@@ -123,7 +123,7 @@ for (const watch of [false, true]) test(`catalogue invalidates source, form and 
   const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
   const selected = await fetch(sim.url + '/_sim/api/dataverse/session', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ userId: session.users.find(user => user.name === 'Invented restricted staff').id }) });
   assert.equal(selected.status, 200); const cookie = selected.headers.get('set-cookie').split(';')[0];
-  const catalogue = async () => (await (await fetch(sim.url + '/_apps/api', { headers: { cookie } })).json()).tables.x_scale0;
+  const catalogue = async () => (await (await fetch(sim.url + '/_apps/api/metadata/x_scale0', { headers: { cookie } })).json());
   const before = await catalogue(); assert.equal(before.capabilities.fields.x_value1.read, false);
   const csrf = sim.state().csrf, headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
   const made = await fetch(sim.url + '/_apps/api/tables/x_scale0', { method: 'POST', headers: { ...headers, cookie }, body: JSON.stringify({ x_value0: 'Invented staff row' }) });
@@ -187,6 +187,8 @@ for (const portal of [false, true]) test(`${portal ? 'portal' : 'standalone'} fr
   assert.equal(report.results[1].timings.solutionCache.misses, 0);
   assert.equal(report.results[2].timings.stateRestore.journal, true);
   for (const result of report.results) {
+    assert.equal(result.metadataTransport.length, 4);
+    assert.ok(result.metadataTransport.every(read => read.bytes > 0 && read.parseMs >= 0));
     assert.deepEqual(result.progress.filter(entry => ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'].includes(entry.phase)).map(entry => entry.phase),
       ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready']);
     assert.ok(result.progress.every((entry, i) => entry.elapsedMs >= (result.progress[i - 1]?.elapsedMs ?? 0)));

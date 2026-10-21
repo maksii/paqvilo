@@ -3,12 +3,15 @@ import { setImmediate } from 'node:timers/promises';
 
 const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'client-runtime.mjs': 'text/javascript; charset=utf-8', 'pcf-runtime.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'date-control.mjs': 'text/javascript; charset=utf-8', 'date-control.css': 'text/css; charset=utf-8', 'duration-control.mjs': 'text/javascript; charset=utf-8', 'duration-control.css': 'text/css; charset=utf-8', 'choice-control.mjs': 'text/javascript; charset=utf-8', 'lookup-dialog.mjs': 'text/javascript; charset=utf-8', 'lookup-control.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8', 'controls.css': 'text/css; charset=utf-8' };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
-const metadataOnly = async (catalogue, data, actor, res) => {
+const metadataOnly = async (catalogue, data, actor, res, { index = false, entity } = {}) => {
   const tables = {};
   let yieldedAt = performance.now();
   for (const [name, { rows: _rows, ...table }] of Object.entries(catalogue.tables)) {
+    if (entity && name !== entity) continue;
     if (res.destroyed) throw fail('Catalogue request was cancelled.', 499);
-    tables[name] = { ...table, capabilities: data.capabilities?.(name, actor, undefined, table.fields) };
+    const { entity: logical, label, singular, idColumn, nameColumn, entitySet, kind, source, projected } = table;
+    tables[name] = { ...(index ? { entity: logical, label, singular, idColumn, nameColumn, entitySet, kind, source, projected, metadata: 'lazy' } : table),
+      capabilities: data.capabilities?.(name, actor, undefined, index ? {} : table.fields) };
     // Keep the serialized read epoch across yields: writes cannot change the
     // principal or field security halfway through the resulting catalogue.
     if (performance.now() - yieldedAt >= 8) { await setImmediate(); yieldedAt = performance.now(); }
@@ -50,9 +53,16 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw fail('Method not allowed.', 405);
       if (method !== 'GET' && req.headers['x-sim-csrf'] !== csrf()) throw fail('Missing simulator CSRF token.', 403);
       const actor = principal(req);
-      if (!api[1]) {
+      const tableMetadata = /^metadata\/([a-z][\w]*)$/i.exec(api[1] ?? '');
+      if (!api[1] || api[1] === 'index' || tableMetadata) {
         if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
-        const result = await read(async () => metadataOnly(await (catalogue.async?.({ cancelled: () => res.destroyed }) ?? catalogue()), data, actor, res));
+        const result = await read(async () => {
+          const source = await (catalogue.async?.({ cancelled: () => res.destroyed }) ?? catalogue());
+          const entity = tableMetadata?.[1];
+          if (entity && !Object.hasOwn(source.tables, entity)) throw fail('Table metadata not found.', 404);
+          const result = await metadataOnly(source, data, actor, res, { index: api[1] === 'index', entity });
+          return entity ? result.tables[entity] : result;
+        });
         if (!res.destroyed) json(res, 200, result); return true;
       }
       const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);

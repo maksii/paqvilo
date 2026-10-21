@@ -262,11 +262,12 @@ const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { pr
  * tables whose complete column metadata is stored on the mapping (`fieldMetadata`
  * and `schemaComplete`) for Web API attribute validation.
  */
-export function applySolutionData(state, metadata, { webApiTables, environmentVariables, connectionReferences, presetLibrary } = {}) {
-  const result = structuredClone({
+export function applySolutionData(state, metadata, { webApiTables, environmentVariables, connectionReferences, presetLibrary, owned = false } = {}) {
+  const input = {
     ...state,
     presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary),
-  });
+  };
+  const result = owned ? input : structuredClone(input);
   result.mappings ??= {};
   result.tables ??= {};
   result.simulator ??= {};
@@ -343,10 +344,12 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
       const rowId = id(table[index]?.[key]);
       if (before.has(rowId) && !current.has(rowId)) table.splice(index, 1);
     }
+    const positions = new Map();
+    table.forEach((row, index) => { const value = id(row?.[key]); if (!positions.has(value)) positions.set(value, index); });
     for (const row of rows) {
-      const index = table.findIndex((existing) => id(existing?.[key]) === id(row[key]));
+      const rowId = id(row[key]), index = positions.get(rowId) ?? -1;
       if (index >= 0) table[index] = { ...table[index], ...row };
-      else table.push(row);
+      else { positions.set(rowId, table.length); table.push(row); }
     }
     seeded[entity] = [...current];
   }

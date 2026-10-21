@@ -23,7 +23,9 @@ await store.compact(); // schedule during an idle period, when desired
 
 `readStateFile` is also exported by `paqvilo/mirage/fixtures`. JSON parsing a state file
 directly is no longer supported. Section projections avoid retaining unselected checkpoint
-rows, although integrity verification still reads the file. `snapshot()` intentionally
+rows and skip reconstructing discarded fragmented values, although integrity verification
+still reads and checksums every journal byte. Small JSON values use a bounded native parse;
+larger documents retain streaming parsing. `snapshot()` intentionally
 copies its requested data; select sections/tables when a complete copy is unnecessary.
 For optimistic fixture replacement, use `store.snapshotDigest()` and
 `replaceState(next, { expectedDigest })`; this hashes bounded chunks without building

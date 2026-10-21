@@ -77,6 +77,7 @@ export class StateStorage {
     this.signature = null; this.journal = false;
   }
   async load({ sections } = {}) {
+    this.skippedFragmentEntries = 0;
     const selected = sections ? new Set(sections) : null;
     const wanted = entry => !selected || selected.has(entry.key ?? 'tables');
     const before = await fileSignature(this.file);
@@ -128,7 +129,22 @@ export class StateStorage {
                 yield item.chunk;
               }
             }
-            try { entry = await parseJsonStream(fragments()); }
+            try {
+              const chunks = fragments(), first = await chunks.next();
+              // Our journal writer puts operation and section/table identity
+              // before the value. Inspect that bounded prefix, then still read
+              // and checksum every fragment of an unselected operation.
+              const header = !first.done && /^\{"op":"(section|remove-section|table|remove-table|insert|set|delete)","(key|table)":("(?:[^"\\]|\\.)*")/.exec(first.value);
+              const descriptor = header && { op: header[1], [header[2]]: JSON.parse(header[3]) };
+              if (descriptor && !wanted(descriptor)) {
+                for await (const _chunk of chunks) { /* Integrity hashes advance in fragments(). */ }
+                entry = descriptor;
+                this.skippedFragmentEntries = (this.skippedFragmentEntries ?? 0) + 1;
+              } else {
+                async function* complete() { if (!first.done) yield first.value; yield* chunks; }
+                entry = await parseJsonStream(complete());
+              }
+            }
             catch (cause) { if (!incomplete || !committed) throw cause; tail = true; break; }
             if (incomplete) { tail = true; break; }
           }

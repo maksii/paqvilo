@@ -135,6 +135,7 @@ test('source-card refresh restores a nonzero existing content scroll position',a
   const elementSources=Array.from({length:16},(_,index)=>({selector:'#title',matchKind:'id',kind:'template',name:'Invented source '+index,ref:'sources/'+index+'.html',sourceFile:'/sources/'+index+'.html'}));
   await page.evaluate(({data,report,elementSources})=>document.getElementById('paqvilo-xray').__px.update(data,{...report,elementSources}),{data,report,elementSources});
   await pick(page,page.frameLocator('#first').locator('#title'));
+  assert.match(await page.locator('#paqvilo-xray .card .content').innerText(), /Possible matches \(16\)/);
   const scroll=await page.locator('#paqvilo-xray .card .content').evaluate(node=>{node.scrollTop=120;return node.scrollTop;});
   assert.equal(scroll,120);
   await page.evaluate(({data,report,elementSources})=>document.getElementById('paqvilo-xray').__px.update(data,{...report,elementSources}),{data,report,elementSources});

@@ -324,11 +324,11 @@ test('lookup target picker clears selection and preserves polymorphic target ide
   const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
   const page = await browser.newPage(); page.setDefaultTimeout(5000);
   let targetLabel;
-  await page.route('**/_apps/api', async route => {
-    const response = await route.fetch(), catalogue = await response.json();
-    catalogue.tables.x_child.fields.x_parentid.targets = ['x_item', 'x_child'];
-    targetLabel = catalogue.tables.x_child.label;
-    await route.fulfill({ response, json: catalogue });
+  await page.route('**/_apps/api/metadata/x_child', async route => {
+    const response = await route.fetch(), table = await response.json();
+    table.fields.x_parentid.targets = ['x_item', 'x_child'];
+    targetLabel = table.label;
+    await route.fulfill({ response, json: table });
   });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd');
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();

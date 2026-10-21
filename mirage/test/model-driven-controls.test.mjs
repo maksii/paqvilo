@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { controlDescriptor } from '../lib/model-driven/control-descriptors.mjs';
+
+test('registered native column types select scalar controls without redundant presentation metadata', () => {
+  for (const [dataverseType, type] of [['int', 'number'], ['nvarchar', 'text'], ['bit', 'boolean'], ['datetime', 'date'], ['lookup', 'lookup'], ['ntext', 'textarea']])
+    assert.equal(controlDescriptor({ dataverseType }).type, type);
+});
 import { compileForm } from '../lib/model-driven/solution.mjs';
 
 test('control capabilities preserve explicit write restrictions and unknown placeholders', () => {

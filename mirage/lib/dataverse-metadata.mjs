@@ -544,10 +544,13 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const std = standardTable(logical);
     // Standard file (standard-tables-plan 3.1): Solution export > standard file > mapping. Its fields go under the Solution's.
     const def = standardTableDef(logical);
-    const thin = m?.fields ?? {};
+    const thin = { ...m?.fields, ...m?.fieldMetadata };
+    for (const name of Object.keys(m?.fieldMetadata ?? {})) if (m?.fields?.[name] && typeof m.fields[name] === 'object')
+      thin[name] = { ...m.fieldMetadata[name], ...m.fields[name] };
     // API-created columns (customColumns, reapplied onto the mapping) stay above the standard columns.
     const custom = Object.fromEntries(Object.entries(thin).filter(([, f]) => f?.columnMetadata?.isManaged === false && f?.columnMetadata?.isCustomizable === true));
     const tableType = s?.tableType ?? m?.tableType ?? m?.dataverseMetadata?.TableType ?? def?.tableType;
+    const declaresColumns = s?.schemaComplete || s?.completeFile || Object.keys(s?.attributes ?? {}).length > 0;
     return {
       logical,
       s,
@@ -563,7 +566,10 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       entitySet: s?.entitySetName ?? m?.entitySet ?? std?.entitySet ?? pluralizeEntitySetName(logical),
       idColumn: s?.primaryIdAttribute ?? m?.idColumn ?? std?.primaryIdAttribute ?? `${logical}id`,
       primaryName: s?.primaryNameAttribute ?? def?.primaryNameAttribute ?? m?.nameColumn ?? std?.primaryNameAttribute ?? null,
-      fields: s ? { ...standardFields(logical), ...tableFields(root, logical), ...custom } : { ...thin, ...standardFields(logical), ...custom },
+      // Forms/views can introduce a table shell without declaring its columns.
+      // An actual column definition retains structural authority, even when its
+      // export is partial; only empty table shells supplement registered fields.
+      fields: s ? { ...(!declaresColumns ? thin : {}), ...standardFields(logical), ...tableFields(root, logical), ...custom } : { ...thin, ...standardFields(logical), ...custom },
     };
   }
 

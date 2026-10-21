@@ -5,6 +5,7 @@ import { classifySolutionPath, parseSchemaDocument, buildSolutionSchema, tableFi
 import { parseSolutionXml, descendants, pickLabel } from './solution-xml.mjs';
 
 const id = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
+const COMPONENT_IDS = { systemform: 'formid', savedquery: 'savedqueryid', appmodule: 'appmoduleid', sitemap: 'sitemapid' };
 const mergeRows = (base, incoming) => [...new Map([...base, ...incoming].map(row => [row.uniqueName ?? `${row.entity ?? ''}/${row.id}`, structuredClone(row)])).values()];
 const metadataXml = name => {
   const parts = String(name).toLowerCase().split('/');
@@ -89,18 +90,22 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       next.collectionLabel = pickLabel(mapping.dataverseMetadata?.labels?.DisplayCollectionName, base.lcid) ?? next.collectionLabel;
     }
     const components = scan.layers.flatMap(layer => layer.documents.map(document => document.facts.appComponents ?? {}));
-    const present = (table, key, componentId) => (!state.dataverse?.solutionPayloads?.[componentId]
-      && !state.dataverse?.sourceSolutionComponents?.baseline?.[`${table}/${componentId}`]) || rows[table].some(row => id(row[key]) === componentId);
+    const rowIds = Object.fromEntries(Object.entries(rows).map(([table, values]) => [table,
+      new Set(values.map(row => id(row[COMPONENT_IDS[table]])))]));
+    const present = (table, componentId) => (!state.dataverse?.solutionPayloads?.[componentId]
+      && !state.dataverse?.sourceSolutionComponents?.baseline?.[`${table}/${componentId}`]) || rowIds[table].has(componentId);
     const localized = component => ({ ...component, name: pickLabel(component.nameLabels, base.lcid) ?? component.name });
-    const forms = mergeRows(base.forms ?? [], components.flatMap(component => component.forms ?? []).map(localized)).filter(form => present('systemform', 'formid', form.id));
-    const views = mergeRows(base.views ?? [], components.flatMap(component => component.views ?? []).map(localized)).filter(view => present('savedquery', 'savedqueryid', view.id));
+    const forms = mergeRows(base.forms ?? [], components.flatMap(component => component.forms ?? []).map(localized)).filter(form => present('systemform', form.id));
+    const views = mergeRows(base.views ?? [], components.flatMap(component => component.views ?? []).map(localized)).filter(view => present('savedquery', view.id));
+    const firstById = values => { const byId = new Map(); for (const value of values) if (!byId.has(value.id)) byId.set(value.id, value); return byId; };
+    const formsById = firstById(forms), viewsById = firstById(views);
     // Current metadata rows take precedence over their original import payload.
     for (const row of rows.systemform) {
-      const form = forms.find(form => form.id === id(row.formid));
+      const form = formsById.get(id(row.formid));
       if (form) Object.assign(form, { name: row.name ?? form.name, xml: row.formxml ?? form.xml, active: row.formactivationstate !== 0, systemFormType: row.type ?? form.systemFormType });
     }
     for (const row of rows.savedquery) {
-      const view = views.find(view => view.id === id(row.savedqueryid));
+      const view = viewsById.get(id(row.savedqueryid));
       if (!view) continue;
       Object.assign(view, { name: row.name ?? view.name, fetchXml: row.fetchxml ?? view.fetchXml, queryType: row.querytype ?? view.queryType, isDefault: row.isdefault ?? view.isDefault });
       if (row.layoutxml) view.fields = descendants(parseSolutionXml(row.layoutxml), 'cell').filter(cell => cell.attrs.ishidden !== '1').map(cell => ({ name: cell.attrs.name, width: Number(cell.attrs.width) || 180 }));
@@ -115,7 +120,7 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     const explicitMaps = [...scan.layers.flatMap(layer => layer.documents), ...appDocuments].flatMap(document => document.facts.appMaps ?? []);
     const apps = [];
     for (const source of [...(base.modelDrivenApps ?? []), ...appsOf({ ...scan, layers: [...scan.layers, { documents: appDocuments }] }, { lcid: base.lcid ?? 1033 })]) {
-      if (!present('appmodule', 'appmoduleid', source.id)) continue;
+      if (!present('appmodule', source.id)) continue;
       const index = apps.findIndex(app => source.id && app.id === source.id || source.uniqueName && app.uniqueName === source.uniqueName);
       const next = structuredClone(source);
       if (index < 0) apps.push(next);

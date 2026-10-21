@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import os from 'node:os';
 import { createSimulator } from '../mirage/server.mjs';
 import { performanceFixture } from '../mirage/test/runtime-performance-fixture.mjs';
 
@@ -73,6 +74,17 @@ export async function runtimePerformance({ scales = [16, 32, 64], records = 1000
           catalogue.push({ warmth, durationMs: Math.round(durationMs), maxHeartbeatMs: Math.round(Math.max(...heartbeat)), heartbeats: heartbeat.length, heartbeatErrors });
           onProgress({ tables, run: phase, phase: 'catalogue-complete', ...catalogue.at(-1) });
         }
+        const metadataTransport = [];
+        for (const attempt of ['first', 'repeat']) for (const route of ['index', 'metadata/x_scale0']) {
+          const at = performance.now();
+          const response = await fetch(sim.url + '/_apps/api/' + route, { signal: AbortSignal.timeout(catalogueBudgetMs) });
+          if (!response.ok) throw Error(`Metadata ${route}: ${response.status}`);
+          const text = await response.text(), transferredMs = performance.now() - at, parseAt = performance.now();
+          const value = JSON.parse(text), parseMs = performance.now() - parseAt;
+          if (route === 'index' && Object.values(value.tables).some(table => table.forms || table.fields || table.views)) throw Error('Index includes unrelated table bodies');
+          if (route !== 'index' && value.forms.length !== formsPerTable) throw Error('Selected-table forms are incomplete');
+          metadataTransport.push({ attempt, catalogueState: 'already constructed', route, bytes: Buffer.byteLength(text), transferredMs: Math.round(transferredMs), parseMs: Math.round(parseMs * 100) / 100 });
+        }
         const dataReads = [];
         const recordId = sim.store.tableRows('x_scale0')[0].x_scale0id;
         for (const [kind, route] of [['first-grid', '/_apps/api/tables/x_scale0'], ['first-record', '/_apps/api/tables/x_scale0/' + recordId]]) {
@@ -92,7 +104,7 @@ export async function runtimePerformance({ scales = [16, 32, 64], records = 1000
         if (actualRecords !== records) throw Error('Imported fixture record count changed');
         const startupBudgetMs = startupBudgets[phase] ?? budgetMs;
         results.push({ tables, formsPerTable, phase, startupMs: Math.round(startupMs), startupBudgetMs, generated: fixture.generated() - before,
-          preset: status.startupPreset, timings: status.bootstrap?.timings, progress, catalogue, dataReads, stateBytes: (await fs.stat(stateFile)).size,
+          preset: status.startupPreset, timings: status.bootstrap?.timings, progress, catalogue, metadataTransport, dataReads, stateBytes: (await fs.stat(stateFile)).size,
           rows: sim.store.tableRows('x_scale0').length, actualRecords, inventory: fixture.inventory, fixtureMs, memoryBefore, memory: process.memoryUsage() });
         checkBudget(startupMs, startupBudgetMs, { tables, phase, stage: 'startup' });
         if (phase === 'unchanged') for (let i = 0; i < 25; i++) await sim.store.update('x_scale0', sim.store.tableRows('x_scale0')[0].x_scale0id, { x_value0: `Local journal edit ${i}` }, { admin: true });
@@ -102,6 +114,8 @@ export async function runtimePerformance({ scales = [16, 32, 64], records = 1000
     } finally { await sim?.close(); await fixture.cleanup(); }
   }
   return { version: 1, dataset: 'invented loopback fixture', budgetMs, startupBudgets, catalogueBudgetMs, heartbeatBudgetMs, dataBudgetMs, strictBudgets,
+    execution: 'sequential same-process starts; filesystem warmth is not controlled',
+    environment: { node: process.version, platform: process.platform, architecture: process.arch, logicalCpus: os.cpus().length, totalMemoryBytes: os.totalmem() },
     startupBudget: 'post-completion elapsed assertion; embedding caller owns startup cancellation', records, columns, formsPerTable, portal, findings, results };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

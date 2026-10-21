@@ -52,10 +52,17 @@ function loadFailed(error, retry) {
   notice(error.message, true); $('#notice').append(document.createTextNode(' '), button('Try again', retry));
 }
 async function api(path = '', options = {}) {
-  const response = await fetch('/_apps/api' + path, { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
+  const response = await fetch('/_apps/api' + (path || '/index'), { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
   const body = await response.json();
   if (!response.ok) { const code = body.error?.code, errorCode = typeof code === 'number' ? code : /^0x[\da-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) : undefined; throw Object.assign(new Error(body.error?.message ?? `Request failed (${response.status}).`), { status: response.status, code, ...(Number.isFinite(errorCode) ? { errorCode } : {}) }); }
   return body;
+}
+async function ensureMetadata(entity, { signal } = {}) {
+  const owner = catalogue, candidate = owner.tables[entity];
+  if (!candidate || candidate.metadata !== 'lazy') return candidate;
+  const result = await api('/metadata/' + encodeURIComponent(entity), { signal });
+  if (owner === catalogue) owner.tables[entity] = result;
+  return result;
 }
 async function staffRequest(options = {}) {
   const response = await fetch('/_sim/api/dataverse/session', { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf } });
@@ -550,11 +557,16 @@ function editFilters(initialField) {
   dialogLifetime.signal.addEventListener('abort', disposeValues, { once: true });
   element.classList.add('side-panel', 'filters-panel'); element.prepend(button('Close', closeDialog, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }));
 }
-function lookup(field) { return createLookupDialog(field, { tables: catalogue.tables, api, tablePath, display, dialog, closeDialog, onDialogCancel, pickerButton, getLifetime: () => dialogLifetime }); }
+async function lookup(field) {
+  const lifetime = formLifetime;
+  await Promise.all((field.targets ?? []).map(entity => ensureMetadata(entity, { signal: lifetime?.signal })));
+  if (lifetime?.signal.aborted) return null;
+  return createLookupDialog(field, { tables: catalogue.tables, api, tablePath, display, dialog, closeDialog, onDialogCancel, pickerButton, getLifetime: () => dialogLifetime });
+}
 async function lookupSuggestions(field, search, { signal } = {}) {
   const targets = (field.targets ?? []).filter(entity => Object.hasOwn(catalogue.tables, entity));
   const results = await Promise.all(targets.map(async entity => {
-    const destination = catalogue.tables[entity], view = (destination.lookupViews ?? destination.views)?.[0];
+    const destination = await ensureMetadata(entity, { signal }), view = (destination.lookupViews ?? destination.views)?.[0];
     const secondary = view?.fields?.find(column => ![destination.nameColumn, destination.idColumn].includes(column.name) && Object.hasOwn(destination.fields, column.name))?.name;
     const found = await api(tablePath(entity) + '?query=' + encodeURIComponent(JSON.stringify({ search, columns: [destination.nameColumn, ...(secondary ? [secondary] : [])], ...(view?.id ? { view: view.id } : { scope: 'table' }), pageSize: 5 })), { signal });
     return found.rows.map(row => ({ id: row[destination.idColumn], entity, name: display(row[destination.nameColumn], destination.fields[destination.nameColumn], row, destination.nameColumn),
@@ -619,6 +631,9 @@ async function renderRecord() {
   recordCard.append(header);
   const availableForms = appForms();
   let selectedForm = availableForms.find(form => form.id === formId) ?? availableForms[0];
+  const renderingForm = formId, renderingLifetime = formLifetime;
+  await Promise.all([...new Set(selectedForm.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).map(cell => cell.subgrid?.entity).filter(Boolean))].map(entity => ensureMetadata(entity)));
+  if (renderGeneration !== generation || renderingForm !== formId || renderingLifetime.signal.aborted) return;
   if (new URLSearchParams(location.search).has('formid')) { const url = new URL(location.href); url.searchParams.set('formid', selectedForm.id); history.replaceState(history.state, '', url); }
   if (availableForms.length > 1) {
     const separator = document.createElement('span'); separator.textContent = '·'; separator.setAttribute('aria-hidden', 'true');
@@ -730,6 +745,7 @@ function createShellClient(selectedForm) {
   const cells = selectedForm.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(cell => cell.name && cell.supported);
   const controlName = cell => cell.sourceControl?.id ?? cell.name;
   const runtime = createFormClientRuntime({ table, tables: catalogue.tables, form: selectedForm, record: record ?? {}, extensions: catalogue.clientExtensions,
+    metadata: entity => ensureMetadata(entity),
     getFormType: () => loadedFormType,
     user: staffSession?.current ? { id: staffSession.current.principalId ?? staffSession.current.id, name: staffSession.current.name } : undefined,
     read: name => { const entry = controls.find(entry => entry.name === name); return entry?.control.supported ? entry.control.read() : record?.[name]; },
@@ -920,8 +936,15 @@ async function loadRoute() {
   app = application ? catalogue.apps.find(app => app.id === application || app.uniqueName === application) : catalogue.apps.find(app => app.id === catalogue.defaultApp);
   if (!app) throw new Error('This application is not imported. Choose an available application above.');
   $('#apps').innerHTML = `<span>${esc(app.name ?? app.uniqueName)}</span>${icon('chevron', 'chevron')}`; $('#apps').title = 'Select an app'; $('#source-label').textContent = app.name ?? app.uniqueName;
-  const entity = params.get('etn') ?? firstEntity(app); table = catalogue.tables[entity];
-  if (!table) throw new Error('No table metadata is available for this application. Import its solution and local mappings.');
+  const entity = params.get('etn') ?? firstEntity(app), routeGeneration = ++generation, routeCatalogue = catalogue;
+  contentLoading('Loading table metadata…');
+  let nextTable;
+  try {
+    nextTable = await ensureMetadata(entity);
+    if (!nextTable) throw new Error('No table metadata is available for this application. Import its solution and local mappings.');
+  } catch (error) { if (routeGeneration === generation) loadFailed(error, loadRoute); return; }
+  if (routeGeneration !== generation || routeCatalogue !== catalogue) return;
+  table = nextTable;
   const preferredArea = storage.get(`area.${app.uniqueName}`, undefined), requestedViewId = (params.get('viewid') ?? (!params.has('etn') ? firstPage(app)?.view : undefined))?.replace(/[{}]/g, '').toLowerCase(), containsEntity = area => area.groups.some(group => group.items.some(item => item.supported && item.entity === entity));
   const containsView = area => Boolean(requestedViewId && area.groups.some(group => group.items.some(item => item.supported && item.entity === entity && item.view === requestedViewId)));
   activeArea = app.navigation.find(area => area.id === preferredArea && containsView(area)) ?? app.navigation.find(containsView) ?? app.navigation.find(area => area.id === preferredArea && containsEntity(area)) ?? app.navigation.find(containsEntity) ?? app.navigation.find(area => area.id === preferredArea) ?? app.navigation[0];

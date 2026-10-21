@@ -596,7 +596,7 @@ export function readSolutionZip(buffer) {
  * root by definition-before-extension; `order: "derived"` applies that rule across
  * all roots (used for automatically discovered roots).
  */
-export async function scanSolutionSources(roots = [], { cache, cacheFile, order = "explicit" } = {}) {
+export async function scanSolutionSources(roots = [], { cache, cacheFile, order = "explicit", previous } = {}) {
   if (typeof roots === "string") roots = [roots];
   cache ??= await SolutionFileCache.open(cacheFile ?? null);
   const diagnostics = [];
@@ -654,6 +654,13 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
       file.error = error.message;
     }
   });
+  // Reuse only after rediscovering the complete inventory and validating every
+  // file identity. Additions, deletions, root/order changes and errors invalidate.
+  const inventory = value => JSON.stringify(value.map(layer => [layer.inputIndex, layer.input, layer.dir, layer.type, layer.manifestFile,
+    layer.files.map(file => [file.path, file.kind, file.stamp, file.error])]));
+  if (previous && previous.order === order && !diagnostics.length && !previous.diagnostics.length &&
+      JSON.stringify(inputs) === JSON.stringify(previous.inputs) && inventory(layers) === inventory([...previous.layers].sort((a, b) => a.inputIndex - b.inputIndex || a.discoveryIndex - b.discoveryIndex))) return previous;
+  layers.forEach((layer, discoveryIndex) => { layer.discoveryIndex = discoveryIndex; });
   const parseFile = async (file) => {
     if (file.error) {
       diagnostics.push({ code: "SOLUTION_XML_READ_FAILED", source: file.path, message: file.error });

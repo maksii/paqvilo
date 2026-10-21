@@ -9,6 +9,8 @@ present. This is not an inventory of the connected organization.
 
 A [standalone model-driven runtime](standalone-organization.md) imports Solution apps without a portal or website. Its organization core remains available when the public HTTP API is disabled. Configure the runtime surface, default imported app and [simulation level](simulation-levels.md) in `/_setup/`; restart to apply changes.
 
+The shell loads a compact application/navigation index and requests table metadata as needed. All imported forms and views remain available through table navigation, form switching, lookups and subgrids. Refresh and staff changes fetch current metadata and permissions. The complete catalogue endpoint remains available for existing integrations; see [loading measurements](runtime-performance.md).
+
 App definitions from configured `solutionRoots` appear in the application picker.
 The picker opens an application-card dialog with search and keyboard navigation.
 Exported application names and descriptions populate its cards; switching apps

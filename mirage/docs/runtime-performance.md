@@ -4,6 +4,16 @@ Organization composition installs its registrations, security and platform exten
 
 Both portal and standalone hosts decide `presetMode: 'bootstrap'` from whether the state file already exists. Restarting an existing state keeps local records and does not hydrate or reapply that preset. `status.startupPreset` reports the selection and applied/kept decision. This remains separate from explicit `always` mode and manual preset application.
 
+Portal startup without a simulation storage adapter restores the state once, reads its profile pin from that restored graph, and hands the verified storage identity to the store. It rechecks file identity before adopting the graph. `profilePinMs` includes the early read; `statePreloadMs` records the full restore performed there, and `stateRestoreMs` includes that cost plus store initialization. These timings overlap configuration time and must not be added together. Simulation adapters retain their recovery/publication boundary; section-only journal reads checksum discarded fragmented sections without reconstructing their values.
+
+Site-bound contexts retain immutable Solution scan/schema inputs. A runtime rediscovers the complete inventory and checks file stamps, roots, layer order and locale before reusing them; changed portal content also invalidates the bound portal import. Replacement keeps the old graph as rollback input and adopts private detached composition results. Presets avoid copying sections they replace, keep organization-owned rows, and omit the unused full admin-state response during startup. Default public replacement/preset results remain detached.
+
+Security seeding builds temporary ID indexes for existing security rows and user-role pairs inside each seed transaction. It keeps the first matching case-insensitive ID and insert-only grants, including edited depths. The indexes expire on success and failure; extension-added tables are resolved against fresh inputs. Environment-variable source seeding likewise indexes its existing rows once.
+
+On Windows, source watching uses recursive OS notifications per distinct watched directory root, coalesces overlapping/case-equivalent roots, filters events to the requested sources, and waits for changed files to stabilize. Shared nonrecursive ancestor watchers reattach roots when an export or containing directory is replaced; handle count follows source path depth rather than exported directory count. Other platforms and unsupported/missing native roots retain chokidar. Both hosts wait for watcher readiness and close their own handles. `bootstrap.timings.watcher` reports the backend and native handle or chokidar directory count.
+
+The model-driven shell requests `/_apps/api/index` for application/navigation and table identities, followed by `/_apps/api/metadata/<logical-name>` for the selected table. Forms, views, fields and relationships travel only for that table and explicitly requested lookup/subgrid targets. The complete legacy catalogue remains available at `/_apps/api`. Every response evaluates the current staff principal and field security; response bodies are not reused between callers. API-only startup does not construct an unused model-driven catalogue.
+
 Model-driven catalogue field capabilities resolve imported metadata once per table and reuse the staff profile grants within that calculation. They retain record rights, field-security precedence and sharing checks. Catalogue construction and its HTTP projection yield between tables after approximately 8 ms of work, while keeping their serialized read boundary. That projection reuses its immutable metadata inputs within the read epoch. Grid and record reads can also reuse those inputs until a potentially mutating read plug-in captures its rollback snapshot; reuse stops before arbitrary plug-in code runs. Staff grants and field-security results are not cached across requests. Writes wait for the read boundary; unrelated status requests can continue. Disconnecting a consumer stops remaining catalogue work, and completed epochs release their metadata references.
 
 `status.bootstrap.timings` reports source/cache, state restore/composition, preset and organization costs, state-file size/format, and memory snapshots. `startupMs` and `listenerMs` measure the runtime call through initial listener/watcher setup; portal `sourceBootstrapMs` separately measures its earlier source/state composition milestone. A listener is not proof that the browser has loaded its application. Optional embedded `onStartup({ phase, elapsedMs })` observes phase starts and `listener-ready`; synchronous exceptions and rejected promises/thenables do not fail startup. Observer results are not awaited, so a pending observer cannot block listener readiness.
@@ -19,6 +29,8 @@ node scripts/runtime-performance.mjs --large --standalone
 ```
 
 Each matrix covers 16/32/64 imported tables with 24 custom fields, about 10,000 generated records, and fresh-state, unchanged-state and grown-journal restarts. It measures cold/warm catalogue reads alongside concurrent status heartbeats, records cache hits/misses, state bytes and process memory, and verifies that a local journal edit survives restart. The declared startup threshold is 30,000 ms (checked after startup completes), and status requests have a 1,000 ms deadline. Embedding callers own startup cancellation; this probe does not claim a cancellation deadline for the `createSimulator` call. `--quick` uses one 16-table, 1,000-record case. The ordinary regression suite uses smaller fixtures and a wider heartbeat deadline for shared CI hosts; it separately asserts cooperative response ordering and cancellation.
+
+Reports also include navigation-index/selected-table transferred bytes and explicit JSON parse time for first/repeat transport reads after catalogue construction, plus Node/OS/CPU/memory context. Matrix starts share one process; filesystem warmth is uncontrolled. The first/repeat labels do not claim separate cold-process samples. Portable regressions enforce single-restore/parse-reuse invariants, bounded metadata payloads and linear security ID-read counts on input doubling. Historical elapsed samples below remain observations of their stated implementations and hardware, not hardware-independent budgets for the current changes.
 
 `--large` is an optional source-volume investigation, excluded from default CI and the default matrix. It imports **256 tables × 24 fields × 40 distinct full forms**, totaling **10,498 XML files**, and exactly **20,000 business records**. The portal mode also imports the small invented portal; standalone mode selects the same complete Solution inputs. No forms, roots or records are removed to meet a target. Every successful catalogue is checked for all 40 forms on every table, every startup is checked for the exact record count, and bootstrap presets/local journal edits are checked across restarts. The report distinguishes fixture generation time and source bytes/file counts from the runtime's discovery/import/startup costs.
 
@@ -76,3 +88,31 @@ snapshots again reached about 2.6 GB; the memory and embedded-cancellation limit
 above still apply. The separate Power Pages PCF preload is not part of the
 model-driven client catalogue's aggregate import budget; see
 [client source selection](model-driven-customizations.md).
+
+## 2026-10-21 feedback follow-up
+
+The follow-up also indexes source form/view presence and row overlays. The complete
+10,498-file fixture exposed these remaining quadratic scans: its first full-catalogue
+request delayed status for about three seconds before indexing. An ID-read-count
+regression now guards input doubling for both security seeding and form/view overlays.
+
+Sequential reruns on Windows x64, Node 24.13.1, 20 logical CPUs and approximately
+95 GiB RAM retained all 10,240 forms, 20,000 records and the grown-journal local edit:
+
+| Surface / state | Runtime ready | First / repeat full catalogue | Maximum status heartbeat |
+| --- | ---: | ---: | ---: |
+| Standalone fresh | 4,379 ms | 1,864 / 803 ms | 400 ms |
+| Standalone unchanged | 3,470 ms | 1,789 / 773 ms | 411 ms |
+| Standalone grown journal | 3,507 ms | 1,795 / 754 ms | 394 ms |
+| Portal fresh | 5,264 ms | 1,878 / 808 ms | 426 ms |
+| Portal unchanged | 2,689 ms | 1,802 / 802 ms | 403 ms |
+| Portal grown journal | 2,731 ms | 1,814 / 756 ms | 404 ms |
+
+Both runs completed without declared budget findings. The shell index was 164,724
+bytes standalone and 177,141 bytes with the portal; the selected table, including
+all 40 of its forms, was 329,833 bytes on both. First/repeat index reads took 20–35 ms
+and selected-table reads 14–20 ms **after catalogue construction**. These transport
+measurements are not cold browser page-ready clocks. Starts within each run share
+one process and warm filesystem/module caches; these samples do not reproduce the
+consumer's ARM64 datasets or establish p95/cold-process performance. No source
+inputs or records were removed. Receipts remain in ignored `.paqvilo/`.

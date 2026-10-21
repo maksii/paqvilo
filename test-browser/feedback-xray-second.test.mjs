@@ -41,18 +41,86 @@ test('native PCF selection requires a rendered host rather than a configured col
   assert.equal((await identify('#title')).kind,'Code component');
 });
 
-test('full class coverage outranks rare subsets and IDs with contradictory classes; export rarity survives refresh',async t=>{
+test('shared template coverage stays uncertain and contradictory IDs cannot hide a unique class match',async t=>{
   const elementSources=[...hints('<div class="state">x</div>','subset'),...['full1','full2','full3'].flatMap(name=>hints('<div class="state padded">x</div>',name)),...hints('<button id="b" class="btn exit">Close</button>','wrong-id'),...hints('<button id="{{ id }}" class="ui-btn custom">Close</button>','correct-classes')];
   const report={elementSources,elementSourceFrequencies:{'div.state':1,'div.state.padded':3}}, {page,identify,data}=await fixture(t,'<div class="state padded">x</div><button id="b" class="ui-btn custom">Close</button>',report);
-  assert.equal((await identify('div')).title,'full1');assert.equal((await identify('button')).title,'correct-classes');
+  assert.equal((await identify('div')).title,'No reliable source');assert.equal((await identify('button')).title,'correct-classes');
   await page.evaluate(({data,report})=>document.getElementById('paqvilo-xray').__px.update(data,{...report,elementSources:[...report.elementSources,...Array.from({length:90},(_,index)=>({selector:'.unmatched-'+index,kind:'template',name:'Unrelated'}))]}),{data,report});
-  assert.equal((await identify('div')).title,'full1');assert.equal((await identify('button')).title,'correct-classes');
+  assert.equal((await identify('div')).title,'No reliable source');assert.equal((await identify('button')).title,'correct-classes');
+});
+
+for (const session of [1, 2]) test(`a runtime notification class cannot promote an inactive template over a shared shell (session ${session})`, async t => {
+  const shell = '<div class="alert alert-info">Notice</div>';
+  const inactive = '<div class="alert alert-info notification">Notice</div>';
+  const elementSources = [...hints(shell, 'Global shell', { includedBy: ['page-template:layout'] }),
+    ...hints(inactive, 'Unrelated application wizard', { includedBy: ['web-template:layout'] }),
+    ...hints('<button id="active-next" class="wizard-next">Next</button>', 'Active wizard')];
+  const { page, identify } = await fixture(t, shell + '<button id="active-next" class="wizard-next" onclick="window.activated=true">Next</button>', { elementSources,
+    webTemplates: [{ id: 'layout', name: 'Invented layout', includedBy: ['page-template:layout'], source: "{% if false %}{% include 'Unrelated application wizard' %}{% endif %}" }] });
+  await page.locator('.alert').evaluate(node => node.classList.add('notification'));
+  const found = await identify('.notification');
+  assert.equal(found.title, 'No reliable source');
+  assert.ok(found.matches.filter(item => item.depth === 0).every(item => !item.strong));
+  assert.equal((await identify('#active-next')).title, 'Active wizard');
+  const rect = await page.locator('.notification').boundingBox();
+  await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('.notification')));
+  const highlight = await page.locator('#paqvilo-xray .selected').boundingBox();
+  assert.ok(highlight); for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(rect[key] - highlight[key]) <= 2, key);
+  const button = await page.locator('#active-next').boundingBox();
+  await page.mouse.click(button.x + button.width / 2, button.y + button.height / 2);
+  assert.equal(await page.evaluate(() => window.activated), undefined);
+});
+
+for (const kind of ['template', 'snippet']) test(`current page markup keeps overlapping ${kind} selectors uncertain after runtime changes`, async t => {
+  const shell = '<div class="alert alert-info">Notice</div>';
+  const active = '<button id="active-next" class="wizard-next">Next</button>';
+  const pageHints = hints(shell, 'Current page', { kind: 'page' });
+  const { page, identify, data } = await fixture(t, shell + active.replace('>Next', ' onclick="window.activated=true">Next'), {});
+  for (const [label, markup] of [
+    ['class', '<div class="alert alert-info notification">Notice</div>'],
+    ['id', '<div id="notification" class="alert alert-info">Notice</div>'],
+    ['attribute', '<div data-entityname="notification" class="alert alert-info">Notice</div>'],
+  ]) {
+    const report = { elementSources: [...pageHints, ...hints(markup, 'Inactive source', { kind }), ...hints(active, 'Active wizard')] };
+    await page.evaluate(({ data, report, label }) => {
+      const node = document.querySelector('.alert'); node.className = 'alert alert-info'; node.removeAttribute('id'); node.removeAttribute('data-entityname');
+      if (label === 'class') node.classList.add('notification');
+      else if (label === 'id') node.id = 'notification';
+      else node.dataset.entityname = 'notification';
+      document.getElementById('paqvilo-xray').__px.update(data, report);
+    }, { data, report, label });
+    const found = await identify('.alert');
+    assert.equal(found.title, 'No reliable source', label);
+    assert.equal(found.matches.filter(item => item.depth === 0).length, 2, label);
+    assert.ok(found.matches.filter(item => item.depth === 0).every(item => !item.strong), label);
+    assert.equal((await identify('#active-next')).title, 'Active wizard', label);
+    const rect = await page.locator('.alert').boundingBox();
+    await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('.alert')));
+    await page.locator('#paqvilo-xray .selected').waitFor({ state: 'visible' });
+    const highlight = await page.locator('#paqvilo-xray .selected').boundingBox();
+    assert.ok(highlight); for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(rect[key] - highlight[key]) <= 2, `${label}: ${key}`);
+    const text = await page.locator('#paqvilo-xray .content').innerText();
+    assert.match(text, /Current page/); assert.match(text, /Inactive source/);
+  }
+  const button = await page.locator('#active-next').boundingBox();
+  await page.mouse.click(button.x + button.width / 2, button.y + button.height / 2);
+  assert.equal(await page.evaluate(() => window.activated), undefined);
 });
 
 test('repeated ID branches score the classes and source line of their matching occurrence',async t=>{
   const elementSources=hints('<button id="branch" class="btn exit">One</button>\n<button id="branch" class="ui-btn custom">Two</button>','Branches');
   const {identify}=await fixture(t,'<button id="branch" class="ui-btn custom">Two</button>',{elementSources});
   const row=await identify('button');assert.equal(row.title,'Branches');assert.equal(row.matches[0].line,2);assert.equal(row.matches[0].strong,true);
+});
+
+test('shared selectors in separate records of one enhanced source retain both uncertain identities', async t => {
+  const sources = ['one', 'two'].flatMap(recordId => hints('<div class="shared-notice">Notice</div>', recordId,
+    { recordId, ref: 'shared.powerpagecomponent.xml', sourceFile: '/shared.powerpagecomponent.xml' }));
+  const { page, identify } = await fixture(t, '<div class="shared-notice">Notice</div>', { elementSources: sources });
+  const found = await identify('.shared-notice'); assert.equal(found.title, 'No reliable source');
+  assert.deepEqual(found.matches.map(item => item.recordId).sort(), ['one', 'two']); assert.ok(found.matches.every(item => !item.strong));
+  await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('.shared-notice')));
+  const text = await page.locator('#paqvilo-xray .content').innerText(); assert.match(text, /Possible matches \(2\)/);
 });
 
 test('framework-only evidence remains uncertain despite unique static include reachability',async t=>{

@@ -5,6 +5,23 @@ import { createHash } from 'node:crypto';
 // Bound intermediate strings to one JSON scalar, rather than the document size.
 // Chunk boundaries may fall inside UTF-8, escapes, numbers or property names.
 export async function parseJsonStream(chunks) {
+  // Most individual journal entries fit in a bounded native parse. Keep the
+  // streaming fallback for documents larger than this fixed allocation budget.
+  const iterator = chunks[Symbol.asyncIterator] ? chunks[Symbol.asyncIterator]() : chunks[Symbol.iterator]();
+  const prefix = []; let length = 0;
+  while (length <= 8 * 1024 * 1024) {
+    const next = await iterator.next();
+    if (next.done) return JSON.parse(prefix.join(''));
+    const chunk = String(next.value); prefix.push(chunk); length += chunk.length;
+  }
+  async function* remaining() {
+    try { yield* prefix; while (true) { const next = await iterator.next(); if (next.done) return; yield next.value; } }
+    finally { await iterator.return?.(); }
+  }
+  return parseLargeJsonStream(remaining());
+}
+
+async function parseLargeJsonStream(chunks) {
   let root, hasRoot = false, token = '', quoted = false, escaped = false;
   const stack = [];
   const fail = () => { throw new SyntaxError('Invalid streamed state JSON'); };

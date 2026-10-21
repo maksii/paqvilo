@@ -158,18 +158,22 @@ export function xrayUi(data) {
       const rarity=report?.elementSourceFrequencies?.[item.selector]??frequencies.get(item.selector)?.size??1;
       const contextual=contexts[0]?.contextual??0,contradictions=contexts[0]?.contradictions??0;
       // Static reachability and selector rarity cannot prove a conditional branch rendered.
-      const strong=tagMatch&&!missing&&!contradictions&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||contextual>0||agreed>0&&meaningful.length>0));
+      const compatible=tagMatch&&!missing&&!contradictions;
+      const strong=compatible&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||contextual>0||agreed>0&&meaningful.length>0));
       const attributeCount=Object.entries(contexts[0]?.attributes??item.attributes??{}).filter(([key,value])=>target.getAttribute(key)===value).length;
       // Prefer stronger evidence across adjacent regions, but do not let a distant
       // page-container ID eclipse the distinctive template immediately around a node.
       const score=attributeCount*5+(item.matchKind==='id'?110:item.matchKind==='attribute'?85:item.matchKind==='class'?35+classes.length*5+meaningful.length*10:20)+(tagMatch?10:-85)+agreed*20+contextual*20-contradictions*65-depth*40+coverage*15-missing*65-Math.min(10,Math.log2(Math.max(1,rarity))*2);
       const best=contexts.filter(location=>location.locationScore===contexts[0]?.locationScore);
-      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,pageChain,
+      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,compatible,pageChain,
         evidenceLabel:`${item.kind==='script'?'Script reference':strong?'Markup match':'Possible match'}: ${item.selector}${depth?' on an enclosing element':''}${item.occurrences>1?' · '+item.occurrences+' locations in this source':''}`});
     }catch{}}
-    // A page's include graph cannot disambiguate identical snippet markup.
-    // Keep equally supported snippets as possibilities instead of choosing a name.
-    for(const row of rows)if(row.kind==='snippet'&&row.strong&&rows.some(other=>other!==row&&other.kind==='snippet'&&other.sourceFile!==row.sourceFile&&other.selector===row.selector&&other.depth===row.depth&&other.score===row.score))row.ambiguous=true;
+    // A page's include graph cannot disambiguate shared markup. The current
+    // page's own copy also competes with template/snippet IDs and attributes
+    // added at runtime; retain those identities without asserting an owner.
+    const sourceIdentity=item=>(item.ref??item.sourceFile??'')+'\u0000'+(item.recordId??item.id??item.name??'');
+    const markupKinds=new Set(['page','template','snippet']);
+    for(const row of rows)if(row.strong&&markupKinds.has(row.kind)&&rows.some(other=>other!==row&&other.compatible&&markupKinds.has(other.kind)&&sourceIdentity(other)!==sourceIdentity(row)&&other.depth===row.depth&&(other.selector===row.selector||other.matchKind==='class'&&row.matchKind==='class'||other.kind==='page'||row.kind==='page')))row.ambiguous=true;
     for(const row of rows)if(row.ambiguous){row.strong=false;row.evidenceLabel=row.evidenceLabel.replace('Markup match:','Possible match:');}
     const ranked=rows.sort((a,b)=>Number(b.strong)-Number(a.strong)||b.score-a.score||a.depth-b.depth||Number(b.pageChain)-Number(a.pageChain));
     const result=ranked.slice(0,60);result.omitted=Math.max(0,ranked.length-result.length);return result;
@@ -194,7 +198,7 @@ export function xrayUi(data) {
   };
   const selectionIdentity=node=>{if(!node)return null;const found=identify(node),b=found.b,component=b.fields.length===1||b.forms.length||b.lists.length;return {title:found.title,kind:found.kind,sub:found.sub,fields:b.fields.map(({entity,name,label,ref})=>({entity,name,label,ref})),forms:b.forms.map(({id,name,kind,ref,formXml})=>({id,name,kind,ref,formXml})),views:b.views.map(({id,name,entity,ref})=>({id,name,entity,ref})),lists:b.lists.map(({id,recordId,name,entity,ref})=>({id:id??recordId,name,entity,ref})),sources:found.matches.filter(item=>item.strong&&(!component||item.depth===0)).slice(0,12).map(({name,kind,ref,line,selector,depth})=>({name,kind,ref,line,selector,depth}))};};
   const sourcesHtml = node => {
-    const b=binding(node),exact=b.fields.length===1?b.fields[0]:null,matches=sourceMatches(node),allMarkup=matches.filter(item=>item.kind!=='script'),markup=exact||b.forms.length||b.lists.length?allMarkup.filter(item=>item.depth===0&&item.strong):allMarkup,scripts=matches.filter(item=>item.kind==='script');
+    const b=binding(node),exact=b.fields.length===1?b.fields[0]:null,matches=sourceMatches(node),allMarkup=matches.filter(item=>item.kind!=='script'),markup=exact||b.forms.length||b.lists.length?allMarkup.filter(item=>item.depth===0&&(item.strong||item.ambiguous)):allMarkup,scripts=matches.filter(item=>item.kind==='script');
     let out=b.conflict?'<div class="section"><h3>Conflicting table context</h3><p class="note">The rendered table and exported form/view disagree. No column identity is asserted.</p></div>':'';
     if(exact){
       const table=(report?.tables??[]).find(item=>item.logicalName===exact.entity);
@@ -212,7 +216,7 @@ export function xrayUi(data) {
     if(markup.length){
       // Retain distinct evidence within a source too: an enclosing unique ID must
       // remain inspectable beside a nearer class match from the same file.
-      const files=[...new Map(markup.map(item=>[(item.ref??item.sourceFile)+'\u0000'+item.selector,item])).values()];
+      const files=[...new Map(markup.map(item=>[(item.ref??item.sourceFile)+'\u0000'+(item.recordId??item.id??item.name??'')+'\u0000'+item.selector,item])).values()];
       const strong=files.filter(item=>item.strong),possible=files.filter(item=>!item.strong);
       if(strong.length)out+=`<div class="section"><h3>Element source candidates <small>(${strong.length})</small></h3>${sourceRows(strong)}<p class="note">Static selector candidates; rendered invocation is not verified. Multiple templates or conditional branches can share a match.</p></div>`;
       if(possible.length)out+=`<details open><summary>Possible matches (${possible.length})</summary>${sourceRows(possible)}<p class="note">Shared selectors alone do not identify an owner. Multiple templates or conditional branches can share a match.</p></details>`;

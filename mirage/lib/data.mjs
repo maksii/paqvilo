@@ -729,7 +729,7 @@ export class DataStore {
     }
     return `${this.revision}.${this.siteRevision ?? 0}`;
   }
-  async init() {
+  async init({ restoredState, restoredStorage } = {}) {
     if (this.storageAdapter) {
       this.state = normalizeState(await this.storageAdapter.load(this.state), this.presetLibrary, this.platformConfig, true);
       return this;
@@ -737,7 +737,11 @@ export class DataStore {
     if (this.file) {
       this.ensureStorage();
       try {
-        this.state = normalizeState(await this.storage.load(), this.presetLibrary, this.platformConfig, true);
+        if (restoredState !== undefined) {
+          if (!(restoredStorage instanceof StateStorage) || restoredStorage.file !== this.file) throw new TypeError('Restored state must use this file storage.');
+          await restoredStorage.assertUnchanged(); this.storage = restoredStorage;
+        }
+        this.state = normalizeState(restoredState ?? await this.storage.load(), this.presetLibrary, this.platformConfig, true);
         this.persistedDigest = this.storage.digest;
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
@@ -1158,7 +1162,7 @@ export class DataStore {
   }
   async flushCommittedEvents(){while(this.committedEventDispatches?.size)await Promise.all([...this.committedEventDispatches]);}
   /** Runtime composition may omit an unused result; inputs and default snapshots remain detached. */
-  async replaceState(state, { expectedSnapshot, expectedDigest, expectedRevision, returnSnapshot = true } = {}) {
+  async replaceState(state, { expectedSnapshot, expectedDigest, expectedRevision, returnSnapshot = true, cloneInput = true } = {}) {
     return this.transact(() => {
       if (expectedRevision !== undefined && this.revision !== expectedRevision)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
@@ -1166,9 +1170,16 @@ export class DataStore {
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       if (expectedSnapshot !== undefined && JSON.stringify(this.snapshot()) !== expectedSnapshot)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
-      this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
-      return returnSnapshot ? this.snapshot() : undefined;
-    }, { cloneResult: returnSnapshot });
+      const next = normalizeState(state, this.presetLibrary, this.platformConfig, !cloneInput);
+      // Replacement never edits the old graph. Retain it as the rollback input
+      // instead of copying it on the successful path; failed saves still restore
+      // a detached copy through the ordinary transaction rollback.
+      const boundary = this.pluginRollbackBoundary;
+      boundary.backup ??= this.state;
+      boundary.persistenceBackup ??= this.state;
+      this.state = next;
+      return returnSnapshot ? this.state : undefined;
+    }, { cloneResult: returnSnapshot, lazyReadSnapshot: true });
   }
   /**
    * Read-only tables a host derives from the portal export (site components,
@@ -3440,15 +3451,15 @@ export class DataStore {
       targetId,
     };
   }
-  async applyPreset(name, { generatedPresets = this.presetLibrary } = {}) {
+  async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {
     const preset = resolvePreset(this.state, name, generatedPresets);
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
     if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
     return this.transact(() => {
-      applyPresetSections(this.state, preset);
-      this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig);
-      return this.snapshot();
-    });
+      applyPresetSections(this.state, preset, { owned: true });
+      this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig, true);
+      return returnSnapshot ? this.state : undefined;
+    }, { cloneResult: returnSnapshot });
   }
   /**
    * Evaluate FetchXML for an identity. options.profile "webapi" applies the

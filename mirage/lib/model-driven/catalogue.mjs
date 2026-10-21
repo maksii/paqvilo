@@ -33,9 +33,11 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
   for (const [entity, mapping] of Object.entries(mappings)) {
     if (tables[entity]) continue;
     const exported = metadata.entities?.[entity];
+    const fields = { ...mapping.fields, ...mapping.fieldMetadata };
+    for (const name of Object.keys(mapping.fieldMetadata ?? {})) if (mapping.fields?.[name] && typeof mapping.fields[name] === 'object') fields[name] = { ...mapping.fieldMetadata[name], ...mapping.fields[name] };
     tables[entity] = { entity, label: exported?.collectionLabel ?? friendly(entity), singular: exported?.label ?? friendly(entity),
       idColumn: mapping.idColumn ?? `${entity}id`, nameColumn: mapping.nameColumn ?? exported?.primaryNameAttribute ?? mapping.idColumn ?? `${entity}id`,
-      fields: { ...(mapping.fieldMetadata ?? mapping.fields), ...exported?.fields }, source: exported ? 'solution' : 'local-mapping', projected: false };
+      fields: { ...fields, ...exported?.fields }, source: exported ? 'solution' : 'local-mapping', projected: false };
   }
   for (const table of Object.values(tables)) {
     const exported = metadata.entities?.[table.entity];
@@ -45,7 +47,7 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
     const mapping = mappings[table.entity];
     if (mapping?.entitySet) table.entitySet = mapping.entitySet;
     if (mapping?.relationships) table.relationships = structuredClone(mapping.relationships);
-    table.fields = Object.fromEntries(Object.entries(table.fields).map(([name, field]) => [name, typeof field === 'object' && field ? { name, ...field } : { name, label: friendly(name), type: 'text', dataverseType: field }]));
+    table.fields = Object.fromEntries(Object.entries(table.fields).map(([name, field]) => [name, typeof field === 'object' && field ? { name, label: friendly(name), ...field } : { name, label: friendly(name), dataverseType: field }]));
     for (const field of Object.values(table.fields)) { field.control = controlDescriptor(field); field.type = field.control.type;
       const mask = String(field.columnMetadata?.displayMask ?? '').trim();
       if (field.columnMetadata?.isLogical === true || mask) field.validForGrid = field.columnMetadata?.isLogical !== true && /(?:^|\|)\s*ValidForGrid\s*(?:\||$)/i.test(mask);

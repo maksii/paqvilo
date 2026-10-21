@@ -41,6 +41,14 @@ test('client attribute types and choice labels derive from exported metadata', (
   assert.deepEqual(runtime.formContext.getAttribute('x_choice').getOption('One'), { text: 'One', value: 1 });
 });
 
+test('disposing a form during lazy metadata preparation prevents its pending Xrm write', async () => {
+  let release;
+  const { runtime, requests } = runtimeFixture({ metadata: () => new Promise(resolve => { release = resolve; }) });
+  const pending = runtime.Xrm.WebApi.createRecord('x_item', { x_name: 'Must not write' });
+  runtime.destroy(); release();
+  await assert.rejects(pending, /disposed/); assert.equal(requests.length, 0);
+});
+
 test('global context reports the selected local staff without inventing security role identifiers', () => {
   const { runtime } = runtimeFixture({ user: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Invented staff', roles: ['Basic User'] } });
   const settings = runtime.Xrm.Utility.getGlobalContext().userSettings;

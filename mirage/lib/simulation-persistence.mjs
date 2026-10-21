@@ -189,7 +189,7 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
     },
     activate(state) {
       if (active) return;
-      active = true; capture(state); initialRows = rowHashes(state);
+      active = true; capture(state); initialRows = new Map(baselineRows);
       for (const [table, rows] of Object.entries(state.tables ?? {})) {
         const idColumn = state.mappings?.[table]?.idColumn;
         const mapping = { idColumn, tableType: state.mappings?.[table]?.tableType };

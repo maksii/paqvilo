@@ -3,7 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import chokidar from 'chokidar';
+import { watchSources } from './source-watcher.mjs';
 import { createSetupHandler } from '../../lense/setup/server.mjs';
 import { DataStore } from './data.mjs';
 import { runtimeSettings, runtimeCapabilities } from './runtime-config.mjs';
@@ -168,7 +168,7 @@ export async function createStandaloneRuntime(options = {}) {
     await store.replaceState(applySolutionData(store.state, sources.solutionData, { webApiTables: Object.keys(sources.solutionData.mappings), environmentVariables: options.environmentVariables, presetLibrary: boot.presetLibrary }), { returnSnapshot: false });
     bootstrapTimings.stateCompositionMs = Math.round(performance.now() - stageAt); stageAt = performance.now();
     startupPhase('preset');
-    if (startupPreset.applied) await store.applyPreset(options.preset);
+    if (startupPreset.applied) await store.applyPreset(options.preset, { returnSnapshot: false });
     bootstrapTimings.presetMs = Math.round(performance.now() - stageAt); stageAt = performance.now();
     startupPhase('organization');
     const extensions = await sourceOrganizationExtensions({ layers: sources.solutionData.layers, plugins: sources.metadata.plugins,
@@ -204,7 +204,7 @@ export async function createStandaloneRuntime(options = {}) {
       return catalogueCache.value;
     };
     // Validate an explicitly selected app before opening any listener.
-    catalogue();
+    if (caps.modelDriven && runtime.defaultApp) catalogue();
     const recordService = createModelDrivenRecordService({ organization, origin: () => localOrigin });
     const data = createModelDrivenData({ store, catalogue, recordService,
       readMetadata: fn => overlay.withReadEpoch(fn, { valid: () => store.isUnmodifiedRead() }) });
@@ -284,7 +284,7 @@ export async function createStandaloneRuntime(options = {}) {
       const cacheDirectory = checkpoint && !simulation ? path.join(path.dirname(checkpoint), 'cache') : null;
       const ignored = solutionWatchFilter({ roots: watchedRoots, layers: [...sources.solutionData.layers, ...(modelDriven.clientSources ?? []).map(dir => ({ type: 'directory', dir }))],
         exclude: [cacheDirectory, ...(storageAdapter?.report(store.state).targets.map(target => target.file) ?? [])] });
-      const watched = chokidar.watch(watchedRoots, { ignoreInitial: true,
+      const watched = watchSources(watchedRoots, { ignoreInitial: true,
         ignored: (file, stats) => {
           const absolute = pathKey(path.resolve(file));
           return Boolean(checkpointKey && (absolute === checkpointKey || absolute.startsWith(checkpointKey + '.'))) || ignored(file, stats);
@@ -309,6 +309,9 @@ export async function createStandaloneRuntime(options = {}) {
         throw error;
       }
       if (closing) await watched.close();
+      bootstrapTimings.watcher = watched.nativeWatchCount?.() > 0
+        ? { backend: 'windows-recursive', handles: watched.nativeWatchCount() }
+        : { backend: 'chokidar', directories: Object.keys(watched.getWatched?.() ?? {}).length };
       await previous?.close();
     }
     if (options.watch !== false && watchedRoots.length) await restartWatcher();

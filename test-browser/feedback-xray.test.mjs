@@ -47,19 +47,22 @@ test('selected duplicate labels refresh when their locally associated control bi
   await page.locator('#paqvilo-xray .binding').getByText('item.other',{exact:true}).waitFor();
 });
 
-test('tied source candidates prefer the transitive page include chain and weak evidence stays under possible matches',async t=>{
+test('transitive static includes keep shared selectors uncertain and weak evidence stays possible',async t=>{
   const elementSources=[...hints('<button class="owned">Go</button>','global'),...hints('<button class="owned">Go</button>','nested').map(item=>({...item,includedBy:['web-template:middle']})),...hints('<input class="form-control">','generic')];
   const report={elementSources,webTemplates:[{id:'main',includedBy:['page-template:main']},{id:'middle',includedBy:['web-template:main']}]};
   const {page,identify}=await fixture(t,'<button class="owned">Go</button><input class="form-control">',report);
-  assert.equal((await identify('button')).title,'nested');
+  const found = await identify('button'); assert.equal(found.title, 'No reliable source');
+  assert.ok(found.matches.every(item => !item.strong)); assert.ok(found.matches.some(item => item.pageChain));
   await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.select(document.querySelector('input')));
   assert.match(await page.locator('#paqvilo-xray .content').innerText(),/Possible matches/);
 });
 
-test('snippet dependency chains use exported usedBy names when resolving tied source evidence',async t=>{
+test('snippet dependency chains retain exported usedBy reachability without naming a shared selector owner',async t=>{
   const elementSources=[...hints('<button class="owned">Go</button>','global'),...hints('<button class="owned">Go</button>','nested').map(item=>({...item,usedBy:['content-snippet:Middle']}))];
   const report={elementSources,snippets:[{id:'snippet-main',name:'Main',usedBy:['page']},{id:'snippet-middle',name:'Middle',usedBy:['content-snippet:Main']}]};
-  const {identify}=await fixture(t,'<button class="owned">Go</button>',report);assert.equal((await identify('button')).title,'nested');
+  const {identify}=await fixture(t,'<button class="owned">Go</button>',report);
+  const found = await identify('button'); assert.equal(found.title, 'No reliable source');
+  assert.ok(found.matches.every(item => !item.strong)); assert.ok(found.matches.some(item => item.pageChain));
 });
 
 test('classic lists, fallback basic forms and modal iframe URLs resolve with a visible frame boundary',async t=>{

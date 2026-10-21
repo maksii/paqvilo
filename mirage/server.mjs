@@ -31,7 +31,7 @@ import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AuditLog } from "./lib/audit-log.mjs";
-import chokidar from "chokidar";
+import { watchSources } from './lib/source-watcher.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles, profileSelection, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 import {
   DataStore,
@@ -398,9 +398,17 @@ async function createPowerPagesSimulator({
   const profileConfig = resolveDeploymentProfiles(deploymentProfiles, projectRoot, {sourceDir,sourceRoot:projectRoot});
   if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw error('Use deploymentProfiles or the legacy deploymentProfile option, not both.');
   let persistedPin = initial?.simulator?.deploymentProfilePin ?? null;
+  let restoredState, restoredStorage;
   if (stateFile) {
-    try { const { readStateFile } = await import('./lib/state-storage.mjs'); persistedPin = (await readStateFile(stateFile, { sections: ['simulator'] })).simulator?.deploymentProfilePin ?? null; }
+    const preloadStarted = performance.now();
+    try {
+      const { StateStorage, readStateFile } = await import('./lib/state-storage.mjs');
+      if (!simulation) { restoredStorage = new StateStorage(stateFile, persistence); restoredState = await restoredStorage.load(); }
+      persistedPin = (restoredState ?? await readStateFile(stateFile, { sections: ['simulator'] })).simulator?.deploymentProfilePin ?? null;
+    }
     catch (cause) { if (cause.code !== 'ENOENT') throw cause; }
+    bootstrapTimings.profilePinMs = Math.round(performance.now() - preloadStarted);
+    bootstrapTimings.statePreloadMs = restoredState === undefined ? 0 : bootstrapTimings.profilePinMs;
   }
   if (personaInstance?.deploymentProfile !== undefined) persistedPin = personaInstance.deploymentProfile;
   let activeProfiles = await loadDeploymentProfiles(profileConfig, persistedPin);
@@ -436,7 +444,7 @@ async function createPowerPagesSimulator({
     bootstrapTimings.portalMs = Math.round(performance.now() - started);
     return imported;
   };
-  let sourcePortal = importedSources?.sourceDir === sourceDir && importedSources.pagesFile === activeProfiles.pagesFile && importedSources.deploymentProfile === deploymentProfile && importedSources.dataModel === dataModel && !persistedPin ? applyObserved(importedSources.portal,observed) : await importSource();
+  let sourcePortal = importedSources?.sourceDir === sourceDir && importedSources.pagesFile === activeProfiles.pagesFile && importedSources.profilesFingerprint === activeProfiles.fingerprint && importedSources.deploymentProfile === deploymentProfile && importedSources.dataModel === dataModel && !persistedPin && importedSources.portalDigest === await sourceDigest ? applyObserved(importedSources.portal,observed) : await importSource();
   // A source with zero recognised pages is not a portal: `serve` fails loudly, naming its layout.
   if (requirePortalSource) assertPortalSource(sourcePortal);
   let portal = sourcePortal;
@@ -469,15 +477,17 @@ async function createPowerPagesSimulator({
     startupPhase('solution-import');
     const started = performance.now();
     const cache = await SolutionFileCache.open(solutionCacheFile);
-    const scan = await scanSolutionSources(solutionRoots, { cache, order: solutionOrder });
+    const previous = reuseImported && importedSources?.solutionOrder === solutionOrder && JSON.stringify(importedSources.solutionRoots) === JSON.stringify(solutionRoots) ? importedSources.solutionScan : undefined;
+    const scan = await scanSolutionSources(solutionRoots, { cache, order: solutionOrder, previous });
     const lcid = project?.lcid ?? dataverseOption?.localeId ?? 1033;
-    const schema = buildSolutionSchema(scan, { lcid });
+    const schema = scan === previous && importedSources?.solutionSchema?.lcid === lcid ? importedSources.solutionSchema : buildSolutionSchema(scan, { lcid });
+    bootstrapTimings.solutionReuse = { scan: scan === previous, schema: schema === importedSources?.solutionSchema };
     operationWorkflows = await importOperationWorkflows(scan.layers);
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
     codeComponents = await importCodeComponents(scan.layers);
     [solutionMetadata, solutionData] = await Promise.all([
       importSolutionMetadata(solutionRoots, { portal, entities: Object.keys(schema.tables), scan, schema, observed, lcid }),
-      reuseImported && importedSources?.solutionData && importedSources.solutionOrder === solutionOrder && JSON.stringify(importedSources.solutionRoots) === JSON.stringify(solutionRoots) ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema, lcid }),
+      scan === previous && schema === importedSources?.solutionSchema ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
     solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid });
     clientResources = await importModelDrivenResources(scan.layers, { codeComponents, clientSources: modelDrivenSettingsValue.clientSources });
@@ -537,8 +547,9 @@ async function createPowerPagesSimulator({
     Object.entries(portal.settings ?? {})
       .filter(([name, value]) => /^Webapi\/[^/]+\/enabled$/i.test(name) && String(value).toLowerCase() === "true")
       .map(([name]) => name.split("/")[1].toLowerCase());
-  const applySolutions = (state) =>
+  const applySolutions = (state, { owned = false } = {}) =>
     applySolutionData(state, solutionData, {
+      owned,
       presetLibrary: generatedPresets,
       webApiTables: webApiTables(),
       // Local values set in _sim (simulator.environmentVariables) win over project-level overrides.
@@ -560,10 +571,12 @@ async function createPowerPagesSimulator({
   };
   // Every replacement keeps solution-derived mappings, column metadata and seeded rows current.
   const replaceCompiledState = async (state, { expectedRevision = store.snapshotRevision(state) ?? store.revision } = {}) => {
-    const candidate = compilePermissions(applySolutions(state));
+    const candidate = compilePermissions(applySolutions(state, { owned: store.snapshotRevision(state) !== undefined }));
     sourceComponentStorage?.materialize(candidate.state);
     managementStorage?.materialize(candidate.state);
-    await store.replaceState(candidate.state, { expectedRevision, returnSnapshot: false });
+    // Source composition produced this private detached candidate; normalization
+    // can adopt it without cloning the entire business graph again.
+    await store.replaceState(candidate.state, { expectedRevision, returnSnapshot: false, cloneInput: false });
     appliedPermissionModel = candidate.model;
   };
   if (!['data-only', 'apply'].includes(presetConfiguration)) throw new Error('presetConfiguration must be data-only or apply');
@@ -589,7 +602,7 @@ async function createPowerPagesSimulator({
     storageAdapter,
     presetLibrary: generatedPresets,
     platform: platformOption,
-    state: applySolutions(seededInitialState()),
+    state: restoredState !== undefined ? { version: 1 } : applySolutions(seededInitialState()),
   });
   bootstrapTimings.stateSeedMs = Math.round(performance.now() - bootstrapStageAt);
   const validateStartupConfiguration = () => {
@@ -604,8 +617,9 @@ async function createPowerPagesSimulator({
   if (!stateExisted) validateStartupConfiguration();
   startupPhase('state-restore');
   bootstrapStageAt = performance.now();
-  await store.init();
-  bootstrapTimings.stateRestoreMs = Math.round(performance.now() - bootstrapStageAt);
+  await store.init({ restoredState, restoredStorage });
+  restoredState = restoredStorage = undefined;
+  bootstrapTimings.stateRestoreMs = Math.round(performance.now() - bootstrapStageAt) + (bootstrapTimings.statePreloadMs ?? 0);
   bootstrapTimings.stateRestore = { existed: stateExisted, journal: store.storage?.journal ?? false,
     bytes: stateFile ? (await fs.stat(stateFile).catch(() => null))?.size ?? 0 : 0 };
   if (Object.keys(store.state.simulator?.modelDriven?.records ?? {}).length) {
@@ -1574,20 +1588,18 @@ async function createPowerPagesSimulator({
     }
     throw error('Source records changed repeatedly while compiling the local portal. Refresh will retry on the next request.', 409, 'SourceRefreshConflict');
   };
-  const applySelectedPreset = async (name, adjust, { applyConfiguration = false } = {}) => {
-    const state = store.snapshot(),
-      preset = resolvePreset(state, name, generatedPresets);
+  const applySelectedPreset = async (name, adjust, { applyConfiguration = false, returnState = true } = {}) => {
+    const preset = resolvePreset(store.state, name, generatedPresets);
     if (!preset) throw error("Preset not found.", 404);
+    const replaced = ['mappings', 'tables', 'permissions', 'plugins', 'settings'].filter(key => preset[key] !== undefined);
+    // Preserve all unspecified state, without copying business sections that
+    // this preset replaces. Organization-owned rows are retained explicitly.
+    const state = store.snapshot({ sections: Object.keys(store.state).filter(key => !replaced.includes(key)) });
     state.simulator ??= config();
-    const organizationSections = { mappings: state.mappings, tables: state.tables };
-    for (const key of [
-      "mappings",
-      "tables",
-      "permissions",
-      "plugins",
-      "settings",
-    ])
-      if (preset[key] !== undefined) state[key] = structuredClone(preset[key]);
+    const organizationSections = { mappings: store.state.mappings, tables: store.state.tables };
+    for (const key of replaced)
+      // resolvePreset returned a detached graph owned by this operation.
+      if (preset[key] !== undefined) state[key] = preset[key];
     preserveOrganizationPresetSections(organizationSections, preset, state);
     if (preset.personaCatalog !== undefined) state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, 'Preset ' + name);
     if (preset.identity)
@@ -1616,7 +1628,7 @@ async function createPowerPagesSimulator({
       state.simulator = applyExperiment({simulator:state.simulator},configuration).simulator;
     }
     await saveState(state);
-    return exposedState();
+    return returnState ? exposedState() : undefined;
   };
   const validateConfig = (cfg) => {
     profileSelection(profileConfig, cfg.deploymentProfilePin ?? null);
@@ -4283,7 +4295,7 @@ async function createPowerPagesSimulator({
   });
   bootstrapStageAt = performance.now();
   startupPhase('preset');
-  if (startupPreset.applied) await applySelectedPreset(preset,undefined,{applyConfiguration:presetConfiguration==='apply'});
+  if (startupPreset.applied) await applySelectedPreset(preset,undefined,{applyConfiguration:presetConfiguration==='apply',returnState:false});
   bootstrapTimings.presetMs = Math.round(performance.now() - bootstrapStageAt);
   if (personaInstance) {
     const state = store.snapshot(); state.simulator ??= {};
@@ -4438,7 +4450,7 @@ async function createPowerPagesSimulator({
     const pluginSourceKeys = new Set(pluginSources.map(file => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
     const ignoreSource = solutionWatchFilter({ sourceDir, roots: [...solutionRoots, ...clientSources], layers: [...layers, ...clientSources.map(dir => ({ type: 'directory', dir }))], exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
-    watcher = chokidar.watch([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources], {
+    watcher = watchSources([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources], {
       ignoreInitial: true,
       ignored: (file, stats) => pluginSourceKeys.has(path.resolve(file).toLowerCase()) ? false : ignoreSource(file, stats),
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
@@ -4461,6 +4473,9 @@ async function createPowerPagesSimulator({
       recordDiagnostic({ code: "WATCH_ERROR", message: err.message }),
     );
     await watchReady;
+    bootstrapTimings.watcher = watched.nativeWatchCount?.() > 0
+      ? { backend: 'windows-recursive', handles: watched.nativeWatchCount() }
+      : { backend: 'chokidar', directories: Object.keys(watched.getWatched?.() ?? {}).length };
     await previousWatcher?.close();
   }
   if (watch) await restartWatcher();

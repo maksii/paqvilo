@@ -1,8 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+
+test('form-only overlays retain the trusted Xrm CRUD/query round trip with bounded lazy metadata requests', async t => {
+  const fixture = await modelDrivenFixture(t, { stateFile: null }); await fixture.sim.close();
+  await fs.unlink(path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml'));
+  const initial = { version: 1, mappings: { x_item: { userConfigured: true, entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name',
+    fields: { x_name: { dataverseType: 'nvarchar' }, x_quantity: { dataverseType: 'int' } } },
+    x_extra: { userConfigured: true, entitySet: 'x_extras', idColumn: 'x_extraid', nameColumn: 'x_name',
+      fields: { x_name: { dataverseType: 'nvarchar' }, x_parentid: { dataverseType: 'lookup', targets: ['x_item'] } },
+      relationships: { x_parentid: { entity: 'x_item', from: 'x_parentid', to: 'x_itemid', many: false } } } },
+    tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Mapped original', x_quantity: 2 }] } };
+  const sim = await fixture.start({ stateFile: null, initial, modelDriven: { trustedExtensions: true } }); t.after(() => sim.close());
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(), paths = [], errors = [];
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/_apps/api')) paths.push(new URL(request.url()).pathname); });
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  assert.ok(paths.includes('/_apps/api/index')); assert.ok(paths.includes('/_apps/api/metadata/x_item'));
+  assert.equal(paths.includes('/_apps/api'), false);
+  assert.ok(paths.filter(route => route.startsWith('/_apps/api/metadata/')).every(route => ['/_apps/api/metadata/x_item', '/_apps/api/metadata/x_child'].includes(route)));
+  const result = await page.evaluate(async () => {
+    const made = await Xrm.WebApi.createRecord('x_item', { x_name: 'Browser mapped row', x_quantity: 3 });
+    await Xrm.WebApi.updateRecord('x_item', made.id, { x_name: 'Browser mapped update' });
+    const saved = await Xrm.WebApi.retrieveRecord('x_item', made.id, '?$select=x_name');
+    const filtered = await Xrm.WebApi.retrieveMultipleRecords('x_item', "?$select=x_name&$filter=x_name eq 'Browser mapped update'");
+    let unknown; try { await Xrm.WebApi.retrieveRecord('x_item', made.id, '?$select=x_unknown'); } catch (error) { unknown = error.message; }
+    await Xrm.WebApi.deleteRecord('x_item', made.id);
+    return { saved, filtered, unknown, id: made.id };
+  });
+  assert.equal(result.saved.x_name, 'Browser mapped update'); assert.equal(result.filtered.entities.length, 1);
+  assert.match(result.unknown, /Could not find a property/);
+  assert.equal((await fetch(sim.url + '/_apps/api/tables/x_item/' + result.id)).status, 404);
+  const related = await page.evaluate(async () => {
+    const made = await Xrm.WebApi.createRecord('x_extra', { x_name: 'Lazy relation', 'x_parentid@odata.bind': '/x_items(aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)' });
+    const saved = await Xrm.WebApi.retrieveRecord('x_extra', made.id, '?$select=x_name,_x_parentid_value');
+    await Xrm.WebApi.deleteRecord('x_extra', made.id); return saved;
+  });
+  assert.equal(related._x_parentid_value, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  assert.ok(paths.includes('/_apps/api/metadata/x_extra'));
+  assert.deepEqual(errors, []);
+});
 
 test('model-driven Xrm lookup writes use the local staff transport, CSRF and current ETags', async t => {
   const { sim, origin } = await modelDrivenFixture(t);

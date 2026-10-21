@@ -161,7 +161,8 @@ export function createFormClientRuntime(host) {
   // Recheck after each asynchronous boundary: a form or staff identity may have
   // changed while a read was in flight. In particular, never send a follow-up
   // PATCH/DELETE from a context revoked during its ETag preflight.
-  const request = async (...args) => { assertLive(); const result = await host.request(...args); assertLive(); return result; };
+  const prepareTable = async entity => { await host.metadata(entity); assertLive(); };
+  const request = async (...args) => { assertLive(); if (host.metadata) await prepareTable(args[0]); const result = await host.request(...args); assertLive(); return result; };
   const onlineWebApi = client({
     retrieveRecord: async (entity, id, options = '') => { if (typeof options !== 'string' || options && !options.startsWith('?')) throw new Error('Xrm.WebApi query options must start with ?.'); return request(entity, id, { query: { scope: 'odata', options } }); },
     retrieveMultipleRecords: async (entity, options = '', maxPageSize) => {
@@ -174,8 +175,8 @@ export function createFormClientRuntime(host) {
       }
       return request(entity, undefined, { query: { scope: 'odata', options, ...(maxPageSize === undefined ? {} : { pageSize: maxPageSize }) } });
     },
-    createRecord: async (entity, data) => { const values = writeData(data, host.tables[entity], host.tables); const result = await request(entity, undefined, { method: 'POST', data: values }); return { id: result.row[host.tables[entity].idColumn], entityType: entity }; },
-    updateRecord: async (entity, id, data) => { const values = writeData(data, host.tables[entity], host.tables); const current = await request(entity, id); await request(entity, id, { method: 'PATCH', data: values, etag: current.etag }); return { id, entityType: entity }; },
+    createRecord: async (entity, data) => { if (host.metadata) await prepareTable(entity); const values = writeData(data, host.tables[entity], host.tables); const result = await request(entity, undefined, { method: 'POST', data: values }); return { id: result.row[host.tables[entity].idColumn], entityType: entity }; },
+    updateRecord: async (entity, id, data) => { if (host.metadata) await prepareTable(entity); const values = writeData(data, host.tables[entity], host.tables); const current = await request(entity, id); await request(entity, id, { method: 'PATCH', data: values, etag: current.etag }); return { id, entityType: entity }; },
     deleteRecord: async (entity, id) => { const current = await request(entity, id); await request(entity, id, { method: 'DELETE', etag: current.etag }); return { id, entityType: entity }; },
   }, 'Xrm.WebApi');
   const webApi = client({ ...onlineWebApi, online: onlineWebApi }, 'Xrm.WebApi');

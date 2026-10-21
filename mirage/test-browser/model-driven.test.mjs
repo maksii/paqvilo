@@ -35,7 +35,7 @@ test('slow model-driven reads and saves show feedback, prevent duplicate writes 
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   let startupFailed = false;
-  await page.route('**/_apps/api', route => {
+  await page.route('**/_apps/api/index', route => {
     if (startupFailed) return route.continue();
     startupFailed = true; return route.fulfill({ status: 503, json: { error: { message: 'Invented startup failure' } } });
   });

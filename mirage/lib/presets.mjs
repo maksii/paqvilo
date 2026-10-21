@@ -136,22 +136,23 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
 }
 
 /** Apply a resolved preset's state sections in place (DataStore transaction body). */
-export function applyPresetSections(state, preset) {
+export function applyPresetSections(state, preset, { owned = false } = {}) {
+  const copy = owned ? value => value : clone;
   if (preset.personaCatalog !== undefined) state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, `Preset ${preset.id ?? preset.name ?? 'unnamed'}`);
   if (preset.tables)
     for (const [entity, rows] of Object.entries(preset.tables))
-      state.tables[entity] = clone(rows);
-  if (preset.mappings) Object.assign(state.mappings, clone(preset.mappings));
+      state.tables[entity] = copy(rows);
+  if (preset.mappings) Object.assign(state.mappings, copy(preset.mappings));
   for (const key of ["plugins", "permissions"])
-    if (preset[key]) state[key] = clone(preset[key]);
-  if (preset.settings) Object.assign(state.settings, preset.settings);
+    if (preset[key]) state[key] = copy(preset[key]);
+  if (preset.settings) Object.assign(state.settings, copy(preset.settings));
   if (preset.identity) {
     state.simulator ??= {};
-    state.simulator.identity = clone(preset.identity);
+    state.simulator.identity = copy(preset.identity);
   }
   if (preset.endpoints) {
     state.simulator ??= {};
-    state.simulator.endpoints = clone(preset.endpoints);
+    state.simulator.endpoints = copy(preset.endpoints);
   }
   return state;
 }

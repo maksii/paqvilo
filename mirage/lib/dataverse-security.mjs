@@ -192,11 +192,32 @@ function mappingFor(logical, def) {
   };
 }
 
-const rowsOf = (store, logical) => (store.state.tables[logical] ??= []);
+// These indexes live only for a synchronous seed inside the caller's transaction.
+// Never retain indexes across administrator edits, replacement or rollback.
+const seedFrames = new WeakMap(), seedRows = new WeakMap();
+function rowsOf(store, logical) {
+  const rows = store.state.tables[logical] ??= [];
+  const frame = seedFrames.get(store), def = TABLE_DEFS[logical];
+  if (frame && def && !seedRows.has(rows)) {
+    const index = new Map();
+    for (const row of rows) { const id = key(row[def.id]); if (!index.has(id)) index.set(id, row); }
+    seedRows.set(rows, index); frame.push(rows);
+  }
+  return rows;
+}
+function withSeedIndexes(store, fn) {
+  if (seedFrames.has(store)) return fn();
+  const frame = []; seedFrames.set(store, frame);
+  try { return fn(); }
+  finally { for (const rows of frame) seedRows.delete(rows); seedFrames.delete(store); }
+}
 
 // Seeding is insert-only: an existing row is never rewritten, so administrator edits survive a re-seed.
 function insertMissing(rows, idColumn, row) {
-  if (!rows.some((r) => sameId(r[idColumn], row[idColumn]))) rows.push(row);
+  const index = seedRows.get(rows), id = key(row[idColumn]);
+  if (index ? !index.has(id) : !rows.some((r) => sameId(r[idColumn], row[idColumn]))) {
+    rows.push(row); index?.set(id, row);
+  }
 }
 
 function removeWhere(rows, predicate) {
@@ -214,7 +235,9 @@ function rowOf(store, logical, id) {
   const def = TABLE_DEFS[logical];
   // Accept a stored lookup object as well as a bare id (systemuser.businessunitid is a lookup).
   id = refId(id);
-  const row = store.tableRows(logical).find((r) => sameId(r[def.id], id));
+  const rows = seedFrames.has(store) ? rowsOf(store, logical) : store.tableRows(logical);
+  const index = seedRows.get(rows);
+  const row = index ? index.get(key(id)) : rows.find((r) => sameId(r[def.id], id));
   if (!row) throw new DataError(`${logical} ${id} does not exist.`, 404, 'NotFound');
   return row;
 }
@@ -251,12 +274,15 @@ function seedMappings(store) {
 
 function linkRole(store, userId, roleId) {
   const rows = rowsOf(store, 'systemuserroles');
-  if (rows.some((r) => sameId(refId(r.systemuserid), userId) && sameId(refId(r.roleid), roleId))) return;
-  rows.push({
+  const frame = seedFrames.get(store), pair = key(userId) + '/' + key(roleId);
+  if (frame && !frame.roleLinks) frame.roleLinks = new Set(rows.map(row => key(refId(row.systemuserid)) + '/' + key(refId(row.roleid))));
+  if (frame ? frame.roleLinks.has(pair) : rows.some((r) => sameId(refId(r.systemuserid), userId) && sameId(refId(r.roleid), roleId))) return;
+  const row = {
     systemuserroleid: uuidV5(userId, roleId),
     systemuserid: lookupRow(store, 'systemuser', userId),
     roleid: lookupRow(store, 'role', roleId),
-  });
+  };
+  rows.push(row); seedRows.get(rows)?.set(key(row.systemuserroleid), row); frame?.roleLinks.add(pair);
 }
 
 function addUser(store, organizationId, id, fields, roles) {
@@ -420,7 +446,7 @@ function seedSecurity(store, settings, schema) {
 export function ensureSecurityModel(store, settings, { schema } = {}) {
   return store.transact(() => {
     if (!GUID_RE.test(settings?.organizationId ?? '')) throw new DataError('A GUID organizationId is required.', 400, 'InvalidRequest');
-    return seedSecurity(store, settings, schema);
+    return withSeedIndexes(store, () => seedSecurity(store, settings, schema));
   });
 }
 
@@ -437,7 +463,7 @@ export function grantTablePrivileges(store, organizationId, logical, { schema } 
   const [table] = tableInfo(store, schema).filter((t) => t.logical === logical);
   if (!table) throw new DataError(`${logical} is not a known table.`, 404, 'NotFound');
   const privileges = tablePrivilegesOf(table);
-  grantPrivileges(store, organizationId, privileges);
+  withSeedIndexes(store, () => grantPrivileges(store, organizationId, privileges));
   return privileges.map((p) => p.name);
 }
 

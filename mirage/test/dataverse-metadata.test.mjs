@@ -8,6 +8,23 @@ import { seed as seedStandard } from "../lib/dataverse-standard.mjs";
 
 const ORG = "5f0c2c1e-1d2b-4c3a-9a7e-0123456789ab";
 
+test('registered fields supplement a source shell but complete source schemas remain authoritative', () => {
+  const mappings = { x_probe: { entitySet: 'x_probes', idColumn: 'x_probeid', nameColumn: 'x_name',
+    fields: { x_name: { dataverseType: 'nvarchar' }, x_mappingonly: { dataverseType: 'int' } },
+    fieldMetadata: { x_name: { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } } } } };
+  let table;
+  const service = createMetadataService({ organizationId: ORG, mappings: () => mappings, schema: () => ({ tables: table ? { x_probe: table } : {}, relationships: {}, targets: {}, optionSets: {} }) });
+  assert.ok(service.recordFields('x_probe').x_mappingonly);
+  assert.equal(service.attributes('x_probe').find(field => field.LogicalName === 'x_name').IsSecured, true);
+  table = { logicalName: 'x_probe', attributes: {}, layers: [], labels: {} };
+  assert.ok(service.recordFields('x_probe').x_mappingonly);
+  table = { ...table, attributes: { x_name: { name: 'x_name', type: 'nvarchar' } } };
+  assert.equal(service.recordFields('x_probe').x_mappingonly, undefined, 'A column-declaring source retains its existing authority.');
+  table = { ...table, completeFile: 'invented/Entity.xml' };
+  assert.equal(service.recordFields('x_probe').x_mappingonly, undefined);
+  assert.equal(service.recordFields('x_probe').x_unknown, undefined);
+});
+
 const MAPPINGS = {
   widget: {
     entitySet: "widgets",
