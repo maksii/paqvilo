@@ -8,6 +8,8 @@ export function renderChoice(field, value, { multiple = false, options = field.o
   const primary = document.createElement('input'); primary.type = 'text';
   primary.setAttribute('role', 'combobox'); primary.setAttribute('aria-haspopup', 'listbox'); primary.setAttribute('aria-expanded', 'false'); primary.autocomplete = 'off';
   const chevron = document.createElement('span'); chevron.className = 'choice-chevron'; chevron.innerHTML = icon('chevron');
+  const chips = document.createElement('div'); chips.className = 'choice-chips';
+  const summary = document.createElement('span'); summary.className = 'choice-summary'; summary.setAttribute('aria-hidden', 'true');
   const list = document.createElement('div'); list.id = `field-choices-${++nextId}`; list.className = 'choice-options'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', `${field.label ?? field.name} choices`); list.hidden = true;
   if (multiple) list.setAttribute('aria-multiselectable', 'true');
   primary.setAttribute('aria-controls', list.id);
@@ -25,10 +27,22 @@ export function renderChoice(field, value, { multiple = false, options = field.o
   const update = () => {
     primary.value = multiple && !list.hidden ? filterText : selected.map(value => options.find(option => same(option.value, value))?.label ?? String(value)).join('; ');
     primary.placeholder = list.hidden ? '---' : multiple ? 'Select or search options' : '--Select--';
+    element.classList.toggle('has-choices', multiple && selected.length > 0); chips.hidden = !multiple || !selected.length;
+    summary.textContent = multiple ? selected.map(value => options.find(option => same(option.value, value))?.label ?? String(value)).join(', ') : '';
+    chips.replaceChildren();
+    if (multiple) for (const value of selected) {
+      const label = options.find(option => same(option.value, value))?.label ?? String(value), chip = document.createElement('span'); chip.className = 'choice-chip';
+      const text = document.createElement('span'); text.textContent = label;
+      const remove = document.createElement('button'); remove.type = 'button'; remove.tabIndex = -1; remove.disabled = primary.disabled; remove.setAttribute('aria-label', `Remove ${label}`); remove.innerHTML = icon('close');
+      remove.addEventListener('pointerdown', event => event.preventDefault());
+      remove.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); if (!alive || primary.disabled) return; selected = selected.filter(candidate => !same(candidate, value)); update(); primary.focus(); notify(); });
+      chip.append(text, remove); chips.append(chip);
+    }
     for (const [index, option] of [...list.children].entries()) { option.setAttribute('aria-selected', String(chosen(entries[index]))); option.classList.toggle('active', keyboardActive && index === active); }
     validate();
     if (!list.hidden && active >= 0 && !list.children[active]?.hidden) primary.setAttribute('aria-activedescendant', `${list.id}-${active}`); else primary.removeAttribute('aria-activedescendant');
   };
+  const notify = () => { notifying = true; primary.dispatchEvent(new Event('input', { bubbles: true })); primary.dispatchEvent(new Event('change', { bubbles: true })); notifying = false; };
   const filterOptions = (resetActive = false) => {
     const term = filterText.toLocaleLowerCase();
     for (const [index, option] of [...list.children].entries()) option.hidden = multiple && !entries[index].all && !entries[index].label.toLocaleLowerCase().includes(term);
@@ -61,7 +75,7 @@ export function renderChoice(field, value, { multiple = false, options = field.o
     const entry = entries[index]; if (!alive || !entry || primary.disabled) return;
     selected = multiple ? entry.all ? chosen(entry) ? [] : options.map(option => option.value) : chosen(entry) ? selected.filter(value => !same(value, entry.value)) : [...selected, entry.value] : entry.value == null ? [] : [entry.value];
     update(); if (!multiple) close(); primary.focus();
-    notifying = true; primary.dispatchEvent(new Event('input', { bubbles: true })); primary.dispatchEvent(new Event('change', { bubbles: true })); notifying = false;
+    notify();
   };
   for (const [index, entry] of entries.entries()) {
     const option = document.createElement('div'); option.id = `${list.id}-${index}`; option.setAttribute('role', 'option'); option.setAttribute('aria-label', entry.label); option.textContent = entry.label;
@@ -88,7 +102,7 @@ export function renderChoice(field, value, { multiple = false, options = field.o
       if (index >= 0) { active = index; keyboardActive = true; update(); revealActive(); }
     }
   });
-  element.append(primary, chevron, list); update();
+  element.append(primary, chips, summary, chevron, list); update();
   return { element, primary, read: () => multiple ? selected.length ? [...selected] : null : selected[0] ?? null,
     setValue(value) { selected = multiple ? Array.isArray(value) ? [...value] : value == null || value === '' ? [] : String(value).split(',').map(Number) : value == null ? [] : [value]; update(); },
     setDisabled(disabled) { primary.disabled = disabled; if (disabled) close(); }, destroy() { alive = false; close(); } };

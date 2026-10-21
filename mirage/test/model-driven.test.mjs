@@ -6,9 +6,39 @@ import { modelDrivenFixture } from './model-driven-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
-import { compileForm, parseAppDefinitions } from '../lib/model-driven/solution.mjs';
+import { compileForm, parseAppDefinitions, parseSiteMap } from '../lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../lib/solution-xml.mjs';
 import { columnIcon } from '../lib/model-driven/icons.mjs';
+
+test('source navigation admits bounded imported table-view pages and leaves remote or unknown destinations unavailable', () => {
+  const areas = parseSiteMap('<SiteMap><Area Id="work"><Group Id="planning"><SubArea Id="all" Entity="x_item"/><SubArea Id="upper" Url="/main.aspx?appid=77777777-7777-4777-8777-777777777777&amp;pagetype=entitylist&amp;etn=x_item&amp;viewid={upper-view}&amp;viewType=1039"/><SubArea Id="missing" Url="main.aspx?pagetype=entitylist&amp;etn=x_item&amp;viewid=missing-view"/><SubArea Id="remote" Url="https://example.invalid/main.aspx?pagetype=entitylist&amp;etn=x_item"/><SubArea Id="record" Url="/main.aspx?pagetype=entityrecord&amp;etn=x_item"/><SubArea Id="script" Url="javascript:alert(1)"/><SubArea Id="unmapped" Url="/main.aspx?pagetype=entitylist&amp;etn=x_absent"/></Group></Area></SiteMap>');
+  assert.equal(areas[0].groups[0].items[1].view, 'upper-view');
+  const catalogue = appCatalogue({ providers: [{ tables: { x_item: { entity: 'x_item', idColumn: 'x_itemid', nameColumn: 'x_name', fields: { x_name: { type: 'text' } } } }, apps: [{ id: 'x_example', name: 'Invented', navigation: areas }] }], metadata: { views: [{ entity: 'x_item', id: 'upper-view', name: 'Upper items', queryType: 0 }] } });
+  const entries = catalogue.apps[0].navigation[0].groups[0].items;
+  assert.deepEqual(entries.map(item => item.supported), [true, true, false, false, false, false, false]);
+  assert.match(entries[2].reason, /view that is not imported/); assert.match(entries[6].reason, /no imported metadata/);
+});
+
+test('navigation resolves only known native application IDs without mistaking derived local IDs for native mismatches', () => {
+  const ownerId = '77777777-7777-4777-8777-777777777777', otherId = '88888888-8888-4888-8888-888888888888';
+  const navigation = parseSiteMap(`<SiteMap><Area Id="main"><Group Id="pages"><SubArea Id="own" Url="/main.aspx?appid=${ownerId}&amp;pagetype=entitylist&amp;etn=x_item"/><SubArea Id="other" Url="/main.aspx?appid=${otherId}&amp;pagetype=entitylist&amp;etn=x_item"/><SubArea Id="unknown" Url="/main.aspx?appid=99999999-9999-4999-8999-999999999999&amp;pagetype=entitylist&amp;etn=x_item"/><SubArea Id="inherited" Url="/main.aspx?pagetype=entitylist&amp;etn=constructor"/></Group></Area></SiteMap>`);
+  const tables = { x_item: { entity: 'x_item', idColumn: 'x_itemid', nameColumn: 'x_name', fields: { x_name: { type: 'text' } } } };
+  const catalogue = appCatalogue({ providers: [{ tables, apps: [{ id: ownerId, idSource: 'exported', navigation }, { id: otherId, idSource: 'exported', navigation: [] }] }] });
+  const entries = catalogue.apps[0].navigation[0].groups[0].items;
+  assert.equal(entries[0].targetApplicationId, ownerId); assert.equal(entries[1].targetApplicationId, otherId); assert.equal(entries[1].supported, true);
+  assert.equal(entries[2].supported, false); assert.match(entries[2].reason, /application that is not imported/); assert.equal(entries[3].supported, false);
+  const derived = appCatalogue({ providers: [{ tables, apps: [{ id: 'derived-id', idSource: 'derived-local', navigation }] }] });
+  const derivedPage = derived.apps[0].navigation[0].groups[0].items[0]; assert.equal(derivedPage.supported, true); assert.equal(derivedPage.targetApplicationId, undefined);
+});
+
+test('source view destinations honor the target application view components before enabling navigation', () => {
+  const page = (id, applicationId, entity, view) => `<SubArea Id="${id}" Url="/main.aspx?appid=${applicationId}&amp;pagetype=entitylist&amp;etn=${entity}&amp;viewid=${view}"/>`;
+  const navigation = parseSiteMap(`<SiteMap><Area Id="main"><Group Id="pages">${page('own-allowed', 'owner', 'x_item', 'allowed-view')}${page('own-excluded', 'owner', 'x_item', 'excluded-view')}${page('cross-allowed', 'target', 'x_item', 'excluded-view')}${page('cross-excluded', 'target', 'x_item', 'allowed-view')}${page('child', 'owner', 'x_child', 'child-view')}</Group></Area></SiteMap>`);
+  const definition = entity => ({ entity, idColumn: `${entity}id`, nameColumn: 'x_name', fields: { x_name: { type: 'text' } } });
+  const catalogue = appCatalogue({ providers: [{ tables: { x_item: definition('x_item'), x_child: definition('x_child') }, apps: [{ id: 'owner', idSource: 'exported', navigation, components: [{ type: 26, id: '{ALLOWED-VIEW}' }] }, { id: 'target', idSource: 'exported', navigation: [], components: [{ type: 26, id: 'excluded-view' }] }] }], metadata: { views: [{ entity: 'x_item', id: 'allowed-view', queryType: 0 }, { entity: 'x_item', id: 'excluded-view', queryType: 0 }, { entity: 'x_child', id: 'child-view', queryType: 0 }] } });
+  const entries = catalogue.apps[0].navigation[0].groups[0].items; assert.deepEqual(entries.map(item => item.supported), [true, false, true, false, true]);
+  assert.equal(entries[0].view, 'allowed-view'); assert.equal(entries[2].view, 'excluded-view'); assert.equal(entries[2].targetApplicationId, 'target'); assert.match(entries[1].reason, /view that is not available to its imported application/);
+});
 
 test('column browser glyphs retain source Boolean, choice, lookup, money, file and image identities', () => {
   const types = [
@@ -55,19 +85,45 @@ test('view ordering and add-column eligibility follow exported defaults and colu
 });
 
 test('form layout retains exported columns, hidden sections, row positions and spanning fields', () => {
-  const form = compileForm({ id: 'layout', xml: '<form><tabs><tab name="general"><columns><column width="70%"><sections><section columns="11" showlabel="false"><rows><row><cell><control datafieldname="x_name"/></cell><cell><control datafieldname="x_quantity"/></cell></row><row><cell colspan="2"><control datafieldname="x_notes"/></cell></row></rows></section></sections></column><column width="30%"><sections><section visible="false"><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }, { x_name: {}, x_quantity: {}, x_notes: {} });
+  const form = compileForm({ id: 'layout', xml: '<form><tabs><tab name="general"><columns><column width="70%"><sections><section columns="11" showlabel="false"><rows><row><cell><control datafieldname="x_name"/></cell><cell><control datafieldname="x_quantity"/></cell></row><row><cell colspan="2" rowspan="5"><control datafieldname="x_notes"/></cell></row></rows></section></sections></column><column width="30%"><sections><section visible="false"><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }, { x_name: {}, x_quantity: {}, x_notes: {} });
   const tab = form.tabs[0]; assert.deepEqual(tab.columnWidths, [70, 30]);
   assert.equal(tab.sections[0].showLabel, false); assert.equal(tab.sections[0].columns, 2);
   assert.deepEqual(tab.sections[0].fields.map(({ row, column, colspan }) => ({ row, column, colspan })), [{ row: 0, column: 0, colspan: 1 }, { row: 0, column: 1, colspan: 1 }, { row: 1, column: 0, colspan: 2 }]);
   assert.equal(tab.sections[1].column, 1); assert.equal(tab.sections[1].visible, false);
+  assert.equal(tab.sections[0].fields[2].rowspan, 5); assert.equal(tab.sections[0].fields[0].rowspan, undefined);
 });
 
-test('state labels honor the exported text control without disabling state choice controls', () => {
+test('legacy text class IDs do not override state choice metadata or source permissions', () => {
   const form = compileForm({ id: 'state-layout', xml: '<form><tabs><tab name="general"><columns><column><sections><section><rows><row><cell><control datafieldname="x_state" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell><cell><control datafieldname="x_state" classid="{3EF39988-22BB-4F0B-BBBE-64B5A3748AEE}"/></cell><cell><control datafieldname="x_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }, { x_state: { dataverseType: 'state' }, x_name: { dataverseType: 'nvarchar' } });
   const fields = form.tabs[0].sections[0].fields;
-  assert.equal(fields[0].readOnlyText, true); assert.equal(fields[0].disabled, true);
+  assert.equal(fields[0].readOnlyText, undefined); assert.equal(fields[0].disabled, false);
   assert.equal(fields[1].readOnlyText, undefined); assert.equal(fields[1].disabled, false);
   assert.equal(fields[2].readOnlyText, undefined); assert.equal(fields[2].disabled, false);
+});
+
+test('source form matrices preserve spacer cells, row spans, labels and ordered two and three column groups', () => {
+  const control = name => `<control datafieldname="${name}"/>`;
+  const section = rows => `<section columns="3" labelwidth="135" celllabelposition="Top" celllabelalignment="Right"><rows>${rows}</rows></section>`;
+  const left = section(`<row><cell rowspan="2">${control('x_notes')}</cell><cell colspan="2">${control('x_name')}</cell></row><row><cell/> <cell showlabel="false">${control('x_quantity')}</cell></row><row><cell colspan="2"/> <cell visible="false">${control('x_hidden')}</cell></row>`);
+  const xml = `<form><tabs><tab name="two"><columns><column width="65%"><sections>${left}</sections></column><column width="35%"><sections><section showlabel="false"><rows><row><cell><control datafieldname="x_readonly" disabled="true"/></cell></row></rows></section></sections></column></columns></tab><tab name="three"><columns>${[34, 33, 33].map((width, index) => `<column width="${width}%"><sections><section><labels><label description="Group ${index}" languagecode="1033"/></labels><rows><row><cell>${control(`x_field${index}`)}</cell></row></rows></section></sections></column>`).join('')}</columns></tab></tabs></form>`;
+  const fields = Object.fromEntries(['x_notes', 'x_name', 'x_quantity', 'x_hidden', 'x_readonly', 'x_field0', 'x_field1', 'x_field2'].map(name => [name, { type: 'text' }]));
+  const form = compileForm({ id: 'matrix', xml }, fields);
+  assert.deepEqual(form.tabs.map(tab => tab.columnWidths), [[65, 35], [34, 33, 33]]);
+  const [matrix, right] = form.tabs[0].sections;
+  assert.deepEqual(matrix.fields.map(({ name, spacer, row, column, colspan, rowspan }) => ({ name, spacer, row, column, colspan, rowspan })), [
+    { name: 'x_notes', spacer: undefined, row: 0, column: 0, colspan: 1, rowspan: 2 },
+    { name: 'x_name', spacer: undefined, row: 0, column: 1, colspan: 2, rowspan: undefined },
+    { name: undefined, spacer: true, row: 1, column: 1, colspan: 1, rowspan: undefined },
+    { name: 'x_quantity', spacer: undefined, row: 1, column: 2, colspan: 1, rowspan: undefined },
+    { name: undefined, spacer: true, row: 2, column: 0, colspan: 2, rowspan: undefined },
+    { name: 'x_hidden', spacer: undefined, row: 2, column: 2, colspan: 1, rowspan: undefined },
+  ]);
+  assert.equal(matrix.fields[3].showLabel, false); assert.equal(matrix.fields[5].visible, false);
+  assert.equal(matrix.labelWidth, 135); assert.equal(matrix.labelPosition, 'top'); assert.equal(matrix.labelAlignment, 'right');
+  assert.equal(right.showLabel, false); assert.equal(right.fields[0].disabled, true);
+  assert.deepEqual(form.tabs[1].sections.map(section => [section.column, section.label, section.fields[0].name]), [[0, 'Group 0', 'x_field0'], [1, 'Group 1', 'x_field1'], [2, 'Group 2', 'x_field2']]);
+  const occupied = compileForm({ id: 'occupied', xml: '<form><tabs><tab><columns><column><sections><section columns="1111"><rows><row><cell/><cell rowspan="2"><control datafieldname="x_notes"/></cell><cell colspan="2"/></row><row><cell colspan="2"><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }, fields);
+  assert.equal(occupied.tabs[0].sections[0].fields.at(-1).column, 2, 'a spanned cell requires a contiguous free range after prior-row occupancy');
 });
 
 test('model-driven app catalogue imports solution navigation, forms and views alongside the default management app', async t => {
@@ -191,4 +247,19 @@ test('monolithic solution metadata imports app forms, views and navigation with 
   assert.equal(solutionApps(scan)[0].navigation[0].groups[0].items[0].entity, 'x_embedded');
   const catalogue = appCatalogue({ portal: { website: {}, records: [], format: 'enhanced' }, metadata: { ...metadata, modelDrivenApps: solutionApps(scan) }, mappings: { x_embedded: { idColumn: 'x_embeddedid', nameColumn: 'x_name' } } });
   const app = catalogue.apps.find(app => app.uniqueName === 'x_embedded_app'); assert.equal(app.navigation[0].groups[0].items[0].title, 'X Embedded');
+});
+
+
+test('table default desktop grid pagination flows from source facts into the app catalogue without form PCF leakage', async t => {
+  const { solutionDir } = await modelDrivenFixture(t);
+  const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml'), original = await fs.readFile(entityFile, 'utf8');
+  const config = (name, factor, value) => `<customControl name="${name}" formFactor="${factor}"><parameters>${value === undefined ? '' : `<EnablePagination static="true" type="Enum">${value}</EnablePagination>`}</parameters></customControl>`;
+  for (const [controls, expected] of [[config('Microsoft.PowerApps.PowerAppsOneGrid', 0, 'yes'), true], [config('Microsoft.PowerApps.PowerAppsOneGrid', 0, 'no'), false], [config('Microsoft.PowerApps.PowerAppsOneGrid', 0), false], [config('Microsoft.PowerApps.PowerAppsOneGrid', 1, 'yes'), undefined], [config('Invented.CustomGrid', 0, 'no'), undefined]]) {
+    await fs.writeFile(entityFile, original.replace('</Entity>', `<CustomControlDefaultConfigs><CustomControlDefaultConfig><ControlDescriptionXML><controlDescriptions><controlDescription>${controls}</controlDescription></controlDescriptions></ControlDescriptionXML></CustomControlDefaultConfig></CustomControlDefaultConfigs><FormXml><customControl name="Microsoft.PowerApps.PowerAppsOneGrid" formFactor="0"><parameters><EnablePagination>no</EnablePagination></parameters></customControl></FormXml></Entity>`));
+    const scan = await scanSolutionSources([solutionDir]), metadata = await importSolutionMetadata([solutionDir], { scan });
+    assert.equal(metadata.entities.x_item.grid?.pagination, expected);
+    const catalogue = appCatalogue({ metadata, providers: [{ tables: { x_item: { entity: 'x_item', idColumn: 'x_itemid', nameColumn: 'x_name', fields: metadata.entities.x_item.fields } } }] });
+    assert.equal(catalogue.tables.x_item.grid?.pagination, expected);
+    assert.equal(metadata.entities.x_child.grid, undefined);
+  }
 });

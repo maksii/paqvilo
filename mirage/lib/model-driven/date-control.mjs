@@ -25,6 +25,7 @@ let nextId = 0;
 export function renderDate(field, initialValue, context = {}) {
   const onlyDate = String(field.format).toLowerCase() === 'dateonly' || field.dateTimeBehavior === 'DateOnly';
   const independent = field.dateTimeBehavior === 'TimeZoneIndependent';
+  const offset = context.formatting?.timeZoneOffsetMinutes, staffTimeZone = !onlyDate && !independent && Number.isInteger(offset);
   const element = document.createElement('div'); element.className = `date-control${onlyDate ? '' : ' date-with-time'}`;
   const dateHost = document.createElement('div'); dateHost.className = 'date-input';
   const primary = document.createElement('input'); primary.type = 'text'; primary.placeholder = 'M/d/yyyy'; primary.autocomplete = 'off';
@@ -35,6 +36,11 @@ export function renderDate(field, initialValue, context = {}) {
   const trigger = button(`Open calendar for ${field.label ?? field.name}`, 'calendar', () => calendar.hidden ? open() : close(true));
   trigger.innerHTML = '<svg class="icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="3.5" y="3.5" width="13" height="13" rx="2" fill="none" stroke="currentColor"/><g fill="currentColor"><circle cx="7" cy="8" r="1"/><circle cx="10" cy="8" r="1"/><circle cx="13" cy="8" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="10" cy="12" r="1"/></g></svg>';
   const time = document.createElement('input'); time.type = 'text'; time.className = 'date-time-input'; time.placeholder = '--:--'; time.setAttribute('aria-label', `${field.label ?? field.name} Time`); time.autocomplete = 'off';
+  const timeHost = document.createElement('div'); timeHost.className = 'date-time-host';
+  const timeOptions = document.createElement('div'); timeOptions.className = 'date-time-options'; timeOptions.id = calendar.id + '-times'; timeOptions.setAttribute('role', 'listbox'); timeOptions.setAttribute('aria-label', `Time options for ${field.label ?? field.name}`);
+  time.setAttribute('role', 'combobox'); time.setAttribute('aria-haspopup', 'listbox'); time.setAttribute('aria-controls', timeOptions.id); time.setAttribute('aria-expanded', 'false');
+  const timeTrigger = button(`Open time options for ${field.label ?? field.name}`, 'chevron', () => { time.focus(); timeOptions.isConnected ? closeTime() : openTime(); });
+  let timeLifetime, timeActive = 0, timeKeyboard = false;
   let shown, focused, yearPage, years = false, alive = true, lifetime, dateError = '', timeError = '', externalDateError = '', externalTimeError = '', rendering = false;
   const nativeDateValidity = primary.setCustomValidity.bind(primary), nativeTimeValidity = time.setCustomValidity.bind(time);
   primary.setCustomValidity = message => { externalDateError = String(message); nativeDateValidity(externalDateError || dateError); };
@@ -44,18 +50,45 @@ export function renderDate(field, initialValue, context = {}) {
     const date = primary.value ? parseDate(primary.value) : null;
     const nextDateError = primary.value && !date ? 'Enter a valid date in M/d/yyyy format.' : '';
     dateError = nextDateError; nativeDateValidity(externalDateError || dateError);
-    if (!onlyDate) { time.hidden = !primary.value; timeError = time.value && !parseTime(time.value) ? 'Enter a valid time.' : ''; nativeTimeValidity(externalTimeError || timeError); }
+    if (!onlyDate) { time.hidden = timeHost.hidden = !primary.value; if (!primary.value) closeTime(); timeError = time.value && !parseTime(time.value) ? 'Enter a valid time.' : ''; nativeTimeValidity(externalTimeError || timeError); }
     return date;
   };
   function setValue(value) {
+    closeTime();
     const instant = value == null || value === '' ? null : new Date(value);
     const valid = instant && Number.isFinite(instant.getTime());
-    const date = valid ? value instanceof Date ? instant : onlyDate || independent ? parseDate(String(value).slice(0, 10)) : instant : null;
+    const wall = valid && staffTimeZone ? new Date(instant.getTime() + offset * 60000) : null;
+    const date = wall ? localDate(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate()) : valid ? value instanceof Date ? instant : onlyDate || independent ? parseDate(String(value).slice(0, 10)) : instant : null;
     primary.value = date ? dateText(date) : '';
-    const localTime = valid && independent && !(value instanceof Date) ? parseTime(String(value).slice(11, 16)) : valid ? { hour: instant.getHours(), minute: instant.getMinutes() } : null;
+    const localTime = wall ? { hour: wall.getUTCHours(), minute: wall.getUTCMinutes() } : valid && independent && !(value instanceof Date) ? parseTime(String(value).slice(11, 16)) : valid ? { hour: instant.getHours(), minute: instant.getMinutes() } : null;
     time.value = localTime ? timeText(localTime) : ''; updateValidity();
   }
   const emit = () => { primary.dispatchEvent(new Event('input', { bubbles: true })); primary.dispatchEvent(new Event('change', { bubbles: true })); };
+  function closeTime(focus = false) { timeOptions.remove(); timeLifetime?.abort(); timeLifetime = undefined; time.setAttribute('aria-expanded', 'false'); time.removeAttribute('aria-activedescendant'); if (focus && alive && !time.disabled) time.focus({ preventScroll: true }); }
+  function markTime() {
+    const value = parseTime(time.value), selected = value ? value.hour * 60 + value.minute : -1;
+    for (const [index, option] of [...timeOptions.children].entries()) { option.setAttribute('aria-selected', String(index * 30 === selected)); option.classList.toggle('active', timeKeyboard && index === timeActive); }
+    if (timeOptions.isConnected) time.setAttribute('aria-activedescendant', `${timeOptions.id}-${timeActive}`);
+  }
+  function revealTime() { const row = timeOptions.children[timeActive]?.getBoundingClientRect(), bounds = timeOptions.getBoundingClientRect(); if (row?.top < bounds.top) timeOptions.scrollTop -= bounds.top - row.top; else if (row?.bottom > bounds.bottom) timeOptions.scrollTop += row.bottom - bounds.bottom; }
+  function chooseTime(index) {
+    if (!alive || primary.disabled || time.disabled || !timeOptions.isConnected) return;
+    time.value = timeText({ hour: Math.floor(index / 2), minute: index % 2 * 30 }); updateValidity(); closeTime(true); emit();
+  }
+  function openTime() {
+    if (!alive || primary.disabled || time.disabled || timeHost.hidden || timeOptions.isConnected) return;
+    close(); timeKeyboard = false;
+    const value = parseTime(time.value); timeActive = value ? Math.min(47, Math.floor((value.hour * 60 + value.minute) / 30)) : 0;
+    document.body.append(timeOptions); time.setAttribute('aria-expanded', 'true'); markTime();
+    const rect = timeHost.getBoundingClientRect(), below = innerHeight - rect.bottom, above = rect.top, isAbove = below < Math.min(1544, above), height = Math.max(32, Math.min(1544, isAbove ? above : below));
+    Object.assign(timeOptions.style, { width: `${Math.min(rect.width, innerWidth - 16)}px`, maxHeight: `${height}px`, left: `${Math.max(8, Math.min(rect.left, innerWidth - rect.width - 8))}px`, top: `${isAbove ? rect.top - height : rect.bottom}px` });
+    timeOptions.scrollTop = 0; revealTime();
+    timeLifetime = new AbortController();
+    document.addEventListener('pointerdown', event => { if (!timeHost.contains(event.target) && !timeOptions.contains(event.target)) closeTime(); }, { signal: timeLifetime.signal });
+    window.addEventListener('resize', () => closeTime(), { signal: timeLifetime.signal });
+    window.addEventListener('scroll', event => { if (!timeOptions.contains(event.target)) closeTime(); }, { capture: true, signal: timeLifetime.signal });
+  }
+  if (!onlyDate) for (let index = 0; index < 48; index++) { const option = document.createElement('div'); option.id = `${timeOptions.id}-${index}`; option.setAttribute('role', 'option'); option.textContent = timeText({ hour: Math.floor(index / 2), minute: index % 2 * 30 }); option.setAttribute('aria-label', option.textContent); option.addEventListener('pointerdown', event => event.preventDefault()); option.addEventListener('click', () => chooseTime(index)); timeOptions.append(option); }
   function close(focus = false) { calendar.hidden = true; primary.setAttribute('aria-expanded', 'false'); lifetime?.abort(); lifetime = undefined; if (focus && alive && !primary.disabled) primary.focus(); }
   function choose(date) {
     if (!alive || primary.disabled) return;
@@ -107,6 +140,7 @@ export function renderDate(field, initialValue, context = {}) {
   }
   function open() {
     if (!alive || primary.disabled || !calendar.hidden) return;
+    closeTime();
     focused = updateValidity() ?? localDate(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()); shown = localDate(focused.getFullYear(), focused.getMonth(), 1); yearPage = shown.getFullYear(); years = false; render();
     calendar.hidden = false; primary.setAttribute('aria-expanded', 'true');
     const scrollRoot = element.closest('.record-content');
@@ -124,18 +158,25 @@ export function renderDate(field, initialValue, context = {}) {
     calendar.querySelector(`[data-date="${keyOf(focused)}"]`)?.focus();
   }
   primary.addEventListener('input', updateValidity);
-  primary.addEventListener('change', () => { const date = updateValidity(); if (date) primary.value = dateText(date); else if (!primary.value) { time.value = ''; time.hidden = true; } });
+  primary.addEventListener('change', () => { const date = updateValidity(); if (date) primary.value = dateText(date); else if (!primary.value) { time.value = ''; time.hidden = timeHost.hidden = true; closeTime(); } });
   primary.addEventListener('click', open);
   primary.addEventListener('keydown', event => { if (event.key === 'ArrowDown' || event.altKey && event.key === 'ArrowUp') { event.preventDefault(); open(); } else if (event.key === 'Enter') { event.preventDefault(); primary.dispatchEvent(new Event('change', { bubbles: true })); close(true); } });
-  time.addEventListener('input', updateValidity); time.addEventListener('change', () => { const parsed = parseTime(time.value); if (parsed) time.value = timeText(parsed); updateValidity(); });
-  time.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); time.dispatchEvent(new Event('change', { bubbles: true })); } });
+  time.addEventListener('input', () => { updateValidity(); markTime(); }); time.addEventListener('change', () => { const parsed = parseTime(time.value); if (parsed) time.value = timeText(parsed); updateValidity(); markTime(); });
+  time.addEventListener('click', openTime); time.addEventListener('blur', () => closeTime()); timeTrigger.addEventListener('pointerdown', event => event.preventDefault());
+  time.addEventListener('keydown', event => {
+    if (event.key === 'Tab') { closeTime(); return; }
+    if (event.key === 'Escape' && timeOptions.isConnected) { event.preventDefault(); event.stopPropagation(); closeTime(true); return; }
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && (timeOptions.isConnected || event.key.startsWith('Arrow'))) { event.preventDefault(); const closed = !timeOptions.isConnected; openTime(); timeActive = event.key === 'Home' ? 0 : event.key === 'End' ? 47 : Math.max(0, Math.min(47, timeActive + (closed ? 0 : event.key === 'ArrowDown' ? 1 : -1))); timeKeyboard = true; markTime(); revealTime(); }
+    else if (event.key === 'Enter') { event.preventDefault(); if (timeOptions.isConnected) chooseTime(timeActive); else time.dispatchEvent(new Event('change', { bubbles: true })); }
+  });
   element.addEventListener('keydown', event => { if (event.key === 'Escape' && !calendar.hidden) { event.preventDefault(); event.stopPropagation(); close(true); } });
-  dateHost.append(primary, trigger, calendar); element.append(dateHost); if (!onlyDate) element.append(time); setValue(initialValue);
+  dateHost.append(primary, trigger, calendar); element.append(dateHost); timeHost.append(time, timeTrigger); if (!onlyDate) element.append(timeHost); setValue(initialValue);
   return { element, primary, read() {
     const date = updateValidity(); if (!primary.value) return null; if (!date) throw new Error(`Enter a valid date for ${field.label ?? field.name}.`);
     if (onlyDate) return keyOf(date);
     const clock = time.value ? parseTime(time.value) : { hour: 0, minute: 0 }; if (!clock) throw new Error(`Enter a valid time for ${field.label ?? field.name}.`);
     if (independent) return `${keyOf(date)}T${pad(clock.hour)}:${pad(clock.minute)}:00.000Z`;
+    if (staffTimeZone) { const utc = new Date(0); utc.setUTCFullYear(date.getFullYear(), date.getMonth(), date.getDate()); utc.setUTCHours(clock.hour, clock.minute, 0, 0); return new Date(utc.getTime() - offset * 60000).toISOString(); }
     date.setHours(clock.hour, clock.minute); return date.toISOString();
-  }, setValue, setDisabled(disabled) { primary.disabled = Boolean(disabled); time.disabled = Boolean(disabled); trigger.disabled = Boolean(disabled); if (disabled) close(); }, destroy() { alive = false; close(); } };
+  }, setValue, setDisabled(disabled) { primary.disabled = Boolean(disabled); time.disabled = Boolean(disabled); trigger.disabled = Boolean(disabled); timeTrigger.disabled = Boolean(disabled); if (disabled) { close(); closeTime(); } }, destroy() { alive = false; close(); closeTime(); } };
 }

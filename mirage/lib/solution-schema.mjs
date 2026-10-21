@@ -26,7 +26,7 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@21";
+export const SCHEMA_PARSER_ID = "schema@22";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
@@ -256,6 +256,17 @@ function attributeFacts(node) {
   });
 }
 
+// Only the table default desktop grid describes the main list. Form/subgrid PCFs
+// have their own configuration and must not change a table list's paging mode.
+function tableGridFacts(node) {
+  const configs = child(node, 'CustomControlDefaultConfigs');
+  for (const control of descendants(configs, 'customControl')) {
+    if (!control.attrs.name || control.attrs.formFactor !== '0') continue;
+    if (control.attrs.name !== 'Microsoft.PowerApps.PowerAppsOneGrid') return { control: control.attrs.name };
+    const value = childText(child(control, 'parameters'), 'EnablePagination');
+    return compact({ control: control.attrs.name, pagination: value === undefined || value === 'no' ? false : value === 'yes' ? true : undefined });
+  }
+}
 function entityFacts(node, info) {
   const entityInfo = child(node, "EntityInfo");
   const header = child(entityInfo, "entity") ?? entityInfo;
@@ -286,6 +297,7 @@ function entityFacts(node, info) {
   const primaryName = attributes.find((a) => a.isPrimaryName)?.name;
   return compact({
     logicalName: logical,
+    grid: tableGridFacts(node),
     // A mixed-case entity Name is the table's SchemaName (bp_DefaultApplication). A lowercase Name is the logical name, and its
     // SchemaName is not in the export, so the privilege noun stays the capitalised logical name.
     schemaName: /[A-Z]/.test(String(header?.attrs?.Name ?? "")) ? String(header.attrs.Name).trim() : undefined,
@@ -858,6 +870,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         }
         if (entity.ownership) table.ownership = entity.ownership;
         if (entity.tableType !== undefined) table.tableType = entity.tableType;
+        if (entity.grid !== undefined) table.grid = entity.grid;
         if (entity.dataSourceId !== undefined) table.dataSourceId = entity.dataSourceId;
         if (entity.dataProviderId !== undefined) table.dataProviderId = entity.dataProviderId;
         if (entity.changeTrackingEnabled !== undefined) table.changeTrackingEnabled = entity.changeTrackingEnabled;

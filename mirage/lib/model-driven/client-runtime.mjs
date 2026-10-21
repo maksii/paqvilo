@@ -128,7 +128,7 @@ export function createFormClientRuntime(host) {
       getIsDirty: () => host.isDirty(), save: () => saveForm(false), refresh: save => save ? saveForm(false) : host.refresh(),
       addOnLoad: callback => add('onload', callback), removeOnLoad: callback => remove('onload', callback),
     }, 'formContext.data'),
-    ui: client({ controls: collection(controls), getFormType: () => host.record[host.table.idColumn] ? 2 : 1,
+    ui: client({ controls: collection(controls), getFormType: () => host.getFormType?.() ?? (host.record[host.table.idColumn] ? 2 : 1),
       setFormNotification: (message, level, id = 'default') => { notifications.add(id); host.notification(String(message), level, id); return true; },
       clearFormNotification: (id = 'default') => { notifications.delete(id); host.notification(null, null, id); return true; }, close: () => host.close(),
     }, 'formContext.ui'),
@@ -196,10 +196,10 @@ export function createFormClientRuntime(host) {
   };
 }
 
-export function evaluateRibbonRules(rules = [], { mode, entity, selection = [], read = () => null, existing = false } = {}) {
+export function evaluateRibbonRules(rules = [], { mode, entity, selection = [], read = () => null, existing = false, formType } = {}) {
   return rules.every(rule => rule.clauses.every(clause => {
     let value;
-    if (clause.type === 'FormStateRule') value = clause.State === (existing ? 'Existing' : 'Create');
+    if (clause.type === 'FormStateRule') value = clause.State === ({ 1: 'Create', 2: 'Existing', 3: 'ReadOnly', 4: 'Disabled', 6: 'BulkEdit' }[formType] ?? (existing ? 'Existing' : 'Create'));
     else if (clause.type === 'EntityRule') value = clause.EntityName === entity && (!clause.AppliesTo || clause.AppliesTo === 'PrimaryEntity');
     else if (clause.type === 'ValueRule') value = String(read(clause.Field) ?? '') === String(clause.Value ?? '');
     else if (clause.type === 'SelectionCountRule') value = mode === 'grid' && selection.length >= Number(clause.Minimum ?? 0) && selection.length <= Number(clause.Maximum ?? Infinity);

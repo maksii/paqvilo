@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
@@ -81,10 +83,15 @@ test('calendar validates typed dates, clears optional values and rejects disable
   await page.evaluate(() => { window.retainedDate = document.querySelector('[data-date="2024-02-28"]'); fields.due.setDisabled(true); });
   await page.evaluate(() => retainedDate.click()); assert.equal(await page.evaluate(() => fields.due.read()), '2024-02-29');
   assert.equal(await input.isDisabled(), true); assert.equal(await input.getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('.date-input>button').first().isVisible(), false, 'disabled date fields omit the native calendar affordance');
   await page.evaluate(() => { fields.due.setDisabled(false); fields.due.destroy(); });
   await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click(); assert.equal(await input.getAttribute('aria-expanded'), 'false');
+  await page.evaluate(() => fields.local.setDisabled(true));
+  assert.equal(await page.locator('.date-time-host>button').last().isVisible(), false, 'disabled date/time fields omit the time affordance');
+  await page.evaluate(() => fields.local.setDisabled(false));
+  assert.equal(await page.locator('.date-time-host>button').last().isVisible(), true, 'client unlock restores the supported affordance');
   const local = page.getByRole('combobox', { name: 'Local', exact: true }); await local.fill(''); await page.getByRole('button', { name: 'Outside', exact: true }).click();
-  assert.equal(await page.evaluate(() => fields.local.read()), null); assert.equal(await page.getByRole('textbox', { name: 'Local Time', exact: true }).isVisible(), false);
+  assert.equal(await page.evaluate(() => fields.local.read()), null); assert.equal(await page.getByRole('combobox', { name: 'Local Time', exact: true }).isVisible(), false);
 });
 
 test('calendar clamps its actual responsive width into the viewport in either form column', async t => {
@@ -101,10 +108,10 @@ test('calendar clamps its actual responsive width into the viewport in either fo
 
 test('date-time controls preserve independent wall time, convert user-local values and validate time edits', async t => {
   const page = await fixture(t);
-  assert.equal(await page.getByRole('textbox', { name: 'Independent Time', exact: true }).inputValue(), '2:30 PM');
-  assert.equal(await page.getByRole('textbox', { name: 'Local Time', exact: true }).inputValue(), '10:30 AM');
+  assert.equal(await page.getByRole('combobox', { name: 'Independent Time', exact: true }).inputValue(), '2:30 PM');
+  assert.equal(await page.getByRole('combobox', { name: 'Local Time', exact: true }).inputValue(), '10:30 AM');
   assert.deepEqual(await page.evaluate(() => [fields.independent.read(), fields.local.read()]), ['2026-06-15T14:30:00.000Z', '2026-06-15T14:30:00.000Z']);
-  const local = page.getByRole('combobox', { name: 'Local', exact: true }), time = page.getByRole('textbox', { name: 'Local Time', exact: true });
+  const local = page.getByRole('combobox', { name: 'Local', exact: true }), time = page.getByRole('combobox', { name: 'Local Time', exact: true });
   await local.fill('2/29/2024'); await time.fill('23:45'); await time.press('Enter');
   assert.equal(await time.inputValue(), '11:45 PM'); assert.equal(await page.evaluate(() => fields.local.read()), '2024-03-01T04:45:00.000Z');
   await time.fill('24:00'); await time.press('Tab'); assert.equal(await time.evaluate(node => node.checkValidity()), false);
@@ -130,4 +137,49 @@ test('calendar stays inside a scrolled record body below its pinned header and d
   await page.evaluate(() => { document.querySelector('#record-test').scrollTop += 300; });
   await calendar.waitFor({ state: 'hidden' });
   assert.equal(await page.getByRole('combobox', { name: 'Due date', exact: true }).getAttribute('aria-expanded'), 'false');
+});
+
+test('time choices use the observed half-hour list while retaining arbitrary typed times and calendar focus lifecycle', async t => {
+  const page = await fixture(t), time = page.getByRole('combobox', { name: 'Local Time', exact: true });
+  const before = await page.evaluate(() => fields.local.read());
+  await page.getByRole('button', { name: 'Open time options for Local', exact: true }).click();
+  const options = page.getByRole('listbox', { name: 'Time options for Local', exact: true });
+  assert.equal(await options.getByRole('option').count(), 48);
+  assert.equal(await options.getByRole('option', { name: '10:30 AM', exact: true }).getAttribute('aria-selected'), 'true');
+  const geometry = await options.evaluate(node => { const rect = node.getBoundingClientRect(), row = node.firstElementChild; return { top: rect.top, bottom: rect.bottom, width: rect.width, host: document.querySelector('[aria-label="Local Time"]').parentElement.getBoundingClientRect().width, row: row.getBoundingClientRect().height, padding: getComputedStyle(row).padding, font: getComputedStyle(row).fontSize }; });
+  assert.ok(geometry.top >= 0 && geometry.bottom <= 900, JSON.stringify(geometry));
+  assert.equal(geometry.width, geometry.host); assert.equal(geometry.row, 32); assert.equal(geometry.font, '14px');
+  await time.press('End'); await time.press('Enter');
+  assert.equal(await time.inputValue(), '11:30 PM'); assert.equal(await page.evaluate(() => fields.local.read()), '2026-06-16T03:30:00.000Z');
+  assert.equal(await options.count(), 0); assert.equal(await time.evaluate(node => node === document.activeElement), true);
+  await time.fill('11:47 PM'); await time.press('Enter');
+  assert.equal(await page.evaluate(() => fields.local.read()), '2026-06-16T03:47:00.000Z', 'typed minute precision is independent of the half-hour options');
+  await time.press('ArrowDown'); await time.press('Escape'); assert.equal(await page.evaluate(() => fields.local.read()), '2026-06-16T03:47:00.000Z');
+  await time.press('ArrowDown'); await page.getByRole('button', { name: 'Open calendar for Local', exact: true }).click(); assert.equal(await options.count(), 0);
+  await page.keyboard.press('Escape');
+  await time.press('ArrowDown'); await page.evaluate(() => fields.local.setDisabled(true)); assert.equal(await options.count(), 0);
+  await page.evaluate(() => { fields.local.setDisabled(false); fields.local.setValue('2026-06-15T14:30:00Z'); });
+  assert.equal(await page.evaluate(() => fields.local.read()), before);
+  await time.press('ArrowDown'); await page.evaluate(() => { window.oldTimeOption = document.querySelector('.date-time-options [role=option]'); fields.local.destroy(); oldTimeOption.click(); });
+  assert.equal(await options.count(), 0); assert.equal(await page.evaluate(() => fields.local.read()), before); assert.equal(await page.evaluate(() => submits), 0);
+});
+
+for (const kind of ['portal', 'model-driven']) test(`saved UserLocal controls honor an explicit organization offset independently of the PCF browser zone in ${kind}`, async t => {
+  const { sim, origin, solutionDir } = await modelDrivenFixture(t, kind === 'model-driven' ? { runtime: { kind }, sourceDir: undefined } : {});
+  const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml'), formFile = path.join(solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  await fs.writeFile(entityFile, (await fs.readFile(entityFile, 'utf8')).replace('</attributes>', '<attribute PhysicalName="x_appointment"><Name>x_appointment</Name><Type>datetime</Type><Format>datetime</Format><Behavior>1</Behavior><displaynames><displayname description="Appointment" languagecode="1033"/></displaynames></attribute></attributes>'));
+  await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('<control id="unimplemented"/>', '<control datafieldname="x_appointment"/>'));
+  await sim.reload();
+  await sim.store.transact(() => { sim.store.state.settings.timeZoneOffsetMinutes = 0; sim.store.state.tables.x_item[0].x_appointment = '2026-10-22T09:30:00Z'; });
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage({ timezoneId: 'Europe/Kyiv' });
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  const time = page.getByRole('combobox', { name: 'Appointment Time', exact: true }); await time.waitFor();
+  assert.equal(await time.inputValue(), '9:30 AM', 'the configured staff offset takes precedence over browser Kyiv time');
+  assert.equal(await page.evaluate(() => new Date('2026-10-22T09:30:00Z').getHours()), 12, 'source PCFs still receive their actual browser environment');
+  await time.fill('10:47 AM'); await time.press('Enter');
+  await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  const saved = await (await fetch(origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
+  assert.equal(new Date(saved.row.x_appointment).toISOString(), '2026-10-22T10:47:00.000Z');
+  await page.reload(); await time.waitFor(); assert.equal(await time.inputValue(), '10:47 AM');
 });

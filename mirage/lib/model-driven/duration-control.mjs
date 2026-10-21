@@ -48,13 +48,24 @@ export function renderDuration(field, initialValue, context = {}) {
   const open = () => {
     if (!alive || primary.disabled || !list.hidden) return;
     list.hidden = false; primary.setAttribute('aria-expanded', 'true'); active = choices.indexOf(validate().next); if (active < 0) active = 0;
-    const rect = element.getBoundingClientRect(), scrollRoot = element.closest('.record-content'), boundary = scrollRoot?.getBoundingClientRect(), pinned = scrollRoot?.querySelector(':scope>.record-card')?.getBoundingClientRect();
-    const below = Math.min(innerHeight, boundary?.bottom ?? innerHeight) - rect.bottom, above = rect.top - Math.max(0, boundary?.top ?? 0, pinned?.bottom ?? 0);
+    const scrollRoot = element.closest('.record-content');
+    const bounds = () => { const boundary = scrollRoot?.getBoundingClientRect(), pinned = scrollRoot?.querySelector(':scope>.record-card')?.getBoundingClientRect(); return { top: Math.max(0, boundary?.top ?? 0, pinned?.bottom ?? 0), bottom: Math.min(innerHeight, boundary?.bottom ?? innerHeight) }; };
+    let rect = element.getBoundingClientRect(), edge = bounds();
+    // Browser focus can scroll a field underneath a sticky form header. Bring
+    // it back into the usable form area before measuring the options viewport.
+    if (scrollRoot && (rect.top < edge.top + 8 || rect.bottom > edge.bottom - 8 || edge.bottom - rect.bottom < 458 && edge.bottom - edge.top >= rect.height + 466)) {
+      scrollRoot.scrollTop += rect.top - (edge.top + 8); rect = element.getBoundingClientRect(); edge = bounds();
+    }
+    const below = edge.bottom - rect.bottom, above = rect.top - edge.top;
     const isAbove = below < Math.min(450, list.scrollHeight) && above > below; list.classList.toggle('above', isAbove); list.style.maxHeight = `${Math.max(80, Math.min(450, (isAbove ? above : below) - 8))}px`; markActive();
     lifetime = new AbortController(); document.addEventListener('pointerdown', event => { if (!element.contains(event.target)) close(); }, { signal: lifetime.signal });
     element.addEventListener('focusout', event => { if (!element.contains(event.relatedTarget)) close(); }, { signal: lifetime.signal });
     window.addEventListener('resize', () => close(), { signal: lifetime.signal });
-    window.addEventListener('scroll', event => { if (!list.contains(event.target)) close(); }, { capture: true, signal: lifetime.signal });
+    window.addEventListener('scroll', event => {
+      if (list.contains(event.target)) return;
+      const edge = bounds(), field = element.getBoundingClientRect(), popup = list.getBoundingClientRect();
+      if (field.top < edge.top || field.bottom > edge.bottom || popup.top < edge.top || popup.bottom > edge.bottom) close();
+    }, { capture: true, signal: lifetime.signal });
     revealActive();
   };
   for (const [index, minutes] of choices.entries()) {
@@ -73,7 +84,7 @@ export function renderDuration(field, initialValue, context = {}) {
       active = event.key === 'Home' ? enabled[0] : event.key === 'End' ? enabled.at(-1) : enabled[Math.max(0, Math.min(enabled.length - 1, position + (wasClosed ? 0 : event.key === 'ArrowDown' ? 1 : -1)))]; markActive(); revealActive();
     } else if (event.key === 'Enter') { if (!list.hidden) { event.preventDefault(); if (choices[active] !== undefined) choose(choices[active]); } else commit(); }
   });
-  trigger.addEventListener('pointerdown', event => event.preventDefault()); trigger.addEventListener('click', () => { primary.focus(); if (list.hidden) open(); else close(); });
+  trigger.addEventListener('pointerdown', event => event.preventDefault()); trigger.addEventListener('click', () => { primary.focus({ preventScroll: true }); if (list.hidden) open(); else close(); });
   clear.addEventListener('pointerdown', event => event.preventDefault()); clear.addEventListener('click', () => { if (!alive || primary.disabled) return; value = null; edited = false; preserveText = false; primary.value = ''; validate(true); close(true); primary.dispatchEvent(new Event('input', { bubbles: true })); primary.dispatchEvent(new Event('change', { bubbles: true })); edited = false; });
   primary.value = formatDuration(value); element.append(primary, clear, trigger, list, error); validate();
   return { element, primary, read() { const state = validate(true); if (!state.valid) throw new Error(`${field.label ?? field.name}: ${validationError}`); return state.next; },

@@ -1,10 +1,19 @@
 /* Native field calendars use a compact day pane beside the month/year pane. */
 .date-control { display:flex; gap:8px; min-width:0; }
 .date-input { position:relative; min-width:0; flex:1; }
-.date-with-time .date-input,.date-with-time .date-time-input { flex:0 1 calc(50% - 4px); }
+.date-with-time .date-input,.date-with-time .date-time-host { flex:0 1 calc(50% - 4px); }
+.date-time-host { position:relative; min-width:0; }
+.date-time-host>input { width:100%; padding-right:32px; }
+.date-time-host>button { position:absolute; top:0; right:0; width:32px; min-height:32px; padding:0; color:#605e5c; }
+.date-time-host>button .icon { width:12px; height:12px; }
+.date-time-options { position:fixed; z-index:1000; overflow:auto; background:#fff; color:#323130; border-radius:4px; padding:4px 0; box-shadow:0 3px 8px #0003; font:14px 'Segoe UI',sans-serif; }
+.date-time-options>[role=option] { position:relative; height:32px; line-height:20px; padding:6px 32px; cursor:pointer; }
+.date-time-options>[role=option]:hover,.date-time-options>[role=option].active { background:#f3f2f1; }
+.date-time-options>[aria-selected=true]::before { position:absolute; left:12px; content:'✓'; }
 .field .date-input>input { width:100%; padding-right:32px; }
 .date-input>button { position:absolute; top:0; right:0; width:32px; min-height:32px; padding:0; color:#605e5c; }
 .date-input>button .icon { width:14px; height:14px; }
+.date-input>button:disabled,.date-time-host>button:disabled { display:none; }
 .date-calendar { position:absolute; z-index:20; top:100%; left:0; display:flex; width:442px; height:254px; border:1px solid transparent; border-radius:4px; background:#fff; box-shadow:0 0 2px #0000001f,0 8px 16px #00000024; overflow:auto; color:#242424; }
 .date-calendar[hidden] { display:none; }
 .date-calendar.above { top:auto; bottom:100%; }

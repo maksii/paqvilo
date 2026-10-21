@@ -3198,7 +3198,7 @@ async function createPowerPagesSimulator({
     const metadata = modelMetadata();
     if (modelDrivenCache?.portal !== portal || modelDrivenCache?.metadata !== metadata || modelDrivenCache?.storeRevision !== store.revision) {
       modelDrivenCache = { portal, metadata, storeRevision: store.revision,
-        value: appCatalogue({ portal, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp,
+        value: appCatalogue({ portal, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp, settings: store.state.settings,
           clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue) }) };
     }
     return modelDrivenCache.value;
@@ -3206,7 +3206,7 @@ async function createPowerPagesSimulator({
   modelDrivenCatalogue.async = async ({ cancelled } = {}) => {
     const metadata = modelMetadata(), source = portal, storeRevision = store.revision;
     if (modelDrivenCache?.portal !== source || modelDrivenCache?.metadata !== metadata || modelDrivenCache?.storeRevision !== storeRevision) {
-      const value = await appCatalogueAsync({ portal: source, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp,
+      const value = await appCatalogueAsync({ portal: source, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp, settings: store.state.settings,
         clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue) }, { cancelled });
       modelDrivenCache = { portal: source, metadata, storeRevision, value };
     }

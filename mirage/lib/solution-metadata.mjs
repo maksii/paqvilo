@@ -237,6 +237,7 @@ export async function importSolutionMetadata(
       entitySetSource: table.entitySetSource,
       ownership: table.ownership,
       tableType: table.tableType,
+      grid: table.grid,
       dataSourceId: table.dataSourceId,
       dataProviderId: table.dataProviderId,
       changeTrackingEnabled: table.changeTrackingEnabled,

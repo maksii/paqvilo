@@ -2,6 +2,7 @@
 .field .duration-control>input { padding-right:32px; }
 .duration-trigger { position:absolute; top:0; right:0; height:32px; min-height:32px; width:32px; padding:0; color:#605e5c; }
 .duration-trigger .icon { width:12px; height:12px; }
+.duration-control:has(>input:disabled)>.duration-trigger,.duration-control:has(>input:disabled)>.duration-clear { display:none; }
 .duration-clear { position:absolute; top:0; right:32px; height:32px; min-height:32px; width:24px; padding:0; opacity:0; }
 .duration-clear .icon { width:12px; height:12px; }
 .duration-control:hover>.duration-clear,.duration-control:focus-within>.duration-clear { opacity:1; }

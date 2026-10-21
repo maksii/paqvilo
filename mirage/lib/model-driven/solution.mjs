@@ -9,6 +9,14 @@ const title = (node, lcid) => {
 };
 const titleLabels = node => Object.fromEntries(descendants(node, 'Title').filter(row => row.attrs.LCID && row.attrs.Title)
   .map(row => [row.attrs.LCID, row.attrs.Title]));
+const tableNavigation = value => {
+  if (!/^(?:\/)?main\.aspx\?/i.test(value ?? '')) return undefined;
+  try {
+    const url = new URL(value, 'http://local.invalid/'), entity = url.searchParams.get('etn');
+    if (url.origin !== 'http://local.invalid' || url.pathname.toLowerCase() !== '/main.aspx' || url.searchParams.get('pagetype') !== 'entitylist' || !/^[a-z][\w]*$/i.test(entity ?? '')) return undefined;
+    return { entity: entity.toLowerCase(), ...(url.searchParams.has('viewid') ? { view: id(url.searchParams.get('viewid')) } : {}), ...(url.searchParams.has('appid') ? { applicationId: id(url.searchParams.get('appid')) } : {}) };
+  } catch { return undefined; }
+};
 
 /** Data-only navigation. URLs, scripts and resource IDs are never executed as app code. */
 export function parseSiteMap(root, { lcid = 1033 } = {}) {
@@ -19,11 +27,14 @@ export function parseSiteMap(root, { lcid = 1033 } = {}) {
     id: area.attrs.Id, title: title(area, lcid) ?? area.attrs.Id, titleLabels: titleLabels(child(area, 'Titles')),
     groups: (area.children ?? []).filter(node => node.name === 'Group').map(group => ({
       id: group.attrs.Id, title: title(group, lcid) ?? group.attrs.Id, titleLabels: titleLabels(child(group, 'Titles')),
-      items: (group.children ?? []).filter(node => node.name === 'SubArea').map(item => ({
+      items: (group.children ?? []).filter(node => node.name === 'SubArea').map(item => {
+        const destination = item.attrs.Entity ? { entity: item.attrs.Entity.toLowerCase() } : tableNavigation(item.attrs.Url);
+        return {
         id: item.attrs.Id, title: title(item, lcid), titleLabels: titleLabels(child(item, 'Titles')), entity: item.attrs.Entity?.toLowerCase(),
+        ...destination,
         // Non-table destinations have no renderer yet. Keep their place and explain it.
-        supported: Boolean(item.attrs.Entity), reason: item.attrs.Entity ? undefined : 'This navigation type is not supported locally yet.',
-      })),
+        supported: Boolean(destination), reason: destination ? undefined : 'This navigation type is not supported locally yet.',
+      }; }),
     })),
   }));
 }
@@ -96,6 +107,20 @@ export function compileForm(form, fields, lcid = 1033) {
   const sourceControl = control => ({ id: control.attrs.id ?? null, uniqueId: control.attrs.uniqueid ?? null,
     classId: control.attrs.classid ?? null, attributes: { ...control.attrs }, xml: serializeXml(control),
     customBindings: bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [] });
+  const sectionColumns = section => /^[1-4]$/.test(section.attrs.columns ?? '') ? Number(section.attrs.columns) : /^1{2,4}$/.test(section.attrs.columns ?? '') ? section.attrs.columns.length : 1;
+  const layoutCells = section => {
+    const width = sectionColumns(section), occupied = [], result = [];
+    for (const [row, definition] of descendants(section, 'row').entries()) {
+      let column = 0;
+      for (const cell of definition.children.filter(node => node.name === 'cell')) {
+        const colspan = Math.max(1, Math.min(Number(cell.attrs.colspan) || 1, width)), rowspan = Math.max(1, Number(cell.attrs.rowspan) || 1);
+        while (Array.from({ length: colspan }, (_, offset) => (occupied[column + offset] ?? 0) > row).some(Boolean)) column++;
+        for (let offset = 0; offset < colspan; offset++) occupied[column + offset] = row + rowspan;
+        result.push({ cell, position: { row, column, colspan, ...(cell.attrs.rowspan ? { rowspan } : {}), showLabel: cell.attrs.showlabel !== 'false' } }); column += colspan;
+      }
+    }
+    return result;
+  };
   const tabs = descendants(root, 'tab').map(tab => ({
     id: tab.attrs.name ?? tab.attrs.id, label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
     visible: tab.attrs.visible !== 'false',
@@ -104,29 +129,28 @@ export function compileForm(form, fields, lcid = 1033) {
       label: label(child(section, 'labels'), lcid) ?? '',
       showLabel: section.attrs.showlabel !== 'false', visible: section.attrs.visible !== 'false',
       column: (child(tab, 'columns')?.children ?? []).findIndex(column => descendants(column, 'section').includes(section)),
-      columns: /^1{1,4}$/.test(section.attrs.columns ?? '') ? section.attrs.columns.length : 1,
-      fields: descendants(section, 'cell').flatMap(cell => {
+      columns: sectionColumns(section),
+      ...(Number(section.attrs.labelwidth) > 0 ? { labelWidth: Number(section.attrs.labelwidth) } : {}),
+      ...(section.attrs.celllabelposition ? { labelPosition: section.attrs.celllabelposition.toLowerCase() } : {}),
+      ...(section.attrs.celllabelalignment ? { labelAlignment: section.attrs.celllabelalignment.toLowerCase() } : {}),
+      fields: layoutCells(section).flatMap(({ cell, position }) => {
         const control = child(cell, 'control');
-        if (!control) return [];
+        if (!control) return [{ ...position, spacer: true, supported: true, visible: cell.attrs.visible !== 'false' }];
         const name = control.attrs.datafieldname;
-        const rows = descendants(section, 'row'), row = rows.find(row => row.children.includes(cell));
-        const position = { row: rows.indexOf(row), column: row?.children.slice(0, row.children.indexOf(cell)).reduce((sum, item) => sum + (Number(item.attrs.colspan) || 1), 0) ?? 0,
-          colspan: Number(cell.attrs.colspan) || 1, showLabel: cell.attrs.showlabel !== 'false' };
         if (id(control.attrs.classid) === 'e7a81278-8635-4d9e-8d4d-59480b391c5b') {
           const parameter = name => descendants(control, name)[0]?.text.trim();
           return [{ ...position, sourceControl: sourceControl(control), label: label(child(cell, 'labels'), lcid) ?? control.attrs.id, visible: cell.attrs.visible !== 'false',
             supported: true, subgrid: { entity: parameter('TargetEntityType')?.toLowerCase(), view: id(parameter('ViewId')), relationship: parameter('RelationshipName'),
-              pageSize: Number(parameter('RecordsPerPage')) || 10, searchEnabled: parameter('EnableQuickFind') === 'true' } }];
+              pageSize: Number(parameter('RecordsPerPage')) || 10, searchEnabled: parameter('EnableQuickFind') === 'true',
+              viewPickerEnabled: parameter('EnableViewPicker') === 'true', views: parameter('ViewIds')?.split(',').map(value => id(value.trim())).filter(Boolean) } }];
         }
         const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
         const pcf = isCustom ? pcfBinding(control) : undefined;
         const supported = Boolean(name && fields[name] && (!isCustom || pcf));
-        // A state bound to the standard text control is a read-only label. A
-        // state choice control retains its own exported behavior.
-        const readOnlyText = fields[name]?.dataverseType === 'state' && id(control.attrs.classid) === '4273edbd-ac1d-40d3-9fb2-095c621b552d' && !pcf;
+        // Modern forms can export the text class ID for a state choice. The
+        // column's type and create/update permissions govern its behavior.
         return [{ ...position, sourceControl: sourceControl(control), name, label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
-          visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true' || readOnlyText,
-          ...(readOnlyText ? { readOnlyText: true } : {}),
+          visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true',
           ...(pcf ? { pcf } : {}), supported,
           ...(!supported ? { reason: !name ? 'This control is not supported locally yet.' : !fields[name] ? 'Column metadata is unavailable.' : 'This custom control is not supported locally yet.' } : {}) }];
       }),
@@ -187,6 +211,7 @@ export function parseAppActionCommand(root, { webresourcesById = new Map(), lcid
     });
   } catch { parameterError = true; }
   const location = Number(childText(root, 'location')), labelNode = child(root, 'buttonlabeltext');
+  const sequenceText = childText(root, 'sequence'), sequence = sequenceText?.trim() ? Number(sequenceText) : undefined;
   // Native form command elements use the exported AppAction name, which differs
   // from the canonical uniquename. Only the observed form/context contract is
   // mapped; other locations remain available by canonical ID without guessing.
@@ -196,6 +221,7 @@ export function parseAppActionCommand(root, { webresourcesById = new Map(), lcid
     ? [`${entity.toLowerCase()}|NoRelationship|Form|${nativeName}`] : [];
   const supported = Boolean(entity && library && childText(root, 'onclickeventjavascriptfunctionname') && childText(root, 'context') === '1' && childText(root, 'statecode') !== '1' && childText(root, 'onclickeventtype') === '2' && childText(root, 'type') === '0' && !parameterError && parameters.every(parameter => parameter.kind !== 'unsupported') && [0, 1].includes(location) && childText(root, 'isdisabled') !== '1');
   return { entity: entity?.toLowerCase(), id: root.attrs.uniquename ?? childText(root, 'name'), nativeControlIds,
+    ...(Number.isFinite(sequence) ? { sequence } : {}),
     label: label(labelNode, lcid) ?? labelNode?.attrs.default ?? childText(root, 'name'), locations: childText(root, 'hidden') === '1' ? [] : location === 0 ? ['form'] : location === 1 ? ['grid'] : [],
     supported, reason: supported ? undefined : 'This modern command requires a supported JavaScript action, parameter and local exported resource.',
     actions: [{ type: 'JavaScriptFunction', library, functionName: childText(root, 'onclickeventjavascriptfunctionname'), parameters }], displayRules: [], enableRules: [], source: 'appaction' };

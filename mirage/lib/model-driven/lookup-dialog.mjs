@@ -60,14 +60,16 @@ export function createLookupDialog(field, { tables, api, tablePath, display, dia
       request?.abort(); request = new AbortController();
       const signal = AbortSignal.any([lifetime.signal, request.signal]);
       const definition = views().find(definition => definition.id === view);
-      const columns = [...new Set([destination.nameColumn, ...(definition?.fields ?? []).map(field => field.name)])].filter(name => name !== destination.idColumn && destination.fields[name]).slice(0, 5);
+      const columns = [...new Set([destination.nameColumn, ...(definition?.fields ?? []).map(field => field.name)])].filter(name => name !== destination.idColumn && destination.fields[name]);
+      const widths = new Map((definition?.fields ?? []).map(field => [field.name, field.width]));
       results.inert = true; results.setAttribute('aria-busy', 'true'); status.textContent = 'Searching records…'; results.replaceChildren();
       try {
         const found = await api(tablePath(destination.entity) + '?query=' + encodeURIComponent(JSON.stringify({ search: search.value, columns, pageSize: 50, view })), { signal });
         if (token !== sequence || lifetime.signal.aborted) return;
         const grid = document.createElement('table'); grid.setAttribute('aria-label', `${destination.label} lookup results`);
+        grid.style.minWidth = `${42 + columns.reduce((sum, name) => sum + (widths.get(name) || 180), 0)}px`;
         const head = grid.createTHead().insertRow(); const selectionHeading = document.createElement('th'); selectionHeading.className = 'lookup-selection'; selectionHeading.setAttribute('aria-label', 'Selection'); head.append(selectionHeading);
-        for (const name of columns) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = destination.fields[name]?.label ?? name; head.append(cell); }
+        for (const name of columns) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = destination.fields[name]?.label ?? name; cell.style.width = `${widths.get(name) || 180}px`; head.append(cell); }
         const tbody = grid.createTBody();
         for (const record of found.rows) {
           const row = tbody.insertRow(); row.setAttribute('aria-selected', 'false');

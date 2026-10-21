@@ -28,7 +28,7 @@ export function solutionApps(scan, { lcid = 1033 } = {}) {
 }
 
 /** Stable JSON contract consumed by the shell and future control/command registries. */
-function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault, clientExtensions } = {}) {
+function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault, clientExtensions, settings = {} } = {}) {
   const tables = Object.assign({}, ...providers.filter(Boolean).map(provider => structuredClone(provider.tables ?? {})));
   for (const [entity, mapping] of Object.entries(mappings)) {
     if (tables[entity]) continue;
@@ -41,6 +41,7 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
     const exported = metadata.entities?.[table.entity];
     if (exported?.collectionLabel != null) table.label = exported.collectionLabel;
     if (exported?.label != null) table.singular = exported.label;
+    if (exported?.grid) table.grid = structuredClone(exported.grid);
     const mapping = mappings[table.entity];
     if (mapping?.entitySet) table.entitySet = mapping.entitySet;
     if (mapping?.relationships) table.relationships = structuredClone(mapping.relationships);
@@ -84,11 +85,27 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
       app.navigation = [{ id: 'main', title: app.name ?? app.uniqueName, groups: [{ id: 'tables', title: 'Tables', items: names.map(entity => ({ id: entity, entity, title: tables[entity]?.label ?? entity, supported: Boolean(tables[entity]) })) }] }];
     }
     for (const area of app.navigation) for (const group of area.groups) for (const item of group.items) {
-      if (item.entity && !tables[item.entity]) { item.supported = false; item.reason = 'This table has no imported metadata or local mapping.'; }
-      item.title ??= tables[item.entity]?.label ?? item.entity ?? item.id;
+      const destination = item.entity && Object.hasOwn(tables, item.entity) ? tables[item.entity] : undefined;
+      let viewApplication = app;
+      if (item.entity && !destination) { item.supported = false; item.reason = 'This table has no imported metadata or local mapping.'; }
+      if (item.view && !destination?.views.some(view => view.id === item.view)) { item.supported = false; item.reason = 'This page selects a view that is not imported for its table.'; }
+      if (item.applicationId) {
+        const targetApp = apps.find(candidate => candidate.idSource !== 'derived-local' && candidate.id?.toLowerCase() === item.applicationId);
+        if (targetApp) { item.targetApplicationId = targetApp.id; viewApplication = targetApp; }
+        // A missing native AppModuleId produces a synthetic local ID. Its native
+        // URL ID cannot prove a mismatch; retain the owning app's local context.
+        else if (app.idSource === 'exported') { item.supported = false; item.reason = 'This page selects an application that is not imported.'; }
+      }
+      if (item.view && destination?.views.some(view => view.id === item.view)) {
+        const ids = new Set((viewApplication.components ?? []).filter(component => component.type === 26).map(component => String(component.id ?? '').replace(/[{}]/g, '').toLowerCase()));
+        const scoped = destination.views.filter(view => ids.has(String(view.id).replace(/[{}]/g, '').toLowerCase()));
+        if (scoped.length && !scoped.some(view => view.id === item.view)) { item.supported = false; item.reason = 'This page selects a view that is not available to its imported application.'; }
+      }
+      item.title ??= destination?.label ?? item.entity ?? item.id;
     }
   }
   return { version: 1, defaultApp: defaultApp?.id ?? null, apps, tables, ...(clientExtensions ? { clientExtensions } : {}),
+    ...(Number.isInteger(settings.timeZoneOffsetMinutes) && Math.abs(settings.timeZoneOffsetMinutes) <= 1440 && !settings.formattedValueTimeZone ? { formatting: { timeZoneOffsetMinutes: settings.timeZoneOffsetMinutes } } : {}),
     capabilities: { localCrud: true, views: true, search: true, filters: true, columns: true, solutionNavigation: true, relatedSubgrids: true,
       scripts: clientExtensions?.trusted === true, businessProcessFlows: false, customControls: clientExtensions?.trusted === true, reports: false, powerBi: false, flows: false, globalSearch: false, advancedFind: false, classicSettings: false } };
 }

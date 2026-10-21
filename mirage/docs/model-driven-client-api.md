@@ -30,7 +30,8 @@ Classic ribbon JavaScript actions support PrimaryControl, selected record IDs,
 selected entity name and primitive parameters. The supported rules are
 FormStateRule, EntityRule, ValueRule and SelectionCountRule. Modern AppAction
 exports support a JavaScript WebResource and the captured PrimaryControl parameter
-type. Unsupported actions, parameters, rules and missing exported libraries leave
+type. An explicit zero-sequence modern form action appears before standard form
+actions; other command positions retain their fallback placement. Unsupported actions, parameters, rules and missing exported libraries leave
 commands disabled with an explanation.
 
 ## Bounded client API
@@ -40,8 +41,8 @@ commands disabled with an explanation.
 | Attributes | Get/set values, initial values, dirty state, metadata-derived type, required level, choice options/text, add/remove/fire OnChange, attribute control collection |
 | Controls | Get/set visibility, disabled state and label; focus; notifications; bound attribute |
 | Form data | Entity ID/name/primary name, attributes, dirty state, add/remove OnSave, save and refresh |
-| Form UI | Create/existing form type, control collection, form notifications, close |
-| Navigation | Alert and confirmation dialogs; opening another imported local form |
+| Form UI | Create/existing/disabled inactive form type, control collection, form notifications, close |
+| Navigation | Alert and confirmation dialogs; opening another imported local form, including its app-owned `formId` |
 | Global context | Local client URL, selected staff ID/name, Web client and online state |
 | WebApi | Retrieve one/multiple records, scalar and multiselect writes, imported single-valued lookup bindings, create/update/delete through the local staff pipeline |
 
@@ -79,3 +80,14 @@ Client methods cannot enable writes denied by metadata, source ownership or staf
 field security. Held form contexts are revoked when their form is disposed or the
 staff identity changes. Portal contact sessions remain separate from staff
 identities and this shell does not inject its client API into Power Pages.
+
+Form XML control disabling defines the initial presentation. Explicit client
+scripts can unlock that control or set its attribute value and save while the
+control stays disabled. Column update metadata, ownership and staff permissions
+continue to govern each write.
+
+An inactive two-state record initially exposes disabled form type 4. Its default
+disabled presentation permits an explicit client `setDisabled(false)`, attribute
+`setValue` and SDK save when source and staff permissions allow the write. The
+standard Save buttons remain hidden. Form-state ribbon rules distinguish this
+disabled form from an editable existing record.

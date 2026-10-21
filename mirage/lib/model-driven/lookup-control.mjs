@@ -16,11 +16,14 @@ export function renderLookup(field, value, context) {
   const available = field.targets?.some(entity => context.tables?.[entity]);
   find.disabled = !available; find.title = available ? 'Search records' : 'Target table metadata is unavailable.';
   const popup = document.createElement('div'); popup.className = 'lookup-suggestions'; popup.hidden = true;
+  const header = document.createElement('div'); header.className = 'lookup-suggestions-header'; header.hidden = true;
+  const heading = document.createElement('span'); heading.textContent = field.targets?.length === 1 ? context.tables?.[field.targets[0]]?.label ?? field.label : field.label;
+  const recent = document.createElement('button'); recent.type = 'button'; recent.textContent = 'Recent records'; recent.disabled = true; recent.title = 'Recent lookup history is not available locally; records come from the exported lookup view.'; header.append(heading, recent);
   const results = document.createElement('div'); results.id = `lookup-suggestions-${++nextId}`; results.setAttribute('role', 'listbox'); results.setAttribute('aria-label', `${field.label} records`);
   primary.setAttribute('aria-controls', results.id);
   const footer = document.createElement('div'); footer.className = 'lookup-suggestions-footer';
   const create = makeButton('New', 'add'); create.append(document.createTextNode('New')); create.disabled = true; create.title = 'Creating a record from this lookup is not supported locally.';
-  const advanced = makeButton('Advanced', 'search'); advanced.append(document.createTextNode('Advanced')); footer.append(create, advanced); popup.append(results, footer);
+  const advanced = makeButton('Advanced', 'search'); advanced.append(document.createTextNode('Advanced')); footer.append(create, advanced); popup.append(header, results, footer);
   let alive = true, pending = false, timer, request, lifetime, sequence = 0, active = -1, found = [];
   const update = () => {
     element.classList.toggle('has-selection', Boolean(selectedId)); clear.hidden = !selectedId; badge.hidden = !selectedId;
@@ -28,7 +31,7 @@ export function renderLookup(field, value, context) {
     primary.style.width = selectedId ? `${Math.max(40, primary.value.length * 7.2 + 16)}px` : '';
     validate();
   };
-  const close = () => { clearTimeout(timer); request?.abort(); lifetime?.abort(); sequence++; popup.hidden = true; primary.placeholder = '---'; primary.setAttribute('aria-expanded', 'false'); primary.removeAttribute('aria-activedescendant'); };
+  const close = () => { clearTimeout(timer); request?.abort(); lifetime?.abort(); sequence++; popup.hidden = true; primary.placeholder = primary.disabled ? '' : '---'; primary.setAttribute('aria-expanded', 'false'); primary.removeAttribute('aria-activedescendant'); };
   const choose = selected => {
     if (!alive || primary.disabled) return;
     selectedId = selected.id; selectedEntity = selected.entity; selectedName = selected.name; primary.value = selectedName ?? selectedId; close(); update();
@@ -37,9 +40,9 @@ export function renderLookup(field, value, context) {
   const position = () => {
     const rect = element.getBoundingClientRect(), scrollRoot = element.closest('.record-content'), boundary = scrollRoot?.getBoundingClientRect(), pinned = scrollRoot?.querySelector(':scope>.record-card')?.getBoundingClientRect();
     const below = Math.min(innerHeight, boundary?.bottom ?? innerHeight) - rect.bottom, above = rect.top - Math.max(0, boundary?.top ?? 0, pinned?.bottom ?? 0);
-    const desired = Math.min(240, results.scrollHeight) + footer.getBoundingClientRect().height;
+    const chrome = footer.getBoundingClientRect().height + header.getBoundingClientRect().height, desired = Math.min(240, results.scrollHeight) + chrome;
     const isAbove = below < desired && above > below; popup.classList.toggle('above', isAbove);
-    results.style.maxHeight = `${Math.max(40, Math.min(240, (isAbove ? above : below) - footer.getBoundingClientRect().height - 8))}px`;
+    results.style.maxHeight = `${Math.max(40, Math.min(240, (isAbove ? above : below) - chrome - 8))}px`;
   };
   const open = () => {
     if (!alive || primary.disabled || !available) return false;
@@ -53,10 +56,14 @@ export function renderLookup(field, value, context) {
     position(); return true;
   };
   const render = () => {
+    header.hidden = !found.length;
     results.replaceChildren();
     for (const [index, record] of found.entries()) {
       const row = makeButton(record.name || '(No name)', navigationIcon({ entity: record.entity }), 'lookup-suggestion'); row.setAttribute('role', 'option'); row.id = `${results.id}-${index}`; row.tabIndex = -1;
-      row.setAttribute('aria-selected', String(index === active)); row.append(document.createTextNode(record.name || '(No name)'));
+      row.setAttribute('aria-selected', String(index === active));
+      const text = document.createElement('span'); text.className = 'lookup-suggestion-text'; const name = document.createElement('span'); name.textContent = record.name || '(No name)'; text.append(name);
+      if (record.description) { const detail = document.createElement('small'); detail.textContent = record.description; text.append(detail); row.classList.add('has-description'); }
+      row.append(text);
       row.addEventListener('pointerdown', event => event.preventDefault()); row.addEventListener('click', () => choose(record)); results.append(row);
     }
     if (active >= 0) primary.setAttribute('aria-activedescendant', `${results.id}-${active}`); else primary.removeAttribute('aria-activedescendant');
@@ -100,6 +107,6 @@ export function renderLookup(field, value, context) {
   advanced.addEventListener('click', browse);
   element.append(badge, primary, clear, find, popup); update();
   return { element, primary, read() { if (!selectedId) { if (primary.value) throw new Error(`Select a record for ${field.label} from its lookup.`); return null; } if (!selectedEntity) throw new Error(`Choose a target table for ${field.label} using its lookup.`); return { id: selectedId, entity: selectedEntity, ...(selectedName ? { name: selectedName } : {}) }; },
-    setDisabled(disabled) { primary.disabled = disabled; clear.disabled = disabled; find.disabled = disabled || !available || pending; if (disabled) close(); },
+    setDisabled(disabled) { primary.disabled = disabled; primary.placeholder = disabled ? '' : '---'; clear.disabled = disabled; find.disabled = disabled || !available || pending; advanced.disabled = disabled; if (disabled) close(); },
     destroy() { alive = false; close(); } };
 }

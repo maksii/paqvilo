@@ -28,9 +28,19 @@ those apps receive a stable local GUID derived from their unique name, reported 
 `idSource: derived-local`. Use `appname` for a portable link, or the local catalogue's
 GUID for `runtime.defaultApp`. A generated local GUID is not the deployed app ID.
 
+The area selector shows the selected module's authored navigation groups. Its
+selection belongs to the local browser and application; direct table/view links
+activate a matching source area. Relative `main.aspx` entity-list destinations
+in a sitemap retain their imported table and saved view, including the default
+page's filter. Remote URLs, other page types and missing table/view metadata stay
+unavailable. A known native `appid` can select another imported application;
+an unknown one is unavailable when the owning app's exported native ID is known.
+When that ID was omitted and the local app ID is derived, the source page retains
+its owning app's local context rather than comparing unlike IDs.
+
 ## Baseline behavior
 
-- Navigate application groups, switch views, search, sort, page, change/reorder
+- Switch exported navigation areas and groups, switch views, search, sort, page, change/reorder
   columns, and combine filter conditions with AND. Exported FetchXML remains the
   base query, including its filters and joins. View preferences, recent items and
   pins belong to the local browser and are keyed by application/table/view.
@@ -41,17 +51,25 @@ GUID for `runtime.defaultApp`. A generated local GUID is not the deployed app ID
   boolean, date, multiline, JSON and lookup fields use a control registry.
   Choice controls expose labelled options and keyboard selection. Date-only,
   timezone-independent and user-local fields retain their distinct values.
+  Date/time editors include the native half-hour time list and accept typed
+  minutes. User-local editors use the browser zone unless the project supplies
+  an explicit fixed `settings.timeZoneOffsetMinutes`; that offset changes the
+  native editor while source PCFs retain their browser environment. Rule-based
+  formatted-value profiles remain separate from this fixed editor setting.
   Lookup suggestions and Advanced lookup read local target tables, including
   exported lookup views. Advanced lookup stages a selection until Done; Cancel
   leaves the field unchanged. Record updates/deletes require a current ETag.
   A rejected stale save retains the draft. Choice, duration and lookup lists
   scroll their own options without moving the form; scrolling the form or
   resizing dismisses their obsolete popup position.
-- Render exported main-form tabs, sections, labels and field layouts. Missing
+- Render exported main-form tabs, two- and three-column layouts, section columns,
+  empty spacer cells, row/column spans, labels and visibility. Missing
   forms/views get explicitly labelled metadata-generated defaults. Unsupported
   controls and script/event dependencies remain visible as limitations.
 - Render table subgrids whose exported target table, saved view and unique parent
-  lookup are available. Related rows are filtered to the current record. Open a
+  lookup or named relationship are available. Exported view-picker settings
+  select the allowed views while retaining the parent filter. Related rows are
+  filtered to the current record. Open a
   related record, search/sort the grid, create one with its parent prefilled, or
   select and delete local related rows. Ambiguous/missing
   relationships and unsupported many-to-many controls remain explicit placeholders.
@@ -75,6 +93,14 @@ field PCF controls can run through an explicitly enabled
 [trusted extension host](model-driven-customizations.md). Trust is off by default.
 Business process flows, dashboards and unsupported subgrids remain unavailable.
 This baseline does not claim full model-driven or Dynamics client parity.
+
+For exported two-state tables with states 0/1, an inactive loaded row uses disabled
+form type 4, a status strip and initially disabled fields. Save and Save & Close
+are hidden. Explicit client scripts can unlock controls, set attribute values and
+save the inactive record through the supported SDK, subject to source and staff
+write permissions. Editing an active draft's state does not disable it before
+saving; loading the saved row applies its new state. Activation commands remain
+explicitly unavailable locally.
 
 The top-right profile avatar opens **Staff profile**. Select an eligible interactive organization user to apply canonical staff roles, row access and field security to grids, lookup candidates, forms and mutations. **Local administrator** is an explicit development bypass, selected only when no staff cookie exists or you explicitly choose it. Invalid, disabled, deleted or expired staff selections fail instead of escalating. Manage users, roles and application credentials under `/_sim/#dataverse`. Portal visitor identity/table permissions and token-authenticated application identities remain separate.
 
@@ -126,8 +152,8 @@ The app chooser uses a searchable card modal; view, form, tab and column choices
 use anchored menus. Grid columns and filters have separate drawers. Source-typed
 fields include searchable choices, checkbox multiselects, inline and advanced
 lookups, a two-pane date calendar and duration choices with editable units. Date
-and time values retain their source behavior; a separate native time-picker
-appearance has not been verified. Unsupported file, image and dataset controls
+and time values retain their source behavior; the time list exposes 48 half-hour
+choices while retaining arbitrary typed minutes. Unsupported file, image and dataset controls
 retain visible reasons instead of accepting edits.
 
 Trusted scalar PCF controls receive the selected local staff identity and use the
@@ -151,3 +177,5 @@ Keep actual Power Pages app exports, browser observations, screenshots and
 site acceptance tests in a separate project. Read-only reference inspection does
 not authorize creating records, changing solutions, exporting through a new
 unmanaged solution, publishing, or deploying to the organization.
+
+The table's exported desktop `Microsoft.PowerApps.PowerAppsOneGrid` default configuration selects grid paging. `EnablePagination=yes` uses server pages with the native row range and first/previous/next controls; `no` (or the built-in control's omitted default) loads further server chunks on scroll. A table without an exported recognized grid configuration retains Mirage's paged fallback. These facts come from the table default configuration; form and subgrid PCFs do not override the main grid. Returning from a record preserves the originating imported table, source view, keyword, filters, page and area in the local browser history.

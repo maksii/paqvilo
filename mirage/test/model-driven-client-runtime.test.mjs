@@ -135,6 +135,8 @@ test('form XML compiles native handler metadata and ribbon preserves unsupported
   const commands = parseRibbonCommands('<RibbonDiffXml><CustomActions><CustomAction><CommandUIDefinition><Button Id="x.Form.Do" Command="x.Do" LabelText="$LocLabels:x.Label"/></CommandUIDefinition></CustomAction><CustomAction><CommandUIDefinition><Button Id="x.HomePageGrid.Unsupported" Command="x.Unsupported" LabelText="Unsupported"/></CommandUIDefinition></CustomAction></CustomActions><CommandDefinitions><CommandDefinition Id="x.Do"><EnableRules><EnableRule Id="x.Existing"/></EnableRules><Actions><JavaScriptFunction Library="$webresource:x_/sample.js" FunctionName="Sample.command"><CrmParameter Value="PrimaryControl"/></JavaScriptFunction></Actions></CommandDefinition><CommandDefinition Id="x.Unsupported"><Actions><Url Address="https://example.invalid"/></Actions></CommandDefinition></CommandDefinitions><RuleDefinitions><EnableRules><EnableRule Id="x.Existing"><FormStateRule State="Existing"/></EnableRule></EnableRules></RuleDefinitions><LocLabels><LocLabel Id="x.Label"><Titles><Title languagecode="1033" description="Do something"/></Titles></LocLabel></LocLabels></RibbonDiffXml>');
   assert.equal(commands[0].label, 'Do something'); assert.equal(commands[0].supported, true); assert.deepEqual(commands[0].locations, ['form']);
   assert.equal(evaluateRibbonRules(commands[0].enableRules, { existing: false }), false); assert.equal(evaluateRibbonRules(commands[0].enableRules, { existing: true }), true);
+  assert.equal(evaluateRibbonRules(commands[0].enableRules, { existing: true, formType: 4 }), false, 'a disabled persisted form is distinct from an editable existing form');
+  for (const [formType, State] of [[1, 'Create'], [2, 'Existing'], [3, 'ReadOnly'], [4, 'Disabled'], [6, 'BulkEdit']]) assert.equal(evaluateRibbonRules([{ clauses: [{ type: 'FormStateRule', State }] }], { formType }), true);
   assert.equal(commands[1].supported, false); assert.deepEqual(commands[1].locations, ['grid']);
 });
 
@@ -163,6 +165,9 @@ test('modern AppAction compiles its exported WebResource ID and PrimaryControl w
   const command = parseAppActionCommand(xml, { webresourcesById: new Map([['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'x_/sample.js']]) });
   assert.equal(command.entity, 'x_item'); assert.equal(command.supported, true); assert.deepEqual(command.actions[0].parameters, [{ kind: 'crm', value: 'PrimaryControl' }]);
   assert.equal(command.id, 'x_modern'); assert.deepEqual(command.nativeControlIds, ['x_item|NoRelationship|Form|modern']);
+  assert.equal(command.sequence, undefined, 'omitted sequence must not invent a first-position action');
+  assert.equal(parseAppActionCommand(xml.replace('</appaction>', '<sequence>0.0000000000</sequence></appaction>')).sequence, 0);
+  assert.equal(parseAppActionCommand(xml.replace('</appaction>', '<sequence>invalid</sequence></appaction>')).sequence, undefined);
   assert.deepEqual(parseAppActionCommand(xml.replace('<location>0</location>', '<location>1</location>')).nativeControlIds, [], 'Grid aliases require their own observed contract');
   assert.deepEqual(parseAppActionCommand(xml.replace('<context>1</context>', '<context>2</context>')).nativeControlIds, [], 'Other contexts cannot impersonate a table form command');
   assert.deepEqual(parseAppActionCommand(xml.replace('<name>modern</name>', '<name>foreign|identifier</name>')).nativeControlIds, [], 'An exported name cannot add native shell path segments');

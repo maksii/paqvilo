@@ -53,7 +53,11 @@ test('duration choices and typed units preserve numeric minutes, keyboard focus 
   await page.getByRole('button', { name: 'Open duration options for Duration', exact: true }).click();
   await page.evaluate(() => control.setDisabled(true));
   assert.equal(await input.getAttribute('aria-expanded'), 'false'); assert.equal(await input.isDisabled(), true);
-  assert.equal(await page.getByRole('button', { name: 'Open duration options for Duration', exact: true }).isDisabled(), true);
+  assert.equal(await page.locator('.duration-trigger').isDisabled(), true); assert.equal(await page.locator('.duration-trigger').isVisible(), false);
+  assert.equal(await page.locator('.duration-clear').isVisible(), false); assert.equal(await page.evaluate(() => control.read()), 73);
+  await page.evaluate(() => control.setDisabled(false));
+  assert.equal(await page.locator('.duration-trigger').isVisible(), true);
+  await page.locator('.duration-trigger').click(); assert.equal(await input.getAttribute('aria-expanded'), 'true');
 });
 
 test('exported duration formats create the duration control and save whole minutes through the staff API', async t => {
@@ -83,4 +87,31 @@ test('exported duration formats create the duration control and save whole minut
   assert.equal((await submitted).postDataJSON().x_quantity, 90);
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
   await page.reload(); await duration.waitFor(); assert.equal(await duration.inputValue(), '1.5 hours');
+});
+
+test('opening duration below a sticky form header restores the field and full popup while keyboard scrolling stays inside the list', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } }); await page.goto(origin + '/main.aspx');
+  await page.evaluate(async () => {
+    const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren();
+    const root = document.createElement('div'); root.className = 'record-content'; root.style.cssText = 'position:absolute;inset:70px 40px 30px;overflow:auto;display:block';
+    const header = document.createElement('div'); header.className = 'record-card'; header.style.cssText = 'position:sticky;top:0;height:140px;background:white;z-index:20';
+    const filler = document.createElement('div'); filler.style.height = '500px'; const field = document.createElement('div'); field.className = 'field'; field.style.cssText = 'display:block;margin:0';
+    window.control = renderControl({ name: 'x_duration', label: 'Duration', type: 'number', dataverseType: 'int', format: 'duration' }, 90); field.append(control.element);
+    const trailing = document.createElement('div'); trailing.style.height = '1000px'; root.append(header, filler, field, trailing); document.body.append(root); root.scrollTop = 550;
+    control.primary.focus({ preventScroll: true });
+  });
+  const input = page.getByRole('combobox', { name: 'Duration', exact: true });
+  await input.press('ArrowDown');
+  const geometry = () => page.evaluate(() => { const root = document.querySelector('.record-content'), field = control.element.getBoundingClientRect(), popup = document.querySelector('.duration-options').getBoundingClientRect(); return { top: field.top, bottom: field.bottom, popupTop: popup.top, popupBottom: popup.bottom, popupHeight: popup.height, headerBottom: root.querySelector('.record-card').getBoundingClientRect().bottom, boundary: root.getBoundingClientRect().bottom, scrollTop: root.scrollTop, listScroll: document.querySelector('.duration-options').scrollTop }; });
+  await page.waitForFunction(() => control.primary.getAttribute('aria-expanded') === 'true');
+  const opened = await geometry();
+  assert.ok(opened.top >= opened.headerBottom + 7 && opened.popupTop >= opened.bottom, 'field and options belong below the sticky header');
+  assert.equal(opened.popupHeight, 450); assert.ok(opened.popupBottom <= opened.boundary);
+  await input.press('End'); const end = await geometry();
+  assert.equal(end.scrollTop, opened.scrollTop); assert.equal(end.top, opened.top); assert.ok(end.listScroll > opened.listScroll);
+  await input.press('Enter'); assert.equal(await page.evaluate(() => control.read()), 4320);
+  await input.click(); await page.getByRole('listbox', { name: 'Duration duration options', exact: true }).waitFor();
+  assert.equal(await input.getAttribute('aria-expanded'), 'true', 'mouse opening survives queued focus scrolling');
 });

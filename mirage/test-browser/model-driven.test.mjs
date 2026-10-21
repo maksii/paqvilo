@@ -164,7 +164,7 @@ test('model-driven shell supports solution navigation, editable grids and local 
   assert.equal(geometry.aside.width, 200);
   assert.deepEqual(geometry['.commands'], { x: 207, y: 104, width: 1360, height: 46 });
   assert.equal(geometry['#content'].y, 155); assert.equal(geometry.thead.height, 42);
-  assert.equal(geometry['tbody tr'].height, 43); assert.equal(geometry['.grid-footer'].y, 938);
+  assert.equal(geometry['tbody tr'].height, 42); assert.equal(geometry['.grid-footer'].y, 938);
   assert.equal(await page.locator('#navigation button svg').count() > 0, true);
   assert.equal(await page.getByRole('button', { name: 'Flow', exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Advanced Find', exact: true }).isDisabled(), true);

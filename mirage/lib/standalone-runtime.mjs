@@ -190,14 +190,14 @@ export async function createStandaloneRuntime(options = {}) {
       const current = metadata();
       if (catalogueCache?.metadata !== current || catalogueCache?.revision !== store.revision)
         catalogueCache = { metadata: current, revision: store.revision,
-          value: appCatalogue({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp,
+          value: appCatalogue({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp, settings: store.state.settings,
             clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven) }) };
       return catalogueCache.value;
     };
     catalogue.async = async ({ cancelled } = {}) => {
       const current = metadata(), revision = store.revision;
       if (catalogueCache?.metadata !== current || catalogueCache?.revision !== revision) {
-        const value = await appCatalogueAsync({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp,
+        const value = await appCatalogueAsync({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp, settings: store.state.settings,
           clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven) }, { cancelled });
         catalogueCache = { metadata: current, revision, value };
       }

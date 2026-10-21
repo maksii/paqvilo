@@ -4,6 +4,11 @@
 .field .choice-control>input { padding-right:32px; cursor:pointer; caret-color:transparent; }
 .choice-chevron { position:absolute; right:10px; top:8px; pointer-events:none; color:#605e5c; }
 .choice-chevron .icon { width:12px; height:12px; }
+.choice-control:has(>input:disabled)>.choice-chevron { display:none; }
+.choice-multiple:has(>input:disabled) { min-height:44px; background:#f0f0f0; border-radius:0; }
+.choice-multiple:has(>input:disabled)>input { height:44px; }
+.choice-multiple:has(>input:disabled)>.choice-summary { padding:0 14px; }
+.lookup:has(>input:disabled)>button { display:none; }
 .choice-options { position:absolute; z-index:12; top:100%; left:0; right:0; min-width:160px; max-height:240px; overflow:auto; background:#fff; border:1px solid #edebe9; box-shadow:0 3px 8px #0003; border-radius:4px; padding:4px 0; }
 .choice-options[hidden] { display:none; }
 .choice-options.above { top:auto; bottom:100%; }
@@ -12,8 +17,9 @@
 .choice-options [aria-selected=true]::after { content:'✓'; position:absolute; left:12px; color:#242424; }
 .choice-options[aria-multiselectable=true] [role=option] { padding-left:36px; }
 .choice-options[aria-multiselectable=true] [role=option]::before { content:''; position:absolute; top:12px; left:14px; width:10px; height:10px; border:1px solid #605e5c; border-radius:0; }
-.choice-options[aria-multiselectable=true] [aria-selected=true]::before { background:#0078d4; border-color:#0078d4; }
-.choice-options[aria-multiselectable=true] [aria-selected=true]::after { right:auto; left:14px; color:white; font-size:10px; }
+.choice-options[aria-multiselectable=true] [aria-selected=true] { background:#bdbdbd; }
+.choice-options[aria-multiselectable=true] [aria-selected=true]::before { background:transparent; border-color:#605e5c; }
+.choice-options[aria-multiselectable=true] [aria-selected=true]::after { right:auto; left:14px; color:#001e40; font-size:10px; }
 .field .choice-control.choice-multiple>input { background:transparent; }
 .choice-multiple .choice-chevron { display:none; }
 .field .choice-control.open>input { outline:2px solid #000; outline-offset:-2px; border-radius:0; }
@@ -24,15 +30,43 @@
 .choice-multiple .choice-options [role=option] { min-height:36px; }
 .choice-select-all>span { float:right; font-size:12px; }
 .choice-multiple .choice-options { color:#001e40; }
+.choice-chips { position:absolute; top:7px; right:26px; left:14px; height:28px; display:flex; align-items:center; gap:6px; overflow:hidden; pointer-events:none; }
+.choice-chips[hidden] { display:none; }
+.choice-multiple:not(:focus-within):not(.open)>.choice-chips { display:none; }
+.choice-summary { position:absolute; inset:0; display:flex; align-items:center; font-weight:600; pointer-events:none; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.choice-control:not(.choice-multiple)>.choice-summary,.choice-multiple:focus-within>.choice-summary,.choice-multiple.open>.choice-summary { display:none; }
+.choice-chip { display:inline-flex; align-items:center; height:28px; min-width:0; max-width:100%; background:#f0f0f0; padding-left:8px; gap:4px; flex:none; }
+.choice-chip>span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.choice-chip>button { pointer-events:auto; padding:0; min-height:28px; height:28px; width:24px; border:0; border-radius:0; }
+.choice-chip>button .icon { height:12px; width:12px; }
+.choice-multiple.has-choices:not(.open)>input { color:transparent; }
+.field .choice-multiple.has-choices:focus-within>input { border:1px solid #605e5c; border-radius:0; height:42px; }
+.field .choice-multiple.has-choices.open>input { height:78px; padding-top:38px; }
+.number-control { position:relative; min-width:0; }
+.number-formatted { position:absolute; inset:0 11px; display:flex; align-items:center; pointer-events:none; white-space:nowrap; overflow:hidden; }
+.number-control.has-number>input:not(:focus) { color:transparent; }
+.number-control>input:focus+.number-formatted { visibility:hidden; }
+.number-control:has(>input:disabled)>.number-formatted { color:#605e5c; }
+.text-action-control { position:relative; min-width:0; }
+.field .text-action-control>input { padding-right:42px; }
+.text-action-control>.text-field-action { position:absolute; right:0; top:0; width:32px; height:32px; min-height:32px; padding:0; border:0; border-radius:0 4px 4px 0; background:#ebebeb; color:#605e5c; }
+.text-field-action .icon { width:16px; height:16px; }
 .field .lookup { position:relative; }
 .field .lookup>button[aria-label^="Look up "] { margin-left:auto; }
 .lookup-suggestions { position:absolute; z-index:15; top:100%; left:0; right:0; background:#fff; border:1px solid #edebe9; border-radius:4px; box-shadow:0 4px 12px #0003; }
 .lookup-suggestions.above { top:auto; bottom:100%; }
+.lookup-suggestions-header { display:flex; align-items:center; gap:12px; height:36px; padding:0 12px; background:#faf9f8; }
+.lookup-suggestions-header[hidden] { display:none; }
+.lookup-suggestions-header>button { height:24px; min-height:24px; padding:0 6px; border:1px solid #d2d0ce; border-radius:2px; font-size:12px; }
 .lookup-suggestions [role=listbox] { min-height:52px; max-height:240px; overflow:auto; padding:8px; }
 .lookup-suggestions [role=listbox][aria-busy=true] { padding:16px 8px; color:#605e5c; }
 .lookup-suggestions [role=listbox]>p { margin:8px 0; color:#605e5c; }
 .lookup-suggestions button.lookup-suggestion { display:flex; width:100%; height:40px; justify-content:flex-start; gap:12px; border-radius:0; padding:0 8px; }
 .lookup-suggestions button.lookup-suggestion[aria-selected=true] { background:#f3f2f1; }
+.lookup-suggestions button.lookup-suggestion.has-description { height:52px; }
+.lookup-suggestion-text { display:flex; flex-direction:column; align-items:flex-start; min-width:0; }
+.lookup-suggestion-text>span,.lookup-suggestion-text>small { max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.lookup-suggestion-text>small { font-size:12px; color:#605e5c; }
 .lookup-suggestions-footer { border-top:1px solid #d2d0ce; display:flex; justify-content:space-between; padding:4px 10px; }
 .lookup-suggestions-footer button { gap:5px; min-height:34px; padding:0 8px; font-size:12px; }
 .lookup-suggestions-footer button:last-child { text-decoration:underline; }

@@ -42,7 +42,7 @@ const fieldType = (name, values) => {
   if (typeof value === 'boolean') return { type: 'boolean', dataverseType: 'bit' };
   if (typeof value === 'number') return { type: 'number', dataverseType: Number.isInteger(value) ? 'int' : 'decimal' };
   if (typeof value === 'object') return { type: 'json', dataverseType: 'json' };
-  if (/(?:source|copy|value|customjavascript|customcss|description|summary)$/.test(name)) return { type: 'textarea', dataverseType: 'memo' };
+  if (/(?:source|copy|value|customjavascript|customcss|description|summary)$/.test(name)) return { type: 'textarea', dataverseType: 'memo', ...(/(?:source|copy|customjavascript|customcss)$/.test(name) ? { editorRows: 12 } : {}) };
   return { type: 'text', dataverseType: 'nvarchar' };
 };
 
@@ -88,6 +88,10 @@ export function powerPagesTables(portal, metadata = {}) {
     fields[nameColumn].isPrimaryName = true;
     fields.statecode = { name: 'statecode', label: 'Status', type: 'number', dataverseType: 'state', options: [{ value: 0, label: 'Active' }, { value: 1, label: 'Inactive' }] };
     Object.assign(fields, metadata.entities?.[entity]?.fields);
+    // These documented portal columns contain editable source, rather than a
+    // standard memo field. Keep the management editor spacious when metadata
+    // replaces the projected column definition.
+    for (const name of ['source', 'copy', 'customjavascript', 'customcss']) if (fields[prefix + name]?.type === 'textarea') fields[prefix + name].editorRows ??= 12;
     if (kind !== 'website' && fields[prefix + 'websiteid']) fields[prefix + 'websiteid'].defaultValue = primaryWebsiteId;
     tables[entity] = { entity, kind, label: plural, singular: plural === 'Websites' ? 'Website' : plural.replace(/s$/, ''),
       entitySet: metadata.entities?.[entity]?.entitySet,
