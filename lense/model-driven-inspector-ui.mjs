@@ -87,8 +87,8 @@ export function modelDrivenInspectorUi(data) {
   };
   root.addEventListener('click', event => {
     const action = event.target.closest?.('[data-action]')?.dataset.action;
-    if (action === 'panel') { opened = !opened; if (!opened) picking = false; render(); if (opened) refresh(); }
-    if (action === 'pick') { pick(!picking); if (picking) refresh(); }
+    if (action === 'panel') { host.__paqModelActions?.close(); opened = !opened; if (!opened) picking = false; render(); if (opened) refresh(); }
+    if (action === 'pick') { host.__paqModelActions?.close(); pick(!picking); if (picking) refresh(); }
     if (action === 'close') { opened = false; picking = false; render(); }
     if (action === 'refresh') refresh();
   }, { signal: lifetime.signal });
@@ -109,11 +109,11 @@ export function modelDrivenInspectorUi(data) {
   }, { capture: true, passive: false, signal: lifetime.signal });
   window.addEventListener('keydown', event => {
     if (event.key === 'Escape' && picking) { event.preventDefault(); event.stopImmediatePropagation(); pick(false); }
-    if (event.altKey && event.shiftKey && event.code === 'KeyX') { event.preventDefault(); pick(!picking); if (picking) refresh(); }
+    if (event.altKey && event.shiftKey && event.code === 'KeyX') { event.preventDefault(); host.__paqModelActions?.close(); pick(!picking); if (picking) refresh(); }
     if (picking && !event.ctrlKey && !own(event) && ['Enter', ' '].includes(event.key)) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, { capture: true, signal: lifetime.signal });
   window.addEventListener('scroll', schedule, { capture: true, passive: true, signal: lifetime.signal });
   window.addEventListener('resize', schedule, { passive: true, signal: lifetime.signal });
-  host.__paqModelInspector = { token: data.token, update(next) { current = next; render(); }, dispose() { disposed = true; lifetime.abort(); if (frame) cancelAnimationFrame(frame); selected = null; host.remove(); } };
+  host.__paqModelInspector = { token: data.token, update(next) { current = next; render(); }, closePanel() { opened = false; picking = false; render(); }, dispose() { disposed = true; host.__paqModelWatch?.dispose?.(); host.__paqModelActions?.dispose(); host.__paqModelCommands?.dispose?.(); lifetime.abort(); if (frame) cancelAnimationFrame(frame); selected = null; host.remove(); } };
   render();
 }

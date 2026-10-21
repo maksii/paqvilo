@@ -11,6 +11,7 @@ const DOCUMENTATION_ASSETS = new Set([
 ]);
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
+const LENSE_ACTION_LICENSE = 'lense/LICENSE-levelup.txt';
 const SETUP_ASSETS = new Set(['lense/setup/index.html', 'lense/setup/style.css']);
 const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'catalogue.mjs', 'control-descriptors.mjs', 'controls.mjs', 'controls.css', 'choice-control.mjs', 'date-control.mjs', 'date-control.css', 'duration-control.mjs', 'duration-control.css', 'lookup-control.mjs', 'lookup-dialog.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'providers.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
 // Reusable campaign sources only. Native recordings, configuration snapshots,
@@ -78,6 +79,8 @@ export const PROJECT_TEMPLATE_FILES = [
 export const REQUIRED_RELEASE_FILES = [
   'lense/model-driven.mjs', 'lense/commands/model-driven.mjs',
   'lense/model-driven-inspection.mjs', 'lense/model-driven-inspector.mjs', 'lense/model-driven-inspector-ui.mjs',
+  'lense/model-driven-actions.mjs', 'lense/model-driven-action-runner.mjs', 'lense/model-driven-actions-ui.mjs',
+  'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', LENSE_ACTION_LICENSE, 'docs/model-driven-actions.md',
   ...MODEL_DRIVEN_FILES, 'mirage/docs/model-driven-apps.md',
   'lense/standalone-mirage.mjs', 'mirage/lib/standalone-runtime.mjs',
   'mirage/lib/dataverse-organization.mjs', 'mirage/lib/runtime-config.mjs',
@@ -157,7 +160,7 @@ export function validateReleaseFiles(files) {
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !MODEL_DRIVEN_FILES.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !MODEL_DRIVEN_FILES.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && name !== LENSE_ACTION_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }

@@ -4,7 +4,7 @@
 
 Lense provides Power Pages-aware resource overrides for pro-code development. Preview local JavaScript, CSS, images and supported literal HTML edits on a live site; the online backend continues to run Liquid and Dataverse.
 
-For model-driven apps, use the explicit [Solution resource overlay mode](../mirage/docs/model-driven-customizations.md#preview-the-same-code-with-lense). It maps exported JavaScript, PCF bundles and styles to the selected environment's observed resource paths, with applied-response evidence, reload on save, a model-driven X-ray inspector and the shared bounded agent/debugger workflow. Power Pages keeps the source and Liquid inspection described below.
+For model-driven apps, use the explicit [Solution resource overlay mode](../mirage/docs/model-driven-customizations.md#preview-the-same-code-with-lense). It maps exported JavaScript, PCF bundles and styles to the selected environment's observed resource paths, with applied-response evidence, reload on save, a model-driven X-ray inspector and the shared bounded agent/debugger workflow. The [Actions panel](model-driven-actions.md) adds native inspection, navigation, form workflows, diagnostics, request identity and custom commands alongside the app. Power Pages keeps the source and Liquid inspection described below.
 
 If you use Fiddler AutoResponder or browser DevTools Local Overrides, Lense adds export-based mappings, record and field identity, Git baseline comparisons and live reload. See the [workflow comparison](../README.md#beyond-fiddler-and-devtools-overrides).
 

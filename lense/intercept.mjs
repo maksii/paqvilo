@@ -183,7 +183,7 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
 
 function makeRoute({ cdp, context, page, event, isMainDocument }) {
   const { requestId, request } = event;
-  let fetched = false;
+  let fetched = false, headersChanged = false;
   const responses = new Set();
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const send = (method, params) => {
@@ -206,6 +206,12 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
   };
   const route = {
     answered: false,
+    /** An opt-in owned developer tool may add a validated request header. */
+    setRequestHeader(name, value) {
+      if (route.answered || fetched) throw new Error('Request headers are already sent');
+      if (!/^[!#$%&'*+.^_`|~\w-]+$/.test(name) || typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new Error('Invalid request header');
+      headers[name.toLowerCase()] = value; headersChanged = true;
+    },
     request: () => ({
       postData,
       url: () => request.url + (request.urlFragment ?? ''),
@@ -276,7 +282,7 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       });
     },
     /** Lets the request go to the online portal untouched. */
-    fallback: () => fetched && !SAFE_METHODS.has(request.method) ? route.abort() : send('Fetch.continueRequest', {}),
+    fallback: () => fetched && !SAFE_METHODS.has(request.method) ? route.abort() : send('Fetch.continueRequest', headersChanged ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) } : {}),
     abort: () => send('Fetch.failRequest', { errorReason: 'Aborted' }),
     disposeResponses: async () => {
       await Promise.allSettled([...responses].map((response) => response.dispose?.()));

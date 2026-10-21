@@ -91,7 +91,7 @@ async function runModelDriven(args, action, progress) {
     page = attached ? await context.newPage() : context.pages()[0] ?? await context.newPage();
     page.once('close', stop);
     progress?.phase('interception and inspector setup');
-    release = await interceptOrigin(context, origin, route => overlay.handle(route), { bypassCSP: cfg.browser.bypassCSP, ownsPage: candidate => candidate === page, onError });
+    release = await interceptOrigin(context, origin, route => { inspector?.prepareRequest(route); return overlay.handle(route); }, { bypassCSP: cfg.browser.bypassCSP, ownsPage: candidate => candidate === page, onError });
     inspector = await startModelDrivenInspector({ context, page, overlay, cfg, imported, attached, stop,
       runtime: { watching: !args['no-reload'], debugPort: debugPort ?? null } });
     if (!args['no-reload']) {

@@ -56,7 +56,7 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   const host = page.locator('#paqvilo-model-inspector'); await host.waitFor();
   await page.getByRole('button', { name: 'Model-driven developer panel' }).click();
   await page.getByRole('button', { name: 'X-ray', exact: true }).click();
-  await page.locator('input').click();
+  await page.locator('input[data-id]').click();
   await page.getByText('Current native form ID matched: Invented main', { exact: true }).waitFor();
   const details = await host.innerText(); // Shadow text intentionally requires an explicit shadow query below.
   assert.equal(details.includes('FORM_VALUE_MUST_NOT_LEAK'), false);

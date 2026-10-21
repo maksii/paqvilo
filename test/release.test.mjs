@@ -33,9 +33,12 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
   }
   assert.throws(() => validateReleaseFiles(required.slice(1)), /Required release file/);
   for (const requiredPath of ['mirage/lib/model-driven/icons.mjs', 'mirage/lib/model-driven/control-descriptors.mjs',
-    'mirage/lib/model-driven/providers.mjs', 'mirage/lib/standalone-runtime.mjs', 'mirage/docs/standalone-organization.md'])
+    'mirage/lib/model-driven/providers.mjs', 'mirage/lib/standalone-runtime.mjs', 'mirage/docs/standalone-organization.md',
+    'lense/model-driven-actions.mjs', 'lense/model-driven-action-runner.mjs', 'lense/model-driven-actions-ui.mjs',
+    'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', 'lense/LICENSE-levelup.txt', 'docs/model-driven-actions.md'])
     assert.throws(() => validateReleaseFiles(required.filter(file => file.path !== requiredPath)), /Required release file/);
   for (const file of ['mirage/lib/model-driven/unreviewed.mjs', 'mirage/lib/model-driven/reference.json', 'mirage/lib/model-driven/screenshot.png']) assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
+  assert.throws(() => validateReleaseFiles([...required, { path: 'lense/LICENSE-unreviewed.txt' }]), /Unexpected release file/);
   for (const file of ['examples/company-operations/.paqvilo/dataverse/connection.json','examples/company-operations/.paqvilo/dataverse/remote-plan.json','lense/dataverse/private-credential.json','examples/company-operations/plugins/bin/QueryObservation.dll','examples/company-operations/plugins/obj/assets.json','examples/company-operations/forms/native-live-export.xml','examples/company-operations/portal-security/actual-tester-overlay.json','examples/company-operations/portal-harness/native-capture.json','examples/company-operations/portal-harness/native-connection.mjs','examples/company-operations/plugins/mirage-native-captures.json']) {
     assert.throws(()=>validateReleaseFiles([...required,{path:file}]),/Unexpected release file/);
   }
