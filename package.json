@@ -80,6 +80,7 @@
     "check": "node scripts/check.mjs && npm run check:boundary",
     "validate": "npm run check && npm test && npm run test:example && npm run test:company && npm run test:browser && npm run test:company:browser && npm --prefix mirage run validate && npm run release:check",
     "release:check": "node scripts/release-check.mjs",
+    "preview:cleanup": "node scripts/preview-retention.mjs",
     "release:smoke": "node scripts/package-smoke.mjs",
     "ci:evidence": "node scripts/collect-evidence.mjs",
     "demo": "node scripts/demo.mjs",

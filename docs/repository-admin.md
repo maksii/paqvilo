@@ -56,6 +56,12 @@ Before publishing, inspect CI/security findings, install the packed package into
 project, and check the release notes and upgrade instructions. After publication, verify
 the exact npm version and channel. Preview builds must leave `latest` unchanged.
 
+Run the [local preview cleanup](branch-packages.md#preview-retention) after publishing previews
+or a stable release. It preserves primary releases, keeps the latest three unreleased previews
+globally, and retires previews covered by a stable release. Apply cleanup interactively with
+your npm login and npm's manual two-factor approval. Publishing stays on trusted publishing;
+there is no GitHub cleanup workflow or maintenance token.
+
 ## Website
 
 `npm run site:build` builds the static website and checks its local links. Pages builds
