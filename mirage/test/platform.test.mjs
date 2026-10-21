@@ -70,6 +70,32 @@ test("lookup views follow exact XML paging cookies and fail explicitly on incomp
   );
 });
 
+test('lookup pagination strips only root paging attributes and preserves quoted contents and authored XML', async () => {
+  const calls = [], suffix = '<entity name="term"><filter><condition attribute="name" operator="eq" value="page"/></filter></entity></FETCH>';
+  const xml = `<?xml version="1.0"?><FETCH count = '5' note="keep > page='91' paging-cookie='nested'" data-page="77" PAGE = '3' paging-cookie = "old &quot;cookie&quot;" distinct="true">${suffix}`;
+  const rows = await readLookupView(xml, { fetchXml: async value => {
+    calls.push(value);
+    return calls.length === 1 ? { value: [{ id: 'first' }], more_records: true, paging_cookie: '<cookie page="3"/>' } : { value: [{ id: 'second' }], more_records: false };
+  } });
+  assert.deepEqual(rows.map(row => row.id), ['first', 'second']);
+  assert.equal(calls[0], xml);
+  assert.equal(calls[1], `<?xml version="1.0"?><FETCH count = '5' note="keep > page='91' paging-cookie='nested'" data-page="77" distinct="true" page="4" paging-cookie="&lt;cookie page=&quot;3&quot;/&gt;">${suffix}`);
+});
+
+test('lookup root parsing handles adversarial whitespace and rejects unterminated quoted roots before querying', async () => {
+  const calls = [], spaces = ' '.repeat(250000);
+  const xml = `<fetch${spaces}count="5" page="2"><entity name="term"/></fetch>`;
+  await readLookupView(xml, { fetchXml: async value => {
+    calls.push(value);
+    return calls.length === 1 ? { entities: [{ id: 'first' }], more_records: true, paging_cookie: 'next' } : { entities: [], more_records: false };
+  } });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1], `<fetch${spaces}count="5" page="3" paging-cookie="next"><entity name="term"/></fetch>`);
+  const forbidden = { fetchXml: async () => { assert.fail('Malformed lookup roots must not query the provider.'); } };
+  await assert.rejects(readLookupView('<fetch paging-cookie="' + ' <fetch page=\'2\''.repeat(16000) + '>', forbidden), /complete FetchXML root/);
+  await assert.rejects(readLookupView('<fetch' + spaces, forbidden), /complete FetchXML root/);
+});
+
 test("readonly and hidden lookup bindings do not query inaccessible lookup choices", async () => {
   const formConfig = (html) =>
   JSON.parse(/<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(html)[1]);

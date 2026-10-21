@@ -6,6 +6,24 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 
+test('lazy metadata rejects inherited table identities before making a metadata request', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(), metadata = [], errors = [];
+  await page.addInitScript(() => {
+    Object.defineProperty(Object.prototype, 'metadata', { value: 'lazy', configurable: true, writable: true });
+    Object.defineProperty(Object.prototype, 'x_inherited', { value: { metadata: 'lazy' }, configurable: true });
+  });
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/_apps/api/metadata/')) metadata.push(request.url()); });
+  page.on('pageerror', error => errors.push(error.message));
+  for (const entity of ['__proto__', 'constructor', 'toString', 'x_inherited']) {
+    await page.goto(origin + '/main.aspx?appname=x_example&etn=' + encodeURIComponent(entity));
+    await page.getByRole('status').filter({ hasText: 'No table metadata is available' }).waitFor();
+    assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'error');
+  }
+  assert.deepEqual(metadata, []); assert.deepEqual(errors, []);
+});
+
 test('form-only overlays retain the trusted Xrm CRUD/query round trip with bounded lazy metadata requests', async t => {
   const fixture = await modelDrivenFixture(t, { stateFile: null }); await fixture.sim.close();
   await fs.unlink(path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml'));

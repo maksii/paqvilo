@@ -95,15 +95,42 @@ for (const kind of ['template', 'snippet']) test(`current page markup keeps over
     assert.ok(found.matches.filter(item => item.depth === 0).every(item => !item.strong), label);
     assert.equal((await identify('#active-next')).title, 'Active wizard', label);
     const rect = await page.locator('.alert').boundingBox();
-    await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('.alert')));
-    await page.locator('#paqvilo-xray .selected').waitFor({ state: 'visible' });
-    const highlight = await page.locator('#paqvilo-xray .selected').boundingBox();
+    const highlight = await page.evaluate(() => {
+      const host = document.getElementById('paqvilo-xray'); host.__px.select(document.querySelector('.alert'));
+      return host.shadowRoot.querySelector('.selected')?.getBoundingClientRect().toJSON();
+    });
     assert.ok(highlight); for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(rect[key] - highlight[key]) <= 2, `${label}: ${key}`);
     const text = await page.locator('#paqvilo-xray .content').innerText();
     assert.match(text, /Current page/); assert.match(text, /Inactive source/);
   }
   const button = await page.locator('#active-next').boundingBox();
   await page.mouse.click(button.x + button.width / 2, button.y + button.height / 2);
+  assert.equal(await page.evaluate(() => window.activated), undefined);
+});
+
+test('selection outlines exist before notification and retain their node across observer and animation paints', async t => {
+  const { page } = await fixture(t, '<button id="moving" style="margin:100px" onclick="window.activated=true">Move</button>', {});
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById('paqvilo-xray'), node = document.getElementById('moving');
+    let notifiedWithOutline = false;
+    host.addEventListener('paqvilo-xray', event => { if (event.detail.action === 'selected') notifiedWithOutline = Boolean(host.shadowRoot.querySelector('.selected')); });
+    host.__px.select(node);
+    const outline = host.shadowRoot.querySelector('.selected');
+    if (!outline) return { notifiedWithOutline, stable: false };
+    node.classList.add('changed');
+    const animation = node.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(100px)' }], { duration: 100, fill: 'forwards' });
+    let stable = true;
+    for (let frame = 0; frame < 8; frame++) {
+      await new Promise(requestAnimationFrame);
+      stable &&= outline.isConnected && host.shadowRoot.querySelector('.selected') === outline;
+    }
+    await animation.finished;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return { notifiedWithOutline, stable, target: node.getBoundingClientRect().toJSON(), outline: outline.getBoundingClientRect().toJSON() };
+  });
+  assert.equal(result.notifiedWithOutline, true); assert.equal(result.stable, true);
+  for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(result.target[key] - result.outline[key]) <= 2, key);
+  const target = result.target; await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
   assert.equal(await page.evaluate(() => window.activated), undefined);
 });
 

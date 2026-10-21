@@ -58,10 +58,14 @@ async function api(path = '', options = {}) {
   return body;
 }
 async function ensureMetadata(entity, { signal } = {}) {
-  const owner = catalogue, candidate = owner.tables[entity];
+  const owner = catalogue;
+  if (!Object.hasOwn(owner.tables, entity)) return undefined;
+  const candidate = owner.tables[entity];
   if (!candidate || candidate.metadata !== 'lazy') return candidate;
   const result = await api('/metadata/' + encodeURIComponent(entity), { signal });
-  if (owner === catalogue) owner.tables[entity] = result;
+  // Only replace an imported own entry; defining its data property cannot invoke
+  // an inherited setter for a route- or client-supplied table name.
+  if (owner === catalogue) Object.defineProperty(owner.tables, entity, { value: result, writable: true, enumerable: true, configurable: true });
   return result;
 }
 async function staffRequest(options = {}) {

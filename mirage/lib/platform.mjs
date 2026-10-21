@@ -51,15 +51,8 @@ const escape = (value) =>
 
 /** Complete an exported lookup view without silently dropping later pages. */
 export async function readLookupView(fetchXml, readProvider, identity) {
-  const root = /<fetch\b([^>]*)>/i.exec(fetchXml);
-  if (!root) throw new Error("Lookup view requires a FetchXML root.");
-  const initialPage = Number(
-    /\bpage\s*=\s*["'](\d+)["']/i.exec(root[1])?.[1] ?? 1,
-  );
-  const baseAttributes = root[1].replace(
-    /\s+(?:page|paging-cookie)\s*=\s*(["'])[\s\S]*?\1/gi,
-    "",
-  );
+  const root = lookupFetchRoot(fetchXml);
+  const { initialPage, baseAttributes } = root;
   const rows = [],
     cookies = new Set();
   let xml = fetchXml;
@@ -85,15 +78,59 @@ export async function readLookupView(fetchXml, readProvider, identity) {
         { status: 501, code: "LOOKUP_VIEW_PAGING_UNRESOLVED" },
       );
     cookies.add(cookie);
-    xml = fetchXml.replace(
-      root[0],
-      `<fetch${baseAttributes} page="${page + 1}" paging-cookie="${escape(cookie)}">`,
-    );
+    xml = fetchXml.slice(0, root.start) +
+      `${root.tag}${baseAttributes} page="${page + 1}" paging-cookie="${escape(cookie)}">` +
+      fetchXml.slice(root.end);
   }
   throw Object.assign(
     new Error("Lookup view exceeds the bounded 100-page limit."),
     { status: 501, code: "LOOKUP_VIEW_LIMIT" },
   );
+}
+
+// Walk each attribute once. A global whitespace/backreference expression can
+// repeatedly rescan a long missing quote or whitespace run. Quoted values also
+// must stay opaque: text such as ` page='2'` inside another value is not paging.
+function lookupFetchRoot(xml) {
+  const match = /<fetch\b/i.exec(xml);
+  if (!match) throw new Error("Lookup view requires a FetchXML root.");
+  const start = match.index, attributesStart = start + match[0].length;
+  let end = attributesStart, quote = '';
+  for (; end < xml.length; end++) {
+    const char = xml[end];
+    if (quote) { if (char === quote) quote = ''; }
+    else if (char === '"' || char === "'") quote = char;
+    else if (char === '>') break;
+  }
+  if (end === xml.length) throw new Error("Lookup view requires a complete FetchXML root.");
+  const attributes = xml.slice(attributesStart, end), parts = [];
+  let at = 0, copied = 0, initialPage;
+  while (at < attributes.length) {
+    const whitespace = at;
+    while (at < attributes.length && /\s/.test(attributes[at])) at++;
+    const nameStart = at;
+    while (at < attributes.length && /[\w:.-]/.test(attributes[at])) at++;
+    if (at === nameStart) { at++; continue; }
+    const name = attributes.slice(nameStart, at).toLowerCase();
+    while (at < attributes.length && /\s/.test(attributes[at])) at++;
+    if (attributes[at] !== '=') continue;
+    at++; while (at < attributes.length && /\s/.test(attributes[at])) at++;
+    const delimiter = attributes[at];
+    if (delimiter !== '"' && delimiter !== "'") {
+      while (at < attributes.length && !/\s/.test(attributes[at])) at++;
+      continue;
+    }
+    const valueStart = ++at;
+    while (at < attributes.length && attributes[at] !== delimiter) at++;
+    if (at === attributes.length) break;
+    const value = attributes.slice(valueStart, at++);
+    if (name === 'page' || name === 'paging-cookie') {
+      parts.push(attributes.slice(copied, whitespace)); copied = at;
+      if (name === 'page' && initialPage === undefined && /^\d+$/.test(value)) initialPage = Number(value);
+    }
+  }
+  parts.push(attributes.slice(copied));
+  return { start, end: end + 1, tag: match[0], initialPage: initialPage ?? 1, baseAttributes: parts.join('') };
 }
 
 /** Power Pages view controls substitute context-marked conditions at any depth. */
