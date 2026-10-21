@@ -37,6 +37,11 @@ export function renderDuration(field, initialValue, context = {}) {
     return { next, valid: !message };
   };
   const markActive = () => { for (const [index, node] of [...list.children].entries()) { node.classList.toggle('active', index === active); node.setAttribute('aria-selected', String(choices[index] === value)); } if (!list.hidden && active >= 0) primary.setAttribute('aria-activedescendant', `${list.id}-${active}`); else primary.removeAttribute('aria-activedescendant'); };
+  const revealActive = () => {
+    const row = list.children[active]?.getBoundingClientRect(), viewport = list.getBoundingClientRect();
+    if (row?.top < viewport.top) list.scrollTop -= viewport.top - row.top;
+    else if (row?.bottom > viewport.bottom) list.scrollTop += row.bottom - viewport.bottom;
+  };
   const close = (focus = false) => { list.hidden = true; primary.setAttribute('aria-expanded', 'false'); primary.removeAttribute('aria-activedescendant'); lifetime?.abort(); if (focus && alive && !primary.disabled) primary.focus(); };
   const commit = (show = true) => { const state = validate(show); if (state.valid) { if (edited) preserveText = state.next === value; value = state.next; edited = false; primary.value = preserveText ? primary.value.trim() : formatDuration(value); } return state; };
   const choose = next => { if (!alive || primary.disabled || reason(next)) return; value = next; edited = false; preserveText = false; primary.value = formatDuration(next); validate(true); close(true); primary.dispatchEvent(new Event('input', { bubbles: true })); primary.dispatchEvent(new Event('change', { bubbles: true })); edited = false; };
@@ -48,7 +53,9 @@ export function renderDuration(field, initialValue, context = {}) {
     const isAbove = below < Math.min(450, list.scrollHeight) && above > below; list.classList.toggle('above', isAbove); list.style.maxHeight = `${Math.max(80, Math.min(450, (isAbove ? above : below) - 8))}px`; markActive();
     lifetime = new AbortController(); document.addEventListener('pointerdown', event => { if (!element.contains(event.target)) close(); }, { signal: lifetime.signal });
     element.addEventListener('focusout', event => { if (!element.contains(event.relatedTarget)) close(); }, { signal: lifetime.signal });
-    list.children[active]?.scrollIntoView({ block: 'nearest' });
+    window.addEventListener('resize', () => close(), { signal: lifetime.signal });
+    window.addEventListener('scroll', event => { if (!list.contains(event.target)) close(); }, { capture: true, signal: lifetime.signal });
+    revealActive();
   };
   for (const [index, minutes] of choices.entries()) {
     const option = document.createElement('div'); option.id = `${list.id}-${index}`; option.setAttribute('role', 'option'); option.textContent = formatDuration(minutes); option.setAttribute('aria-disabled', String(Boolean(reason(minutes))));
@@ -63,7 +70,7 @@ export function renderDuration(field, initialValue, context = {}) {
     else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && (!list.hidden || event.key.startsWith('Arrow'))) {
       event.preventDefault(); const wasClosed = list.hidden; open();
       const enabled = choices.flatMap((value, index) => reason(value) ? [] : [index]), position = enabled.indexOf(active);
-      active = event.key === 'Home' ? enabled[0] : event.key === 'End' ? enabled.at(-1) : enabled[Math.max(0, Math.min(enabled.length - 1, position + (wasClosed ? 0 : event.key === 'ArrowDown' ? 1 : -1)))]; markActive(); list.children[active]?.scrollIntoView({ block: 'nearest' });
+      active = event.key === 'Home' ? enabled[0] : event.key === 'End' ? enabled.at(-1) : enabled[Math.max(0, Math.min(enabled.length - 1, position + (wasClosed ? 0 : event.key === 'ArrowDown' ? 1 : -1)))]; markActive(); revealActive();
     } else if (event.key === 'Enter') { if (!list.hidden) { event.preventDefault(); if (choices[active] !== undefined) choose(choices[active]); } else commit(); }
   });
   trigger.addEventListener('pointerdown', event => event.preventDefault()); trigger.addEventListener('click', () => { primary.focus(); if (list.hidden) open(); else close(); });

@@ -94,10 +94,12 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   await columns.getByRole('button', { name: 'Add columns', exact: true }).click();
   const addColumns = page.getByRole('dialog', { name: 'Add columns', exact: true });
   assert.equal(await addColumns.evaluate(node => node.getBoundingClientRect().width), 340);
+  assert.equal(await addColumns.locator('.add-column-search>.icon-search').count(), 1);
   await addColumns.getByRole('searchbox', { name: 'Search columns' }).fill('Quantity');
   await addColumns.getByRole('button', { name: 'Quantity', exact: true }).click();
   await page.keyboard.press('Escape');
   assert.equal(await columns.isVisible(), true, 'Escape closes the child column browser first');
+  assert.equal(await columns.getByRole('button', { name: 'Add columns', exact: true }).evaluate(node => document.activeElement === node), true);
   assert.equal(await columns.getByRole('button', { name: 'Apply', exact: true }).isDisabled(), true, 're-adding the same last column restores the original draft');
   await columns.getByRole('button', { name: 'Cancel', exact: true }).click();
   const nameHeader = page.locator('thead').getByRole('button', { name: /^Name/ });
@@ -124,6 +126,54 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   await gridChange(() => page.getByRole('button', { name: 'Apply', exact: true }).click());
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Silver', exact: true }).count(), 0);
+});
+
+test('filter drawer uses typed scalar values, literal contains, null conditions and isolated drafts', async t => {
+  const fixture = await modelDrivenFixture(t); await fixture.sim.close();
+  const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
+  const labels = label => `<displaynames><displayname description="${label}" languagecode="1033"/></displaynames>`;
+  const option = (value, label) => `<option value="${value}"><labels><label description="${label}" languagecode="1033"/></labels></option>`;
+  const attributes = `<attribute PhysicalName="x_available"><Name>x_available</Name><Type>bit</Type>${labels('Available')}<optionset Name="x_available"><options>${option(0, 'Unavailable')}${option(1, 'Available')}</options></optionset></attribute><attribute PhysicalName="x_stage"><Name>x_stage</Name><Type>picklist</Type>${labels('Stage')}<optionset Name="x_stage"><options>${option(3, 'Routine')}${option(7, 'Urgent')}</options></optionset></attribute><attribute PhysicalName="x_due"><Name>x_due</Name><Type>datetime</Type><Format>dateonly</Format><DateTimeBehavior>DateOnly</DateTimeBehavior>${labels('Due date')}</attribute>`;
+  await fs.writeFile(entityFile, (await fs.readFile(entityFile, 'utf8')).replace('</attributes>', attributes + '</attributes>'));
+  const sim = await fixture.start(); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
+  for (const [x_name, x_available, x_stage, x_quantity] of [['Literal %_[box]', false, 3, 3], ['Ready for review', true, 7, 6]]) {
+    const response = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name, x_available, x_stage, x_quantity, x_due: '2026-04-12' }) }); assert.equal(response.status, 201, await response.clone().text());
+  }
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } }); page.setDefaultTimeout(5000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item'); await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  const drawer = page.getByRole('dialog', { name: /^Edit filters:/ });
+  const field = async name => { await drawer.getByRole('button', { name: 'Filter 1 column', exact: true }).click(); await page.getByRole('menuitemradio', { name, exact: true }).click(); };
+  const operator = async name => { await drawer.getByRole('button', { name: 'Filter 1 operator', exact: true }).click(); await page.getByRole('menuitemradio', { name, exact: true }).click(); };
+  const apply = async expected => {
+    const request = page.waitForRequest(request => request.method() === 'GET' && new URL(request.url()).pathname === '/_apps/api/tables/x_item');
+    await drawer.getByRole('button', { name: 'Apply', exact: true }).click();
+    assert.deepEqual(JSON.parse(new URL((await request).url()).searchParams.get('query')).filters[0], expected);
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+  };
+  await page.getByRole('button', { name: 'Edit filters', exact: true }).click(); await drawer.getByRole('button', { name: 'Add condition' }).click(); await operator('Contains');
+  await drawer.getByLabel('Filter 1 value').fill('%_[box]'); await apply({ field: 'x_name', operator: 'contains', value: '%_[box]' });
+  assert.equal(await page.locator('tbody tr').count(), 1); await page.getByRole('button', { name: 'Literal %_[box]', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Edit filters', exact: true }).click(); assert.equal(await drawer.getByLabel('Filter 1 value').inputValue(), '%_[box]');
+  await field('Quantity'); assert.equal(await drawer.getByRole('spinbutton', { name: 'Filter 1 value' }).count(), 1); await operator('Greater than'); await drawer.getByLabel('Filter 1 value').fill('4');
+  await apply({ field: 'x_quantity', operator: 'gt', value: 4 }); assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).count(), 0); await page.getByRole('button', { name: 'Silver', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Edit filters', exact: true }).click(); await field('Available');
+  assert.equal(await drawer.getByRole('button', { name: 'Filter 1 operator' }).textContent(), 'Equals');
+  await drawer.getByRole('combobox', { name: 'Filter 1 value' }).click(); await page.getByRole('option', { name: 'Unavailable', exact: true }).click();
+  await apply({ field: 'x_available', operator: 'eq', value: 0 }); await page.getByRole('button', { name: 'Literal %_[box]', exact: true }).waitFor(); assert.equal(await page.locator('tbody tr').count(), 1);
+  await page.getByRole('button', { name: 'Edit filters', exact: true }).click(); assert.equal(await drawer.getByRole('combobox', { name: 'Filter 1 value' }).inputValue(), 'Unavailable');
+  await field('Stage'); const choice = drawer.getByRole('combobox', { name: 'Filter 1 value' });
+  await drawer.getByRole('button', { name: 'Apply', exact: true }).click(); assert.equal(await drawer.isVisible(), true, 'an empty choice cannot silently become a raw empty-string query');
+  await choice.click(); await page.getByRole('option', { name: 'Urgent', exact: true }).click(); await apply({ field: 'x_stage', operator: 'eq', value: 7 }); await page.getByRole('button', { name: 'Ready for review', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Edit filters', exact: true }).click(); await operator('Does not contain data'); assert.equal(await drawer.getByRole('combobox', { name: 'Filter 1 value' }).isDisabled(), true);
+  await drawer.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit filters', exact: true }).click(); assert.equal(await drawer.getByRole('button', { name: 'Filter 1 operator' }).textContent(), 'Equals'); assert.equal(await drawer.getByRole('combobox', { name: 'Filter 1 value' }).inputValue(), 'Urgent');
+  await field('Due date'); const date = drawer.getByRole('combobox', { name: 'Filter 1 value', exact: true }); await date.fill('incomplete');
+  await drawer.getByRole('button', { name: 'Apply', exact: true }).click(); assert.equal(await drawer.isVisible(), true); assert.equal(await date.evaluate(node => node.checkValidity()), false);
+  await date.fill('4/12/2026'); await date.press('Tab'); assert.equal(await date.evaluate(node => node.checkValidity()), true);
+  await field('Stage'); await drawer.getByRole('combobox', { name: 'Filter 1 value' }).click(); assert.equal(await page.getByRole('listbox').isVisible(), true);
+  await drawer.getByRole('button', { name: 'Close', exact: true }).click(); assert.equal(await page.getByRole('listbox').count(), 0, 'closing the drawer disposes the active value popup');
+  assert.deepEqual(errors, []);
 });
 
 test('new required owner controls default to the active organization staff principal', async t => {

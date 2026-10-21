@@ -8,6 +8,18 @@ import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
 import { compileForm, parseAppDefinitions } from '../lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../lib/solution-xml.mjs';
+import { columnIcon } from '../lib/model-driven/icons.mjs';
+
+test('column browser glyphs retain source Boolean, choice, lookup, money, file and image identities', () => {
+  const types = [
+    [{ type: 'boolean' }, 'booleanColumn'], [{ type: 'number', options: [] }, 'choiceColumn'],
+    [{ type: 'number', dataverseType: 'int' }, 'numericColumn'], [{ type: 'number', dataverseType: 'money' }, 'moneyColumn'],
+    [{ type: 'lookup', dataverseType: 'owner' }, 'person'], [{ type: 'lookup' }, 'lookupColumn'],
+    [{ type: 'text', dataverseType: 'file' }, 'help'], [{ type: 'text', dataverseType: 'image' }, 'imageColumn'],
+    [{ type: 'date' }, 'calendar'], [{ type: 'textarea' }, 'text'],
+  ];
+  for (const [field, expected] of types) assert.equal(columnIcon(field), expected);
+});
 
 test('application cards retain exported localized descriptions and icon identities', () => {
   const source = parseSolutionXml('<AppModule><UniqueName>x_inventory</UniqueName><Descriptions><Description description="Invented inventory" languagecode="1033"/><Description description="Invented translated inventory" languagecode="1036"/></Descriptions><WebResourceId>{77777777-7777-4777-8777-777777777777}</WebResourceId></AppModule>');
@@ -82,6 +94,23 @@ test('grid runs saved FetchXML with search, filters, columns, sorting and paging
   const raw = await list({ scope: 'table', columns: ['x_name'], filters: [{ field: 'x_quantity', operator: 'eq', value: 0 }] });
   assert.equal(raw.rows.length, 1); assert.equal(raw.rows[0].x_name, 'Empty', 'Client API table queries do not inherit saved-view filters.');
   const invalid = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify({ filters: [{ field: 'unknown', operator: 'eq', value: 1 }] }))); assert.equal(invalid.status, 400);
+});
+
+test('native text filter operations match literal substrings and retain explicit LIKE patterns', async t => {
+  const { origin, sim } = await modelDrivenFixture(t);
+  for (const x_name of ['Literal %_[box]', 'Literal AAbox', 'Other %_[box]']) {
+    const response = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name, x_quantity: 1 }) }); assert.equal(response.status, 201);
+  }
+  const names = async (operator, value) => {
+    const response = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify({ filters: [{ field: 'x_name', operator, value }] })));
+    assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).rows.map(row => row.x_name);
+  };
+  assert.deepEqual(await names('contains', '%_[box]'), ['Literal %_[box]', 'Other %_[box]']);
+  assert.deepEqual(await names('not-contains', '%_[box]'), ['Copper', 'Literal AAbox', 'Silver']);
+  assert.deepEqual(await names('begins-with', 'Literal %_['), ['Literal %_[box]']);
+  assert.deepEqual(await names('ends-with', '%_[box]'), ['Literal %_[box]', 'Other %_[box]']);
+  assert.deepEqual(await names('like', 'Literal %'), ['Literal %_[box]', 'Literal AAbox']);
+  assert.deepEqual(await names('not-like', 'Literal %'), ['Copper', 'Other %_[box]', 'Silver']);
 });
 
 test('local CRUD requires CSRF, validates values and rejects stale writes', async t => {

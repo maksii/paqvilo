@@ -71,3 +71,66 @@ for (const kind of ['portal', 'model-driven']) test(`Xrm queries share canonical
   assert.deepEqual(result.fetched.entities.map(row => row.x_name), ['Empty']); assert.match(result.invalid, /local imported table/);
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
 });
+
+test('saved form and Xrm edits share concurrency without overwriting either a newer row or the rejected draft', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(), errors = [], external = [], writes = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => { if (new URL(request.url()).origin !== origin) external.push(request.url()); });
+  page.on('response', response => { if (response.request().method() === 'PATCH') writes.push(response.status()); });
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', route = `/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=${id}`;
+  await page.goto(origin + route);
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  await page.getByLabel('Name', { exact: true }).fill('Form draft retained');
+  await page.evaluate(async id => { await Xrm.WebApi.online.updateRecord('x_item', id, { x_quantity: 19 }); }, id);
+  const conflict = page.waitForResponse(response => response.request().method() === 'PATCH' && response.status() === 412);
+  await page.getByRole('button', { name: 'Save', exact: true }).click(); await conflict;
+  await page.getByRole('status').filter({ hasText: /version|changed|match/i }).waitFor();
+  assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Form draft retained');
+  assert.equal(await page.getByLabel('Quantity', { exact: true }).inputValue(), '2');
+  assert.equal(await page.locator('#record-form').evaluate(node => node.inert), false);
+  assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).isEnabled(), true);
+  let saved = await (await fetch(origin + '/_apps/api/tables/x_item/' + id)).json();
+  assert.equal(saved.row.x_name, 'Copper'); assert.equal(saved.row.x_quantity, 19);
+  // A fresh document is an explicit discard of the rejected draft. The next
+  // sparse form write must retain the value changed through Xrm.
+  await page.goto(origin + route);
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  assert.equal(await page.getByLabel('Quantity', { exact: true }).inputValue(), '19');
+  await page.getByLabel('Name', { exact: true }).fill('Saved after reload');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  saved = await (await fetch(origin + '/_apps/api/tables/x_item/' + id)).json();
+  assert.equal(saved.row.x_name, 'Saved after reload'); assert.equal(saved.row.x_quantity, 19);
+  assert.deepEqual(writes, [200, 412, 200]);
+  assert.deepEqual(errors, []); assert.deepEqual(external, []);
+});
+
+test('leaving a form during Xrm ETag preflight prevents the pending update from writing afterward', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(), errors = [], methods = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const child = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', endpoint = '/_apps/api/tables/x_child/' + child;
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  let release, intercepted;
+  const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { intercepted = resolve; });
+  t.after(() => release());
+  await page.route('**' + endpoint, async route => {
+    methods.push(route.request().method());
+    if (route.request().method() === 'GET') { intercepted(); await gate; }
+    await route.continue();
+  });
+  await page.evaluate(id => { window.pendingXrmUpdate = Xrm.WebApi.updateRecord('x_child', id, { x_name: 'Disposed form must not write' }).then(() => 'unexpected success', error => error.message); }, child);
+  await started;
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  release();
+  assert.match(await page.evaluate(() => pendingXrmUpdate), /disposed/);
+  assert.deepEqual(methods, ['GET']);
+  const saved = await (await fetch(origin + endpoint)).json();
+  assert.equal(saved.row.x_name, 'Copper child');
+  assert.deepEqual(errors, []);
+});

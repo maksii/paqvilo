@@ -41,3 +41,45 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
   assert.equal(await input.getAttribute('aria-activedescendant'), null);
   assert.equal(await input.isDisabled(), true);
 });
+
+test('choice lists stay inside the form viewport and keyboard navigation scrolls only their options', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  await page.goto(origin + '/main.aspx');
+  await page.evaluate(async () => {
+    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    document.body.replaceChildren();
+    const root = document.createElement('div'); root.className = 'record-content'; root.style.cssText = 'position:absolute;inset:70px 40px 30px;overflow:auto;display:block';
+    const header = document.createElement('div'); header.className = 'record-card'; header.style.cssText = 'position:sticky;top:0;height:100px;background:white';
+    const filler = document.createElement('div'); filler.style.height = '370px';
+    const field = document.createElement('div'); field.className = 'field'; field.style.cssText = 'display:block;margin:0;height:32px';
+    window.control = renderControl({ name: 'x_rank', label: 'Rank', type: 'number', options: Array.from({ length: 40 }, (_, index) => ({ value: index, label: `Choice ${index}` })) }, 0);
+    field.append(control.element); root.append(header, filler, field); document.body.append(root);
+  });
+  const input = page.getByRole('combobox', { name: 'Rank', exact: true });
+  await input.click();
+  const geometry = () => page.evaluate(() => {
+    const root = document.querySelector('.record-content'), list = document.querySelector('.choice-options'), rect = list.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, headerBottom: root.querySelector('.record-card').getBoundingClientRect().bottom, boundary: root.getBoundingClientRect().bottom, fieldTop: control.element.getBoundingClientRect().top, scrollTop: root.scrollTop, listScroll: list.scrollTop };
+  });
+  const before = await geometry();
+  assert.ok(before.top >= before.headerBottom && before.bottom <= before.boundary, 'popup must avoid the pinned header and remain inside the form');
+  assert.equal(await page.locator('.choice-options').evaluate(node => node.classList.contains('above')), true);
+  await input.press('End');
+  const after = await geometry();
+  assert.equal(after.scrollTop, before.scrollTop); assert.equal(after.fieldTop, before.fieldTop);
+  assert.ok(after.listScroll > before.listScroll, 'End must reveal the final option inside the bounded list');
+  await input.press('Enter');
+  assert.equal(await page.evaluate(() => control.read()), 39);
+  assert.equal(await input.inputValue(), 'Choice 39');
+  await input.click(); await input.press('Home'); await input.press('Enter');
+  assert.equal(await page.evaluate(() => control.read()), null, 'the empty choice remains keyboard selectable after reopening');
+  await input.click();
+  await page.setViewportSize({ width: 980, height: 680 });
+  await page.waitForFunction(() => control.primary.getAttribute('aria-expanded') === 'false');
+  assert.equal(await input.getAttribute('aria-expanded'), 'false', 'viewport changes dismiss the obsolete popup position');
+  await input.click();
+  await page.locator('.record-content').evaluate(root => { const trailing = document.createElement('div'); trailing.style.height = '1000px'; root.append(trailing); root.scrollTop = 30; });
+  await page.waitForFunction(() => control.primary.getAttribute('aria-expanded') === 'false');
+});

@@ -114,12 +114,20 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       if (input.search) {
         if (typeof input.search !== 'string' || input.search.length > 500) throw invalid('Search is limited to 500 characters.');
         const columns = Object.keys(table.fields).filter(name => ['text', 'textarea'].includes(table.fields[name].type) && !table.fields[name].isPrimaryId);
-        if (columns.length) filter.children.push(node('filter', { type: 'or' }, columns.map(name => node('condition', { attribute: name, operator: 'like', value: `%${input.search.replace(/[\[\]%_]/g, char => `[${char}]`)}%` }))));
+        if (columns.length) filter.children.push(node('filter', { type: 'or' }, columns.map(name => node('condition', { attribute: name, operator: 'like', value: `%${input.search.replace(/[\[%_]/g, char => `[${char}]`)}%` }))));
       }
       if (input.filters !== undefined && (!Array.isArray(input.filters) || input.filters.length > 30)) throw invalid('Provide at most 30 filter conditions.');
       for (const condition of input.filters ?? []) {
-        if (!table.fields[condition.field] || !['eq', 'ne', 'like', 'not-like', 'gt', 'ge', 'lt', 'le', 'null', 'not-null'].includes(condition.operator)) throw invalid('Unsupported filter column or operator.');
-        filter.children.push(node('condition', { attribute: condition.field, operator: condition.operator, ...(!['null', 'not-null'].includes(condition.operator) ? { value: String(condition.value ?? '') } : {}) }));
+        if (!table.fields[condition.field] || !['eq', 'ne', 'like', 'not-like', 'contains', 'not-contains', 'begins-with', 'ends-with', 'gt', 'ge', 'lt', 'le', 'null', 'not-null'].includes(condition.operator)) throw invalid('Unsupported filter column or operator.');
+        let operator = condition.operator, value = String(condition.value ?? '');
+        // The native filter editor treats the typed text as a literal substring.
+        // Explicit legacy LIKE queries retain their existing pattern semantics.
+        if (['contains', 'not-contains', 'begins-with', 'ends-with'].includes(operator)) {
+          const literal = value.replace(/[\[%_]/g, char => `[${char}]`);
+          value = (operator === 'ends-with' || operator.endsWith('contains') ? '%' : '') + literal + (operator === 'begins-with' || operator.endsWith('contains') ? '%' : '');
+          operator = operator === 'not-contains' ? 'not-like' : 'like';
+        }
+        filter.children.push(node('condition', { attribute: condition.field, operator, ...(!['null', 'not-null'].includes(operator) ? { value } : {}) }));
       }
       if (filter.children.length) target.children.push(filter);
       if (input.sort) {

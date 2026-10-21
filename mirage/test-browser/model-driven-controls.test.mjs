@@ -17,7 +17,7 @@ test('model-driven choice fields preserve typed values, required validation, key
     window.changes = []; window.fields = {};
     for (const [field, value] of [
       [{ name: 'x_kind', label: 'Kind', type: 'number', required: true, options: [{ value: 3, label: 'Bronze' }, { value: 7, label: 'Gold' }] }, null],
-      [{ name: 'x_enabled', label: 'Enabled', type: 'boolean', options: [{ value: 0, label: 'Unavailable' }, { value: 1, label: 'Available' }] }, false],
+      [{ name: 'x_enabled', label: 'Enabled', type: 'boolean', options: [{ value: 1, label: 'Available' }, { value: 0, label: 'Unavailable' }] }, false],
       [{ name: 'x_tags', label: 'Tags', type: 'text', dataverseType: 'multiselectpicklist', options: [{ value: 2, label: 'Red' }, { value: 5, label: 'Blue' }] }, '2,5'],
     ]) { const control = renderControl(field, value); fields[field.name] = control; form.append(control.element); }
     form.addEventListener('change', event => changes.push(event.target.name));
@@ -30,6 +30,9 @@ test('model-driven choice fields preserve typed values, required validation, key
   assert.equal(await page.locator('form').evaluate(form => form.checkValidity()), true);
   assert.equal(await page.getByRole('combobox', { name: 'Enabled', exact: true }).inputValue(), 'Unavailable');
   assert.equal(await page.evaluate(() => fields.x_enabled.read()), false);
+  await page.getByRole('combobox', { name: 'Enabled', exact: true }).click();
+  assert.deepEqual(await page.getByRole('option').allTextContents(), ['Unavailable', 'Available'], 'native Boolean choices order false first even when the export serializes TrueOption first');
+  await page.keyboard.press('Escape');
   const tags = page.getByRole('combobox', { name: 'Tags', exact: true });
   assert.equal(await tags.inputValue(), 'Red; Blue');
   await tags.click(); await page.getByRole('option', { name: 'Red', exact: true }).click();
@@ -61,7 +64,7 @@ test('advanced lookup uses staged Done, preserves a cancelled value, queries exp
   const footerGap = await dialog.evaluate(node => node.getBoundingClientRect().bottom - node.querySelector('.dialog-actions .primary').getBoundingClientRect().bottom);
   assert.ok(footerGap >= 35 && footerGap <= 38, `Lookup footer must follow the modal bottom; gap was ${footerGap}px.`);
   assert.equal(await dialog.getByRole('button', { name: 'Done', exact: true }).isDisabled(), true);
-  assert.equal(await dialog.getByRole('button', { name: 'Lookup view', exact: true }).textContent(), 'Stocked items');
+  assert.equal(await dialog.getByRole('button', { name: 'Lookup view', exact: true }).textContent(), 'Stocked items (default)');
   await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
   assert.equal(await dialog.isVisible(), true);
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -96,6 +99,33 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
   await page.getByRole('option', { name: 'Silver', exact: true }).click();
   assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Silver');
   assert.equal(await page.getByLabel('Parent', { exact: true }).getAttribute('aria-expanded'), 'false');
+});
+
+test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+  await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: /^Choose .* for Parent$/ });
+  await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
+  const search = dialog.getByRole('searchbox', { name: 'Search lookup records' });
+  await search.fill('No matching invented record');
+  await dialog.getByRole('heading', { name: 'We don’t have any data for this view', exact: true }).waitFor();
+  assert.equal(await dialog.getByText('Please try switching to another view', { exact: true }).isVisible(), true);
+  assert.equal(await dialog.getByRole('table').count(), 0);
+  assert.equal(await dialog.getByRole('button', { name: 'Done', exact: true }).isDisabled(), true);
+  const center = await dialog.locator('.lookup-browser-empty').evaluate(node => {
+    const bounds = node.getBoundingClientRect(), title = node.querySelector('h3').getBoundingClientRect();
+    return { expected: (bounds.top + bounds.bottom) / 2, actual: (title.top + title.bottom) / 2 };
+  });
+  assert.ok(Math.abs(center.actual - center.expected) < 35, 'empty message belongs near the center of the results area');
+  await search.fill('Copper');
+  await dialog.getByRole('radio', { name: 'Select Copper', exact: true }).waitFor();
+  assert.equal(await dialog.locator('.lookup-browser-empty').count(), 0);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Copper');
 });
 
 test('lookup invalidates selection during search, ignores stale responses and settles Escape', async t => {

@@ -19,7 +19,10 @@ components embedded in `Customizations.xml`, including solution archives. Later
 selected solution layers win. Forms and saved queries come from the same metadata
 pipeline as portal forms. `main.aspx?appname=<UniqueName>&pagetype=entitylist&etn=<table>`
 opens a table; `pagetype=entityrecord&id=<record-id>` opens a record. Omit `id`
-for a new record. `appid` selects an imported app ID. Exported IDs are not inferred
+for a new record. `formid=<form-id>` selects an imported main form available to
+the selected app. Form-picker changes update that link, and saves retain the
+selected form. An unavailable form ID falls back to the app's first main form.
+`appid` selects an imported app ID. Exported IDs are not inferred
 from a live environment or a deployment commit. PAC exports can omit the app GUID;
 those apps receive a stable local GUID derived from their unique name, reported as
 `idSource: derived-local`. Use `appname` for a portable link, or the local catalogue's
@@ -31,6 +34,9 @@ GUID for `runtime.defaultApp`. A generated local GUID is not the deployed app ID
   columns, and combine filter conditions with AND. Exported FetchXML remains the
   base query, including its filters and joins. View preferences, recent items and
   pins belong to the local browser and are keyed by application/table/view.
+  Filter editors use metadata-derived choices, booleans, numbers and dates.
+  Contains, Does not contain, Begins with and Ends with treat text as literal
+  values, including percent signs and underscores.
 - Create, read, edit and delete local records. Scalar, choice, multiselect,
   boolean, date, multiline, JSON and lookup fields use a control registry.
   Choice controls expose labelled options and keyboard selection. Date-only,
@@ -38,6 +44,9 @@ GUID for `runtime.defaultApp`. A generated local GUID is not the deployed app ID
   Lookup suggestions and Advanced lookup read local target tables, including
   exported lookup views. Advanced lookup stages a selection until Done; Cancel
   leaves the field unchanged. Record updates/deletes require a current ETag.
+  A rejected stale save retains the draft. Choice, duration and lookup lists
+  scroll their own options without moving the form; scrolling the form or
+  resizing dismisses their obsolete popup position.
 - Render exported main-form tabs, sections, labels and field layouts. Missing
   forms/views get explicitly labelled metadata-generated defaults. Unsupported
   controls and script/event dependencies remain visible as limitations.

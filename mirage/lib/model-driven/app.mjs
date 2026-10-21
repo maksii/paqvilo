@@ -1,6 +1,6 @@
 import { createLookupDialog } from './lookup-dialog.mjs';
 import { renderControl, hasControl } from './controls.mjs';
-import { icon, navigationIcon } from './icons.mjs';
+import { icon, navigationIcon, columnIcon } from './icons.mjs';
 import { createFormClientRuntime, evaluateRibbonRules } from './client-runtime.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -193,15 +193,16 @@ async function confirm(title, text, yes = 'Continue') {
 }
 async function canLeave() { return !dirty || await confirm('Unsaved changes', 'Leave this record and discard your unsaved changes?', 'Discard changes'); }
 const firstEntity = application => application.navigation.flatMap(area => area.groups.flatMap(group => group.items)).find(item => item.supported && item.entity)?.entity;
-function targetUrl(entity, { id, view, application = app, defaults } = {}) {
+function targetUrl(entity, { id, view, application = app, defaults, form } = {}) {
   const params = new URLSearchParams({ appname: application.uniqueName ?? application.id, pagetype: id ? 'entityrecord' : 'entitylist', etn: entity });
   if (id && id !== 'new') params.set('id', id); if (view) params.set('viewid', view);
+  if (id && form) params.set('formid', form);
   if (defaults) params.set('extraqs', new URLSearchParams(defaults).toString());
   return '/main.aspx?' + params;
 }
-async function navigate(entity, { id, view, application = app, replace = false, defaults } = {}) {
+async function navigate(entity, { id, view, application = app, replace = false, defaults, form } = {}) {
   if (!await canLeave()) return;
-  const url = targetUrl(entity, { id, view, application, defaults });
+  const url = targetUrl(entity, { id, view, application, defaults, form });
   history[replace ? 'replaceState' : 'pushState']({}, '', url);
   await loadRoute();
 }
@@ -344,7 +345,7 @@ function editColumns() {
   let chosen = [...current.columns], resetWidths = false, dragged;
   const body = document.createElement('div'), toolbar = document.createElement('div'); toolbar.className = 'columns-toolbar';
   const list = document.createElement('div'); list.className = 'columns-list'; list.setAttribute('aria-label', 'View columns'); body.append(toolbar, list);
-  let apply, reset;
+  let apply, reset, addColumns;
   const defaults = (table.views.find(view => view.id === query.view)?.fields ?? []).map(field => field.name);
   const changed = () => { if (apply) apply.disabled = !resetWidths && JSON.stringify(chosen) === JSON.stringify(current.columns); if (reset) reset.disabled = JSON.stringify(chosen) === JSON.stringify(defaults) && (!query.widths || resetWidths); };
   const move = (name, offset) => { const index = chosen.indexOf(name), next = index + offset; if (next < 0 || next >= chosen.length) return; [chosen[index], chosen[next]] = [chosen[next], chosen[index]]; render(); };
@@ -352,7 +353,7 @@ function editColumns() {
     list.replaceChildren();
     for (const [index, name] of chosen.entries()) {
       const label = table.fields[name]?.label ?? name, row = document.createElement('div'); row.className = 'column-card'; row.draggable = true; row.tabIndex = 0;
-      row.innerHTML = `${icon(table.fields[name]?.type === 'date' ? 'calendar' : table.fields[name]?.type === 'number' ? 'number' : 'text')}<span>${esc(label)}</span>`;
+      row.innerHTML = `${icon(columnIcon(table.fields[name]))}<span>${esc(label)}</span>`;
       row.addEventListener('dragstart', event => { dragged = name; event.dataTransfer.setData('text/plain', name); });
       row.addEventListener('dragover', event => { if (dragged && dragged !== name) event.preventDefault(); });
       row.addEventListener('drop', event => { event.preventDefault(); if (!dragged || dragged === name) return; chosen.splice(chosen.indexOf(dragged), 1); chosen.splice(index, 0, dragged); dragged = undefined; render(); });
@@ -362,14 +363,14 @@ function editColumns() {
     }
     changed();
   }
-  toolbar.append(button('Add columns', () => {
+  toolbar.append(addColumns = button('Add columns', () => {
     const panel = document.createElement('dialog'); panel.className = 'add-column-browser'; panel.setAttribute('aria-labelledby', 'add-columns-title'); const title = document.createElement('h3'); title.id = 'add-columns-title'; title.textContent = 'Add columns';
-    const close = () => { lifetime.signal.removeEventListener('abort', close); panel.close(); panel.remove(); }; const lifetime = dialogLifetime; lifetime.signal.addEventListener('abort', close, { once: true });
+    const close = () => { lifetime.signal.removeEventListener('abort', close); panel.close(); panel.remove(); if (!lifetime.signal.aborted && addColumns.isConnected) addColumns.focus(); }; const lifetime = dialogLifetime; lifetime.signal.addEventListener('abort', close, { once: true });
     panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } });
     panel.addEventListener('cancel', event => { event.preventDefault(); close(); });
     const tabs = document.createElement('div'); tabs.className = 'add-column-tabs'; tabs.setAttribute('role', 'tablist'); const primary = button(table.singular, null); primary.setAttribute('role', 'tab'); primary.setAttribute('aria-selected', 'true'); const related = button('Related', null, { disabled: true, title: 'Adding columns from related tables is not supported locally.' }); related.setAttribute('role', 'tab'); related.setAttribute('aria-selected', 'false'); tabs.append(primary, related);
-    const searchBox = document.createElement('div'); searchBox.className = 'add-column-search'; const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search'; search.setAttribute('aria-label', 'Search columns'); searchBox.append(search, button('All', null, { disabled: true, chevron: true, title: 'All available local columns are shown.' }));
-    const options = document.createElement('div'); options.className = 'add-column-options'; const renderOptions = () => { options.replaceChildren(); for (const field of Object.values(table.fields).filter(field => field.validForGrid !== false && !chosen.includes(field.name) && (field.label ?? field.name).toLocaleLowerCase().includes(search.value.toLocaleLowerCase())).sort((left, right) => (left.label ?? left.name).localeCompare(right.label ?? right.name))) options.append(button(field.label ?? field.name, () => { chosen.push(field.name); render(); renderOptions(); }, { iconName: field.type === 'date' ? 'calendar' : field.type === 'number' ? 'number' : 'text' })); };
+    const searchBox = document.createElement('div'); searchBox.className = 'add-column-search'; const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search'; search.setAttribute('aria-label', 'Search columns'); searchBox.innerHTML = icon('search'); searchBox.append(search, button('All', null, { disabled: true, chevron: true, title: 'All available local columns are shown.' }));
+    const options = document.createElement('div'); options.className = 'add-column-options'; const renderOptions = () => { options.replaceChildren(); for (const field of Object.values(table.fields).filter(field => field.validForGrid !== false && !chosen.includes(field.name) && (field.label ?? field.name).toLocaleLowerCase().includes(search.value.toLocaleLowerCase())).sort((left, right) => (left.label ?? left.name).localeCompare(right.label ?? right.name))) options.append(button(field.label ?? field.name, () => { chosen.push(field.name); render(); renderOptions(); }, { iconName: columnIcon(field) })); };
     const footer = document.createElement('div'); footer.className = 'add-column-footer'; footer.append(button('Close', close, { className: 'secondary' }));
     search.addEventListener('input', renderOptions); panel.append(title, button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }), tabs, searchBox, options, footer); $('#dialog').append(panel); renderOptions(); panel.showModal(); search.focus();
   }, { iconName: 'add' }), reset = button('Reset to default', () => { chosen = [...defaults]; resetWidths = Boolean(query.widths); render(); }, { iconName: 'reset' }), button('Download LayoutXML', null, { iconName: 'download', disabled: true, title: 'Downloading an edited view definition is not supported locally.' }));
@@ -394,27 +395,45 @@ function columnMenu(trigger, name) {
 }
 function editFilters(initialField) {
   const filters = structuredClone(query.filters ?? []), body = document.createElement('div');
+  let valueControls = [];
+  const disposeValues = () => { for (const control of valueControls) control.destroy?.(); valueControls = []; };
   if (initialField && !filters.some(filter => filter.field === initialField)) filters.push({ field: initialField, operator: 'eq', value: '' });
   const toolbar = document.createElement('div'); toolbar.className = 'filters-toolbar'; toolbar.append(button('Reset to default', () => { filters.splice(0); render(); }, { iconName: 'reset' }), button('Download FetchXML', null, { disabled: true, iconName: 'download', title: 'Downloading an edited query definition is not supported locally.' }), button('Delete all filters', () => { filters.splice(0); render(); }, { iconName: 'filter' }));
   const dataMode = document.createElement('div'); dataMode.className = 'filter-data-mode'; dataMode.append(document.createTextNode('Showing local data'), button('Change to retained data', null, { disabled: true, title: 'Retained Dataverse data is not available in the local simulator.' })); dataMode.insertAdjacentHTML('beforeend', icon('info'));
   const headings = document.createElement('div'); headings.className = 'filter-headings'; headings.innerHTML = '<span>Field</span><span>Operator</span><span>Value</span>';
   const group = button('AND', null, { disabled: true, chevron: true, title: 'All local conditions must match.' }); group.className = 'filter-group';
   const list = document.createElement('div'); list.className = 'filter-conditions'; body.append(toolbar, dataMode, group, headings, list);
-  const operators = [['eq', 'Equals'], ['ne', 'Does not equal'], ['like', 'Contains (% wildcards)'], ['not-like', 'Does not contain (% wildcards)'], ['gt', 'Greater than'], ['ge', 'Greater than or equal'], ['lt', 'Less than'], ['le', 'Less than or equal'], ['null', 'Does not contain data'], ['not-null', 'Contains data']];
+  const comparisons = [['eq', 'Equals'], ['ne', 'Does not equal']], emptyOperators = [['null', 'Does not contain data'], ['not-null', 'Contains data']];
+  const operatorsFor = field => [...comparisons, ...(field?.type === 'number' && !field.options || field?.type === 'date' ? [['gt', 'Greater than'], ['ge', 'Greater than or equal'], ['lt', 'Less than'], ['le', 'Less than or equal']] : []), ...(['text', 'textarea'].includes(field?.type) && !field.options ? [['contains', 'Contains'], ['not-contains', 'Does not contain'], ['begins-with', 'Begins with'], ['ends-with', 'Ends with']] : []), ...emptyOperators];
   function render() {
+    disposeValues();
     list.replaceChildren();
     for (const [index, filter] of filters.entries()) {
       const row = document.createElement('div'); row.className = 'filter-row';
-      const field = pickerButton(table.fields[filter.field]?.label ?? filter.field, Object.values(table.fields).map(definition => ({ label: definition.label ?? definition.name, value: definition.name })), { label: `Filter ${index + 1} column`, selected: filter.field, choose: name => { filter.field = name; render(); }, className: 'filter-picker' });
+      const definition = table.fields[filter.field], operators = operatorsFor(definition);
+      // Retain old explicitly-authored pattern filters when editing saved preferences.
+      if (['like', 'not-like'].includes(filter.operator)) operators.splice(2, 0, [filter.operator, filter.operator === 'like' ? 'Matches pattern' : 'Does not match pattern']);
+      const field = pickerButton(definition?.label ?? filter.field, Object.values(table.fields).map(definition => ({ label: definition.label ?? definition.name, value: definition.name })), { label: `Filter ${index + 1} column`, selected: filter.field, choose: name => { filter.field = name; filter.value = ''; if (!operatorsFor(table.fields[name]).some(([value]) => value === filter.operator)) filter.operator = 'eq'; render(); }, className: 'filter-picker' });
       const operator = pickerButton(operators.find(([value]) => value === filter.operator)?.[1] ?? filter.operator, operators.map(([value, label]) => ({ label, value })), { label: `Filter ${index + 1} operator`, selected: filter.operator, choose: value => { filter.operator = value; render(); }, className: 'filter-picker' });
-      const value = document.createElement('input'); value.setAttribute('aria-label', `Filter ${index + 1} value`); value.value = filter.value ?? ''; value.disabled = ['null', 'not-null'].includes(filter.operator); value.addEventListener('input', () => { filter.value = value.value; });
+      const noValue = ['null', 'not-null'].includes(filter.operator), value = document.createElement('div'); value.className = 'filter-value';
+      // Filter values use the same source-typed scalar editors as the record form.
+      // Query bounds are independent of the table's write bounds and required level.
+      const typed = definition && ['number', 'boolean', 'date'].includes(definition.type), control = typed ? renderControl({ ...definition, name: `filter-${index + 1}-value`, label: `Filter ${index + 1} value`, required: !noValue, minValue: undefined, maxValue: undefined }, filter.value === '' ? null : filter.value, { disabled: noValue }) : undefined;
+      if (control) {
+        valueControls.push(control); value.append(control.element);
+        const read = () => { try { const next = control.read(); filter.value = definition.type === 'boolean' && next != null ? Number(next) : next; } catch { /* The editor retains its own validation while a value is incomplete. */ } };
+        control.element.addEventListener('input', read); control.element.addEventListener('change', read);
+      } else {
+        const input = document.createElement('input'); input.setAttribute('aria-label', `Filter ${index + 1} value`); input.value = filter.value ?? ''; input.disabled = noValue; input.addEventListener('input', () => { filter.value = input.value; }); value.append(input);
+      }
       row.append(field, operator, value, button('Remove condition', () => { filters.splice(index, 1); render(); }, { title: 'Remove condition', iconName: 'delete', iconOnly: true })); list.append(row);
     }
   }
   const addRow = () => { filters.push({ field: table.nameColumn, operator: 'eq', value: '' }); render(); };
   const split = document.createElement('div'); split.className = 'add-filter-split'; const add = button('Add', addRow, { iconName: 'add' }); add.setAttribute('aria-label', 'Add condition');
   const more = button('Add options', () => picker(more, [{ label: 'Add row', value: 'row', role: 'menuitem', iconName: 'add' }, { label: 'Add group', value: 'group', role: 'menuitem', disabled: true, reason: 'Nested filter groups are not supported locally.' }], { label: 'Add filter options', menuClass: 'column-picker', choose: addRow }), { chevron: true, iconOnly: true }); split.append(add, more); body.append(split); render();
-  const element = dialog(`Edit filters: ${table.label}`, body, [['Apply', async () => { query.filters = filters; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }, true], ['Cancel', closeDialog]]);
+  const element = dialog(`Edit filters: ${table.label}`, body, [['Apply', async () => { if (valueControls.some(control => !(control.primary ?? control.element).reportValidity())) return; query.filters = filters; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }, true], ['Cancel', closeDialog]]);
+  dialogLifetime.signal.addEventListener('abort', disposeValues, { once: true });
   element.classList.add('side-panel', 'filters-panel'); element.prepend(button('Close', closeDialog, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }));
 }
 function lookup(field) { return createLookupDialog(field, { tables: catalogue.tables, api, tablePath, display, dialog, closeDialog, onDialogCancel, pickerButton, getLifetime: () => dialogLifetime }); }
@@ -447,7 +466,9 @@ async function loadRecord(id) {
       // Creating own data properties avoids invoking inherited setters from URL-supplied defaults.
       record = { ...record, ...Object.fromEntries(initialValues) };
     }
-    etag = result.etag; formId = appForms()[0]?.id; activeTab = null; await renderRecord();
+    const requestedForm = new URLSearchParams(location.search).get('formid')?.replace(/[{}]/g, '').toLowerCase();
+    etag = result.etag; formId = appForms().find(form => String(form.id).replace(/[{}]/g, '').toLowerCase() === requestedForm)?.id ?? appForms()[0]?.id;
+    activeTab = null; await renderRecord();
     if (token !== generation) return;
     if (id) remember({ label: record[table.nameColumn] ?? table.singular, url: location.pathname + location.search, app: app.uniqueName });
     contentLoaded();
@@ -467,7 +488,8 @@ async function renderRecord() {
   recordCard.append(header);
   const availableForms = appForms();
   let selectedForm = availableForms.find(form => form.id === formId) ?? availableForms[0];
-  if (availableForms.length > 1) header.append(pickerButton(selectedForm.name, availableForms.map(form => ({ label: form.name, value: form.id })), { label: 'Record form', selected: selectedForm.id, className: 'form-chooser', choose: async id => { captureDraft(); disposeClient(); formId = id; await renderRecord(); } }));
+  if (new URLSearchParams(location.search).has('formid')) { const url = new URL(location.href); url.searchParams.set('formid', selectedForm.id); history.replaceState({}, '', url); }
+  if (availableForms.length > 1) header.append(pickerButton(selectedForm.name, availableForms.map(form => ({ label: form.name, value: form.id })), { label: 'Record form', selected: selectedForm.id, className: 'form-chooser', choose: async id => { captureDraft(); disposeClient(); formId = id; const url = new URL(location.href); url.searchParams.set('formid', id); history.replaceState({}, '', url); await renderRecord(); } }));
   if (selectedForm.hasScripts) { const warning = document.createElement('span'); warning.className = 'script-indicator'; warning.textContent = catalogue.clientExtensions?.trusted ? 'Local Solution scripts' : 'Local scripts disabled'; warning.title = catalogue.clientExtensions?.trusted ? 'Explicitly trusted exported scripts execute against the bounded local client API.' : 'Trust local Solution client extensions in configuration to run exported form events.'; header.append(warning); }
   const tabs = document.createElement('div'); tabs.className = 'tabs'; tabs.setAttribute('role', 'tablist');
   const availableTabs = selectedForm.tabs.filter(tab => tab.visible !== false);
@@ -588,7 +610,7 @@ function createShellClient(selectedForm) {
     },
     request: async (entity, id, options = {}) => { if (!Object.hasOwn(catalogue.tables, entity)) throw new Error(`Table ${entity} is not imported.`); return api(tablePath(entity, id ? String(id).replace(/[{}]/g, '') : undefined) + (options.query ? '?query=' + encodeURIComponent(JSON.stringify(options.query)) : ''), { method: options.method ?? 'GET', ...(options.etag ? { headers: { 'if-match': options.etag } } : {}), ...(options.data ? { body: JSON.stringify(options.data) } : {}) }); },
     save: close => saveRecord(close), refresh: () => loadRoute(), close: () => navigate(table.entity),
-    openForm: options => { if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.'); if (options.useQuickCreateForm || options.openInNewWindow) throw new Error('Quick create and separate form windows are not supported locally.'); return navigate(options.entityName, { id: options.entityId ?? 'new' }); },
+    openForm: options => { if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.'); if (options.useQuickCreateForm || options.openInNewWindow) throw new Error('Quick create and separate form windows are not supported locally.'); return navigate(options.entityName, { id: options.entityId ?? 'new', form: options.formId }); },
     alert: (text, title) => new Promise(resolve => { const body = document.createElement('p'); body.textContent = text; const element = dialog(title, body, [['OK', () => { resolve(); closeDialog(); }, true]]); onDialogCancel(element, () => resolve()); }),
     confirm: (text, title) => confirm(title, text),
   });
@@ -712,7 +734,7 @@ async function persistRecord(close) {
     dirty = false; touchedFields.clear(); record = result.row; etag = result.etag;
     const refreshed = await api(); if (saveGeneration !== generation) return;
     catalogue = refreshed; table = catalogue.tables[table.entity];
-    await navigate(table.entity, close ? {} : { id: record[table.idColumn], replace: true }); notice('Record saved locally.');
+    await navigate(table.entity, close ? {} : { id: record[table.idColumn], form: formId, replace: true }); notice('Record saved locally.');
   } finally { pending = false; }
 }
 async function deleteRecords(rows) {

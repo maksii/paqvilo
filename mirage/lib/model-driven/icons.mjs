@@ -57,8 +57,23 @@ const paths = {
   calendar: '<path d="M1 3h14v12H1zM1 6h14M4 1v4M12 1v4M4 9h2m2 0h2m2 0h1M4 12h2m2 0h2"/>',
   text: '<path d="M1 3h14v10H1zM3 10l1.5-4L6 10M3.5 9h2M8 6v4m0-2c3-3 3 4 0 1m5-2c-3-2-3 4 0 2"/>',
   number: '<path d="M6 1 4 15M12 1l-2 14M1 6h14M1 10h14"/>',
+  numericColumn: '<path d="M1 3h14v10H1zM3 7l1-1v4m2-3c0-2 3-1 2 0l-2 3h3m2-4c3-1 3 2 1 2 2 0 2 3-1 2"/>',
+  choiceColumn: '<path d="M1 3h14v10H1zM10 7l2 2 2-2"/>',
+  booleanColumn: '<path d="M1 1h14v14H1zM3 8l3 3 7-7"/>',
+  lookupColumn: '<path d="M1 2h5v5H1zM10 2h5v5h-5zM1 10h5v5H1zM6 4h3M3 7v2m8 1h4m-2-2v7"/>',
+  moneyColumn: '<path d="M1 3h14v10H1zM3 5h1m8 0h1M3 11h1m8 0h1"/><circle cx="8" cy="8" r="3"/>',
+  imageColumn: '<path d="M1 1h14v14H1zM2 13l4-5 3 3 3-4 2 3"/><circle cx="5" cy="5" r="1.5"/>',
   reset: '<path d="M1 7a6 6 0 1 1 2 6M1 2v5h5"/>',
   download: '<path d="M8 1v10M4 7l4 4 4-4M2 12v3h12v-3"/>',
 };
 export const icon = (name, className = '') => `<svg class="icon icon-${name} ${className}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width=".85" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.page}</svg>`;
+// Column browsers use metadata glyphs, including types whose form editor is unavailable.
+export const columnIcon = field => field?.type === 'date' ? 'calendar'
+  : field?.type === 'lookup' ? field.dataverseType === 'owner' ? 'person' : 'lookupColumn'
+    : field?.type === 'boolean' ? 'booleanColumn'
+      : field?.options || ['picklist', 'state', 'status', 'multiselectpicklist'].includes(field?.dataverseType) ? 'choiceColumn'
+        : field?.dataverseType === 'money' ? 'moneyColumn'
+          : field?.dataverseType === 'image' ? 'imageColumn'
+            : field?.dataverseType === 'file' ? 'help'
+              : field?.type === 'number' ? 'numericColumn' : 'text';
 export const navigationIcon = item => ({ website: 'globe', pagetemplate: 'page', redirect: 'redirect', sitemarker: 'marker', sitesetting: 'siteSettings', setting: 'settings', contentsnippet: 'pageCode', basicform: 'edit', entityform: 'edit', list: 'list', entitylist: 'list', shortcut: 'shortcut', webfile: 'file', advancedform: 'pageForm', webform: 'pageForm', weblinkset: 'lines', webpage: 'pages', webtemplate: 'template', websitelanguage: 'language', contact: 'person', tablepermission: 'shield', entitypermission: 'shield', columnpermissionprofile: 'shield', invitation: 'invitation', publishingstatetransitionrule: 'transition', webpageaccesscontrolrule: 'shield', webrole: 'person', websiteaccess: 'key' })[item.id] ?? ({ website: 'globe', pagetemplate: 'page', redirect: 'redirect', sitemarker: 'marker', sitesetting: 'siteSettings', setting: 'settings', contentsnippet: 'pageCode', entityform: 'edit', entitylist: 'list', shortcut: 'shortcut', webfile: 'file', webform: 'pageForm', weblinkset: 'lines', webpage: 'pages', webtemplate: 'template', websitelanguage: 'language', contact: 'person', entitypermission: 'shield', columnpermissionprofile: 'shield', invitation: 'invitation', publishingstatetransitionrule: 'transition', webpageaccesscontrolrule: 'shield', webrole: 'person', websiteaccess: 'key' })[item.entity?.replace(/^.*?_/, '')] ?? 'page';

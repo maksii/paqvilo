@@ -13,7 +13,7 @@ export function renderChoice(field, value, { multiple = false, options = field.o
   primary.setAttribute('aria-controls', list.id);
   const values = multiple ? Array.isArray(value) ? [...value] : value == null || value === '' ? [] : String(value).split(',').map(Number) : value == null ? [] : [value];
   const entries = multiple ? [{ all: true, label: 'Select all' }, ...options] : allowEmpty ? [{ value: null, label: '--Select--' }, ...options] : options;
-  let selected = values, active = -1, outside, typed = '', typingTimer, notifying = false, filterText = '', required = false, externalError = '', alive = true;
+  let selected = values, active = -1, outside, typed = '', typingTimer, notifying = false, filterText = '', required = false, externalError = '', alive = true, keyboardActive = false;
   const nativeValidity = primary.setCustomValidity.bind(primary);
   const validate = () => nativeValidity(externalError || (required && !selected.length ? 'Select an option.' : ''));
   primary.setCustomValidity = message => { externalError = String(message); validate(); };
@@ -25,7 +25,7 @@ export function renderChoice(field, value, { multiple = false, options = field.o
   const update = () => {
     primary.value = multiple && !list.hidden ? filterText : selected.map(value => options.find(option => same(option.value, value))?.label ?? String(value)).join('; ');
     primary.placeholder = list.hidden ? '---' : multiple ? 'Select or search options' : '--Select--';
-    for (const [index, option] of [...list.children].entries()) { option.setAttribute('aria-selected', String(chosen(entries[index]))); option.classList.toggle('active', index === active); }
+    for (const [index, option] of [...list.children].entries()) { option.setAttribute('aria-selected', String(chosen(entries[index]))); option.classList.toggle('active', keyboardActive && index === active); }
     validate();
     if (!list.hidden && active >= 0 && !list.children[active]?.hidden) primary.setAttribute('aria-activedescendant', `${list.id}-${active}`); else primary.removeAttribute('aria-activedescendant');
   };
@@ -35,11 +35,27 @@ export function renderChoice(field, value, { multiple = false, options = field.o
     if (resetActive || active < 0 || list.children[active]?.hidden) active = [...list.children].findIndex((option, index) => !option.hidden && (!term || !entries[index].all));
   };
   const close = () => { list.hidden = true; element.classList.remove('open'); primary.setAttribute('aria-expanded', 'false'); primary.removeAttribute('aria-activedescendant'); outside?.abort(); clearTimeout(typingTimer); typed = ''; filterText = ''; update(); };
+  const position = () => {
+    const rect = element.getBoundingClientRect(), scrollRoot = element.closest('.record-content'), boundary = scrollRoot?.getBoundingClientRect(), pinned = scrollRoot?.querySelector(':scope>.record-card')?.getBoundingClientRect();
+    const below = Math.min(innerHeight, boundary?.bottom ?? innerHeight) - rect.bottom, above = rect.top - Math.max(0, boundary?.top ?? 0, pinned?.bottom ?? 0);
+    const isAbove = below < Math.min(240, list.scrollHeight) && above > below;
+    list.classList.toggle('above', isAbove); list.style.maxHeight = `${Math.max(32, Math.min(240, (isAbove ? above : below) - 8))}px`;
+  };
+  // scrollIntoView can scroll the containing form and move its focused field.
+  // Move only the list viewport when keyboard navigation reaches an edge.
+  const revealActive = () => {
+    const option = list.children[active]; if (!option) return;
+    const row = option.getBoundingClientRect(), viewport = list.getBoundingClientRect();
+    if (row.top < viewport.top) list.scrollTop -= viewport.top - row.top;
+    else if (row.bottom > viewport.bottom) list.scrollTop += row.bottom - viewport.bottom;
+  };
   const open = (query = '') => {
     if (!alive || primary.disabled || !list.hidden) return;
-    list.hidden = false; element.classList.add('open'); primary.setAttribute('aria-expanded', 'true'); active = Math.max(0, entries.findIndex(chosen)); filterText = multiple ? query : ''; filterOptions(Boolean(filterText)); update();
+    list.hidden = false; element.classList.add('open'); primary.setAttribute('aria-expanded', 'true'); active = Math.max(0, entries.findIndex(chosen)); keyboardActive = false; filterText = multiple ? query : ''; filterOptions(Boolean(filterText)); update(); position(); revealActive();
     outside = new AbortController();
     document.addEventListener('pointerdown', event => { if (!element.contains(event.target)) close(); }, { signal: outside.signal });
+    window.addEventListener('resize', close, { signal: outside.signal });
+    window.addEventListener('scroll', event => { if (!list.contains(event.target)) close(); }, { capture: true, signal: outside.signal });
   };
   const choose = index => {
     const entry = entries[index]; if (!alive || !entry || primary.disabled) return;
@@ -53,7 +69,7 @@ export function renderChoice(field, value, { multiple = false, options = field.o
     option.addEventListener('pointerdown', event => event.preventDefault()); option.addEventListener('click', () => choose(index)); list.append(option);
   }
   primary.addEventListener('beforeinput', event => { if (!multiple) event.preventDefault(); });
-  primary.addEventListener('input', event => { if (!multiple || notifying) return; event.stopPropagation(); const term = primary.value; if (list.hidden) open(term); else { filterText = term; filterOptions(true); update(); } });
+  primary.addEventListener('input', event => { if (!multiple || notifying) return; event.stopPropagation(); const term = primary.value; if (list.hidden) open(term); else { filterText = term; filterOptions(true); update(); position(); } });
   primary.addEventListener('click', () => list.hidden ? open() : close());
   primary.addEventListener('blur', close);
   primary.addEventListener('keydown', event => {
@@ -63,13 +79,13 @@ export function renderChoice(field, value, { multiple = false, options = field.o
       event.preventDefault(); const wasClosed = list.hidden; open();
       const visible = [...list.children].flatMap((option, index) => option.hidden ? [] : [index]), position = visible.indexOf(active);
       active = event.key === 'Home' ? visible[0] : event.key === 'End' ? visible.at(-1) : visible[Math.max(0, Math.min(visible.length - 1, position + (wasClosed ? 0 : event.key === 'ArrowDown' ? 1 : -1)))];
-      update(); list.children[active]?.scrollIntoView({ block: 'nearest' }); return;
+      keyboardActive = true; update(); revealActive(); return;
     }
     if (event.key === 'Enter' || event.key === ' ' && !multiple) { event.preventDefault(); if (list.hidden) open(); else choose(active); }
     else if (!multiple && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault(); open(); typed += event.key.toLocaleLowerCase(); clearTimeout(typingTimer); typingTimer = setTimeout(() => { typed = ''; }, 700);
       const index = entries.findIndex(entry => String(entry.label).toLocaleLowerCase().startsWith(typed));
-      if (index >= 0) { active = index; update(); list.children[active]?.scrollIntoView({ block: 'nearest' }); }
+      if (index >= 0) { active = index; keyboardActive = true; update(); revealActive(); }
     }
   });
   element.append(primary, chevron, list); update();

@@ -28,19 +28,27 @@ export function renderLookup(field, value, context) {
     primary.style.width = selectedId ? `${Math.max(40, primary.value.length * 7.2 + 16)}px` : '';
     validate();
   };
-  const close = () => { clearTimeout(timer); request?.abort(); lifetime?.abort(); sequence++; popup.hidden = true; primary.setAttribute('aria-expanded', 'false'); primary.removeAttribute('aria-activedescendant'); };
+  const close = () => { clearTimeout(timer); request?.abort(); lifetime?.abort(); sequence++; popup.hidden = true; primary.placeholder = '---'; primary.setAttribute('aria-expanded', 'false'); primary.removeAttribute('aria-activedescendant'); };
   const choose = selected => {
     if (!alive || primary.disabled) return;
     selectedId = selected.id; selectedEntity = selected.entity; selectedName = selected.name; primary.value = selectedName ?? selectedId; close(); update();
     element.dispatchEvent(new Event('change', { bubbles: true })); primary.focus();
   };
-  const position = () => { const rect = element.getBoundingClientRect(); popup.classList.toggle('above', innerHeight - rect.bottom < 220 && rect.top > 220); };
+  const position = () => {
+    const rect = element.getBoundingClientRect(), scrollRoot = element.closest('.record-content'), boundary = scrollRoot?.getBoundingClientRect(), pinned = scrollRoot?.querySelector(':scope>.record-card')?.getBoundingClientRect();
+    const below = Math.min(innerHeight, boundary?.bottom ?? innerHeight) - rect.bottom, above = rect.top - Math.max(0, boundary?.top ?? 0, pinned?.bottom ?? 0);
+    const desired = Math.min(240, results.scrollHeight) + footer.getBoundingClientRect().height;
+    const isAbove = below < desired && above > below; popup.classList.toggle('above', isAbove);
+    results.style.maxHeight = `${Math.max(40, Math.min(240, (isAbove ? above : below) - footer.getBoundingClientRect().height - 8))}px`;
+  };
   const open = () => {
     if (!alive || primary.disabled || !available) return false;
     if (popup.hidden) {
       popup.hidden = false; primary.setAttribute('aria-expanded', 'true'); primary.placeholder = `Look for ${field.label}`; lifetime = new AbortController();
       document.addEventListener('pointerdown', event => { if (!element.contains(event.target)) close(); }, { signal: lifetime.signal });
       element.addEventListener('focusout', event => { if (!element.contains(event.relatedTarget)) close(); }, { signal: lifetime.signal });
+      window.addEventListener('resize', close, { signal: lifetime.signal });
+      window.addEventListener('scroll', event => { if (!popup.contains(event.target)) close(); }, { capture: true, signal: lifetime.signal });
     }
     position(); return true;
   };
@@ -60,7 +68,7 @@ export function renderLookup(field, value, context) {
     results.setAttribute('aria-busy', 'true'); results.textContent = 'Loading…';
     try {
       const rows = await context.lookupSuggestions(field, selectedId ? '' : primary.value, { signal: request.signal });
-      if (token !== sequence || !alive || primary.disabled) return; found = rows; render();
+      if (token !== sequence || !alive || primary.disabled) return; found = rows; render(); position();
     } catch (error) {
       if (token !== sequence || request.signal.aborted || !alive) return;
       results.textContent = error.message;
@@ -82,6 +90,9 @@ export function renderLookup(field, value, context) {
     else if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
       event.preventDefault(); if (popup.hidden) { if (context.lookupSuggestions) load(); else browse(); return; }
       active = Math.max(0, Math.min(found.length - 1, active + (event.key === 'ArrowDown' ? 1 : -1))); render();
+      const row = results.children[active]?.getBoundingClientRect(), viewport = results.getBoundingClientRect();
+      if (row?.top < viewport.top) results.scrollTop -= viewport.top - row.top;
+      else if (row?.bottom > viewport.bottom) results.scrollTop += row.bottom - viewport.bottom;
     } else if (event.key === 'Enter' && !popup.hidden) { event.preventDefault(); if (found[active]) choose(found[active]); }
   });
   clear.addEventListener('click', () => { if (!alive || primary.disabled) return; selectedId = null; selectedName = null; selectedEntity = undefined; primary.value = ''; close(); update(); element.dispatchEvent(new Event('change', { bubbles: true })); primary.focus(); });

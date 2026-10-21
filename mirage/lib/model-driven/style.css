@@ -1002,3 +1002,20 @@ aside.collapsed .navigation-history p { padding:8px 16px; }
 .record-content>.form-layout { position:relative; z-index:1; }
 .grid-header .view-select>span { font-size:20px; line-height:20px; font-weight:600; }
 .grid-header .view-select>.chevron { color:#616161; }
+/* Source-typed filters retain their form editor without inheriting form field layout. */
+.filter-value { min-width:0; }
+.filter-value>input,.filter-value .choice-control>input { width:100%; height:32px; min-width:0; }
+.filter-value .choice-control>input { padding-right:32px; cursor:pointer; caret-color:transparent; }
+.filter-value .choice-control.open>input { outline:2px solid #242424; outline-offset:-2px; }
+.filter-value .date-control { width:100%; }
+.filter-value .date-input>input { width:100%; padding-right:32px; }
+.add-column-search { position:relative; }
+.add-column-search>.icon { position:absolute; left:12px; top:8px; pointer-events:none; }
+.add-column-search input { padding-left:34px; }
+/* Both side panels use the native compact title and bottom action strip. */
+.columns-panel h2 { padding-top:18px; min-height:54px; }
+.columns-panel .columns-toolbar { margin-bottom:21px; }
+.columns-panel .column-card { height:35px; color:#242424; background:#f4f4f4; }
+.columns-panel .dialog-actions { min-height:38px; padding:2px 12px; }
+.add-column-browser h3 { margin-top:18px; margin-bottom:10px; }
+.add-column-tabs { height:34px; margin-bottom:0; }

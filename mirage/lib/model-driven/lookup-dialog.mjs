@@ -38,7 +38,8 @@ export function createLookupDialog(field, { tables, api, tablePath, display, dia
     };
     const renderView = () => {
       const definitions = views();
-      const trigger = pickerButton(definitions.find(definition => definition.id === view)?.name ?? 'Select a view', definitions.map(definition => ({ label: definition.name, value: definition.id, isDefault: definition.isDefault })), { label: 'Lookup view', selected: view, search: true, className: 'lookup-view-picker', choose: value => { view = value; renderView(); clearTimeout(timer); load(); } });
+      const current = definitions.find(definition => definition.id === view);
+      const trigger = pickerButton(current ? current.name + (current.isDefault ? ' (default)' : '') : 'Select a view', definitions.map(definition => ({ label: definition.name, value: definition.id, isDefault: definition.isDefault })), { label: 'Lookup view', selected: view, search: true, className: 'lookup-view-picker', choose: value => { view = value; renderView(); clearTimeout(timer); load(); } });
       viewHost.replaceChildren(trigger);
     };
     const renderTarget = () => {
@@ -74,7 +75,14 @@ export function createLookupDialog(field, { tables, api, tablePath, display, dia
           for (const name of columns) { const cell = row.insertCell(); if (name === destination.nameColumn) { const glyph = document.createElement('span'); glyph.innerHTML = icon(navigationIcon({ entity: destination.entity })); const title = document.createElement('span'); title.textContent = display(record[name]) || '(No name)'; cell.append(glyph, title); } else cell.textContent = display(record[name + '@OData.Community.Display.V1.FormattedValue'] ?? record[name]); }
           row.addEventListener('click', () => choose(record, destination, row)); radio.addEventListener('change', () => choose(record, destination, row));
         }
-        results.append(grid); status.textContent = found.rows.length ? `${found.rows.length} record${found.rows.length === 1 ? '' : 's'}${found.more ? ' (first 50)' : ''}` : 'No records found.';
+        if (found.rows.length) results.append(grid);
+        else {
+          const empty = document.createElement('div'); empty.className = 'lookup-browser-empty';
+          const title = document.createElement('h3'); title.textContent = 'We don’t have any data for this view';
+          const detail = document.createElement('p'); detail.textContent = 'Please try switching to another view'; empty.append(title, detail); results.append(empty);
+        }
+        if (found.rows.length) status.textContent = `${found.rows.length} record${found.rows.length === 1 ? '' : 's'}${found.more ? ' (first 50)' : ''}`;
+        else { const announcement = document.createElement('span'); announcement.className = 'sr-only'; announcement.textContent = 'No records found.'; status.replaceChildren(announcement); }
       } catch (error) {
         if (token !== sequence || lifetime.signal.aborted) return;
         status.textContent = error.message + ' '; const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Try again'; retry.addEventListener('click', load); status.append(retry);

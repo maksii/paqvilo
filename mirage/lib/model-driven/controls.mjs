@@ -28,7 +28,9 @@ registerControl('number', (field, value) => {
   return { element: control.element, read: () => control.element.value === '' ? null : Number(control.element.value) };
 });
 registerControl('boolean', (field, value) => {
-  const choices = field.options?.length ? field.options.map(option => ({ ...option, value: Boolean(Number(option.value)) })) : [{ label: 'No', value: false }, { label: 'Yes', value: true }];
+  // Dataverse can serialize TrueOption before FalseOption. The native two-option
+  // control presents false then true while preserving each exported label.
+  const choices = field.options?.length ? field.options.map(option => ({ ...option, value: Boolean(Number(option.value)) })).sort((left, right) => Number(left.value) - Number(right.value)) : [{ label: 'No', value: false }, { label: 'Yes', value: true }];
   return renderChoice(field, value == null ? null : value === true || value === 1 || value === 'true' || value === '1', { options: choices, allowEmpty: false });
 });
 registerControl('multiselect', (field, value) => renderChoice(field, value, { multiple: true }));

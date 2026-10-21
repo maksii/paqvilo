@@ -10,7 +10,6 @@
 .date-calendar.above { top:auto; bottom:100%; }
 .calendar-days,.calendar-months { width:220px; flex:none; padding:12px; }
 .calendar-months { border-left:1px solid #e1dfdd; }
-.calendar-days.year-picker-open .calendar-header,.calendar-days.year-picker-open th { opacity:.35; }
 .calendar-header { display:flex; align-items:center; height:28px; margin-bottom:4px; }
 .date-calendar .calendar-heading { display:flex; justify-content:flex-start; width:140px; min-width:0; height:28px; min-height:28px; padding:0 10px; white-space:nowrap; font-size:14px; font-weight:600; }
 .date-calendar button { border:0; border-radius:2px; padding:0; min-height:0; gap:0; }
