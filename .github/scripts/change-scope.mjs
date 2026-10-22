@@ -3,6 +3,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+export function isDescriptionOnlyEdit(event, eventName) {
+  return eventName === 'pull_request' && event?.action === 'edited' && Boolean(event.pull_request)
+    && event.changes != null && Object.hasOwn(event.changes, 'body') && event.changes.body != null
+    && Object.keys(event.changes).every(key => key === 'body');
+}
+
 export function classifyChanges(files) {
   // A narrow secondary allowlist means new source directories receive full validation.
   const secondary = /^(?:docs\/|site\/|mirage\/(?:README\.md$|docs\/)|examples\/(?:project|company-operations)\/(?:[^/]+\/)*README\.md$|(?:README\.md|AGENTS\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|NOTICE)$|\.github\/(?:ISSUE_TEMPLATE\/|DISCUSSION_TEMPLATE\/|PULL_REQUEST_TEMPLATE\.md$|CODEOWNERS$|release\.yml$|workflows\/pages\.yml$))/;
@@ -25,7 +31,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const base = event.pull_request?.base.sha ?? event.before;
   const head = event.pull_request?.head.sha ?? process.env.GITHUB_SHA;
   let scope = { runtime: true, package: true, dependencies: true };
-  if (base && !/^0+$/.test(base) && process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' && process.env.VALIDATE_ALL !== 'true') {
+  if (isDescriptionOnlyEdit(event, process.env.GITHUB_EVENT_NAME) && process.env.VALIDATE_ALL !== 'true') {
+    scope = { runtime: false, package: false, dependencies: false };
+  } else if (base && !/^0+$/.test(base) && process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' && process.env.VALIDATE_ALL !== 'true') {
     const revisions = event.pull_request ? [`${base}...${head}`] : [base, head];
     const diff = spawnSync('git', ['diff', '--name-only', '--no-renames', '-z', ...revisions, '--'], { encoding: 'utf8', windowsHide: true });
     if (diff.status !== 0) throw new Error('Cannot determine changed files; refusing to skip validation.');

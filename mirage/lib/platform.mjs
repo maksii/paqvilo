@@ -1588,12 +1588,13 @@ async function renderForm(kind, name, context, options) {
     schema = { ...schema, ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }) };
   const identity = context.user ?? context.identity;
   const params = context.request?.params ?? {};
-  const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
+  let postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
   let progress = "";
   let stepIndex = 0;
   let stepList = [];
   let advancedSteps = null;
   let session = null;
+  let completedSuccessGet = false;
   if (kind === "webform" && schema.steps) {
     const startNew = truthy(fieldOf(definition?.metadata ?? {}, "startnewsessiononload"));
     // The runtime's sessions and the request's owner: the signed-in contact or browser visitor.
@@ -1608,7 +1609,22 @@ async function renderForm(kind, name, context, options) {
       && Array.isArray(completed.history)
       && completed.history.some(entry => canonicalId(entry.stepId) === canonicalId(postback.stepId) && canonicalId(entry.recordId) === canonicalId(postback.savedId))
       ? completed : null;
-    const access = completedPostbackSession ? null : await advancedFormAccess({
+    // Native terminal saves redirect to msg=success. The query alone never
+    // manufactures success: require this owner's completed form and final
+    // saved step, including the explicit session on start-new forms.
+    const completedGetSession = params.msg === 'success' && owner && typeof params.stepid === 'string'
+      ? sessions?.list(definition?.id ?? name, owner).find(candidate => {
+        const last = Array.isArray(candidate.history) ? candidate.history.at(-1) : null;
+        return candidate.completed === true && candidate.active === false
+          && candidate.owner === owner && candidate.webformId === canonicalId(definition?.id ?? name)
+          && (!startNew || params.sessionid === candidate.id)
+          && (!params.sessionid || params.sessionid === candidate.id)
+          && typeof last?.recordId === 'string' && Boolean(canonicalId(last.recordId))
+          && typeof last.entity === 'string' && Boolean(canonicalId(last.entity))
+          && canonicalId(last.stepId) === canonicalId(params.stepid)
+          && schema.steps.some(step => canonicalId(step.stepId) === canonicalId(last.stepId) && canonicalId(step.entity) === canonicalId(last.entity));
+      }) ?? null : null;
+    const access = completedPostbackSession || completedGetSession ? null : await advancedFormAccess({
       definition: definition ?? { id: name, metadata: {} },
       identity,
       owner,
@@ -1630,7 +1646,7 @@ async function renderForm(kind, name, context, options) {
       return `<script>location.replace(${json(route.location)});</script>`;
     }
     if (access?.message) return `<div id="MessagePanel" class="message alert alert-info" role="alert"><span id="MessageLabel">${escape(access.message)}</span></div>`;
-    session = completedPostbackSession ?? access?.session ?? webFormSession({ webformId: definition?.id ?? name, owner, sessionId: params.sessionid, startNew, sessions });
+    session = completedPostbackSession ?? completedGetSession ?? access?.session ?? webFormSession({ webformId: definition?.id ?? name, owner, sessionId: params.sessionid, startNew, sessions });
     // Platform step URLs carry stepid (and sessionid); portal code builds links with them, so a
     // stepid parameter opens that step directly. Without one the session's step renders.
     const stepId = params.stepid ?? (!startNew ? session?.current : null) ?? schema.initialStepId;
@@ -1696,6 +1712,14 @@ async function renderForm(kind, name, context, options) {
     }
     advancedSteps = schema.steps;
     schema = selected;
+    if (completedGetSession) {
+      completedSuccessGet = true;
+      postback = {
+      kind, formId: definition.id, sessionId: session.id, stepId: schema.stepId,
+      savedId: session.history.at(-1).recordId,
+      outcome: { type: 'message', message: formLabel(fieldOf(schema.metadata ?? {}, 'successmessage'), 'Submission completed successfully.'), hideForm: fieldOf(schema.metadata ?? {}, 'hideformonsuccess') !== false },
+      };
+    }
   }
   if (schema.type === "redirect") {
     const target = new URL(schema.redirectUrl, context.request?.url ?? "http://localhost/");
@@ -1715,6 +1739,22 @@ async function renderForm(kind, name, context, options) {
   const websiteId = canonicalId(portal.website?.id);
   const N = compactId(definition?.id ?? name);
   const ids = options.referenceForm?.ids ?? nativeFormControlIds(kind, definition?.id ?? name, { modal, pageControl });
+
+  const startupScript = async () => {
+    const source = schema.js ?? definition?.js;
+    const rendered = source && (renderLiquid ? await renderLiquid(source, context) : source);
+    return rendered ? `<span><script type="text/javascript">${debugScript(rendered,exportFieldFile(schema.metadata??definition?.metadata,'custom_javascript.js'))}</script></span>` : "";
+  };
+
+  // A trusted completed submission can confirm its write without Read access.
+  // Success-only output contains source-authored text, never saved row fields.
+  // A form that remains visible still follows the normal record-read path.
+  if (completedSuccessGet && postback.outcome.hideForm !== false) {
+    const message = bs.v5
+      ? `<div id="MessagePanel" class="${SUCCESS_PANEL_V5}" role="alert">${messageCloseButton(ids.buttons, bs, fieldOf(componentMetadata, 'validationgroup') ?? '')}<span id="MessageLabel">${postback.outcome.message}</span></div>`
+      : `<div id="MessagePanel" class="message alert alert-info success alert alert-success success alert alert-success" role="alert"><span id="MessageLabel">${postback.outcome.message}</span></div>`;
+    return `<!--pp-native-form--><div id="${attr(ids.wrapper)}">${await startupScript()}${message}</div>`;
+  }
 
   // Record source.
   const source = options.referenceForm ? { mode: FORM_MODE.readOnly, id: options.referenceForm.id } : await resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session });
@@ -1741,11 +1781,7 @@ async function renderForm(kind, name, context, options) {
   // The legacy EntityForm and WebForm controls add the form's (or step's) startup script before
   // they read the record, so a form whose record is missing or unreadable still runs it,
   // ahead of the message.
-  const startupScript = async () => {
-    const source = schema.js ?? definition?.js;
-    const rendered = source && (renderLiquid ? await renderLiquid(source, context) : source);
-    return rendered ? `<span><script type="text/javascript">${debugScript(rendered,exportFieldFile(schema.metadata??definition?.metadata,'custom_javascript.js'))}</script></span>` : "";
-  };
+
   if (accessDenied) {
     // crmentityformview: the EntitySecurity/Record/ReadAccessDeniedMessage
     // snippet, by default the Access_Denied_Error resource behind a lock icon.

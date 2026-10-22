@@ -1,4 +1,5 @@
 import { organizationRecord } from './organization-context.mjs';
+import { assertDataverseRootBody } from "./dataverse-reader-details.mjs";
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
@@ -369,7 +370,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const unique = [...new Set(parts)];
     return `${mapping.entitySet}${unique.length ? `(${unique.join(",")})` : ""}`;
   };
-  const bodyOf = (set, body) => {
+  const bodyOf = (set, body, c) => {
+    assertDataverseRootBody(body, c?.dataverseHttpReader);
     if (body && typeof body === "object" && !Array.isArray(body)) return body;
     throw invalid(`Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : A request body is required.`, "0x80048d19");
   };
@@ -1297,12 +1299,12 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     ...currencyOnWrite(mapping, input),
     ...timeZoneOnWrite(mapping, input),
   });
-  const createOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, true), bypassCustomPlugins: c.bypassCustomPlugins === true });
+  const createOptions = (c, extra = {}) => writeOptions({ ...extra, dataverseHttpReader: c.dataverseHttpReader, systemColumns: systemColumns(c, true), bypassCustomPlugins: c.bypassCustomPlugins === true });
   // An object extra.systemColumns (an internal writer's kept stamps, e.g. CalculateRollupField's modifiedon) lands over the stamps.
   const updateOptions = (c, extra = {}) => {
     const kept = extra.systemColumns && typeof extra.systemColumns === "object" ? extra.systemColumns : null;
     const stamps = systemColumns(c, false);
-    return writeOptions({ partitionId: c.partitionId, ...extra, systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps, bypassCustomPlugins: c.bypassCustomPlugins === true });
+    return writeOptions({ partitionId: c.partitionId, ...extra, dataverseHttpReader: c.dataverseHttpReader, systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps, bypassCustomPlugins: c.bypassCustomPlugins === true });
   };
 
   async function createData(c, mapping, body) {
@@ -1394,7 +1396,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   async function createEntity(c) {
     const { mapping } = c;
-    const body = bodyOf(mapping.entitySet, c.body);
+    const body = bodyOf(mapping.entitySet, c.body, c);
     const row = await runWrite(async () => {
       const data = await createData(c, mapping, body);
       const created = await withKeyViolation(mapping, data, () =>
@@ -1418,7 +1420,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   async function patchEntity(c) {
     const { mapping } = c;
-    const body = bodyOf(mapping.entitySet, c.body);
+    const body = bodyOf(mapping.entitySet, c.body, c);
     // The key row is read inside the write slot, so concurrent upserts of one new key create once and then update.
     let key;
     const outcome = await runWrite(() => {
@@ -1543,7 +1545,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   function putProperty(c) {
     if (navigationOf(c.mapping, c.route.segment)) throw methodNotAllowed(c.method);
-    const body = bodyOf(c.mapping.entitySet, c.body);
+    const body = bodyOf(c.mapping.entitySet, c.body, c);
     if (!("value" in body)) throw invalid('A property value is required: { "value": ... }.', "0x0");
     return writeProperty(c, c.route.segment, body.value);
   }
@@ -1577,7 +1579,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const { mapping, route } = c;
     const rel = navigationOf(mapping, route.segment);
     if (!rel || rel.many === false) throw methodNotAllowed(c.method);
-    const ref = refOf(bodyOf(mapping.entitySet, c.body)["@odata.id"]);
+    const ref = refOf(bodyOf(mapping.entitySet, c.body, c)["@odata.id"]);
     const target = store.resolveMapping(rel.entity);
     const parent = parentRow(c, mapping, "appendto");
     const child = rowOf(c, target, ref.id);
@@ -1594,7 +1596,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const { mapping, route } = c;
     const rel = navigationOf(mapping, route.segment);
     if (!rel || rel.many !== false) throw methodNotAllowed(c.method);
-    const ref = refOf(bodyOf(mapping.entitySet, c.body)["@odata.id"]);
+    const ref = refOf(bodyOf(mapping.entitySet, c.body, c)["@odata.id"]);
     const parent = parentRow(c, mapping, "update");
     await runWrite(async () => {
       const data = await updateData(c, mapping, { [`${route.segment}${BIND}`]: `/${ref.set}(${ref.id})` }, parent.row);

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withNativeFormContactAssociation } from './native-form-association.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
 import { DataError } from "./data.mjs";
 import { isSecuredField } from "./dataverse-fls.mjs";
@@ -714,6 +715,7 @@ export async function submitPortalForm(
     }
   }
   const assigned = new Set();
+  let currentContactAssociation = null;
   let contactRecord;
   if (create && portalField(componentMetadata, "associatecurrentportaluser", false) === true) {
     if (portalField(componentMetadata, "portaluserlookupattributeisactivityparty", false) === true)
@@ -722,6 +724,7 @@ export async function submitPortalForm(
     const attribute = effectiveFields.find((field) => canonical(field.name) === name) ?? schema.currentUserAssociationField;
     if (!name || !attribute || canonical(attribute.name) !== name || attribute.type !== "lookup")
       fail("Current-user association requires an imported contact lookup column", 501, "FormUserAssociationUnresolved");
+    currentContactAssociation = { entity: canonical(mapping.logicalName), column: name, contactId: canonical(identity.contactId ?? identity.id) };
     formMetadata.push({ adx_attributelogicalname: name, adx_setvalueonsave: true, adx_onsavetype: 100000002, adx_onsavefromattribute: "contactid" });
   }
   // These values come from exported metadata and authenticated server context,
@@ -975,7 +978,9 @@ export async function submitPortalForm(
   const cloudStore = cloudUploads.length ? cloudAttachments() : null;
   for (const upload of cloudUploads) await cloudStore.put(upload.key, Buffer.from(upload.content, "base64"), { contentType: upload.type });
   const { record, savedId, next } = await writeUnit(writeProvider, async (operations) => {
-    const record = create ? await operations.create(schema.entity, values, identity) : await operations.update(schema.entity, recordId, values, identity);
+    const record = create
+      ? await withNativeFormContactAssociation(currentContactAssociation, () => operations.create(schema.entity, values, identity))
+      : await operations.update(schema.entity, recordId, values, identity);
     const savedId = canonical(record?.[mapping.idColumn] ?? recordId);
     for (const relation of relateAfterCreate) {
       if (!operations.associate) fail("Native form reference association requires an association provider", 501, "FormReferenceUnsupported");
@@ -993,6 +998,14 @@ export async function submitPortalForm(
   let outcome;
   if (session) {
     outcome = advanceSession(session, schema, next, savedId, savedRecord, { portal, pageUrl, startNew, text });
+    if (nativePostback && outcome.type === 'message') {
+      const target = new URL(requestUrl ?? pageUrl, 'http://localhost/');
+      target.searchParams.set('msg', 'success');
+      target.searchParams.set('stepid', schema.stepId);
+      if (startNew) target.searchParams.set('sessionid', session.id);
+      else target.searchParams.delete('sessionid');
+      outcome = { type: 'redirect', url: target.pathname + target.search };
+    }
   } else {
     const settings = (() => {
       try {

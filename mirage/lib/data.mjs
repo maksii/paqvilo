@@ -12,6 +12,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { systemClock, systemIds } from "./runtime-clock.mjs";
 import { currentRequest } from "./request-context.mjs";
+import { takeNativeFormContactAssociation } from './native-form-association.mjs';
 import {
   builtinPresets,
   resolvePreset,
@@ -34,6 +35,7 @@ import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } fro
 import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
 import { validateExperimentPresets } from './experiment-presets.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error-details.mjs";
+import { attachDataverseReaderDetails } from "./dataverse-reader-details.mjs";
 import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric,parseNumericLiteral} from './exact-numeric.mjs';
 import {odataToSdkQuery} from './plugin-query.mjs';
 import {compilePermissionFetchXml,serializePermissionFetchXml} from './permission-query.mjs';
@@ -3180,7 +3182,7 @@ export class DataStore {
         );
     }
   }
-  validateBindings(mapping, input, row, identity, previous = null) {
+  validateBindings(mapping, input, row, identity, previous = null, nativeContactAssociation = null) {
     const relationships = this.relationshipsFor(mapping, identity);
     if (this.state.settings.associationPermissions === "enforce")
       for (const key of Object.keys(input).filter((key) =>
@@ -3223,7 +3225,14 @@ export class DataStore {
           400,
           "InvalidLookup",
         );
-      this.assertBindingTarget(mapping, row, targetMapping, target, identity);
+      // A configured form's server-owned current-contact stamp is not an
+      // explicit visitor lookup. Target existence, other fields and plugin
+      // changes still follow the same validation path.
+      if (!(nativeContactAssociation
+        && String(relationship.from).toLowerCase() === nativeContactAssociation.column
+        && targetMapping.logicalName === 'contact'
+        && String(id).toLowerCase() === nativeContactAssociation.contactId))
+        this.assertBindingTarget(mapping, row, targetMapping, target, identity);
     }
   }
   /**
@@ -3429,6 +3438,7 @@ export class DataStore {
   }
   *createStepsCore(entity, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
+    const nativeContactAssociation = takeNativeFormContactAssociation(m.logicalName, identity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
@@ -3520,7 +3530,7 @@ export class DataStore {
     // Keep explicit input and any plugin change subject to the normal checks.
     for (const [name, value] of Object.entries(systemColumns ?? {}))
       if (!own(input, name) && isDeepStrictEqual(bindingInput[name], value) && isDeepStrictEqual(row[name], value)) delete bindingInput[name];
-    this.validateBindings(m, bindingInput, row, identity);
+    this.validateBindings(m, bindingInput, row, identity, null, nativeContactAssociation);
     // Deep insert/bind into collection-valued navigation properties.
     for (const item of nested.filter((entry) => entry.rel.many !== false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -4404,12 +4414,12 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
   const literal = isExactNumeric(value) ? value.value : typeof value === "object" ? JSON.stringify(value) : String(value);
   const originalValue = value;
   const conversion = (type) =>
-    attachODataReaderDetails(new DataError(
+    attachDataverseReaderDetails(attachODataReaderDetails(new DataError(
       `Cannot convert the literal '${literal}' to the expected type '${type}'.`,
       400,
       "InvalidValue",
       { innerCode: "0x80048d19" },
-    ), options.odataErrorDetails ? odataConversionDetails(originalValue, type, attribute, options) : null);
+    ), options.odataErrorDetails ? odataConversionDetails(originalValue, type, attribute, options) : null), originalValue, attribute, options.dataverseHttpReader);
   switch (kind) {
     case "string": {
       if (typeof value !== "string") throw conversion("Edm.String");

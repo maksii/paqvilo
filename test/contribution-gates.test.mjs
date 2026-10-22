@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { validateCommitMessage } from '../scripts/conventional-commit.mjs';
-import { classifyChanges, preCommitScripts } from '../.github/scripts/change-scope.mjs';
+import { classifyChanges, preCommitScripts, isDescriptionOnlyEdit } from '../.github/scripts/change-scope.mjs';
 
 test('commit gates accept Conventional Commits and reject malformed subjects/bodies', () => {
   for (const message of ['feat: add preview', 'fix(lense)!: change contract\n\nBREAKING CHANGE: explicit identity required', 'revert: undo change', 'perf(mirage): speed up rendering']) assert.doesNotThrow(() => validateCommitMessage(message));
@@ -22,6 +22,46 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   assert.deepEqual(classifyChanges(['site/index.html', '.github/ISSUE_TEMPLATE/bug.yml']), { runtime: false, package: false, dependencies: false });
   for (const file of ['lense/cli.mjs', 'mirage/lib/server.mjs', 'test/cli.test.mjs', '.github/workflows/ci.yml', '.github/scripts/change-scope.mjs', 'new-runtime/index.mjs', '.env.example']) assert.equal(classifyChanges([file]).runtime, true, file);
   assert.equal(classifyChanges(['mirage/package-lock.json']).dependencies, true);
+});
+
+test('description edits preserve source validation while title/base/code edits remain gated', t => {
+  const event = { action: 'edited', pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } }, changes: { body: { from: 'Previous description' } } };
+  assert.equal(isDescriptionOnlyEdit(event, 'pull_request'), true);
+  for (const changed of [
+    { ...event, action: 'synchronize' }, { ...event, changes: {} },
+    { ...event, changes: { body: null } },
+    { ...event, changes: { title: { from: 'Previous title' } } },
+    { ...event, changes: { ...event.changes, title: { from: 'Previous title' } } },
+    { ...event, changes: { ...event.changes, base: { ref: { from: 'previous' } } } },
+    { ...event, changes: { ...event.changes, unknown: {} } },
+  ]) assert.equal(isDescriptionOnlyEdit(changed, 'pull_request'), false);
+  assert.equal(isDescriptionOnlyEdit(event, 'workflow_dispatch'), false);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-description-event-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const eventFile = path.join(directory, 'event.json'), output = path.join(directory, 'output');
+  const run = (payload, forced = false) => {
+    fs.writeFileSync(eventFile, JSON.stringify(payload)); fs.writeFileSync(output, '');
+    const env = { ...process.env, GITHUB_EVENT_PATH: eventFile, GITHUB_EVENT_NAME: 'pull_request', GITHUB_OUTPUT: output, VALIDATE_ALL: String(forced) };
+    for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../.github/scripts/change-scope.mjs', import.meta.url))], {
+      cwd: directory, encoding: 'utf8', windowsHide: true,
+      env,
+    });
+    return { ...result, output: fs.readFileSync(output, 'utf8') };
+  };
+  const description = run(event);
+  assert.equal(description.status, 0, description.stderr);
+  assert.equal(description.output, 'runtime=false\npackage=false\ndependencies=false\n', 'metadata needs no Git diff or runtime jobs');
+  const title = run({ ...event, changes: { title: { from: 'Previous title' } } });
+  assert.notEqual(title.status, 0, 'title changes must still require a real source diff');
+  assert.match(title.stderr, /Cannot determine changed files/);
+  const forced = run(event, true);
+  assert.equal(forced.status, 0, forced.stderr);
+  assert.equal(forced.output, 'runtime=true\npackage=true\ndependencies=true\n');
+  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  assert.match(ci.concurrency.group, /'description' \|\| 'sources'/);
+  assert.match(ci.concurrency['cancel-in-progress'], /!\(github\.event\.action == 'edited'/);
+  assert.match(ci.jobs.gate.name, /'PR description metadata' \|\| 'CI gate'/, 'metadata never replaces the required source gate');
 });
 
 test('local validation reserves runtime suites and package smoke for code, dependencies and unknown paths', () => {

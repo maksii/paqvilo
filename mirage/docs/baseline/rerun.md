@@ -81,12 +81,19 @@ Stale evidence remains a coverage gap until recaptured.
 Read `report.json`, `summary.md` and each scenario's `diff.json`. Capture folders contain
 metadata, DOM, elements, requests, console output, screenshots and same-origin frame data.
 A failed capture, unexpected sign-in page or blocked scenario is not successful coverage.
+Each capture records `summary.settlements`. Quiet-network readiness waits for visible
+loaders and explicitly busy or indeterminate progress controls. A determinate wizard
+position indicator does not delay readiness. A settle timeout makes the capture fail
+and remains in its problems and settlement records; it is not silently accepted.
 `ALLOWED` means differences were explained by the supplied allowlist; it does not mean
 identical output. Screenshots are retained but are not compared by the tool.
 
 Review allowlist proposals against their evidence. Do not hide missing controls, permission
 failures or incorrect saved data behind broad patterns. Keep raw project evidence private;
 publish only deliberately sanitized summaries.
+The capture redacts URL query values in embedded DOM, response bodies, frames,
+element inventories and console text as well as request URLs. Keep source paths and
+structural differences visible when reviewing the sanitized evidence.
 
 Reference portals cache role changes, rows and rendered markup independently. Probe the
 effective persona and actual fixture values before capturing; a fixed delay alone is not

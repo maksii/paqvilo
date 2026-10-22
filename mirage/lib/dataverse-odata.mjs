@@ -1,5 +1,6 @@
 import { parseKeySegment } from "./data.mjs";
 import { DataError } from "./data-error.mjs";
+import { dataverseReaderMessage } from "./dataverse-reader-details.mjs";
 import { annotationMatcher } from "./webapi-handler.mjs";
 import { uuidV5 } from "./dataverse-security.mjs";
 
@@ -589,7 +590,7 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
   // A duplicate of an entity (alternate) key carries its own Dataverse code and message whatever the inner code says.
   const keyViolation = error?.code === "DuplicateRecord" && details.keyName != null && details.columns != null;
   const [status, code] = keyViolation ? [412, "0x80060892"] : resolveError(error);
-  let message = error?.message ?? "An unexpected error occurred.";
+  let message = dataverseReaderMessage(error) ?? error?.message ?? "An unexpected error occurred.";
   const recordId = id ?? details.id;
   // A 500 that names its Dataverse code (innerCode, for example 0x0) keeps its message; an internal exception does not.
   if (status === 500 && typeof details.innerCode !== "string") message = "An unexpected error occurred.";

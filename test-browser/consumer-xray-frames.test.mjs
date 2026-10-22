@@ -211,11 +211,18 @@ test('frames added to a pre-existing shadow root of a large page stay guarded af
   const {page,data,report}=await guardFixture(browser,'<div>'+'<span>x</span>'.repeat(5000)+'</div><div id="host"></div><script>window.root=document.getElementById("host").attachShadow({mode:"open"});root.innerHTML="<p>empty</p>";</script>');
   await page.evaluate(({data,report})=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,report);api.toggle(true);},{data,report});
   await page.waitForTimeout(400);
+  // Suspend geometry callbacks: guarding a loaded frame must not depend on a
+  // later scan noticing its replacement Document (load is not shadow-composed).
+  await page.evaluate(()=>{window.guardOriginalRaf=window.requestAnimationFrame;window.requestAnimationFrame=()=>0;});
   await page.evaluate(()=>new Promise(resolve=>{const frame=document.createElement('iframe');frame.id='late';frame.src='/form';frame.onload=resolve;window.root.append(frame);}));
+  await page.evaluate(()=>new Promise(resolve=>{const frame=window.root.getElementById('late');frame.onload=resolve;frame.src='/form?replacement=1';}));
   await page.evaluate(()=>{const doc=window.root.getElementById('late').contentDocument;doc.getElementById('next').focus();const event=new doc.defaultView.KeyboardEvent('keydown',{key:'Enter',cancelable:true,bubbles:true});doc.getElementById('next').dispatchEvent(event);window.listenerGuard=event.defaultPrevented;});
   assert.equal(await page.evaluate(()=>window.listenerGuard),true,'the frame document has its own listener guard');
   await page.evaluate(()=>window.root.getElementById('late').contentDocument.getElementById('next').focus());await page.keyboard.press('Enter');
   assert.equal(await actions(page),0);
+  await page.evaluate(()=>{window.requestAnimationFrame=window.guardOriginalRaf;document.getElementById('paqvilo-xray').__px.toggle(false);});
+  await page.evaluate(()=>window.root.getElementById('late').contentDocument.getElementById('next').click());
+  assert.equal(await actions(page),1,'releasing inspection removes the owned frame guard');
 });
 
 test('focus cannot stay in closed-shadow-root or cross-origin frames while inspecting, including focus already inside a closed root at activation',async t=>{

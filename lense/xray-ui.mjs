@@ -26,7 +26,7 @@ export function xrayUi(data) {
   const wash=document.createElement('div');wash.className='scan-wash';wash.hidden=true;wash.setAttribute('aria-hidden','true');ui.prepend(wash);
   const scanState=document.createElement('div');scanState.className='scan-state';scanState.hidden=true;scanState.setAttribute('role','status');scanState.setAttribute('aria-live','polite');ui.append(scanState);
   const lifetime = new AbortController(), listen = (target, type, fn, options = {}) => target.addEventListener(type, fn, { ...options, signal: lifetime.signal });
-  const viewListeners=[],frameViews=new Map();
+  const viewListeners=[],frameViews=new Map(),frameElements=new Map();
   const listenViews=(type,fn,options={})=>{listen(window,type,fn,options);viewListeners.push([type,fn,options]);};
   const watchFrame=doc=>{
     if(frameViews.has(doc))return;const controller=new AbortController();
@@ -36,12 +36,23 @@ export function xrayUi(data) {
   };
   // Input guards never wait for a report or the geometry scan: walk documents, open shadow roots and same-origin frames synchronously.
   // The guard observer is separate from the geometry observer, so scan budgets and reconnects never narrow guarding.
-  const guardObserver=new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1&&!own(node))watchFrames(node);});
+  const pruneFrames=()=>{
+    for(const [doc,controller] of frameViews)if(!frameOf(doc)?.isConnected||frameDocument(frameOf(doc))!==doc){controller.abort();frameViews.delete(doc);}
+    for(const [embedding,controller] of frameElements)if(!embedding.isConnected){controller.abort();frameElements.delete(embedding);}
+  };
+  const guardObserver=new MutationObserver(records=>{if(records.some(record=>record.removedNodes.length))pruneFrames();for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1&&!own(node))watchFrames(node);});
   const watchFrames=(surface=document,depth=0)=>{
     if(!enabled||disposed||depth>40)return;
     if(surface.nodeType!==1)guardObserver.observe(surface,{subtree:true,childList:true});
     for(const node of [surface,...surface.querySelectorAll('*')]){
       if(node.shadowRoot&&!own(node)){shadowRoots.add(node.shadowRoot);watchFrames(node.shadowRoot,depth+1);}
+      if(node.localName==='iframe'&&!own(node)&&!frameElements.has(node)){
+        const controller=new AbortController();
+        // Frame load is not composed across a shadow boundary. Listen on the
+        // embedding element in capture phase, independently of geometry scans.
+        node.addEventListener('load',()=>{pruneFrames();watchFrames(node);},{capture:true,signal:controller.signal});
+        frameElements.set(node,controller);
+      }
       const inner=node.localName==='iframe'&&frameDocument(node);
       if(inner){watchFrame(inner);watchFrames(inner,depth+1);}
     }
@@ -57,7 +68,7 @@ export function xrayUi(data) {
     setTimeout(()=>{if(enabled&&!disposed&&!interacting&&!ctrl&&root.activeElement===ui){ui.blur();ui.focus({preventScroll:true});}});
   });
   ui.tabIndex=-1;
-  const releaseFrames=()=>{for(const controller of frameViews.values())controller.abort();frameViews.clear();};
+  const releaseFrames=()=>{for(const controller of [...frameViews.values(),...frameElements.values()])controller.abort();frameViews.clear();frameElements.clear();};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
   const norm = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
   let geometryCache=null,styleCache=null;
@@ -340,7 +351,7 @@ export function xrayUi(data) {
     // Rebuild observed roots so detached components are not retained indefinitely.
     observer.disconnect();observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
     const selector='input:not([type=hidden]),select,textarea,form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-view-layouts],[data-listid],.entitylist,.entity-grid,[data-entityname],[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-pcf-schema],[data-th],[role=dialog],dialog,iframe';
-    for(const [doc,controller] of frameViews)if(!frameOf(doc)?.isConnected||frameDocument(frameOf(doc))!==doc){controller.abort();frameViews.delete(doc);}
+    pruneFrames();
     const hintSelectors=[...new Set((report?.elementSources??[]).map(hint=>hint.selector))];
     candidates=[];const seen=new Set(),visible=[],fallback=[];let observed=0,visibleOverflow=false;
     const addCandidate=node=>{if(own(node)||seen.has(node))return;observed=Math.min(801,observed+1);const local=node.getBoundingClientRect(),view=node.ownerDocument.defaultView;const r=local.width>0&&local.height>0&&local.bottom>0&&local.right>0&&local.left<view.innerWidth&&local.top<view.innerHeight&&visibleRect(node);const inView=r&&!backgroundClipped(node);const list=inView?visible:fallback;if(list.length<800){list.push(node);seen.add(node);}else if(inView)visibleOverflow=true;};

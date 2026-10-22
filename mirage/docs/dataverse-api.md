@@ -237,6 +237,7 @@ Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets a
 
 - Service document, and entity sets with create, read, update, delete.
 - Query options `$select`, `$filter`, `$orderby`, `$top`, `$expand`, `$count` and annotations. `$skip`, `$search` and `$format` are not supported. `$apply` aggregation is passed through to the local query engine.
+- Primitive `/$value` and collection/navigation `/$count` HTTP text responses include the Dataverse UTF-8 BOM, including batch parts. JSON, null 204 responses, binary file/image streams and explicit non-text provider responses keep their existing encoding. Internal record handlers return the primitive value without a transport BOM.
 - Paging with the `odata.maxpagesize` preference and `$skiptoken`.
 - Change tracking on collections, described under Request handling.
 - `fetchXml` queries. `distinct="true"` folds values under the organization collation as `$apply` `groupby` and TDS `DISTINCT` do, and each folded group answers the value of its first stored row.

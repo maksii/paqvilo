@@ -2,6 +2,7 @@
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
 // Order in the router: managed identity, STS, Prefer, extension routes (bearer first), discovery, SOAP, then the Web API.
 import http from "node:http";
+import { encodeDataverseText } from "./dataverse-text-value.mjs";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
 import { ownsChange, runOwned, runAtomic } from "./dataverse-transaction-context.mjs";
@@ -606,6 +607,7 @@ async function recordCall(d, route, common) {
     identity: common.identity,
     requestId: common.requestId,
     bypassCustomPlugins: common.bypassCustomPlugins === true,
+    dataverseHttpReader: { method: common.method, entitySet: route.set, recordPayload: ["collection", "entity"].includes(route.kind), hasJsonBody: Boolean(common.bodyBuffer?.length) && /json/i.test(common.req.headers["content-type"] ?? "") },
   });
   return result ?? { status: 204 };
 }
@@ -969,6 +971,7 @@ async function batchCall(d, c, common) {
       // A part's engine error carries its request id once: the part serialiser expects a string, not the top-level pair.
       else if (Array.isArray(result.headers?.REQ_ID)) result.headers.REQ_ID = c.requestId;
     }
+    result = encodeDataverseText(parseDataverseRoute(new URL(part.url).pathname), result);
     const body = result.body ?? undefined;
     return { ...result, body: body === undefined || typeof body === "string" ? body : stringifyExactJson(orderAnnotations(body)) };
   };
@@ -1069,7 +1072,7 @@ export function createDataverseHandler(deps) {
         kind: meta.kind,
       }),
     );
-    const reply = (result) => send(res, result, requestId, clientRequestId, { cors: wantsCors(req, origin), gzip: acceptsGzip(req) });
+    const reply = (result) => send(res, encodeDataverseText(c.url ? parseDataverseRoute(c.url.pathname) : null, result), requestId, clientRequestId, { cors: wantsCors(req, origin), gzip: acceptsGzip(req) });
     let result;
     try {
       if (req.headers.host !== undefined && !hostAllowed(req.headers.host, d.hostNames)) {

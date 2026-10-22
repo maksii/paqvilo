@@ -9,6 +9,51 @@ import { createHash } from "node:crypto";
 import { redactUrl, normalizeText } from "./parity-suite.mjs";
 
 export const SIGN_IN_MARKERS = Object.freeze(["form#loginForm", "form[action*='/SignIn']", "[action*='login.microsoftonline']", ".login-heading-section", "#SubmitButton[value='Sign in']"]);
+
+/** Preserve surrounding markup/JSON and URL paths while removing query values. */
+export function redactEmbeddedQueryValues(text) {
+  return String(text ?? "").replace(/(?:https?:)?(?:\/|\\\/){2}[^\s<>"'`]+|\/(?!\/)[^\s<>"'`]*/gi, (raw) => {
+    const ending = raw.match(/[),.;\]}]+$/)?.[0] ?? "";
+    const body = ending ? raw.slice(0, -ending.length) : raw;
+    const escapedSlashes = body.includes("\\/");
+    const separator = body.match(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/i)?.[0];
+    const plain = body.replaceAll("\\/", "/").replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, "&");
+    const question = plain.indexOf("?");
+    if (question < 0) return raw;
+    try {
+      new URL(plain, "https://redaction.invalid");
+    } catch {
+      return raw;
+    }
+    const hash = plain.indexOf("#", question);
+    const query = plain.slice(question + 1, hash < 0 ? undefined : hash);
+    const fragment = hash < 0 ? "" : plain.slice(hash);
+    const safe = query.split("&").map((part) => {
+      const equals = part.indexOf("=");
+      if (equals < 0) return part;
+      const redacted = redactUrl("https://redaction.invalid/?" + part, { keepPaging: true });
+      return part.slice(0, equals + 1) + redacted.slice(redacted.lastIndexOf("=") + 1);
+    }).join(separator ?? "&");
+    const result = plain.slice(0, question + 1) + safe + fragment;
+    return (escapedSlashes ? result.replaceAll("/", "\\/") : result) + ending;
+  });
+}
+
+function redactCaptureQueryValues(value) {
+  if (typeof value === "string") return redactEmbeddedQueryValues(value);
+  if (Array.isArray(value)) return value.map(redactCaptureQueryValues);
+  if (value && typeof value === "object") {
+    const result = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === "screenshot" || key === "bodyHashInput" ? item : redactCaptureQueryValues(item)]));
+    if (typeof value.body === "string" && redactTokens(value.body) !== value.body) {
+      result.body = redactTokens(value.body);
+      delete result.bodyHashInput;
+      result.bodyHashProvenance = "redacted-text-sha256";
+    }
+    return result;
+  }
+  return value;
+}
+
 const TOKEN_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization", "x-csrf-token", "__requestverificationtoken", "x-ms-file-continuation-token", "x-ms-request-id", "x-request-id", "request-id", "x-azure-ref", "x-cache"]);
 const TOKEN_FIELDS = /(__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken|__RequestVerificationToken_[\w-]+)=[^&]*/g;
 const TOKEN_ATTRIBUTES = /(name="?(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION)"?[^>]*value=")[^"]*(")/g;
@@ -16,7 +61,7 @@ const sha = (value) => createHash("sha256").update(value).digest("hex");
 
 /** Replace per-session tokens in text bodies and markup with a stable placeholder. */
 export function redactTokens(text) {
-  return String(text ?? "")
+  return redactEmbeddedQueryValues(text)
     .replace(TOKEN_FIELDS, "$1={token}")
     .replace(TOKEN_ATTRIBUTES, "$1{token}$2")
     // The same fields in a multipart postback (forms with a file control): name="…" header line, blank line, value.
@@ -160,13 +205,18 @@ export async function pageRunner(page, options) {
     await dialog.accept().catch(() => {});
   });
   const loadingProbe = () => {
-    const selectors = ["[role=progressbar]", ".form-loading", ".loader", ".dataTables_processing", ".overlay:not([style*='display: none'])", ".modal.in .loading", ".modal.show .loading"];
-    return selectors.some((selector) => {
-      try {
-        return [...document.querySelectorAll(selector)].some((element) => element.getClientRects().length && getComputedStyle(element).display !== "none" && getComputedStyle(element).visibility !== "hidden");
-      } catch {
-        return false;
-      }
+    const visible = element => element.getClientRects().length && getComputedStyle(element).display !== "none" && getComputedStyle(element).visibility !== "hidden";
+    // A determinate wizard progress indicator describes position, not page loading.
+    // Explicitly busy or indeterminate progress still blocks readiness.
+    if ([...document.querySelectorAll('[role="progressbar"]')].some(element => {
+      if (!visible(element) || element.getAttribute('aria-busy') === 'false') return false;
+      const value = element.getAttribute('aria-valuenow');
+      return element.getAttribute('aria-busy') === 'true' || value == null || value.trim() === '' || !Number.isFinite(Number(value));
+    })) return true;
+    const selectors = [".form-loading", ".loader", ".dataTables_processing", ".overlay:not([style*='display: none'])", ".modal.in .loading", ".modal.show .loading"];
+    return selectors.some(selector => {
+      try { return [...document.querySelectorAll(selector)].some(visible); }
+      catch { return false; }
     });
   };
   const settle = async (opts = {}) => {
@@ -174,9 +224,9 @@ export async function pageRunner(page, options) {
     const timeout = opts.timeout ?? settleDefaults.timeout ?? 20000;
     const settleMs = opts.settleMs ?? settleDefaults.settleMs ?? 0;
     const started = Date.now();
-    let settled = false;
+    let settled = false, loading = false;
     while (Date.now() - started < timeout) {
-      const loading = await owned.evaluate(loadingProbe).catch(() => false);
+      loading = await owned.evaluate(loadingProbe).catch(() => false);
       if (!loading && inflight.size === 0 && Date.now() - lastActivity >= quietMs) {
         settled = true;
         break;
@@ -184,6 +234,8 @@ export async function pageRunner(page, options) {
       await sleep(150);
     }
     if (settleMs) await sleep(Math.min(settleMs, 10000));
+    (summary.settlements ??= []).push({ settled, timeoutMs: timeout, loading, inflight: inflight.size });
+    if (!settled) summary.problems.push("page did not settle within " + timeout + " ms");
     return settled;
   };
   const runStep = async (step) => {
@@ -365,6 +417,7 @@ export const pageRunnerSource = () => pageRunner.toString();
 
 /** Redact raw evidence and write the scenario folder. Returns the capture meta. */
 export async function writeCapture({ summary, raw }, { outDir, origin, side, meta = {}, scenarioId = null }) {
+  ({ summary, raw } = redactCaptureQueryValues({ summary, raw }));
   // Evidence of another scenario never lands in this folder (a late post of an abandoned bridge run once did).
   if (scenarioId && summary?.id !== scenarioId) throw new Error(`Capture of ${summary?.id ?? "(unknown)"} refused for scenario ${scenarioId}`);
   await fs.mkdir(outDir, { recursive: true });
@@ -379,6 +432,7 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
           body: entry.response.body === null || entry.response.body === undefined ? null : redactTokens(entry.response.body),
           bodyBytes: entry.response.bodyBytes ?? null,
           bodySha256: entry.response.bodyHashInput ? sha(Buffer.from(entry.response.bodyHashInput, "base64")) : entry.response.body ? sha(redactTokens(entry.response.body)) : null,
+          ...(entry.response.bodyHashProvenance ? { bodyHashProvenance: entry.response.bodyHashProvenance } : {}),
         }
       : null;
     return {

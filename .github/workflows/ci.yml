@@ -23,8 +23,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Description edits must not cancel or replace the required source validation.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'description' || 'sources' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null) }}
 
 env:
   FORCE_COLOR: '1'
@@ -300,9 +301,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Single required status check for branch protection.
+  # Required source validation stays separate from description-only metadata.
   gate:
-    name: CI gate
+    name: ${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'PR description metadata' || 'CI gate' }}
     if: always()
     needs: [changes, checks, test, windows, package]
     runs-on: ubuntu-latest
