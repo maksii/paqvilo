@@ -234,7 +234,7 @@ const ERROR_TYPES = Object.freeze({
  * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
-export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod, mutationPermissionText } = {}) {
+export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod, mutationPermissionText, selfNnPermissionErrors } = {}) {
   const status = Number(error?.status ?? error?.statusCode) || 500;
   const internal = error?.code == null ? null : String(error.code);
   const details = error?.details ?? {};
@@ -291,6 +291,13 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   if (internal === "PermissionDenied") {
     const operation = String(details.operation ?? "").toLowerCase(),
       table = details.table ?? "";
+    const selfNn = details.portalSelfNnAssociation;
+    if (["append", "appendto"].includes(operation) && selfNn?.table === table && details.related === table
+      && selfNnPermissionErrors?.[String(selfNn.schema).toLowerCase()] === 'native-classic') {
+      const response = respond(403, "90040106", `You don’t have permission to associate or disassociate table ${table} to ${table}`, plain);
+      if (response.body.error.innererror) response.body.error.innererror.type = 'EntityPermissionAppendToIsMissingDuringAssociationChange';
+      return response;
+    }
     if (operation === "create")
       return respond(403, "90040103", `You don't have permission to create ${table} entity.`, plain);
     if (operation === "update" || operation === "write")
@@ -366,6 +373,7 @@ export async function handleWebApi(req, res, url, deps) {
       errorTemplates: deps.webApiErrorTemplates,
       errorMethod: req.method,
       mutationPermissionText: deps.portal?.observed?.webApiMutationPermissionText,
+      selfNnPermissionErrors: deps.portal?.observed?.webApiSelfNnPermissionErrors,
     });
     deps.onError?.(cause, response);
     deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
@@ -571,11 +579,40 @@ function requestContext(req, res, url, deps, target, method) {
 
 // ---- response helpers -------------------------------------------------------
 
-const send = (t, status, body, headers = {}) =>
-  t.deps.json(t.res, status, status === 204 ? null : t.include ? stripAnnotations(body, t.include) : body, {
+const send = async (t, status, body, headers = {}) => {
+  if (status === 200 || status === 201) {
+    const relationship = t.mapping.relationships?.[t.target.segment];
+    const mapping = relationship ? t.store.resolveMapping(relationship.entity) : t.mapping;
+    await hydrateImages(t, body, mapping);
+  }
+  return t.deps.json(t.res, status, status === 204 ? null : t.include ? stripAnnotations(body, t.include) : body, {
     ...apiHeaders(t.deps.portal),
     ...headers,
   });
+};
+
+// Query projection already enforced row, column and field-security permissions.
+// Resolve only surviving image IDs, using the same authorized byte reader as /$value.
+async function hydrateImages(t, body, mapping) {
+  const files = t.store.recordPipeline?.fileContentInternal;
+  if (typeof files?.kindOf !== "function" || !body || typeof body !== "object") return;
+  for (const row of Array.isArray(body.value) ? body.value : [body]) {
+    if (!row || typeof row !== "object") continue;
+    if (GUID_PATTERN.test(String(row[mapping.idColumn] ?? ""))) {
+      for (const [column, value] of Object.entries(row)) {
+        if (!GUID_PATTERN.test(String(value ?? "")) || files.kindOf(mapping.logicalName, column) !== "image") continue;
+        const answer = await files({ principal: filePrincipal(t, mapping, "read"), entity: mapping.logicalName,
+          id: row[mapping.idColumn], column, operation: "download" });
+        row[column] = answer.statusCode === 200 ? answer.body.$content : null;
+      }
+    }
+    for (const [navigation, relation] of Object.entries(mapping.relationships ?? {})) {
+      if (!own(row, navigation) || !row[navigation] || typeof row[navigation] !== "object") continue;
+      const nested = Array.isArray(row[navigation]) ? { value: row[navigation] } : row[navigation];
+      await hydrateImages(t, nested, t.store.resolveMapping(relation.entity));
+    }
+  }
+}
 const sendText = (t, value) => {
   t.res.writeHead(200, { "content-type": "text/plain; charset=utf-8", ...apiHeaders(t.deps.portal) });
   t.res.end(String(value));
@@ -948,6 +985,11 @@ async function getProperty(t, raw) {
   const formatted = t.formatter.formatEntity(result.value[0] ?? {}, mapping, { etag: false });
   const lookup = /^_(.+)_value$/.test(target.segment) ? target.segment : `_${target.segment}_value`;
   let value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
+  if (value != null && fileKind(t) === "image") {
+    const row = { [mapping.idColumn]: id, [target.segment]: value };
+    await hydrateImages(t, row, mapping);
+    value = row[target.segment];
+  }
   if (value == null && ATTACHMENT_COLUMNS[mapping.logicalName] === target.segment && typeof t.deps.attachmentBody === "function")
     value = await t.deps.attachmentBody(mapping.logicalName, { [mapping.idColumn]: id }, { strict: raw });
   if (value == null) return sendNoContent(t);
@@ -1182,6 +1224,10 @@ async function putProperty(t) {
 // portal file passes 16 MB, the Learn single-call limit.
 const FILE_BODY_LIMIT = 128 * 1024 * 1024; // Learn: a single-request Web API upload is under 128 MB.
 const fileKind = (t) => t.store.recordPipeline?.fileContentInternal?.kindOf?.(t.mapping.logicalName, t.target.segment) ?? null;
+function filePrincipal(t, mapping, operation) {
+  const userId = [t.deps.identity?.contactId, t.deps.identity?.id].find((value) => GUID_PATTERN.test(String(value ?? ""))) ?? "00000000-0000-0000-0000-000000000000";
+  return { userId, evidence: "portal table permissions (webapi-handler.mjs)", grants: [{ entity: mapping.logicalName, operations: [operation] }] };
+}
 async function rawBody(req) {
   const chunks = [];
   let size = 0;
@@ -1200,11 +1246,16 @@ async function fileColumnRequest(t) {
   const { id } = locate(t, mapping, target.key);
   const row = download ? readRecord(t, mapping, id, target.key) : id == null ? null : store.findByKey(mapping, String(id));
   if (!row) throw recordNotFound(mapping, target.key);
+  // A field-security projection may hide an existing file. Never re-read its
+  // raw storage ID through the byte seam after the portal reader masked it.
+  if (download && !GUID_PATTERN.test(String(row[target.segment] ?? ""))) {
+    if (fileKind(t) === "image") return sendNoContent(t);
+    throw new DataError("No file attachment found.", 404, "NotFound", { innerCode: "0x80040217" });
+  }
   const operation = download ? "read" : "update";
   store.assertAllowed(mapping.logicalName, operation, row, deps.identity);
   // The table permission check above is the grant; the profile only carries it into the seam's own check.
-  const userId = [deps.identity?.contactId, deps.identity?.id].find((value) => GUID_PATTERN.test(String(value ?? ""))) ?? "00000000-0000-0000-0000-000000000000";
-  const principal = { userId, evidence: "portal table permissions (webapi-handler.mjs fileColumnRequest)", grants: [{ entity: mapping.logicalName, operations: [operation] }] };
+  const principal = filePrincipal(t, mapping, operation);
   const header = (name) => (typeof req.headers?.[name] === "string" ? req.headers[name] : null);
   const fileName = header("x-ms-file-name") ?? url.searchParams.get("x-ms-file-name");
   // A file name is a name, never a path: separators, NUL and "."/".." are refused before anything is read or stored.
@@ -1214,7 +1265,7 @@ async function fileColumnRequest(t) {
   const answer = await store.recordPipeline.fileContentInternal({
     principal, entity: mapping.logicalName, id: row[mapping.idColumn], column: target.segment,
     operation: download ? "download" : method === "DELETE" ? "delete" : "upload",
-    size: download && url.searchParams.get("size") !== "thumbnail" ? "full" : null,
+    size: download && url.searchParams.get("size") === "full" ? "full" : null,
     content: download || method === "DELETE" ? null : await rawBody(req),
     fileName,
     contentType: header("content-type"),

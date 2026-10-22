@@ -129,7 +129,7 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder", "webApiTwoDigitYearMax", "webApiFetchXmlTransport"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder", "webApiTwoDigitYearMax", "webApiFetchXmlTransport", "webApiSelfNnPermissionErrors"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
   if(value.webApiFetchXmlTransport!=null){
@@ -260,6 +260,17 @@ export function observedConfig(value, label = "observed") {
     if (!isTenantAuthority(authority))
       throw new Error(`${label}.azureAdAuthority must be the observed Microsoft Entra authority of one tenant, https://login.windows.net/<tenant>/ with the tenant's directory ID or domain name (not a placeholder, common or organizations)`);
     observed.azureAdAuthority = authority;
+  }
+  if (value.webApiSelfNnPermissionErrors != null) {
+    const profiles = value.webApiSelfNnPermissionErrors;
+    if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles) || !Object.keys(profiles).length || Object.keys(profiles).length > 1000)
+      throw new Error(`${label}.webApiSelfNnPermissionErrors must map qualified relationship schema names to native-classic`);
+    observed.webApiSelfNnPermissionErrors = Object.create(null);
+    for (const [schema, mode] of Object.entries(profiles)) {
+      if (!/^[a-z][a-z0-9_]{0,199}$/i.test(schema) || mode !== 'native-classic' || Object.hasOwn(observed.webApiSelfNnPermissionErrors, schema.toLowerCase()))
+        throw new Error(`${label}.webApiSelfNnPermissionErrors requires unique relationship schema names and native-classic values`);
+      observed.webApiSelfNnPermissionErrors[schema.toLowerCase()] = mode;
+    }
   }
   for (const [key, choices] of Object.entries(OBSERVED_CHOICES)) {
     if (value[key] == null) continue;

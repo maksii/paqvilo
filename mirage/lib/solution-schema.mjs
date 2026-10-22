@@ -21,6 +21,7 @@ import { DataError } from './data-error.mjs';
 import { parseAppDefinitions, embeddedAppComponents, parseDashboards } from './model-driven/solution.mjs';
 import { solutionDocumentComponents } from './dataverse-solution-components.mjs';
 import YAML from 'yaml';
+import { parseSolutionFormulaDocument, solutionFormulaResolver } from './solution-formulas.mjs';
 import { INVENTORY_TREE_DIRS, CANVAS_MSAPP_LIMIT, classifyInventoryPath, inventoryFacts, inventoryEntry, missingDependencies,
   connectionReferenceFacts, mergeInventory, inventoryCode, canvasMsappRecord, inventoryRecord, COMPONENT_BY_TYPE, securityDefinitions } from './solution-inventory.mjs';
 import {
@@ -33,13 +34,13 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@25";
+export const SCHEMA_PARSER_ID = "schema@26";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
 // Directories of an unpacked solution tree that carry table metadata.
 // Inventory folders (solution-inventory.mjs) are listed, not imported.
-const TREE_DIRS = new RegExp(`^(?:appmodules|appmodulesitemaps|sitemaps|workflows|entities|entityrelationships|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages|${INVENTORY_TREE_DIRS.join('|')})$`, 'i');
+const TREE_DIRS = new RegExp(`^(?:appmodules|appmodulesitemaps|sitemaps|workflows|entities|formulas|entityrelationships|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages|${INVENTORY_TREE_DIRS.join('|')})$`, 'i');
 // Every standard Dataverse table owns these columns; a definition that exports its
 // primary key and all of them is a full table export rather than a column patch.
 const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", "statecode", "statuscode"];
@@ -85,6 +86,9 @@ export function classifySolutionPath(relative) {
   if (app) return { kind: 'app' };
   if (workflow) return { kind: 'workflow' };
   if (plugin) return { kind: 'plugin' };
+  if (parent === 'formulas' && /\.ya?ml$/i.test(file)
+      && (parts.length === 2 || lower.at(-4) === 'entities'))
+    return { kind: 'formula', formulaFile: parts.at(-1), ...(parts.length > 2 ? { entityDir: parts.at(-3) } : {}) };
   if (lower.at(-3) === 'entities' && parts.at(-2) && file === 'entity.xml') return { kind: 'entity', entityDir: parts.at(-2) };
   if (form !== undefined) return { kind: 'form', entityDir: form };
   if (view !== undefined) return { kind: 'view', entityDir: view };
@@ -102,7 +106,7 @@ export function classifySolutionPath(relative) {
   if (file === 'environment_variable_values.json' && lower.length > 1) return { kind: 'envvalue', envDir: parts.at(-2) };
   return classifyInventoryPath(parts, lower);
 }
-const SCHEMA_KINDS = new Set(["app", "form", "view", "workflow", "entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin", "inventory"]);
+const SCHEMA_KINDS = new Set(["app", "form", "view", "workflow", "entity", "formula", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin", "inventory"]);
 
 async function manifestOf(dir) {
   let entries;
@@ -368,6 +372,7 @@ function attributeFacts(node) {
     isLocalizable: bit(t("IsLocalizable")),
     databaseLength: num(t("Length")),
     formulaDefinition: t("FormulaDefinition") || undefined,
+    formulaDefinitionFileName: t("FormulaDefinitionFileName") || undefined,
     optionSetName: t("OptionSetName"),
     optionSet: optionSet ? optionSetFacts(optionSet) : undefined,
   });
@@ -621,6 +626,10 @@ function envValueFacts(text, kind, envDir) {
 /** Parse one solution document into schema facts. */
 export function parseSchemaDocument(text, info = {}) {
   const facts = { entities: [], relationships: [], optionSets: [], envDefinitions: [], envValues: [] };
+  if (info.kind === 'formula') {
+    facts.formulaDefinitions = parseSolutionFormulaDocument(text, info);
+    return facts;
+  }
   if (info.kind === "inventory") {
     // Component files are listed, never imported: no table, form or row comes from them.
     if (typeof text === "string" && /\.xml$/i.test(info.path ?? info.name ?? "") && /<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("XML external declarations are not supported");
@@ -892,7 +901,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
       return [{ file: file.path, kind: file.kind, facts: value, hash }];
     } catch (error) {
       diagnostics.push({
-        code: file.kind === "envvalue" ? "SOLUTION_ENVVAR_INVALID" : file.kind === "yaml" ? "SOLUTION_YAML_INVALID" : "SOLUTION_XML_INVALID",
+        code: file.kind === "formula" ? "SOLUTION_FORMULA_INVALID" : file.kind === "envvalue" ? "SOLUTION_ENVVAR_INVALID" : file.kind === "yaml" ? "SOLUTION_YAML_INVALID" : "SOLUTION_XML_INVALID",
         severity: "error",
         source: file.path,
         // A YAML parser message quotes the offending lines: only its first line (position) is reported.
@@ -1113,6 +1122,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
       origin,
     });
   for (const layer of scan.layers) {
+    const resolveFormula = solutionFormulaResolver(layer.documents, diagnostics);
     for (const doc of layer.documents) {
       fingerprint.update(doc.file).update("\0").update(doc.hash ?? "").update("\0");
       const { facts } = doc;
@@ -1166,11 +1176,13 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         Object.assign(table.collectionLabels, entity.collectionLabels);
         if (entity.fullDefinition && !table.completeFile) table.completeFile = doc.file;
         for (const attribute of entity.attributes) {
+          const resolved = resolveFormula(entity.logicalName, attribute, doc.file);
+          if (resolved.formulaDefinitionSource && !table.sources.includes(resolved.formulaDefinitionSource)) table.sources.push(resolved.formulaDefinitionSource);
           const previous = table.attributes[attribute.name];
           table.attributes[attribute.name] = {
-            ...attribute,
+            ...resolved,
             source: doc.file,
-            sources: [...(previous?.sources ?? []), doc.file],
+            sources: [...new Set([...(previous?.sources ?? []), doc.file, ...(resolved.formulaDefinitionSource ? [resolved.formulaDefinitionSource] : [])])],
           };
         }
         // A later layer replaces the keys it exports again; other keys stay.
@@ -1449,7 +1461,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
  */
 function columnMetadataFacts(tableName, attribute, globalSet) {
   if (attribute.implicit || attribute.intersectTarget) return undefined;
-  const { source: _s, sources: _ss, name: _n, optionSet, ...facts } = attribute;
+  const { source: _s, sources: _ss, name: _n, formulaDefinitionSource: _fs, formulaDefinitionFileName: _ff, optionSet, ...facts } = attribute;
   const set = optionSet ?? (globalSet && !globalSet.dynamic ? (({ source: _gs, sourceKind: _k, ...rest }) => rest)(globalSet) : undefined);
   return { ...facts, ...(set ? { optionSet: set } : {}), customTable: !standardTable(tableName) };
 }

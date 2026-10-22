@@ -75,7 +75,7 @@ export async function resolveSolutionRoots({ sourceDir, explicitRoots, explicitO
 }
 
 // Imported metadata folders, the listed inventory folders (solution-inventory.mjs) and a YAML repository's `solutions` folder.
-const RELEVANT_TREE_NAMES = new Set(["appmodules", "appmodulesitemaps", "sitemaps", "entities", "entityrelationships", "other", "optionsets", "environmentvariabledefinitions",
+const RELEVANT_TREE_NAMES = new Set(["appmodules", "appmodulesitemaps", "sitemaps", "entities", "formulas", "entityrelationships", "other", "optionsets", "environmentvariabledefinitions",
   "controls", "webresources", "appactions", "workflows", "powerpagecomponents", "pluginassemblies", "plugintypes", "sdkmessageprocessingsteps", "sdkmessages",
   "solutions", ...INVENTORY_TREE_DIRS]);
 const RELEVANT_TREE_DIRS = { test: (name) => RELEVANT_TREE_NAMES.has(String(name).toLowerCase()) };

@@ -86,7 +86,7 @@ import {
   richTextConfigurationStatus,
 } from "./lib/richtext-config.mjs";
 import { pageAccess } from "./lib/page-access.mjs";
-import { sourceFingerprint, cachedSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
+import { implementationSourceFingerprint, cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from "./lib/solution-metadata.mjs";
 import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
@@ -203,7 +203,7 @@ const ROOT =path.dirname(fileURLToPath(import.meta.url));
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
 // Bind evidence to the mirage loaded by this process as well as portal sources.
-const implementationFingerprint = await sourceFingerprint(ROOT);
+const implementationFingerprint = await implementationSourceFingerprint(ROOT);
 const auditResponse = Symbol("auditResponse");
 const mime = (file) =>
   ({
@@ -2318,7 +2318,7 @@ async function createPowerPagesSimulator({
       const witness = await trace.run({ ...trace.getStore(), auth, localOnly: true }, () => store.readOperation(async () => {
         verificationTableSelection(selectedTables, store.state);
         const start = { revision, fingerprint, portal };
-        const [currentSource, currentImplementation] = await Promise.all([calculateFingerprint(), cachedSourceFingerprint(ROOT)]);
+        const [currentSource, currentImplementation] = await Promise.all([calculateFingerprint(), cachedImplementationSourceFingerprint(ROOT)]);
         if (start.revision !== revision || start.fingerprint !== fingerprint || start.portal !== portal)
           throw error('Runtime source changed while capturing verification evidence.', 409, 'VerificationSourceDrift');
         return verificationWitness({ state: store.state, tables: selectedTables, identity: currentIdentity(), portal,
@@ -2356,7 +2356,7 @@ async function createPowerPagesSimulator({
       });
       // Browser adapters/admin assets are read on demand. A startup-only digest
       // cannot detect their edits during a comparison against this process.
-      Object.assign(current.status, implementationEvidence(implementationFingerprint, await cachedSourceFingerprint(ROOT)));
+      Object.assign(current.status, implementationEvidence(implementationFingerprint, await cachedImplementationSourceFingerprint(ROOT)));
       current.status.solutionMetadata = {
         ...solutionMetadata.summary,
         data: solutionData.stats,

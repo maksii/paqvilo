@@ -43,9 +43,11 @@ export function runProcess(executable, args, { input = '', timeout = 120_000 } =
 export async function protectSecret(value, decrypt = false) {
   if (process.platform !== 'win32') throw new Error('Stored credentials require Windows DPAPI. On other hosts use environment-provided credentials.');
   const action = decrypt ? 'Unprotect' : 'Protect';
-  const script = `Add-Type -AssemblyName System.Security; $v=[Console]::In.ReadToEnd(); $b=${decrypt ? '[Convert]::FromBase64String($v)' : '[Text.Encoding]::UTF8.GetBytes($v)'}; $r=[Security.Cryptography.ProtectedData]::${action}($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write(${decrypt ? '[Text.Encoding]::UTF8.GetString($r)' : '[Convert]::ToBase64String($r)'});`;
-  const result = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { input: value, timeout: 15_000 });
-  if (result.code !== 0 || result.timedOut) throw new Error('Windows credential encryption/decryption failed; no plaintext fallback.');
+  const script = `$ErrorActionPreference='Stop'; try { [Console]::InputEncoding=New-Object Text.UTF8Encoding($false); [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); Add-Type -AssemblyName System.Security; $v=[Console]::In.ReadToEnd(); $b=${decrypt ? '[Convert]::FromBase64String($v)' : '[Text.Encoding]::UTF8.GetBytes($v)'}; $r=[Security.Cryptography.ProtectedData]::${action}($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write(${decrypt ? '[Text.Encoding]::UTF8.GetString($r)' : '[Convert]::ToBase64String($r)'}); } catch { exit 1; }`;
+  // A cold Windows PowerShell startup can exceed 15 seconds on a busy host.
+  // Keep the operation bounded, including startup, without retrying or persisting input.
+  const result = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { input: value, timeout: 60_000 });
+  if (result.code !== 0 || result.timedOut || result.stderr || !decrypt && !/^[A-Za-z0-9+/]+={0,2}$/.test(result.stdout)) throw new Error('Windows credential encryption/decryption failed; no plaintext fallback.');
   return result.stdout;
 }
 

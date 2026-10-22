@@ -1588,6 +1588,7 @@ async function renderForm(kind, name, context, options) {
     schema = { ...schema, ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }) };
   const identity = context.user ?? context.identity;
   const params = context.request?.params ?? {};
+  const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
   let progress = "";
   let stepIndex = 0;
   let stepList = [];
@@ -1598,7 +1599,16 @@ async function renderForm(kind, name, context, options) {
     // The runtime's sessions and the request's owner: the signed-in contact or browser visitor.
     const sessions = options.webFormSessions;
     const owner = options.webFormOwner ? options.webFormOwner() : webFormSessionOwner(identity);
-    const access = await advancedFormAccess({
+    // Completion makes a session inactive. The successful server-owned postback
+    // still renders that submission, before ordinary reload/resume rules apply.
+    // Keep both owner/form identity and the submitted step's saved record pinned.
+    const completed = postback?.outcome?.type === 'message' && postback.sessionId && postback.stepId && postback.savedId ? sessions?.get(postback.sessionId) : null;
+    const completedPostbackSession = owner && completed?.completed === true
+      && completed.owner === owner && completed.webformId === canonicalId(definition?.id ?? name)
+      && Array.isArray(completed.history)
+      && completed.history.some(entry => canonicalId(entry.stepId) === canonicalId(postback.stepId) && canonicalId(entry.recordId) === canonicalId(postback.savedId))
+      ? completed : null;
+    const access = completedPostbackSession ? null : await advancedFormAccess({
       definition: definition ?? { id: name, metadata: {} },
       identity,
       owner,
@@ -1620,7 +1630,7 @@ async function renderForm(kind, name, context, options) {
       return `<script>location.replace(${json(route.location)});</script>`;
     }
     if (access?.message) return `<div id="MessagePanel" class="message alert alert-info" role="alert"><span id="MessageLabel">${escape(access.message)}</span></div>`;
-    session = access?.session ?? webFormSession({ webformId: definition?.id ?? name, owner, sessionId: params.sessionid, startNew, sessions });
+    session = completedPostbackSession ?? access?.session ?? webFormSession({ webformId: definition?.id ?? name, owner, sessionId: params.sessionid, startNew, sessions });
     // Platform step URLs carry stepid (and sessionid); portal code builds links with them, so a
     // stepid parameter opens that step directly. Without one the session's step renders.
     const stepId = params.stepid ?? (!startNew ? session?.current : null) ?? schema.initialStepId;
@@ -1780,7 +1790,6 @@ async function renderForm(kind, name, context, options) {
   if (kind === "entityform" && mode === FORM_MODE.insert && !formCreateAllowed(store, schema.entity, identity))
     // Still a basic form control: the page keeps its WebForms server form (live permission-denied captures).
     return ENTITY_FORM_CLIENT_VALIDATE + createAccessDeniedForm({ ids, formName: schema.formName ?? schema.title ?? name, snippet: portal.snippets?.["EntitySecurity/Record/CreateAccessDeniedMessage"] }).replace(/^<div id="[^"]*"/, "<!--pp-native-form-->$&");
-  const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
   // Two postback renders exist on live. A form that sets an entity reference rebuilds its
   // controls as on a first load: a single view class, labelled blank list options, and blank
   // choice options unlabelled beside a value. Every other form restores its controls from

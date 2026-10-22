@@ -46,6 +46,7 @@ async function start() {
   return {
     origin: api.origin,
     store,
+    metadata: api.organization.metadata,
     admin: await clientFor(ADMIN_APP),
     basic: await clientFor(BASIC_APP),
     noRole: await clientFor(NOROLE_APP),
@@ -191,10 +192,17 @@ describe("activitypointer union past one page", () => {
   it("follows each source's nextLink, so the union holds every row past 5000 and the count is exact", async () => {
     const dv = await start();
     try {
+      const recordFields = dv.metadata.recordFields;
+      let fieldReads = 0;
+      dv.metadata.recordFields = function(logical, options) {
+        if (logical === 'task') fieldReads++;
+        return recordFields.call(this, logical, options);
+      };
       const tasks = (dv.store.state.tables.task ??= []);
       for (let i = 1; i <= 5005; i++) tasks.push({ activityid: guid(i), taskid: guid(i), subject: `bulk ${i}` });
       const first = await (await dv.admin("activitypointers?$count=true")).json();
       assert.equal(first.value.length, 5000);
+      assert.ok(fieldReads < 50, `Metadata is derived per page, not per field/row (${fieldReads} reads)`);
       assert.equal(first["@odata.count"], 5005);
       assert.ok(first["@odata.nextLink"], "a second page is linked");
       const next = first["@odata.nextLink"].slice(`${dv.origin}${API}`.length);
@@ -203,6 +211,28 @@ describe("activitypointer union past one page", () => {
       const ids = new Set([...first.value, ...second.value].map((row) => row.activityid.toLowerCase()));
       assert.equal(ids.size, 5005);
       assert.equal(second["@odata.nextLink"], undefined);
+    } finally {
+      await dv.close();
+    }
+  });
+
+  it('refreshes projected definitions between requests instead of retaining a previous page cache', async () => {
+    const dv = await start();
+    try {
+      const id = guid(1);
+      (dv.store.state.tables.task ??= []).push({ activityid: id, taskid: id, subject: 'Metadata refresh' });
+      const recordFields = dv.metadata.recordFields;
+      let extra = false;
+      dv.metadata.recordFields = function(logical, options) {
+        const fields = recordFields.call(this, logical, options);
+        return logical === 'task' && extra ? { ...fields, exa_projectionprobe: { dataverseType: 'string' } } : fields;
+      };
+      const read = async () => (await (await dv.admin('tasks')).json()).value[0];
+      assert.equal(Object.hasOwn(await read(), 'exa_projectionprobe'), false);
+      extra = true;
+      assert.equal((await read()).exa_projectionprobe, null);
+      extra = false;
+      assert.equal(Object.hasOwn(await read(), 'exa_projectionprobe'), false);
     } finally {
       await dv.close();
     }

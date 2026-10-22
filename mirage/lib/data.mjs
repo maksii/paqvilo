@@ -4011,10 +4011,25 @@ export class DataStore {
         404,
         "NotFound",
       );
-    this.assertBindingTarget(mapping, row, targetMapping, target, identity);
+    const edgeMapping = relationship.intersect ? this.resolveMapping(relationship.intersect.entity) : null;
+    // A Solution N:N declaration marks its implicit intersect table even when
+    // that table has no Entity.xml. Portal association rights belong to the
+    // endpoints; direct CRUD and project-configured edge tables keep their own
+    // permissions. Do not infer this contract from an arbitrary collection map.
+    const nativeIntersect = edgeMapping?.intersect === true && edgeMapping.userConfigured !== true
+      && relationship.type === "many-to-many" && Boolean(relationship.schemaName);
+    if (nativeIntersect) {
+      try {
+        this.assertAllowed(mapping.logicalName, "append", row, identity, targetMapping.logicalName);
+        this.assertAllowed(targetMapping.logicalName, "appendTo", target, identity, mapping.logicalName);
+      } catch (error) {
+        if (options.portalRequest === true && mapping.logicalName === targetMapping.logicalName && error?.code === "PermissionDenied")
+          error.details = { ...error.details, portalSelfNnAssociation: { schema: relationship.schemaName, table: mapping.logicalName } };
+        throw error;
+      }
+    } else this.assertBindingTarget(mapping, row, targetMapping, target, identity);
     if (relationship.intersect) {
       const link = relationship.intersect;
-      const edgeMapping = this.resolveMapping(link.entity);
       const edges = (this.state.tables[edgeMapping.logicalName] ??= []);
       const values = {
         [link.from]: scalar(field(row, relationship.from)),
@@ -4027,17 +4042,17 @@ export class DataStore {
       );
       if (associate) {
         const edge = { [edgeMapping.idColumn]: this.ids.uuid(), ...values };
-        this.assertAllowed(edgeMapping.logicalName, "create", edge, identity);
+        if (!nativeIntersect) this.assertAllowed(edgeMapping.logicalName, "create", edge, identity);
         if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
       } else {
-        if (!existing.length)
+        if (!nativeIntersect && !existing.length)
           this.assertAllowed(
             edgeMapping.logicalName,
             "delete",
             values,
             identity,
           );
-        for (const edge of existing)
+        for (const edge of nativeIntersect ? [] : existing)
           this.assertAllowed(
             edgeMapping.logicalName,
             "delete",

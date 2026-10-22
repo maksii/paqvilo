@@ -105,6 +105,8 @@ export function initialState(portal, { origin, packs, metadata, platform } = {})
         ["create", "create"],
         ["write", "update"],
         ["delete", "delete"],
+        ["append", "append"],
+        ["appendto", "appendTo"],
       ]
         .filter(
           ([source]) =>

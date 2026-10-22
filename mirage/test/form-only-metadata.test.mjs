@@ -24,6 +24,6 @@ test('runtime imports portal-referenced standalone FormXml without an Entity.xml
  const sim=await createSimulator({sourceDir:path.join(root,'portal'),solutionRoots:[path.join(root,'solution')],stateFile:path.join(root,'state.json'),initial:{mappings:{exa_partial:{entitySet:'exa_partials',idColumn:'exa_partialid',nameColumn:'exa_label'}},tables:{exa_partial:[]},settings:{permissionMode:'permissive'}},watch:false,port:0});t.after(()=>sim.close());
  const response=await fetch(sim.url),html=await response.text();assert.equal(response.status,200);
  const diagnostics=(await(await fetch(sim.url+'/_sim/api/diagnostics')).json()).diagnostics;
- assert.ok(html.includes('Authored standalone field'),html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,'').replace(/\s+/g,' ').slice(0,500));assert.ok(html.includes('id="exa_label"'),'the authored field is rendered');
+ assert.ok(html.includes('Authored standalone field'),'the authored standalone field label is rendered');assert.ok(html.includes('id="exa_label"'),'the authored field is rendered');
  assert.ok(!diagnostics.some(row=>['SYSTEMFORM_UNRESOLVED','COMPONENT_SCHEMA_REQUIRED'].includes(row.code)),JSON.stringify(diagnostics));
 });

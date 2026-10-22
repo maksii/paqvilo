@@ -316,18 +316,36 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     return Object.fromEntries(Object.entries(names).map(([n, targets]) => [n, { dataverseType: n === "ownerid" ? "owner" : "lookup", targets }]));
   };
   const fieldsOf = (logical) => ({ ...systemFields(logical), ...(metadataFields(logical) ?? {}) });
+  // Collection projection is synchronous. Reuse derived definitions only while
+  // shaping that page; the next request must observe source/metadata changes.
+  let projectionFields = null;
+  const projectPage = fn => {
+    const previous = projectionFields;
+    projectionFields ??= new Map();
+    try { return fn(); } finally { projectionFields = previous; }
+  };
+  const declaredFields = (logical, includeNonOData = false) => {
+    const key = `${logical}:${includeNonOData ? 'all' : 'odata'}`;
+    if (projectionFields?.has(key)) return projectionFields.get(key);
+    const fields = metadata?.recordFields?.(logical, { includeNonOData });
+    projectionFields?.set(key, fields);
+    return fields;
+  };
   const readFieldsOf = logical => {
-    const definitions = metadata?.recordFields?.(logical);
+    if (projectionFields?.has(logical)) return projectionFields.get(logical);
+    const definitions = declaredFields(logical);
     if (!definitions) return fieldsOf(logical);
     const originalFields = fieldsOf(logical);
     // Metadata controls which structural properties exist. Preserve the record pipeline's source/observed
     // formatting facts for those properties instead of replacing option labels with synthesized defaults.
-    return Object.fromEntries(Object.entries(definitions).map(([name, definition]) => {
+    const fields = Object.fromEntries(Object.entries(definitions).map(([name, definition]) => {
       const source = store.fieldDefinition(logical, name, () => originalFields);
       const field = source ? { ...definition, ...source } : definition;
       const options = field.options ?? field.statuses ?? field.states;
       return [name, options ? { ...field, options } : field];
     }));
+    projectionFields?.set(logical, fields);
+    return fields;
   };
   const readDefinition = (mapping, name) => {
     const fields = metadata?.recordFields ? readFieldsOf(mapping.logicalName) : null;
@@ -623,7 +641,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // W/"n" and versionnumber agree. A non-null UserLocal or DateOnly value implies timezoneruleversionnumber 4,
   // including a DateOnly-only row and a row whose UserLocal value was cleared while its DateOnly value remains.
   function stampSystemValues(mapping, formatted, dateColumns) {
-    const declared = metadata?.recordFields?.(mapping.logicalName);
+    const declared = metadata?.recordFields ? readFieldsOf(mapping.logicalName) : null;
     if (hasStateColumns(mapping) && (!declared || declared.statecode || declared.statuscode)) {
       if (formatted.statecode == null) formatted.statecode = mapping.recordDefaults?.statecode ?? 0;
       const status = mapping.stateStatusDefaults?.[formatted.statecode] ?? mapping.recordDefaults?.statuscode ?? (Number(formatted.statecode) === 0 ? 1 : undefined);
@@ -685,7 +703,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // apply column security (null) and masking rules (masked unless UnMaskedData and CanReadUnmasked allow it).
   // single is a single-record read (entity, property, $value); collections, FetchXML and $expand rows are not.
   function projectRow(c, mapping, formatted, expand = [], single = false) {
-    const all = metadata?.recordFields?.(mapping.logicalName, { includeNonOData: true });
+    const all = declaredFields(mapping.logicalName, true);
     if (all) for (const [name, field] of Object.entries(all)) {
       if ((field.dataverseMetadata?.IsValidODataAttribute ?? field.columnMetadata?.isValidODataAttribute) !== false) continue;
       for (const key of Object.keys(formatted)) if (key === name || key.startsWith(`${name}@`)) delete formatted[key];
@@ -991,7 +1009,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (c.include?.(RECORD_COUNT)) body[`@${RECORD_COUNT}`] = counted ? Math.min(total, pageCap) : -1;
     if (c.include?.(RECORD_LIMIT)) body[`@${RECORD_LIMIT}`] = counted ? total > pageCap : false;
     const expand = parseExpand(url.searchParams.get("$expand"));
-    body.value = rows.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: true, expand, allColumns: true }), c.include));
+    body.value = projectPage(() => rows.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: true, expand, allColumns: true }), c.include)));
     if (result.paging?.moreRecords) {
       const idColumn = mapping.idColumn;
       const cookie = encodeSkipToken({

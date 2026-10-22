@@ -42,7 +42,10 @@ test('a Secret variable answers null with a SECRET_NOT_EXPOSED_TO_SERVER_LOGIC d
   const messages = await run("function get() { return Server.EnvironmentVariable.get('fx_Key'); }", environmentVariablePayload(state));
   assert.equal(messages.at(-1).raw, 'null');
   assert.deepEqual(messages.filter((m) => m.kind === 'diagnostic').map((m) => m.code), ['SECRET_NOT_EXPOSED_TO_SERVER_LOGIC']);
-  assert.equal(JSON.stringify(messages).includes('vault.azure.net'), false);
+  assert.deepEqual(messages, [
+    { kind: 'diagnostic', code: 'SECRET_NOT_EXPOSED_TO_SERVER_LOGIC', message: 'Secret environment variable fx_Key is not exposed to server logic; bind it to a site setting.' },
+    { kind: 'result', raw: 'null' },
+  ]);
 });
 
 test('without a payload every variable is null', async () => {

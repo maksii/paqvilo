@@ -3,7 +3,67 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { stateFingerprint, observedEvidence, sourceFingerprint, cachedSourceFingerprint, implementationEvidence } from "../lib/evidence.mjs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
+import { stateFingerprint, observedEvidence, sourceFingerprint, cachedSourceFingerprint, implementationSourceFingerprint, cachedImplementationSourceFingerprint, implementationEvidence } from "../lib/evidence.mjs";
+
+test("implementation hashes ignore only generated SDK directories and retain authored and mapped assemblies", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sim-sdk-fingerprint-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const files = ["test-sdk/Gate/obj/apphost.exe", "test-sdk/Gate/bin/Gate.dll", "test-sdk/Gate/Program.cs", "plugins/bin/Plugin.dll", "obj/runtime.mjs", "lib/handler.mjs"];
+  for (const file of files) {
+    await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await fs.writeFile(path.join(root, file), "first");
+  }
+  let implementation = await implementationSourceFingerprint(root);
+  let source = await sourceFingerprint(root);
+  assert.equal(await cachedImplementationSourceFingerprint(root), implementation);
+  assert.equal(await cachedSourceFingerprint(root), source);
+  for (const file of files) {
+    await fs.writeFile(path.join(root, file), "second");
+    const next = await cachedImplementationSourceFingerprint(root);
+    assert.equal(next, await implementationSourceFingerprint(root));
+    if (file.startsWith("test-sdk/") && /\/(bin|obj)\//.test(file)) assert.equal(next, implementation, file);
+    else assert.notEqual(next, implementation, file);
+    const nextSource = await cachedSourceFingerprint(root);
+    assert.notEqual(nextSource, source, `generic export hash must retain ${file}`);
+    assert.equal(nextSource, await sourceFingerprint(root));
+    implementation = next;
+    source = nextSource;
+  }
+  await fs.rm(path.join(root, "test-sdk/Gate/obj"), { recursive: true });
+  assert.equal(await cachedImplementationSourceFingerprint(root), implementation, "generated directory removal is irrelevant");
+  await fs.writeFile(path.join(root, "test-sdk/Gate/New.cs"), "authored");
+  assert.notEqual(await cachedImplementationSourceFingerprint(root), implementation, "new SDK source invalidates evidence");
+});
+
+test("fresh Mirage startup tolerates an exclusively locked SDK build product", { timeout: 60000 }, async t => {
+  const sdkRoot = fileURLToPath(new URL("../test-sdk/", import.meta.url));
+  const owned = await fs.mkdtemp(path.join(sdkRoot, "fingerprint-lock-"));
+  const generated = path.join(owned, "obj", "apphost.exe");
+  await fs.mkdir(path.dirname(generated));
+  await fs.writeFile(generated, "owned SDK build product");
+  let locker;
+  t.after(async () => {
+    if (locker && locker.exitCode === null) { const exited = once(locker, "exit"); locker.kill(); await exited; }
+    await fs.rm(owned, { recursive: true, force: true });
+  });
+  if (process.platform === "win32") {
+    locker = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", '$f=[System.IO.File]::Open($env:PAQVILO_TEST_LOCK,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None); try { [Console]::WriteLine("LOCKED"); [Console]::In.ReadLine() | Out-Null } finally { $f.Dispose() }'], { env: { ...process.env, PAQVILO_TEST_LOCK: generated }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const [ready] = await once(locker.stdout, "data");
+    assert.match(ready.toString(), /LOCKED/);
+    await assert.rejects(sourceFingerprint(fileURLToPath(new URL("../", import.meta.url))), { code: "EBUSY" });
+  }
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(new URL("../server.mjs", import.meta.url).href)}); console.log("MIRAGE_IMPORTED")`], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", value => { stdout += value; });
+  child.stderr.on("data", value => { stderr += value; });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  const [code] = await once(child, "exit");
+  assert.equal(code, 0, stderr);
+  assert.match(stdout, /MIRAGE_IMPORTED/);
+});
 
 test("cached implementation fingerprints match full hashes and follow same-size edits, additions and removals", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sim-cached-fingerprint-"));

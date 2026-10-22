@@ -2,7 +2,7 @@ import {guid,stable,sha256,encodeArtifact,decodeArtifact,authoredQuery,odataRequ
 
 // Async plugin commits arrive after the initiating HTTP response. Keep the owned
 // probe until the operation's checksummed packets settle, without claiming durability.
-export async function reconcileBackendArtifact({read,artifactType,stopped=()=>false,timeoutMs=60000,intervalMs=1000,now=()=>Date.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}) {
+export async function reconcileBackendArtifact({read,artifactType,stopped=()=>false,timeoutMs=120000,intervalMs=1000,now=()=>Date.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}) {
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>120000||!Number.isSafeInteger(intervalMs)||intervalMs<1||intervalMs>timeoutMs)throw new Error('Invalid backend reconciliation bound.');
   const started=now();let events=[],attempts=0,previous=null;
   const finish=(state,extra={})=>({state,attempts,elapsedMs:now()-started,events,...extra});
@@ -37,9 +37,12 @@ export function createRunner({manifest,context,request,notify=()=>{},stopped=()=
   const artifactTransportBudgetBytes=manifest.artifactTransportBudgetBytes??20*1024*1024;
   if(!Number.isSafeInteger(artifactTransportBudgetBytes)||artifactTransportBudgetBytes<=0)throw new Error('Invalid artifact transport budget.');
   let artifactTransportBytes=0;
-  async function backendEvents(operationId,signal) {
+  async function backendEvents(operationId,signal,fresh=false) {
     const fields=['pqvd_plugineventid','pqvd_stage','pqvd_executionorder','pqvd_depth','pqvd_querytype','pqvd_artifacttype','pqvd_payloadtext','pqvd_payloadhash','pqvd_spanid','pqvd_parentspanid','pqvd_partnumber','pqvd_partcount','pqvd_message'];
-    const xml=`<fetch count="200"><entity name="pqvd_pluginevent">${fields.map(f=>`<attribute name="${f}"></attribute>`).join('')}<filter><condition attribute="pqvd_operationid" operator="eq" value="${guid(operationId)}"></condition></filter><order attribute="pqvd_plugineventid"></order></entity></fetch>`;
+    // Power Pages can retain an earlier query response even with cache:no-store.
+    // A nonnull primary key always satisfies EQ OR NE; only the cache key varies.
+    const nonce=fresh?crypto.randomUUID():null,freshness=nonce?`<filter type="or"><condition attribute="pqvd_plugineventid" operator="eq" value="${nonce}"></condition><condition attribute="pqvd_plugineventid" operator="ne" value="${nonce}"></condition></filter>`:'';
+    const xml=`<fetch count="200"><entity name="pqvd_pluginevent">${fields.map(f=>`<attribute name="${f}"></attribute>`).join('')}<filter><condition attribute="pqvd_operationid" operator="eq" value="${guid(operationId)}"></condition>${freshness}</filter><order attribute="pqvd_plugineventid"></order></entity></fetch>`;
     return request({url:`/_api/pqvd_pluginevents?fetchXml=${encodeURIComponent(xml)}`,signal});
   }
   const actor=()=>sha256({contactId:context.contactId,roles:[...context.roles].sort()});
@@ -165,7 +168,7 @@ export function createRunner({manifest,context,request,notify=()=>{},stopped=()=
       const body={'pqvd_activeoperationid@odata.bind':bind('pqvd_testoperations',op.pqvd_testoperationid),pqvd_triggernonce:crypto.randomUUID(),pqvd_pluginscenario:profile,pqvd_hopbudget:profile==='P09'?9:3};
       const response=await request({method:'PATCH',url:`/_api/pqvd_crudprobes(${probeId})`,body});const result={profile,operationId:op.pqvd_testoperationid,probeId,status:response.status,response:response.text,rollbackEvidenceMode:'transaction-bound; failure may remove backend logs'};evidence.push(result);
       if(profile==='P10'&&response.ok){
-        const reconciled=await reconcileBackendArtifact({read:({signal})=>backendEvents(op.pqvd_testoperationid,signal),artifactType:'AsyncContext',stopped});
+        const reconciled=await reconcileBackendArtifact({read:({signal})=>backendEvents(op.pqvd_testoperationid,signal,true),artifactType:'AsyncContext',stopped});
         const {events,...state}=reconciled;result.backendEvents=events;result.backendReconciliation=state;
         if(state.state!=='observed')evidence.push({kind:'profile-backend-incomplete',profile,operationId:op.pqvd_testoperationid,...state});
       }else{const events=await backendEvents(op.pqvd_testoperationid);result.backendEvents=events.ok?events.data.value:[];}
@@ -282,6 +285,6 @@ export function mount(manifest,context) {
   document.getElementById('co-view-history').onclick=async()=>{try{if(!baselineSelect.value)throw new Error('Select a saved run.');const runner=createRunner({manifest,context,request:portalRequest});const loaded=await runner.loadRecordedRun(baselineSelect.value);current=loaded.summary||loaded.index;render(current);status.textContent=`Saved run loaded; ${loaded.verifiedParts||0} checksummed parts verified${loaded.legacy?' (legacy inline index)':''}.`;}catch(error){status.textContent=error.message;}};
   const profileSelect=document.getElementById('co-profile');for(const p of manifest.pluginProfiles||[])profileSelect.add(new Option(p.id+' '+p.readiness,p.id));
   document.getElementById('co-history').onclick=async()=>{try{const response=await portalRequest({url:'/_api/pqvd_testruns?$select=pqvd_testrunid,pqvd_name,pqvd_startedat&$orderby=pqvd_startedat desc&$top=20'});if(!response.ok) throw new Error(`History read HTTP ${response.status}`);baselineSelect.replaceChildren(new Option('No baseline',''));for(const run of response.data.value) baselineSelect.add(new Option(run.pqvd_name,run.pqvd_testrunid));}catch(error){status.textContent=error.message;}};
-  const execute=async crud=>{cancelled=false;log.textContent='';status.textContent='Running';document.querySelectorAll('[data-run]').forEach(b=>b.disabled=true);try{const runner=createRunner({manifest,context,request:portalRequest,notify:render,stopped:()=>cancelled});current=await runner.run({crud,crudMode:document.getElementById('co-crud-scope').value,selectedCases:select.value==='all'?undefined:[select.value],baselineId:baselineSelect.value||null,pluginProfile:profileSelect.value||null});render(current);status.textContent=current.error?'Incomplete: '+current.error:'Finished; inspect recorded completeness and verdicts.';}catch(error){status.textContent=error.message;current={error:error.message,httpStatus:error.response?.status,rawResponse:error.response?.text};render(current);}finally{document.querySelectorAll('[data-run]').forEach(b=>b.disabled=false);}};
+  const execute=async crud=>{cancelled=false;log.textContent='';status.textContent='Running';document.querySelectorAll('[data-run]').forEach(b=>b.disabled=true);try{const runner=createRunner({manifest,context,request:portalRequest,notify:render,stopped:()=>cancelled});current=await runner.run({crud,crudMode:document.getElementById('co-crud-scope').value,selectedCases:select.value==='all'?undefined:[select.value],baselineId:baselineSelect.value||null,pluginProfile:profileSelect.value||null});render(current);status.textContent=current.error?'Incomplete: '+current.error:cancelled?'Interrupted; inspect recorded completeness and verdicts.':'Finished; inspect recorded completeness and verdicts.';}catch(error){status.textContent=error.message;current={error:error.message,httpStatus:error.response?.status,rawResponse:error.response?.text};render(current);}finally{document.querySelectorAll('[data-run]').forEach(b=>b.disabled=false);}};
   document.getElementById('co-read').onclick=()=>execute(false);document.getElementById('co-crud').onclick=()=>execute(true);document.getElementById('co-stop').onclick=()=>{cancelled=true;status.textContent='Stopping after current request';};document.getElementById('co-export').onclick=()=>{const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([JSON.stringify(current,null,2)],{type:'application/json'}));link.download='co-permission-run.json';link.click();URL.revokeObjectURL(link.href);};
 }

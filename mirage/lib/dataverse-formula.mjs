@@ -18,8 +18,8 @@
 // A formula that answers a Power Fx error value reads null with FORMULA_ERROR (its ErrorKind) once per column. A decimal
 // result keeps the column's precision (default 2). An async-only engine is refused by evaluateSync (PowerFxAsyncAdapter),
 // so the column reads null with the diagnostic; the explicitly disabled engine answers 501 and reads null the same way.
-// unverified: Learn says a formula column's FormulaDefinition is YAML ("Specialized columns using code"). The key that holds
-// the expression is not confirmed, so the stored text is passed to the evaluator whole.
+// solution-schema resolves a referenced FormulaDefinitions YAML column mapping to its expression;
+// metadata containing an inline FormulaDefinition supplies the expression directly.
 // unverified: the native refusal of a value for a formula column (read-only). The invalid-property shape (0x80048d19) used by
 // calculated columns is reused.
 // ponytail: a formula is evaluated once per row per query (the read copy keeps it) with no cross-query cache. Upgrade path:
