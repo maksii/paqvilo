@@ -6,7 +6,7 @@
 // Deterministic probes answer the capability flags (unverified, pending live capture LC4). AddToFeedbackLoop is store-backed.
 // ponytail: AddToFeedbackLoop does not write the prediction input and output file columns (upgrade via dataverse-files).
 // The probes ignore arguments when the corresponding cloud feature is unavailable.
-import { randomUUID } from "node:crypto";
+import { parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
 import { aiUnavailable, argsOf, idOf, registerAddon, registerInternalMessage } from "./dataverse-addon-common.mjs";
 
 // Learn (code interpreter, Predict): "This public message is for internal use only." for AIModelPublish.
@@ -20,24 +20,18 @@ const PROBES = {
   copilottextdatastatus: async () => ({ response: null }),
 };
 
-const iso = (at) => new Date(at).toISOString();
-
-// A feedback-loop row for the model. The bound model's id comes from the route; the prediction input and output are not written.
+// A feedback-loop row for the model, created through the record handlers as the caller, so plug-ins, audit and field security see it.
+// The bound model's id comes from the route; the prediction input and output are not written.
 function feedbackLoop(api) {
   return async (c) => {
     api.principals.authorize({ user: c.user, entity: "msdyn_aimodel", operation: "appendto", row: c.target.row, mapping: c.target.mapping });
     const mapping = api.store.resolveMapping("msdyn_aibfeedbackloop");
     api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: "create", mapping });
     api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: "append", mapping });
-    const row = {
-      msdyn_aibfeedbackloopid: randomUUID(),
-      msdyn_name: argsOf(c).inputName ?? null,
-      msdyn_aimodelid: c.target.id,
-      createdon: iso(api.clock()),
-    };
-    await api.change(() => api.store.transact(() => {
-      (api.store.state.tables.msdyn_aibfeedbackloop ??= []).push(row);
-    }, { isolated: true }));
+    const url = new URL(`${c.origin}/api/data/${c.version}/${mapping.entitySet}`);
+    await api.records.handle({ ...c, method: "POST", url, route: parseDataverseRoute(url.pathname),
+      body: { msdyn_name: argsOf(c).inputName ?? null, "msdyn_AIModelId@odata.bind": `/${c.target.mapping.entitySet}(${c.target.id})` },
+      headers: { "content-type": "application/json" }, prefer: parsePrefer(undefined) });
     return undefined;
   };
 }

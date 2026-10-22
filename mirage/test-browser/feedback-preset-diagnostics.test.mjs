@@ -13,7 +13,9 @@ test('a failed lazy configuration link marks its preset immediately and repeated
   t.after(async()=>{await browser?.close();await app?.close();await fs.rm(root,{recursive:true,force:true});});
   const pack={id:'invented-links',name:'Invented links',description:'Synthetic lazy link mismatch',matches:()=>true,configurationPresets:[{id:'declared',name:'Declared'},{id:'loaded',name:'Loaded'}],presets:()=>({mismatch:{name:'Mismatch',configurationPreset:'declared',load:()=>({configurationPreset:'loaded'})}})};
   app=await createSimulator({sourceDir:root,initial:initial(),packs:[pack],watch:false});browser=await chromium.launch(browserLaunchOptions({headless:true}));const page=await browser.newPage();
-  await page.goto(app.url+'/_sim/#access');await page.getByLabel('Available preset',{exact:true}).selectOption('mismatch');
+  await page.goto(app.url+'/_sim/#access');
+  // The scenario picker is a kit section collapsed by default; the failure itself shows in the page notification.
+  await page.locator('[data-ui-section="preset-picker"] > summary').click();await page.getByLabel('Available preset',{exact:true}).selectOption('mismatch');
   await page.getByLabel('Also apply the data preset’s configuration preset (if provided)').check();
   assert.doesNotMatch(await page.locator('#available-preset option[value="mismatch"]').textContent(),/invalid configuration link/);
   await page.getByRole('button',{name:'Apply selected preset',exact:true}).click();

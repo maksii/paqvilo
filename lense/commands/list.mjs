@@ -2,10 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { loadCatalogue, loadDevTargets, ENV_SETTINGS, resolveMirageConfig } from '../config.mjs';
+import { loadCatalogue, loadDevTargets, ENV_SETTINGS, resolveMirageConfig, mirageOnlySite } from '../config.mjs';
 import { detectFormat } from '../portal-model.mjs';
 import { browserProfileInfo } from '../browser-profile.mjs';
 import { resolveCatalogue } from '../resolved-catalogue.mjs';
+import { scanSolutionSources } from '../../mirage/lib/solution-schema.mjs';
+import { inventoryCounts } from '../model-driven.mjs';
+import { miragePaths } from './mirage.mjs';
 
 /** Portal extracts in the repository, whether configured or not. */
 export function discoverExtracts(startDir) {
@@ -69,7 +72,22 @@ export default async function list(_cfg, args) {
     defaultEnv: site.defaultEnv ?? Object.keys(site.environments)[0] ?? null,
     environments: Object.entries(site.environments).map(([env, e]) => ({ name: env, ...e })),
     mirage: mirageOf(site),
+    mirageOnly: mirageOnlySite(site),
   }));
+  // A Mirage-only selected site is a valid catalogue choice, not a broken one: list reports it and succeeds.
+  const usable = Boolean(inEffect) || problemCode === 'mirage_only_site';
+  // Solution inventory (canvas apps, connectors, dashboards...): listed with counts, never coverage.
+  // The same solution cache the derived Solution order uses (lense/commands/mirage.mjs), so a repeated list parses only what changed.
+  const cacheFile = path.join(miragePaths(null, { config: catalogue.configFile }).discoveryRoot, 'cache/solution-discovery.json');
+  for (const site of sites) {
+    const roots = site.mirage.resolved.solutionRoots;
+    if (!roots.length) continue;
+    try {
+      const scan = await scanSolutionSources(roots, { cacheFile, order: site.mirage.resolved.solutionOrder ?? 'derived' });
+      try { await scan.cache?.save({ prune: false }); } catch { /* the cache only saves parsing time */ }
+      site.inventory = { level: 'inventory', counts: inventoryCounts(scan.inventory), components: scan.inventory.length, cache: scan.cache?.stats ?? null };
+    } catch (error) { site.inventory = { error: error.message }; }
+  }
   const configured = new Set(sites.map((s) => s.source && path.resolve(s.source).toLowerCase()));
   const unconfigured = discoverExtracts(catalogue.sourceRoot).filter((dir) => !configured.has(dir.toLowerCase()));
   const coverage = {
@@ -84,7 +102,7 @@ export default async function list(_cfg, args) {
   if (args.json) {
     let resolved;
     try { resolved = await resolveCatalogue(args); } catch (error) { resolved = { error: error.message }; }
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', ok: Boolean(inEffect), errors: inEffect ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }], offline: true, sourceRoot: catalogue.sourceRoot, resolved, sites, inEffect: inEffect && {
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', ok: usable, errors: usable ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }], offline: true, sourceRoot: catalogue.sourceRoot, resolved, sites, inEffect: inEffect && {
       site: inEffect.siteName, env: inEffect.envName, url: inEffect.origin, source: inEffect.sourceDir, scope: inEffect.site.scope, baseline: inEffect.site.markup.baseline, portals: inEffect.portals,
       browser: { channel: inEffect.browser.channel, headless: inEffect.browser.headless, debugPort: inEffect.browser.debugPort, bypassCSP: inEffect.browser.bypassCSP, mode: inEffect.browser.cdpUrl ? 'attach' : 'launch',
         profileMode: inEffect.browser.cdpUrl ? 'attached' : inEffect.browser.userDataDir ? 'external' : inEffect.browser.profile ? 'named' : 'default',
@@ -96,7 +114,7 @@ export default async function list(_cfg, args) {
       'PAQVILO_<SITE>_SOURCE': 'sources folder of a site (overrides the catalogue; a new name adds a site)',
       'PAQVILO_<SITE>_ENV_<NAME>': 'adds an environment to a site',
     } } : {}), unconfigured }, null, 2));
-    return inEffect ? 0 : 1;
+    return usable ? 0 : 1;
   }
 
   console.log(`catalogue: ${catalogue.configFile}`);
@@ -104,7 +122,7 @@ export default async function list(_cfg, args) {
   console.log(`personal:  ${catalogue.settings.file}${fs.existsSync(catalogue.settings.file) ? '' : '   (not there yet: copy .env.example, or run "npm run use")'}\n`);
   for (const site of sites) {
     const current = inEffect?.siteName === site.name;
-    const state = !site.source ? 'no source folder configured' : site.format ? `${site.format} extract` : 'FOLDER NOT FOUND or not an extract';
+    const state = site.mirageOnly ? `${site.mirage.resolved.runtime?.kind ?? site.mirage.configured.runtime.kind} Mirage site, no portal export needed` : !site.source ? 'no source folder configured' : site.format ? `${site.format} extract` : 'FOLDER NOT FOUND or not an extract';
     console.log(`${current ? '*' : ' '} ${site.name.padEnd(10)} ${site.source ? rel(site.source) : ''}   [${state}]`);
     const width = Math.max(0, ...site.environments.map((e) => e.name.length));
     for (const env of site.environments) {
@@ -112,9 +130,10 @@ export default async function list(_cfg, args) {
       const extras = [env.name === site.defaultEnv ? 'default' : null, env.caution ? 'CAUTION: real data' : null, env.baseline ? `baseline ${env.baseline}` : null, env.scope ? `scope ${env.scope}` : null].filter(Boolean);
       console.log(`    ${mark} ${env.name.padEnd(width)}  ${env.url}${extras.length ? `   (${extras.join(', ')})` : ''}`);
     }
-    if (!site.environments.length) console.log('      (no environments configured)');
+    if (!site.environments.length && !site.mirageOnly) console.log('      (no environments configured)');
     const mirage = mirageText(site.mirage.resolved, { port: false });
     if (mirage) console.log(`      mirage: ${mirage}`);
+    if (site.inventory?.components) console.log(`      inventory (listed, not coverage): ${Object.entries(site.inventory.counts).map(([kind, levels]) => `${Object.values(levels).reduce((a, b) => a + b, 0)} ${kind}`).join(', ')}`);
   }
 
   console.log('');
@@ -129,7 +148,7 @@ export default async function list(_cfg, args) {
     console.log(`            mirage ${mirageText(inEffect.mirageConfig) || 'defaults (sibling Solution discovery, port 8787)'}`);
     for (const note of inEffect.notes) console.log(`            note: ${note}`);
   } else {
-    console.log(`in effect:  nothing usable - ${problem}`);
+    console.log(`in effect:  ${usable ? "no Lense target" : "nothing usable"} - ${problem}`);
   }
   console.log(`\ndev coverage: ${coverage.mode}, ${coverage.targets.length} target(s); ${coverage.configuredTargetCount} configured portal/environment entries${coverage.ready ? '' : ' (not ready)'}`);
   for (const target of coverage.targets) console.log(`  ${target.initial ? '*' : ' '} ${target.site} @ ${target.env}  ${target.origin}  <- ${rel(target.source)}`);
@@ -153,5 +172,5 @@ export default async function list(_cfg, args) {
   }
   console.log('\nchoose:  npm run use            (remembers it in .env)');
   console.log('         npm run dev -- --site <site> --env <environment>     (this run only)');
-  return inEffect ? 0 : 1;
+  return usable ? 0 : 1;
 }

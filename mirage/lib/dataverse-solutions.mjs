@@ -23,15 +23,17 @@ import { DataError } from "./data-error.mjs";
 import { contextUrl } from "./dataverse-odata.mjs";
 import { readSolutionZip, parseSchemaDocument } from "./solution-schema.mjs";
 import { parseSolutionXml, child, childText, labelsOf, pickLabel } from "./solution-xml.mjs";
-import { createTable, createColumn, createKey } from "./dataverse-metadata-tables.mjs";
+import { createTable, createColumn, createKey, updateTable, activateKey } from "./dataverse-metadata-tables.mjs";
 import { readSolutionAssetEntries, appendSolutionAssetLayer, latestSolutionAssetEntries, solutionAssetLayers } from "./dataverse-solution-assets.mjs";
 import { solutionDocumentComponents, applySolutionPayloads, mergeSolutionCustomizationEntries } from "./dataverse-solution-components.mjs";
 import { standardTableDef } from './dataverse-standard.mjs';
 import { installSolutionMessages, entriesOfSolution, holdingArchive, assertStageable, metadataIdOf, componentsOf, addMemberRows } from "./dataverse-solution-messages.mjs";
 import { registerInternalMessage } from "./dataverse-addon-common.mjs";
+import { securityDefinitions, mergeInventory } from "./solution-inventory.mjs";
+import { importSolutionSecurity } from "./dataverse-security.mjs";
 import {
   createOneToMany, createManyToMany, createGlobalSet, requireMetadataPrivilege, addSolutionComponents, assertUnpatched, componentObjectId,
-  lastMetadataSeq,
+  lastMetadataSeq, managedLayerOf, managedLayerId, layerStack, activeOnTop, projectManagedFlags,
 } from "./dataverse-metadata-relationships.mjs";
 
 const DEFAULT_LCID = 1033;
@@ -387,7 +389,7 @@ function readArchive(base64) {
   } catch (error) {
     throw new DataError("The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.", 400, "0x80048060"); // Learn: ImportCustomizationsBadZipFileError
   }
-  const archive = { manifest: null, entities: [], relationships: [], optionSets: [], assetEntries, payloadComponents: [] };
+  const archive = { manifest: null, entities: [], relationships: [], optionSets: [], assetEntries, payloadComponents: [], inventory: [] };
   for (const entry of assetEntries) {
     // Binary web resources and plug-in assemblies remain opaque. Only XML
     // component declarations are read; declarations/entities are rejected.
@@ -400,6 +402,7 @@ function readArchive(base64) {
     archive.entities.push(...(facts.entities ?? []));
     archive.relationships.push(...(facts.relationships ?? []));
     archive.optionSets.push(...(facts.optionSets ?? []));
+    archive.inventory.push(...(facts.inventory ?? []).filter((record) => record.component === "role" || record.component === "fieldsecurityprofile"));
   }
   if (!archive.manifest?.solution.uniqueName) throw invalid("The solution file has no solution.xml with a UniqueName."); // unverified
   const root = parseSolutionXml(archive.manifest.xml, { recover: true });
@@ -528,15 +531,34 @@ const entityLayerBody = (entity) => ({
 });
 
 // Applies the archive's components in the store (inside the caller's transaction) and returns its members: { kind, logical, name,
-// created }. created is true when the import introduced the component (componentOrigin records it). A managed archive also records
-// a managed layer for each table and column (state.dataverse.managedLayers): activeOnTop is true when the import kept an existing
-// definition, so the unmanaged customization stays on top of the layer.
+// created }. created is true when the import introduced the component (componentOrigin records it). A managed archive also pushes
+// its layer onto each component's managed stack (state.dataverse.managedLayers, dataverse-metadata-relationships.mjs): tables and
+// columns with their definition, keys and relationships for ownership. Learn solution-layers-alm and update-solutions: the
+// incoming definition becomes active when this solution's layer is the top managed layer and no unmanaged customization sits on
+// top; OverwriteUnmanagedCustomizations governs only that unmanaged customization (replaced with it, kept on top without it).
 function apply(api, archive, { overwrite, origin, version, caller }, log) {
   const { store } = api;
   const state = store.state;
   const c = { api, origin, version, headers: {}, caller };
   const members = [];
   const layers = [];
+  const managed = archive.solution.managed === true;
+  // The solution's own id when it is already installed (an update replaces its layer in place); a new solution's entries get
+  // their id in recordSolution.
+  const ownId = (state.tables.solution ?? []).find((s) => lower(s.uniquename) === lower(archive.solution.uniqueName))?.solutionid ?? null;
+  // An existing component without a managed stack is an unmanaged definition; with one, the customization above the stack counts.
+  const unmanagedOnTop = (kind, logical, name = null) => {
+    const layer = managedLayerOf(api, kind, logical, name);
+    return layerStack(layer).length ? activeOnTop(api, layer) : true;
+  };
+  // This import's layer is the top managed layer: pushed on top, or its own entry already the top one.
+  const becomesTop = (kind, logical, name = null) => {
+    const stack = layerStack(managedLayerOf(api, kind, logical, name));
+    const at = ownId ? stack.findIndex((entry) => lower(entry.solutionid) === lower(ownId)) : -1;
+    return at === -1 || at === stack.length - 1;
+  };
+  // Whether an existing definition is replaced by the incoming one.
+  const replaces = (kind, logical, name = null) => (managed ? becomesTop(kind, logical, name) && (overwrite || !unmanagedOnTop(kind, logical, name)) : overwrite);
   for (const set of archive.optionSets) {
     const existing = Object.keys(state.dataverse?.globalOptionSets ?? {}).some((name) => lower(name) === lower(set.name));
     if (existing) log.push({ kind: "optionset", name: set.name, action: "kept" });
@@ -563,15 +585,17 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
     const key = `LogicalName='${logical}'`;
     const existed = state.mappings[logical] !== undefined;
     const outcome = new Map(attributes.map((a) => [a.name, "created"])); // a new table's columns are created with it
+    const tableReplaced = existed && managed && replaces("entity", logical) && state.mappings[logical].dataverseMetadata?.createdByMetadataApi === true;
     if (!existed) {
       createTable(c, entityBody(entity, attributes)); // grants the table's privileges too
       log.push({ kind: "entity", name: logical, action: "created" });
     } else {
-      log.push({ kind: "entity", name: logical, action: "kept" });
+      if (tableReplaced) updateTable(c, key, entityLayerBody(entity));
+      log.push({ kind: "entity", name: logical, action: tableReplaced ? "overwritten" : "kept" });
       const mapping = state.mappings[logical];
       for (const a of attributes) {
         const exists = Object.hasOwn(mapping.fields ?? {}, a.name);
-        if (exists && !overwrite) {
+        if (exists && !replaces("attribute", logical, a.name)) {
           outcome.set(a.name, "kept");
           log.push({ kind: "attribute", name: `${logical}.${a.name}`, action: "kept" });
           continue;
@@ -611,12 +635,17 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
       members.push({ kind: "key", logical, name: sourceKey.name, created: !exists });
     }
     for (const a of attributes) members.push({ kind: "attribute", logical, name: a.name, created: outcome.get(a.name) === "created" });
-    if (archive.solution.managed === true) {
+    if (managed) {
       const primary = (a) => a.name === entity.primaryNameAttribute || a.isPrimaryName === true; // the primary name column is never removed
-      layers.push({ kind: "entity", logical, name: null, body: entityLayerBody(entity), activeOnTop: existed });
+      const entityKept = existed && !tableReplaced && unmanagedOnTop("entity", logical);
+      layers.push({ kind: "entity", logical, name: null, body: entityLayerBody(entity), customizable: entity.isCustomizable !== false,
+        applied: !existed || tableReplaced, kept: entityKept });
       for (const a of attributes.filter((x) => !primary(x))) {
-        layers.push({ kind: "attribute", logical, name: a.name, body: attributeBody(a, false), activeOnTop: outcome.get(a.name) === "kept" });
+        const kept = outcome.get(a.name) === "kept";
+        layers.push({ kind: "attribute", logical, name: a.name, body: attributeBody(a, false), customizable: a.isCustomizable !== false,
+          applied: !kept, kept: kept && unmanagedOnTop("attribute", logical, a.name) });
       }
+      for (const sourceKey of entity.keys ?? []) layers.push({ kind: "key", logical, name: lower(sourceKey.name), body: null, applied: true, kept: false });
     }
   }
   for (const rel of archive.relationships) {
@@ -633,11 +662,24 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
       log.push({ kind: "relationship", name: rel.schemaName, action: "created" });
     }
     members.push({ kind: "relationship", logical: entity, name: rel.schemaName, created: !existed });
+    if (managed) layers.push({ kind: "relationship", logical: entity, name: rel.schemaName, body: null, applied: true, kept: false });
   }
-  if (archive.solution.managed === true) {
-    const managed = ((state.dataverse ??= {}).managedLayers ??= {});
+  if (managed) {
+    const stacks = ((state.dataverse ??= {}).managedLayers ??= {});
     const seq = lastMetadataSeq(api); // the change log after the import: a later change is an active customization
-    for (const layer of layers) managed[metadataIdOf(api, layer.kind, layer.logical, layer.name)] = { ...layer, solutionid: null, seq };
+    for (const { kind, logical, name, body, customizable, applied, kept } of layers) {
+      const id = managedLayerId(api, kind, logical, name);
+      const record = (stacks[id] ??= { kind, logical, name, stack: [], activeOnTop: false, seq });
+      const stack = layerStack(record);
+      const entry = { solutionid: ownId, version: archive.solution.version ?? null, body, customizable, seq };
+      const at = ownId ? stack.findIndex((item) => lower(item.solutionid) === lower(ownId)) : -1;
+      if (at >= 0) stack[at] = entry;
+      else stack.push(entry);
+      // The incoming definition is live: nothing customizes it yet. A kept unmanaged definition stays the active layer.
+      if (applied) Object.assign(record, { activeOnTop: false, seq });
+      else if (kept) record.activeOnTop = true;
+    }
+    projectManagedFlags(api);
   }
   return members;
 }
@@ -675,14 +717,14 @@ function recordSolution(api, archive, members) {
     createdon: row.createdon ?? stamp(api),
   });
   addSolutionComponents(api, info.uniqueName, members);
-  const keyIds = new Set(members.filter(member => member.kind === 'key').map(componentObjectId));
-  addMemberRows(store, row.solutionid, componentsOf(store.state).filter(component => keyIds.has(component.id)));
+  const keyIds = new Set(members.filter(member => member.kind === 'key').map(member => componentObjectId(member, api.settings.organizationId)));
+  addMemberRows(store, row.solutionid, componentsOf(store.state, api.settings.organizationId).filter(component => keyIds.has(component.id)));
   // A created component records the solution that introduced it (the base layer an uninstall or upgrade removes). The managed
   // layers this import recorded take the solution too.
   const dv = (store.state.dataverse ??= {});
   const origin = (dv.componentOrigin ??= {});
-  for (const member of members) if (member.created) origin[lower(componentObjectId(member))] = row.solutionid;
-  for (const layer of Object.values(dv.managedLayers ?? {})) if (layer.solutionid == null) layer.solutionid = row.solutionid;
+  for (const member of members) if (member.created) origin[lower(componentObjectId(member, api.settings.organizationId))] = row.solutionid;
+  for (const layer of Object.values(dv.managedLayers ?? {})) for (const entry of layerStack(layer)) if (entry.solutionid == null) entry.solutionid = row.solutionid;
   return row;
 }
 
@@ -717,11 +759,19 @@ function writeJob(api, { jobId, archive, log, error, progress }) {
 async function importArchive(api, archive, { overwrite, jobId, origin, version, caller }) {
   const log = [];
   const revision = api.changes?.current();
+  let created = [];
   try {
     await api.change(() => api.store.transact(() => {
       const members = apply(api, archive, { overwrite, origin, version, caller }, log);
+      created = members.filter((member) => member.kind === "key" && member.created);
       const solution = recordSolution(api, archive, members);
       appendSolutionAssetLayer(api.store.state, solution.solutionid, archive.assetEntries ?? [], archive.solution);
+      // Security roles and field security profiles: the same import as the Solution source seed (dataverse-security.mjs).
+      const name = archive.solution.uniqueName;
+      const security = securityDefinitions(mergeInventory((archive.inventory ?? []).map((record) => ({ ...record, solution: name }))),
+        { managed: archive.solution.managed === true ? new Set([lower(name)]) : new Set() });
+      if (security.securityRoles.length || security.fieldSecurityProfiles.length)
+        (api.store.state.dataverse ??= {}).securityDiagnostics = importSolutionSecurity(api.store, api.settings.organizationId, security, { solutionId: solution.solutionid });
       applySolutionPayloads(api.store.state, solution.solutionid, archive.payloadComponents ?? [], { overwrite, definitionOf: standardTableDef, entityId: logical => metadataIdOf(api, 'entity', logical) });
       writeJob(api, { jobId, archive, log, progress: 100 });
     }, { isolated: true }));
@@ -731,6 +781,8 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
     await api.change(() => api.store.transact(() => writeJob(api, { jobId, archive, log: [], error: error.message, progress: 0 })));
     throw error instanceof DataError ? error : invalid(`The solution import failed: ${error.message}`); // unverified: message text
   }
+  // The imported keys start Pending; each gets its index job once the import has committed (Learn define-alternate-keys-entity).
+  for (const member of created) await activateKey(api, member.logical, lower(member.name), caller?.systemuserid ?? null);
 }
 
 // ---------------------------------------------------------------------------

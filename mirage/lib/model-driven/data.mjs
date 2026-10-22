@@ -50,7 +50,10 @@ function projectedStore(table) {
 
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
-export function createModelDrivenData({ store, catalogue, portal, saveOverlay, writeRecord, recordService, readMetadata = fn => fn() }) {
+export function createModelDrivenData({ store, catalogue, portal, saveOverlay, writeRecord, recordService: organizationRecords, readMetadata = fn => fn() }) {
+  // A staff session in mobile offline mode passes its offline copy as actor.recordService (model-driven/offline.mjs): the
+  // shell's grids, forms and subgrids then read and write that copy through the same view, validation and format path.
+  const recordsOf = actor => actor?.recordService ?? organizationRecords;
   const readOperation = fn => store.readOperation(() => readMetadata(fn));
   const tableFor = entity => {
     const tables = catalogue().tables;
@@ -61,6 +64,19 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
   const backend = table => table.projected && !store.state.mappings[table.entity]?.modelDrivenSource ? projectedStore(table) : store;
   const format = (table, rows) => {
     const tables = catalogue().tables;
+    // One id map per target table and call: lookup display names cost O(rows + target rows), not a scan per cell.
+    const byId = new Map();
+    const targetRow = (entity, target, id) => {
+      if (!byId.has(entity)) {
+        const index = new Map();
+        for (const record of target.projected && !store.state.mappings[entity]?.modelDrivenSource ? target.rows : store.tableRows(entity)) {
+          const key = String(record[target.idColumn]).replace(/[{}]/g, '').toLowerCase();
+          if (!index.has(key)) index.set(key, record);
+        }
+        byId.set(entity, index);
+      }
+      return byId.get(entity).get(id);
+    };
     return rows.map(row => {
       const copy = { ...row };
       for (const field of Object.values(table.fields)) {
@@ -69,8 +85,7 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
         let name = value?.name;
         for (const entity of field.targets ?? []) {
           const target = tables[entity]; if (!target) continue;
-          const targetRows = target.projected && !store.state.mappings[entity]?.modelDrivenSource ? target.rows : store.tableRows(entity);
-          const found = targetRows.find(record => String(record[target.idColumn]).replace(/[{}]/g, '').toLowerCase() === id);
+          const found = targetRow(entity, target, id);
           if (found) { name = found[target.nameColumn]; break; }
         }
         if (!name && table.kind === 'website' && /defaultlanguage$/.test(field.name)) name = portal().websiteLanguages?.find(language => language.id === id)?.displayName;
@@ -80,13 +95,14 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
     });
   };
   const capabilities = (entity, actor, id, fields = tableFor(entity).fields) => {
-    const rights = recordService?.capabilities?.(entity, actor, { id, fields });
+    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields });
     return rights && id && tableFor(entity).protectedIds?.includes(id) ? { ...rights, delete: false } : rights;
   };
   return {
     tableFor,
     capabilities,
     async list(entity, input = {}, actor = {}) {
+      const recordService = recordsOf(actor);
       return readOperation(async () => {
       const table = tableFor(entity);
       if (input.scope === 'odata') {
@@ -109,6 +125,14 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       root.attrs.returntotalrecordcount = 'true';
       delete root.attrs.top;
       for (const name of new Set([table.idColumn, ...fields])) if (/^[a-z][\w]*$/i.test(name) && !target.children.some(item => item.name === 'attribute' && item.attrs.name === name)) target.children.push(node('attribute', { name }));
+      // Dataset PCF linking (dataset.linking.addLinkedEntity): imported tables joined by known columns, with an alias.
+      if (input.links !== undefined && (!Array.isArray(input.links) || input.links.length > 10)) throw invalid('Provide at most 10 linked tables.');
+      for (const link of input.links ?? []) {
+        const linkedTable = Object.hasOwn(catalogue().tables ?? {}, link?.name) ? tableFor(link.name) : null, columns = link?.columns ?? [];
+        if (!linkedTable || !linkedTable.fields[link.from] || !table.fields[link.to] || !/^[a-z_][a-z\d_]*$/i.test(link.alias ?? '') || !['inner', 'outer'].includes(link.linkType ?? 'inner')
+          || !Array.isArray(columns) || columns.length > 50 || columns.some(name => !linkedTable.fields[name])) throw invalid('Linked tables need imported tables, known from/to columns, an alias and an inner or outer link type.');
+        target.children.push(node('link-entity', { name: link.name, from: link.from, to: link.to, 'link-type': link.linkType ?? 'inner', alias: link.alias }, columns.map(name => node('attribute', { name }))));
+      }
       const filter = node('filter', { type: 'and' });
       if (view.state !== undefined && table.fields.statecode) filter.children.push(node('condition', { attribute: 'statecode', operator: 'eq', value: String(view.state) }));
       if (input.search) {
@@ -148,6 +172,7 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       });
     },
     async get(entity, id, actor = {}, input = {}) {
+      const recordService = recordsOf(actor);
       return readOperation(async () => {
       const table = tableFor(entity), db = backend(table);
       if (input.scope === 'odata') {
@@ -162,6 +187,7 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       });
     },
     async write(entity, id, values, { remove = false, etag, ...actor } = {}) {
+      const recordService = recordsOf(actor);
       const table = await store.readOperation(() => tableFor(entity)), db = backend(table), operation = id ? 'update' : 'create';
       if (remove && !id) throw invalid('A record ID is required.');
       const data = remove ? {} : validateValues(table, values, operation);

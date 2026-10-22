@@ -4,7 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>Portal Studio · Local simulator</title>
+    <title>Paqvilo · Simulator workspace</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/__sim/ui-kit.css" />
+    <link rel="stylesheet" href="/__sim/shell.css" />
+    <link rel="stylesheet" href="/__sim/dashboard.css" />
     <link rel="stylesheet" href="/__sim/style.css" />
     <link rel="stylesheet" href="/__sim/persona-picker.css" />
   </head>
@@ -14,10 +18,15 @@
       <aside class="sidebar" aria-label="Workspace navigation">
         <a class="brand" href="/__sim/"
           ><span class="brand-symbol" aria-hidden="true">P</span
-          ><span><span id="workspace-name">Mirage Studio</span><small>LOCAL SIMULATOR</small></span></a
+          ><span><span id="workspace-name">Paqvilo</span><small id="workspace-kind">SIMULATOR WORKSPACE</small></span></a
         >
         <div class="nav-label">WORKSPACE</div>
         <nav id="navigation"></nav>
+        <div class="nav-label area-label">AREAS</div>
+        <nav class="nav-group areas" aria-label="Areas">
+          <a class="nav-item" href="/_setup/" title="Administration and initial configuration: sources, runtime, packs and settings."><span class="nav-icon" aria-hidden="true">⚙</span>Project setup</a>
+          <a class="nav-item active" href="/_sim/" aria-current="page" title="Daily work: run, inspect and change the simulated portal and organization."><span class="nav-icon" aria-hidden="true">▣</span>Simulator workspace</a>
+        </nav>
         <div class="sidebar-bottom">
           <span class="status-dot" id="connection-dot"></span
           ><span id="connection-label">Connecting…</span

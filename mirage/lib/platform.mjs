@@ -1,6 +1,7 @@
 import {debugScript,exportFieldFile} from './source-debug.mjs';
 import { decodeXml, portalField } from "./importer.mjs";
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { renderFormLabel } from './form-labels.mjs';
 import {
@@ -23,8 +24,10 @@ import {
   formCells,
   metaFilterGroups,
   executeGridQuery,
+  gridMasked,
   settingsJson,
 } from "./native-services.mjs";
+import { modernListFallback, modernListUnservedActions } from "./platform-changes.mjs";
 import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess, appendRedirectRecordId, nativeFormSubmissionContext, formCreateAllowed } from "./form-service.mjs";
 import { formErrorPanel, createAccessDeniedForm } from "./form-error-presentation.mjs";
 import { deniedPageRoute } from "./redirects.mjs";
@@ -39,6 +42,7 @@ import { timeZoneChoices } from "./platform-time-zones.mjs";
 import { missingLiquidComponent, observedChartMarkup, observedSearchUnavailable } from './liquid-service-observations.mjs';
 import { compactNativeControlId as compactId, nativeFormControlIds, nativeFormPostbackDescriptor, nativeFormTransport, encodeNativeViewState } from './native-postback.mjs';
 import { renderCalendarList } from "./list-views.mjs";
+import { portalSearch } from "./portal-search.mjs";
 import { LiquidError } from "./liquid-engine.mjs";
 const escape = (value) =>
   String(value ?? "").replace(
@@ -341,6 +345,14 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
   })();`;
 }
 
+/**
+ * The local $pages client API and modern list / document grid adapter (lib/pages-client-api.js), loaded right after the
+ * page runtime script, before authored scripts. server.mjs serves it at PAGES_CLIENT_API_SCRIPT. A page that loads the
+ * platform bundles references no /__sim-static path (platform-manifest.test.mjs), so there it runs inline.
+ */
+export const PAGES_CLIENT_API_SCRIPT = "/__sim-static/pages-client-api.js";
+export const PAGES_CLIENT_API_FILE = new URL("./pages-client-api.js", import.meta.url);
+const PAGES_CLIENT_API_SOURCE = readFileSync(PAGES_CLIENT_API_FILE, "utf8").replace(/<\/script/gi, "<\\/script");
 /** Static native platform compatibility scripts served by lib/native-services.mjs. */
 export const NATIVE_GRID_SCRIPT = "/__sim-static/native/entity-grid-compat.js";
 export const NATIVE_FORMS_SCRIPT = "/__sim-static/native/webforms-compat.js";
@@ -416,10 +428,16 @@ export function injectRuntime(
   revision,
   identity = {},
   traceId = null,
+  languages = null,
 ) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
-  const script = `<script data-paqvilo-mirage-runtime>${clientRuntime(token, revision, identity, traceId, pageSite(html))}</script>`;
+  // The $pages client API (lib/pages-client-api.js) runs right after the runtime, before authored scripts.
+  // languages: the site's active website language codes (the client object's activeLanguages, $pages.languages.getAll).
+  const runtime = clientRuntime(token, revision, identity, traceId, { ...pageSite(html), ...(languages?.length ? { languages } : {}) });
+  const script = hasPlatformBundles(html)
+    ? `<script data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`
+    : `<script data-paqvilo-mirage-runtime>${runtime}</script><script src="${PAGES_CLIENT_API_SCRIPT}" data-paqvilo-mirage-runtime></script>`;
   // The server form's __VIEWSTATE carries the visitor's anti-forgery key (k), as ASP.NET binds
   // ViewState to the visitor (ViewStateUserKey): WebForms postbacks then post the page's own
   // fields only (live bodies carry no __RequestVerificationToken; lib/native-postback.mjs
@@ -441,7 +459,7 @@ export function injectRuntime(
       ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${grid}$&`)
       : html + grid;
   return /<head\b[^<>]*>/i.test(html)
-    ? html.replace(/<head\b[^<>]*>/i, "$&" + script)
+    ? html.replace(/<head\b[^<>]*>/i, (head) => head + script)
     : script + html;
 }
 
@@ -957,7 +975,7 @@ function viewConfiguration(model, view, { actions, websiteId, languageCode = 103
 }
 const stripAction = ({ source, position, FilterCriteria, ...action }) => action;
 
-function gridLayouts(model, { secureBase, websiteId, metadata, actions, selectColumn = false, language = {} }) {
+function gridLayouts(model, { secureBase, websiteId, metadata, actions, selectColumn = false, language = {}, masked = null }) {
   const actionColumn = actions.some((action) => action.position === "item");
   return model.views.map((view) =>
     buildLayout({
@@ -971,6 +989,7 @@ function gridLayouts(model, { secureBase, websiteId, metadata, actions, selectCo
       secure: { ...secureBase, view: view.id },
       selectColumn,
       actionColumn,
+      masked,
     }),
   );
 }
@@ -1038,15 +1057,26 @@ async function renderListGrid(model, context, options) {
     return renderCalendarList({ list: model.list, calendar: model.calendar, websiteId, viewId: model.views[0].id, variant: bootstrapVariant(options.portal.settings), culture: options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ?? "en-US" });
   const language = requestLanguage(context, options.portal);
   const page = `/_portal/modal-form-template-path/${websiteId}`;
+  const v5 = bootstrapMarkup(options.portal.settings).v5;
+  // A list attached to a legacy ASPX page is the static EntityListControl of the WebForms master.
+  const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
+  const actions = listActionLinks(model, context, options, { websiteId, v5, pageControl });
+  const identity = context.user ?? context.identity;
+  const layouts = gridLayouts(model, { secureBase: { t: "list", w: websiteId, list: model.list.id }, websiteId, metadata: options.metadata, actions, language, masked: gridMasked({ store: options.store, identity: context.user ?? context.identity }) });
+  const settings = model.settings ?? {};
+  const authenticated = Boolean(identity?.contactId ?? identity?.id);
+  const bs = bootstrapMarkup(options.portal.settings);
+  return renderListGridMarkup({ model, context, options, websiteId, page, pageControl, identity, layouts, settings, authenticated, bs, language });
+}
+
+/** The list's action links (settings actions, details and create pages, the create privilege): one rule for the classic and modern list. */
+function listActionLinks(model, context, options, { websiteId, v5, pageControl }) {
   const actions = actionLinks(model.settings, { portal: options.portal, requestUrl: context.request?.url ?? "http://localhost/", website: websiteId });
   if (model.detailsPage && !actions.some((action) => action.Type === 1)) {
     const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.detailsPage);
     if (target)
       model.detailsActionLink = { Type: 1, Enabled: true, Target: 1, Label: model.detailsLabel, Tooltip: model.detailsLabel, URL: { PathWithQueryString: target.url, Path: target.url }, QueryStringIdParameterName: model.idParameter, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" };
   }
-  const v5 = bootstrapMarkup(options.portal.settings).v5;
-  // A list attached to a legacy ASPX page is the static EntityListControl of the WebForms master.
-  const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
   // The Bootstrap 5 page control has no create page link (live layout: InsertActionLink disabled).
   if (v5 && pageControl) {
     /* no create link */
@@ -1068,10 +1098,10 @@ async function renderListGrid(model, context, options) {
     if (model.insertActionLink) model.insertActionLink = { ...model.insertActionLink, Enabled: false };
     for (const action of actions) if (action.Type === 3) action.Enabled = false;
   }
-  const layouts = gridLayouts(model, { secureBase: { t: "list", w: websiteId, list: model.list.id }, websiteId, metadata: options.metadata, actions, language });
-  const settings = model.settings ?? {};
-  const authenticated = Boolean(identity?.contactId ?? identity?.id);
-  const bs = bootstrapMarkup(options.portal.settings);
+  return actions;
+}
+
+async function renderListGridMarkup({ model, context, options, websiteId, page, pageControl, identity, layouts, settings, authenticated, bs, language }) {
   // Bootstrap 5 page control: the legacy grid markup (as subgrids), not the Bootstrap 5 list markup (live page/bound-entitylist).
   const pageControlGrid = () => `<div><div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "")}" data-mobile-view-enabled="false" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, language)}${PAGINATION}${gridModals(page, settings, language, bs)}</div></div>`;
   const grid = bs.v5 && pageControl ? pageControlGrid() : bs.v5 ? listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) : `<div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "table-striped")}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
@@ -1081,6 +1111,37 @@ async function renderListGrid(model, context, options) {
   const script = js ? `<script type="text/javascript">${debugScript(js,exportFieldFile(model.list.metadata,'custom_javascript.js'))}</script>` : "";
   if (bs.v5 && pageControl) return `<div id="EntityListControl"><div class="entitylist">${body}${script}</div></div>`;
   return `<div${pageControl ? ' id="EntityListControl"' : ""} class="entitylist">${body}${script}</div>`;
+}
+
+/**
+ * A modern list (entity_list include with isModern 'true'): local, neutral markup over the list's own secured
+ * grid query (/_services/entity-grid-data.json, the same Base64SecureConfiguration as the classic grid). The
+ * client adapter in lib/pages-client-api.js continues the query page by page as the list scrolls (infinite
+ * scroll, Learn add-list "Modern list") and publishes rows, columns and the loaded/rowclick/cellclick events
+ * through $pages.currentPage.lists. Views, search, metadata filters, sorting and the details, edit, create,
+ * delete and download actions reuse the classic grid engine: the same layouts (with the list's action links), the
+ * same filter panel and the same grid, delete, download and modal form routes. Other action types are reported
+ * (MODERN_LIST_FEATURES_UNSERVED). The platform's modern list markup and styling are not documented, so the
+ * markup stays local (MODERN_LIST_LOCAL_MARKUP).
+ */
+async function renderModernList(model, context, options) {
+  const websiteId = canonicalId(options.portal.website?.id);
+  const language = requestLanguage(context, options.portal);
+  const unserved = modernListUnservedActions(model.list);
+  if (unserved.length)
+    options.diagnostic?.({ code: "MODERN_LIST_FEATURES_UNSERVED", severity: "warning", component: "entitylist", list: model.list.name, items: unserved,
+      message: `Modern list '${model.list.name}' configures action(s) the local modern list does not serve: ${unserved.join(", ")}. They are absent from the local list.` });
+  const actions = listActionLinks(model, context, options, { websiteId, v5: false, pageControl: false }).filter((action) => [1, 2, 3, 4, 8].includes(action.Type));
+  const layouts = gridLayouts(model, { secureBase: { t: "list", w: websiteId, list: model.list.id }, websiteId, metadata: options.metadata, actions, language, masked: gridMasked({ store: options.store, identity: context.user ?? context.identity }) });
+  const columns = (layouts[0]?.Columns ?? []).filter((column) => column.Type === 0);
+  const head = columns.map((column) => `<th scope="col" data-logical-name="${attr(column.LogicalName)}">${escape(column.Name ?? column.LogicalName)}</th>`).join("");
+  // unverified: the batch size of a modern list's continuation; the list's page size is used.
+  const pageSize = Number(model.pageSize) || 10;
+  const empty = model.emptyText ? model.emptyText : "There are no records to display.";
+  const views = layouts.length > 1 ? `<select data-pp-modern-list-view aria-label="View">${layouts.map((layout, index) => `<option value="${attr(layout.Id)}">${escape(model.views[index]?.displayName || layout.ViewName || layout.Id)}</option>`).join("")}</select>` : "";
+  const search = model.search?.enabled ? `<input type="search" data-pp-modern-list-search placeholder="${attr(model.search.placeholder)}" aria-label="${attr(model.search.placeholder)}" title="${attr(model.search.tooltip)}">` : "";
+  const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : "";
+  return `<div class="entitylist" data-mirage-component="modern-list"><div id="list_${attr(compactId(model.list.id))}" class="pp-modern-list" data-pp-modern-list data-get-url="/_services/entity-grid-data.json/${websiteId}" data-website-id="${attr(websiteId)}" data-selected-view="${attr(model.views[0]?.id ?? "")}" data-page-size="${pageSize}" data-view-layouts="${base64Json(layouts)}"><div class="pp-modern-list-toolbar">${views}${search}<span data-pp-modern-list-actions></span></div>${filter ? `<div data-pp-modern-list-filter>${filter}</div>` : ""}<table class="table" role="grid"><thead><tr>${head}</tr></thead><tbody></tbody></table><div class="view-empty message" hidden>${empty}</div><div class="view-access-denied message" hidden>You don't have permissions to view these records.</div><div class="view-error message" hidden>Error completing request.</div><div data-pp-modern-list-more aria-hidden="true" style="min-height:1px"></div><dialog data-pp-modern-list-dialog aria-label="Form"><button type="button" data-pp-modern-list-close>Close</button><iframe title="Form"></iframe></dialog></div></div>`;
 }
 
 /** Bootstrap 5 server markup of a list grid: the messages and dialogs the client fills. */
@@ -1182,7 +1243,7 @@ function entityListDrop(model, options, context) {
   const pageUrl = (id) => options.portal.pages.find((candidate) => canonicalId(candidate.id) === canonicalId(id))?.url ?? null;
   const fields = options.metadata?.entities?.[model.entity]?.fields ?? {};
   const actions = actionLinks(model.settings, { portal: options.portal, requestUrl: context.request?.url ?? "http://localhost/", website: websiteId });
-  const layouts = gridLayouts(model, { secureBase: { t: "list", w: websiteId, list: model.list.id }, websiteId, metadata: options.metadata, actions, language: requestLanguage(context, options.portal) });
+  const layouts = gridLayouts(model, { secureBase: { t: "list", w: websiteId, list: model.list.id }, websiteId, metadata: options.metadata, actions, language: requestLanguage(context, options.portal), masked: gridMasked({ store: options.store, identity: context.user ?? context.identity }) });
   return {
     ...model.list.metadata,
     id: model.list.id,
@@ -1281,7 +1342,16 @@ async function renderEntityList(name, context, options) {
     options.diagnostic?.({ code: 'PCF_NATIVE_DATASET_UNSUPPORTED', severity: 'warning', component: 'entitylist', list: list.id, message });
     notice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
   }
-  return { context: { entitylist: drop }, html: builtin ? notice + await renderListGrid(model, context, options) : "" };
+  if (!builtin) return { context: { entitylist: drop }, html: "" };
+  // The design studio's Modern list toggle is exported as the include's isModern argument (platform-changes.mjs).
+  if (/^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ""))) {
+    // The same rule preflight applies (platform-changes.mjs modernListFallback); page controls are a render-time case.
+    const fallback = modernListFallback(list) ?? (pageControl ? "page-control lists" : null);
+    if (!fallback) return { context: { entitylist: drop }, html: await renderModernList(model, context, options) };
+    options.diagnostic?.({ code: "MODERN_LIST_RENDERED_CLASSIC", severity: "warning", component: "entitylist", list: list.name,
+      message: `List '${list.name}' asks for the modern list, but the local modern list adapter does not serve ${fallback}; the classic list renders instead.` });
+  }
+  return { context: { entitylist: drop }, html: notice + await renderListGrid(model, context, options) };
 }
 
 async function renderEntityView(name, context, options) {
@@ -1350,6 +1420,29 @@ async function renderEntityView(name, context, options) {
   };
 }
 
+// Power BI reports are never rendered or requested locally: the tag emits a labelled placeholder.
+const POWERBI_INPUTS = [["path", "data-powerbi-path"], ["authentication_type", "data-powerbi-authentication-type"], ["roles", "data-powerbi-roles"], ["tileid", "data-powerbi-tileid"], ["filter", "data-powerbi-filter"]];
+// ponytail: redaction is a pattern over `?key=value`, `&key=value` and `#key=value` pairs of any value with a query or
+// fragment (absolute or relative), not a URL parser.
+const redactUrlQuery = (value) => (/[?#]/.test(value) ? value.replace(/([?&#][^=&#]+)=([^&#]*)/g, "$1=[redacted]") : value);
+function powerBiPlaceholderMarkup(args, options) {
+  const attributes = POWERBI_INPUTS.flatMap(([input, attribute]) => (args?.[input] == null || args[input] === "" ? [] : [` ${attribute}="${escape(redactUrlQuery(String(args[input])))}"`])).join("");
+  options.diagnostic?.({ code: "LIQUID_POWERBI_PLACEHOLDER", severity: "warning", component: "powerbi", message: "The powerbi tag emits a placeholder; the Power BI report is not rendered locally and no request is made." });
+  return `<div class="paqvilo-powerbi-placeholder" data-mirage-component="powerbi"${attributes}>Power BI report is not rendered locally.</div>`;
+}
+
+/** The searchindex tag (lib/portal-search.mjs): results filtered by the visitor's table permissions. */
+async function renderSearchIndex(context, options) {
+  const args = options.args ?? {};
+  const found = await portalSearch({ portal: options.portal, store: options.store, readProvider: options.readProvider, metadata: options.metadata, config: options.config,
+    identity: context.user ?? context.identity, query: args.query ?? "", filter: args.filter ?? null, logicalNames: args.logical_names ?? null, page: args.page ?? 1, pageSize: args.page_size ?? 10,
+    diagnostic: (entry) => options.diagnostic?.(entry) });
+  // The observed site answers its Liquid error when search cannot run there (liquid-service-observations.mjs).
+  if (found.unavailable && found.unavailable !== "disabled") observedSearchUnavailable(options);
+  const { unavailable, ...searchindex } = found;
+  return { context: { searchindex } };
+}
+
 /** Explicit schemas make local forms editable even when Dataverse systemform XML is absent. */
 export async function renderComponent(kind, name, context, options) {
   // {% entityview %} inside {% entitylist %} needs no arguments: it selects the list's default view.
@@ -1358,9 +1451,12 @@ export async function renderComponent(kind, name, context, options) {
     const markup = observedChartMarkup(options.args, context, options);
     if (markup !== null) return markup;
   }
+  // Native `{% powerbi path: '...' %}` has no name, so this runs before the name check.
+  if (kind === "powerbi") return powerBiPlaceholderMarkup(options.args, options);
+  // Native `{% searchindex query: ... %}` has no name either.
+  if (kind === "searchindex") return renderSearchIndex(context, options);
   if (name == null || name === "") return "";
   if (kind === "entitylist") return renderEntityList(name, context, options);
-  if (kind === 'searchindex') observedSearchUnavailable(options);
   if (kind !== "entityform" && kind !== "webform")
     throw componentError(`Component ${kind} '${name}' is not implemented by the local runtime.`, 501, "COMPONENT_UNSUPPORTED");
   return renderForm(kind, name, context, options);
@@ -1896,6 +1992,7 @@ async function renderForm(kind, name, context, options) {
               idColumn: targetMapping.idColumn,
               primaryName: targetMapping.nameColumn ?? null,
               metadata,
+              masked: gridMasked({ store, identity }),
               settings: {},
               // A Bootstrap 5 lookup dialog's configuration carries the empty GUID as its id.
               configuration: { ...viewConfiguration(viewModel, view, { actions: [], websiteId, language: formLanguage }), ...(bs.v5 ? { Id: EMPTY_GUID } : {}) },
@@ -2207,6 +2304,19 @@ async function renderForm(kind, name, context, options) {
       continue;
     }
     const label = cell.label ?? cell.id;
+    // A Document Locations subgrid is the SharePoint document control (Learn, manage-sharepoint-documents). Its markup and
+    // service wire format are not documented: a local, labelled grid over /_apps/portal-documents/ (sharepoint-documents.mjs
+    // createPortalDocumentService) lists, uploads, downloads and deletes per the visitor's table permissions.
+    if (canonicalId(cell.entity) === "sharepointdocumentlocation") {
+      options.diagnostic?.({ code: "PORTAL_SHAREPOINT_DOCUMENTS_LOCAL", severity: "info", level: "contract", component: kind, form: definition?.id, grid: cell.id,
+        message: `Subgrid ${label} is the SharePoint document control; the local runtime renders a local document grid over its document service.` });
+      const heading = cell.showLabel === false ? "" : `<h3 class="${bs.info} form-subgrid-heading"><label class="field-label">${escape(label)}</label></h3>`;
+      // Learn: uploading needs the parent record, so a create-mode form shows no document grid.
+      extraControls.set(cell.id, id
+        ? `${heading}<div class="control"><div id="${attr(cell.id)}" class="subgrid" data-mirage-component="portal-documents" data-pp-documents data-documents-url="/_apps/portal-documents/${encodeURIComponent(schema.entity)}/${encodeURIComponent(canonicalId(id))}" aria-busy="true"><table class="table"><thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Modified</th><th scope="col"><span class="sr-only visually-hidden">Actions</span></th></tr></thead><tbody></tbody></table><p class="message" role="status" hidden></p></div></div>`
+        : `${heading}<div class="control"><p class="message" role="status" data-mirage-component="portal-documents">Documents can be added after the record is saved.</p></div>`);
+      continue;
+    }
     if (!id) {
       // Native subgrids bind to an existing record: Insert mode renders an empty plain cell (live).
       extraControls.set(cell.id, "");
@@ -2234,12 +2344,12 @@ async function renderForm(kind, name, context, options) {
       throw componentError(`Subgrid ${cell.id} requires exported relationship ${cell.relationship}`, 501, "SUBGRID_RELATIONSHIP_REQUIRED");
     const actions = actionLinks(model.settings, { portal, requestUrl: context.request?.url ?? "http://localhost/", website: websiteId });
     for (const action of actions) action.Enabled = action.Enabled && (action.Type !== 3 || !store.allowed || store.allowed(cell.entity, "create", unbound ? {} : { [model.relationship.to]: id }, identity));
-    const layouts = gridLayouts(model, { secureBase: { t: "subgrid", w: websiteId, kind, form: schemaSourceId ?? definition?.id ?? name, step: schema.stepId ?? null, grid: cell.id, parent: canonicalId(id) }, websiteId, metadata, actions, language: formLanguage });
+    const layouts = gridLayouts(model, { secureBase: { t: "subgrid", w: websiteId, kind, form: schemaSourceId ?? definition?.id ?? name, step: schema.stepId ?? null, grid: cell.id, parent: canonicalId(id) }, websiteId, metadata, actions, language: formLanguage, masked: gridMasked({ store, identity }) });
     const associate = actions.find((action) => action.Type === 5);
     let associateHtml = "";
     if (associate) {
       const associateModelValue = associateModel({ portal, schemas, metadata, store, kind, formId: schemaSourceId ?? definition?.id ?? name, stepId: schema.stepId, gridId: cell.id });
-      const associateLayouts = gridLayouts(associateModelValue, { secureBase: { t: "associate", w: websiteId, kind, form: definition?.id ?? name, step: schema.stepId ?? null, grid: cell.id, parent: canonicalId(id) }, websiteId, metadata, actions: [], selectColumn: bs.srOnly, language: formLanguage });
+      const associateLayouts = gridLayouts(associateModelValue, { secureBase: { t: "associate", w: websiteId, kind, form: definition?.id ?? name, step: schema.stepId ?? null, grid: cell.id, parent: canonicalId(id) }, websiteId, metadata, actions: [], selectColumn: bs.srOnly, language: formLanguage, masked: gridMasked({ store, identity }) });
       const reverseSchema = model.relationship.schemaName ?? cell.relationship;
       // The associate dialog (LookupDialog metadata): its CssClass joins the wrapper and the
       // candidate grid, its Size picks the dialog width, its DefaultErrorMessage replaces the
@@ -2548,10 +2658,13 @@ async function renderForm(kind, name, context, options) {
   let createRelatedLink = null;
   let defaultButton = "";
   const renderedActions = [];
+  // The step facts the $pages multistep form reads (pages-client-api.js formOf: hasNextStep, hasPreviousStep).
+  let clientStep = null;
   if (kind === "webform") {
     const step = schema.metadata ?? {};
     const nextStep = schema.nextStepId ? (advancedSteps ?? schemas[definition?.id]?.steps ?? []).find((candidate) => canonicalId(candidate.stepId) === canonicalId(schema.nextStepId)) : null;
     const terminal = !nextStep || nextStep.type === "redirect";
+    clientStep = { hasNextStep: !terminal, hasPreviousStep: stepIndex > 0 };
     const nextLabel = terminal ? formLabel(fieldOf(step, "submitbuttontext"), "Submit") : formLabel(fieldOf(step, "nextbuttontext"), "Next");
     const previousAllowed = stepIndex > 0 && fieldOf(step, "movepreviouspermitted") !== false;
     defaultButton = "NextButton";
@@ -2650,6 +2763,7 @@ async function renderForm(kind, name, context, options) {
     kind,
     formId: definition?.id ?? name,
     stepId: schema.stepId ?? null,
+    ...(clientStep ? { clientStep } : {}),
     submitUrl: `/__sim/forms/${kind}/${encodeURIComponent(definition?.id ?? name)}/submit`,
     operation: mode === FORM_MODE.insert ? "create" : "update",
     recordQueryName: queryName,

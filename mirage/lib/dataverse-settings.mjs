@@ -15,7 +15,7 @@ const GRANTS = Object.keys(GRANT_TYPES);
 const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 // The audience a federated identity credential accepts (Microsoft Entra workload identity federation).
 const TOKEN_EXCHANGE_AUDIENCE = 'api://AzureADTokenExchange';
-const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentity', 'managedIdentities', 'federatedIssuers', 'auditing', 'duplicateDetection', 'pluginTimeoutSeconds', 'currencyCode', 'currencySymbol', 'localeId', 'tds', 'gitRemoteDirectory'];
+const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentity', 'managedIdentities', 'federatedIssuers', 'auditing', 'duplicateDetection', 'pluginTimeoutSeconds', 'currencyCode', 'currencySymbol', 'localeId', 'tds', 'gitRemoteDirectory', 'maxUploadSessions', 'maxUploadBytes'];
 const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants', 'federatedCredentials'];
 const USER_KEYS = ['domainname', 'fullname', 'objectId', 'roles'];
 const FEDERATED_CREDENTIAL_KEYS = ['issuer', 'subject', 'audiences'];
@@ -237,8 +237,15 @@ export function dataverseSettings(value, label = 'dataverse') {
     tds: tds(input.tds, `${label}.tds`),
     // A local directory standing in for the Git remote of source control (dataverse-addon-git.mjs); resolved by server.mjs.
     gitRemoteDirectory: optionalText(input.gitRemoteDirectory, `${label}.gitRemoteDirectory`),
+    // Simulator memory bounds for in-flight file uploads (dataverse-files.mjs): open upload sessions, and bytes buffered across
+    // them plus inline note/attachment SAS copies. Present only when configured; the module applies the defaults.
+    ...(input.maxUploadSessions !== undefined ? { maxUploadSessions: integer(input.maxUploadSessions, `${label}.maxUploadSessions`, MAX_UPLOAD_SESSIONS, 1, 4096) } : {}),
+    ...(input.maxUploadBytes !== undefined ? { maxUploadBytes: integer(input.maxUploadBytes, `${label}.maxUploadBytes`, MAX_UPLOAD_BYTES, 1, 8 * 1024 ** 3) } : {}),
   };
 }
+
+export const MAX_UPLOAD_SESSIONS = 32;
+export const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 export function dataverseStatus(settings, runtime = {}) {
   return {

@@ -6,6 +6,7 @@ import {fieldKind} from './dataverse-values.mjs';
 import {
   FETCH_OPERATORS,
   UNSUPPORTED_FETCH_OPERATORS,
+  HIERARCHY_OPERATORS,
   compileColumnComparison,
   compileOperator,
 } from "./dataverse-conditions.mjs";
@@ -13,6 +14,7 @@ import { fiscalCalendar } from "./fiscal-calendar.mjs";
 import {
   compareSortKeys,
   dateGroupValue,
+  equalityKey,
   foldText,
   guidKey,
   isoUtc,
@@ -371,8 +373,9 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
         const operator = node.attrs.operator;
         if (operator == null)
           fail(`The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`, 400, "InvalidFetchXml");
-        // Identity operators are evaluated only for a Dataverse caller (identity.dataverse).
-        const identityOperator = dataverseIdentity && UNSUPPORTED_FETCH_OPERATORS.has(operator);
+        // Identity operators are evaluated only for a Dataverse caller (identity.dataverse); hierarchy operators for every
+        // caller, resolved when the condition compiles (dataverse-conditions.mjs runWithQueryResolvers).
+        const identityOperator = UNSUPPORTED_FETCH_OPERATORS.has(operator) && (dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
         if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
           fail(
             `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
@@ -604,6 +607,8 @@ export function executeFetch(plan, ctx) {
   const aliasNode = (alias) => (alias == null ? root : plan.byAlias.get(alias));
   const definition = (node, attribute) =>
     ctx.definition?.(mappingOf.get(node).logicalName, attribute);
+  // An order the platform ignores (a calculated column over a parent or another calculated column) is dropped silently.
+  const sortable = (node, attribute) => attribute == null || node == null || ctx.sortable?.(mappingOf.get(node).logicalName, attribute) !== false;
   const resolveEntityName = (name) => {
     if (plan.byAlias.has(name)) return plan.aliasOf.get(plan.byAlias.get(name));
     if (plan.byName.has(name)) return plan.aliasOf.get(plan.byName.get(name));
@@ -1052,6 +1057,8 @@ export function executeFetch(plan, ctx) {
     }
   };
   if (ctx.equalRows) for (const filter of children(root, 'filter')) narrow(filter);
+  // Storage order: a distinct bucket answers its first stored row's value, as OData groupby and TDS DISTINCT do.
+  const storageOrder = new Map(inputs.map((base, index) => [base, index]));
   let rows = pkSort(inputs, rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
   const rootFilter = compileFilters(root, null);
   const pushdown = rootFilter && !children(root, "filter").some((f) => referencesOtherAlias(f, null));
@@ -1063,7 +1070,7 @@ export function executeFetch(plan, ctx) {
   } else {
     // Rows of one root stay together and roots keep the final order, so joining roots
     // in that order and stopping once `limit` rows exist gives the same first rows.
-    const specs = children(root, "order").map((order) => ({
+    const specs = children(root, "order").filter((order) => sortable(root, order.attrs.attribute)).map((order) => ({
       attribute: order.attrs.attribute,
       descending: bool(order.attrs.descending),
       definition: definition(root, order.attrs.attribute),
@@ -1200,7 +1207,7 @@ export function executeFetch(plan, ctx) {
     ({ entities, keys } = aggregateRows());
     cookieSupported = false;
   } else {
-    const specs = orderSpecs.map(({ order, alias }) => {
+    const specs = orderSpecs.filter(({ order, alias }) => sortable(aliasNode(alias), order.attrs.attribute)).map(({ order, alias }) => {
       if (order.attrs.alias && !order.attrs.attribute)
         fail("An order alias is valid only in aggregate queries.", 400, "InvalidFetchXml");
       const node = aliasNode(alias);
@@ -1234,15 +1241,22 @@ export function executeFetch(plan, ctx) {
     });
     let projected = keyed.map((entry) => ({ entity: project(entry.row), entry }));
     if (plan.distinct) {
-      const seen = new Set();
-      projected = projected.filter(({ entity, entry }) => {
+      // One row per equality bucket, at the bucket's first position in this order, with the value of the bucket's first
+      // stored row (the equalityKey contract: the emitted value is the first row's original value).
+      const buckets = new Map();
+      const position = (item) => storageOrder.get(item.entry.row.base) ?? Infinity;
+      projected = projected.filter((item) => {
         const signature = JSON.stringify([
-          Object.keys(entity).sort().map((key) => [key, canonical(entity[key])]),
-          entry.keys.map((key) => (key ? [key.t, key.v] : null)),
+          Object.keys(item.entity).sort().map((key) => [key, canonical(item.entity[key], collation)]),
+          item.entry.keys.map((key) => (key ? [key.t, key.t === "s" ? foldText(key.v, collation) : equalityKey(key.v)] : null)),
         ]);
-        if (seen.has(signature)) return false;
-        seen.add(signature);
-        return true;
+        const held = buckets.get(signature);
+        if (!held) {
+          buckets.set(signature, item);
+          return true;
+        }
+        if (position(item) < position(held)) Object.assign(held, { entity: item.entity, entry: { ...held.entry, row: item.entry.row } });
+        return false;
       });
     }
     entities = projected.map((item) => item.entity);
@@ -1349,7 +1363,7 @@ export function executeFetch(plan, ctx) {
     const buckets = new Map();
     for (const row of input) {
       const values = groups.map((column) => groupValue(row, column));
-      const signature = JSON.stringify(values.map(canonical));
+      const signature = JSON.stringify(values.map((value) => canonical(value, collation)));
       if (!buckets.has(signature)) buckets.set(signature, { values, rows: [] });
       buckets.get(signature).rows.push(row);
     }
@@ -1364,7 +1378,7 @@ export function executeFetch(plan, ctx) {
         if (column.distinct) {
           const seen = new Set();
           values = values.filter((value) => {
-            const signature = JSON.stringify(canonical(value));
+            const signature = JSON.stringify(canonical(value, collation));
             if (seen.has(signature)) return false;
             seen.add(signature);
             return true;
@@ -1448,8 +1462,13 @@ export function executeFetch(plan, ctx) {
       const entry = cookie.values.get(spec.attribute);
       if (!entry || entry.last == null) return null;
       const kind = String(spec.definition?.dataverseType ?? "").toLowerCase();
+      // ponytail: lookup and choice orders sort by name or label, which the cookie's raw value does not carry; they resume
+      // at the page offset, so a cursor row deleted between pages shifts the next page by one row. Carrying the label in
+      // the cookie (an extra attribute read here) is the upgrade.
       if (["lookup", "customer", "owner", "picklist", "state", "status", "multiselectpicklist"].includes(kind)) return null;
-      lastValues.push(makeSortKey(entry.last, { definition: spec.definition, rawChoice: true }));
+      // An empty last is the null marker (cookieValue(null)), as the OData skip token reads it (data.mjs cursorValue):
+      // makeSortKey(null) orders it first ascending, as compareSortKeys orders every null (keysetPage's compare).
+      lastValues.push(makeSortKey(entry.last === "" ? null : entry.last, { definition: spec.definition, rawChoice: true }));
     }
     const pkEntry = cookie.values.get(pk);
     if (!pkEntry?.last) return null;
@@ -1489,17 +1508,17 @@ export function executeFetch(plan, ctx) {
   }
 }
 
-function canonical(value) {
+// Equality key of a value under the collation: groupby, distinct and countcolumn distinct agree with filter equality.
+function canonical(value, collation = "CI_AI") {
   if (value == null) return null;
+  if (isExactNumeric(value)) return equalityKey(value, collation);
   if (typeof value === "object" && !Array.isArray(value)) {
     if (own(value, "id")) return ["ref", guidKey(value.id) ?? String(value.id)];
     if (own(value, "value")) return ["choice", value.value];
     return Object.keys(value)
       .sort()
-      .map((key) => [key, canonical(value[key])]);
+      .map((key) => [key, canonical(value[key], collation)]);
   }
-  if (Array.isArray(value)) return value.map(canonical);
-  const guid = guidKey(value);
-  if (guid) return ["guid", guid];
-  return value;
+  if (Array.isArray(value)) return value.map((item) => canonical(item, collation));
+  return equalityKey(value, collation);
 }

@@ -1,21 +1,10 @@
-import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
-import {identityProviderSettings} from '../mirage/lib/identity-provider-settings.mjs';
-import {dataverseSettings} from '../mirage/lib/dataverse-settings.mjs';
-import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
-import { simulationSettings } from '../mirage/lib/simulation-settings.mjs';
-import { modelDrivenSettings } from '../mirage/lib/model-driven-settings.mjs';
 // Validate configuration before it can become a browser URL, path, or routing rule.
-import { validateLocalOverrides } from '../mirage/lib/local-overrides.mjs';
-import { renderSettings } from '../mirage/lib/render-settings.mjs';
-import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
-import { platformConfig } from '../mirage/lib/platform-config.mjs';
-import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
+import { catalogueKeys, parseSetting } from '../mirage/lib/config-keys.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const SITE_KEYS = ['source', 'defaultEnv', 'environments', 'startPath', 'webFiles', 'inline', 'markup', 'scope', 'routes', 'mirage'];
-const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'presetConfiguration', 'confinePortalPages', 'externalAssets', 'externalFrameOrigins', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider', 'dataverse', 'runtime', 'simulation', 'modelDriven'];
-const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
-const PRESET_ID = /^[\w.-]+$/;
+// Every catalogue mirage key is a row of mirage/lib/config-keys.mjs (the one registration point).
+const MIRAGE_KEYS = catalogueKeys();
 
 export function object(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} must be a mapping`);
@@ -89,45 +78,12 @@ function array(value, name, allowed) {
  * Local Mirage runtime settings of a site (or of `defaults`). Paths stay strings here; config.mjs
  * resolves `project` and `dataPacks` modules from the catalogue folder and `solutionRoots` from the
  * portal checkout root. `null` clears an inherited project, port or preset in a personal override.
+ * Each key is validated by its row in mirage/lib/config-keys.mjs; observed values are validated in full
+ * by the Mirage's observedConfig (mirage/lib/project-config.mjs).
  */
 export function mirageSettings(value, name) {
   keys(value, MIRAGE_KEYS, name);
-  if (value.runtime !== undefined) runtimeSettings(value.runtime, `${name}.runtime`);
-  if (value.simulation !== undefined) simulationSettings(value.simulation, `${name}.simulation`);
-  if (value.modelDriven !== undefined) modelDrivenSettings(value.modelDriven, `${name}.modelDriven`);
-  if (value.deploymentProfiles !== undefined) resolveDeploymentProfiles(value.deploymentProfiles);
-  validateLocalOverrides(value);
-  if (value.project != null) string(value.project, `${name}.project`);
-  if (value.solutionRoots !== undefined) {
-    if (!Array.isArray(value.solutionRoots)) throw new Error(`${name}.solutionRoots must be an array of folders`);
-    value.solutionRoots.forEach((root, index) => string(root, `${name}.solutionRoots[${index}]`));
-  }
-  if (value.dataPacks !== undefined) {
-    if (!Array.isArray(value.dataPacks)) throw new Error(`${name}.dataPacks must be an array of module paths or {id, module} objects`);
-    value.dataPacks.forEach((entry, index) => {
-      const at = `${name}.dataPacks[${index}]`;
-      if (typeof entry === 'string') return string(entry, at);
-      keys(entry, ['id', 'module'], at);
-      string(entry.module, `${at}.module`);
-      if (entry.id !== undefined && (typeof entry.id !== 'string' || !PACK_ID.test(entry.id))) throw new Error(`${at}.id must match ${PACK_ID}`);
-    });
-  }
-  // Observed platform behaviour of this portal's environment, with its evidence; the keys and
-  // values are validated by the Mirage's observedConfig (mirage/lib/project-config.mjs).
-  if (value.observed != null && (typeof value.observed !== 'object' || Array.isArray(value.observed))) throw new Error(`${name}.observed must be an object such as { loginPath: /SignIn, evidence: <where it was observed> }`);
-  if (value.solutionOrder != null && !['derived', 'explicit'].includes(value.solutionOrder)) throw new Error(`${name}.solutionOrder must be derived (Solution dependency order, the default) or explicit (the listed solutionRoots order)`);
-  if (value.port != null && (!Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) throw new Error(`${name}.port must be an integer from 0 to 65535 (0 chooses a free port)`);
-  if (value.preset != null && (typeof value.preset !== 'string' || !PRESET_ID.test(value.preset))) throw new Error(`${name}.preset must be a preset ID (letters, numbers, underscores, dots or hyphens)`);
-  if (value.presetConfiguration != null && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error(`${name}.presetConfiguration must be data-only or apply`);
-  if (value.presetMode != null && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error(`${name}.presetMode must be bootstrap or always`);
-  contentPolicyDefaults(value);
-  if (value.render !== undefined) renderSettings(value.render);
-  if (value.identityProvider !== undefined) identityProviderSettings(value.identityProvider);
-  if (value.dataverse !== undefined) dataverseSettings(value.dataverse, 'mirage.dataverse');
-  if (value.personaContexts !== undefined) personaContextSettings(value.personaContexts);
-  if (value.platform !== undefined) platformConfig(value.platform, `${name}.platform`);
-  // The site's data model when the source does not record it (a .powerpages-site export defaults to enhanced).
-  if (value.dataModel != null && !['standard', 'enhanced'].includes(value.dataModel)) throw new Error(`${name}.dataModel must be standard or enhanced`);
+  for (const key of MIRAGE_KEYS) if (value[key] !== undefined) parseSetting(key, value[key], { label: `${name}.${key}` });
 }
 
 function siteSettings(site, name) {

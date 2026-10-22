@@ -1,0 +1,32 @@
+savedqueries:
+  savedquery:
+    savedqueryid: '{77777777-7777-4777-8777-777777777783}'
+    querytype: '0'
+    isdefault: '1'
+    returnedtypecode: x_item
+    layoutxml:
+      grid:
+        '@name': resultset
+        '@jump': x_name
+        '@select': '1'
+        '@icon': '1'
+        '@preview': '1'
+        row:
+          '@name': result
+          '@id': x_itemid
+          cell:
+            '@name': x_name
+            '@width': '300'
+    fetchxml:
+      fetch:
+        '@version': '1.0'
+        '@mapping': logical
+        entity:
+          '@name': x_item
+          attribute:
+          - '@name': x_name
+          - '@name': x_itemid
+    LocalizedNames:
+      LocalizedName:
+        '@description': Active Items
+        '@languagecode': '1033'

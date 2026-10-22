@@ -156,18 +156,18 @@ test(
     await page
       .getByRole("heading", { name: "Entity mappings", exact: true })
       .waitFor();
-    assert.equal(await page.locator("tbody tr").count(), 10);
+    assert.equal(await page.locator('table[data-table="mappings"] tbody tr').count(), 10);
     assert.ok(!calls.some((path) => path.includes("/audit")));
     await page.getByRole("button", { name: "Next", exact: true }).click();
     assert.equal(
-      await page.locator("tbody tr").first().innerText(),
+      await page.locator('table[data-table="mappings"] tbody tr').first().innerText(),
       "entity10\tentities10\tentity10id\tEditDelete",
     );
     await page
       .getByRole("searchbox", { name: "Search mappings", exact: true })
       .fill("entity84");
-    assert.equal(await page.locator("tbody tr").count(), 1);
-    assert.match(await page.locator("tbody").innerText(), /entity84/);
+    assert.equal(await page.locator('table[data-table="mappings"] tbody tr').count(), 1);
+    assert.match(await page.locator('table[data-table="mappings"] tbody').innerText(), /entity84/);
     workspace.status.richTextConfigurations = [
       {
         version: 1,
@@ -184,6 +184,8 @@ test(
       },
     ];
     await page.locator("#refresh").click();
+    // Baselines are collapsed sections (RA-21); open the rich-text one.
+    await page.locator('[data-disclosure="rich-text-baselines"] > summary').click();
     await page
       .getByRole("heading", { name: "Versioned rich-text JSON baselines" })
       .waitFor();
@@ -204,9 +206,9 @@ test(
     await page
       .getByRole("heading", { name: "Data records", exact: true })
       .waitFor();
-    assert.equal(await page.locator("tbody tr").count(), 20);
+    assert.equal(await page.locator('table[data-table="records"] tbody tr').count(), 20);
     await page.getByRole("button", { name: "Next", exact: true }).click();
-    assert.match(await page.locator("tbody").innerText(), /Record 20/);
+    assert.match(await page.locator('table[data-table="records"] tbody').innerText(), /Record 20/);
     await page
       .getByRole("link", { name: "Identity & permissions", exact: false })
       .click();
@@ -216,7 +218,7 @@ test(
         exact: true,
       })
       .waitFor();
-    assert.equal(await page.locator("tbody tr").count(), 10);
+    assert.equal(await page.locator('table[data-table="grant tree"] tbody tr').count(), 10);
     assert.equal(await page.locator("#identity-form").count(), 0);
     assert.equal(
       await page
@@ -235,7 +237,7 @@ test(
       .getByRole("link", { name: "Request audit", exact: false })
       .click();
     await page.getByText("43 retained", { exact: false }).waitFor();
-    assert.equal(await page.locator("tbody tr").count(), 10);
+    assert.equal(await page.locator('table[data-table="audit"] tbody tr').count(), 10);
     if (process.env.PAQVILO_MIRAGE_EVIDENCE_DIR) {
       await fs.mkdir(process.env.PAQVILO_MIRAGE_EVIDENCE_DIR, { recursive: true });
       await page.screenshot({
@@ -271,15 +273,15 @@ test(
     await page.locator('[data-audit-filter="outcome"]').selectOption("denied");
     await page.getByText("22 results", { exact: false }).waitFor();
     assert.ok(calls.some((path) => path.includes("outcome=denied")));
-    assert.equal(await page.locator("tbody tr").count(), 10);
+    assert.equal(await page.locator('table[data-table="audit"] tbody tr').count(), 10);
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await page.getByText("Page 2 of 3", { exact: false }).waitFor();
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await page.getByText("Page 3 of 3", { exact: false }).waitFor();
     await page.waitForFunction(
-      () => document.querySelectorAll("tbody tr").length === 2,
+      () => document.querySelectorAll('table[data-table="audit"] tbody tr').length === 2,
     );
-    assert.equal(await page.locator("tbody tr").count(), 2);
+    assert.equal(await page.locator('table[data-table="audit"] tbody tr').count(), 2);
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: "Export filtered JSON" }).click();
     const download = await downloadPromise;

@@ -101,11 +101,73 @@ These optional pack properties are explicit trust decisions. Mirage checks the e
 
 `runExportedCloudFlow()` interprets supported exported request flows and activated Dataverse row triggers. Supported actions include variables, conditions, scopes, sequential loops and basic local Dataverse CRUD. Unsupported connectors, expressions and execution settings require explicit project handlers or per-action mocks. See [operations](operations.md) for the current action, identity and transaction boundaries.
 
+Flow identities and connectors are further optional pack exports ([connections and connectors](operations.md#connections-and-connectors)):
+
+```js
+flowIdentities: {
+  // Per-flow override keyed by the exported workflow id; wins over a connection principal.
+  '77777777-7777-4777-8777-777777777777': { userId: '10000000-0000-4000-8000-000000000001', evidence: 'Invented flow owner', grants: [{ entity: 'x_item', operations: ['read', 'create'] }] },
+},
+connectionPrincipals: {
+  // Same descriptor shape, named for a project connection's principal.
+  'flow-service': { userId: '10000000-0000-4000-8000-000000000002', evidence: 'Invented connection owner', grants: [{ entity: 'x_item', operations: ['read'] }] },
+},
+connectors: {
+  // Served by the provider pack:<pack id>; the result is { statusCode, headers?, body, nextLink? }.
+  x_inventory: { operations: { ListItems: async (request, context) => ({ statusCode: 200, body: { value: [] } }) } },
+},
+httpFixtures: [
+  // Answers Http actions bound to the fixture provider; no network.
+  { id: 'stock', method: 'GET', url: /^https:\/\/api\.example\.test\/stock\/\d+$/, respond: async request => ({ status: 200, body: { url: request.url } }) },
+],
+```
+
+A backend descriptor needs `userId` (GUID), non-empty `evidence` and explicit `grants` of `{ entity, operations, predicate? }`, with optional `bulkTables`. A connector function receives `{ connectorId, operationId, parameters, nextLink? }` and a context with `caller`, `principal`, `correlationId`, `actionPath`, `settings` and `timeoutMs`. Pack connectors cannot reuse the `http`, Dataverse or `flow` connector ids; `flow` is reserved for child flows. Fixture URL patterns are regular expressions without the `g` or `y` flags, matched against the URL after connection rewrites; the first matching fixture answers.
+
 Standard PCF controls use selected Solution manifests and declared resources. Tags can use an exact exported schema name; GUID references require `observed.codeComponents` with evidence. The host provides lifecycle calls, parameters, output events (`paqvilo:pcf-output`) and permission-scoped Web API operations. Explicitly bound exported datasets and enabled native single-field bindings have dedicated adapters. React/virtual hosts, platform libraries and unsupported SDK services remain outside this host. See [code components](code-components.md).
 
 For imported Dataverse plugin steps, expose `pluginSteps: { '<exported-step-id>': synchronousHandler }` on your pack. Handlers explicitly model local validation or target-field changes; they do not execute the assembly. To run every step of a plug-in type, including steps registered through the Dataverse API, expose `pluginTypes: { '<Namespace.TypeName>': synchronousHandler }` (see [project extensions](../../docs/project-extensions.md#plug-in-type-handlers)). See [plugin contracts and rollback](dataverse-plugins.md#model-a-write).
 
 A pack can name a `shell.headerNotificationQuery` web template for an explicitly captured header presentation. The template owns all audience and visibility rules and returns `{ "notifications": [{ "notificationText": "Local notice", "severity": "info", "visible": true }] }`. Severity accepts `success`, `danger`, `warning` or `info`. The count includes visible rows only. Text is bounded plain text and displayed literally with HTML escaping; the runtime does not decode project field formats or infer visibility from custom audience values. Invalid rows produce `HEADER_NOTIFICATION_QUERY_INVALID` and are omitted.
+
+## Recognised exports
+
+`mirage/lib/pack-exports.mjs` holds `PACK_EXPORTS`, the one registry of pack exports. Each row has a kind (`map` of key to value, or `value`), a key normaliser, a `check` that throws on an invalid value, and a collision rule. `validatePack` runs every check when a pack loads. It returns a frozen snapshot of the pack's own exports (a getter or Proxy-backed recognised export is refused), so every reader sees the values that were validated. Two packs registering the same normalised key fail with `Ambiguous <export> registration for <key> in packs <a> and <b>`. `collectPackExport(packs, name)` returns that Map of key to `{ value, pack }`, and `packProvides(packs)` lists `{ pack, export, key }` for every pack.
+
+| Export | Keys | Collision |
+| --- | --- | --- |
+| `serverLogics`, `cloudFlows` | lower-case name | error |
+| `flowIdentities`, `pluginSteps`, `pluginRuntimes` | canonical GUID | error |
+| `pluginTypes`, `dataverseMessages`, `expressionOperators` | exact name | error |
+| `customApis` | lower-case unique name | error |
+| `workflows` | canonical id or lower-case unique name | error |
+| `shell` | `footerLogoClass:<class>`, `headerNotificationQuery:<template>` | error |
+| `endpoints` | endpoint id | first registration wins |
+| `connectors`, `connectionPrincipals`, `storageProviders`, `messageProviders`, `outboxHandlers` | exact name | error |
+| `httpFixtures` | fixture id | error |
+| `calculatedColumns`, `rollups`, `formulaColumns` | lower-case `<table>.<column>` | error |
+| `businessRules` | canonical workflow GUID | error |
+| `virtualTableProviders` | lower-case data source id or table name | error |
+| `virtualTables` | lower-case table name | error |
+| `flowActions` | action type | error |
+| `flowTriggers` | connector id | error |
+| `hierarchies`, `transitions` | lower-case table name | error |
+| `serviceFixtures` | `<service>.<operation>` | error |
+| `powerFx` | `adapter` (one adapter per runtime) | error |
+| `capabilities` | capability name (array) or map key | error |
+
+Each provider export is checked by its owning module, which calls `registerPackExport(name, { check, key?, entries?, collide? })` when it loads: `connector-runtime.mjs` (`connectors`, `httpFixtures`, `connectionPrincipals`), `storage-provider.mjs` (`storageProviders`: names to factory functions), `message-bus.mjs` (`messageProviders`: names to factory functions), `outbox.mjs` (`outboxHandlers`: names to functions), `service-fixtures.mjs`, `canvas-power-fx.mjs` (`powerFx`), and the Dataverse contract modules for `calculatedColumns`, `businessRules`, `rollups`, `formulaColumns`, `virtualTableProviders`, `hierarchies` and `transitions`. `capabilities` records need at least `name`, `kind` and a `level` of `inventory`, `contract`, `behaviour` or `native-qualified`. `mirage/lib/provider-modules.mjs` loads every owning module and `project-config.mjs` imports it. An export whose module has not loaded is checked only for shape (an object of functions or objects; `httpFixtures` an array of objects) and reported as `PACK_EXPORT_PENDING`. The core keys `id`, `name`, `description`, `matches`, `presets`, `configurationPresets`, `personaCatalog`, `dataFiles`, `webApiErrorTemplates`, `dataset`, `profiles`, `parity`, `generators`, `personas` and `plugins` are not registry exports.
+
+Flow extension exports (both contract level):
+
+- `flowActions`: `{ [actionType]: async ({ type, inputs }, context) => outputs }` (`flow-actions.mjs`). Adds a flow action type (it cannot replace a built-in or provider-backed type). Inputs are resolved; the call is journalled like a connector action; an `outputs.statusCode` of 400 or above fails the action.
+- `flowTriggers`: `{ [connectorId]: { [operationId]: { subscribe(ctx), unsubscribe?(ctx), poll?(ctx) } } }` (`flow-triggers.mjs`). Hosts a connector webhook or polling trigger. `ctx` carries `processId`, `operationKey`, `connectorId`, `operationId`, the trigger `parameters`, `clock` and `fire(body)`, which starts a tracked run; `unsubscribe` and `poll` also receive the `subscription` value `subscribe` returned; `poll` answers an array of trigger bodies. See [operations](operations.md#execution-boundary).
+
+`virtualTables` (`dataverse-virtual-providers.mjs`) declares tables virtual, optionally with `fallback: 'local'`; see [Dataverse contract modules](dataverse-contract-modules.md#virtual-providers).
+
+Any other key is reported as a `PACK_EXPORT_UNKNOWN` diagnostic, so a typo such as `customAPIs` is visible instead of silently disabling a handler. The pack still loads. `discoverPacks` returns those diagnostics as `packs.diagnostics`. `validatePackExports(pack, { strict: true })` throws on unknown keys instead.
+
+Expression operators and shell conventions are registered per runtime, only for the packs that matched its portal: `discoverPacks` returns them as `packs.registries`. A footer class, notification query or operator name declared by two matched packs is an error. A host isolates its runtime's lookups with `runWithPackRegistries(packs.registries, fn)` from `lib/extensions.mjs`; outside such a scope the lookups see every activated runtime.
 
 ## Pack configuration presets
 

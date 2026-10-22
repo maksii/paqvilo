@@ -15,8 +15,8 @@ import {
   edmFamily,
   edmOfColumn,
   edmOfLiteral,
+  equalityKey,
   fieldKind,
-  guidKey,
   looksLikeDate,
   makeSortKey,
   own,
@@ -36,6 +36,8 @@ export const ODATA_COMPARISON = new Set(["eq", "ne", "gt", "ge", "lt", "le"]);
 export const ODATA_STRING_FUNCTIONS = new Set(["contains", "startswith", "endswith"]);
 export const ODATA_EXTENDED_FUNCTIONS = new Set([
   "tolower", "toupper", "trim", "length", "concat", "substring", "year", "month", "day",
+  // right and replace are not OData functions: they let Power Fx Right() and Substitute() delegate (power-fx-functions.mjs).
+  "right", "replace",
 ]);
 // Dataverse documents sum/average/min/max and $count; distinct counting is
 // explicitly unavailable through OData ("Get distinct number with CountColumn").
@@ -691,6 +693,8 @@ export function compileODataPredicate(ast, mapping, ctx) {
           length: (a) => String(a ?? "").length,
           concat: (a, b) => String(a ?? "") + String(b ?? ""),
           substring: (a, b, c) => String(a ?? "").slice(b, c == null ? undefined : b + c),
+          right: (a, n) => (n > 0 ? String(a ?? "").slice(-n) : ""),
+          replace: (a, from, to) => (from === "" || from == null ? String(a ?? "") : String(a ?? "").split(String(from)).join(String(to ?? ""))),
           year: (a) => new Date(a).getUTCFullYear(),
           month: (a) => new Date(a).getUTCMonth() + 1,
           day: (a) => new Date(a).getUTCDate(),
@@ -887,10 +891,8 @@ export function evaluateApply(steps, rows, ctx) {
       const values = properties.map((segments) => valueOf(row, segments));
       if (properties.some((segments, index) => fieldKind(ctx.pathDefinition(segments)) == null && typeof values[index] === "string" && looksLikeDate(values[index])))
         unsupported("groupby with datetime values isn't supported.");
-      const signature = JSON.stringify(values.map((value) => {
-        const raw = scalar(value);
-        return raw == null || raw === "" ? null : (guidKey(raw) ?? raw);
-      }));
+      // Buckets compare under the column collation, as $filter equality does (CI_AI by default).
+      const signature = JSON.stringify(values.map((value) => equalityKey(value, ctx.settings?.collation ?? "CI_AI")));
       if (!buckets.has(signature)) buckets.set(signature, { values, rows: [] });
       buckets.get(signature).rows.push(row);
     }

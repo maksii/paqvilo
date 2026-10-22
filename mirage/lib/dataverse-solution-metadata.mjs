@@ -128,6 +128,9 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
         const explicitNavigation = explicitMaps.some(map => map.uniqueName === next.uniqueName || map.appId && map.appId === next.id)
           || rows.appmodule.some(row => id(row.appmoduleid) === next.id && /<SiteMap(?:\s|>)/i.test(row.appmodulexml ?? ''));
         if (!next.navigation?.length && !explicitNavigation) next.navigation = structuredClone(apps[index].navigation ?? []);
+        if (!next.dashboards?.length) next.dashboards = structuredClone(apps[index].dashboards ?? []);
+        // Mobile offline profiles come from Solution component files the overlay does not reparse (model-driven/offline.mjs).
+        if (!next.offlineProfiles?.length) next.offlineProfiles = structuredClone(apps[index].offlineProfiles ?? []);
         apps[index] = next;
       }
     }

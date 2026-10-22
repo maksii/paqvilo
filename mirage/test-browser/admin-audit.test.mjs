@@ -83,7 +83,7 @@ test(
       ),
     );
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(app.adminUrl);
+    await page.goto(app.adminUrl + "#overview");
     await page
       .getByRole("heading", { name: "Your local portal workspace" })
       .waitFor();
@@ -97,7 +97,7 @@ test(
     assert.equal(await page.getByLabel("Entity", { exact: true }).inputValue(), "contact");
     await page.getByLabel("Entity", { exact: true }).selectOption("contact");
     await page.waitForFunction(
-      () => document.querySelectorAll("tbody tr").length === 20,
+      () => document.querySelectorAll('table[data-table="records"] tbody tr').length === 20,
     );
     assert.ok(
       calls.includes("/__sim/api/records/contact?page=1&pageSize=20&search="),
@@ -105,17 +105,17 @@ test(
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await page.waitForFunction(() =>
       document
-        .querySelector("tbody")
+        .querySelector('table[data-table="records"] tbody')
         ?.textContent.includes("Synthetic member 20"),
     );
     await page
       .getByRole("searchbox", { name: "Search record values" })
       .fill("member 80");
     await page.waitForFunction(
-      () => document.querySelectorAll("tbody tr").length === 1,
+      () => document.querySelectorAll('table[data-table="records"] tbody tr').length === 1,
     );
     assert.match(
-      await page.locator("tbody").innerText(),
+      await page.locator('table[data-table="records"] tbody').innerText(),
       /Synthetic member 80/,
     );
     assert.ok(calls.some((url) => url.includes("search=member+80")));
@@ -140,20 +140,20 @@ test(
       .getByRole("link", { name: "Request audit", exact: false })
       .click();
     await page
-      .locator("tbody")
+      .locator('table[data-table="audit"] tbody')
       .getByText("liquid-fetchxml", { exact: true })
       .waitFor();
     await page.locator('[data-audit-filter="kind"]').selectOption("api");
     await page.waitForFunction(
-      () => document.querySelectorAll("tbody tr").length === 2,
+      () => document.querySelectorAll('table[data-table="audit"] tbody tr').length === 2,
     );
     await page.locator('[data-audit-filter="outcome"]').selectOption("denied");
     await page.waitForFunction(
-      () => document.querySelectorAll("tbody tr").length === 1,
+      () => document.querySelectorAll('table[data-table="audit"] tbody tr').length === 1,
     );
     // The row shows the simulator code (X-Sim-Error-Code) and the Power Pages envelope code.
     await page
-      .locator("tbody tr .row-detail")
+      .locator('table[data-table="audit"] tbody tr .row-detail')
       .getByText("PermissionDenied · portal 90040103", { exact: true })
       .waitFor();
     await page.getByRole("button", { name: "Inspect request" }).click();

@@ -4,12 +4,21 @@
 import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { organizationRecord } from './organization-context.mjs';
+import { onceReporter } from './dataverse-addon-common.mjs';
+import { fieldKind } from './dataverse-values.mjs';
 
 export const SYSTEM_ADMINISTRATOR_PROFILE_ID = '572329c1-a042-4e22-be47-367c6374ea45';
 // field_security_permission_type: 0 Not Allowed, 4 Allowed.
 const ALLOWED = 4;
 const ADMIN_ROLE = 'System Administrator';
+/**
+ * A principal not yet created that will hold System Administrator (the portal's local application user, created on first
+ * use): column security evaluates it as an administrator. Matched by reference only, so no data can claim it.
+ */
+export const SYSTEM_ADMINISTRATOR_STAND_IN = Object.freeze({ systemuserid: null });
 const FLAGS = ['cancreate', 'canread', 'canupdate', 'canreadunmasked'];
+// CanReadUnmasked (Learn column-level-security#display-masked-data): 1 One Record (Retrieve only), 3 All Records.
+const UNMASK_ONE = 1, UNMASK_ALL = 3;
 // unverified: the read code 0x8004f508 comes from the audit brief, not from a captured response.
 const INNER_CODE = { create: '0x8004f502', update: '0x8004f507', read: '0x8004f508' };
 
@@ -82,24 +91,51 @@ const idOf = (mapping, row, prefix = '') => row?.[`${prefix}${mapping.idColumn ?
 const attributeIdOf = (organizationId, entity, name) => uuidV5(organizationId, `attribute:${entity}:${name}`);
 
 // unverified: status 403, the AccessDenied code and the principal-type wording; inner codes from the task brief.
-function denied(operation, user, name, entity) {
+/** The column-security refusal of a write (also used by dataverse-customapi.mjs for low-code plug-in changes). */
+export function denied(operation, user, name, entity) {
   return new DataError(
     `SystemUser user with Id ${user.systemuserid} does not have ${operation} permissions to a ${name} secured field on entity ${entity}. The requested operation could not be completed.`,
     403, 'AccessDenied', { innerCode: INNER_CODE[operation] },
   );
 }
 
+/** A masked column used as a filter, order or aggregate operand: Learn web-service-error-codes 0x80041155 CannotFilterOnMaskedAttribute. */
+export function maskedOperand() {
+  return new DataError('Filtering on masked attributes without the read unmasked column permission is not allowed.', 400, 'InvalidRequest', { innerCode: '0x80041155' });
+}
+// Aggregates that read only whether a value is present: masking keeps null as null, so they observe nothing of the clear value.
+const PRESENCE_AGGREGATES = new Set(['count', 'countcolumn', '$count']);
+
 /** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
-export function createFieldSecurity({ store, principals, organizationId, metadataFields = () => undefined }) {
+export function createFieldSecurity({ store, principals, organizationId, metadataFields = () => undefined, diagnostic = null }) {
+  const reporter = onceReporter(diagnostic);
+  const report = (entry) => reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.column}`);
   const rows = (logical) => store.tableRows(logical);
-  const isAdmin = (user) => principals.roles(user).some((r) => r.name === ADMIN_ROLE);
+  const isAdmin = (user) => user === SYSTEM_ADMINISTRATOR_STAND_IN || principals.roles(user).some((r) => r.name === ADMIN_ROLE);
   const mappingField = (mapping, name, source = metadataFields(mapping?.logicalName)) => ({ ...source?.[name], ...mapping?.fieldMetadata?.[name], ...mapping?.fields?.[name] });
   const securedNames = mapping => {
     const source = metadataFields(mapping?.logicalName) ?? null;
     return [...new Set([...Object.keys(source ?? {}), ...Object.keys(mapping?.fieldMetadata ?? {}), ...Object.keys(mapping?.fields ?? {})])]
       .filter(name => isSecuredField(mappingField(mapping, name, source)));
   };
-  const fieldOf = (logical, column) => mappingField(store.state.mappings?.[logical], column);
+  // A stored mapping keyed by its logical name may omit logicalName (a project-declared table); the masking rule, grant and
+  // metadata lookups key on it, so it is always set here.
+  const mappingOf = (logical) => {
+    const mapping = store.state.mappings?.[logical];
+    return mapping && !mapping.logicalName ? { ...mapping, logicalName: logical } : mapping;
+  };
+  const fieldOf = (logical, column) => mappingField(mappingOf(logical), column);
+  // Learn admin/field-level-security "Which columns can be secured?": primary name columns can't be secured (their
+  // CanBeSecuredFor* are false, attribute-metadata.mjs). Metadata that secures one is refused when it loads, so a lookup's
+  // formatted value and a Liquid `.name` never disagree with a masked column read.
+  const assertSecurable = () => {
+    for (const logical of Object.keys(store.state.mappings ?? {})) {
+      const mapping = mappingOf(logical), name = mapping?.nameColumn;
+      if (name && isSecuredField(mappingField(mapping, name))) {
+        throw new DataError(`The primary name column ${name} of table ${logical} can't be secured.`, 400, 'InvalidRequest'); // unverified: message text and code (refused at load, not captured live)
+      }
+    }
+  };
 
   // The profiles a systemuser or team holds, and the principals a field share can name: the user (or team) and its teams.
   // A user reaches its own profiles and those of its teams.
@@ -142,8 +178,10 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
   }
 
   // unverified: a System Administrator passes every secured column; recordId is absent on create and on aggregates.
+  // unmasked is the max-merged CanReadUnmasked (0 Not Allowed, 1 One Record, 3 All Records); a field share grants none.
+  // A System Administrator may unmask every record, but still reads masked values until it asks (Learn create-manage-masking-rules).
   function accessOf(user, entity, name, recordId) {
-    if (isAdmin(user)) return { create: true, read: true, update: true };
+    if (isAdmin(user)) return { create: true, read: true, update: true, unmasked: UNMASK_ALL };
     const { profiles, principals: ids } = scopeOf('systemuser', user.systemuserid);
     const perm = grantsOf(profiles).get(`${key(entity)}.${key(name)}`) ?? {};
     const shared = sharedOf(ids, recordId, attributeIdOf(organizationId(), entity, name));
@@ -151,14 +189,59 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
       create: perm.cancreate === ALLOWED,
       read: perm.canread === ALLOWED || shared.read,
       update: perm.canupdate === ALLOWED || shared.update,
+      unmasked: Number(perm.canreadunmasked) || 0,
     };
+  }
+
+  // The masking rule of a column: attributemaskingrule (entityname, attributelogicalname) -> maskingrule
+  // (regularexpression, maskedcharacter). null when the column has none. A pattern JS cannot compile is { error }.
+  // ponytail: the .NET regular expression dialect is approximated by JS RegExp (unicode-less, global); a .NET-only
+  // construct reports MASKING_RULE_UNSUPPORTED and the column reads null, never the clear value.
+  const compiled = new Map();
+  // Rules per column, memoised per data revision (a masking rule row edit is a committed data write); the row counts also
+  // catch rule rows added inside the open transaction.
+  let rules = { revision: null, byColumn: new Map() };
+  function maskOf(entity, column) {
+    const revision = `${store.dataRevision?.() ?? Math.random()}:${rows('attributemaskingrule').length}:${rows('maskingrule').length}`;
+    if (rules.revision !== revision) rules = { revision, byColumn: new Map() };
+    const id = `${key(entity)}\u0000${key(column)}`;
+    if (!rules.byColumn.has(id)) rules.byColumn.set(id, ruleOf(entity, column));
+    return rules.byColumn.get(id);
+  }
+  function ruleOf(entity, column) {
+    const link = rows('attributemaskingrule').find((r) => same(r.entityname, entity) && same(r.attributelogicalname, column));
+    if (!link) return null;
+    const rule = rows('maskingrule').find((r) => same(r.maskingruleid, refId(link.maskingruleid)));
+    if (!rule?.regularexpression) return { error: 'The masking rule has no regular expression.' };
+    const pattern = String(rule.regularexpression);
+    if (!compiled.has(pattern)) {
+      try { compiled.set(pattern, { regex: new RegExp(pattern, 'g') }); } catch (error) { compiled.set(pattern, { error: error.message }); }
+    }
+    const { regex, error } = compiled.get(pattern);
+    return error ? { error } : { regex, character: String(rule.maskedcharacter ?? '*') || '*' };
+  }
+
+  // The one unmask rule: UnMaskedData asked and CanReadUnmasked All Records, or One Record on a single-record read.
+  const unmaskable = (access, view) => view?.unmask === true && (access.unmasked === UNMASK_ALL || (access.unmasked === UNMASK_ONE && view.single === true));
+
+  // Learn create-manage-masking-rules: each match of the rule's expression becomes one masked character.
+  function maskedValue(entity, column, value, access, view) {
+    if (value === null || value === undefined || typeof value === 'object') return value;
+    const rule = maskOf(entity, column);
+    if (!rule) return value;
+    if (unmaskable(access, view)) return value;
+    if (rule.error) {
+      report({ code: 'MASKING_RULE_UNSUPPORTED', table: entity, column, message: `The masking rule of ${entity}.${column} cannot be evaluated (${rule.error}); the column reads as null.` });
+      return null;
+    }
+    return String(value).replace(rule.regex, () => rule.character);
   }
 
   // A catalogue asks for every field's three rights together. Resolve imported
   // metadata and staff grants once for this table, within the caller's serialized
   // read. Do not retain either across requests or security/source edits.
   function capabilities(user, logical, columns, recordId) {
-    const mapping = store.state.mappings?.[logical];
+    const mapping = mappingOf(logical);
     const source = metadataFields(mapping?.logicalName ?? logical) ?? null;
     let administrator, scope, grants;
     return Object.fromEntries(columns.map(name => {
@@ -181,12 +264,27 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
   }
 
   // Nulls each secured column the user cannot read, under its plain name and its lookup form (_name_value), with its annotations.
+  // view ({ unmask, single }) is a read the caller receives: a readable column with a masking rule answers its masked value
+  // unless the read asked UnMaskedData and CanReadUnmasked allows it (All Records, or One Record on a single-record read).
+  // Without view (filter evaluation) a readable column keeps its stored value.
   // unverified: the aliased lookup form `prefix_name_value` is assumed, not captured.
-  function maskRow(user, mapping, row, prefix = '') {
+  function maskRow(user, mapping, row, prefix = '', view = null) {
     const recordId = idOf(mapping, row, prefix);
     for (const name of securedNames(mapping)) {
       const forms = [`${prefix}${name}`, `${prefix}_${name}_value`].filter((form) => Object.hasOwn(row, form));
-      if (!forms.length || accessOf(user, mapping.logicalName, name, recordId).read) continue;
+      if (!forms.length) continue;
+      const access = accessOf(user, mapping.logicalName, name, recordId);
+      if (access.read) {
+        const plain = `${prefix}${name}`;
+        if (view && Object.hasOwn(row, plain)) {
+          const masked = maskedValue(mapping.logicalName, name, row[plain], access, view);
+          if (masked !== row[plain]) {
+            row[plain] = masked;
+            for (const k of Object.keys(row)) if (k.startsWith(`${plain}@`)) delete row[k];
+          }
+        }
+        continue;
+      }
       for (const form of forms) {
         row[form] = null;
         for (const k of Object.keys(row)) if (k.startsWith(`${form}@`)) delete row[k];
@@ -197,18 +295,48 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
 
   return {
     capabilities,
-    /** Projection hook: a secured column the caller may not read becomes null and loses its annotations. */
-    project(c, mapping, formatted, { prefix = '' } = {}) {
+    assertSecurable,
+    /**
+     * Projection hook: a secured column the caller may not read becomes null and loses its annotations; a readable one with a
+     * masking rule answers its masked value unless c.unmasked (UnMaskedData=true) and CanReadUnmasked allow the clear value.
+     * single: a single-record read (Retrieve), which CanReadUnmasked One Record unmasks.
+     */
+    project(c, mapping, formatted, { prefix = '', single = false } = {}) {
       if (!securedNames(mapping).length) return;
+      const view = { unmask: c.unmasked === true, single: single === true };
       // unverified: `formatted` may be one row or an array; both are handled.
-      for (const row of [].concat(formatted)) maskRow(c.user, mapping, row, prefix);
+      for (const row of [].concat(formatted)) maskRow(c.user, mapping, row, prefix, view);
     },
 
-    /** Copy of a row with the secured columns the user cannot read nulled. Other modules' responses use it via api.fieldSecurity. */
-    mask(user, logical, row, { prefix = '' } = {}) {
-      const mapping = store.state.mappings?.[logical];
+    /**
+     * Copy of a row with the secured columns the user cannot read nulled. Other modules' responses use it via api.fieldSecurity.
+     * With view ({ unmask, single }) the copy is what the caller receives, masking rules applied; without it (filter evaluation)
+     * readable columns keep their stored value.
+     */
+    mask(user, logical, row, { prefix = '', view = null } = {}) {
+      const mapping = mappingOf(logical);
       const copy = { ...row };
-      return mapping ? maskRow(user, mapping, copy, prefix) : copy;
+      return mapping ? maskRow(user, mapping, copy, prefix, view) : copy;
+    },
+
+    /** The value a caller receives for one readable column (masking rule applied per view); unreadable columns read null. */
+    maskValue(user, logical, column, value, view, recordId) {
+      if (!isSecuredField(fieldOf(logical, column))) return value;
+      const access = accessOf(user, logical, column, recordId);
+      return access.read ? maskedValue(logical, column, value, access, view) : null;
+    },
+
+    diagnostics: () => [...reporter.diagnostics],
+
+    /**
+     * True when the caller reads this column masked for this view ({ unmask, single }): a secured column it may read, with
+     * a masking rule, that UnMaskedData plus CanReadUnmasked does not unmask. Such a column is never a filter or order
+     * operand (dataverse-records.mjs answers 0x80041155).
+     */
+    maskedFor(user, logical, column, view = { unmask: false, single: false }) {
+      if (!isSecuredField(fieldOf(logical, column))) return false;
+      const access = accessOf(user, logical, column);
+      return access.read && maskOf(logical, column) !== null && !unmaskable(access, view);
     },
 
     canRead(user, logical, column, recordId) {
@@ -220,11 +348,46 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
       return !isSecuredField(fieldOf(logical, column)) || writable(user, logical, column, operation, recordId);
     },
 
-    /** Aggregates read the raw column, so a secured one the caller cannot read is refused. */
+    /**
+     * Aggregates and groupings read the raw column. columns: names on mapping, or { logical, column, method } resolved through
+     * navigation paths. A secured column the caller cannot read is refused (403); a masked one is refused as an operand (400
+     * 0x80041155) for every method but a presence count.
+     * unverified: Learn names filtering only; min/max/groupby/countdistinct over the clear value are the same order and equality oracle.
+     */
     assertAggregate(c, mapping, columns = []) {
-      for (const name of columns) {
-        if (isSecuredField(mappingField(mapping, name)) && !accessOf(c.user, mapping.logicalName, name).read) throw denied('read', c.user, name, mapping.logicalName);
+      const view = { unmask: c.unmasked === true, single: false };
+      for (const item of columns) {
+        const { logical = mapping.logicalName, column, method } = typeof item === 'string' ? { column: item } : item;
+        const field = mappingField(logical === mapping.logicalName ? mapping : mappingOf(logical), column);
+        if (!isSecuredField(field)) continue;
+        const access = accessOf(c.user, logical, column);
+        if (!access.read) throw denied('read', c.user, column, logical);
+        // The maskedFor rule over the access just read.
+        if (!PRESENCE_AGGREGATES.has(method) && maskOf(logical, column) !== null && !unmaskable(access, view)) throw maskedOperand();
       }
+    },
+
+    /**
+     * Query-context row mask for a table (store.queryContext backendRowsMask): null when the table has no secured column, else
+     * a function returning a copy of a row with each secured column this user cannot read nulled. Readable columns keep their
+     * stored value (masking applies to what the caller receives, not to evaluation). Lookups are join keys and are never
+     * nulled: lookup columns cannot be secured (Learn field-level-security, "Which columns can be secured?").
+     */
+    rowMask(user, logical) {
+      const mapping = mappingOf(logical);
+      if (!mapping || isAdmin(user)) return null;
+      const source = metadataFields(mapping.logicalName) ?? null;
+      const names = securedNames(mapping).filter((name) => fieldKind(mappingField(mapping, name, source)) !== 'lookup');
+      if (!names.length) return null;
+      return (row) => {
+        let copy = row;
+        for (const name of names) {
+          if (row[name] == null || accessOf(user, logical, name, idOf(mapping, row)).read) continue;
+          if (copy === row) copy = { ...row };
+          copy[name] = null;
+        }
+        return copy;
+      };
     },
 
     /** Write hook: a write naming a secured column (plain or @odata.bind) needs the matching permission. */
@@ -258,8 +421,9 @@ export const fieldSecurity = {
   install(api) {
     const { store, principals } = api;
     // The organization GUID comes from the organization row: api.settings.organizationId is null at runtime (H6).
-    const fls = createFieldSecurity({ store, principals, metadataFields: logical => api.metadataFields?.(logical), organizationId: () => organizationRecord(store)?.organizationid });
-    api.fieldSecurity = { mask: fls.mask, canRead: fls.canRead, canWrite: fls.canWrite, capabilities: fls.capabilities, assertAggregate: fls.assertAggregate };
+    const fls = createFieldSecurity({ store, principals, metadataFields: logical => api.metadataFields?.(logical), organizationId: () => organizationRecord(store)?.organizationid, diagnostic: api.diagnostic ?? null });
+    fls.assertSecurable();
+    api.fieldSecurity = { mask: fls.mask, maskValue: fls.maskValue, maskedFor: fls.maskedFor, canRead: fls.canRead, canWrite: fls.canWrite, capabilities: fls.capabilities, assertAggregate: fls.assertAggregate, rowMask: fls.rowMask, maskedOperand, diagnostics: fls.diagnostics };
     for (const entity of ['systemuser', 'team']) {
       api.registry.register({
         name: 'RetrievePrincipalAttributePrivileges',
@@ -275,7 +439,7 @@ export const fieldSecurity = {
         },
       });
     }
-    api.recordHooks.add('project', (c, mapping, formatted) => fls.project(c, mapping, formatted));
+    api.recordHooks.add('project', (c, mapping, formatted, info = {}) => fls.project(c, mapping, formatted, { single: info.single === true }));
     api.recordHooks.add('beforeWrite', (c, mapping, change) => fls.beforeWrite(c, mapping, change));
     // The API awaits install, so the seed is committed before the first request.
     return api.change(() => ensureFieldSecurity(store));

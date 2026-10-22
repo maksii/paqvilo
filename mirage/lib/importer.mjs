@@ -794,8 +794,17 @@ export async function importPortal(
     }
   }
   const settings = {};
-  for (const r of byKind("sitesetting"))
+  // Enhanced data model: a site setting can name an environment variable instead of a static value. The binding is
+  // recorded here (no environment variable state exists at import time); secret-resolver.mjs bindSiteSettings applies
+  // the effective value, or resolves a Secret type through the secrets resolver. unverified: the export field names
+  // (`environmentvariable` lookup, `source` 1 = Environment variable) need confirming against a real export.
+  const settingEnvironmentVariables = {};
+  for (const r of byKind("sitesetting")) {
     settings[r.name] = String(field(r, "value", ""));
+    const bound = id(field(r, "environmentvariable"));
+    // unverified: native default for adx_sitesetting source is the static value (0)
+    if (bound && Number(field(r, "source", 0)) === 1) settingEnvironmentVariables[r.name] = bound;
+  }
   const webFiles = [];
   const webFileRecords = byKind("webfile");
   // Attachment lookups are independent; resolve them concurrently, then keep record order.
@@ -1214,6 +1223,7 @@ export async function importPortal(
     snippets,
     snippetTranslations,
     settings,
+    settingEnvironmentVariables,
     webFiles,
     pageTemplates,
     weblinks,

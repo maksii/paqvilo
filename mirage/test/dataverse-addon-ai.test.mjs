@@ -121,7 +121,7 @@ describe("AI add-on messages over HTTP", () => {
       body: { inputName: "Invented input", source: "invented", predictionOutput: "{}", predictionInput: {} },
     });
     assert.equal(response.status, 204);
-    const rows = plain.store.state.tables.msdyn_aibfeedbackloop.filter((row) => row.msdyn_aimodelid === MODEL);
+    const rows = plain.store.state.tables.msdyn_aibfeedbackloop.filter((row) => (row.msdyn_aimodelid?.id ?? row.msdyn_aimodelid) === MODEL);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].msdyn_name, "Invented input");
   });

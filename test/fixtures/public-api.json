@@ -22,6 +22,8 @@
       "importSolutionData",
       "initialState",
       "loadPack",
+      "loadSourceGraph",
+      "preflight",
       "migrateScenarioState",
       "presetLibrary",
       "resolveSolutionRoots"
@@ -62,6 +64,8 @@
       "connectRuntime",
       "createPortalSession",
       "runSessionMatrix",
+      "runStorageContract", "STORAGE_CONTRACT_CASES",
+      "fixedClock", "sequentialIds", "createScheduler",
       "signInContext",
       "signInHeaders"
     ],
@@ -88,7 +92,11 @@
       "assertReadOnlyPath",
       "DENIED_ROUTE_PATTERNS",
       "validatePlan",
-      "activatePackDeniedRoutes"
+      "activatePackDeniedRoutes",
+      "PACK_EXPORTS",
+      "validatePackExports",
+      "collectPackExport",
+      "packProvides"
     ],
     "paqvilo/mirage/fixtures": [
       "formatMockRecord",

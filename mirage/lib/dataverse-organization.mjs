@@ -11,8 +11,27 @@ import { standardGlobalOptionSets, fieldsWithStandard } from './dataverse-standa
 import { contextUrl } from './dataverse-odata.mjs';
 import { DataError } from './data-error.mjs';
 import { EXTENSIONS } from './dataverse-extensions.mjs';
-import { organizationContext, runOwned, runAtomic } from './dataverse-transaction-context.mjs';
+import { ownsChange, runOwned, runAtomic } from './dataverse-transaction-context.mjs';
+import { clockFunction, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
+import { collectPackExport } from './pack-exports.mjs';
+import { createCounters } from './runtime-counters.mjs';
+import { QUEUE_MESSAGE_MAPPING, QUEUE_MESSAGE_TABLE } from './message-bus.mjs';
+import { OUTBOX_MAPPING, OUTBOX_TABLE } from './outbox.mjs';
+import { FLOW_RUN_TABLE } from './flow-runs.mjs';
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
+// The organization's internal tables (the one registration seam): table -> its own mapping, or null for a standard table
+// whose mapping the standard metadata supplies. The organization composes them in its startup transaction, before any
+// simulation level captures the schema, so the first message, outbox capture or flow run writes rows, never the schema.
+// Async operations (asyncoperation) are a seeded security-model table already.
+const INTERNAL_TABLE_MAPPINGS = Object.freeze({ [QUEUE_MESSAGE_TABLE]: QUEUE_MESSAGE_MAPPING, [OUTBOX_TABLE]: OUTBOX_MAPPING, [FLOW_RUN_TABLE]: null });
+/** The internal table names, for the persistence layer (runtime-owned rows at every simulation level). */
+export const INTERNAL_TABLES = Object.freeze(Object.keys(INTERNAL_TABLE_MAPPINGS));
+function composeInternalTables(store) {
+  for (const [table, mapping] of Object.entries(INTERNAL_TABLE_MAPPINGS)) {
+    if (mapping) store.state.mappings[table] ??= structuredClone(mapping);
+    store.state.tables[table] ??= [];
+  }
+}
 export const DATAVERSE_NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse');
 export const dataverseOrganizationId = settings => (settings.organizationId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:organization`)).toLowerCase();
 function seedRegistrations(store, settings, ids, clock) {
@@ -49,6 +68,31 @@ function seedRegistrations(store, settings, ids, clock) {
   }
 }
 
+// The providers object (ARCH 18): every key present, each a provider or null.
+const PROVIDER_KEYS = ['storage', 'messaging', 'outbox', 'connectors', 'secrets', 'serviceFixtures', 'powerFx', 'localServices'];
+const providersOf = (providers = {}) => Object.freeze(Object.fromEntries(PROVIDER_KEYS.map(key => [key, providers?.[key] ?? null])));
+
+/** The diagnostic sink extensions get. While held (install, reseed), repeated `*_NOT_SIMULATED` diagnostics of one code
+ * become one summary with the tables they name; other diagnostics pass straight through. */
+function extensionDiagnostics(forward) {
+  let held = null;
+  const sink = entry => {
+    if (held && /_NOT_SIMULATED$/.test(String(entry?.code ?? ''))) { held.set(entry.code, [...(held.get(entry.code) ?? []), entry]); return; }
+    forward(entry);
+  };
+  sink.hold = () => { held ??= new Map(); };
+  sink.flush = () => {
+    const groups = held; held = null;
+    for (const [code, entries] of groups ?? []) {
+      if (entries.length === 1) { forward(entries[0]); continue; }
+      const tables = [...new Set(entries.map(entry => entry.table ?? entry.entity ?? entry.logicalName).filter(Boolean))].sort();
+      forward({ code, severity: entries[0].severity ?? 'info', count: entries.length, tables,
+        message: `${entries.length} ${code} diagnostics${tables.length ? ` for ${tables.length} tables` : ''}; the first: ${entries[0].message ?? code}` });
+    }
+  };
+  return sink;
+}
+
 function maxRowVersion(state) {
   let max = 0;
   for (const rows of Object.values(state.tables ?? {})) {
@@ -70,12 +114,35 @@ export async function createOrganizationRuntime(options) {
     return await options.store.transact(async () => organization = await composeOrganizationRuntime(options),
       { isolated: true, cloneResult: false, skipSaveIfUnchanged: true });
   } catch (error) {
-    await organization?.close().catch(() => {});
+    if (organization) await organization.close().catch(() => {});
+    else { const pending = pendingSchedulers.get(options.store); pendingSchedulers.delete(options.store); if (pending) releaseOrganizationScheduler(pending); }
     throw error;
   }
 }
 
-async function composeOrganizationRuntime({ store, settings, change = fn => fn(), schema = () => null, metadataFields = () => undefined, clock = () => Date.now(), records = null, log = () => {}, extensions = EXTENSIONS }) {
+// Schedulers an organization opened, with the number of open organizations using each (composeOrganizationRuntime).
+const organizationSchedulers = new WeakMap();
+// Schedulers opened by a composition that has not returned yet (store → scheduler), released if that composition throws.
+const pendingSchedulers = new WeakMap();
+const releaseOrganizationScheduler = scheduler => { const users = organizationSchedulers.get(scheduler) - 1; organizationSchedulers.set(scheduler, users); if (!users) scheduler.close(); };
+
+async function composeOrganizationRuntime({ store, settings, change = fn => fn(), schema = () => null, metadataFields = () => undefined, clock: clockOption, ids: idsOption, scheduler: schedulerOption, records = null, log = () => {}, extensions = EXTENSIONS,
+  providers = null, packs = [], secrets = undefined, diagnostic = () => {} }) {
+  // One clock, id and scheduler source (runtime-clock.mjs) for the store and the API: an option replaces the store's default,
+  // otherwise the store's own drives the API too.
+  if (clockOption && (!store.clock || store.clock === systemClock)) store.clock = typeof clockOption === 'function' ? { now: clockOption } : clockOption;
+  const clock = clockOption ? clockFunction(clockOption) : () => (store.clock ?? systemClock).now();
+  if (idsOption && (!store.ids || store.ids === systemIds)) store.ids = idsOption;
+  const ids = idsOption ?? store.ids ?? systemIds;
+  // Organizations own the scheduler only when one of them opened it (no backend or caller supplied one): the last of them
+  // closes it, so organizations hosted without a backend leave no timers. A backend-owned scheduler stays open for the backend.
+  const previousScheduler = store.scheduler;
+  const scheduler = storeScheduler(store, schedulerOption ?? null, { reopen: true });
+  // Activity counters (runtime-counters.mjs) for the /_sim/ dashboard: one set per store, kept across organization restarts.
+  store.counters ??= createCounters();
+  if (!schedulerOption && scheduler !== previousScheduler) organizationSchedulers.set(scheduler, 0);
+  const ownsScheduler = organizationSchedulers.has(scheduler);
+  if (ownsScheduler) { organizationSchedulers.set(scheduler, organizationSchedulers.get(scheduler) + 1); pendingSchedulers.set(store, scheduler); }
   // Standard table columns under the Solution's own fields (plan 3.2); the records and TDS layers both read this.
   const solutionFields = metadataFields;
   metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
@@ -109,9 +176,12 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
   });
   const seedSecurity = () => ensureSecurityModel(store, securitySettings, { schema });
   await change(registerApplications);
+  await change(() => store.transact(() => composeInternalTables(store)));
   await change(seedSecurity);
   // Record writes from inside a $batch skip `change` (see inBatch); other record writes use the caller's change.
-  const recordChange = (fn) => (organizationContext.getStore() ? fn() : change(fn));
+  // The slot owner is marked (runOwned), so a nested recordChange from inside the slot (a message handler called by a flow
+  // run, a plug-in writing through the SDK) joins it instead of waiting on itself.
+  const recordChange = (fn) => (ownsChange() ? fn() : change(() => runOwned(fn)));
 
   const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
   // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
@@ -156,6 +226,8 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     schema,
     changes,
     clock,
+    ids,
+    scheduler,
     limits,
     tdsPort: null,
     log,
@@ -165,7 +237,14 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
     runAtomic: (fn) => runAtomic(api, fn),
     dataRevision: () => store.dataRevision?.(),
+    // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs (ARCH 18, 19).
+    // An explicit `secrets` resolver option wins over providers.secrets; api.secrets stays its alias for the message handlers.
+    providers: providersOf(secrets === undefined ? providers : { ...providers, secrets }),
+    packs,
+    packExport: (name) => collectPackExport(packs, name),
+    diagnostic: extensionDiagnostics(diagnostic),
   };
+  api.secrets = api.providers.secrets;
   // Metadata functions over the metadata service's response builders.
   const metadataFunction = (name, respond, csdl) =>
     operations.register({
@@ -206,18 +285,24 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
   let closed;
   const close = () => closed ??= (async () => {
     const results = await Promise.allSettled(installed.map(extension => Promise.resolve().then(() => extension.close?.(api))));
-    try { await recordHandlers.close?.(); } finally { changes.close(); }
+    try { await recordHandlers.close?.(); } finally {
+      changes.close();
+      if (ownsScheduler) releaseOrganizationScheduler(scheduler);
+    }
     const failures = results.filter(result => result.status === 'rejected').map(result => result.reason);
     if (failures.length) throw new AggregateError(failures, 'Organization extension cleanup failed.');
   })();
   try {
+    api.diagnostic.hold();
     for (const extension of extensions) {
       if (typeof extension?.install !== "function") throw new Error("A Dataverse API extension needs an install(api) function.");
       // An installer may allocate resources before it fails. Give it the same
       // cleanup opportunity as successfully installed extensions.
       installed.push(extension);
-      await extension.install(api);
+      // The runtime's diagnostic sink; pack overrides and providers come from api.packExport / api.providers.
+      await extension.install(api, { diagnostic: api.diagnostic });
     }
+    api.diagnostic.flush();
     if (extensions.length) await change(seedSecurity);
   } catch (error) {
     await close().catch(cleanup => log('organization-cleanup', cleanup));
@@ -226,14 +311,26 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
   // H6: the organization the seeded organization row carries (settings.organizationId is null at runtime).
   const organizationRow = store.tableRows("organization").find((row) => String(row.organizationid).toLowerCase() === organizationId);
   api.settings = { ...settings, organizationId: organizationRow?.organizationid ?? organizationId };
+  // Query hierarchy operators resolve through the hierarchy module when it is installed: Dataverse callers through their
+  // principal context (dataverse-principal-context.mjs), every other caller through the host query scope
+  // (dataverse-conditions.mjs runWithQueryResolvers); the module then reports its query operators at behaviour.
+  if (api.hierarchy?.resolve) { store.hierarchyResolver = (table, id, mode) => api.hierarchy.resolve(table, id, mode); api.hierarchyQueryWired = true; }
+  // The organization's row-version counter starts above every stored row version, so the first write through the pipeline
+  // (nextRowVersion) never stamps a row with a version at or below the one it carries (a seeded or restored state).
+  store.state.rowVersion = Math.max(Number(store.state.rowVersion ?? 0), maxRowVersion(store.state));
+  // Ready committed-event jobs saved before a restart run once the organization (and its registrations) exists.
+  store.committedJobs?.resume();
+  pendingSchedulers.delete(store);
 
-  return { api, store, settings, change, principals, metadata, records: recordHandlers, registry: operations, changes, routes, limits, clock, tenantId, organizationId, environmentId,
+  return { api, providers: api.providers, packs, packExport: api.packExport, store, settings, change, principals, metadata, records: recordHandlers, registry: operations, changes, routes, limits, clock, ids, scheduler, tenantId, organizationId, environmentId,
     requests: () => [],
     runOwned, runAtomic: fn => runAtomic(api, fn),
     read: fn => store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
     reseed: async () => {
       await registerApplications();
-      for (const extension of extensions) await extension.reset?.(api);
+      await store.transact(() => composeInternalTables(store));
+      api.diagnostic.hold();
+      try { for (const extension of extensions) await extension.reset?.(api); } finally { api.diagnostic.flush(); }
       await seedSecurity();
       await store.transact(() => { store.state.rowVersion = maxRowVersion(store.state); });
       await store.flushCommittedEvents?.(); changes.reset();

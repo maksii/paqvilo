@@ -343,3 +343,52 @@ test('a persisted inactive two-state record disables its default UI while explic
   assert.equal(await page.locator('#record-status').count(), 0, 'the inactive record strip cannot leak onto a grid');
   assert.deepEqual(errors, []);
 });
+
+test('a header-only column set through the client API is saved with the record; dirty clears for persisted values (FC3-62)', async t => {
+  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } }); await initial.sim.close();
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  let xml = await fs.readFile(formFile, 'utf8');
+  // x_quantity moves from the body to the form header (Learn: header controls are named header_<column>).
+  xml = xml.replace('<row><cell><labels><label description="Quantity" languagecode="1033"/></labels><control datafieldname="x_quantity"/></cell></row>', '')
+    .replace('<form><tabs>', '<form><header><rows><row><cell><control id="header_x_quantity" datafieldname="x_quantity"/></cell></row></rows></header><tabs>');
+  await fs.writeFile(formFile, xml);
+  const sim = await initial.start(); sim.origin = sim.origin ?? sim.url; t.after(() => sim.close());
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  assert.equal(await page.evaluate(() => Xrm.Page.getControl('header_x_quantity')?.getName()), 'header_x_quantity');
+  assert.equal(await page.evaluate(() => { Xrm.Page.getAttribute('x_quantity').setValue(42); return Xrm.Page.data.entity.getIsDirty(); }), true);
+  await page.getByRole('button', { name: 'Save', exact: true }).first().click();
+  await page.getByText('Record saved locally.', { exact: true }).waitFor();
+  const row = await (await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
+  assert.equal(row.row.x_quantity, 42);
+  assert.equal(row.row.x_name, 'Copper');
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  assert.equal(await page.evaluate(() => Xrm.Page.data.entity.getIsDirty()), false);
+  assert.deepEqual(errors, []);
+});
+
+test('a save that cannot carry every changed column still runs Save & Close, then names the columns (RC4a-14)', async t => {
+  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } }); await initial.sim.close();
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  // x_quantity is bound to a custom control the shell does not host: it stays a form attribute a client script can set,
+  // but the save cannot carry it.
+  await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('<control datafieldname="x_quantity"/>', '<control datafieldname="x_quantity" uniqueid="{77777777-7777-4777-8777-7777777777c1}"/>')
+    .replace('</form>', '<controlDescriptions><controlDescription forControl="{77777777-7777-4777-8777-7777777777c1}"><customControl formFactor="2" name="x_Invented.Phone"/></controlDescription></controlDescriptions></form>'));
+  const sim = await initial.start(); sim.origin = sim.origin ?? sim.url; t.after(() => sim.close());
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
+  await page.evaluate(() => { Xrm.Page.getAttribute('x_name').setValue('Copper two'); Xrm.Page.getAttribute('x_quantity').setValue(42); });
+  await page.getByRole('button', { name: 'Save & Close', exact: true }).first().click();
+  // The normal path ran: the grid is shown again, and the notice names the column the save could not carry.
+  await page.getByText('Record saved locally. These changed columns cannot be saved locally: x_quantity.', { exact: true }).waitFor();
+  assert.doesNotMatch(page.url(), /pagetype=entityrecord/);
+  const row = await (await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
+  assert.deepEqual([row.row.x_name, row.row.x_quantity], ['Copper two', 2]);
+  assert.deepEqual(errors, []);
+});

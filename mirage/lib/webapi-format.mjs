@@ -42,6 +42,12 @@ export function createWebApiFormatter({ store, identity = {}, metadata, formatti
   const storedRow = (mapping, id) => {
     const key = rowKey(id);
     if (key == null) return null;
+    // String ids of local tables go through the store's primary-key index. It answers null for site,
+    // elastic and non-string-keyed tables, which keep the per-request index below.
+    // ponytail: those tables index every row once per request; upgrade: indexed lookup over virtual rows.
+    const raw = scalar(id);
+    const subset = typeof raw === "string" ? store.primaryKeySubset(mapping, [raw]) : null;
+    if (subset) return subset.findLast((row) => rowKey(row[mapping.idColumn]) === key) ?? null;
     if (!storedRows.has(mapping.logicalName)) {
       const index = new Map();
       for (const row of store.tableRows(mapping.logicalName))

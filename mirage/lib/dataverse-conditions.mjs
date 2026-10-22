@@ -1,6 +1,7 @@
 // Condition operators shared by FetchXML <condition> and the Dataverse OData
 // query functions (Microsoft.Dynamics.CRM.*). One implementation keeps both
 // query languages consistent; see docs/dataverse-parity.md for evidence.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { DataError } from "./data-error.mjs";
 import {
   DATE_OPERATORS,
@@ -39,6 +40,15 @@ const UNSUPPORTED_OPERATORS = new Map([
   ["ne-businessid", "the portal application user's business unit is not modelled"],
 ]);
 
+// The record hierarchy operators. A Dataverse caller resolves them through identity.dataverse.hierarchy; every other caller
+// (portal FetchXML, Liquid, the portal Web API) through the runtime's query scope (runWithQueryResolvers, entered by the
+// organization host per request), which answers from the organization's hierarchy module (store.hierarchyResolver).
+// Outside any scope they keep the UNSUPPORTED_OPERATORS refusal; inside one, only a table that is not hierarchical is refused.
+export const HIERARCHY_OPERATORS = new Set(["above", "eq-or-above", "under", "eq-or-under", "not-under"]);
+const queryScope = new AsyncLocalStorage();
+/** Runs fn with the runtime's query resolvers ({ hierarchy(table, attribute, id, mode) }) in scope. */
+export const runWithQueryResolvers = (resolvers, fn) => queryScope.run(resolvers, fn);
+
 // Hierarchy, team and business-unit operators need `identity.dataverse` (the Dataverse caller's
 // userId, businessUnitId, teamIds and hierarchy lookups). Without it they keep UNSUPPORTED_OPERATORS.
 const DATAVERSE_IDENTITY_OPERATORS = new Set([
@@ -56,6 +66,9 @@ export const FETCH_OPERATORS = new Set([
   ...DATE_OPERATORS,
 ]);
 export const UNSUPPORTED_FETCH_OPERATORS = UNSUPPORTED_OPERATORS;
+/** Whether a FetchXML condition operator runs for a Dataverse caller (identity.dataverse) on any table: the record
+ * hierarchy operators also need the table's hierarchical relationship, so they are not in this set. */
+export const dataverseFetchOperator = (operator) => FETCH_OPERATORS.has(operator) || (DATAVERSE_IDENTITY_OPERATORS.has(operator) && !HIERARCHY_OPERATORS.has(operator));
 export const COLUMN_COMPARISON_OPERATORS = new Set(["eq", "ne", "gt", "ge", "lt", "le"]);
 
 const nullMessage = (attribute) =>
@@ -93,6 +106,8 @@ export function compileOperator(operator, {
   const op = operator === "neq" ? "ne" : operator;
   if (identity.dataverse && DATAVERSE_IDENTITY_OPERATORS.has(op))
     return compileIdentityOperator(op, { attribute, values, table, identity: identity.dataverse });
+  const hierarchy = HIERARCHY_OPERATORS.has(op) ? queryScope.getStore()?.hierarchy : null;
+  if (hierarchy) return compileIdentityOperator(op, { attribute, values, table, identity: { hierarchy } });
   // EqualUserAuthContext is a query function only: it has no FetchXML operator, so it is not in FETCH_OPERATORS.
   // The caller's authentication contexts come from identity.dataverse.authContexts; the simulator issues no acrs claim,
   // so the list is empty and nothing matches. unverified: the semantics are a guess from the name (live capture LC-G5-3).
@@ -255,7 +270,7 @@ const identityIds = (items) => new Set([...items].map((item) => guidKey(item) ??
 function compileIdentityOperator(op, { attribute, values, table, identity }) {
   const hierarchyError = () =>
     new DataError("The entity does not have a hierarchical relationship.", 400, "InvalidQuery", {
-      innerCode: "0x80040203",
+      innerCode: "0x80040203", reason: "HIERARCHY_NOT_HIERARCHICAL",
     });
   const treeOf = (mode) => {
     const recordId = identityKey(values[0]);

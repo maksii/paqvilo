@@ -4,15 +4,48 @@ Paqvilo 0.9.4 introduces supported package entry points. Exported names, documen
 
 | Import | Supported surface |
 | --- | --- |
-| `paqvilo/mirage` | `createSimulator`, `DataStore`, `DataError`, `readStateFile`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext` |
+| `paqvilo/mirage` | `createSimulator`, `DataStore`, `DataError`, `readStateFile`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext`, `loadSourceGraph`, `preflight` |
 | `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers |
-| `paqvilo/mirage/packs` | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation |
+| `paqvilo/mirage/packs` | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation, persona catalogue validation/merging, and the pack-export registry (`PACK_EXPORTS`, `validatePackExports`, `collectPackExport`, `packProvides`; see [data packs](../mirage/docs/data-packs.md)) |
 | `paqvilo/mirage/fixtures` | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer` |
-| `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `createPersonaSession`, `createPersonaBrowserContext`, `runSessionMatrix` |
+| `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `createPersonaSession`, `createPersonaBrowserContext`, `runSessionMatrix`, `runStorageContract`, `STORAGE_CONTRACT_CASES`, `fixedClock`, `sequentialIds`, `createScheduler` |
 | `paqvilo/lense` | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue` |
 | `paqvilo/dataverse` | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md) |
 
 Wildcard paths such as `paqvilo/mirage/lib/data.mjs` resolve through the package's `./mirage/*` and `./lense/*` exports, but they are not supported entry points: modules outside the table are implementation details. Use the entry points in the table.
+
+## Clock, ids and scheduler
+
+The organization runtime (`createOrganizationRuntime`) accepts `clock` (epoch milliseconds, a function or `{ now() }`), `ids` (`{ uuid() }`) and `scheduler`, and shares them with its `DataStore` (which also takes `clock` and `ids` directly) and its asynchronous jobs. `mirage/lib/runtime-clock.mjs` provides `systemClock`, `systemIds`, `fixedClock(startMs)` (`now`, `advance(ms)`, `set(ms)`), `sequentialIds(namespace)` (valid version 5 GUIDs over a counter) and `createScheduler({ clock, manual, faults })` (`schedule`, `cancel`, `pending`, `runDue`, `advance`, `drain`, `close`, `status`). With a fixed clock and sequential ids, row ids, `createdon`/`modifiedon`, audit rows, plug-in trace logs and web hook payloads repeat byte for byte between runs; a manual scheduler runs the durable asynchronous jobs only when a test calls `runDue()` or `advance(ms)`. `runDue()` (and `advance(ms)`) runs every due task in order, each finishing before the next starts, and returns once the started tasks have settled or are blocked. A task is blocked when it waits on a task it queued on the same scheduler that is not due yet, such as a connector retry pause: `status().blocked` counts it, `status().pending` leaves it out, `drain()` returns without it, and the later `advance(ms)` that makes the queued task due lets it finish. A task that queues a due task and awaits it finishes in the same `runDue()`. The defaults keep wall time, random GUIDs and real timers.
+
+`createSimulator` accepts the same `clock`, `ids` and `scheduler` options for the Power Pages and the standalone host, and passes them to its state store, organization runtime and committed-work backend. `paqvilo/mirage/testing` exports `fixedClock`, `sequentialIds` and `createScheduler` for project acceptance tests.
+
+## Inspect Solution sources
+
+```js
+import { loadSourceGraph } from 'paqvilo/mirage';
+const graph = await loadSourceGraph({ solutionRoots: ['./solutions/Core', './solutions/Extension'], solutionOrder: 'explicit' });
+graph.resolve('canvasapp', 'x_inventedapp'); // node from the later selected layer, or null
+graph.requirements(); // [{ id, kind, source, status: 'satisfied'|'missing'|'placeholder'|'unsupported'|'disabled', reason }]
+graph.summary();      // { nodes, levels, kinds: { kind: { level: count } } }
+```
+
+`loadSourceGraph({ solutionRoots, solutionOrder = 'derived', sourceDir, lcid = 1033, bindings })` reads the selected Solution roots once and returns a read-only graph. With `sourceDir`, it also reads that portal export. `bindings` takes deployment-profile values, `{ connectionReferences: [{ logicalName, connectionId }], environmentVariables: { name: value } }`, which settle requirements. Node ids are `<kind>:<lower-case key>`. `JSON.stringify(graph)` gives `{ fingerprint, summary, nodes }`, without environment variable values or connection ids. Inventory kinds and statuses are described in [Sources and bootstrap](../mirage/docs/bootstrap-and-sources.md#solution-inventory).
+
+## Preflight
+
+```js
+import { preflight } from 'paqvilo/mirage';
+const report = await preflight({ runtime: { kind: 'dataverse-api' }, solutionRoots: ['./solutions/Core'],
+  scenario: { id: 'approval', requires: ['cloud-flow:*', 'table:x_item'] } });
+report.summary.blocking; // 0 when nothing in the scenario's scope blocks
+```
+
+`preflight(options)` returns the same report as `paqvilo mirage preflight --json`, without exiting the process. It takes the `createSimulator` option names (`runtime`, `simulation`, `solutionRoots`, `solutionOrder`, `sourceDir`, `dataPacks`, `environmentVariables`, `deploymentProfiles`, `localServices`, `providers`), plus `scenario`, `strict` and `env`. `env` is where `env:NAME` references resolve, `process.env` by default. The report shape, the four fidelity levels, scenario patterns and exit codes are described in [Capabilities and preflight](../mirage/docs/capabilities-and-preflight.md).
+
+A running simulator answers the same report for its live state: `simulator.preflight({ scenario, strict })` on the handle `createSimulator` returns (Power Pages and standalone hosts alike), and `GET /_sim/api/preflight` over HTTP. It reads the host's own capability registry and operation catalogue, including the operation modes saved in `/_sim/`. The runtime status (`simulator.state()`, standalone `status()`) carries the same registry as `capabilities` (the legacy summary) and `capabilityReport`. `simulator.settle()` on either handle resolves once every committed-event job (asynchronous plug-in steps, web hooks, row-triggered flows and due scheduled jobs) has run; tests await it instead of the store queue, because durable jobs run on the runtime scheduler. It then settles the instantiated pack providers: pending outbox observer calls and each provider's own `settle()`.
+
+Both hosts also answer `GET /_sim/api/dashboard`, a read-only, redacted topology and activity document for monitoring tools (see [simulation administration](../mirage/docs/sim-administration.md#infrastructure-feed)). Its activity numbers come from the organization runtime's counters, `store.counters` (`createCounters()` in `mirage/lib/runtime-counters.mjs`): `snapshot()` returns the named counts and `tick` moves on every change. Counts start at zero with the runtime and are not persisted.
 
 ## Persona catalogues
 

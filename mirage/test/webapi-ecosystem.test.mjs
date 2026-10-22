@@ -384,11 +384,14 @@ test("platform change diagnostics name enhanced authorization, list feeds, unsec
     templates: { t1: { name: "Classic", source: "{% include 'entity_list' key: 'Products' %}" } },
   });
   const byCode = Object.fromEntries(found.map((diagnostic) => [diagnostic.code, diagnostic]));
-  assert.deepEqual(Object.keys(byCode).sort(), ["ENHANCED_AUTHORIZATION", "LIST_ODATA_FEED_REMOVED", "MODERN_LIST_RENDERED_CLASSIC", "TABLE_PERMISSIONS_ALWAYS_ENFORCED"]);
+  assert.deepEqual(Object.keys(byCode).sort(), ["ENHANCED_AUTHORIZATION", "LIST_ODATA_FEED_REMOVED", "MODERN_LIST_LOCAL_MARKUP", "TABLE_PERMISSIONS_ALWAYS_ENFORCED"]);
   assert.equal(byCode.ENHANCED_AUTHORIZATION.state, "Enabled");
   assert.deepEqual(byCode.LIST_ODATA_FEED_REMOVED.items, ["Feed (/_odata/contactset)"]);
   assert.deepEqual(byCode.TABLE_PERMISSIONS_ALWAYS_ENFORCED.items, ["list Open", "basic form Open form", "advanced form step Open step"]);
-  assert.equal(byCode.MODERN_LIST_RENDERED_CLASSIC.count, 1);
+  // The modern list adapter serves a plain list (local markup); a map list falls back to the classic list.
+  assert.equal(byCode.MODERN_LIST_LOCAL_MARKUP.count, 1);
+  const mapped = platformChangeDiagnostics({ lists: [list("Places", { adx_map_enabled: true })], pages: [{ url: "/map/", html: "{% include 'entity_list' key: 'Places' isModern: 'true' %}" }] });
+  assert.deepEqual(mapped.map((diagnostic) => diagnostic.code), ["MODERN_LIST_RENDERED_CLASSIC"]);
   // Disabled enhanced authorization (0) and a site without the column report nothing.
   assert.deepEqual(platformChangeDiagnostics({ website: { enhancedauthorization: 0 } }), []);
   assert.deepEqual(platformChangeDiagnostics({}), []);
@@ -408,7 +411,7 @@ test("exports surface the platform changes as portal diagnostics", async (t) => 
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(standard, name), body);
   const portal = await importPortal(standard);
   const codes = portal.diagnostics.map((diagnostic) => diagnostic.code);
-  for (const code of ["LIST_ODATA_FEED_REMOVED", "TABLE_PERMISSIONS_ALWAYS_ENFORCED", "MODERN_LIST_RENDERED_CLASSIC"]) assert.ok(codes.includes(code), code);
+  for (const code of ["LIST_ODATA_FEED_REMOVED", "TABLE_PERMISSIONS_ALWAYS_ENFORCED", "MODERN_LIST_LOCAL_MARKUP"]) assert.ok(codes.includes(code), code);
   assert.equal(portal.diagnostics.find((diagnostic) => diagnostic.code === "TABLE_PERMISSIONS_ALWAYS_ENFORCED").count, 3);
   // The enhanced site record carries enhancedauthorization (Learn: powerpagesite choices 0-3).
   const enhanced = await fs.mkdtemp(path.join(os.tmpdir(), "pp-platform-changes-enhanced-"));

@@ -182,3 +182,22 @@ test('well-known SDK message ids resolve without a project observation', () => {
   const observed = observedConfig({ evidence: 'Invented', sdkMessages: { [createId]: { name: 'Update', evidence: 'Invented row' } } });
   assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
 });
+
+test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined nine', async () => {
+  const { enterPluginExecution, leavePluginExecution, pluginExecutionDepth } = await import('../lib/plugin-clr.mjs');
+  const step = { id: '10000000-0000-4000-8000-000000000042', name: 'Invented shared depth step', entity: 'x_widget', message: 'Update', enabled: true, stage: 40, rank: 1, mode: 0, typeName: 'Invented.SharedDepth', assemblyId: 'invented', supportedDeployment: 0, filteringAttributes: [], images: [] };
+  const store = new DataStore({ state: { version: 1, mappings: { x_widget: { entitySet: 'x_widgets', idColumn: 'x_widgetid' } }, tables: { x_widget: [] }, permissions: [], plugins: [], settings: { permissionMode: 'enforce' } } });
+  const depths = [];
+  const handlers = new Map([[step.typeName, ({ record, context }) => { depths.push(context.Depth); store.sdkMutation(() => store.updateRecord('x_widget', record.x_widgetid, { x_count: (record.x_count ?? 0) + 1 }, { admin: true })); }]]);
+  const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
+  const row = await store.create('x_widget', { x_name: 'Root', x_count: 0 }, { admin: true });
+  store.setPluginPipeline(context => runPluginPhase({ ...context, store, items, handlers }));
+  // Three CLR frames are active (the CLR host enters the same counter around its run); the JS chain continues at Depth 4.
+  for (let i = 0; i < 3; i++) enterPluginExecution();
+  try {
+    await assert.rejects(store.update('x_widget', row.x_widgetid, { x_count: 1 }, { admin: true }), error => error.code === 'LocalPluginDepth' && error.status === 400);
+    assert.deepEqual(depths, [4, 5, 6, 7, 8]);
+    assert.equal(pluginExecutionDepth(), 3);
+  } finally { for (let i = 0; i < 3; i++) leavePluginExecution(); }
+  assert.equal(pluginExecutionDepth(), 0);
+});

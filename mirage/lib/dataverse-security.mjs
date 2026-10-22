@@ -293,8 +293,133 @@ function addUser(store, organizationId, id, fields, roles) {
     businessunitid: lookupRow(store, 'businessunit', rootId(organizationId)),
     organizationid: lookupRow(store, 'organization', organizationId),
   });
-  for (const role of roles) linkRole(store, id, roleIdOf(organizationId, role));
+  for (const role of roles) linkRole(store, id, roleIdByName(store, organizationId, role));
   return id;
+}
+
+// A role named by a user is a built-in role, a GUID, or a role row of that name (a Solution role keeps its Solution id).
+function roleIdByName(store, organizationId, role) {
+  if (GUID_RE.test(role) || ROLE_NAMES.includes(role)) return roleIdOf(organizationId, role);
+  return rowsOf(store, 'role').find((row) => key(row.name) === key(role))?.roleid ?? roleIdOf(organizationId, role);
+}
+
+// Privilege depth names of a Solution role file -> privilegedepthmask (Learn: Basic 1, Local 2, Deep 4, Global 8).
+const depthMaskOf = (depth) => DEPTH[Object.keys(DEPTH).find((name) => key(name) === key(depth))] ?? (Number.isInteger(Number(depth)) && Object.values(DEPTH).includes(Number(depth)) ? Number(depth) : null);
+const grantSignature = (store, roleId) => rowsOf(store, 'roleprivileges').filter((g) => sameId(refId(g.roleid), roleId))
+  .map((g) => `${key(refId(g.privilegeid))}:${g.privilegedepthmask}`).sort().join('|');
+
+/**
+ * Imports Solution security definitions (solution-inventory.mjs securityDefinitions) into the security tables:
+ * - a role row under the root business unit, keeping the Solution's role id, with its roleprivileges resolved by privilege name;
+ *   an unknown privilege name is skipped and reported (SOLUTION_ROLE_PRIVILEGE_UNKNOWN), never granted;
+ * - a field security profile row, keeping its Solution id, with its fieldpermission rows.
+ * Users and teams get the roles and profiles from project data (settings users' roles, /_sim/, the Web API associations).
+ * A managed definition is a layer on the role's stack (state.dataverse.managedLayers, kind securityrole): a new definition
+ * replaces the privilege set (Learn how-managed-solutions-merged, "Replace behavior for custom security roles") unless the
+ * role was changed after the last import (AddPrivilegesRole, ReplacePrivilegesRole: an unmanaged layer on top), which stays.
+ * An unmanaged definition is applied when the role is new or unchanged since its last import. Returns the diagnostics.
+ */
+// An uninstall restores a role or field security profile from its layer stack (dataverse-solution-messages.mjs popLayers
+// through SECURITY_LAYERS: the layer below, or the component, its grants and its user/team associations removed with the last layer).
+/**
+ * Replaces a role's roleprivileges with grants ([{ privilegeid, mask }]) and returns the role's new grant signature (the
+ * `applied` mark of its securityrole layer). Shared by importSolutionSecurity and the uninstall restore.
+ */
+export function applyRoleGrants(store, roleid, grants) {
+  removeWhere(rowsOf(store, 'roleprivileges'), (g) => sameId(refId(g.roleid), roleid));
+  for (const grant of grants) {
+    const id = uuidV5(roleid, grant.privilegeid);
+    rowsOf(store, 'roleprivileges').push({ roleprivilegeid: id, roleid: lookupRow(store, 'role', roleid), privilegeid: lookupRow(store, 'privilege', grant.privilegeid), privilegedepthmask: grant.mask });
+  }
+  seedRows.delete(rowsOf(store, 'roleprivileges')); // the seed index no longer matches the rewritten rows
+  return grantSignature(store, roleid);
+}
+
+/** Removes a role row, its roleprivileges and its user/team role associations (the last managed layer was uninstalled). */
+export function removeRoleGrants(store, roleid) {
+  for (const table of ['roleprivileges', 'systemuserroles', 'teamroles']) removeWhere(rowsOf(store, table), (g) => sameId(refId(g.roleid), roleid));
+  removeWhere(rowsOf(store, 'role'), (r) => sameId(r.roleid, roleid));
+  for (const table of ['roleprivileges', 'systemuserroles', 'teamroles', 'role']) seedRows.delete(rowsOf(store, table));
+}
+
+const permissionSignature = (store, profileId) => rowsOf(store, 'fieldpermission').filter((p) => sameId(refId(p.fieldsecurityprofileid), profileId))
+  .map((p) => `${key(p.entityname)}:${key(p.attributelogicalname)}:${p.canread}:${p.cancreate}:${p.canupdate}:${p.canreadunmasked}`).sort().join('|');
+
+/** Replaces a field security profile's fieldpermission rows and returns its permission signature (the layer's `applied` mark). */
+export function applyProfilePermissions(store, profileId, permissions) {
+  const rows = rowsOf(store, 'fieldpermission');
+  const profile = rowsOf(store, 'fieldsecurityprofile').find((p) => sameId(p.fieldsecurityprofileid, profileId));
+  const ref = { id: profileId, logical_name: 'fieldsecurityprofile', name: profile?.name };
+  removeWhere(rows, (p) => sameId(refId(p.fieldsecurityprofileid), profileId));
+  for (const permission of permissions) {
+    rows.push({
+      fieldpermissionid: permission.id ?? uuidV5(profileId, `${permission.entity}:${permission.attribute}`), fieldsecurityprofileid: ref,
+      entityname: permission.entity, attributelogicalname: permission.attribute,
+      canread: permission.canread, cancreate: permission.cancreate, canupdate: permission.canupdate, canreadunmasked: permission.canreadunmasked,
+    });
+  }
+  return permissionSignature(store, profileId);
+}
+
+/** Removes a field security profile row, its fieldpermission rows and its systemuserprofiles/teamprofiles associations. */
+export function removeProfile(store, profileId) {
+  for (const table of ['fieldpermission', 'systemuserprofiles', 'teamprofiles']) removeWhere(rowsOf(store, table), (p) => sameId(refId(p.fieldsecurityprofileid), profileId));
+  removeWhere(rowsOf(store, 'fieldsecurityprofile'), (p) => sameId(p.fieldsecurityprofileid, profileId));
+}
+
+/** The one security-layer table: how popLayers restores a lower layer's body ([apply]) or removes the component ([remove]). */
+export const SECURITY_LAYERS = Object.freeze({
+  securityrole: { apply: applyRoleGrants, remove: removeRoleGrants, signature: grantSignature },
+  fieldsecurityprofile: { apply: applyProfilePermissions, remove: removeProfile, signature: permissionSignature },
+});
+
+// A managed definition is a layer on the component's stack; it is applied unless the component was changed after its last
+// import (an unmanaged layer on top, activeOnTop), which stays. An unmanaged definition is applied the same way but adds no layer.
+function pushSecurityLayer(store, org, kind, id, name, managed, solutionid, body) {
+  const { apply, signature } = SECURITY_LAYERS[kind];
+  const layers = ((store.state.dataverse ??= {}).managedLayers ??= {});
+  const record = (layers[key(uuidV5(org, `${kind}:${id}`))] ??= { kind, logical: id, name, stack: [], activeOnTop: false, seq: 0 });
+  const customized = record.applied != null && signature(store, id) !== record.applied;
+  if (!customized) record.applied = apply(store, id, body);
+  record.activeOnTop = customized;
+  const entry = { solutionid, version: null, body, seq: 0 };
+  const at = record.stack.findIndex((item) => sameId(item.solutionid, solutionid));
+  if (managed) { if (at >= 0) record.stack[at] = entry; else record.stack.push(entry); }
+}
+
+export function importSolutionSecurity(store, organizationId, { securityRoles = [], fieldSecurityProfiles = [] } = {}, { solutionId = null } = {}) {
+  const org = organizationId, root = rootId(org);
+  const diagnostics = [];
+  const privileges = new Map(rowsOf(store, 'privilege').map((row) => [key(row.name), row]));
+  for (const role of securityRoles) {
+    const roleid = key(role.id ?? '') && GUID_RE.test(role.id) ? key(role.id) : roleIdOf(org, role.name);
+    insertMissing(rowsOf(store, 'role'), 'roleid', {
+      roleid, name: role.name, businessunitid: lookupRow(store, 'businessunit', root), organizationid: lookupRow(store, 'organization', org),
+    });
+    const row = rowsOf(store, 'role').find((r) => sameId(r.roleid, roleid));
+    Object.assign(row, { name: role.name, ismanaged: role.managed === true, ...(solutionId ? { solutionid: solutionId } : {}) });
+    const grants = [];
+    for (const privilege of role.privileges ?? []) {
+      const found = privileges.get(key(privilege.name)), mask = depthMaskOf(privilege.depth);
+      if (!found || mask == null) {
+        diagnostics.push({ code: 'SOLUTION_ROLE_PRIVILEGE_UNKNOWN', severity: 'warning', role: role.name, privilege: privilege.name,
+          message: `Role ${role.name}: ${found ? `depth ${privilege.depth} is not Basic, Local, Deep or Global` : `privilege ${privilege.name} does not exist in this organization`}; it is not granted.` });
+        continue;
+      }
+      grants.push({ privilegeid: found.privilegeid, mask });
+    }
+    pushSecurityLayer(store, org, 'securityrole', roleid, role.name, role.managed === true, solutionId ?? role.solution ?? null, grants);
+  }
+  const profileRows = rowsOf(store, 'fieldsecurityprofile');
+  for (const profile of fieldSecurityProfiles) {
+    const profileId = profile.id && GUID_RE.test(profile.id) ? key(profile.id) : uuidV5(org, `fieldsecurityprofile:${key(profile.name)}`);
+    let row = profileRows.find((p) => sameId(p.fieldsecurityprofileid, profileId));
+    if (!row) profileRows.push(row = { fieldsecurityprofileid: profileId });
+    Object.assign(row, { name: profile.name, ismanaged: profile.managed === true, ...(solutionId ? { solutionid: solutionId } : {}) });
+    // The definition replaces the profile's permissions, as a managed import replaces a role's privileges.
+    pushSecurityLayer(store, org, 'fieldsecurityprofile', profileId, profile.name, profile.managed === true, solutionId ?? profile.solution ?? null, profile.permissions ?? []);
+  }
+  return diagnostics;
 }
 
 function applicationUser(store, settings, app) {
@@ -434,6 +559,10 @@ function seedSecurity(store, settings, schema) {
   const privileges = GLOBAL_PRIVILEGES.map((name) => ({ right: null, name, own: null }));
   for (const table of tableInfo(store, schema)) privileges.push(...tablePrivilegesOf(table));
   grantPrivileges(store, org, privileges);
+  // Solution roles and field security profiles (buildSolutionSchema securityRoles/fieldSecurityProfiles), before any user names them.
+  const source = typeof schema === 'function' ? schema() : schema;
+  if (source?.securityRoles?.length || source?.fieldSecurityProfiles?.length)
+    (store.state.dataverse ??= {}).securityDiagnostics = importSolutionSecurity(store, org, source);
   // SYSTEM runs internal reads that need no caller privilege (dataverse-security-messages.mjs), so it holds System Administrator.
   const systemUserId = addUser(store, org, uuidV5(org, 'systemuser:SYSTEM'), { fullname: 'SYSTEM', accessmode: ACCESS_MODE.NonInteractive }, ['System Administrator']);
   const userIds = {};
@@ -514,11 +643,14 @@ const shareOf = (store, target, principal) =>
  * Share `target` ({ logical, id }) with `principal` ({ id, logical_name: systemuser | team }) at `mask`.
  * GrantAccess ORs the mask into an existing share; ModifyAccess (replace) sets it.
  */
+// Share rows change through the store's row operations, so a share is an incremental (journaled) write
+// that advances only the principalobjectaccess revision: the security index keeps everything but its shares.
 export function grantAccess(store, { target, principal, mask }, { replace = false } = {}) {
   return store.transact(() => {
     const existing = shareOf(store, target, principal);
     if (existing) {
-      existing.accessrightsmask = replace ? mask : Number(existing.accessrightsmask) | mask;
+      const rows = rowsOf(store, 'principalobjectaccess');
+      store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), { accessrightsmask: replace ? mask : Number(existing.accessrightsmask) | mask });
       return existing;
     }
     const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
@@ -530,9 +662,9 @@ export function grantAccess(store, { target, principal, mask }, { replace = fals
       accessrightsmask: mask,
       inheritedaccessrightsmask: 0,
     };
-    rowsOf(store, 'principalobjectaccess').push(row);
+    store.insertRow('principalobjectaccess', rowsOf(store, 'principalobjectaccess'), row);
     return row;
-  });
+  }, { incremental: true });
 }
 
 export const modifyAccess = (store, args) => grantAccess(store, args, { replace: true });
@@ -541,14 +673,29 @@ export function revokeAccess(store, { target, principal }) {
   return store.transact(() => {
     const rows = rowsOf(store, 'principalobjectaccess');
     const index = rows.indexOf(shareOf(store, target, principal));
-    if (index >= 0) rows.splice(index, 1);
+    if (index >= 0) store.removeRow('principalobjectaccess', rows, index);
     return index >= 0;
-  });
+  }, { incremental: true });
 }
 
-// Derived indexes, rebuilt wholesale when store.dataRevision() changes.
-// ponytail: whole-state rebuild per committed change; per-table indexes if tables grow large.
+// Derived indexes per store: the principal/role/privilege part is rebuilt only when one of its tables
+// commits a change (store.tablesRevision), the share part only when principalobjectaccess does.
 const indexes = new WeakMap();
+const CORE_TABLES = Object.freeze(['systemuser', 'team', 'role', 'privilege', 'roleprivileges', 'systemuserroles', 'teammembership', 'teamroles', 'businessunit', 'organization']);
+const SHARE_TABLES = Object.freeze(['principalobjectaccess']);
+// Stores without per-table counters (older embedders) fall back to the whole-data revision.
+const revisionOf = (store, tables) => typeof store.tablesRevision === 'function'
+  ? `${store.tablesRevision(tables)}.${store.state.dataverse?.organizationId ?? ''}` : store.dataRevision();
+
+function buildShares(store) {
+  const shares = new Map();
+  for (const s of store.tableRows('principalobjectaccess')) {
+    const k = key(s.objectid);
+    if (!shares.has(k)) shares.set(k, []);
+    shares.get(k).push({ principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
+  }
+  return shares;
+}
 
 function buildIndex(store) {
   const idx = {
@@ -592,7 +739,6 @@ function buildIndex(store) {
   for (const b of store.tableRows('businessunit')) {
     if (refId(b.parentbusinessunitid)) add(idx.children, key(refId(b.parentbusinessunitid)), key(b.businessunitid));
   }
-  for (const s of store.tableRows('principalobjectaccess')) add(idx.shares, key(s.objectid), { principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
   // Org settings (hierarchySecurity) live on the organization row.
   const org = organizationRecord(store), depth = Number(org?.hierarchysecuritydepth);
   idx.hierarchy = { enabled: org?.hierarchysecurityenabled === true, depth: Number.isInteger(depth) && depth > 0 ? depth : DEFAULT_HIERARCHY_DEPTH };
@@ -613,12 +759,11 @@ function sharedWith(idx, uid, row, idColumn, right) {
 }
 
 function indexOf(store) {
-  const revision = store.dataRevision();
-  const hit = indexes.get(store);
-  if (hit?.revision === revision) return hit.idx;
-  const idx = buildIndex(store);
-  indexes.set(store, { revision, idx });
-  return idx;
+  const core = revisionOf(store, CORE_TABLES), shares = revisionOf(store, SHARE_TABLES);
+  let hit = indexes.get(store);
+  if (hit?.core !== core) indexes.set(store, (hit = { core, shares: null, idx: buildIndex(store) }));
+  if (hit.shares !== shares) { hit.idx.shares = buildShares(store); hit.shares = shares; }
+  return hit.idx;
 }
 
 const teamsOf = (idx, uid) => idx.teams.get(uid) ?? [];
@@ -994,6 +1139,18 @@ function parentRowOf(store, logical, row) {
   return id && table ? find(String(table), id) : null;
 }
 
+/**
+ * The principal kind an access token stands for: 'delegated' (a user signed in through a client: idtyp user, or an scp claim)
+ * or 'application' (client credentials, managed identity: idtyp app, or appid/azp without scp). Every issuer path of
+ * dataverse-auth.mjs (authorization code, device code, password, on-behalf-of, refresh, federated client assertions) mints
+ * idtyp; a claim set with neither idtyp nor a client id (an in-process caller naming a user) is delegated.
+ */
+export function tokenKind(claims = {}) {
+  if (claims.idtyp === 'user' || claims.scp != null) return 'delegated';
+  if (claims.idtyp === 'app' || claims.appid != null || claims.azp != null) return 'application';
+  return 'delegated';
+}
+
 /** Principal and privilege checks for the Dataverse layer. Read-only apart from the cached index. */
 export function createPrincipals(store, settings = {}) {
   const idx = () => indexOf(store);
@@ -1030,13 +1187,17 @@ export function createPrincipals(store, settings = {}) {
     byApplicationId: (appId) => idx().byApp.get(key(appId)) ?? null,
     byDomainName: (name) => idx().byDomain.get(key(name)) ?? null,
 
-    /** Claims -> { user, reason }. reason: 'unknown' | 'disabled' | null. */
+    /**
+     * Claims -> { user, reason }. reason: 'unknown' | 'disabled' | null. The token kind decides the lookup: a delegated token
+     * (user sign-in, on-behalf-of, federated user) resolves its user by oid (by upn only when it carries no oid) and never falls
+     * back to the client's application user; an application token resolves the application user by appid/azp only.
+     */
     resolve(claims = {}) {
       const index = idx();
       const appId = claims.appid ?? claims.azp, upn = claims.upn ?? claims.preferred_username;
-      const user = (claims.oid ? index.byOid.get(key(claims.oid)) : undefined)
-        ?? (appId ? index.byApp.get(key(appId)) : undefined)
-        ?? (upn ? index.byDomain.get(key(upn)) : undefined) ?? null;
+      const user = tokenKind(claims) === 'delegated'
+        ? (claims.oid ? index.byOid.get(key(claims.oid)) : upn ? index.byDomain.get(key(upn)) : null) ?? null
+        : (appId ? index.byApp.get(key(appId)) : null) ?? null;
       if (!user) return { user: null, reason: 'unknown' };
       return { user, reason: user.isdisabled === true ? 'disabled' : null };
     },

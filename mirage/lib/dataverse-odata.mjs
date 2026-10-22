@@ -437,14 +437,17 @@ const XML_ATTRIBUTE = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 
 /**
  * Raw paging cookie: the pagingcookie attribute is percent-encoded twice, with lowercase escapes.
- * orderColumn ({ name, last, first }, optional): a $orderby column's values, which come before the id element.
- * The ordered column adds its own last/first values to the paging cookie.
+ * orderColumns ([{ name, last, first }], optional; orderColumn for one): the $orderby columns' values, in order, which
+ * come before the id element, as the paging cookie carries them (Learn page-results: data about the first and last record).
+ * A column whose name is not an XML name (a navigation path) is left out.
  */
-export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOfRecords, orderColumn }) {
+export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOfRecords, orderColumn, orderColumns = orderColumn ? [orderColumn] : [] }) {
   const count = countOfRecords == null ? "" : ` countOfRecords="${countOfRecords}"`;
-  const order = orderColumn
-    ? `<${orderColumn.name} last="${String(orderColumn.last ?? "").replace(/[&<>"]/g, (ch) => XML_ATTRIBUTE[ch])}" first="${String(orderColumn.first ?? "").replace(/[&<>"]/g, (ch) => XML_ATTRIBUTE[ch])}" />`
-    : "";
+  const attribute = (value) => String(value ?? "").replace(/[&<>"]/g, (ch) => XML_ATTRIBUTE[ch]);
+  const order = orderColumns
+    .filter((column) => /^[A-Za-z_][\w.-]*$/.test(column.name) && column.name !== idColumn)
+    .map((column) => `<${column.name} last="${attribute(column.last)}" first="${attribute(column.first)}" />`)
+    .join("");
   const inner = `<cookie page="${pageNumber - 1}"${count}>${order}<${idColumn} last="{${upperGuid(lastId)}}" first="{${upperGuid(firstId)}}" /></cookie>`;
   const paging = encodeURIComponent(encodeURIComponent(inner)).replace(/%25([0-9A-F]{2})/g, (escape, hex) => `%25${hex.toLowerCase()}`);
   return `<cookie pagenumber="${pageNumber}" pagingcookie="${paging}" istracking="False" />`;
@@ -471,15 +474,20 @@ export function decodeSkipToken(text) {
   if (!outer) return null;
   const inner = decode(decode(outer[2]) ?? "");
   const head = inner && /<cookie\s+page="\d+"([^>]*)>/.exec(inner);
-  // The id element is the last one: a $orderby column element (see encodeSkipToken) comes before it.
-  const element = head && [...inner.matchAll(/<(\w+)\s+last="\{?([^"}]*)\}?"\s+first="\{?([^"}]*)\}?"/g)].at(-1);
+  // The id element is the last one: the $orderby column elements (see encodeSkipToken) come before it.
+  const elements = head ? [...inner.matchAll(/<([\w.-]+)\s+last="([^"]*)"\s+first="([^"]*)"/g)] : [];
+  const element = elements.at(-1);
   if (!element) return null;
   const count = /countOfRecords="(\d+)"/.exec(head[1]);
+  const xmlText = (value) => value.replace(/&(amp|lt|gt|quot);/g, (_, name) => ({ amp: "&", lt: "<", gt: ">", quot: '"' })[name]);
+  const id = (value) => lowerGuid(value.replace(/^\{|\}$/g, ""));
   return {
     pageNumber: Number(outer[1]),
-    lastId: lowerGuid(element[2]),
-    firstId: lowerGuid(element[3]),
+    lastId: id(element[2]),
+    firstId: id(element[3]),
     idColumn: element[1],
+    // The order-column values by name ({ name: last }); keysetPage resumes after them and the id.
+    ...(elements.length > 1 ? { orderValues: Object.fromEntries(elements.slice(0, -1).map((item) => [item[1], xmlText(item[2])])) } : {}),
     ...(count ? { countOfRecords: Number(count[1]) } : {}),
   };
 }

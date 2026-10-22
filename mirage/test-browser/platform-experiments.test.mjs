@@ -15,6 +15,8 @@ test('developer configures platform rules and override presets through two dedic
  await page.goto(app.url+'/_sim/#platform');await page.getByRole('heading',{name:'Platform rules',exact:true}).waitFor();
  const budget=page.locator('tr').filter({has:page.getByRole('spinbutton',{name:'QueryLinkEntityLimit',exact:true})});
  await budget.getByRole('spinbutton').fill('30');await budget.getByRole('button',{name:'Save override'}).click();await budget.getByText('Instance override',{exact:false}).waitFor();
+ // The rules table is paginated; MaxDepth sits on a later page, so the kit search box filters for it first.
+ await page.locator('[data-table-search="platform-settings"]').fill('MaxDepth');
  const depth=page.locator('tr').filter({has:page.getByRole('spinbutton',{name:'WorkflowSettings.MaxDepth',exact:true})});await depth.getByRole('spinbutton').fill('12');await depth.getByRole('button',{name:'Save override'}).click();await depth.getByText('Instance override',{exact:false}).waitFor();
  await page.getByLabel('Preset name',{exact:true}).fill('Raised joins');await page.getByLabel('Preset ID',{exact:true}).fill('raised-joins');await page.getByRole('button',{name:'Save current overrides'}).click();await page.getByLabel('Configuration preset').selectOption('raised-joins');
  await page.getByRole('link',{name:'Settings & snippet overrides',exact:true}).click();await page.getByRole('heading',{name:'Settings & snippet overrides',exact:true}).waitFor();

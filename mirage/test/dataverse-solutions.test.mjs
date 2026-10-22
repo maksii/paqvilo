@@ -10,10 +10,14 @@ import { EXTENSIONS } from "../lib/dataverse-extensions.mjs";
 import { readSolutionZip } from "../lib/solution-schema.mjs";
 import { zipOf, solutionImportJob } from "../lib/dataverse-solutions.mjs";
 import { componentObjectId } from "../lib/dataverse-metadata-relationships.mjs";
+import { dataverseOrganizationId } from "../lib/dataverse-organization.mjs";
+import { uuidV5 } from "../lib/dataverse-security.mjs";
 
 const APP_ID = "55555555-5555-4555-8555-555555555555";
 const CLERK_APP_ID = "66666666-6666-4666-8666-666666666666";
 const SOLUTION = "new_samplesolution";
+// The organization every default-settings server runs as; a metadata component id is its MetadataId in it.
+const ORG = dataverseOrganizationId(dataverseSettings({ enabled: true }));
 const PUBLISHER = "new_samplepublisher";
 const SOLUTION_HEADER = { "MSCRM.SolutionUniqueName": SOLUTION };
 const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
@@ -176,7 +180,7 @@ describe("Solution export and import", { concurrency: false }, () => {
     const category = await target.request("POST", "/new_categories", { new_name: "Hardware" });
     assert.equal(category.status, 204, JSON.stringify(category.json));
     const categoryId = idOf(category) ?? rowsOf(target.store, "new_category")[0].new_categoryid;
-    const widget = await target.request("POST", "/new_widgets", { new_name: "Alpha", new_code: "A-1", "new_CategoryId@odata.bind": `/new_categories(${categoryId})` });
+    const widget = await target.request("POST", "/new_widgets", { new_name: "Alpha", new_code: "A-1", "new_category@odata.bind": `/new_categories(${categoryId})` });
     assert.equal(widget.status, 204, JSON.stringify(widget.json));
     const read = await target.request("GET", `/new_widgets(${idOf(widget)})?$select=new_name,new_code`);
     assert.equal(read.json.new_name, "Alpha");
@@ -252,7 +256,7 @@ describe("Solution export and import", { concurrency: false }, () => {
 // Solution component messages and dependency functions, on the same source solution. Invented schema, loopback only.
 describe("Solution component messages", { concurrency: false }, () => {
   let source;
-  const componentId = (kind, logical, name = null) => componentObjectId({ kind, logical, name });
+  const componentId = (kind, logical, name = null) => componentObjectId({ kind, logical, name }, ORG);
   const dependencyRows = (json) => json.value;
 
   before(async () => {
@@ -289,8 +293,26 @@ describe("Solution component messages", { concurrency: false }, () => {
     assert.equal(noSolution.status, 404, JSON.stringify(noSolution.json));
   });
 
+  // Learn AddSolutionComponentRequest.ComponentId: for MetadataBase components the component id is the MetadataId.
+  it("AddSolutionComponent takes the MetadataId the table definition returns and refuses the old generated component id", async () => {
+    const metadataId = (await source.request("GET", "/EntityDefinitions(LogicalName='new_loose')?$select=MetadataId")).json.MetadataId;
+    const publisherId = (await source.request("GET", `/publishers?$select=publisherid&$filter=uniquename eq '${PUBLISHER}'`)).json.value[0].publisherid;
+    await source.request("POST", "/solutions", { uniquename: "new_idsolution", friendlyname: "Id solution", version: "1.0.0.0", "publisherid@odata.bind": `/publishers(${publisherId})` });
+    const added = await source.request("POST", "/AddSolutionComponent", { ComponentId: metadataId, ComponentType: 1, SolutionUniqueName: "new_idsolution", AddRequiredComponents: false });
+    assert.equal(added.status, 200, JSON.stringify(added.json));
+    const solution = rowsOf(source.store, "solution").find((row) => row.uniquename === "new_idsolution");
+    assert.ok(rowsOf(source.store, "solutioncomponent").some((row) => row.solutionid === solution.solutionid && row.objectid === metadataId), "membership is keyed by the MetadataId");
+    const dependents = await source.request("GET", `/RetrieveDependentComponents(ObjectId=${metadataId},ComponentType=1)`);
+    assert.equal(dependents.status, 200, JSON.stringify(dependents.json));
+    // The id the simulator generated before MetadataId became the component id (namespace-derived, not a MetadataId).
+    const generated = uuidV5("3f0a9c4e-7b21-4d6e-9a58-1c2e8f0b7d13", "entity|new_loose|");
+    assert.notEqual(generated, metadataId);
+    const legacy = await source.request("POST", "/AddSolutionComponent", { ComponentId: generated, ComponentType: 1, SolutionUniqueName: "new_idsolution" });
+    assert.equal(legacy.status, 404, JSON.stringify(legacy.json));
+  });
+
   it("UpdateSolutionComponent persists selected settings for an existing unmanaged membership only", async () => {
-    const objectId = componentObjectId({ kind: "entity", logical: "new_widget", name: null });
+    const objectId = componentObjectId({ kind: "entity", logical: "new_widget", name: null }, ORG);
     const payload = { ComponentId: objectId, ComponentType: 1, SolutionUniqueName: SOLUTION, IncludedComponentSettingsValues: ["IncludeMetadata"] };
     const updated = await source.request("POST", "/UpdateSolutionComponent", payload);
     assert.equal(updated.status, 204, JSON.stringify(updated.json));
@@ -348,7 +370,7 @@ describe("Solution component messages", { concurrency: false }, () => {
 // Supported uninstall: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/uninstallsolutionasync
 describe("Solution lifecycle messages", { concurrency: false }, () => {
   const PATCH_NAME = "Sample patch";
-  const componentId = (kind, logical, name = null) => componentObjectId({ kind, logical, name });
+  const componentId = (kind, logical, name = null) => componentObjectId({ kind, logical, name }, ORG);
   const LOOSE = componentId("entity", "new_loose");
   const opened = [];
   const open = async (options) => {

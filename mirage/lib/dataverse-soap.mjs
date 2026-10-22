@@ -400,7 +400,7 @@ async function createRow(s, entity) {
 
 async function retrieveRow(s, target, columnSet) {
   const select = columnSet && !columnSet.allColumns && columnSet.columns?.length ? { $select: columnSet.columns.join(",") } : {};
-  const result = await web(s, "GET", `${setOf(s.api, target.logicalName)}(${recordKey(s.api, target, "Retrieve")})`, { query: { ...select, ...partitionQuery(s) }, prefer: ANNOTATIONS });
+  const result = await web(s, "GET", `${setOf(s.api, target.logicalName)}(${recordKey(s.api, target, "Retrieve")})`, { query: { ...select, ...partitionQuery(s), ...(s.unmask ? { UnMaskedData: "true" } : {}) }, prefer: ANNOTATIONS });
   return entityFrom(s, target.logicalName, result.body);
 }
 
@@ -409,7 +409,7 @@ async function retrieveMany(s, query) {
   const fetchXml = query.type === "Fetch" ? query.xml : toFetchXml(model, { primaryIdOf: (name) => primaryOf(s.api, name) });
   const logical = query.type === "Fetch" ? /<entity\b[^>]*?\bname\s*=\s*["']([^"']+)["']/i.exec(fetchXml)?.[1] : model.entityName;
   if (!logical) throw invalid("The query names no entity.");
-  const result = await web(s, "GET", setOf(s.api, logical), { query: { fetchXml }, prefer: ANNOTATIONS });
+  const result = await web(s, "GET", setOf(s.api, logical), { query: { fetchXml, ...(s.unmask ? { UnMaskedData: "true" } : {}) }, prefer: ANNOTATIONS });
   return collectionFrom(s, logical, result.body);
 }
 
@@ -463,7 +463,9 @@ function bypassed(s, params) {
 }
 
 async function runRequest(base, { name, params }) {
-  const s = { ...bypassed(base, params), partitionId: params.get("partitionId")?.value, sessionToken: params.get("SessionToken")?.value };
+  // UnMaskedData (Learn optional-parameters#return-unmasked-data): request["UnMaskedData"] = true asks the clear value of masked columns.
+  const unmask = [true, "true"].includes(params.get("UnMaskedData")?.value);
+  const s = { ...bypassed(base, params), partitionId: params.get("partitionId")?.value, sessionToken: params.get("SessionToken")?.value, unmask };
   const writeReply = (results = new Map()) => {
     if (s.responseSessionToken) results.set("x-ms-session-token", { type: "string", value: s.responseSessionToken });
     return reply(name, results);

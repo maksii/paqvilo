@@ -1,0 +1,8 @@
+RootComponents:
+  RootComponent:
+  - '@type': '1'
+    '@schemaName': x_item
+    '@behavior': '0'
+  - '@type': '60'
+    '@id': '{77777777-7777-4777-8777-777777777784}'
+    '@behavior': '0'

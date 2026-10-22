@@ -6,11 +6,12 @@
 import { randomUUID } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
+import { isExactNumeric } from "./exact-numeric.mjs";
 import { contextUrl } from "./dataverse-odata.mjs";
 import { uuidV5 } from "./dataverse-security.mjs";
 import { requireMetadataPrivilege } from "./dataverse-metadata-relationships.mjs";
 import { createMetadataService } from "./dataverse-metadata.mjs";
-import { handleMetadataWrite } from "./dataverse-metadata-tables.mjs";
+import { handleMetadataWrite, activateKey } from "./dataverse-metadata-tables.mjs";
 import { zipOf } from "./dataverse-solutions.mjs";
 
 const DEFAULT_LCID = 1033;
@@ -409,7 +410,7 @@ function operations(api) {
     {
       name: "SetAutoNumberSeed", kind: "action", signature: { params: [...[["EntityName","Edm.String"],["AttributeName","Edm.String"]], ["Value", "Edm.Int64"]] },
       handle: async (c) => {
-        const value = Number(argOf(c, "Value"));
+        const raw = argOf(c, "Value"); const value = Number(isExactNumeric(raw) ? raw.value : raw);
         if (!Number.isSafeInteger(value) || value < 0) throw fail("Value must be a non-negative whole number."); // unverified: message text
         const { key: counterKey } = autoNumberOf(api, c);
         privilege(c, "prvWriteAttribute", "attribute");
@@ -566,20 +567,12 @@ function operations(api) {
     return noContent();
   }
 
-  // Learn: "Create index for {0} for table {1}" is the index job's name. The key is Active again when the job completes.
+  // Learn: "Create index for {0} for table {1}" is the index job's name. The job validates the data again (activateKey): the key
+  // is Active when the values are unique and Failed again while duplicates remain.
   async function reactivateKey(c) {
     const { mapping, found } = keyFor(c);
     if (found.indexStatus !== "Failed") throw fail("Reactivate entity key is only supported for failed job", 400, "InvalidRequest", "0x80060897");
-    await writeState(api, () => {
-      found.indexStatus = "Pending";
-    });
-    const jobId = await api.systemJob({ name: `Create index for ${found.schemaName ?? found.name} for table ${mapping.logicalName}`, operationtype: 63, callerId: c.caller?.systemuserid }, () => writeState(api, () => {
-      found.indexStatus = "Active";
-      found.deactivated = false;
-    }));
-    await writeState(api, () => {
-      found.asyncJob = jobId;
-    });
+    await activateKey(api, mapping.logicalName, found.name, c.caller?.systemuserid ?? null);
     return noContent();
   }
 

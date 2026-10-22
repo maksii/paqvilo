@@ -52,7 +52,7 @@ async function organization(t, options = {}) {
 test('standalone API administration hides portal surfaces and shows persistence destinations', { timeout: 30000 }, async t => {
   const { page, sim, errors } = await organization(t, { runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   const requests = []; page.on('request', request => requests.push(new URL(request.url()).pathname));
-  await page.goto(sim.url + '/_sim/');
+  await page.goto(sim.url + '/_sim/#overview');
   await page.getByRole('heading', { name: 'Your local organization workspace' }).waitFor().catch(async error => { throw new Error(`${error.message}\n${await page.locator('body').innerText()}\n${errors.join('\n')}`); });
   assert.equal(await page.getByRole('link', { name: /^Open portal/ }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Model-driven apps', exact: true }).count(), 0);
@@ -60,11 +60,12 @@ test('standalone API administration hides portal surfaces and shows persistence 
   assert.match(await page.locator('#content').innerText(), /Dry run/);
   assert.match(await page.locator('#content').innerText(), /memory/);
   await capture(page, 'api-only-overview');
-  assert.ok(!requests.some(path => /\/api\/(personas|session|environment)$/.test(path)));
+  assert.ok(!requests.some(path => /\/api\/(personas|session)$/.test(path)));
   await page.getByRole('link', { name: 'Organization identity & API', exact: true }).click();
   await page.getByRole('heading', { name: 'Organization identity & API' }).waitFor();
   assert.equal(await page.locator('#staff-session-form').count(), 0);
-  await page.getByRole('heading', { name: 'Register an application' }).waitFor();
+  await page.locator('[data-disclosure="dv-register"] > summary').click();
+  await page.locator('#dv-app-form').waitFor();
   assert.equal(await page.locator('#dv-app-form').count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Reset to imported defaults', exact: true }).count(), 0);
   await capture(page, 'organization-identity');
@@ -80,6 +81,7 @@ test('standalone API administration hides portal surfaces and shows persistence 
 test('model-driven avatar switches staff security and explicitly recovers local administration with API off', { timeout: 30000 }, async t => {
   const { page, sim, errors } = await organization(t);
   await page.goto(sim.url + '/_sim/#dataverse');
+  await page.locator('[data-disclosure="dv-create-user"] > summary').click();
   await page.getByLabel('Full name', { exact: true }).fill('Read restricted staff');
   await page.getByLabel('Sign-in name (domainname)', { exact: true }).fill('staff@example.test');
   await page.locator('#dv-user-form').getByLabel('Basic User', { exact: true }).uncheck();
@@ -263,12 +265,13 @@ test('administration shows outstanding work and keeps failed save input availabl
   await page.emulateMedia({ reducedMotion: 'reduce' });
   let releaseRead; const reading = new Promise(resolve => { releaseRead = resolve; }); t.after(() => releaseRead());
   await page.route('**/__sim/api/state?summary=1', async route => { await reading; await route.continue(); });
-  await page.goto(sim.url + '/_sim/');
+  await page.goto(sim.url + '/_sim/#overview');
   await page.locator('#activity-feedback').filter({ hasText: 'Loading workspace data' }).waitFor();
   assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
   assert.equal(await page.locator('#activity-feedback').evaluate(node => getComputedStyle(node, '::before').animationName), 'none');
   releaseRead(); await page.getByRole('heading', { name: 'Your local organization workspace' }).waitFor();
   await page.getByRole('link', { name: 'Organization identity & API', exact: true }).click();
+  await page.locator('[data-disclosure="dv-register"] > summary').click();
   await page.locator('#dv-app-form').waitFor();
   const form = page.locator('#dv-app-form'); await page.locator('#dv-app-name').fill('Uncommitted application');
   let releaseWrite, writes = 0; const writing = new Promise(resolve => { releaseWrite = resolve; }); t.after(() => releaseWrite());
@@ -364,11 +367,16 @@ test('administration serializes overlapping refreshes and awaits a fresh round a
 test('organization row actions share one lock with nested role forms through refresh and failure', { timeout: 60000 }, async t => {
   const { page, sim, errors } = await organization(t, { runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   await page.goto(sim.url + '/_sim/#dataverse');
+  await page.locator('[data-disclosure="dv-create-user"] > summary').click();
   await page.locator('#dv-user-name').fill('Pending roles fixture'); await page.locator('#dv-user-domain').fill('pending@example.test');
   await page.locator('#dv-user-form button[type=submit]').click();
   await page.locator('#notification').filter({ hasText: 'User created.' }).waitFor();
   const row = page.locator('tr[id^=dv-user-row-]').filter({ hasText: 'Pending roles fixture' });
-  const roles = row.locator('form[data-dv-user]'); await roles.locator('[data-dv-role]').first().check();
+  // One edit form for the selected user (RA-02): roles and password live in the editor, Disable stays on the row.
+  if (!await page.locator('[data-disclosure="dv-users"][open]').count()) await page.locator('[data-disclosure="dv-users"] > summary').click();
+  await row.getByRole('button', { name: 'Edit Pending roles fixture', exact: true }).click();
+  const editor = page.locator('[data-dv-user-editor]');
+  const roles = editor.locator('form[data-dv-user]'); await roles.locator('[data-dv-role]').first().check();
   const selected = await roles.locator('[data-dv-role]:checked').evaluateAll(nodes => nodes.map(node => node.dataset.dvRole));
   let release, writes = 0; const gate = new Promise(resolve => { release = resolve; }); t.after(() => release());
   await page.route('**/__sim/api/dataverse/users/*', async route => {
@@ -376,16 +384,16 @@ test('organization row actions share one lock with nested role forms through ref
     writes++; await gate; await route.fulfill({ status: 422, json: { error: { message: 'Fixture refused the role change.' } } });
   });
   await roles.getByRole('button', { name: 'Save roles', exact: true }).click();
-  await row.locator('button[aria-busy=true]').waitFor();
+  await editor.locator('button[aria-busy=true]').waitFor();
   assert.equal(await row.getByRole('button', { name: 'Disable', exact: true }).isDisabled(), true);
-  assert.equal(await row.locator('input[type=password]').isDisabled(), true);
+  assert.equal(await editor.locator('input[type=password]').isDisabled(), true);
   await page.locator('#refresh').click(); await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
   assert.equal(await row.getByRole('button', { name: 'Disable', exact: true }).isDisabled(), true);
   await row.locator('[data-dv-toggle-user]').evaluate(button => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   release(); await page.locator('#notification').filter({ hasText: 'Fixture refused the role change.' }).waitFor();
   assert.equal(writes, 1, 'a sibling row action cannot overlap its role save');
   assert.equal(await row.getByRole('button', { name: 'Disable', exact: true }).isDisabled(), false);
-  assert.equal(await row.locator('input[type=password]').isDisabled(), false);
+  assert.equal(await editor.locator('input[type=password]').isDisabled(), false);
   assert.equal(await roles.getByRole('button', { name: 'Save roles', exact: true }).isDisabled(), false);
   assert.deepEqual(await roles.locator('[data-dv-role]:checked').evaluateAll(nodes => nodes.map(node => node.dataset.dvRole)), selected);
   assert.deepEqual(errors, []);

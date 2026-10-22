@@ -26,18 +26,27 @@ async function fixture(t, options = {}) {
   page.setDefaultTimeout(10_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  return { app, page, errors };
+  // Secondary panels are collapsed (RA-18); open one without closing it when it is already open.
+  const open = async (key) => {
+    const section = page.locator(`[data-disclosure="${key}"]`);
+    if ((await section.getAttribute("open")) === null) await section.locator("summary").first().click();
+    await page.locator(`[data-disclosure="${key}"][open] [data-disclosure-body] > *`).first().waitFor();
+  };
+  return { app, page, errors, open };
 }
 
 test("registering an application shows its secret once and later reads carry only the hint", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { app, page, errors, open } = await fixture(t, { dataverse: { enabled: true } });
   await page.goto(app.adminUrl + "#dataverse");
   await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
+  await open("dv-connect");
   await page.getByText(app.state().dataverse.origin, { exact: true }).waitFor();
   assert.notEqual(new URL(app.state().dataverse.origin).port, '80');
   const portNote = page.locator('[data-serviceclient-port]');
   await portNote.waitFor(); assert.match(await portNote.innerText(), /port as 80.*restart Mirage/);
   assert.equal(await portNote.getByRole('link').getAttribute('href'), '/_setup/#runtime-configuration');
+  await open("dv-register");
+  await open("dv-users");
   await page.getByLabel("Display name", { exact: true }).fill("Browser client");
   await page.getByRole("button", { name: "Register application" }).click();
   const secret = (await page.locator("#dv-secret").textContent()).trim();
@@ -66,19 +75,22 @@ test("registering an application shows its secret once and later reads carry onl
 });
 
 test("a runtime without the HTTP API retains organization identity administration", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t);
+  const { app, page, errors, open } = await fixture(t);
   await page.goto(app.adminUrl + "#dataverse");
   await page.getByText("HTTP API disabled · organization available", { exact: true }).waitFor();
+  await open("dv-register");
   assert.equal(await page.locator("#dv-app-form").count(), 1);
   assert.deepEqual(errors, []);
 });
 
 test("user, role, secret and certificate forms round-trip through the admin endpoints", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { app, page, errors, open } = await fixture(t, { dataverse: { enabled: true } });
   const { generateKeyPairSync } = await import("node:crypto");
   const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   await page.goto(app.adminUrl + "#dataverse");
   await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
+  await open("dv-create-user");
+  await open("dv-users");
   await page.getByLabel("Full name", { exact: true }).fill("Maker User");
   await page.getByLabel("Sign-in name (domainname)", { exact: true }).fill("maker@example.test");
   await page.getByLabel(/Password for ROPC sign-in/).fill("correct horse battery");
@@ -87,10 +99,13 @@ test("user, role, secret and certificate forms round-trip through the admin endp
   await page.getByText("User created.", { exact: true }).waitFor();
   const userRow = page.getByRole("row", { name: /Maker User/ });
   await userRow.getByText("Password set", { exact: true }).waitFor();
-  assert.equal(await userRow.getByLabel("System Customizer", { exact: true }).isChecked(), true);
-  await userRow.getByLabel("System Customizer", { exact: true }).uncheck();
-  await userRow.getByLabel("Basic User", { exact: true }).check();
-  await userRow.getByRole("button", { name: "Save roles" }).click();
+  // One edit form for the selected user (RA-02).
+  await userRow.getByRole("button", { name: "Edit Maker User", exact: true }).click();
+  const userEditor = page.locator("[data-dv-user-editor]");
+  assert.equal(await userEditor.getByLabel("System Customizer", { exact: true }).isChecked(), true);
+  await userEditor.getByLabel("System Customizer", { exact: true }).uncheck();
+  await userEditor.getByLabel("Basic User", { exact: true }).check();
+  await userEditor.getByRole("button", { name: "Save roles" }).click();
   await page.getByText("Roles saved.", { exact: true }).waitFor();
   let listing = await (await fetch(`${app.url}/_sim/api/dataverse`)).json();
   const user = listing.users.find((item) => item.fullname === "Maker User");
@@ -98,6 +113,7 @@ test("user, role, secret and certificate forms round-trip through the admin endp
   assert.equal(user.passwordSet, true);
   assert.equal(JSON.stringify(listing).includes("correct horse battery"), false);
 
+  await open("dv-register");
   await page.getByLabel("Display name", { exact: true }).fill("Cert client");
   await page.getByRole("button", { name: "Register application" }).click();
   const first = (await page.locator("#dv-secret").textContent()).trim();
@@ -108,6 +124,7 @@ test("user, role, secret and certificate forms round-trip through the admin endp
   assert.notEqual(second, first);
   await appRow.getByRole("button", { name: "Remove" }).first().click();
   await page.getByText("Secret removed.", { exact: true }).waitFor();
+  await open("dv-certificate");
   await page.getByLabel("Certificate or public key (PEM)", { exact: true }).fill(publicKey.export({ type: "spki", format: "pem" }));
   await page.getByRole("button", { name: "Add certificate" }).click();
   await page.getByText("Certificate added.", { exact: true }).waitFor();
@@ -127,11 +144,13 @@ test("user, role, secret and certificate forms round-trip through the admin endp
 });
 
 test("a certificate PEM shows its SHA-256 fingerprint in the table", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { app, page, errors, open } = await fixture(t, { dataverse: { enabled: true } });
   const { cert } = createSelfSignedCertificate();
   const fingerprint256 = new X509Certificate(cert).fingerprint256.replaceAll(":", "");
   await page.goto(app.adminUrl + "#dataverse");
   await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
+  await open("dv-register");
+  await open("dv-certificate");
   await page.getByLabel("Display name", { exact: true }).fill("Pem client");
   await page.getByRole("button", { name: "Register application" }).click();
   await page.getByRole("button", { name: "Dismiss" }).click();
@@ -150,9 +169,11 @@ test("a certificate PEM shows its SHA-256 fingerprint in the table", { timeout: 
 });
 
 test("the registration, edit, federated credential and managed identity forms round-trip through the admin endpoints", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { app, page, errors, open } = await fixture(t, { dataverse: { enabled: true } });
   await page.goto(app.adminUrl + "#dataverse");
   await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
+  await open("dv-connect");
+  await open("dv-register");
   await page.getByRole("heading", { name: "Connect", exact: true }).waitFor();
   await page.getByLabel("Display name", { exact: true }).fill("Grant client");
   await page.locator("#dv-app-public").check();
@@ -174,6 +195,7 @@ test("the registration, edit, federated credential and managed identity forms ro
   assert.equal(entry.publicClient, false);
   assert.deepEqual(entry.redirectUris, ["https://client.test/callback"]);
 
+  await open("dv-federated");
   await page.locator("#dv-fed-issuer").fill("https://issuer.test/tenant");
   await page.locator("#dv-fed-subject").fill("repo:invented/app:ref:refs/heads/main");
   await page.locator("#dv-fed-jwks").fill(JSON.stringify({ keys: [{ kty: "RSA", kid: "k1", n: "AQAB", e: "AQAB" }] }));
@@ -182,6 +204,9 @@ test("the registration, edit, federated credential and managed identity forms ro
   await page.getByRole("row", { name: /issuer\.test/ }).getByRole("button", { name: "Remove", exact: true }).click();
   await page.getByText("Federated credential removed.", { exact: true }).waitFor();
 
+  await open("dv-managed-identities");
+  // RA-52: the managed identity endpoint summary renders (mode and endpoint, or why it is off).
+  await page.locator('[data-disclosure="dv-managed-identities"]').getByText(/Identity header|managed identity endpoint is off/).first().waitFor();
   await page.getByLabel("Identity name", { exact: true }).fill("Invented identity");
   await page.getByRole("button", { name: "Add managed identity" }).click();
   await page.getByText("Managed identity added.", { exact: true }).waitFor();
@@ -198,8 +223,10 @@ test("the registration, edit, federated credential and managed identity forms ro
 });
 
 test("the environment form saves the runtime settings, and a user password is set and cleared from its row", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { app, page, errors, open } = await fixture(t, { dataverse: { enabled: true } });
   await page.goto(app.adminUrl + "#dataverse");
+  await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
+  await open("dv-environment");
   await page.getByRole("heading", { name: "Environment settings", exact: true }).waitFor();
   await page.locator("#dv-env-auditing").check();
   await page.locator("#dv-env-tds").uncheck();
@@ -214,23 +241,27 @@ test("the environment form saves the runtime settings, and a user password is se
   );
   await page.getByRole("heading", { name: "Restart required", exact: true }).waitFor();
 
+  await open("dv-create-user");
+  await open("dv-users");
   await page.getByLabel("Full name", { exact: true }).fill("Password User");
   await page.getByLabel("Sign-in name (domainname)", { exact: true }).fill("password@example.test");
   await page.getByRole("button", { name: "Create user" }).click();
   await page.getByText("User created.", { exact: true }).waitFor();
   const userRow = page.getByRole("row", { name: /Password User/ });
-  await userRow.getByLabel("New password for Password User", { exact: true }).fill("another password");
-  await userRow.getByRole("button", { name: "Set password", exact: true }).click();
+  await userRow.getByRole("button", { name: "Edit Password User", exact: true }).click();
+  const editor = page.locator("[data-dv-user-editor]");
+  await editor.getByLabel("New password for Password User", { exact: true }).fill("another password");
+  await editor.getByRole("button", { name: "Set password", exact: true }).click();
   await page.getByText("Password set.", { exact: true }).waitFor();
   await userRow.getByText("Password set", { exact: true }).waitFor();
-  await userRow.getByRole("button", { name: "Clear password", exact: true }).click();
+  await editor.getByRole("button", { name: "Clear password", exact: true }).click();
   await page.getByText("Password cleared.", { exact: true }).waitFor();
   assert.equal(await userRow.getByText("Password set", { exact: true }).count(), 0);
   assert.deepEqual(errors, []);
 });
 
 test("the workflows panel saves a run mode and its mock result in one round trip", { timeout: 60_000 }, async (t) => {
-  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { app, page, errors, open } = await fixture(t, { dataverse: { enabled: true } });
   // An activated on-demand classic workflow (invented) on systemuser; the panel lists it with the default run mode.
   const WORKFLOW = "bbbbbbbb-0000-0000-0000-000000000078";
   app.store.transact(() => {
@@ -241,11 +272,16 @@ test("the workflows panel saves a run mode and its mock result in one round trip
     });
   });
   await page.goto(app.adminUrl + "#dataverse");
+  await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
+  await open("dv-workflows");
   await page.getByRole("heading", { name: "Workflows", exact: true }).waitFor();
   const row = page.getByRole("row", { name: /Invented panel run/ });
-  await row.getByLabel("Run mode for Invented panel run").selectOption("mock");
-  await row.getByLabel(/Mock result as JSON for Invented panel run/).fill('{"status": 31, "message": "Invented panel failure"}');
-  await row.getByRole("button", { name: "Save run mode" }).click();
+  // One run-mode form for the selected workflow (RA-03).
+  await row.getByRole("button", { name: "Edit run mode for Invented panel run", exact: true }).click();
+  const editor = page.locator("[data-dv-workflow-editor]");
+  await editor.getByLabel("Run mode for Invented panel run", { exact: true }).selectOption("mock");
+  await editor.getByLabel(/Mock result as JSON for Invented panel run/).fill('{"status": 31, "message": "Invented panel failure"}');
+  await editor.getByRole("button", { name: "Save run mode" }).click();
   await page.getByText("Run mode saved.", { exact: true }).waitFor();
   const listing = await (await fetch(`${app.url}/_sim/api/dataverse`)).json();
   assert.deepEqual(listing.workflows.find((item) => item.workflowid === WORKFLOW).override, { mode: "mock", status: 31, message: "Invented panel failure" });

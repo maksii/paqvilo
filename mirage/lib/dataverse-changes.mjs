@@ -5,7 +5,7 @@
 // not move (a delete, a portal write) takes one here, so a token issued before the commit cannot hide it.
 // A token's stamp is the log's epoch, so a token from another log (a restart, a reset) is expired, not replayed.
 // ponytail: in-memory ring, so a token outlives the process only as an "expired" answer; persist the log if that matters.
-// ponytail: epochs are whole seconds, made distinct within a process; a restart in the same wall-clock second as the old log aliases its tokens.
+// ponytail: epochs are whole seconds, made distinct per store; a new store in the same clock second as the old log aliases its tokens.
 import { DataError } from "./data-error.mjs";
 
 /** The org-wide row version: the persisted counter every Dataverse create, update and delete takes the next value of. */
@@ -19,7 +19,6 @@ const DEFAULT_LIMIT = 10000;
 const EXPIRED_MESSAGE = "Version stamp associated with the client has expired. Please perform a full sync.";
 const pad = (n) => String(n).padStart(2, "0");
 const lower = (value) => String(value ?? "").toLowerCase();
-let lastEpoch = 0;
 
 /** Dataverse-style stamp inside the token: MM/dd/yyyy HH:mm:ss (UTC). */
 function stamp(ms) {
@@ -37,16 +36,18 @@ export function expiredVersionStamp() {
   return new DataError(EXPIRED_MESSAGE, 400, "InvalidRequest", { innerCode: "0x80044352" });
 }
 
-// Each log takes an epoch later than any earlier log in this process.
-const nextEpoch = (clock) => (lastEpoch = Math.max(Math.floor(clock() / 1000), lastEpoch + 1));
+// Each log takes an epoch later than any earlier log of the same store, from its own clock (no process-wide state, so a
+// fixed clock gives the same tokens in every run).
+const nextEpoch = (store, clock) => (store.changeLogEpoch = Math.max(Math.floor(clock() / 1000), (store.changeLogEpoch ?? 0) + 1));
 
 export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Date.now() } = {}) {
   const entries = [];
   // The version the last logged commit took; a commit that leaves the counter where it was takes the next one.
   let lastStamp = rowVersionOf(store);
-  // Tokens below this revision lack entries (trimmed away), so they are expired.
-  let expiredBelow = 0;
-  let epoch = nextEpoch(clock);
+  // Tokens below this revision lack entries (trimmed away, or issued before this log existed: a restart under a fixed
+  // clock takes the same epoch), so they are expired; a token at the current revision stays valid.
+  let expiredBelow = rowVersionOf(store);
+  let epoch = nextEpoch(store, clock);
   const epochStamp = () => stamp(epoch * 1000);
   const idOf = (entity, row) => {
     try {
@@ -118,7 +119,7 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
       entries.length = 0;
       expiredBelow = rowVersionOf(store);
       lastStamp = expiredBelow;
-      epoch = nextEpoch(clock);
+      epoch = nextEpoch(store, clock);
     },
 
     close: unsubscribe,

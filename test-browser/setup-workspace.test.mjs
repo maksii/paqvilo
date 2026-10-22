@@ -58,8 +58,11 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
   const failures = []; page.on('pageerror', error => failures.push(error.message));
   const demoServer = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => demoServer.close());
-  await page.goto(demoServer.url);
+  // Journey sections are collapsed except the next stage; a hash opens its section.
+  await page.goto(demoServer.url + '#portals');
   await page.getByRole('heading', { name: 'Targets & sources', exact: true }).waitFor();
+  assert.equal(await page.locator('#portals').evaluate(node => node.open), true);
+  assert.equal(await page.locator('#identity').evaluate(node => node.open), false);
   assert.match(await page.locator('#portal-example').innerText(), /export/);
   const demoForm = page.locator('form[data-form=site][data-site=example]');
   await page.locator('#portal-example summary').first().click();
@@ -75,15 +78,18 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   t.resources.push(() => demoRuntime.close());
   assert.match(await fetch(demoRuntime.url).then(response => response.text()), /Build it three ways/);
   await page.goto(demoRuntime.url + '/_sim/');
-  const popupWait = page.waitForEvent('popup'); await page.getByRole('link', { name: 'Project setup', exact: true }).click();
+  // The top bar link opens setup in a new tab; the AREAS switch in the sidebar carries the same name.
+  const popupWait = page.waitForEvent('popup'); await page.locator('.topbar').getByRole('link', { name: 'Project setup', exact: true }).click();
   const popup = await popupWait; await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
   assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), '/');
   assert.equal(await popup.getByRole('link', { name: 'Administration', exact: true }).getAttribute('href'), '/_sim/');
   assert.match(await popup.locator('#overview').innerText(), /Mirage preview running/); await popup.close();
 
   const server = await startSetupServer({ directory: consumer, processEnv: {} }); t.resources.push(() => server.close());
-  await page.goto(server.url);
+  await page.goto(server.url + '#settings');
   await page.getByRole('heading', { name: 'Project settings', exact: true }).waitFor();
+  // Missing exports make Sources the next stage, so its section opens without a hash.
+  assert.equal(await page.locator('#portals').evaluate(node => node.open), true);
   assert.match(await page.locator('#overview').innerText(), /Select an existing local export folder/);
   let form = page.locator('form[data-form=settings]');
   await form.locator('[name=sourceRoot]').fill(sources); await saveForm(page, form);
@@ -105,7 +111,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
     selector.dispatchEvent(new Event('change', { bubbles: true }));
   });
   assert.equal(await page.evaluate(() => window.invalidLayerExecuted), undefined);
-  assert.equal(await page.locator('form[data-form=site] .hint').filter({ hasText: 'Writes the shared configuration.' }).count(), 2);
+  assert.equal(await page.locator('form[data-form=site] .muted').filter({ hasText: 'Writes the shared configuration.' }).count(), 2);
   await page.locator('#layer').selectOption('personal');
   form = page.locator('form[data-form=settings]'); await form.locator('[name=browser]').selectOption('chrome'); await saveForm(page, form);
   assert.equal(await fs.readFile(path.join(consumer, 'paqvilo.config.yml'), 'utf8'), sharedBefore);
@@ -141,7 +147,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
 test('missing and invalid setup documents recover through the browser without touching exports', { timeout: 60000 }, async t => {
   const directory = await temporary(t), server = await startSetupServer({ directory, processEnv: {} }); t.resources.push(() => server.close());
   const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
-  const page = await browser.newPage(); await page.goto(server.url);
+  const page = await browser.newPage(); await page.goto(server.url + '#advanced');
   const create = page.locator('form[data-form=create]'); await create.waitFor();
   await create.locator('[name=id]').fill('sample'); await saveForm(page, create);
   const file = path.join(directory, 'paqvilo.config.yml');
@@ -201,7 +207,7 @@ test('setup shows real loading and save feedback, prevents duplicate writes and 
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   let releaseRead; const reading = new Promise(resolve => { releaseRead = resolve; }); t.after(() => releaseRead());
   await page.route('**/_setup/api/status', async route => { await reading; await route.continue(); });
-  await page.goto(server.url);
+  await page.goto(server.url + '#advanced');
   await page.locator('#notice.pending').filter({ hasText: 'Loading project configuration' }).waitFor();
   assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
   assert.equal(await page.locator('#refresh').isDisabled(), true);
@@ -231,6 +237,8 @@ test('setup shows real loading and save feedback, prevents duplicate writes and 
   assert.equal(await page.locator('#content').getAttribute('aria-busy'), null);
   // Successful saving returns focus to the same action and keeps the edited section open.
   await page.unroute('**/_setup/api/config');
+  // The stage rail opens a collapsed section.
+  await page.getByRole('navigation', { name: 'Setup stages' }).getByRole('link', { name: /^Sources/ }).click();
   await page.locator('#portal-example summary').first().click();
   const site = page.locator('form[data-form=site][data-site=example]'); await site.locator('[name=port]').fill('0');
   await saveForm(page, site);

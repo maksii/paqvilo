@@ -12,15 +12,15 @@ import { createSimulationPersistence } from './simulation-persistence.mjs';
 import { discoverPacks } from './preset-registry.mjs';
 import { initialOrganizationState } from './organization-bootstrap.mjs';
 import { loadOrganizationSources } from './solution-runtime-source.mjs';
+import { assertReloadableScan } from './solution-schema.mjs';
 import { solutionWatchFilter } from './solution-roots.mjs';
 import { dataverseSettings, dataverseStatus } from './dataverse-settings.mjs';
-import { createOrganizationRuntime } from './dataverse-organization.mjs';
-import { startDataverseApi } from './dataverse-api.mjs';
-import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
+import { createModelDrivenRecordService, createModelDrivenWebApi } from './dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './staff-session.mjs';
 import { createModelDrivenData } from './model-driven/data.mjs';
-import { createModelDrivenHandler } from './model-driven/http.mjs';
-import { appCatalogue, appCatalogueAsync, solutionApps } from './model-driven/catalogue.mjs';
+import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './model-driven/http.mjs';
+import { offlineSessionState } from './model-driven/offline.mjs';
+import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
 import { createSolutionMetadataOverlay } from './dataverse-solution-metadata.mjs';
 import { createSourceSolutionComponentStorage } from './dataverse-source-components.mjs';
 import { applySolutionData } from './solution-data.mjs';
@@ -31,24 +31,29 @@ import { uuidV5 } from './dataverse-security.mjs';
 import { runtimePort } from './runtime-port.mjs';
 import { modelDrivenSettings } from './model-driven-settings.mjs';
 import { clientExtensionCatalogue } from './model-driven-resources.mjs';
-import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
-import { pluginRuntimeDescriptors } from './plugin-clr.mjs';
-import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
-import { operationHandlers } from './exported-operations.mjs';
-import { operationCatalogue, validateOperationOverrides } from './operation-catalogue.mjs';
-import { workflowHandlers, workflowsWithActivation } from './dataverse-workflows.mjs';
-import { customApiHandlers } from './dataverse-customapi.mjs';
-import { addonHandlers } from './dataverse-addon-common.mjs';
-import { sourceOrganizationExtensions } from './source-organization-extensions.mjs';
-import { createOrganizationBackend } from './organization-backend.mjs';
+import { validateOperationOverrides } from './operation-catalogue.mjs';
 import { ensureCertificate } from './dataverse-tls.mjs';
-import { createManagedIdentityEndpoints } from './dataverse-managed-identity.mjs';
 import { platformSettingEntries } from './platform-settings.mjs';
+import { composeOrganizationHost, providerDescriptors, inventorySummary, codeAppDataverse, codeAppConnectors, persistentLevel, hostSurfaces, graphBindings, activeDeploymentProfile, simApiRoutes, modelDrivenAppsOf } from './organization-host.mjs';
+import { deploymentProfilesSummary } from './deployment-profiles.mjs';
+import { createCanvasHandler } from './canvas-http.mjs';
+import { createCanvasRuntime } from './canvas-runtime.mjs';
+import { createCodeAppsHandler, authorityTokenIssuer } from './code-apps-http.mjs';
+import { codeAppSettings, loadCodeApps } from './code-apps-config.mjs';
+import { createRequestContext, runWithRequest, correlationOf } from './request-context.mjs';
+import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './sim-messaging-routes.mjs';
+import { createFlowRoutes, routes as FLOW_ROUTES } from './sim-flow-routes.mjs';
+import { buildSourceGraph } from './source-graph.mjs';
+import { scenarioSettings } from './capability-report.mjs';
+import { ADMIN_CSP, adminAssetFile, adminAssetType, diagnosticsByCode as byCode } from './runtime-admin.mjs';
+import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './sim-dashboard-routes.mjs';
+import { createPackRoutes, routes as PACK_ROUTES } from './sim-pack-routes.mjs';
+import { createEnvironmentRoutes, environmentVariableTable, applyEnvironmentOverride, routes as ENVIRONMENT_ROUTES } from './sim-environment-routes.mjs';
+import { docsLinks } from './docs-links.mjs';
 
 const fail = (message, status = 400, code = 'RuntimeRequestInvalid') => Object.assign(new Error(message), { status, code });
-const assets = new Set(['index.html', 'app.mjs', 'style.css', 'persona-picker.mjs', 'persona-picker.css', 'persona-manager.mjs']);
-const sharedAssets = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
-const mime = file => file.endsWith('.css') ? 'text/css; charset=utf-8' : file.endsWith('.mjs') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8';
+const toolkitPackage = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
 const json = (res, status, value, headers = {}) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers }); res.end(status === 204 ? undefined : stringifyExactJson(value)); };
 async function readBody(req) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) throw fail('Send application/json.', 415);
@@ -80,8 +85,13 @@ export async function createStandaloneRuntime(options = {}) {
   bootstrapTimings.configurationMs = Math.round(performance.now() - startedAt);
   let seedStarted = performance.now();
   startupPhase('solution-import');
-  let sources = await loadOrganizationSources({ solutionRoots, solutionOrder: options.solutionOrder, modelDriven, lcid,
-    cacheFile: stateFile && !simulation ? path.join(path.dirname(stateFile), 'cache', 'solution-sources.json') : undefined });
+  // Durable local files (source cache, certificate, watcher cache) follow the one persistence rule (organization-host.mjs).
+  const durable = Boolean(stateFile) && persistentLevel(simulation?.level ?? null);
+  const sourceCacheFile = durable ? path.join(path.dirname(stateFile), 'cache', 'solution-sources.json') : undefined;
+  // Resource import diagnostics reach the runtime diagnostics once the sink exists (sourceDiagnostic below).
+  const early = [];
+  let sourceDiagnostic = entry => early.push(entry);
+  let sources = await loadOrganizationSources({ solutionRoots, solutionOrder: options.solutionOrder, modelDriven, lcid, cacheFile: sourceCacheFile, projectRoot, diagnostic: entry => sourceDiagnostic(entry) });
   bootstrapTimings.sourcesMs = Math.round(performance.now() - seedStarted);
   bootstrapTimings.solutionCache = { ...sources.scan.cache?.stats, processHits: sources.scan.cache?.processHits };
   seedStarted = performance.now();
@@ -91,35 +101,49 @@ export async function createStandaloneRuntime(options = {}) {
   const boot = initialOrganizationState({ solutionData: sources.solutionData, packs, environmentVariables: options.environmentVariables });
   bootstrapTimings.presetLibraryMs = Math.round(performance.now() - seedStarted); seedStarted = performance.now();
   const storageAdapter = await createSimulationPersistence({ settings: simulation, packs, stateFile });
+  // Host clock/ids/scheduler (runtime-clock.mjs) drive the store, the organization and its backend; defaults are wall time.
+  const clock = typeof options.clock === 'function' ? { now: options.clock } : options.clock ?? undefined;
   const store = new DataStore({ file: stateFile, state: options.initial ? { ...boot.state, ...options.initial,
     mappings: { ...boot.state.mappings, ...options.initial.mappings }, tables: { ...boot.state.tables, ...options.initial.tables } } : boot.state,
-    presetLibrary: boot.presetLibrary, storageAdapter, persistence: options.persistence, platform: options.platform });
+    presetLibrary: boot.presetLibrary, storageAdapter, persistence: options.persistence, platform: options.platform,
+    ...(clock ? { clock } : {}), ...(options.ids ? { ids: options.ids } : {}) });
   bootstrapTimings.stateSeedMs = Math.round(performance.now() - seedStarted);
-  let organization, dataverse, managedIdentity, watcher, backend, sourceComponents, server, localOrigin, closing, watchedSourceSignature;
+  let organization, dataverse, managedIdentity, watcher, backend, sourceComponents, server, localOrigin, closing, watchedSourceSignature, codeAppRecords = [];
+  // The mounted /_sim/api routers' prefixes (status `routes`): the runtime admin router's own list, set where it is mounted.
+  let adminRoutes = [];
   let managedIdentityHeaderShown = false;
   const requests = new Set();
   let mutation = Promise.resolve();
   const change = fn => { const next = mutation.then(fn); mutation = next.catch(() => {}); return next; };
   const diagnostic = entry => { diagnostics.push(entry); if (diagnostics.length > 500) diagnostics.shift(); };
+  sourceDiagnostic = diagnostic; early.splice(0).forEach(diagnostic);
   const overlay = createSolutionMetadataOverlay({ appsOf: solutionApps }), metadata = () => overlay(sources.metadata, store.state);
   const settings = dataverseSettings({ enabled: runtime.kind === 'dataverse-api', ...(options.dataverse ?? {}), localeId: lcid });
-  const registeredPlugins = pluginHandlers(packs), descriptors = pluginRuntimeDescriptors(packs), runtimes = new Map(), handlers = operationHandlers(packs);
-  const pluginSteps = () => pluginCatalogue({ plugins: organization ? overlayRegisteredSteps(sources.metadata.plugins, store) : sources.metadata.plugins,
-    handlers: registeredPlugins, runtimes, descriptors, overrides: store.state.simulator?.operations ?? {} });
-  const workflows = () => workflowsWithActivation(sources.workflows, organization ? store : null);
-  const operations = () => [...operationCatalogue({ workflows: workflows(), handlers, overrides: store.state.simulator?.operations ?? {} }), ...pluginSteps()];
-  const cloudFlow = id => {
-    const workflow = workflows().get(id); if (!workflow) return null;
-    const item = operations().find(entry => entry.kind === 'cloud-flow' && entry.processId === id);
-    return { definition: workflow.definition?.properties?.definition ?? workflow.definition?.definition, mode: item?.mode ?? 'placeholder',
-      steps: item?.configuration?.steps, serviceProfile: handlers.flowIdentities.get(id) };
-  };
+  // Same composition as server.mjs liveDataverseSettings: admin environment overrides are read per request.
+  const environmentValue = (key, fallback) => (Object.hasOwn(store.state.dataverse?.environment ?? {}, key) ? store.state.dataverse.environment[key] : fallback);
+  const liveSettings = { ...settings, gitRemoteDirectory: settings.gitRemoteDirectory && path.resolve(projectRoot, settings.gitRemoteDirectory),
+    tds: { ...settings.tds, enabled: () => environmentValue('tdsEnabled', settings.tds.enabled) },
+    serviceProtection: { ...settings.serviceProtection, requestsPer300s: () => environmentValue('requestsPer300s', settings.serviceProtection?.requestsPer300s ?? null) } };
   if (runtime.kind === 'dataverse-api' && !settings.enabled) throw new Error('A dataverse-api runtime requires its HTTP API to be enabled.');
+  // The shared organization composition (organization-host.mjs): handler maps, memoised catalogues, providers, backend and API.
+  const EMPTY = Object.freeze({});
   const caps = { ...runtimeCapabilities(runtime), dataverseApi: settings.enabled, setup: true, records: true, staff: true,
     personas: false, liveBridge: false, portalRendering: false };
+  // Host surfaces registered in the capability registry under their legacy status keys (summary() reads them back).
+  const surfaces = () => hostSurfaces({ host: 'standalone', dataverseApi: caps.dataverseApi });
+  const organizationHost = await composeOrganizationHost({ store, packs, runtime, surfaces, inventory: () => sources.inventory, localOrigin: () => localOrigin, codeApps: () => codeAppRecords, projectRoot,
+    config: { connections: options.connections, secrets: options.secrets, providers: options.providers, localServices: options.localServices, canvas: options.canvas, connectorScripts: options.connectorScripts },
+    stateFile, simulation,
+    sources: { plugins: () => sources.metadata.plugins, workflows: () => sources.workflows, layers: () => sources.solutionData.layers },
+    sourcesKey: () => sources, overrides: () => store.state.simulator?.operations ?? EMPTY,
+    workflowOverrides: () => store.state.dataverse?.workflowOverrides ?? {}, diagnostic,
+    timeoutMs: () => (store.state.dataverse?.environment?.pluginTimeoutSeconds ?? settings.pluginTimeoutSeconds) * 1000,
+    clock, ids: options.ids, scheduler: options.scheduler });
+  const { operations } = organizationHost;
+  const codeApps = codeAppSettings(options.codeApps);
   const links = () => ({ administration: '/_sim/', setup: '/_setup/', modelDriven: caps.modelDriven ? '/main.aspx' : null,
     powerPages: null, dataverseApi: dataverse?.origin ?? null });
-  const policy = () => storageAdapter?.report(store.state) ?? simulationReport();
+  const policy = () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport());
   const managedIdentityList = () => [...(settings.managedIdentities ?? []), ...(store.state.dataverse?.managedIdentities ?? [])];
   const managedIdentitySummary = ({ reveal = false } = {}) => {
     if (!managedIdentity) return { enabled: false };
@@ -130,30 +154,52 @@ export async function createStandaloneRuntime(options = {}) {
   };
   const dvSummary = () => ({ ...dataverseStatus(settings, dataverse ?? organization ?? {}), managedIdentity: managedIdentitySummary() });
   const config = () => ({ ...store.state.simulator, runtime, simulation, dataverse: dvSummary(), platformSettings: platformSettingEntries(store.state), permissionMode: store.state.settings.permissionMode });
+  // Deployment profile (deployment-profiles.mjs): loaded as the Power Pages host does, after state restore (a saved pin wins).
+  let profile = null;
+  const loadProfile = () => activeDeploymentProfile({ deploymentProfiles: options.deploymentProfiles, projectRoot, pin: store.state.simulator?.deploymentProfilePin ?? null });
+  const environmentOverrides = () => ({ ...profile?.environmentVariables, ...options.environmentVariables, ...store.state.simulator?.environmentVariables });
+  const solutionDataOptions = next => ({ webApiTables: Object.keys(next.solutionData.mappings), environmentVariables: environmentOverrides(),
+    connectionReferences: profile?.connectionReferences ?? [], presetLibrary: boot.presetLibrary });
   const recordCapabilities = () => Object.fromEntries(Object.keys(store.state.mappings).map(name => [name,
     store.storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true }]));
-  const status = () => ({ csrf, runtime, capabilities: caps, links: links(), simulation: policy(), sourceDir: null, solutionRoots,
+  const status = () => ({ csrf, runtime, ...organizationHost.capabilityStatus(), links: links(), simulation: policy(), sourceDir: null, solutionRoots,
+    inventory: inventorySummary(sources.inventory), providers: providerDescriptors(organizationHost.providers),
+    services: organizationHost.providers.serviceFixtures?.describe() ?? [],
     startupPreset, bootstrap: { timings: { ...bootstrapTimings } },
     recordCapabilities: recordCapabilities(),
     stateFile: simulation?.level === 'dry-run' ? null : stateFile ?? null, revision: store.revision, mode: 'local', reloading: false,
-    dataverse: dvSummary(), platformSettings: platformSettingEntries(store.state), diagnostics: { total: diagnostics.length }, project: options.project ?? null });
+    dataverse: dvSummary(), platformSettings: platformSettingEntries(store.state), diagnostics: { total: diagnostics.length, byCode: byCode(diagnostics) }, project: options.project ?? null, docs: DOCS,
+    // Imported model-driven apps and the /_sim/api route prefixes this host mounts (the admin app reads them instead of probing).
+    modelDrivenApps: modelDrivenAppsOf(sources.metadata), routes: simApiRoutes(MESSAGING_ROUTES, FLOW_ROUTES, DASHBOARD_ROUTES, PACK_ROUTES, ENVIRONMENT_ROUTES, HOST_API_ROUTES, adminRoutes),
+    // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
+    adminAdjacentRoutes: MODEL_DRIVEN_ROUTES });
   const exposed = () => ({ csrf, config: config(), status: { ...status(), tableCounts: Object.fromEntries(Object.entries(store.state.tables).map(([name, rows]) => [name, rows.length])) },
-    runtime, capabilities: caps, links: links(), simulation: policy(), dataverse: dvSummary(),
+    runtime, capabilities: organizationHost.capabilityStatus().capabilities, links: links(), simulation: policy(), dataverse: dvSummary(),
     recordCapabilities: recordCapabilities(),
     summaryMode: true, mappings: Object.entries(store.snapshot({ sections: ['mappings'] }).mappings)
-      .map(([logicalName, mapping]) => ({ logicalName, ...mapping })), diagnostics: [...sources.metadata.diagnostics, ...diagnostics], presets: [] });
+      .map(([logicalName, mapping]) => ({ logicalName, ...mapping })), diagnostics: [...sources.metadata.diagnostics, ...sources.scan.diagnostics.filter(item => item.severity === 'error' && !item.inventory), ...diagnostics], presets: [] });
+  const preflight = ({ scenario = null, strict = false } = {}) => organizationHost.preflight({ simulation, scenario, strict, diagnostics: profile?.diagnostics ?? [],
+    graph: buildSourceGraph({ scan: sources.scan, metadata: sources.metadata, solutionData: sources.solutionData, workflows: sources.workflows, clientResources: sources.clientResources,
+      mappings: store.snapshot({ sections: ['mappings'] }).mappings, bindings: graphBindings({ environmentVariables: options.environmentVariables, profile }) }) });
+  const HOST_API = [
+    ['/preflight', url => preflight({ strict: url.searchParams.get('strict') === 'true',
+      scenario: url.searchParams.get('requires') ? scenarioSettings({ id: url.searchParams.get('scenario') ?? 'request', requires: url.searchParams.getAll('requires') }) : null })],
+    ['/operations', () => ({ items: operations() })],
+    // Every staff session's mobile offline summary (model-driven/offline.mjs); empty until the model-driven handler exists.
+    ['/model-driven/offline', () => ({ items: offlineSessions() })],
+  ];
+  let offlineSessions = () => [];
+  const HOST_API_ROUTES = HOST_API.map(([prefix]) => prefix);
   const close = () => closing ??= (async () => {
     const errors = [];
     const cleanup = async fn => { try { await fn(); } catch (error) { errors.push(error); } };
     await cleanup(() => watcher?.close());
     const stopped = server?.listening ? new Promise(resolve => { server.close(resolve); server.closeIdleConnections(); }) : Promise.resolve();
-    await cleanup(() => dataverse?.close());
-    await cleanup(() => managedIdentity?.close());
     await Promise.allSettled([...requests]);
     await cleanup(() => mutation);
-    await cleanup(() => backend?.close?.());
     await cleanup(() => sourceComponents?.close());
-    await cleanup(() => organization?.close());
+    // One close order (organization-host.mjs): backend, organization, API, managed identity.
+    await cleanup(() => organizationHost.close());
     server?.closeAllConnections(); await stopped;
     if (errors.length) throw new AggregateError(errors, 'Standalone runtime cleanup failed.');
   })();
@@ -165,24 +211,21 @@ export async function createStandaloneRuntime(options = {}) {
     bootstrapTimings.stateRestore = { existed: stateExisted, journal: store.storage?.journal ?? false,
       bytes: stateFile ? (await fs.stat(stateFile).catch(() => null))?.size ?? 0 : 0 };
     startupPhase('state-composition');
-    await store.replaceState(applySolutionData(store.state, sources.solutionData, { webApiTables: Object.keys(sources.solutionData.mappings), environmentVariables: options.environmentVariables, presetLibrary: boot.presetLibrary }), { returnSnapshot: false });
+    profile = await loadProfile();
+    await organizationHost.loadCanvas();
+    await store.replaceState(applySolutionData(store.state, sources.solutionData, solutionDataOptions(sources)), { returnSnapshot: false });
     bootstrapTimings.stateCompositionMs = Math.round(performance.now() - stageAt); stageAt = performance.now();
     startupPhase('preset');
     if (startupPreset.applied) await store.applyPreset(options.preset, { returnSnapshot: false });
     bootstrapTimings.presetMs = Math.round(performance.now() - stageAt); stageAt = performance.now();
     startupPhase('organization');
-    const extensions = await sourceOrganizationExtensions({ layers: sources.solutionData.layers, plugins: sources.metadata.plugins,
-      customApis: customApiHandlers(packs), pluginHandlers: registeredPlugins, workflowHandlers: workflowHandlers(packs),
-      workflowOverrides: () => store.state.dataverse?.workflowOverrides ?? {}, cloudFlow, diagnostic, addonHandlers: addonHandlers(packs),
-      timeoutMs: () => (store.state.dataverse?.environment?.pluginTimeoutSeconds ?? settings.pluginTimeoutSeconds) * 1000 });
-    organization = await createOrganizationRuntime({ store, settings, change, schema: () => sources.schema,
-      metadataFields: logical => metadata().entities?.[logical]?.fields, log: options.log ?? (() => {}), extensions });
+    organization = await organizationHost.createOrganization({ settings: liveSettings, change, schema: () => sources.schema,
+      metadataFields: logical => metadata().entities?.[logical]?.fields, log: options.log ?? (() => {}) });
     bootstrapTimings.organizationMs = Math.round(performance.now() - stageAt);
     sourceComponents = createSourceSolutionComponentStorage({ store, components: () => sources.metadata.sourceComponents,
       entityId: (logical, state) => state.mappings[logical] ? uuidV5(organization.organizationId, `entity:${logical}`) : null });
     await store.transact(() => { sourceComponents.materialize(); });
-    backend = await createOrganizationBackend({ store, items: pluginSteps, handlers: registeredPlugins, runtimes, descriptors,
-      operations, workflows, identities: () => handlers.flowIdentities, diagnostic, systemJobs: () => true });
+    backend = await organizationHost.createBackend();
     const sessions = createStaffSessions({ organization: () => organization, port: () => server?.address()?.port ?? port });
     const sessionHandler = createStaffSessionHandler({ sessions, csrf: () => csrf, json, readBody });
     let catalogueCache;
@@ -191,14 +234,14 @@ export async function createStandaloneRuntime(options = {}) {
       if (catalogueCache?.metadata !== current || catalogueCache?.revision !== store.revision)
         catalogueCache = { metadata: current, revision: store.revision,
           value: appCatalogue({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp, settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven) }) };
+            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven), canvasApps: canvasAppNames(organizationHost) }) };
       return catalogueCache.value;
     };
     catalogue.async = async ({ cancelled } = {}) => {
       const current = metadata(), revision = store.revision;
       if (catalogueCache?.metadata !== current || catalogueCache?.revision !== revision) {
         const value = await appCatalogueAsync({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp, settings: store.state.settings,
-          clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven) }, { cancelled });
+          clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven), canvasApps: canvasAppNames(organizationHost) }, { cancelled });
         catalogueCache = { metadata: current, revision, value };
       }
       return catalogueCache.value;
@@ -208,18 +251,83 @@ export async function createStandaloneRuntime(options = {}) {
     const recordService = createModelDrivenRecordService({ organization, origin: () => localOrigin });
     const data = createModelDrivenData({ store, catalogue, recordService,
       readMetadata: fn => overlay.withReadEpoch(fn, { valid: () => store.isUnmodifiedRead() }) });
-    const model = createModelDrivenHandler({ catalogue, data, csrf: () => csrf, json, readBody, change, read: fn => organization.read(() => overlay.withReadEpoch(fn)), principal: req => sessions.resolve(req),
+    // Canvas apps run headlessly as the selected staff user (canvas-runtime.mjs): Dataverse through the engine's data
+    // sources as that user, writes in the host change slot, connectors through the project connections.
+    const canvasRuntime = createCanvasRuntime({ apps: organizationHost.canvasApps, evaluator: () => organizationHost.providers.powerFx, api: () => organization.api,
+      caller: principal => { const user = organization.principals.byId(principal?.principalId); return user ? { user } : null; },
+      transact: fn => change(() => organization.runOwned(() => organization.runAtomic(fn))),
+      connectors: codeAppConnectors(organizationHost.connectors, options.connections ?? {}), diagnostic });
+    const canvas = createCanvasHandler({ apps: organizationHost.canvasApps, enabled: () => organizationHost.canvas.enabled, diagnostic, runtime: canvasRuntime,
+      principal: req => { const principal = sessions.resolve(req); return principal.kind === 'staff' ? principal : null; }, csrf: () => csrf });
+    codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} });
+    const code = createCodeAppsHandler({ apps: () => codeAppRecords, sessions, user: id => organization.principals.byId(id),
+      organization: { get origin() { return dataverse?.origin ?? localOrigin; }, organizationId: organization.organizationId, environmentId: organization.environmentId, tenantId: organization.tenantId },
+      issueToken: input => {
+        if (!dataverse) throw Object.assign(new Error('Code app tokens need the Dataverse API; enable dataverse in the runtime settings.'), { status: 501, code: 'DataverseApiDisabled' });
+        return authorityTokenIssuer({ issueAccessToken: dataverse.issueAccessToken, origin: dataverse.origin })(input);
+      },
+      dataverse: codeAppDataverse({ organization, change, origin: () => dataverse?.origin ?? localOrigin }),
+      connectors: codeAppConnectors(organizationHost.connectors, options.connections ?? {}), csrf: () => csrf, diagnostic });
+    const model = createModelDrivenHandler({ catalogue, data, csrf: () => csrf, json, readBody, change, read: fn => organization.read(() => overlay.withReadEpoch(fn)), principal: req => sessions.resolve(req), webApi: createModelDrivenWebApi({ organization: () => organization }), offlineState: offlineSessionState(store, change),
       clientAssets: () => modelDriven.trustedExtensions ? sources.clientResources.assets : new Map([...sources.clientResources.assets].filter(([, asset]) => asset.passive === true)) });
+    offlineSessions = model.offlineSessions;
     const dataverseAdmin = createDataverseAdmin({ store, getDataverse: () => dataverse ?? { ...organization, requests: () => [] },
       dataverseConfig: settings, dataverseSummary: dvSummary, managedIdentitySummary, managedIdentityList, json, jsonObjectBody: readBody, change });
+    // GET /_sim/api/preflight and /_sim/api/operations: one [prefix, handler] table; HOST_API_ROUTES is read from it.
+    const hostApi = async (req, res, url) => {
+      const route = /^\/(?:_sim|__sim)\/api(\/[a-z-]+(?:\/[a-z-]+)?)$/.exec(url.pathname)?.[1];
+      const handle = req.method === 'GET' && HOST_API.find(([prefix]) => prefix === route)?.[1];
+      if (!handle) return false;
+      json(res, 200, await handle(url)); return true;
+    };
     const admin = createRuntimeAdminRouter({ store, json, jsonObjectBody: readBody, change, csrf: () => csrf, status, state: exposed,
-      configuration: config, simulation: policy, diagnostics: () => ({ diagnostics }), staffSession: sessionHandler, dataverseAdmin,
+      configuration: config, simulation: policy, diagnostics: () => ({ diagnostics, byCode: byCode(diagnostics) }), staffSession: sessionHandler, dataverseAdmin,
       configure: async patch => {
         if (Object.keys(patch).some(key => key !== 'operations')) throw fail('Change runtime configuration in Setup and restart this instance.', 409, 'RuntimeRestartRequired');
-        const overrides = validateOperationOverrides(patch.operations, operations());
-        await store.transact(() => { store.state.simulator.operations = overrides; }); return exposed();
+        // validateOperationOverrides throws on an invalid map and returns nothing: the validated map is the patch itself.
+        validateOperationOverrides(patch.operations);
+        const overrides = patch.operations ?? {};
+        for (const key of Object.keys(overrides)) if (!operations().some(item => item.key === key)) throw fail(`Unknown operation ${key}.`, 404, 'OperationNotFound');
+        // A step switched to clr gets its CLR runtime prepared before the choice is stored (01-B4).
+        await organizationHost.applyOperationOverrides(overrides, () => store.transact(() => { store.state.simulator.operations = overrides; }));
+        return exposed();
       },
       shutdown: () => { options.onShutdown?.(); return close(); } });
+    adminRoutes = admin.routes;
+    // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs) answer before the generic admin router.
+    const messagingRoutes = createMessagingRoutes({ api: organization.api, csrf: () => csrf });
+    const flowRoutes = createFlowRoutes({ api: organization.api, csrf: () => csrf });
+    // GET /_sim/api/dashboard (sim-dashboard-routes.mjs): the shared topology plus this host's listener and request count.
+    const dashboardRoutes = createDashboardRoutes({ host: organizationHost, docs: DOCS, extras: () => ({
+      runtime: { simulationLevel: simulationReport(simulation).level, revision: null, reloading: false, localOrigin,
+        stateFile: simulation?.level === 'dry-run' || !stateFile ? null : path.relative(projectRoot, stateFile).split(path.sep).join('/'), projectRoot: '.' },
+      nodes: [
+        { id: 'host:model-driven', kind: 'host', label: 'Model-driven apps', status: caps.modelDriven ? 'listening' : 'disabled', detail: { path: caps.modelDriven ? '/main.aspx' : null }, link: '#dataverse' },
+        { id: 'host:setup', kind: 'host', label: 'Setup workspace', status: 'listening', detail: { path: '/_setup/' } },
+        { id: 'host:admin', kind: 'host', label: 'Administration', status: 'listening', detail: { path: '/_sim/' } },
+        ...(caps.modelDriven ? [{ id: 'client:staff', kind: 'client', label: 'Staff browser', status: 'ready', detail: {}, link: '#dataverse' }] : []),
+      ],
+      edges: caps.modelDriven ? [{ from: 'client:staff', to: 'host:model-driven', kind: 'http', status: 'listening', label: 'browser' },
+        { from: 'host:model-driven', to: 'org:store', kind: 'process', status: 'ready', label: 'records' }] : [],
+      configuration: { settingsKeys: options.configuredSettings ?? null, ports: { portal: null, identityProvider: null } },
+      // No source reload revision here (reloads: null); inFlight leaves out this dashboard request itself.
+      activity: { inFlight: Math.max(0, requests.size - 1), diagnostics: { total: diagnostics.length, byCode: byCode(diagnostics) }, reloads: null },
+    }) });
+    // GET /_sim/api/packs (sim-pack-routes.mjs): no portal here, so matched is null.
+    const packRoutes = createPackRoutes({ packs, registration: { project: options.project, dataPacks: options.dataPacks, packs: options.packs }, projectRoot,
+      state: () => store.state, library: () => boot.presetLibrary, simulation: policy });
+    // /_sim/api/environment (sim-environment-routes.mjs): Solution environment variables and local overrides; deployment
+    // profile files are read by the Power Pages host only.
+    const environmentRoutes = createEnvironmentRoutes({ csrf: () => csrf, change, json, jsonObjectBody: readBody, environment: {
+      definitions: () => environmentVariableTable(store, { secrets: organization.api?.secrets ?? null }),
+      profiles: () => (profile ? deploymentProfilesSummary(profile.config, profile)
+        : { supported: false, reason: 'No deploymentProfiles are configured for this runtime.' }),
+      setOverride: async (schemaName, value) => {
+        await store.transact(() => applyEnvironmentOverride(store, store.state, schemaName, value, { secrets: organization.api?.secrets ?? null }));
+        return environmentVariableTable(store, { secrets: organization.api?.secrets ?? null }).definitions.find(item => item.schemaName === schemaName);
+      },
+      extra: () => ({ solutionRoots, live: { supported: false, reason: 'The live bridge belongs to the Power Pages host.' } }),
+    } });
     const setup = await createSetupHandler({ directory: projectRoot, ...(options.setup ?? (options.project?.configFile ? { project: options.project.configFile } : {})),
       runtime: { product: 'Mirage', ...runtime, capabilities: caps } });
     server = http.createServer((req, res) => {
@@ -231,19 +339,28 @@ export async function createStandaloneRuntime(options = {}) {
         if (req.headers['sec-fetch-site'] === 'cross-site' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) throw fail('Cross-site writes are not allowed.', 403);
         const url = new URL(req.url, localOrigin);
         if (await setup(req, res)) return;
-        if (await admin(req, res, url)) return;
-        if (/^\/(?:_sim|__sim)\/api\/operations$/.test(url.pathname) && req.method === 'GET') { json(res, 200, { items: operations() }); return; }
+        if (await messagingRoutes(req, res, url) || await flowRoutes(req, res, url) || await dashboardRoutes(req, res, url) || await packRoutes(req, res, url)) return;
+        if (await environmentRoutes(req, res, url)) return;
+        if (await admin(req, res, url) || await hostApi(req, res, url)) return;
+        // Reserved app surfaces answer before the model-driven handler, which refuses every other /_apps/* path.
+        if (canvas(req, res, url)) return;
+        if (await code(req, res, url)) return;
         if (caps.modelDriven && await model(req, res, url)) return;
         if (['GET', 'HEAD'].includes(req.method) && /^\/(?:_sim|__sim)(?:\/|$)/.test(url.pathname)) {
-          const file = url.pathname.replace(/^\/(?:_sim|__sim)\/?/, '') || 'index.html';
-          if (!assets.has(file) && !sharedAssets.has(file)) throw fail('Resource not found.', 404);
-          res.writeHead(200, { 'content-type': mime(file), 'cache-control': 'no-store' });
-          res.end(req.method === 'HEAD' ? undefined : await fs.readFile(new URL(sharedAssets.has(file) ? `./${file}` : `../admin/${file}`, import.meta.url))); return;
+          // The page answers /_sim and /_sim/ only (as on Power Pages); /_sim/index.html falls under the asset pattern and 404s.
+          const file = url.pathname.replace(/^\/(?:_sim|__sim)\/?/, ''), index = file === '';
+          const source = index ? new URL('../admin/index.html', import.meta.url) : await adminAssetFile(file);
+          if (!source) throw fail('Resource not found.', 404);
+          res.writeHead(200, { 'content-type': adminAssetType(index ? 'index.html' : file), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+            ...(index ? { 'content-security-policy': ADMIN_CSP } : {}) });
+          res.end(req.method === 'HEAD' ? undefined : await fs.readFile(source)); return;
         }
         if (url.pathname === '/' && ['GET', 'HEAD'].includes(req.method)) { res.writeHead(302, { location: caps.modelDriven ? '/main.aspx' : '/_sim/' }); res.end(); return; }
         throw fail('Resource not found.', 404);
       };
-      const task = handle().catch(error => { diagnostic({ code: error.code ?? 'RuntimeError', message: error.message }); if (!res.headersSent) json(res, error.status ?? 500, { error: { code: error.code ?? 'RuntimeError', message: error.message } }); else res.destroy(); });
+      // One request context per call (x-ms-correlation-request-id when given) inside this runtime's pack registries.
+      const context = createRequestContext({ organization, correlationId: correlationOf(req.headers['x-ms-correlation-request-id']) ?? undefined });
+      const task = organizationHost.run(() => runWithRequest(context, handle)).catch(error => { diagnostic({ code: error.code ?? 'RuntimeError', message: error.message }); if (!res.headersSent) json(res, error.status ?? 500, { error: { code: error.code ?? 'RuntimeError', message: error.message } }); else res.destroy(); });
       requests.add(task); task.finally(() => requests.delete(task)).catch(() => {});
     });
     storageAdapter?.activate(store.state);
@@ -251,28 +368,33 @@ export async function createStandaloneRuntime(options = {}) {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, () => { server.off('error', reject); resolve(); }); });
     localOrigin = `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`;
     if (settings.enabled) {
-      const certificate = settings.tls ? await ensureCertificate(options.dataverseCertificateFile ?? (stateFile && !simulation ? path.join(path.dirname(stateFile), 'dataverse-ca.pem') : null)) : null;
-      dataverse = await startDataverseApi({ organization, host, tls: certificate && { key: certificate.key, cert: certificate.cert }, managedIdentity: req => managedIdentity?.handle(req) ?? null });
-      managedIdentity = createManagedIdentityEndpoints({ authority: { issueManagedIdentityToken: dataverse.issueManagedIdentityToken },
-        settings: { get managedIdentities() { return managedIdentityList(); } }, origin: dataverse.origin,
-        secretFile: settings.managedIdentity?.mode === 'arc' ? path.join(projectRoot, '.paqvilo', 'mirage') : undefined });
+      const certificate = settings.tls ? await ensureCertificate(options.dataverseCertificateFile ?? (durable ? path.join(path.dirname(stateFile), 'dataverse-ca.pem') : null)) : null;
+      dataverse = await organizationHost.startApi({ host, tls: certificate && { key: certificate.key, cert: certificate.cert },
+        managedIdentities: managedIdentityList, managedIdentityMode: settings.managedIdentity?.mode ?? 'appservice', secretDirectory: path.join(projectRoot, '.paqvilo', 'mirage') });
+      managedIdentity = organizationHost.managedIdentity;
     }
-    const reload = () => change(async () => {
-      // Settle backend work while holding the host queue before publishing a new source snapshot.
-      // The adapter's async publication context excludes unrelated store writers from the policy bypass.
-      await backend?.settle();
-      const next = await loadOrganizationSources({ solutionRoots, solutionOrder: options.solutionOrder, modelDriven, lcid });
+    // Backend work settles before the host queue is taken, as server.mjs does: a job that calls api.change would otherwise
+    // wait on the queue this reload holds while the reload waits on the job. The adapter's async publication context
+    // excludes unrelated store writers from the policy bypass.
+    const reload = async () => { await backend?.settle(); return change(async () => {
+      const next = await loadOrganizationSources({ solutionRoots, solutionOrder: options.solutionOrder, modelDriven, lcid, cacheFile: sourceCacheFile, projectRoot, diagnostic });
+      assertReloadableScan(sources.scan, next.scan);
+      const nextProfile = await loadProfile();
       const apply = async () => {
-        const previous = sources;
+        const previous = { sources, profile };
         try {
-          await store.transact(() => {
-            sources = next; store.state = applySolutionData(store.state, next.solutionData, { webApiTables: Object.keys(next.solutionData.mappings), environmentVariables: options.environmentVariables, presetLibrary: boot.presetLibrary }); sourceComponents.materialize();
+          // One isolated transaction: Solution data, source components and the re-registered source modules (custom APIs,
+          // duplicate rules, workflows, plug-in registrations) commit together or not at all.
+          await store.transact(async () => {
+            sources = next; profile = nextProfile;
+            store.state = applySolutionData(store.state, next.solutionData, solutionDataOptions(next)); sourceComponents.materialize();
+            await organizationHost.refreshSources();
           }, { isolated: true });
-        } catch (error) { sources = previous; throw error; }
+        } catch (error) { ({ sources, profile } = previous); throw error; }
       };
       if (storageAdapter) await storageAdapter.bootstrap(apply, () => store.state); else await apply();
       if (watcher && watchedSourceSignature !== sourceSignature()) await restartWatcher();
-    });
+    }); };
     const sourceSignature = () => JSON.stringify((sources.solutionData.layers ?? []).map(layer => [layer.type, layer.dir]));
     async function restartWatcher() {
       if (closing) return;
@@ -281,8 +403,9 @@ export async function createStandaloneRuntime(options = {}) {
       const checkpoint = stateFile && path.resolve(stateFile);
       const pathKey = file => process.platform === 'win32' ? file.toLowerCase() : file;
       const checkpointKey = checkpoint && pathKey(checkpoint);
-      const cacheDirectory = checkpoint && !simulation ? path.join(path.dirname(checkpoint), 'cache') : null;
-      const ignored = solutionWatchFilter({ roots: watchedRoots, layers: [...sources.solutionData.layers, ...(modelDriven.clientSources ?? []).map(dir => ({ type: 'directory', dir }))],
+      const cacheDirectory = checkpoint && durable ? path.join(path.dirname(checkpoint), 'cache') : null;
+      // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
+      const ignored = solutionWatchFilter({ roots: watchedRoots, layers: [...sources.solutionData.layers, ...(modelDriven.clientSources ?? []).filter(source => !/[.]js$/i.test(source)).map(dir => ({ type: 'directory', dir }))],
         exclude: [cacheDirectory, ...(storageAdapter?.report(store.state).targets.map(target => target.file) ?? [])] });
       const watched = watchSources(watchedRoots, { ignoreInitial: true,
         ignored: (file, stats) => {
@@ -320,7 +443,7 @@ export async function createStandaloneRuntime(options = {}) {
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };
     startupPhase('listener-ready');
     return { url: localOrigin, origin: localOrigin, adminUrl: `${localOrigin}/_sim/`, port: server.address().port, store, runtime,
-      organization, get dataverse() { return dataverse; }, state: exposed, status, reload, close,
+      organization, get dataverse() { return dataverse; }, state: exposed, status, reload, close, preflight, settle: () => organizationHost.settle(),
       live: { status: () => ({ enabled: false, connected: false, liveWrites: 'disabled' }) },
       identityProvider: { available: false, origin: null, port: null } };
   } catch (error) { try { await close(); } catch (cleanupError) { diagnostic({ code: 'CLEANUP_FAILED', message: cleanupError.message }); } throw error; }

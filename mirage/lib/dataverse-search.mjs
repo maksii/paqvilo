@@ -584,3 +584,4 @@ export function install(api) {
 }
 
 export const EXTENSION = { name: "dataverse-search", install };
+export { tokens as searchTokens };

@@ -85,7 +85,10 @@ test('attachment rejection after the primary form row rolls back the entire unit
     assert.deepEqual((await readStateFile(stateFile)).tables,before.tables);
     if(trusted)assert.equal(handlerCalls,2,'the rejecting attachment follows the primary row and trusted handler');
     await app.close();const restarted=await createSimulator(settings);t.after(()=>restarted.close());
-    assert.deepEqual(restarted.store.state.tables,before.tables);
+    // A restart moves the inline note body to the annotations storage route (dataverse-storage-routing.mjs migration);
+    // the rows are otherwise unchanged.
+    const rows=tables=>({...tables,annotation:tables.annotation?.map(({documentbody,__blobkey,...row})=>row)});
+    assert.deepEqual(rows(restarted.store.state.tables),rows(before.tables));
   }
 });
 

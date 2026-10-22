@@ -17,7 +17,8 @@ import { parseExpand, parseSelect } from "./odata-query.mjs";
 import { createWebApiFormatter } from "./webapi-format.mjs";
 import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from "./webapi-policy.mjs";
 import { fieldKind, GUID_PATTERN, own } from "./dataverse-values.mjs";
-import { siteHeaders } from "./response-headers.mjs";
+import { contentDisposition, fileNameHeader, siteHeaders } from "./response-headers.mjs";
+import { ATTACHMENT_COLUMNS } from "./dataverse-files.mjs";
 import { attachODataReaderDetails, odataNumberLexemes, odataRootDetails, observedODataInnerMessage } from "./webapi-error-details.mjs";
 import { appendObservedWebApiErrorTemplate } from "./webapi-error-templates.mjs";
 
@@ -435,11 +436,25 @@ async function dispatchRead(t) {
   } };
   await t.store.readOperation(async () => { await dispatch(buffered); });
   if (!response) throw new DataError("The read operation produced no response.", 500, "InvalidReadResponse");
+  if (!response.raw && response.status === 200) await hydrateAttachments(t, response.body);
   if (response.raw) {
     t.res.writeHead(response.status, response.headers);
     return t.res.end(response.body);
   }
   return t.deps.json(t.res, response.status, response.body, response.headers);
+}
+
+// A note's documentbody or an attachment's body held by a storage provider (dataverse-storage-routing.mjs) reads as null
+// from the row; deps.attachmentBody (organization-host.mjs) reads it before the entity or collection response leaves.
+// ponytail: bodies under $expand of another table are not read back; add the walk when a portal page expands notes.
+async function hydrateAttachments(t, body) {
+  const logical = t.mapping?.logicalName, column = ATTACHMENT_COLUMNS[logical];
+  if (!column || typeof t.deps.attachmentBody !== "function" || !body || typeof body !== "object") return;
+  const idColumn = t.mapping.idColumn;
+  for (const row of Array.isArray(body.value) ? body.value : [body]) {
+    if (!row || typeof row !== "object" || !own(row, column) || row[column] != null || !row[idColumn]) continue;
+    row[column] = await t.deps.attachmentBody(logical, { [idColumn]: row[idColumn] });
+  }
 }
 
 function dispatch(t) {
@@ -462,12 +477,13 @@ function dispatch(t) {
         if (method === "GET") return getNavigation(t);
         throw methodNotAllowed(method, "a navigation property; use $ref or @odata.bind");
       }
+      if (fileKind(t) && ["PUT", "PATCH", "DELETE"].includes(method)) return fileColumnRequest(t);
       if (method === "GET") return getProperty(t, false);
       if (method === "PUT") return putProperty(t);
       if (method === "DELETE") return deleteProperty(t);
       throw methodNotAllowed(method, "a property");
     case "value":
-      if (method === "GET") return getProperty(t, true);
+      if (method === "GET") return fileKind(t) ? fileColumnRequest(t) : getProperty(t, true);
       throw methodNotAllowed(method, "$value");
     case "navcount":
       if (method === "GET") return getNavigationCount(t);
@@ -531,7 +547,7 @@ function requestContext(req, res, url, deps, target, method) {
       table: configuration,
     });
   const mapping = resolveSet(store, target.set);
-  const policy = webApiPolicy(deps.portal, store, mapping.logicalName);
+  const policy = webApiPolicy(policyPortal(store, deps), store, mapping.logicalName);
   const prefer = parsePrefer(req.headers.prefer);
   const include = prefer.annotations == null ? null : annotationMatcher(prefer.annotations);
   const settings = store.state.settings ?? {};
@@ -811,7 +827,7 @@ function getFetch(t) {
   let project;
   try {
     if(nativePolicy)admitTables();
-    project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName,{structuralJoinFields:nativePolicy});
+    project = webApiFetchPolicy(policyPortal(store, deps), store, xml, mapping.logicalName,{structuralJoinFields:nativePolicy});
   }
   catch(cause) {
     if(!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic'&&cause.details?.innerCode==='0x8004430d')
@@ -890,7 +906,7 @@ function navigationTarget(t) {
   const rel = t.mapping.relationships[t.target.segment];
   t.policy.assertPath([t.target.segment]);
   const targetMapping = t.store.resolveMapping(rel.entity);
-  const targetPolicy = webApiPolicy(t.deps.portal, t.store, targetMapping.logicalName);
+  const targetPolicy = webApiPolicy(policyPortal(t.store, t.deps), t.store, targetMapping.logicalName);
   const { id } = locate(t, t.mapping, t.target.key);
   const parent = readRecord(t, t.mapping, id, t.target.key);
   const related = t.store
@@ -919,7 +935,7 @@ function getNavigationCount(t) {
   return sendText(t, Math.min(related.length, WEBAPI_COUNT_LIMIT));
 }
 
-function getProperty(t, raw) {
+async function getProperty(t, raw) {
   const { mapping, policy, target } = t;
   if (mapping.relationships?.[target.segment]) throw notFound(raw ? "$value" : target.segment);
   policy.assert(target.segment);
@@ -929,7 +945,9 @@ function getProperty(t, raw) {
   const result = t.store.query(mapping.logicalName, params, t.deps.identity, undefined, queryOptions(t, { id }));
   const formatted = t.formatter.formatEntity(result.value[0] ?? {}, mapping, { etag: false });
   const lookup = /^_(.+)_value$/.test(target.segment) ? target.segment : `_${target.segment}_value`;
-  const value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
+  let value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
+  if (value == null && ATTACHMENT_COLUMNS[mapping.logicalName] === target.segment && typeof t.deps.attachmentBody === "function")
+    value = await t.deps.attachmentBody(mapping.logicalName, { [mapping.idColumn]: id }, { strict: raw });
   if (value == null) return sendNoContent(t);
   if (raw) return sendText(t, isExactNumeric(value)?value.value:value);
   return send(t, 200, { value });
@@ -984,6 +1002,43 @@ const writeOptions = (t, extra = {}) => ({
   ifNoneMatch: t.req.headers["if-none-match"],
   ...extra,
 });
+// Portal writes go through the organization's internal entries (dataverse-records.mjs, store.recordPipeline) once the
+// portal policy (prepareWrite, table permissions in the store) has admitted them: the organization rules (state defaults,
+// record hooks, audit and version columns, alternate-key answers) apply as on any organization write ("Dataverse and portal
+// share data"). The portal's own value rules stay (no dataverseWebApi, the portal metadata). Without an organization on the
+// store, the store writes directly. Under enhanced authorization the write runs as the visitor's mapped Dataverse user,
+// called by the site's application user (portal-authorization.mjs principal), so column security profiles apply to it.
+const portalContext = (t) => ({ identity: t.deps.identity, portal: true, caller: null, method: t.req.method, headers: {},
+  ...t.store.portalAuthorization?.principal(t.deps.identity) });
+// The portal the column policy reads: enhanced authorization bypasses the Web API column permissions (portal-authorization.mjs).
+const policyPortal = (store, deps) => store.portalAuthorization?.webApiPortal(deps.portal) ?? deps.portal;
+const internalOptions = (t, extra) => ({ authorized: true, writeOptions: { ...writeOptions(t, extra), dataverseWebApi: false } });
+function portalCreate(t, mapping, data, extra) {
+  const records = t.store.recordPipeline;
+  if (!records) return t.store.createRecordAsync(mapping.logicalName, data, t.deps.identity, writeOptions(t, extra));
+  return records.createInternal(portalContext(t), mapping.logicalName, data, internalOptions(t, extra));
+}
+function portalUpdate(t, mapping, id, data, extra) {
+  const records = t.store.recordPipeline;
+  if (!records) return t.store.updateRecordAsync(mapping.logicalName, id, data, t.deps.identity, writeOptions(t, extra));
+  return records.updateInternal(portalContext(t), mapping.logicalName, id, data, internalOptions(t, extra));
+}
+function portalRemove(t, mapping, id) {
+  const records = t.store.recordPipeline;
+  if (!records) return t.store.removeRecordAsync(mapping.logicalName, id, t.deps.identity, writeOptions(t));
+  return records.removeInternal(portalContext(t), mapping.logicalName, id, internalOptions(t));
+}
+// Portal $ref associations run the organization's association pipeline (records.associateInternal/disassociateInternal:
+// record hooks, Associate/Disassociate plug-in stages, committed work); the store write keeps the portal identity, so the
+// table permissions (append/appendTo) are checked as before.
+function portalAssociation(t, mapping, id, navigation, targetId, associate) {
+  const records = t.store.recordPipeline;
+  if (!records) return t.store.changeAssociationRecord(mapping.logicalName, id, navigation, targetId, t.deps.identity, associate);
+  const entry = associate ? records.associateInternal : records.disassociateInternal;
+  return entry(portalContext(t), mapping.logicalName, id, navigation, [targetId], { authorized: true, writeOptions: { portalRequest: true } });
+}
+// One portal write in its own store transaction (the write slot the store's update/remove wrappers took).
+const portalWrite = (t, fn) => t.deps.change(() => t.store.transact(fn, { incremental: true }));
 
 /**
  * Prefer: return=representation is validated before anything is written: the
@@ -1019,8 +1074,8 @@ function representationBody(t, mapping, id, params) {
 /** Run a write and, when requested, read its representation in one store transaction. */
 function writeAndRepresent(t, mapping, params, write) {
   return t.deps.change(() =>
-    t.store.transact(() => {
-      const outcome = write();
+    t.store.transact(async () => {
+      const outcome = await write();
       const row = outcome.row ?? outcome;
       const id = row[mapping.idColumn];
       return { outcome, id, body: params ? representationBody(t, mapping, id, params) : null };
@@ -1029,14 +1084,14 @@ function writeAndRepresent(t, mapping, params, write) {
 }
 
 async function createEntity(t) {
-  const { mapping, policy, store, deps } = t;
+  const { mapping, policy } = t;
   const body = await readBody(t);
   if (!Object.keys(body).length) throw new DataError("No attributes for Create Table action.", 400, "NoAttributesForTableCreate");
   assertBindOrigins(t, body);
   const prepared = policy.prepareWrite(body, "create");
   const params = representationParams(t, mapping);
   const { id, body: represented } = await writeAndRepresent(t, mapping, params, () =>
-    store.createRecord(mapping.logicalName, prepared, deps.identity, writeOptions(t)),
+    portalCreate(t, mapping, prepared),
   );
   const headers = { "OData-EntityId": entityLocation(t, mapping, id), entityid: String(id) };
   if (params) return send(t, 201, represented, headers);
@@ -1054,14 +1109,16 @@ async function patchEntity(t) {
   let write;
   if (exists) {
     const prepared = policy.prepareWrite(body, "update");
-    write = () => store.upsertRecord(mapping.logicalName, located.id, prepared, deps.identity, options);
+    write = store.recordPipeline
+      ? async () => ({ created: false, row: await portalUpdate(t, mapping, located.id, prepared) })
+      : () => store.upsertRecordAsync(mapping.logicalName, located.id, prepared, deps.identity, options);
   } else {
     // Upsert creates the record with the addressed primary or alternate key.
     const keyed = { ...body, ...(located.alternate ?? {}) };
     const prepared = policy.prepareWrite(keyed, "create");
-    write = located.alternate
-      ? () => ({ created: true, row: store.createRecord(mapping.logicalName, prepared, deps.identity, options) })
-      : () => store.upsertRecord(mapping.logicalName, located.id, prepared, deps.identity, options);
+    write = located.alternate || store.recordPipeline
+      ? async () => ({ created: true, row: await portalCreate(t, mapping, located.alternate ? prepared : { ...prepared, [mapping.idColumn]: located.id }) })
+      : () => store.upsertRecordAsync(mapping.logicalName, located.id, prepared, deps.identity, options);
   }
   const params = representationParams(t, mapping);
   const { outcome, id, body: represented } = await writeAndRepresent(t, mapping, params, write);
@@ -1071,10 +1128,10 @@ async function patchEntity(t) {
 }
 
 async function deleteEntity(t) {
-  const { mapping, store, deps, target } = t;
+  const { mapping, target } = t;
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
-  await deps.change(() => store.remove(mapping.logicalName, id, deps.identity, writeOptions(t)));
+  await portalWrite(t, () => portalRemove(t, mapping, id));
   return sendNoContent(t);
 }
 
@@ -1085,8 +1142,72 @@ async function putProperty(t) {
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
   const prepared = policy.prepareWrite({ [target.segment]: body.value }, "update");
-  await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t)));
+  await portalWrite(t, () => portalUpdate(t, mapping, id, prepared));
   return sendNoContent(t);
+}
+
+// ---- file and image columns (Learn: power-pages/configure/file-column#web-api; the binary contract is Dataverse's,
+// power-apps/developer/data-platform/file-column-data): PUT or PATCH /_api/<set>(id)/<column> with the bytes as the body
+// and the name in x-ms-file-name (header or query), GET /_api/<set>(id)/<column>/$value (size=full|thumbnail for images),
+// DELETE /_api/<set>(id)/<column>. The portal checks come first: the column enabled in Webapi/<table>/fields, its column
+// permission, and the table permission (Read to download, Write to upload or delete) on the row. The bytes then go through
+// the organization's file seam (store.recordPipeline.fileContentInternal, dataverse-files.mjs): column MaxSizeInKB, image
+// sniffing, storage routing, the 404 of an empty file column and the 204 of an empty image, as on /api/data.
+// unverified: native portal response headers; a download answers 200 (Learn's sample shows 204), an upload or delete 204.
+// A download is never served as its stored type on the portal origin (an uploaded .html would run as the reader):
+// application/octet-stream, attachment disposition, nosniff, and the stored type in the mimetype header with the
+// x-ms-file-name and x-ms-file-size headers /api/data sends. An upload without a name keeps the stored file's name, else
+// <column>.bin (seam defaultName).
+// ponytail: one request carries the whole file (Range and chunked transfer are not served on /_api); add Range when a
+// portal file passes 16 MB, the Learn single-call limit.
+const FILE_BODY_LIMIT = 128 * 1024 * 1024; // Learn: a single-request Web API upload is under 128 MB.
+const fileKind = (t) => t.store.recordPipeline?.fileContentInternal?.kindOf?.(t.mapping.logicalName, t.target.segment) ?? null;
+async function rawBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > FILE_BODY_LIMIT) throw new DataError("Request message length is too large.", 413, "PayloadTooLarge", { innerCode: "0x8004418a" });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+async function fileColumnRequest(t) {
+  const { mapping, policy, target, method, store, deps, url, req } = t;
+  const download = method === "GET";
+  if (download) policy.assert(target.segment);
+  else policy.assertWrite({ [target.segment]: null }, "update");
+  const { id } = locate(t, mapping, target.key);
+  const row = download ? readRecord(t, mapping, id, target.key) : id == null ? null : store.findByKey(mapping, String(id));
+  if (!row) throw recordNotFound(mapping, target.key);
+  const operation = download ? "read" : "update";
+  store.assertAllowed(mapping.logicalName, operation, row, deps.identity);
+  // The table permission check above is the grant; the profile only carries it into the seam's own check.
+  const userId = [deps.identity?.contactId, deps.identity?.id].find((value) => GUID_PATTERN.test(String(value ?? ""))) ?? "00000000-0000-0000-0000-000000000000";
+  const principal = { userId, evidence: "portal table permissions (webapi-handler.mjs fileColumnRequest)", grants: [{ entity: mapping.logicalName, operations: [operation] }] };
+  const header = (name) => (typeof req.headers?.[name] === "string" ? req.headers[name] : null);
+  const fileName = header("x-ms-file-name") ?? url.searchParams.get("x-ms-file-name");
+  // A file name is a name, never a path: separators, NUL and "."/".." are refused before anything is read or stored.
+  // unverified: the platform's code and wording for such a name.
+  if (fileName != null && (/[\\/\0]/.test(fileName) || /^\.{1,2}$/.test(fileName.trim())))
+    throw badRequest("The file name must not contain a path.", "InvalidRequest", "0x80040203");
+  const answer = await store.recordPipeline.fileContentInternal({
+    principal, entity: mapping.logicalName, id: row[mapping.idColumn], column: target.segment,
+    operation: download ? "download" : method === "DELETE" ? "delete" : "upload",
+    size: download && url.searchParams.get("size") !== "thumbnail" ? "full" : null,
+    content: download || method === "DELETE" ? null : await rawBody(req),
+    fileName,
+    contentType: header("content-type"),
+    defaultName: true,
+  });
+  if (answer.statusCode !== 200) return sendNoContent(t);
+  const { name, size, mimeType } = answer.file;
+  t.res.writeHead(200, {
+    ...apiHeaders(deps.portal), "content-type": "application/octet-stream", "content-disposition": contentDisposition("attachment", name),
+    "x-content-type-options": "nosniff", mimetype: mimeType, "x-ms-file-name": fileNameHeader(name), "x-ms-file-size": String(size),
+    "access-control-expose-headers": "mimetype, x-ms-file-name, x-ms-file-size",
+  });
+  return t.res.end(Buffer.from(answer.body["$content"], "base64"));
 }
 
 async function deleteProperty(t) {
@@ -1094,7 +1215,7 @@ async function deleteProperty(t) {
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
   const prepared = policy.prepareWrite({ [target.segment]: null }, "update");
-  await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t)));
+  await portalWrite(t, () => portalUpdate(t, mapping, id, prepared));
   return sendNoContent(t);
 }
 
@@ -1128,7 +1249,7 @@ async function reference(t) {
       throw methodNotAllowed(method, "a single-valued navigation property; use PUT");
     const body = await readBody(t);
     const { id: targetId } = referenced(body["@odata.id"], "@odata.id");
-    await deps.change(() => store.associate(mapping.logicalName, id, navigation, targetId, deps.identity));
+    await portalWrite(t, () => portalAssociation(t, mapping, id, navigation, targetId, true));
     return sendNoContent(t);
   }
   if (method === "PUT") {
@@ -1137,19 +1258,19 @@ async function reference(t) {
     const body = await readBody(t);
     const ref = referenced(body["@odata.id"], "@odata.id");
     const prepared = policy.prepareWrite({ [`${navigation}@odata.bind`]: `/${ref.set}(${ref.id})` }, "update");
-    await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t, { coerce: false })));
+    await portalWrite(t, () => portalUpdate(t, mapping, id, prepared, { coerce: false }));
     return sendNoContent(t);
   }
   if (single) {
     if (target.targetKey != null || t.url.searchParams.has("$id")) throw badRequest("A single-valued navigation reference is removed without $id.", "InvalidLookup", "0x0");
     const prepared = policy.prepareWrite({ [`${navigation}@odata.bind`]: null }, "update");
-    await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t, { coerce: false })));
+    await portalWrite(t, () => portalUpdate(t, mapping, id, prepared, { coerce: false }));
     return sendNoContent(t);
   }
   const targetId =
     target.targetKey != null
       ? locate(t, targetMapping, target.targetKey).id
       : referenced(t.url.searchParams.get("$id") ?? undefined, "$id").id;
-  await deps.change(() => store.disassociate(mapping.logicalName, id, navigation, targetId, deps.identity));
+  await portalWrite(t, () => portalAssociation(t, mapping, id, navigation, targetId, false));
   return sendNoContent(t);
 }

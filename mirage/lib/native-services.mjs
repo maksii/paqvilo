@@ -8,8 +8,8 @@ import { csvCell } from './csv.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
-import { notesFilter } from "./form-service.mjs";
-import { platformResourceHeaders, siteHeaders, notModified, PAGE_HEADERS } from "./response-headers.mjs";
+import { notesFilter, portalRecordWrites } from "./form-service.mjs";
+import { platformResourceHeaders, siteHeaders, notModified, PAGE_HEADERS, contentDisposition } from "./response-headers.mjs";
 import { contextualViewFetchXml } from "./platform.mjs";
 import { nativeActionStateValues } from "./native-form-actions.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
@@ -331,6 +331,7 @@ export function buildLayout({
   secure,
   selectColumn = false,
   actionColumn = false,
+  masked = null,
 }) {
   const fetch = parseFetchTree(view.fetchXml);
   const columns = [];
@@ -363,7 +364,8 @@ export function buildLayout({
       Width: width,
       // Multi-select choice columns cannot sort; memo columns can (live subgrid evidence).
       // disableSorting="1" view cells cannot sort either (live: ActionCards cardtypeid).
-      SortDisabled: Boolean(cell.sortDisabled) || /^multiselectpicklist$/i.test(field?.dataverseType ?? ""),
+      // A column the reader reads masked cannot sort (masked = gridMasked; the order would be refused with 0x80041155).
+      SortDisabled: Boolean(cell.sortDisabled) || /^multiselectpicklist$/i.test(field?.dataverseType ?? "") || Boolean(masked?.(table, attribute)),
       Type: 0,
     });
   }
@@ -939,15 +941,26 @@ function applySort(fetch, sort) {
   }
 }
 
-/** Native quick search: begins-with on the view's text columns ("*" is a wildcard). */
-function applySearch(fetch, search, columns, metadata, entity) {
+/**
+ * The (table, column) => masked predicate of a grid's reader (portal-authorization maskedColumn, the operand rule of a portal
+ * read), or null. A masked column is left out of quick search and is SortDisabled, so a search or sort never sends an operand
+ * the read refuses with 0x80041155. unverified: not captured live (the portal's own search/sort over a masked view column).
+ */
+export function gridMasked(context) {
+  const auth = context?.store?.portalAuthorization;
+  return auth?.maskedColumn ? (table, column) => auth.maskedColumn(context.identity ?? {}, table, column, { portalRequest: true }) : null;
+}
+
+/** Native quick search: begins-with on the view's text columns ("*" is a wildcard), masked columns excluded (gridMasked). */
+function applySearch(fetch, search, columns, metadata, entity, masked = null) {
   const query = String(search ?? "").trim().slice(0, 3999);
   if (!query) return;
   const pattern = `${query.replace(/\*/g, "%")}%`;
   const conditions = [];
   for (const column of columns) {
     if (column.Type !== 0) continue;
-    const { field } = columnMetadata(metadata, entity, fetch, column.LogicalName);
+    const { table, attribute: name, field } = columnMetadata(metadata, entity, fetch, column.LogicalName);
+    if (masked?.(table, name)) continue;
     const type = String(field?.dataverseType ?? "").toLowerCase();
     if (type && !/^(nvarchar|string|memo|ntext)$/.test(type)) continue;
     if (!type && column.LogicalName.includes(".")) continue;
@@ -1409,6 +1422,7 @@ export async function executeGridQuery(model, request, context) {
     model.views.find((candidate) => canonical(candidate.id) === canonical(context.secure?.view ?? request.viewId)) ??
     model.views[0];
   model = { ...model, view };
+  const masked = gridMasked(context);
   const layout = buildLayout({
     view,
     entity: model.entity,
@@ -1418,6 +1432,7 @@ export async function executeGridQuery(model, request, context) {
     settings: model.settings,
     configuration: {},
     secure: context.secure ?? { t: "query" },
+    masked,
   });
   if (readDenied(context, model.entity)) return { model, view, layout, accessDenied: true, rows: [] };
   const { store, identity, readProvider } = context;
@@ -1433,7 +1448,7 @@ export async function executeGridQuery(model, request, context) {
         root.children.unshift({ name: "attribute", attrs: { name }, children: [], text: "" });
   applyRelationship(fetch, model, context.secure?.parent, store);
   applyUserFilters(fetch, model, request, identity, context.portal.website?.id);
-  if (model.search?.enabled !== false) applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity);
+  if (model.search?.enabled !== false) applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity, masked);
   if (model.kind === "list" && model.filter?.enabled)
     applyMetaFilter(fetch, request.metaFilter, model.filter.definition);
   const allowedSort = new Set(layout.Columns.filter((column) => column.Type === 0 && !column.SortDisabled).map((column) => column.LogicalName));
@@ -1846,10 +1861,11 @@ function modelFor(secure, context) {
   fail("Invalid_Request", 403, "Invalid_Request");
 }
 
+// A local portal write through the one portal write path (form-service.mjs portalRecordWrites) in its own store transaction.
+const portalWrite = (context, fn) => context.store.transact(() => fn(portalRecordWrites(context.store)), { incremental: true });
 async function writeOperation(context, operation, entity, id, values) {
   if (context.config?.mode !== "live") {
-    if (operation === "delete") return context.store.remove(entity, id, context.identity);
-    return context.store.update(entity, id, values, context.identity);
+    return portalWrite(context, writes => operation === "delete" ? writes.remove(entity, id, context.identity) : writes.update(entity, id, values, context.identity));
   }
   const mapping = context.liveMapping(entity);
   const response = await context.live.request(
@@ -1937,7 +1953,7 @@ function noteAttributes(row, context, zone, regarding) {
   for (const [name, dataverseType] of NOTE_COLUMNS) {
     let value = row[name];
     if (name === "isdocument") value ??= Boolean(row.filename);
-    if (name === "filesize") value ??= row.documentbody ? Buffer.from(String(row.documentbody), "base64").length : 0;
+    if (name === "filesize") value ??= 0; // noteSize filled it before the page was built
     if (name === "objecttypecode") value ??= row.objectid?.logical_name ?? regarding;
     if (value == null || value === "") continue;
     const field = fields[name] ?? { dataverseType, ...(dataverseType === "datetime" ? { dateTimeBehavior: "UserLocal" } : {}) };
@@ -1953,6 +1969,16 @@ function noteAttributes(row, context, zone, regarding) {
     out.push(entry);
   }
   return out;
+}
+
+// A note's body as base64: context.attachmentBody (organization-host.mjs) reads the stored row, inline or from its storage
+// provider; a context without it (unit callers) reads the row's own column.
+const noteBody = (context, row) => (context.attachmentBody ? context.attachmentBody("annotation", row) : row.documentbody ?? null);
+// The byte size of a note: its filesize column, else the length of its body.
+async function noteSize(context, row) {
+  if (Number(row.filesize)) return Number(row.filesize);
+  const body = await noteBody(context, row);
+  return body ? Buffer.from(String(body), "base64").length : 0;
 }
 
 const fileSizeDisplay = (bytes) =>
@@ -1975,9 +2001,11 @@ async function handleNotes(action, req, res, context) {
     const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
     const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id, descending), context.identity, prefix);
     const contact = canonical(context.identity?.contactId ?? context.identity?.id);
-    const records = rows.slice((page - 1) * pageSize, page * pageSize).map((row) => {
+    const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+    for (const row of pageRows) row.filesize = await noteSize(context, row);
+    const records = pageRows.map((row) => {
       const id = canonical(row.annotationid);
-      const size = Number(row.filesize) || (row.documentbody ? Buffer.from(String(row.documentbody), "base64").length : 0);
+      const size = Number(row.filesize) || 0;
       const mine = Boolean(contact) && String(row.subject ?? "").toLowerCase().includes(`[contact:${contact}]`);
       const raw = String(row.notetext ?? "");
       const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
@@ -2063,7 +2091,7 @@ async function handleNotes(action, req, res, context) {
       values.documentbody = String(body.file.content ?? "");
       values.filesize = Buffer.from(values.documentbody, "base64").length;
     }
-    const created = await context.change(() => context.store.create("annotation", values, context.identity));
+    const created = await context.change(() => portalWrite(context, writes => writes.create("annotation", values, context.identity)));
     // The platform answers the native form with an empty 201.
     if (native) return sendEmpty(res, 201);
     return sendJson(res, 201, { Id: canonical(created.annotationid) });
@@ -2084,10 +2112,10 @@ async function handleNotes(action, req, res, context) {
       values.documentbody = String(body.file.content ?? "");
       values.filesize = Buffer.from(values.documentbody, "base64").length;
     }
-    await context.change(() => context.store.update("annotation", id, values, context.identity));
+    await context.change(() => portalWrite(context, writes => writes.update("annotation", id, values, context.identity)));
     return sendJson(res, 200, { Id: canonical(id) });
   }
-  await context.change(() => context.store.remove("annotation", id, context.identity));
+  await context.change(() => portalWrite(context, writes => writes.remove("annotation", id, context.identity)));
   return sendJson(res, 200, { Id: canonical(id) });
 }
 
@@ -2103,7 +2131,7 @@ async function handleAnnotation(req, res, id, context) {
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     return res.end(req.method === "HEAD" ? undefined : "Not Found");
   }
-  const bytes = Buffer.from(String(note.documentbody ?? ""), "base64");
+  const bytes = Buffer.from(String((await noteBody(context, note)) ?? ""), "base64");
   if (!bytes.length) {
     res.writeHead(204, { "cache-control": "private" });
     return res.end();
@@ -2199,7 +2227,8 @@ export async function handleNativeService(req, res, url, context) {
   if (await serveNativeEquivalent(req, res, url, context, websiteId)) return true;
   if (await handleCalendarService(req, res, url, context, websiteId)) return true;
   if (await handleODataFeed(req, res, url, context)) return true;
-  if (await handleImplicitGrant(req, res, url, { portal: context.portal, identity: context.identity, contact: contactRow(context), origin: context.origin })) return true;
+  if (await handleImplicitGrant(req, res, url, { portal: context.portal, identity: context.identity, contact: contactRow(context), origin: context.origin,
+    ...(context.store?.clock ? { clock: () => context.store.clock.now() } : {}) })) return true;
   if (await serveCommunityPlacement(req, res, url, context, websiteId)) return true;
   if (await serveSolutionWebResource(req, res, url, context)) return true;
   const token = /^\/_portal\/([^/]+)\/Layout\/GetAntiForgeryToken\/?$/i.exec(url.pathname);
@@ -2244,7 +2273,7 @@ export async function handleNativeService(req, res, url, context) {
       downloads.delete(key);
       res.writeHead(200, {
         "content-type": file.type,
-        "content-disposition": `attachment; filename="${file.name.replace(/"/g, "")}"`,
+        "content-disposition": contentDisposition("attachment", file.name),
         "content-length": file.body.length,
         "cache-control": "no-store",
       });

@@ -7,7 +7,6 @@ import { DataError } from "./data-error.mjs";
 import { createHash } from "node:crypto";
 import { contextUrl } from "./dataverse-url.mjs";
 import { compileCosmosQuery, cosmosParameters } from "./dataverse-cosmos-query.mjs";
-
 const refuse = (message) => new DataError(message, 400, "InvalidRequest"); // unverified: status and code (LC-E1b..g)
 const bare = (type) => String(type ?? "").replace(/^#?Microsoft\.Dynamics\.CRM\./, "");
 const flagOf = (value) => (value !== null && typeof value === "object" ? value.Value === true : value === true);
@@ -76,13 +75,13 @@ const REFUSED_TYPES = new Map([
 // Whole-number formats other than None are not available (Duration, Language code, Time zone).
 const WHOLE_NUMBER_FORMATS = new Set(["duration", "languagecode", "language", "timezone", "time zone"]);
 
-/** Refuses a column body an elastic table cannot take. Calculated, rollup and formula columns (SourceType 1 or 2). */
+/** Refuses a column body an elastic table cannot take. Calculated, rollup and formula columns (SourceType 1, 2 or 3). */
 export function assertElasticColumn(attr) {
   const type = bare(attr?.["@odata.type"]);
   const name = REFUSED_TYPES.get(type);
   if (name) throw refuse(`${name} columns are not supported on elastic tables.`); // unverified: LC-E1b
   const source = Number(valueOf(attr?.SourceType));
-  if (source === 1 || source === 2 || attr?.FormulaDefinition) throw refuse("Calculated, rollup and formula columns are not supported on elastic tables."); // unverified: LC-E1b
+  if (source === 1 || source === 2 || source === 3 || attr?.FormulaDefinition) throw refuse("Calculated, rollup and formula columns are not supported on elastic tables."); // unverified: LC-E1b
   if (type === "IntegerAttributeMetadata") {
     const format = String(valueOf(attr.Format) ?? "None").toLowerCase().replace(/\s+/g, "");
     if (WHOLE_NUMBER_FORMATS.has(format)) throw refuse(`Whole number format ${valueOf(attr.Format)} is not supported on elastic tables.`); // unverified: LC-E1b
@@ -186,11 +185,15 @@ function installCosmosQuery(api) {
       api.principals.authorize({ user: ctx.user, entity: mapping.logicalName, operation: "read", mapping });
       const parameters = cosmosParameters(args.QueryParameters);
       const execute = compileCosmosQuery(args.QueryText, parameters);
+      // Column security as on every read: a masked column is never a WHERE or ORDER BY operand (0x80041155), and the documents
+      // carry what the caller receives (hidden columns null, masked columns masked), so a projection or DISTINCT sees no clear value.
+      const view = { unmask: false, single: false };
+      if (execute.operands.some((path) => path[1] === "props" && api.fieldSecurity?.maskedFor?.(ctx.user, mapping.logicalName, String(path[2] ?? ""), view))) throw api.fieldSecurity.maskedOperand();
       const readFilter = api.principals.readFilter({ user: ctx.user, entity: mapping.logicalName, mapping });
       const rows = api.store.tableRows(mapping.logicalName)
         .filter((row) => (args.PartitionId == null || samePartition(row.partitionid, args.PartitionId)) && (!readFilter || readFilter(row)))
         .map((row) => {
-          const props = { ...(api.fieldSecurity?.mask?.(ctx.user, mapping.logicalName, row) ?? row) };
+          const props = { ...(api.fieldSecurity?.mask?.(ctx.user, mapping.logicalName, row, { view }) ?? row) };
           for (const [name, value] of Object.entries(props)) {
             if (typeof value !== "string" || !/^[\s]*[\[{]/.test(value)) continue;
             const definition = api.store.fieldDefinition(mapping.logicalName, name, api.metadataFields);

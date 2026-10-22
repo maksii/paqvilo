@@ -222,6 +222,19 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
   const refreshTokens = new Map();
   const codes = new Map();
   const devices = new Map();
+  // An expired entry stays until the map is full, so a lookup answers it as expired (as Entra does); an insert into a full
+  // map drops the expired entries, then evicts the oldest (Map keeps insertion order).
+  // ponytail: a flood of unredeemed codes (or client assertions) can evict a slow client's entry, and an evicted live
+  // assertion id can be replayed; raise AUTH_STORE_LIMIT or move these to the state store if that happens.
+  const AUTH_STORE_LIMIT = 1000;
+  const remember = (map, key, entry) => {
+    if (map.size >= AUTH_STORE_LIMIT) {
+      const now = clock();
+      for (const [stored, value] of map) if (value.expiresAt <= now) map.delete(stored);
+    }
+    while (map.size >= AUTH_STORE_LIMIT) map.delete(map.keys().next().value);
+    map.set(key, entry);
+  };
   const knownTenant = (segment) => ["common", "organizations", "consumers", tenantId.toLowerCase()].includes(String(segment).toLowerCase());
   const findApp = (clientId) => applications().find((item) => item.appId.toLowerCase() === String(clientId).toLowerCase());
   // Interactive users only: application users, non-interactive, disabled and oid-less rows cannot sign in or be picked.
@@ -296,7 +309,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
   // userOid is null for application-only refresh tokens; those rebuild app tokens.
   const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock() }) => {
     const token = randomBytes(36).toString("base64url");
-    refreshTokens.set(token, { appId: appId.toLowerCase(), userOid, resource, scope, expiresAt: now + REFRESH_LIFETIME_MS });
+    remember(refreshTokens, token, { appId: appId.toLowerCase(), userOid, resource, scope, expiresAt: now + REFRESH_LIFETIME_MS });
     return token;
   };
 
@@ -380,9 +393,8 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
     if (claims.jti === undefined) return reject("The client assertion must contain a jti claim.");
     // Keyed with the issuer, so one issuer's jti cannot collide with another's.
     const id = `${String(claims.iss).toLowerCase()} ${claims.jti}`;
-    for (const [key, until] of seenAssertions) if (until <= now) seenAssertions.delete(key);
-    if (seenAssertions.has(id)) return reject("Assertion replay detected.", 9002313);
-    seenAssertions.set(id, (exp + SKEW_SECONDS) * 1000);
+    if (seenAssertions.get(id)?.expiresAt > now) return reject("Assertion replay detected.", 9002313);
+    remember(seenAssertions, id, { expiresAt: (exp + SKEW_SECONDS) * 1000 });
     return { appidacr: "2" };
   };
 
@@ -439,7 +451,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
     const user = interactiveUser(input.oid);
     if (!user) return errorPage(origin, now, 50034, `The user with object id '${input.oid}' was not found in the directory '${tenantId}'.`);
     const code = randomBytes(32).toString("base64url");
-    codes.set(code, {
+    remember(codes, code, {
       clientId: checked.app.appId.toLowerCase(),
       redirectUri: input.redirect_uri,
       scope: input.scope,
@@ -469,7 +481,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
     if (!scopeResource(form.scope, origin, false, applications())) return fail(70011, INVALID_SCOPE);
     const userCode = Array.from(randomBytes(9), (byte) => USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length]).join("");
     const deviceCode = randomBytes(36).toString("base64url");
-    devices.set(deviceCode, { clientId: app.appId.toLowerCase(), scope: form.scope, userCode, expiresAt: now + DEVICE_LIFETIME_SECONDS * 1000, lastPoll: null, oid: null });
+    remember(devices, deviceCode, { clientId: app.appId.toLowerCase(), scope: form.scope, userCode, expiresAt: now + DEVICE_LIFETIME_SECONDS * 1000, lastPoll: null, oid: null });
     const verificationUri = `${origin}/common/oauth2/deviceauth`;
     return json({
       status: 200,
@@ -505,6 +517,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
     const entry = refreshTokens.get(form.refresh_token);
     if (!entry || entry.appId !== app.appId.toLowerCase()) return failure(9002313, MALFORMED);
     refreshTokens.delete(form.refresh_token);
+    // unverified: AADSTS700082 for an expired refresh token follows the Entra error code list; no captured response.
     if (entry.expiresAt <= now) return failure(700082, "The refresh token has expired due to inactivity.");
     const user = entry.userOid ? interactiveUser(entry.userOid) : null;
     if (entry.userOid && !user) return failure(9002313, MALFORMED);

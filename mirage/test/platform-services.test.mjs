@@ -229,7 +229,7 @@ test("native grid actions activate, deactivate, associate, disassociate and down
     const file = await fetch(`${app.url}/_services/${action}/site?key=${encodeURIComponent(sessionKey)}`, { headers: session });
     assert.equal(file.status, 200);
     assert.equal(file.headers.get("content-type"), "text/csv; charset=utf-8");
-    assert.match(file.headers.get("content-disposition"), /^attachment; filename="Children\.csv"$/);
+    assert.equal(file.headers.get("content-disposition"), "attachment; filename=\"Children.csv\"; filename*=UTF-8''Children.csv");
     const bytes = Buffer.from(await file.arrayBuffer());
     assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], "the CSV starts with a UTF-8 byte order mark");
     const lines = bytes.subarray(3).toString("utf8").split("\r\n");

@@ -1,7 +1,7 @@
 # Model-driven apps in Mirage
 
 Start Mirage as usual, then open `/main.aspx` (also linked from `/_sim/` and
-Mirage's setup navigation). Power Pages Management is available by default. Its
+Mirage's setup navigation). Mirage Site Manager is available by default. Its
 Website, Content and Security navigation uses the selected export's data model.
 The enhanced model projects `mspp_*` management tables; standard exports use
 `adx_*`. Only the selected source website and locally created configuration are
@@ -93,7 +93,8 @@ search, quick create, Advanced Find and classic advanced settings are disabled.
 Solution JavaScript/events, supported JavaScript command actions and standard
 field PCF controls can run through an explicitly enabled
 [trusted extension host](model-driven-customizations.md). Trust is off by default.
-Business process flows, dashboards and unsupported subgrids remain unavailable.
+Business process flows and unsupported subgrids remain unavailable. Solution dashboards
+open as described under SiteMap pages.
 This baseline does not claim full model-driven or Dynamics client parity.
 
 For exported two-state tables with states 0/1, an inactive loaded row uses disabled
@@ -111,6 +112,8 @@ Create, update and delete commands follow the backend's table/row/field capabili
 The shell displays progress while loading apps, records, lookups and related grids. Loading content stays unavailable for editing until it is current; failed reads offer a retry. Save commands show pending feedback and lock the form through event handlers and persistence, preventing duplicate saves. Failed saves retain the draft and explain the error. Loading animations respect reduced-motion preferences.
 
 ## Architecture and extension boundaries
+
+The reserved `/_apps/` prefix belongs to the canvas (`/_apps/canvas/`) and code app (`/_apps/code/<name>/`) surfaces. Both hosts mount them before the model-driven handler, which answers 404 for every other `/_apps/*` path; `/main.aspx` and its routes are unaffected. Web resource and app `source`/`sourceFile` values in the catalogue are relative to the project root when the host knows it, and resource import diagnostics reach the runtime diagnostics.
 
 `lib/model-driven/solution.mjs` normalizes solution AppModule, sitemap and form
 facts. `catalogue.mjs` builds the versioned data-only app/table/form/view contract.
@@ -136,6 +139,46 @@ assets and a restrictive CSP. No solution URL, script, web resource, or external
 navigation is executed as part of importing an app. Explicitly trusted supported
 scripts and PCF resources load only through the local app resource allowlist.
 
+SiteMap entries that are not tables carry a code: `MD_NAV_WEBRESOURCE` for
+`$webresource:` URLs, `MD_NAV_CUSTOM_PAGE` for custom pages, `MD_NAV_DASHBOARD` for
+dashboards and `MD_NAV_URL` for other URLs. A trusted, imported HTML web resource opens as
+a page in the app (`main.aspx?pagetype=webresource&webresourceName=…`, with an optional
+`data` parameter). A SiteMap dashboard (`DefaultDashboard`, or
+`main.aspx?pagetype=dashboard&id=<id>`) opens the Solution dashboard as a page in the app
+(`main.aspx?pagetype=dashboard&id=…`). Mirage reads organization-owned dashboards (systemform
+type 0) from Customizations.xml `<Dashboards>` and from `Dashboards/` component files. Each
+list on the dashboard (a sub-grid control with `TargetEntityType` and `ViewId`) renders as a
+grid over the view query engine as the selected staff user, with the view's columns, sorting,
+paging, quick find and view picker settings. Charts (`VisualizationId`), web resources,
+IFRAMEs and every other control are listed on the page under "Not rendered locally", each
+with its name and reason, and a list whose table or view is not imported is listed there
+too. An app's dashboards are the ones its SiteMap opens plus its SystemForm components; an
+app that names none of the Solution dashboards gets all of them. A SiteMap dashboard whose
+definition is not in the sources stays listed and disabled with `MD_NAV_DASHBOARD`. Custom
+pages and external URLs stay listed and disabled with their reason.
+
+Every SiteMap dashboard is a `model-driven:dashboard/<app>/<subarea>` requirement row:
+`satisfied` (level behaviour) when every component renders, `unsupported` with
+`MD_DASHBOARD_COMPONENT_UNSUPPORTED` and the component names when the dashboard holds a
+chart, web resource, IFRAME or other control, and `unsupported` with `MD_NAV_DASHBOARD` when
+the sources hold no definition. A Solution dashboard an app hosts does not report
+`DASHBOARD_NOT_RENDERED`: its inventory row disappears when every component renders and
+otherwise carries `MD_DASHBOARD_COMPONENT_UNSUPPORTED`. The capability record
+`model-driven:dashboard` (host-surface, behaviour) describes the host. HTML web resources (type 1) are imported and served only to trusted
+projects, with a CSP that allows their own inline scripts and same-origin framing.
+Relative links from an HTML web resource to sibling web resources do not resolve.
+
+### Routes
+
+`POST /_apps/api/webapi` serves [`Xrm.WebApi.execute`](model-driven-client-api.md#xrmwebapiexecute)
+wherever the model-driven surface is: the Power Pages simulator and the standalone
+`model-driven` runtime. A standalone `dataverse-api` runtime has no model-driven surface
+and answers 404 there. The route is admin-adjacent: it runs any Web API request
+(CSRF-checked) as the selected staff user, or as the explicit local administrator when no
+staff cookie is set; a principal that is neither is refused (401
+`StaffPrincipalUnavailable`). Both hosts list it in status `adminAdjacentRoutes` (status
+`routes` keeps the `/_sim/api` prefixes).
+
 `control-descriptors.mjs` defines shared data-only control capabilities consumed by the catalogue, HTTP validation and browser registry. `controls.mjs` renders those types; unknown types remain explicit placeholders. Polymorphic lookups preserve the selected table alongside the ID and canonical logical-name annotation. A manually entered ID with multiple targets requires an explicit lookup selection. Existing-record PATCH requests contain only fields touched by actual control events, preserving untouched relationships and hidden values across tab changes. Create requests include editable rendered values.
 
 Add richer controls, command eligibility, related grids, client API/event execution and business process flows as separate
@@ -155,8 +198,9 @@ use anchored menus. Grid columns and filters have separate drawers. Source-typed
 fields include searchable choices, checkbox multiselects, inline and advanced
 lookups, a two-pane date calendar and duration choices with editable units. Date
 and time values retain their source behavior; the time list exposes 48 half-hour
-choices while retaining arbitrary typed minutes. Unsupported file, image and dataset controls
-retain visible reasons instead of accepting edits.
+choices while retaining arbitrary typed minutes. Unsupported file and image controls
+retain visible reasons instead of accepting edits. Trusted dataset components on related
+subgrids render through the PCF dataset host.
 
 Trusted scalar PCF controls receive the selected local staff identity and use the
 same bounded record adapters as form scripts. Record queries share the local

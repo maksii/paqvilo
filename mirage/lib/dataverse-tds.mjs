@@ -185,6 +185,7 @@ export async function startDataverseTds({
         principal,
         signal: controller.signal,
         now: () => new Date(clock()),
+        collation: store.querySettings().collation,
       });
     } catch (error) {
       if (timedOut) throw TIMEOUT;

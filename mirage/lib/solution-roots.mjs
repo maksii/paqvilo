@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { discoverSolutionTrees, scanSolutionSources } from "./solution-schema.mjs";
+import { INVENTORY_TREE_DIRS } from "./solution-inventory.mjs";
 
 
 /**
@@ -73,7 +74,11 @@ export async function resolveSolutionRoots({ sourceDir, explicitRoots, explicitO
   return { roots: await discoverSolutionRoots(sourceDir, { cacheFile }), order: "derived", source: "discovered" };
 }
 
-const RELEVANT_TREE_DIRS = /^(?:appmodules|appmodulesitemaps|sitemaps|entities|other|optionsets|environmentvariabledefinitions|controls|webresources|appactions|workflows|powerpagecomponents|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
+// Imported metadata folders, the listed inventory folders (solution-inventory.mjs) and a YAML repository's `solutions` folder.
+const RELEVANT_TREE_NAMES = new Set(["appmodules", "appmodulesitemaps", "sitemaps", "entities", "entityrelationships", "other", "optionsets", "environmentvariabledefinitions",
+  "controls", "webresources", "appactions", "workflows", "powerpagecomponents", "pluginassemblies", "plugintypes", "sdkmessageprocessingsteps", "sdkmessages",
+  "solutions", ...INVENTORY_TREE_DIRS]);
+const RELEVANT_TREE_DIRS = { test: (name) => RELEVANT_TREE_NAMES.has(String(name).toLowerCase()) };
 const SKIPPED = /(?:^|[\\/])(?:\.git|\.portalconfig|node_modules|bin|obj|\.paqvilo)(?:[\\/]|$)/i;
 
 /**
@@ -125,7 +130,7 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
       if (skipped(full, tree)) return true;
       const segments = full.slice(tree.length + 1).split(sep);
       if (!RELEVANT_TREE_DIRS.test(segments[0])) return true;
-      return Boolean(stats?.isFile()) && !(/^(?:controls|webresources)$/i.test(segments[0]) ? /\.(?:xml|json|js|css|resx|png|jpe?g|svg|woff2?)$/i : /^(?:powerpagecomponents)$/i.test(segments[0]) ? /\.(?:xml|js|sl)$/i : /\.(?:xml|json)$/i).test(full);
+      return Boolean(stats?.isFile()) && !(/^(?:controls|webresources)$/i.test(segments[0]) ? /\.(?:xml|json|js|css|resx|png|jpe?g|svg|woff2?)$/i : /^(?:powerpagecomponents)$/i.test(segments[0]) ? /\.(?:xml|js|sl)$/i : /\.(?:xml|json|ya?ml)$/i).test(full);
     }
     const root = rootKeys.find((dir) => within(full, dir));
     if (!root) return false;

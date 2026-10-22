@@ -71,7 +71,9 @@ test('solution API retains app/form/view/workflow and opaque assets across resta
   const target = await server(); t.after(() => target.close());
   await importInto(target, Buffer.from(exported.json.ExportSolutionFile, 'base64'));
   assert.equal(target.store.state.tables.systemform.find(row => row.formid === formId)?.formxml, source.store.state.tables.systemform.find(row => row.formid === formId)?.formxml);
-  assert.deepEqual(target.store.state.mappings.new_assetrecord.alternateKeys, source.store.state.mappings.new_assetrecord.alternateKeys);
+  // Each organization runs its own index job (Learn define-alternate-keys-entity), so the job id differs; the definition does not.
+  const definition = keys => keys.map(({ asyncJob, ...key }) => key);
+  assert.deepEqual(definition(target.store.state.mappings.new_assetrecord.alternateKeys), definition(source.store.state.mappings.new_assetrecord.alternateKeys));
 });
 
 test('failed import rolls back metadata, component rows and retained payload bytes', async t => {

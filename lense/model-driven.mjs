@@ -33,7 +33,18 @@ export async function readModelDrivenResourceMap(file) {
 export async function importModelDrivenProject(project) {
   const scan = await scanSolutionSources(project.solutionRoots, { order: project.solutionOrder });
   const imported = await importModelDrivenResources(scan.layers, { clientSources: project.modelDriven?.clientSources });
-  return { ...imported, layers: scan.layers, diagnostics: [...scan.diagnostics, ...imported.diagnostics] };
+  // Inventory components (canvas apps, connectors, dashboards...) are listed with counts; they are never overlaid or counted as coverage.
+  return { ...imported, layers: scan.layers, diagnostics: [...scan.diagnostics, ...imported.diagnostics], inventory: scan.inventory ?? [], inventoryCounts: inventoryCounts(scan.inventory) };
+}
+
+/** `{ component: { level: count } }` for Solution inventory records. */
+export function inventoryCounts(records = []) {
+  const counts = {};
+  for (const record of records) {
+    const row = counts[record.component] ??= {};
+    row[record.level] = (row[record.level] ?? 0) + 1;
+  }
+  return counts;
 }
 
 const DEBUG_MAP_LIMITS = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };

@@ -1,10 +1,13 @@
 import { organizationRecord } from './organization-context.mjs';
-import { createHash, randomUUID } from 'node:crypto';
+import { currentRequest } from './request-context.mjs';
+import { collectPackExport } from './pack-exports.mjs';
+import { createHash } from 'node:crypto';
+import { systemClock, systemIds } from './runtime-clock.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
-import {clrContext,clrExecutionDepth,executeClrPlugin} from './plugin-clr.mjs';
+import {clrContext,enterPluginExecution,executeClrPlugin,leavePluginExecution,pluginExecutionDepth} from './plugin-clr.mjs';
 import {sdkValueToRecord} from './local-organization-service.mjs';
 import {populatePluginSystemOutputs} from './plugin-response.mjs';
 import {pluginFailure} from './plugin-fault.mjs';
@@ -56,8 +59,15 @@ export function parsePluginDocument(xml) {
     const primary=canonical(value(step,'PrimaryEntity')||value(step,'PrimaryEntityName')||value(step,'PrimaryEntityTypeCode')||value(step,'PrimaryObjectTypeCode')||value(filter,'PrimaryObjectTypeCode'));
     const messageFilterId=lookupId(step,'SdkMessageFilterId')||null;
     const unfiltered=(primary==='none'||Boolean(filter&&!messageFilterId&&!(filter.text??'').trim()&&!filter.children?.length))&&!messageFilterId;
+    // EventHandler is polymorphic (Learn, sdkmessageprocessingstep.eventhandler: Targets plugintype, serviceendpoint). A service
+    // endpoint handler is named by ServiceEndpointId or by EventHandlerTypeCode 4618 (serviceendpoint); an EventHandler with no
+    // plug-in type facts is resolved by importSolutionPlugins. unverified: the exported element names of a service endpoint step.
+    const handlerType = String(value(step, 'EventHandlerTypeCode') ?? '').trim().toLowerCase();
+    const handlerId = lookupId(step, 'EventHandler') || null;
+    const serviceEndpointId = lookupId(step, 'ServiceEndpointId') || (['4618', 'serviceendpoint'].includes(handlerType) ? handlerId : null) || null;
     steps.push({
-      id, name: value(step, 'Name') || id, typeId: lookupId(step, 'PluginTypeId') || lookupId(step, 'EventHandler') || null,
+      id, name: value(step, 'Name') || id, typeId: lookupId(step, 'PluginTypeId') || (serviceEndpointId ? null : handlerId),
+      serviceEndpointId, eventHandlerOnly: !serviceEndpointId && !lookupId(step, 'PluginTypeId') && !value(step, 'PluginTypeName') && !lookupName(step, 'EventHandler') && !['4602', 'plugintype'].includes(handlerType) && Boolean(handlerId),
       typeName: value(step, 'PluginTypeName') || lookupName(step, 'PluginTypeId') || lookupName(step, 'EventHandler') || null,
       messageId: lookupId(step, 'SdkMessageId') || null, message: value(step, 'SdkMessageName') || lookupName(step, 'SdkMessageId') || value(step, 'MessageName') || null,
       entity: primary&&primary!=='none'?primary:null,messageFilterId,unfiltered,
@@ -98,9 +108,13 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
       maps[kind].set(record.id, { ...record, sourceFile: document.file });
     }
   }
-  const steps = [...maps.steps.values()].map(step => {
-    const namedTypes = [...maps.types.values()].filter(item => step.typeName && item.name === step.typeName);
-    const type = maps.types.get(step.typeId) ?? (namedTypes.length === 1 ? namedTypes[0] : null);
+  const steps = [...maps.steps.values()].map(exported => {
+    const namedTypes = [...maps.types.values()].filter(item => exported.typeName && item.name === exported.typeName);
+    const type = maps.types.get(exported.typeId) ?? (namedTypes.length === 1 ? namedTypes[0] : null);
+    // A bare EventHandler that names no exported plug-in type of the selected layers is resolved against the organization's
+    // rows (overlayRegisteredSteps: a serviceendpoint row makes it a service endpoint step, a plugintype row a plug-in step).
+    // Until then it is unsupported "handler unresolved", so a missing dependency never runs as a silent pass.
+    const { eventHandlerOnly, ...step } = !type && exported.eventHandlerOnly ? { ...exported, eventHandlerId: exported.typeId, typeId: null } : exported;
     const assembly = type && maps.assemblies.get(type.assemblyId);
     const sourceMessage = maps.messages.get(step.messageId);
     const observedMessage = sdkMessages[step.messageId] ?? (SDK_MESSAGES[step.messageId] ? { name: SDK_MESSAGES[step.messageId], evidence: 'platform SDK message id' } : undefined);
@@ -108,7 +122,8 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
     const resolved = { ...step, message, messageEvidence: step.message ? 'exported-step' : sourceMessage ? 'exported-sdk-message' : observedMessage ? (sdkMessages[step.messageId] ? 'project-observation' : 'platform-sdk-message') : 'unresolved', messageSourceFile: sourceMessage?.sourceFile ?? null, messageObservation: observedMessage?.evidence ?? null, typeName: type?.name ?? step.typeName, typeId: type?.id ?? step.typeId, assemblyId: assembly?.id ?? type?.assemblyId ?? null, assemblyName: assembly?.name ?? null, typeSourceFile: type?.sourceFile ?? null, assemblySourceFile: assembly?.sourceFile ?? null, stageName: stages[step.stage] ?? `Stage ${step.stage ?? 'unknown'}` };
     return { ...resolved, unsupported: pluginUnsupported(resolved) };
   });
-  for (const step of steps) if (step.unsupported) diagnostics.push({ code: 'PLUGIN_STEP_UNSUPPORTED', stepId: step.id, sourceFile: step.sourceFile, message: step.unsupported });
+  // A pending EventHandler is reported where it is resolved against the organization rows (PLUGIN_STEP_UNSUPPORTED at run time).
+  for (const step of steps) if (step.unsupported && !step.eventHandlerId) diagnostics.push({ code: 'PLUGIN_STEP_UNSUPPORTED', stepId: step.id, sourceFile: step.sourceFile, message: step.unsupported });
   fingerprint.update(JSON.stringify(sdkMessages));
   return { assemblies: [...maps.assemblies.values()], types: [...maps.types.values()], steps, diagnostics, fingerprint: fingerprint.digest('hex') };
 }
@@ -169,6 +184,7 @@ export function pluginUnsupported(step,{images=false,impersonation=false}={}) {
   if (step.images?.length&&!images) return 'Registered pre/post images require an explicit image adapter.';
   if(images&&(step.images??[]).some(image=>![0,1,2].includes(image.type)||!image.alias&&!image.name))return 'Registered image type or alias is unresolved.';
   if(images&&new Set((step.images??[]).map(image=>image.alias||image.name)).size!==(step.images??[]).length)return 'Registered image aliases must be unique.';
+  if (step.eventHandlerId && !step.serviceEndpointId && !step.assemblyId) return "The step's EventHandler names neither a plug-in type nor a service endpoint of the organization (handler unresolved).";
   // A web hook step (serviceEndpointId, P6) has no plug-in type.
   if (!step.serviceEndpointId && (!step.typeName || !step.assemblyId)) return 'The exported plugin type or assembly dependency is unresolved.';
   return null;
@@ -176,34 +192,19 @@ export function pluginUnsupported(step,{images=false,impersonation=false}={}) {
 
 /** Trusted project packs map exact exported step IDs to synchronous functions. */
 export function pluginStepMatchesEntity(step,entity){return step.entity===entity||step.unfiltered===true&&step.entity==null&&step.messageFilterId==null&&String(step.message).toLowerCase()==='retrievemultiple'&&(step.contract?.mode??step.mode)===0;}
+// P4: one handler per plug-in type name (pluginTypes) serves every step of that type, including steps the Dataverse API
+// registered; pluginSteps handlers are keyed by canonical step id. Validation and the collision message are pack-exports.mjs'.
 export function pluginHandlers(packs = []) {
-  const result = new Map();
-  for (const pack of packs) {
-    // P4: one handler per plug-in type name serves every step of that type, including steps the Dataverse API registered.
-    if (pack.pluginTypes !== undefined) {
-      if (!pack.pluginTypes || typeof pack.pluginTypes !== 'object' || Array.isArray(pack.pluginTypes)) throw error(`Data pack ${pack.id}: pluginTypes must map plug-in type names to synchronous functions.`);
-      for (const [typeName, handler] of Object.entries(pack.pluginTypes)) {
-        if (!/^[_a-z][\w.+`]{0,249}$/i.test(typeName) || typeof handler !== 'function' || handler.constructor?.name === 'AsyncFunction') throw error(`Data pack ${pack.id}: invalid synchronous plugin type handler.`);
-        if (result.has(typeName)) throw error(`Ambiguous plugin type handler for ${typeName}.`);
-        result.set(typeName, handler);
-      }
-    }
-    if (pack.pluginSteps === undefined) continue;
-    if (!pack.pluginSteps || typeof pack.pluginSteps !== 'object' || Array.isArray(pack.pluginSteps)) throw error(`Data pack ${pack.id}: pluginSteps must map exported step IDs to synchronous functions.`);
-    for (const [id, handler] of Object.entries(pack.pluginSteps)) {
-      const key = canonical(id);
-      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(key) || typeof handler !== 'function' || handler.constructor?.name === 'AsyncFunction') throw error(`Data pack ${pack.id}: invalid synchronous plugin step handler.`);
-      if (result.has(key)) throw error(`Ambiguous plugin handler for ${key}.`);
-      result.set(key, handler);
-    }
-  }
-  return result;
+  const entries = [...collectPackExport(packs, 'pluginTypes'), ...collectPackExport(packs, 'pluginSteps')];
+  return new Map(entries.map(([key, { value }]) => [key, value]));
 }
 
 // Step id first, then the plug-in type name (P4). Step ids are GUIDs and type names cannot contain a hyphen, so the keys never collide.
 const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step.typeName);
-// Module-level nesting of plug-in type handlers: a write a handler makes runs its own steps one level deeper (Depth).
-let typedDepth = 0;
+// Nesting of synchronous JavaScript handlers (step id and plug-in type): a write a handler makes runs its own steps one level
+// deeper (Depth). The counter is the one CLR steps use (plugin-clr.mjs pluginExecutionDepth), so a JS/CLR chain shares one
+// Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past eight fails.
+const HANDLER_DEPTH_LIMIT = 8;
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
 const pluginFault = (cause, item) => pluginFailure({ message: cause?.message ?? String(cause), errorCode: cause?.errorCode, pluginFault: 'InvalidPluginExecutionException' }, { name: item.name, id: item.id, type: item.typeName, traces: [] }, 0);
 // The IPluginExecutionContext-like context a plug-in type handler receives (P4): registered images keyed by alias, and the
@@ -230,11 +231,11 @@ function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, 
   const level = Number(organizationRecord(store)?.plugintracelogsetting ?? 0);
   if (!store?.state?.mappings?.plugintracelog || level === 0 || (level === 1 && !error)) return;
   store.insertRow('plugintracelog', store.state.tables.plugintracelog ??= [], {
-    plugintracelogid: randomUUID(), typename: item.typeName ?? null, messagename: messageNameOf(operation), primaryentity: entity,
+    plugintracelogid: (store.ids ?? systemIds).uuid(), typename: item.typeName ?? null, messagename: messageNameOf(operation), primaryentity: entity,
     messageblock: traces.length ? traces.join('\n') : null, exceptiondetails: error ? String(error.message ?? error) : null,
     depth, mode: asyncExecution ? 1 : 0, operationtype: 1, pluginstepid: { id: item.id, logical_name: 'sdkmessageprocessingstep' },
     performanceexecutionduration: Math.round(performance.now() - started), performanceexecutionstarttime: startedAt,
-    correlationid: store.flowChain?.id ?? null, createdon: new Date().toISOString(),
+    correlationid: currentRequest()?.correlationId ?? store.flowChain?.id ?? null, createdon: new Date((store.clock ?? systemClock).now()).toISOString(),
   });
 }
 
@@ -257,8 +258,11 @@ export function pluginPhaseRequiresCheckpoint(items, context) {
   return matchingPluginSteps(items, context).some(item => ['handler', 'clr'].includes(item.mode) && !item.unsupported);
 }
 
-/** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes. */
-export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=null,store, entity, operation, stage, target, targets, previousRecords, records, associationParameters, record, previous, identity, changedAttributes=[],query,collection,columns,holder,portalRequest=false,asyncExecution=false,initialFrame, diagnostic = () => {} }) {
+/** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes.
+ * awaitIo (the asynchronous pipeline, data.mjs createRecordAsync): a synchronous service endpoint step whose post leaves the
+ * process (webhooks.send) suspends the phase, and the phase answers a promise of its frame that runs the later steps after the
+ * post answered; a failed post rejects it. Without awaitIo the post runs on the synchronous I/O bridge (webhooks.sync). */
+export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=null,store, entity, operation, stage, target, targets, previousRecords, records, associationParameters, record, previous, identity, changedAttributes=[],query,collection,columns,holder,portalRequest=false,asyncExecution=false,initialFrame,awaitIo=false, diagnostic = () => {} }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
   if(stage===10&&!asyncExecution&&!['retrieve','retrievemultiple'].includes(operation))executionFrames.set(record,{});
@@ -275,7 +279,10 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
   }
   const replace=(object,value)=>{if(!value||typeof value!=='object'||Array.isArray(value))throw error('Invalid plugin query/collection result.');for(const key of Object.keys(object))delete object[key];Object.assign(object,structuredClone(value));};
   const readResultChanged=()=>{const frame=executionFrames.get(record),key=multiple?'BusinessEntityCollection':'BusinessEntity';if(frame?.outputParameters?.values&&Object.hasOwn(frame.outputParameters.values,key))frame.outputParameters.values[key]=multiple?collection:holder.entity;};
-  for (const item of matched) {
+  // The steps from index `from` on; an awaited post returns the promise of the rest (see awaitIo above).
+  const run = from => {
+  for (let index = from; index < matched.length; index++) {
+    const item = matched[index];
     const note = (code, message) => diagnostic({ code, severity: code === 'PLUGIN_STEP_REJECTED' ? 'error' : code === 'PLUGIN_STEP_SIMULATED' ? 'info' : 'warning', stepId: item.id, name: item.name, entity, operation, stage, sourceFile: item.sourceFile, message });
     if(item.mode==='disabled'){note('PLUGIN_STEP_DISABLED','This step is explicitly disabled in local simulator configuration.');continue;}
     if(item.mode==='mock'){if((item.configuration?.status??200)>=400||item.configuration?.body?.error){const message=item.configuration?.body?.error?.message||'Explicit plugin mock rejected.';note('PLUGIN_STEP_REJECTED',message);throw error(message,'PluginValidation');}if(item.unsupported)note('PLUGIN_STEP_SIMULATED','Explicit mock chosen for an unsupported source execution contract; original logic was not executed.');}
@@ -284,16 +291,20 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
     // Asynchronous web hooks are delivered by plugin-async.mjs after commit.
     if (item.mode === 'webhook') {
       if (!webhooks) throw error('No webhook delivery adapter is configured.', 'LocalPluginUnsupported', 501);
-      try { webhooks.sync({ item, entity, operation, stage, target, targets, record, previous, identity, changedAttributes, depth: typedDepth + 1, correlationId: store?.flowChain?.id ?? randomUUID(), diagnostic }); }
+      const facts = { item, entity, operation, stage, target, targets, record, previous, identity, changedAttributes, depth: pluginExecutionDepth() + 1, correlationId: store?.flowChain?.id ?? currentRequest()?.correlationId ?? (store?.ids ?? systemIds).uuid(), diagnostic };
+      let pending;
+      try { pending = awaitIo && webhooks.send ? webhooks.send(facts) : webhooks.sync(facts); }
       catch (cause) { note('PLUGIN_STEP_REJECTED', cause.message); throw cause; }
+      if (typeof pending?.then === 'function') return pending.then(() => run(index + 1), cause => { note('PLUGIN_STEP_REJECTED', cause.message); throw cause; });
       continue;
     }
     if (item.mode === 'placeholder') { note('PLUGIN_STEP_PLACEHOLDER', 'This exported registration was discovered. Its business logic was skipped; configure a local mock or trusted handler.'); continue; }
-    let output, typed = false;
+    let output, typed = false, nested = false, handlerDepth = 0;
+    store?.counters?.increment('plugins.executions');
     // The trace lines of a handler or CLR run, and its timing for plugintracelog. executed: such a run started.
     const traces = [], trace = text => traces.push(String(text));
     let executed = false, started = 0, startedAt = null;
-    const journal = error => writeTraceLog(store, { item, entity, operation, depth: item.mode === 'clr' ? clrExecutionDepth() + 1 : typed ? typedDepth : typedDepth + 1, asyncExecution, traces, started, startedAt, error });
+    const journal = error => writeTraceLog(store, { item, entity, operation, depth: nested ? handlerDepth : pluginExecutionDepth() + 1, asyncExecution, traces, started, startedAt, error });
     try {
       if(item.mode==='clr'){
         const runtime=runtimes.get(item.id);if(!runtime||!item.clrAvailable||!store)throw error('No trusted original CLR runtime is registered for this exact exported type/step.','LocalPluginClrUnavailable',501);
@@ -304,8 +315,8 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
         if(bulk){frame.targets=targets;frame.previousRecords=previousRecords;frame.records=records;}
         if(association)frame.associationParameters=associationParameters;
         if (operation === 'onexternalupdated') frame.externalEvent = { previous, changedAttributes: [...changedAttributes] };
-        executed=true;started=performance.now();startedAt=new Date().toISOString();
-        const depth=clrExecutionDepth()+1,context=clrContext({runtime,store,step:item,entity,operation,stage,target,record,previous,frame,depth});
+        executed=true;started=performance.now();startedAt=new Date((store?.clock??systemClock).now()).toISOString();
+        const depth=pluginExecutionDepth()+1,context=clrContext({runtime,store,step:item,entity,operation,stage,target,record,previous,frame,depth});
         const answer=executeClrPlugin(runtime,context,{store,diagnostic:entry=>{if(entry.code==='PLUGIN_CLR_TRACE')traces.push(String(entry.message));diagnostic({...entry,stepId:item.id,entity,operation,stage});}});
         if(Object.hasOwn(frame.sharedVariables?.values??{},'tag')&&answer.sharedVariables?.values?.tag!==frame.sharedVariables.values.tag)throw error('The request tag is immutable.','LocalPluginTagImmutable',409);
         frame.sharedVariables=answer.sharedVariables;frame.outputParameters=answer.outputParameters;
@@ -325,12 +336,13 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
         const byStep = handlers.get(item.id), handler = byStep ?? handlers.get(item.typeName);
         if (!handler) throw error(`No trusted handler for plugin step ${item.id}.`);
         typed = byStep === undefined;
-        if (typed) typedDepth++;
-        executed=true;started=performance.now();startedAt=new Date().toISOString();
+        handlerDepth = enterPluginExecution(); nested = true;
+        if (handlerDepth > HANDLER_DEPTH_LIMIT) throw new DataError('Plug-in nested execution depth exceeds eight.', 400, 'LocalPluginDepth');
+        executed=true;started=performance.now();startedAt=new Date((store?.clock??systemClock).now()).toISOString();
         // A trusted handler receives its registered images: the pre-image from the stored row, the
         // PostOperation post-image from the saved row, limited to the registered attributes.
         const image=(types,source)=>{const spec=(item.images??[]).find(entry=>types.includes(entry.type));if(!spec||!source)return undefined;return structuredClone(spec.attributes.length?Object.fromEntries(spec.attributes.filter(name=>Object.hasOwn(source,name)).map(name=>[name,source[name]])):source);};
-        output = handler({ step: structuredClone(item), entity, operation, stage, target: structuredClone(target), record: structuredClone(record), previous: previous ? structuredClone(previous) : null, preImage: image([0,2],previous), postImage: stage===40?image([1,2],record):undefined, identity: structuredClone(identity), changedAttributes: [...changedAttributes],...(association?{associationParameters:structuredClone(associationParameters)}:{}),...(bulk?{targets:structuredClone(targets),previousRecords:structuredClone(previousRecords),records:structuredClone(records)}:{}),...(read?{query:structuredClone(query),collection:structuredClone(collection),columns:structuredClone(columns),entityResult:structuredClone(holder?.entity)}:{}), ...(typed ? { context: typedContext({ item, store, entity, operation, stage, target, targets, record, previous, identity, depth: typedDepth, trace, changedAttributes }) } : {}), trace, reject: message => { throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true }); } });
+        output = handler({ step: structuredClone(item), entity, operation, stage, target: structuredClone(target), record: structuredClone(record), previous: previous ? structuredClone(previous) : null, preImage: image([0,2],previous), postImage: stage===40?image([1,2],record):undefined, identity: structuredClone(identity), changedAttributes: [...changedAttributes],...(association?{associationParameters:structuredClone(associationParameters)}:{}),...(bulk?{targets:structuredClone(targets),previousRecords:structuredClone(previousRecords),records:structuredClone(records)}:{}),...(read?{query:structuredClone(query),collection:structuredClone(collection),columns:structuredClone(columns),entityResult:structuredClone(holder?.entity)}:{}), ...(typed ? { context: typedContext({ item, store, entity, operation, stage, target, targets, record, previous, identity, depth: handlerDepth, trace, changedAttributes }) } : {}), trace, reject: message => { throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true }); } });
         if (output?.then) { Promise.resolve(output).catch(() => {}); throw error('Plugin handlers must return synchronously.', 'LocalPluginAsyncHandler'); }
       } else throw error(`Plugin step mode ${item.mode} has no local execution adapter. Select clr, handler, mock, or disabled.`, 'LocalPluginUnsupported');
       if (output !== undefined && (!output || typeof output !== 'object' || Array.isArray(output) || Object.keys(output).some(key => !(association?['error']:bulk?['targets','error']:read?['query','collection','entityResult','error']:['target','error']).includes(key)))) throw error('Plugin result must contain only supported field/query changes or an error.');
@@ -354,8 +366,11 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
       // A plug-in type handler's exception surfaces as the documented fault; the write rolls back with the throw.
       const failure = typed && !(cause instanceof DataError) ? pluginFault(cause, item) : cause;
       if(executed)journal(failure);
+      store?.counters?.increment('plugins.failures');
       note('PLUGIN_STEP_REJECTED', failure.message); throw failure;
-    } finally { if (typed) typedDepth--; }
+    } finally { if (nested) leavePluginExecution(); }
   }
   return structuredClone(executionFrames.get(record)??{});
+  };
+  return run(0);
 }

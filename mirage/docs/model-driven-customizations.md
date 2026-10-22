@@ -98,6 +98,11 @@ project or catalogue file; programmatic options resolve from the working directo
 The complete `solutions` / `solutionRoots` selection still supplies schema, apps,
 forms and views. Client sources are an explicit replacement for client discovery
 in those metadata layers, and later declared resources override earlier ones.
+
+An entry named `<Library>@<version>.js` is a PCF platform library file, not a Solution
+layer; it is served under `/_apps/controls/platform/`. A list with only library files
+keeps ordinary Solution discovery for the other client assets. A misnamed `.js` entry
+reports `MODEL_PCF_PLATFORM_LIBRARY_INVALID`.
 Omitting `clientSources` preserves ordinary Solution discovery; `[]` imports no
 client extensions. Selection grants no execution trust. Imported WebResources
 retain their file provenance, and missing sources disable the complete client
@@ -126,9 +131,24 @@ must contain the exported desktop custom-control binding. Do not substitute
 TypeScript source for a compiled bundle. Mirage resolves the declared constructor,
 registration or exact classic export; it does not guess from unrelated globals.
 
-The baseline supports scalar standard field controls. Dataset controls, React
-virtual controls, platform libraries, unimplemented device APIs and unsupported
-property types remain explicit placeholders. A component's output is checked
+Field controls and dataset controls are hosted. One admission rule, shared with the
+Power Pages host (`pcfAdmission`, exported by `code-components.mjs`), decides the kind:
+`standard` field, `standard` dataset or `virtual`. A dataset control bound to a form subgrid
+(`<data-set>` in its desktop `customControl`) receives a DataSet over the subgrid view,
+narrowed to the parent record: `records`, `sortedRecordIds`, `columns`, `getFormattedValue`,
+paging (`setPageSize` up to 100, `loadNextPage`, `loadPreviousPage`, `loadExactPage`,
+`reset`), one sort column (`sorting` then `refresh()`), one AND group of filter
+conditions, `linking.addLinkedEntity` with `addColumn(name, alias)`, selection, and
+`openDatasetItem`, which opens the record. Other filter shapes, several sort columns and
+In conditions set `error` with a reason. Table home grids keep the standard grid.
+A virtual (React) control is hosted only when the project supplies every declared platform
+library, plus ReactDOM of the declared React version, as files in
+`modelDriven.clientSources` named `<Library>@<version>.js` (for example
+`React@16.14.0.js`, `ReactDOM@16.14.0.js`). Mirage ships no React or Fluent. Without them
+the control shows `PCF_VIRTUAL_UNSUPPORTED` with its name and the missing files. Field and
+dataset components get the staff context, its formatting, and per-column `security`
+(`secured` true for field-level secured columns). Unimplemented device APIs and
+unsupported property types remain explicit placeholders. A component's output is checked
 against its bound property and the normal record pipeline. Instances are destroyed
 on form/tab replacement or navigation, including an instance that finishes loading
 after navigation. This is a development host, not the complete licensed client.

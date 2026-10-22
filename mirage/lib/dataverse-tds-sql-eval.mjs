@@ -25,6 +25,7 @@
 // ponytail: LIKE builds a RegExp per evaluation; no cache.
 
 import { splitBatches } from "./dataverse-tds-sql-lexer.mjs";
+import { equalityKey, foldText } from "./dataverse-values.mjs";
 import { parseBatch } from "./dataverse-tds-sql-parser.mjs";
 import { callFunction, castValue, commonType, compareValues, FUNCTIONS, formatDecimal, parseDecimal, returnType, systemVariable, toFloat } from "./dataverse-tds-sql-functions.mjs";
 
@@ -49,7 +50,7 @@ function tick(st) {
   if (st.signal?.aborted) fail(3617, "Query was cancelled by the user.");
 }
 
-export async function executeBatch(sql, { catalog, scan, params = {}, principal, signal, now } = {}) {
+export async function executeBatch(sql, { catalog, scan, params = {}, principal, signal, now, collation = "CI_AI" } = {}) {
   const { statements } = parseBatch(sql);
   const batches = splitBatches(sql);
   // A statement belongs to the last batch that starts at or before its line.
@@ -59,7 +60,7 @@ export async function executeBatch(sql, { catalog, scan, params = {}, principal,
     while (index + 1 < batches.length && batches[index + 1].line <= statement.line) index += 1;
     groups[index].push(statement);
   }
-  const st = { catalog, scan, signal, now, scanCache: new Map(), referenced: null, session: { rowCount: 0 }, vars: null, ctx: null };
+  const st = { catalog, scan, signal, now, collation, scanCache: new Map(), referenced: null, session: { rowCount: 0 }, vars: null, ctx: null };
   const resultSets = [];
   for (const [i, batch] of batches.entries()) {
     for (let run = 0; run < batch.repeat; run += 1) {
@@ -77,7 +78,7 @@ export async function executeBatch(sql, { catalog, scan, params = {}, principal,
 async function runStatement(statement, st, resultSets) {
   tick(st);
   // One ctx per statement: functions read @@ROWCOUNT and seeded state from it.
-  st.ctx = { now: st.now, rowCount: st.session.rowCount };
+  st.ctx = { now: st.now, rowCount: st.session.rowCount, collation: st.collation };
   st.referenced = referencedColumns(statement);
   if (statement.type === "Declare") {
     for (const variable of statement.variables) {
@@ -900,7 +901,8 @@ function dedupe(list, rowOf, st) {
   });
 }
 
-// Equality key for DISTINCT and UNION: NULLs equal each other, strings fold case unless caseSensitive.
+// Equality key for DISTINCT, UNION and GROUP BY: NULLs equal each other; strings compare under the organization
+// collation through equalityKey (CI_AI folds case and accents), unless caseSensitive.
 function keyOf(value, st) {
   if (isNull(value)) return ["z"];
   if (typeof value === "boolean") return ["n", value ? "1" : "0"];
@@ -912,7 +914,7 @@ function keyOf(value, st) {
   }
   if (value instanceof Date) return ["d", String(value.getTime())];
   const text = String(value);
-  return ["s", st.ctx?.caseSensitive ? text : text.toLowerCase()];
+  return ["s", st.ctx?.caseSensitive ? text : equalityKey(text.replace(/ +$/, ""), st.ctx?.collation ?? "CI_AI")];
 }
 
 function decParts(value) {
@@ -1074,7 +1076,9 @@ function toNumber(value) {
 // tA and tB are the operands' static types, used when a string meets varbinary.
 function compareOp(op, a, b, st, tA = null, tB = null) {
   if (isNull(a) || isNull(b)) return null;
-  const c = compareValues(a, b, st.ctx, tA, tB);
+  // Two strings compare under the organization collation: CI_AI folds accents as well as case.
+  const fold = (v) => (typeof v === "string" && !st.ctx.caseSensitive ? foldText(v, st.ctx.collation ?? "CI_AI") : v);
+  const c = typeof a === "string" && typeof b === "string" ? compareValues(fold(a), fold(b), st.ctx, tA, tB) : compareValues(a, b, st.ctx, tA, tB);
   switch (op) {
     case "=": return c === 0;
     case "<>": case "!=": return c !== 0;

@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { registerExpressionOperators, registerShellConventions, validateEndpoints } from "./extensions.mjs";
+import { activatePackRegistries, createPackRegistries, validateEndpoints } from "./extensions.mjs";
+import { snapshotPackExports, validatePackExports } from "./pack-exports.mjs";
 import { validateWebApiErrorTemplates } from "./webapi-error-templates.mjs";
 import { seedPresetBody } from "./solution-schema.mjs";
 import { validatePersonaCatalog } from './persona-catalog.mjs';
@@ -25,6 +26,11 @@ const packIdPattern = /^[a-z0-9][a-z0-9._-]*$/;
 const presetIdPattern = /^[\w.-]+$/;
 const reserved = new Set(["__proto__", "constructor", "prototype"]);
 const packDirectories = new WeakMap();
+// Export diagnostics (PACK_EXPORT_UNKNOWN, PACK_EXPORT_PENDING) recorded when a pack is validated.
+const packExportDiagnostics = new WeakMap();
+// One frozen snapshot per loaded pack module, so a module imported twice still dedupes by identity.
+const packSnapshots = new WeakMap();
+const snapshotPacks = new WeakSet();
 export const packDirectory = pack => packDirectories.get(pack) ?? pack.parity?.directory;
 
 /** Presets that are valid for every exported portal. */
@@ -168,7 +174,7 @@ export function validatePack(pack, source = "data pack") {
   const pluginSteps = dataProperty(pack, 'pluginSteps')?.value;
   if (pluginSteps !== undefined && (!pluginSteps || typeof pluginSteps !== 'object' || Array.isArray(pluginSteps) || Object.entries(pluginSteps).some(([id, handler]) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, '')) || typeof handler !== 'function' || handler.constructor?.name === 'AsyncFunction')))
     fail('pluginSteps must map exported step IDs to synchronous functions');
-  for(const kind of ['pluginRuntimes','flowIdentities']){
+  for(const kind of ['pluginRuntimes']){
     const entries=dataProperty(pack,kind)?.value;
     if(entries!==undefined&&(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.entries(entries).some(([id,value])=>!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g,''))||!value||typeof value!=='object'||Array.isArray(value))))fail(`${kind} must map exact exported IDs to explicit trusted descriptors`);
   }
@@ -180,7 +186,13 @@ export function validatePack(pack, source = "data pack") {
   } catch (error) {
     fail(error.message);
   }
-  return pack;
+  // Recognised exports (lib/pack-exports.mjs): invalid values throw, unknown keys are diagnostics.
+  // The validated pack is a frozen snapshot of its own data exports, so a getter or Proxy cannot answer differently later.
+  const validated = snapshotPacks.has(pack) ? pack : packSnapshots.get(pack) ?? snapshotPackExports(pack);
+  packSnapshots.set(pack, validated);
+  snapshotPacks.add(validated);
+  packExportDiagnostics.set(validated, validatePackExports(validated));
+  return validated;
 }
 
 /** Directories under `root` that contain a `pack.mjs`, sorted for determinism. */
@@ -207,13 +219,12 @@ export async function builtinPackModules(root = PACKS_ROOT) {
   return modules;
 }
 
+const moduleLabel = module => (module && typeof module === 'object' && !(module instanceof URL) ? `supplied pack ${module.id ?? '(no id)'}` : String(module));
+
 /** Import and validate one pack module (absolute path or file URL). */
 export async function loadPack(module) {
   if (module && typeof module === 'object' && !(module instanceof URL)) {
-    const pack = validatePack(module, module.id ?? 'loaded pack');
-    registerExpressionOperators(pack.id, pack.expressionOperators);
-    registerShellConventions(pack.id, pack.shell);
-    return pack;
+    return validatePack(module, module.id ?? 'loaded pack');
   }
   const url = module instanceof URL || /^file:/i.test(String(module))
     ? String(module)
@@ -221,8 +232,6 @@ export async function loadPack(module) {
   const imported = await import(url);
   const pack = validatePack(imported.default, fileURLToPath(url));
   packDirectories.set(pack, path.dirname(fileURLToPath(url)));
-  registerExpressionOperators(pack.id, pack.expressionOperators);
-  registerShellConventions(pack.id, pack.shell);
   return pack;
 }
 
@@ -257,7 +266,10 @@ const explicitEntries = (entries, base, label) => {
 /**
  * Discover data packs: every `packs/<id>/pack.mjs` plus explicit project
  * entries. With a portal, only packs whose `matches({ portal })` returns true
- * are returned; without one, every valid pack is returned.
+ * are returned; without one, every valid pack is returned. The array carries
+ * `diagnostics` (export diagnostics of every loaded pack) and `registries`
+ * (expression operators and shell conventions of the matched packs only,
+ * activated for the extension lookups; lib/extensions.mjs).
  */
 export async function packModules({ project, explicit = [], root = PACKS_ROOT } = {}) {
   const base = project?.configFile ? path.dirname(path.resolve(project.configFile)) : process.cwd();
@@ -289,13 +301,22 @@ export async function discoverPacks({
     if (previous) {
       if (previous.pack === pack) continue;
       throw new Error(
-        `Duplicate data pack id '${pack.id}' in ${previous.module} and ${entry.module}`,
+        `Duplicate data pack id '${pack.id}' in ${moduleLabel(previous.module)} and ${moduleLabel(entry.module)}`,
       );
     }
     loaded.set(pack.id, { module: entry.module, pack });
     if (packMatches(pack, portal)) packs.push(pack);
   }
-  return packs;
+  // Non-enumerable, so the result still compares and serialises as the plain list of packs.
+  return Object.defineProperties(packs, {
+    diagnostics: { value: [...loaded.values()].flatMap(({ pack }) => packExportDiagnostics.get(pack) ?? []) },
+    registries: { value: activatePackRegistries(createPackRegistries(packs)) },
+  });
+}
+
+/** Export diagnostics recorded when the pack was validated (empty for a pack that was not). */
+export function packDiagnostics(pack) {
+  return packExportDiagnostics.get(pack) ?? [];
 }
 
 /** Body-free descriptor of one library entry, or null when it is absent. */

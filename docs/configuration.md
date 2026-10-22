@@ -49,6 +49,15 @@ The pack and preset above are project-owned examples; register only modules you 
 Use `--source` for a direct export path. Live Lense Inspect can read the selected Solution
 roots without starting Mirage or loading pack code. Missing managed metadata is reported.
 
+A site without `source` and without `environments` whose `mirage.runtime.kind` is
+`model-driven` or `dataverse-api` (the setup `model-driven` template) is a Mirage-only site.
+`init --check` asks it for neither an environment nor a portal export; `lense list` lists it
+("model-driven Mirage site, no portal export needed") and succeeds; `lense doctor` runs only its
+Mirage checks ("Lense not applicable"); `mirage dev`/`start`/`stop --site <id>` run it, and
+`--portals all` starts and stops it beside the portals (only portals enter the Lense portal
+selector). `mirage init` writes no project file for it: its catalogue settings configure it.
+Lense commands that need a portal target name it as not a Lense target.
+
 ## Personal settings and worktrees
 
 Settings resolve in this order, highest priority first:
@@ -97,6 +106,57 @@ Restart running previews after configuration changes.
 | `platform` | Explicit simulated platform controls; [configuration experiments](../mirage/docs/configuration-experiments.md) |
 | `compat`, `head` | Local adapters and assets, described below |
 | `observed` | Evidenced platform conventions absent from exports, described below |
+
+### Settings table
+
+Every Mirage setting is one row of `MIRAGE_SETTINGS` in `mirage/lib/config-keys.mjs`. The catalogue
+key list, the project key list and every runtime option assembly derive from that table. Scopes
+name where a key may appear: `catalogue` (`sites.<id>.mirage` and `defaults.mirage`),
+`project` (top level of a Mirage project file) and `portal` (a project portal entry). When
+several scopes set a key, a project portal wins over the project, which wins over the catalogue
+site; `platform`, `deploymentProfiles` and the three content-policy keys keep the catalogue site
+first. A project file wins only for keys it sets: a project without `simulation`, `modelDriven`,
+`platform` or `dataverse` keeps the catalogue site value, and the default applies when neither sets it.
+A key whose contract module has not registered its validator is accepted as an object and
+reported as `CONFIG_KEY_PARSER_PENDING`. Version 1 project files report unknown keys as
+`PROJECT_CONFIG_KEY_UNKNOWN` diagnostics; version 2 files reject them.
+
+<!-- settings-table: generated from MIRAGE_SETTINGS (mirage/lib/config-keys.mjs) -->
+| Setting | Scopes | Purpose |
+| --- | --- | --- |
+| `project` | catalogue | Project file of this site, relative to the catalogue folder. |
+| `solutionRoots` | catalogue | Solution folders, relative to the portal checkout root. |
+| `solutionOrder` | catalogue, project | derived (Solution dependency order, default) or explicit (listed order). |
+| `dataPacks` | catalogue, project | Trusted pack modules ({ id, module } or a path). Project packs reach the runtime through the project summary. |
+| `connectorScripts` | catalogue, project | Trusted custom connector C# scripts ({ connector, sha256 }); any other script.csx is refused. |
+| `port` | catalogue | Local port (0 chooses a free port). |
+| `preset` | catalogue | Startup data preset ID. |
+| `presetMode` | catalogue | bootstrap or always. |
+| `presetConfiguration` | catalogue | data-only or apply. |
+| `confinePortalPages` | catalogue, project, portal | Confine portal pages with a content security policy. |
+| `externalAssets` | catalogue, project, portal | Allow external assets in confined pages. |
+| `externalFrameOrigins` | catalogue, project, portal | Origins confined pages may frame. |
+| `observed` | catalogue, portal | Observed platform behaviour with its evidence (validated by observedConfig). |
+| `dataModel` | catalogue, portal | standard or enhanced when the source does not record it. |
+| `compat` | catalogue | Local compatibility adapters. |
+| `head` | catalogue | Local head stylesheets and scripts. |
+| `render` | catalogue | Liquid render limits. |
+| `personaContexts` | catalogue | Persona context runtimes. |
+| `identityProvider` | catalogue | Local external identity provider. |
+| `deploymentProfiles` | catalogue, project, portal | Deployment profile files. |
+| `platform` | catalogue, project, portal | Platform settings with their evidence. |
+| `dataverse` | catalogue, project | Simulated Dataverse API. |
+| `runtime` | catalogue, project | power-pages, model-driven or dataverse-api. |
+| `simulation` | catalogue, project | dry-run, simulation or deep. |
+| `modelDriven` | catalogue, project | Model-driven host settings. |
+| `environmentVariables` | project | Local environment-variable values by schema name. |
+| `connections` | catalogue, project | Local connections by connection id. Contract: see [operations.md](../mirage/docs/operations.md). |
+| `secrets` | catalogue, project | Secrets by `<vault>/<secret>`: an environment variable or a DPAPI-protected value, never a literal. Validated by `secret-resolver.mjs`. Hashed in the runtime identity. |
+| `localServices` | catalogue, project | Declared local services that are probed, never started. Validated by `local-services.mjs`. |
+| `providers` | catalogue, project | Storage routes, messaging providers and the outbox. Contract: see [storage-providers.md](../mirage/docs/storage-providers.md), [messaging-and-outbox.md](../mirage/docs/messaging-and-outbox.md). |
+| `canvas` | project | Canvas surface switch (`enabled`) and project canvas app sources (`sources`). Contract: see [canvas-apps.md](../mirage/docs/canvas-apps.md#project-configuration). |
+| `codeApps` | project | Code apps served under /_apps/code/. Contract: see [code-apps.md](../mirage/docs/code-apps.md). |
+<!-- /settings-table -->
 
 ### Local assets and compatibility
 

@@ -4,7 +4,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { DataError } from "../lib/data-error.mjs";
-import { install, reset } from "../lib/dataverse-files.mjs";
+import { createThroughPipeline, install, reset } from "../lib/dataverse-files.mjs";
+import { uuidV5 } from "../lib/dataverse-security.mjs";
+import { attachmentApi } from "./attachment-api-fixture.mjs";
 
 const ORIGIN = "http://127.0.0.1:5555";
 const VERSION = "v9.2";
@@ -549,5 +551,59 @@ test("the file download route answers its own errors as plain application/json",
   await assert.rejects(
     h.hooks.stream(request("GET", { value: true, headers: { range: "bytes=99999-100000" } })),
     (error) => error.status === 416 && error.details.innerCode === "0x80090000" && error.details.contentType === "application/json",
+  );
+});
+
+// R1 F13: rows a message creates go through the records create rules, including the regarding row's appendTo.
+test("a block-committed note needs appendTo on the regarding row", async (t) => {
+  const h = await attachmentApi(t);
+  const principals = h.server.organization.api.principals, authorize = principals.authorize;
+  const seen = [];
+  principals.authorize = (options) => {
+    seen.push(`${options.operation}:${options.entity}`);
+    if (options.operation === "appendto" && options.entity === "fx_widget") throw new DataError("Principal is missing prvAppendTofx_widget.", 403, "PrivilegeDenied");
+    return authorize.call(principals, options);
+  };
+  t.after(() => { principals.authorize = authorize; });
+  const committed = await h.blocks("Annotation", ["regarded"], { FileName: "r.txt" });
+  assert.equal(committed.status, 403, JSON.stringify(committed.json));
+  assert.ok(seen.includes("append:annotation") && seen.includes("appendto:fx_widget"), seen.join());
+  assert.equal(h.store.tableRows("annotation").length, 0, "no note is stored");
+});
+
+test("a delivered email attachment row is created with the caller's audit columns and a numeric filesize", async (t) => {
+  const h = await attachmentApi(t);
+  const response = await h.send("emails/Microsoft.Dynamics.CRM.DeliverIncomingEmail", {
+    MessageId: "msg-f13", From: "pat@sender.example.test", To: "ops@receiver.example.test", Subject: "Invented", Body: "Invented body",
+    ReceivedOn: "2026-10-19T11:00:00Z", Attachments: [{ filename: "a.txt", mimetype: "text/plain", body: b64("hello") }],
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.json));
+  const [attachment] = h.store.tableRows("activitymimeattachment");
+  assert.equal(attachment.filesize, 5);
+  assert.equal(attachment.createdby?.id, h.appUserId);
+  assert.equal(attachment.modifiedby?.id, h.appUserId);
+  if (attachment.ownerid) assert.equal(attachment.ownerid.id, h.appUserId);
+});
+
+// D5: createThroughPipeline is the records layer's createInternal, so admin rows and key violations follow the Web API rules.
+test("an admin pipeline row with no caller gets the organization SYSTEM user's audit columns", async (t) => {
+  const h = await attachmentApi(t);
+  const api = h.server.organization.api;
+  const id = "77777777-7777-4777-8777-777777777773";
+  const row = await api.change(() => h.store.transact(() => createThroughPipeline(api, { identity: { admin: true } }, "fx_widget", { fx_widgetid: id, fx_name: "Admin widget" })));
+  const system = uuidV5(h.server.organizationId, "systemuser:SYSTEM");
+  assert.equal(row.createdby?.id, system);
+  assert.equal(row.modifiedby?.id, system);
+  assert.equal(row.statecode, 0);
+});
+
+test("a duplicate alternate key through the pipeline answers the Web API create's 412", async (t) => {
+  const h = await attachmentApi(t, { before: (store) => { store.state.mappings.fx_widget.alternateKeys = [{ name: "fx_name_key", attributes: ["fx_name"] }]; } });
+  const api = h.server.organization.api;
+  const web = await h.send("fx_widgets", { fx_name: "Invented widget" });
+  assert.equal(web.status, 412, JSON.stringify(web.json));
+  await assert.rejects(
+    api.change(() => h.store.transact(() => createThroughPipeline(api, { identity: { admin: true } }, "fx_widget", { fx_name: "Invented widget" }))),
+    (error) => error.status === 412 && error.details.innerCode === "0x80060892" && error.message === web.json.error.message,
   );
 });

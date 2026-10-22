@@ -60,11 +60,12 @@ export function withSolutionOperations(portal, supplementary) {
   return { ...portal, serverLogics: merge('serverLogics'), cloudFlows: merge('cloudFlows') };
 }
 
-export function flowContract(workflow,steps={}) {
+/** `connections` lists every connector call (actions and a Dataverse trigger) with its resolved binding.
+ * `principal` is the per-flow override (pack flowIdentities), which takes precedence over a connection principal. */
+export function flowContract(workflow,steps={},{connectors,principal}={}) {
   const definition = definitionOf(workflow);
   const triggers = Object.values(definition?.triggers ?? {});
-  const actions = Object.values(definition?.actions ?? {});
-  const contract=inspectFlowDefinition(definition,steps),trigger=inspectFlowTrigger(definition);
+  const contract=inspectFlowDefinition(definition,steps,{connectors,connectionReferences:workflow?.definition?.properties?.connectionReferences,principal}),trigger=inspectFlowTrigger(definition,{connectors});
   return {
     ...contract,trigger,activation:workflow?.activation??null,supported:trigger.supported&&contract.supported&&(trigger.kind!=='dataverse'||workflow?.active===true),
     inputSchema: triggers.find(trigger => trigger.type === 'Request')?.inputs?.schema ?? null,
@@ -72,7 +73,7 @@ export function flowContract(workflow,steps={}) {
 }
 
 /** Source discovery is automatic; executable project JavaScript still requires an explicit choice. */
-export function operationCatalogue({ portal, workflows = new Map(), handlers, overrides = {} }) {
+export function operationCatalogue({ portal, workflows = new Map(), handlers, overrides = {}, connectors }) {
   const items = [];
   const keys = new Set();
   const names = new Set();
@@ -84,8 +85,9 @@ export function operationCatalogue({ portal, workflows = new Map(), handlers, ov
     if (names.has(nameKey)) throw new DataError(`Ambiguous operation name: ${record.name}`, 409, 'AmbiguousOperation');
     names.add(nameKey);
     const registered = handlers?.[kind === 'server-logic' ? 'serverLogics' : 'cloudFlows']?.has(record.name.toLowerCase()) ?? false;
-    const contract = kind === 'cloud-flow' ? flowContract(workflow,overrides[key]?.steps) : null;
-    const mode = overrides[key]?.mode ?? (registered ? 'handler' : contract?.supported && (record.path||contract.trigger.kind==='dataverse'&&handlers?.flowIdentities?.has(record.processId)) ? 'exported' : 'placeholder');
+    const contract = kind === 'cloud-flow' ? flowContract(workflow,overrides[key]?.steps,{connectors,principal:handlers?.flowIdentities?.get(record.processId)}) : null;
+    // Exported by default only when every connector call (including a Dataverse trigger) resolves to a usable connection.
+    const mode = overrides[key]?.mode ?? (registered ? 'handler' : contract?.supported && (record.path||contract.trigger.kind==='dataverse') && contract.connections.every(c=>c.bound) ? 'exported' : 'placeholder');
     items.push({
       key, kind, name: record.name, id: record.id ?? null, processId: record.processId ?? null,
       path: kind === 'server-logic' ? `/_api/serverlogics/${encodeURIComponent(record.name)}` : record.path ?? null,

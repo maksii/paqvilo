@@ -1,8 +1,9 @@
 // Web hooks (P6): a step whose eventhandler is a contract 8 service endpoint POSTs the RemoteExecutionContext to a loopback URL.
-// The receiver is a child process (a synchronous webhook blocks Mirage's own event loop, so an in-process receiver would deadlock).
-// Invented contoso_widget table, invented step names and loopback endpoints only.
+// The shared receiver is a separate test process; one test uses a receiver in the test's own process, which the asynchronous
+// pipeline (store.create) awaits. Invented contoso_widget table, invented step names and loopback endpoints only.
 import { describe, it, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,7 +13,8 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { install as installRegistration, overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
-import { isLoopbackUrl, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
+import { isLoopbackUrl, loopbackFetch, serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
+import { createLocalMessageBus } from '../lib/message-bus.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue, pluginPhaseRequiresCheckpoint, pluginStepMatchesEntity, runPluginPhase } from '../lib/exported-plugins.mjs';
 
@@ -73,7 +75,7 @@ function fixtureState() {
 
 // A store with the Dataverse API, the registration rows and the pipeline wired the way server.mjs wires it. The endpoint and the
 // step are rows, so each test writes them and can change the endpoint's URL and authentication by editing its row.
-async function world({ mode = 0 } = {}) {
+async function world({ mode = 0, delivery = webhookDelivery } = {}) {
   const store = await new DataStore({ state: fixtureState() }).init();
   const diagnostics = [];
   const diagnostic = (entry) => diagnostics.push(entry);
@@ -86,7 +88,7 @@ async function world({ mode = 0 } = {}) {
     eventhandler: { id: ENDPOINT, logical_name: 'serviceendpoint' }, // the bound table, as eventhandler_serviceendpoint@odata.bind writes it
     stage: 40, mode, rank: 1, statecode: 0, supporteddeployment: 0,
   }, { admin: true });
-  const webhooks = webhookDelivery(store);
+  const webhooks = delivery(store);
   const pluginSteps = () => pluginCatalogue({ plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store), handlers: new Map() });
   store.setPluginPipeline(
     (context) => runPluginPhase({ ...context, store, items: pluginSteps(), handlers: new Map(), webhooks, diagnostic }),
@@ -185,19 +187,40 @@ describe('synchronous web hooks', () => {
     session = await world();
     const secret = 'invented-authvalue-9d2c';
     await session.endpoint({ url: 'https://hooks.contoso.invalid/hook?code=invented-query-secret', authtype: 4, authvalue: secret });
-    const spawn = mock.method(childProcess, 'spawnSync');
     const fetchSpy = mock.method(globalThis, 'fetch');
     await create(session.store);
     assert.equal(rowsOf(session.store).length, 1, 'the create committed');
     const toHost = (input) => String(input ?? '').includes('contoso.invalid');
-    assert.equal(spawn.mock.calls.filter((call) => toHost(call.arguments[2]?.input)).length, 0, 'no child process was started for it');
     assert.equal(fetchSpy.mock.calls.filter((call) => toHost(String(call.arguments[0]))).length, 0, 'fetch never reached it');
     const diagnostic = session.diagnostics.find((entry) => entry.code === 'WEBHOOK_NOT_CONTACTED');
     assert.equal(diagnostic.reason, 'non-loopback');
     assert.equal(diagnostic.host, 'hooks.contoso.invalid');
+    // An uncontacted step never counts or reports as delivered.
+    assert.doesNotMatch(diagnostic.message, /treated as delivered/);
+    if (session.store.counters) {
+      assert.equal(session.store.counters.snapshot()['webhooks.delivered'] ?? 0, 0);
+      assert.equal(session.store.counters.snapshot()['webhooks.notContacted'], 1);
+    }
     const text = JSON.stringify(session.diagnostics);
     assert.equal(text.includes(secret), false, 'the authvalue is in no diagnostic');
     assert.equal(text.includes('invented-query-secret'), false, 'the URL path and query are in no diagnostic');
+  });
+
+  it('a receiver in Mirage\'s own process answers: the asynchronous pipeline awaits the POST instead of blocking the event loop', async () => {
+    session = await world();
+    const received = [];
+    const server = createServer((req, res) => { req.resume(); req.on('end', () => { received.push(req.url); res.writeHead(req.url.endsWith('500') ? 500 : 200); res.end(); }); });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      await session.endpoint({ url: `${origin}/status/500` });
+      await assert.rejects(create(session.store), /Endpoint unavailable/);
+      assert.equal(rowsOf(session.store).length, 0);
+      await session.endpoint({ url: `${origin}/status/200` });
+      await create(session.store);
+      assert.equal(rowsOf(session.store).length, 1);
+      assert.deepEqual(received, ['/status/500', '/status/200']);
+    } finally { await new Promise((resolve) => server.close(resolve)); }
   });
 
   it('a contract other than 8 is not simulated and never contacted, and the create succeeds', async () => {
@@ -244,7 +267,9 @@ describe('asynchronous web hooks', () => {
     assert.equal(Number.isInteger(job.errorcode), true);
   });
 
-  it('a non-loopback URL is never contacted and its job Succeeds, with the not-contacted diagnostic', async () => {
+  // Changed: an uncontacted endpoint no longer ends Succeeded (30), which reported a delivery that never happened; the job is
+  // Canceled (32), as for an endpoint contract the simulator does not deliver.
+  it('a non-loopback URL is never contacted and its job is Canceled, with the not-contacted diagnostic', async () => {
     session = await world({ mode: 1 });
     await session.endpoint({ url: 'https://hooks.contoso.invalid/hook' });
     const fetchSpy = mock.method(globalThis, 'fetch');
@@ -252,8 +277,9 @@ describe('asynchronous web hooks', () => {
     await session.runner.drain();
     assert.equal(fetchSpy.mock.calls.filter((call) => String(call.arguments[0]).includes('contoso.invalid')).length, 0);
     const [job] = session.store.tableRows('asyncoperation');
-    assert.equal(job.statuscode, 30);
-    assert.ok(session.diagnostics.some((entry) => entry.code === 'WEBHOOK_NOT_CONTACTED' && entry.host === 'hooks.contoso.invalid'));
+    assert.equal(job.statuscode, 32);
+    assert.equal(job.message, 'Simulator: endpoint not contacted (loopback webhooks only)');
+    assert.ok(session.diagnostics.some((entry) => entry.code === 'WEBHOOK_NOT_CONTACTED' && entry.host === 'hooks.contoso.invalid' && !/treated as delivered/.test(entry.message)));
   });
 
   it('a contract other than 8 is never contacted and its job is Canceled (32) with the documented-shape message', async () => {
@@ -289,5 +315,40 @@ describe('TriggerServiceEndpointCheck still probes loopback endpoints only', () 
     await assert.rejects(probe({ contract: 8, url: 'https://hooks.contoso.invalid/hook' }), (error) => error.status === 400);
     await assert.rejects(probe({ contract: 2, url: `${receiver.origin}/status/200` }), (error) => error.status === 400);
     assert.equal((await receiver.log()).length, 1, 'only the loopback probe reached the receiver');
+  });
+});
+
+describe('loopback guard by address (R1 F7)', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('refuses a *.localhost name that resolves to a routable address, without a connection', async () => {
+    const fetchSpy = mock.method(globalThis, 'fetch');
+    const lookups = [];
+    const lookup = async (host, options) => { lookups.push([host, options]); return [{ address: '203.0.113.5', family: 4 }]; };
+    await assert.rejects(loopbackFetch('http://fx.localhost:1/', { method: 'POST', lookup }), (error) => error.message === 'Endpoint unavailable');
+    assert.deepEqual(lookups, [['fx.localhost', { all: true }]]);
+    assert.equal(fetchSpy.mock.callCount(), 0, 'no request was sent');
+    const mixed = async () => [{ address: '127.0.0.1', family: 4 }, { address: '203.0.113.5', family: 4 }];
+    await assert.rejects(loopbackFetch('http://fx.localhost:1/', { lookup: mixed }), /Endpoint unavailable/);
+    assert.equal(fetchSpy.mock.callCount(), 0);
+  });
+});
+
+describe('service endpoint bus steps (R1 F15)', () => {
+  let session;
+  afterEach(async () => { await session?.close(); session = null; });
+
+  it('a sync bus step whose send the bus would refuse fails the operation and rolls it back', async () => {
+    let bus = null;
+    // A bare bus with unvalidated settings.endpoints: the mapped entity name fails the bus's entity rule.
+    session = await world({ delivery: (store) => {
+      bus = createLocalMessageBus({ store });
+      bus.settings = { endpoints: { [ENDPOINT]: 'local/not a valid entity!' } };
+      return serviceEndpointDelivery(store, { messaging: bus });
+    } });
+    await session.endpoint({ contract: 2, url: null });
+    await assert.rejects(create(session.store), /Endpoint unavailable/);
+    assert.equal(rowsOf(session.store).length, 0, 'the create rolled back');
+    assert.ok(session.diagnostics.some((entry) => entry.code === 'SERVICE_ENDPOINT_SEND_FAILED'));
   });
 });

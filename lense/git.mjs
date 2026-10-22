@@ -78,6 +78,8 @@ export class GitBaseline {
       this.#acceptCommit(git(this.sourceDir, this.refArgs).trim());
     } catch (err) {
       this.#unavailable(err);
+      // A repository without commits has no baseline yet (not a broken ref): callers skip baseline checks with a note.
+      try { this.unborn = git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' && !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim(); } catch { this.unborn = false; }
     }
   }
 

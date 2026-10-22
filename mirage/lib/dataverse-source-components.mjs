@@ -10,6 +10,7 @@ const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const system = name => /^__sim/.test(name) || /^(?:createdon|createdby|createdonbehalfby|modifiedon|modifiedby|modifiedonbehalfby|versionnumber)$/.test(name);
 const keyOf = (table, id) => `${table}/${lower(id)}`;
 const idOf = table => table === 'systemform' ? 'formid' : `${table}id`;
+const WORKFLOW = 'workflow';
 const settingsOf = state => ((state.dataverse ??= {}).sourceSolutionComponents ??= { version: 1, baseline: {}, overlays: {} });
 function deltaOf(source, row, idColumn) {
   const values = {}, unset = [];
@@ -37,10 +38,13 @@ export function createSourceSolutionComponentStorage({ store, components, entity
   const unsubscribe = store.addMutationObserver(observe, { matches: event => Boolean(store.state.dataverse?.sourceSolutionComponents?.baseline?.[keyOf(event.entity, event.row[idOf(event.entity)])]) });
   const materialize = (state = store.state) => {
     const settings = settingsOf(state), previous = settings.baseline;
-    const selected = new Map(withSolutionAppMembers(components() ?? [], state, entityId).map(component => [keyOf(component.logical, component.id), component]));
+    // Workflow rows have one writer, dataverse-workflows.mjs (exported activation state and activation rows): materializing the
+    // Draft source shape here reverted them on every state replacement. Workflow components still count for app membership.
+    const selected = new Map(withSolutionAppMembers(components() ?? [], state, entityId).filter(component => component.logical !== WORKFLOW)
+      .map(component => [keyOf(component.logical, component.id), component]));
     const staleByTable = new Map();
     for (const [key, before] of Object.entries(previous)) {
-      if (selected.has(key)) continue;
+      if (selected.has(key) || before.component.logical === WORKFLOW) continue;
       // An explicitly imported solution layer can still own the same record.
       if (state.dataverse.solutionPayloads?.[lower(before.component.id)]?.layers.length) continue;
       const table = before.component.logical;

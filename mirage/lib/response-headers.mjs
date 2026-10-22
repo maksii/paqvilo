@@ -105,7 +105,26 @@ export function platformResourceHeaders(kind, { pathname = "", body = "", conten
   };
 }
 
-const rfc5987 = (value) => encodeURIComponent(String(value)).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+/** RFC 5987 value-chars encoding (UTF-8 percent-encoding) of a header parameter such as filename*. */
+export const rfc5987 = (value) => encodeURIComponent(String(value)).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+
+/**
+ * Content-Disposition carrying a file name safely (RFC 6266): a quoted ASCII fallback where
+ * quote, backslash, controls and non-ASCII characters become "_", plus filename*=UTF-8'' with
+ * the exact name, so quotes, semicolons and Unicode names round-trip and never break the header.
+ */
+export function contentDisposition(disposition, name) {
+  const value = String(name ?? "download");
+  const fallback = value.replace(/[^\x20-\x7e]|["\\]/g, "_");
+  return `${disposition === "attachment" ? "attachment" : "inline"}; filename="${fallback}"; filename*=UTF-8''${rfc5987(value)}`;
+}
+
+/**
+ * x-ms-file-name header value: the name itself when it is printable ASCII, otherwise its
+ * UTF-8 percent-encoding.
+ */
+// unverified: Learn file-column-data lists x-ms-file-name without saying how non-ASCII names are encoded; percent-encoding is chosen.
+export const fileNameHeader = (name) => (/^[\x20-\x7e]*$/.test(String(name ?? "")) ? String(name ?? "") : rfc5987(name));
 
 /**
  * Content-Disposition of a web file record (adx_contentdisposition, Learn "Web File"

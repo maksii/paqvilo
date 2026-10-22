@@ -158,13 +158,13 @@ function operations(api) {
     const root = rootOf(goal);
     await compute(root, new Set([key(root.goalid)]));
     const at = api.clock();
-    await write(() => {
+    await write(async () => {
       for (const { node, totals, suffix } of plan) {
         const target = Number(node[`target${suffix}`]) || 0;
         const actual = totals.actual ?? 0;
         const fields = { lastrolledupdate: iso(at), percentage: target ? (actual / target) * 100 : 0 };
         for (const [attribute, value] of Object.entries(totals)) fields[`${attribute}${suffix}`] = value;
-        store.updateRecord("goal", node.goalid, fields, c.identity);
+        await api.records.updateInternal(c, "goal", node.goalid, fields, { authorized: true });
       }
     });
     return undefined;
@@ -185,8 +185,8 @@ function operations(api) {
       if (entity !== "asyncoperation") throw invalid("SyncBulkOperation selects asyncoperation rows only.");
       ids.push(...rows.map((row) => row[idColumn]));
     }
-    await write(() => {
-      for (const id of ids) store.updateRecord("asyncoperation", id, change, c.identity);
+    await write(async () => {
+      for (const id of ids) await store.updateRecordAsync("asyncoperation", id, change, c.identity);
     });
     return { Result: ids.length };
   }
@@ -210,7 +210,7 @@ function operations(api) {
           const drafted = await instantiate({ ...c, body: { TemplateId: args.TemplateId, ObjectType: args.RegardingType, ObjectId: args.RegardingId }, params: {} });
           const emailId = drafted.body.value[0][emailIdColumn];
           const address = recipient.emailaddress1 ?? recipient.internalemailaddress ?? null;
-          await write(() => store.updateRecord("email", emailId, { sender: senderAddress, torecipients: address }, c.identity));
+          await write(() => api.records.updateInternal(c, "email", emailId, { sender: senderAddress, torecipients: address }, { authorized: true }));
           await send({ ...c, target: { mapping: store.resolveMapping("email"), id: emailId, row: rowIn("email", emailId) }, body: { IssueSend: true }, params: {} });
         } catch {
           failed += 1;

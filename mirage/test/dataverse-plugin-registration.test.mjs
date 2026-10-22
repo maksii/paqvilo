@@ -754,9 +754,9 @@ describe('plug-in type handlers: contract (P4)', () => {
   });
 
   it('a type name handled by two packs is ambiguous, and the name and handler must be valid', () => {
-    assert.throws(() => pluginHandlers([{ id: 'one', pluginTypes: { [CONTOSO]: () => {} } }, { id: 'two', pluginTypes: { [CONTOSO]: () => {} } }]), /Ambiguous plugin type handler for Contoso\.Plugins\.WidgetCheck\./);
-    assert.throws(() => pluginHandlers([{ id: 'bad', pluginTypes: { 'not-a-type': () => {} } }]), /invalid synchronous plugin type handler/);
-    assert.throws(() => pluginHandlers([{ id: 'bad', pluginTypes: { [CONTOSO]: async () => {} } }]), /invalid synchronous plugin type handler/);
+    assert.throws(() => pluginHandlers([{ id: 'one', pluginTypes: { [CONTOSO]: () => {} } }, { id: 'two', pluginTypes: { [CONTOSO]: () => {} } }]), /Ambiguous pluginTypes registration for Contoso\.Plugins\.WidgetCheck in packs one and two/);
+    assert.throws(() => pluginHandlers([{ id: 'bad', pluginTypes: { 'not-a-type': () => {} } }]), /pluginTypes must map plug-in type names to synchronous functions/);
+    assert.throws(() => pluginHandlers([{ id: 'bad', pluginTypes: { [CONTOSO]: async () => {} } }]), /pluginTypes must map plug-in type names to synchronous functions/);
   });
 
   it('a pack without pluginTypes changes nothing: its step-id handler keeps the step-id lookup only', () => {

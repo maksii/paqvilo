@@ -18,8 +18,8 @@ import { registerInternalMessage } from "./dataverse-addon-common.mjs";
 
 const ENV_DEFINITION = "environmentvariabledefinition";
 const ENV_VALUE = "environmentvariablevalue";
-// Environment variable types (UpsertEnvironmentVariable Type): String, Integer, Boolean, JSON, Data Source.
-const ENV_TYPES = new Set([100000000, 100000001, 100000002, 100000003, 100000004]);
+// Environment variable types (UpsertEnvironmentVariable Type): String, Integer, Boolean, JSON, Data Source, Secret.
+const ENV_TYPES = new Set([100000000, 100000001, 100000002, 100000003, 100000004, 100000005]);
 // The only secret store Learn documents for UpsertEnvironmentVariable: 0, KeyVault.
 const KEY_VAULT = 0;
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
@@ -435,13 +435,24 @@ function operations(api) {
     },
     {
       name: "RetrieveEnvironmentVariableSecretValue", kind: "action", binding: "unbound",
-      // Learn: callable from a Power Automate flow only. Key Vault is not called, and the simulator holds no vault, so the
-      // secret is refused with the not-simulated code the other messages use (unverified: live capture of the native refusal).
-      handle: (c) => {
+      // Learn: callable from a Power Automate flow only. Key Vault is never called: the value row holds the Key Vault reference
+      // and api.secrets (secret-resolver.mjs, from the project `secrets` config) resolves it for the caller. Without a
+      // `secrets` config the secret is refused with the not-simulated code the other messages use.
+      handle: async (c) => {
         const name = requiredText(argsOf(c).EnvironmentVariableName, "EnvironmentVariableName");
         need(c, ENV_DEFINITION, "Read");
-        if (!definitionNamed(store, name)) throw new DataError(`${ENV_DEFINITION} With SchemaName = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
-        throw new DataError("Key Vault secret values are not simulated: the simulator holds no vault.", 501, "NotImplemented", { innerCode: "0x80040216" });
+        const definition = definitionNamed(store, name);
+        if (!definition) throw new DataError(`${ENV_DEFINITION} With SchemaName = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
+        const secrets = api.secrets ?? null;
+        // unverified: live capture of the native refusal.
+        if (!secrets) throw new DataError("Key Vault secret values are not simulated: no secrets configuration exists.", 501, "NotImplemented", { innerCode: "0x80040216" });
+        if (Number(definition.type) !== 100000005 || Number(definition.secretstore ?? KEY_VAULT) !== KEY_VAULT) throw invalid(`${name} is not a Key Vault Secret environment variable.`); // unverified: code and wording
+        const answer = await secrets.resolve(currentValue(store, definition), { principalId: (c.caller ?? c.user)?.systemuserid, purpose: "RetrieveEnvironmentVariableSecretValue" });
+        if (answer.status === "resolved") return respond(c, "RetrieveEnvironmentVariableSecretValue", { EnvironmentVariableSecretValue: answer.value });
+        // unverified: live capture of the native status and code for each refusal (denied 403, missing/unbound 404, expired/disabled 400).
+        if (answer.status === "denied") throw new DataError(answer.reason, 403, "PrivilegeDenied", { innerCode: "0x80040220" });
+        if (answer.status === "missing" || answer.status === "unbound") throw new DataError(answer.reason, 404, "NotFound", { innerCode: "0x80040217" });
+        throw invalid(answer.reason);
       },
       csdl: csdlOf("action", "RetrieveEnvironmentVariableSecretValue", { params: [["EnvironmentVariableName", "Edm.String"]], response: [["EnvironmentVariableSecretValue", "Edm.String"]] }),
     },
@@ -613,9 +624,9 @@ function operations(api) {
           authorizeRead(c, "socialprofile", existing);
         } else {
           need(c, "socialprofile", "Create");
-          await write(() => {
+          await write(async () => {
             const owner = ownerColumns(store, { id: c.user.systemuserid, logical_name: "systemuser" });
-            id = store.createRecord("socialprofile", { ...fieldsOf(e), ...owner }, c.identity).socialprofileid;
+            id = (await api.records.createInternal(c, "socialprofile", { ...fieldsOf(e), ...owner }, { authorized: true })).socialprofileid;
           });
         }
         const got = await readAsCaller(c, `/api/data/${c.version}/${store.resolveMapping("socialprofile").entitySet}(${id})`);
@@ -664,12 +675,16 @@ function operations(api) {
     },
     {
       name: "ExecuteFxExpression", kind: "action", binding: "unbound",
-      // ponytail: api.fxEvaluator is not wired to a trusted pack's fxExpressionEvaluator here (server and pack loading are outside G1).
+      // api.fxEvaluator (a function) wins; else the host's Power Fx provider (canvas-power-fx.mjs, a pack `powerFx` adapter) through
+      // its synchronous path. Neither present answers 501. unverified: the response carries the value as Result.
       handle: async (c) => {
         const args = argsOf(c);
         const expression = requiredText(args.expression, "expression");
-        if (typeof api.fxEvaluator !== "function") throw new DataError("Power Fx expressions are not simulated: no evaluator is installed.", 501, "NotImplemented", { innerCode: "0x80040216" });
-        const result = await api.fxEvaluator({ expression, entitylogicalname: args.entitylogicalname, context: args.context, inputparameters: args.inputparameters, outputparameters: args.outputparameters, user: c.user });
+        const powerFx = api.providers?.powerFx;
+        const evaluate = typeof api.fxEvaluator === "function" ? api.fxEvaluator
+          : typeof powerFx?.evaluateSync === "function" ? (input) => ({ Result: powerFx.evaluateSync(input.expression, { values: input.inputparameters ?? {}, principal: input.user?.systemuserid ?? null }).value }) : null;
+        if (!evaluate) throw new DataError("Power Fx expressions are not simulated: no evaluator is installed.", 501, "NotImplemented", { innerCode: "0x80040216" });
+        const result = await evaluate({ expression, entitylogicalname: args.entitylogicalname, context: args.context, inputparameters: args.inputparameters, outputparameters: args.outputparameters, user: c.user });
         return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "Microsoft.Dynamics.CRM.crmbaseentity"), ...result } };
       },
       csdl: csdlOf("action", "ExecuteFxExpression", { params: [["expression", "Edm.String"], ["entitylogicalname", "Edm.String"], ["context", "Edm.String"], ["inputparameters", "mscrm.crmbaseentity"], ["outputparameters", "mscrm.crmbaseentity"]], returns: "mscrm.crmbaseentity" }),

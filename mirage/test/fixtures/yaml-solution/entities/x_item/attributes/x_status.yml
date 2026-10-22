@@ -1,0 +1,7 @@
+attribute:
+  '@PhysicalName': x_Status
+  Type: picklist
+  Name: x_status
+  LogicalName: x_status
+  RequiredLevel: none
+  OptionSetName: x_status

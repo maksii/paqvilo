@@ -3,3 +3,4 @@ export { validatePack, configurationPresetDiagnostics, discoverPacks, loadPack, 
 export { bootstrapPresetLibrary, compactBuiltinPresets, listPresets, resolvePreset } from './lib/presets.mjs';
 export { assertReadOnlyPath, DENIED_ROUTE_PATTERNS, validatePlan, activatePackDeniedRoutes } from './parity-suite.mjs';
 export { validatePersonaCatalog, mergePersonaCatalogs } from './lib/persona-catalog.mjs';
+export { PACK_EXPORTS, validatePackExports, collectPackExport, packProvides } from './lib/pack-exports.mjs';

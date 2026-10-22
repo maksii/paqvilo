@@ -6,7 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import YAML from 'yaml';
 import { SetupStore } from '../lense/setup/store.mjs';
-import { startSetupServer } from '../lense/setup/server.mjs';
+import { createSetupHandler, startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 import { createFixture } from './fixture.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
@@ -201,3 +201,210 @@ test('Mirage serves setup independently from simulation identity/state and repor
   assert.equal(saved.runtime.restartRequired, true); assert.equal(saved.runtime.sourceDir, fixture.dir);
   assert.equal(simulator.portal.sourceDir, fixture.dir); assert.equal(simulator.state().revision, before.revision);
 });
+
+test('catalogue sessions edit linked project files as project:<site> layers with shared locking and revisions', async t => {
+  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml'), projectFile = path.join(directory, 'apps', 'x-invented.project.yml');
+  await fs.mkdir(path.dirname(projectFile));
+  await fs.writeFile(projectFile, YAML.stringify({ version: 2, runtime: { kind: 'model-driven' }, solutions: [{ id: 'x-core', path: './missing-solution' }] }));
+  await fs.writeFile(filename, YAML.stringify({ ...minimal, sites: { portal: { ...minimal.sites.portal, mirage: { port: 0, project: './apps/x-invented.project.yml' } } } }));
+  const store = new SetupStore({ directory, processEnv: {} });
+  let snapshot = await store.snapshot();
+  assert.deepEqual(Object.keys(snapshot.layers).sort(), ['personal', 'project:portal', 'shared']);
+  assert.equal(snapshot.layers['project:portal'].file, projectFile);
+  assert.equal(snapshot.layers['project:portal'].site, 'portal');
+  const linked = snapshot.findings.find(item => item.layer === 'project:portal');
+  assert.deepEqual([linked.code, linked.site, linked.section], ['missing-solution', 'portal', '#runtime-configuration']);
+  snapshot = await store.save({ revision: snapshot.revision, layer: 'project:portal', operations: [set(['solutions', 0, 'path'], './solution'), set(['environmentVariables'], { x_InventedFlag: 'on' })] });
+  assert.equal(YAML.parse(await fs.readFile(projectFile, 'utf8')).environmentVariables.x_InventedFlag, 'on');
+  assert.ok(snapshot.findings.some(item => item.layer === 'project:portal'), 'solution folder still missing');
+  const original = await fs.readFile(projectFile, 'utf8');
+  await assert.rejects(store.save({ revision: snapshot.revision, layer: 'project:portal', operations: [set(['solutionOrder'], 'sideways')] }), /solutionOrder/);
+  assert.equal(await fs.readFile(projectFile, 'utf8'), original);
+  await assert.rejects(store.save({ revision: snapshot.revision, layer: 'project:other', operations: [] }), /available configuration layer/);
+  await fs.writeFile(projectFile, original + '# external edit\n');
+  await assert.rejects(store.save({ revision: snapshot.revision, layer: 'project:portal', operations: [set(['watch'], true)] }), error => error.status === 409);
+  assert.equal(await fs.readFile(projectFile, 'utf8'), original + '# external edit\n');
+});
+
+test('setup status carries stages, planned topology, templates, the settings catalogue, finding anchors and inherited defaults', async t => {
+  const directory = await work(t);
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify({ ...minimal, defaults: { mirage: { simulation: { level: 'dry-run' } } },
+    sites: { portal: { ...minimal.sites.portal, source: './missing-export', mirage: { port: 0, dataPacks: [{ id: 'x-pack', module: './missing-pack.mjs' }] } } } }));
+  const server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const status = await fetch(new URL('api/status', server.url)).then(response => response.json());
+  assert.deepEqual(status.stages.map(item => item.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  for (const stage of status.stages) assert.ok(['done', 'next', 'optional', 'blocked'].includes(stage.status) && stage.anchor.startsWith('#') && Array.isArray(stage.findings), JSON.stringify(stage));
+  assert.deepEqual(status.stages.filter(item => item.status === 'next').map(item => item.id), [3]);
+  assert.equal(status.stages[4].status, 'blocked'); assert.deepEqual(status.stages[4].findings, ['missing-pack']);
+  assert.equal(status.stages[6].status, 'done');
+  assert.deepEqual(Object.fromEntries(status.findings.map(item => [item.code, item.section])), { 'missing-source': '#portals', 'missing-pack': '#packs' });
+  assert.deepEqual(status.sites[0].packs, [{ id: 'x-pack', module: path.join(directory, 'missing-pack.mjs'), path: path.join(directory, 'missing-pack.mjs'), exists: false }]);
+  assert.deepEqual(status.sites[0].inherited, { simulation: true });
+  assert.equal(status.sites[0].authoredMirage.simulation, undefined);
+  assert.ok(status.topology.nodes.some(item => item.id === 'host:portal' && item.status === 'planned'));
+  assert.ok(status.settingsCatalogue.some(item => item.key === 'secrets' && item.redact));
+  assert.deepEqual(status.templates.map(item => item.id), ['power-pages', 'model-driven', 'dataverse-api', 'full-stack']);
+  assert.equal(status.docs.configuration.path, 'docs/configuration.md');
+  assert.equal(status.runtime, null);
+  const project = await new SetupStore({ directory, project: path.join(directory, 'absent.project.yml'), processEnv: {} }).snapshot();
+  assert.match(project.findings[0].message, /Mirage project/); assert.equal(project.findings[0].section, '#advanced');
+});
+
+test('setup creates configuration from a template and serves own and shared assets by pattern', async t => {
+  const directory = await work(t), server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const base = new URL(server.url).origin, status = await fetch(base + '/_setup/api/status').then(response => response.json());
+  const post = body => fetch(base + '/_setup/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base, 'X-Paqvilo-Setup-CSRF': status.csrf }, body: JSON.stringify(body) });
+  assert.equal((await post({ layer: 'shared', revision: status.revision, template: 'unknown', values: {} })).status, 400);
+  const created = await post({ layer: 'shared', revision: status.revision, template: 'full-stack', values: { id: 'alpha', root: './exports/alpha' } }).then(response => response.json());
+  assert.deepEqual([...new Set(created.findings.map(item => item.code))].sort(), status.templates.find(item => item.id === 'full-stack').expectedFindings.sort());
+  assert.equal(YAML.parse(await fs.readFile(path.join(directory, 'paqvilo.config.yml'), 'utf8')).sites.alpha.source, './exports/alpha');
+  assert.equal((await post({ layer: 'shared', revision: created.revision, template: 'power-pages', values: {} })).status, 409);
+  for (const [asset, type] of [['app.mjs', 'javascript'], ['style.css', 'css'], ['index.html', 'html']]) {
+    const response = await fetch(`${base}/_setup/${asset}`);
+    assert.equal(response.status, 200, asset); assert.match(response.headers.get('content-type'), new RegExp(type)); assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(response.headers.get('content-security-policy'), /default-src 'none'/);
+  }
+  for (const name of ['ui-kit.mjs', 'ui-kit.css', 'shell.css', 'dashboard-view.mjs', 'help-content.mjs']) {
+    const present = await fs.stat(new URL(`../mirage/admin/${name}`, import.meta.url)).then(() => true, () => false);
+    assert.equal((await fetch(`${base}/_setup/${name}`)).status, present ? 200 : 404, name);
+  }
+  for (const blocked of ['/_setup/missing.mjs', '/_setup/%2e%2e/package.json', '/_setup/App.mjs', '/_setup/x.json', '/_setup/store.mjs', '/_setup/server.mjs', '/_setup/templates.mjs']) assert.equal((await fetch(base + blocked)).status, 404, blocked);
+});
+
+test('restart drift follows the runtime identity and names the restart command', async t => {
+  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml');
+  await fs.writeFile(filename, YAML.stringify(minimal));
+  const server = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Lense', site: 'portal' } }); t.after(() => server.close());
+  const base = new URL(server.url).origin;
+  let status = await fetch(base + '/_setup/api/status').then(response => response.json());
+  assert.equal(status.runtime.restartRequired, false);
+  assert.equal(status.runtime.restartCommand, `npx paqvilo lense dev --config ${/\s/.test(filename) ? `"${filename}"` : filename} --site portal`);
+  await fs.appendFile(path.join(directory, '.gitignore'), '/invented-output/\n');
+  await fs.appendFile(filename, '# comment only\n');
+  status = await fetch(base + '/_setup/api/status').then(response => response.json());
+  assert.equal(status.runtime.restartRequired, false);
+  assert.equal(status.stages.find(item => item.id === 10).status, 'blocked', 'the source folder is not an export yet');
+  await fs.writeFile(filename, YAML.stringify({ ...minimal, sites: { portal: { ...minimal.sites.portal, mirage: { port: 0, simulation: { level: 'dry-run' } } } } }));
+  status = await fetch(base + '/_setup/api/status').then(response => response.json());
+  assert.equal(status.runtime.restartRequired, true);
+  const projectFile = path.join(directory, 'mirage.project.yml');
+  await fs.writeFile(projectFile, YAML.stringify({ version: 2, runtime: { kind: 'dataverse-api' }, solutions: [] }));
+  const project = await startSetupServer({ directory, project: projectFile, processEnv: {}, runtime: { product: 'Mirage' } }); t.after(() => project.close());
+  const projectStatus = await fetch(new URL('api/status', project.url)).then(response => response.json());
+  assert.match(projectStatus.runtime.restartCommand, /^npx paqvilo mirage serve --project .*mirage\.project\.yml"?$/);
+  assert.equal(projectStatus.ready, true); assert.equal(projectStatus.stages.find(item => item.id === 10).status, 'done');
+});
+
+test('linked project files outside the catalogue folder, under .paqvilo/ or not project documents are refused without text or save target', async t => {
+  const directory = await work(t), outside = await work(t), filename = path.join(directory, 'paqvilo.config.yml');
+  await fs.mkdir(path.join(directory, '.paqvilo')); await fs.writeFile(path.join(directory, '.paqvilo', 'session-77777777.json'), '{"version":1,"token":"never-return-discovery"}');
+  await fs.writeFile(path.join(outside, 'private.json'), '{"version":2,"secret":"outside-tree-value"}');
+  await fs.writeFile(path.join(directory, 'notes.json'), '{"note":"never-return-notes"}');
+  const site = project => ({ source: '.', environments: { dev: 'http://127.0.0.1:8787' }, mirage: { port: 0, project } });
+  await fs.writeFile(filename, YAML.stringify({ sourceRoot: '.', defaultSite: 'a', sites: { a: site('./.paqvilo/session-77777777.json'), b: site(path.join(outside, 'private.json')), c: site('./notes.json'), d: site('../escape.project.yml') } }));
+  const server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const base = new URL(server.url).origin, status = await fetch(base + '/_setup/api/status').then(response => response.json());
+  assert.doesNotMatch(JSON.stringify(status), /never-return|outside-tree-value/);
+  assert.deepEqual(Object.keys(status.layers).sort(), ['personal', 'shared']);
+  assert.deepEqual(Object.fromEntries(status.findings.filter(item => item.code.startsWith('project-')).map(item => [item.site, [item.code, item.section]])),
+    { a: ['project-outside', '#advanced'], b: ['project-outside', '#advanced'], c: ['project-invalid', '#advanced'], d: ['project-outside', '#advanced'] });
+  const post = body => fetch(base + '/_setup/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base, 'X-Paqvilo-Setup-CSRF': status.csrf }, body: JSON.stringify(body) });
+  for (const layer of ['project:a', 'project:b', 'project:c']) {
+    const response = await post({ layer, revision: status.revision, text: 'version: 2\nruntime:\n  kind: model-driven\nsolutions: []\n' });
+    assert.equal(response.status, 400, layer); assert.match((await response.json()).error.message, /available configuration layer/);
+  }
+  assert.match(await fs.readFile(path.join(outside, 'private.json'), 'utf8'), /outside-tree-value/);
+  assert.match(await fs.readFile(path.join(directory, '.paqvilo', 'session-77777777.json'), 'utf8'), /never-return-discovery/);
+  const link = path.join(directory, 'linked');
+  try { await fs.symlink(outside, link, 'junction'); } catch { return t.diagnostic('symbolic links are unavailable here'); }
+  await fs.writeFile(path.join(outside, 'escape.project.yml'), 'version: 2\nruntime:\n  kind: model-driven\nsolutions: []\nenvironmentVariables:\n  x_Escaped: never-return-link\n');
+  await fs.writeFile(filename, YAML.stringify({ sourceRoot: '.', defaultSite: 'e', sites: { e: site('./linked/escape.project.yml') } }));
+  const escaped = await new SetupStore({ directory, processEnv: {} }).snapshot();
+  assert.doesNotMatch(JSON.stringify(escaped), /never-return-link/);
+  assert.equal(escaped.layers['project:e'], undefined); assert.equal(escaped.findings.find(item => item.site === 'e' && item.code.startsWith('project-'))?.code, 'project-outside');
+});
+
+test('the structured status carries secrets and connection settings as references only', async t => {
+  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml'), projectFile = path.join(directory, 'alpha.project.yml');
+  const secrets = { 'invented-vault/api-key': { source: 'environment', variable: 'INVENTED_PRIVATE_VARIABLE' }, 'invented-vault/blob': { source: 'protected', protectedValue: 'SW52ZW50ZWRQcm90ZWN0ZWQ=' } };
+  const connections = { 'invented-http': { provider: 'http', settings: { rewrites: { 'https://api.example.test/': 'http://127.0.0.1:7071/private-rewrite/' } } } };
+  await fs.writeFile(projectFile, YAML.stringify({ version: 2, runtime: { kind: 'model-driven' }, solutions: [], secrets, connections }));
+  await fs.writeFile(filename, YAML.stringify({ ...minimal, defaults: { mirage: { secrets, connections } }, sites: { portal: { ...minimal.sites.portal, mirage: { port: 0, secrets, connections, project: './alpha.project.yml' } } } }));
+  const status = await new SetupStore({ directory, processEnv: {} }).snapshot();
+  const { layers, ...structured } = status;
+  for (const text of [JSON.stringify(structured), JSON.stringify(Object.values(layers).map(({ text: verbatim, ...rest }) => rest))]) assert.doesNotMatch(text, /INVENTED_PRIVATE_VARIABLE|SW52ZW50ZWRQcm90ZWN0ZWQ|private-rewrite/);
+  const expected = { 'invented-vault/api-key': { kind: 'variable' }, 'invented-vault/blob': { kind: 'protected' } };
+  for (const mirage of [status.sites[0].mirage, status.sites[0].authoredMirage, status.settings.defaults.mirage, layers['project:portal'].values]) {
+    assert.deepEqual(mirage.secrets, expected); assert.deepEqual(mirage.connections['invented-http'], { provider: 'http', settings: ['rewrites'] });
+  }
+  assert.deepEqual(status.sites[0].effectiveMirage.secrets, expected);
+  assert.match(layers.shared.text, /INVENTED_PRIVATE_VARIABLE/, 'the verbatim YAML editor keeps the document');
+  const project = await new SetupStore({ directory, project: projectFile, processEnv: {} }).snapshot();
+  assert.deepEqual(project.settings.mirage.secrets, expected); assert.deepEqual(project.layers.shared.values.secrets, expected);
+});
+
+test('setup status exposes every key the guided forms read and writes a new personal layer in block style', async t => {
+  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml'), projectFile = path.join(directory, 'apps', 'alpha.project.yml');
+  await fs.mkdir(path.dirname(projectFile));
+  await fs.writeFile(projectFile, 'version: 2\nruntime:\n  kind: model-driven\nsolutions: []\n# flag comment\nenvironmentVariables:\n  x_InventedFlag: "on"\nlcid: 1036\n');
+  await fs.writeFile(filename, YAML.stringify({ ...minimal, includeCaution: true, agent: { enabled: true }, editor: 'code', sourceMaps: true, defaults: { mirage: { simulation: { level: 'dry-run' } } },
+    sites: { portal: { ...minimal.sites.portal, webFiles: { enabled: true }, inline: { enabled: false }, markup: { enabled: true }, mirage: { port: 0, project: './apps/alpha.project.yml' } } } }));
+  const store = new SetupStore({ directory, processEnv: {} });
+  const status = await store.snapshot();
+  assert.deepEqual([status.settings.includeCaution, status.settings.agent, status.settings.editor, status.settings.sourceMaps, status.settings.defaults], [true, { enabled: true }, 'code', true, { mirage: { simulation: { level: 'dry-run' } } }]);
+  assert.deepEqual([status.sites[0].webFiles, status.sites[0].inline, status.sites[0].markup], [{ enabled: true }, { enabled: false }, { enabled: true }]);
+  assert.deepEqual(status.layers['project:portal'].values.environmentVariables, { x_InventedFlag: 'on' }); assert.equal(status.layers['project:portal'].values.lcid, 1036);
+  const projectFileStandalone = path.join(directory, 'beta.project.yml');
+  await fs.writeFile(projectFileStandalone, YAML.stringify({ version: 2, defaultPortal: 'beta', portals: [{ id: 'beta', path: '.' }], references: [{ id: 'dev', origin: 'https://beta.example.test' }], presets: ['./pack.mjs'], lcid: 1033, watch: false, stateDirectory: '.paqvilo/beta' }));
+  const project = await new SetupStore({ directory, project: projectFileStandalone, processEnv: {} }).snapshot();
+  assert.deepEqual([project.settings.lcid, project.settings.watch, project.settings.stateDirectory, project.settings.references, project.settings.presets, project.settings.portals],
+    [1033, false, '.paqvilo/beta', [{ id: 'dev', origin: 'https://beta.example.test' }], ['./pack.mjs'], [{ id: 'beta', path: '.' }]]);
+  await edit(store, 'personal', [set(['sites', 'portal', 'mirage', 'confinePortalPages'], true)]);
+  const personal = await fs.readFile(path.join(directory, 'paqvilo.config.local.yml'), 'utf8');
+  assert.doesNotMatch(personal, /[{}]/); assert.match(personal, /^sites:\n {2}portal:\n {4}mirage:\n {6}confinePortalPages: true\n$/);
+});
+
+test('restart drift names the running site and command, is unknown when the identity fails and covers Lense settings', async t => {
+  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml');
+  const two = { ...minimal, sites: { portal: minimal.sites.portal, beta: { source: '.', environments: { dev: 'http://127.0.0.1:8788' }, mirage: { port: 0 } } } };
+  await fs.writeFile(filename, YAML.stringify(two));
+  const store = new SetupStore({ directory, config: filename, processEnv: {} });
+  const mirage = await createSetupHandler({ store, site: 'beta', command: 'mirage serve', runtime: { product: 'Mirage' } });
+  const first = await serve(t, mirage); t.after(() => first.server.close());
+  const status = await fetch(first.base + '/_setup/api/status').then(response => response.json());
+  assert.equal(status.runtime.site, 'beta'); assert.equal(status.runtime.restartCommand, `npx paqvilo mirage serve --config ${/\s/.test(filename) ? `"${filename}"` : filename} --site beta`);
+  assert.equal(status.commandArgs.site, '--site beta'); assert.match(status.runtime.restartScope, /Mirage runtime/);
+  const previous = process.env.MIRAGE_SETUP_RUNTIME;
+  process.env.MIRAGE_SETUP_RUNTIME = JSON.stringify({ site: 'beta', command: 'mirage dev' });
+  try {
+    const launched = await createSetupHandler({ store, runtime: { product: 'Mirage' } });
+    const { server, base } = await serve(t, launched); t.after(() => server.close());
+    const value = await fetch(base + '/_setup/api/status').then(response => response.json());
+    assert.match(value.runtime.restartCommand, /^npx paqvilo mirage dev --config .* --site beta$/);
+  } finally { if (previous === undefined) delete process.env.MIRAGE_SETUP_RUNTIME; else process.env.MIRAGE_SETUP_RUNTIME = previous; }
+  // A linked project that does not resolve makes the comparison unknown, never a silent false.
+  await fs.writeFile(path.join(directory, 'alpha.project.yml'), 'version: 2\nportals: []\n');
+  await fs.writeFile(filename, YAML.stringify({ ...two, sites: { ...two.sites, beta: { ...two.sites.beta, mirage: { port: 0, project: './alpha.project.yml' } } } }));
+  const broken = await createSetupHandler({ store, site: 'beta', runtime: { product: 'Mirage' } });
+  const { server, base } = await serve(t, broken); t.after(() => server.close());
+  let value = await fetch(base + '/_setup/api/status').then(response => response.json());
+  assert.equal(value.runtime.restartRequired, null); assert.match(value.runtime.restartReason, /^identity unavailable: .*portal source is required/);
+  assert.notEqual(value.stages.find(item => item.id === 10).status, 'done');
+  assert.equal(value.findings.find(item => item.layer === 'project:beta' && item.code === 'configuration').section, '#advanced');
+  // Lense compares the environments it loaded as well.
+  await fs.writeFile(filename, YAML.stringify(two));
+  const lense = await createSetupHandler({ store, runtime: { product: 'Lense', site: 'portal' } });
+  const lenseServer = await serve(t, lense); t.after(() => lenseServer.server.close());
+  value = await fetch(lenseServer.base + '/_setup/api/status').then(response => response.json());
+  assert.equal(value.runtime.restartRequired, false); assert.match(value.runtime.restartCommand, /^npx paqvilo lense dev /); assert.match(value.runtime.restartScope, /environments/);
+  await fs.writeFile(filename, YAML.stringify({ ...two, sites: { ...two.sites, portal: { ...two.sites.portal, environments: { dev: 'http://127.0.0.1:9797' } } } }));
+  value = await fetch(lenseServer.base + '/_setup/api/status').then(response => response.json());
+  assert.equal(value.runtime.restartRequired, true);
+  assert.deepEqual(value.stages.map(item => item.anchor), ['#overview', '#runtime-configuration', '#portals', '#portals', '#packs', '#personas', '#simulation', '#providers', '#identity', '#guidance']);
+});
+
+async function serve(t, handler) {
+  const server = http.createServer((req, res) => { handler(req, res).then(handled => { if (!handled) { res.writeHead(404); res.end(); } }); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { server: { close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }) }, base: `http://127.0.0.1:${server.address().port}` };
+}

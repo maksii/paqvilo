@@ -13,7 +13,7 @@ import { metadataWriteOperations, metadataWriteRoutes } from "./dataverse-metada
 import { install as installDuplicates, reset as resetDuplicates } from "./dataverse-duplicates.mjs";
 import { fieldSecurity } from "./dataverse-fls.mjs";
 import { EXTENSION as recordMessages } from "./dataverse-record-messages.mjs";
-import { install as installAsync, reset as resetAsync } from "./dataverse-async.mjs";
+import { install as installAsync, reset as resetAsync, close as closeAsync } from "./dataverse-async.mjs";
 import { install as installSolutions, reset as resetSolutions } from "./dataverse-solutions.mjs";
 import { install as installSecurityMessages, reset as resetSecurityMessages } from "./dataverse-security-messages.mjs";
 import { install as installSecurityMessages2 } from "./dataverse-security-messages2.mjs";
@@ -35,6 +35,19 @@ import { EXTENSION as addonGit } from "./dataverse-addon-git.mjs";
 import { EXTENSION as addonFeatureControl } from "./dataverse-addon-featurecontrol.mjs";
 import { EXTENSION as addonFlows } from "./dataverse-addon-flows.mjs";
 import { EXTENSION as addonPva } from "./dataverse-addon-pva.mjs";
+import { EXTENSION as hierarchy } from "./dataverse-hierarchy.mjs";
+import { EXTENSION as sharepointDocuments } from "./sharepoint-documents.mjs";
+import { EXTENSION as storageRouting } from "./dataverse-storage-routing.mjs";
+import { EXTENSION as calculated } from "./dataverse-calculated.mjs";
+import { EXTENSION as formula } from "./dataverse-formula.mjs";
+import { EXTENSION as rollup } from "./dataverse-rollup.mjs";
+import { EXTENSION as businessRules } from "./dataverse-business-rules.mjs";
+import { EXTENSION as currency } from "./dataverse-currency.mjs";
+import { EXTENSION as virtualProviders } from "./dataverse-virtual-providers.mjs";
+import { EXTENSION as stateTransitions } from "./dataverse-state-transitions.mjs";
+import { EXTENSION as cascade } from "./dataverse-cascade.mjs";
+import { EXTENSION as bpf } from "./dataverse-bpf.mjs";
+import { USER_SETTINGS_EXTENSION } from "./staff-session.mjs";
 
 const metadataRelationships = {
   name: "dataverse-metadata-relationships",
@@ -47,17 +60,32 @@ const metadataRelationships = {
 export const EXTENSIONS = [
   // First: the standard tables exist before the predefined and audit modules run, and the re-seed gives them privileges.
   { name: "dataverse-standard", install: installStandard, reset: resetStandard },
+  // After the standard tables and their relationships: hierarchical tables are read from the seeded metadata.
+  hierarchy,
   activityPointer,
   { name: "dataverse-files", install: installFiles, reset: resetFiles },
+  // Directly after the files module: file, image, note and attachment bytes move to the host storage routes (api.providers.storage).
+  storageRouting,
+  // Document locations keep their bytes in the storage provider the files module routes.
+  sharepointDocuments,
   { name: "dataverse-predefined", install: installPredefined, reset: resetPredefined },
   { name: "dataverse-audit", install: installAudit, reset: resetAudit },
   { name: "dataverse-metadata-tables", install: installMetadataTables, reset: resetMetadataTables },
   { name: "dataverse-elastic", install: installElastic, close: closeElastic },
   metadataRelationships,
+  // Contract modules that compute column values run before duplicate detection and field security read the row:
+  // calculated first, then formula and rollup columns over it, business rules and the currency of money values.
+  calculated,
+  formula,
+  rollup,
+  businessRules,
+  currency,
   { name: "dataverse-duplicates", install: installDuplicates, reset: resetDuplicates },
   fieldSecurity,
   recordMessages,
-  { name: "dataverse-async", install: installAsync, reset: resetAsync },
+  // Directly after record messages: it reuses their IsValidStateTransition registration.
+  stateTransitions,
+  { name: "dataverse-async", install: installAsync, reset: resetAsync, close: closeAsync },
   // After async: ImportSolutionAsync writes its asyncoperation rows into the table async seeds.
   { name: "dataverse-solutions", install: installSolutions, reset: resetSolutions },
   { name: "dataverse-security-messages", install: installSecurityMessages, reset: resetSecurityMessages },
@@ -79,6 +107,12 @@ export const EXTENSIONS = [
   addonFeatureControl,
   addonFlows,
   addonPva,
+  cascade,
+  bpf,
+  USER_SETTINGS_EXTENSION,
+  // The last beforeWrite: its check runs after every refusal of the other hooks; the provider's write itself runs in the
+  // records 'external' stage after the store write passed every check (module header).
+  virtualProviders,
   // Last: the registry holds every operation, so the sdkmessage rows cover them. The Solution's rows come from server.mjs.
   pluginRegistration,
 ];

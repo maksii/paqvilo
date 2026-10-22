@@ -1,4 +1,6 @@
 import { organizationRecord } from './organization-context.mjs';
+import { collectPackExport } from './pack-exports.mjs';
+import { createRequestContext, currentRequest, runWithRequest } from './request-context.mjs';
 // Workflows in the Dataverse API (briefs W1-W4): workflow rows from the Solution's Workflows folder with their activation
 // rows (W1), the activation rules on PATCH (W1), ExecuteWorkflow (W2), the run of a classic workflow (W3) and the classic
 // triggers on writes (W4: background jobs from committed writes, real-time runs inside the Web API write only).
@@ -7,15 +9,15 @@ import { organizationRecord } from './organization-context.mjs';
 //  - A cloud flow (category 5) runs its exported definition through flow-runtime, as a job. Its activation is the workflow
 //    row's statecode, which workflowsWithActivation copies onto the exported flow map (the portal trigger path reads that map).
 // Invented data only. Loopback only: nothing here makes an outbound request.
-import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
+import { systemIds } from "./runtime-clock.mjs";
 import path from "node:path";
-import { readLocalFile } from "../../lense/local-file.mjs";
 import { DataError } from "./data-error.mjs";
 import { descendants, parseSolutionXml } from "./solution-xml.mjs";
+import { solutionLayerFiles } from "./solution-content-fingerprint.mjs";
 import { contextUrl, dataverseError } from "./dataverse-odata.mjs";
-import { uuidV5 } from "./dataverse-security.mjs";
-import { executeFlowDefinition, inspectFlowTrigger } from "./flow-runtime.mjs";
+import { ownerColumns, uuidV5 } from "./dataverse-security.mjs";
+import { committedJobs, liveJob, stageCommittedJobs } from "./committed-work.mjs";
+import { runTrackedFlow, inspectFlowTrigger } from "./flow-runtime.mjs";
 
 const CATEGORY_WORKFLOW = 0;
 const CATEGORY_MODERN_FLOW = 5;
@@ -31,6 +33,7 @@ const FILE_LIMIT = 1024 * 1024;
 const COMMON = [
   "name", "uniquename", "category", "mode", "scope", "ondemand", "subprocess", "triggeroncreate", "triggerondelete",
   "triggeronupdateattributelist", "primaryentity", "runas", "istransacted", "asyncautodelete", "syncworkflowlogonfailure",
+  "processtriggerscope", "processtriggerformid",
 ];
 const PLACEHOLDER_MESSAGE = "Simulator: classic workflow XAML is not executed; register a trusted pack workflow handler or a mock.";
 const DISABLED_MESSAGE = "Simulator: classic workflow is disabled in this simulator.";
@@ -69,7 +72,7 @@ const errorNumber = (error) => {
   const code = dataverseError(error, {}).body?.error?.code;
   return /^0x[0-9a-f]+$/i.test(code ?? "") ? Number.parseInt(code, 16) | 0 : 0;
 };
-// A job ends Canceled when its work throws this error (jobStatus is read by dataverse-async systemJob); failure ends it Failed.
+// A job ends Canceled when its work throws this error (jobStatus is read by dataverse-async systemJob and runBackgroundJob); failure ends it Failed.
 const canceled = (message, innerCode = "0x0") => Object.assign(new DataError(message, 400, "InvalidRequest", { innerCode }), { jobStatus: JOB_STATUS.canceled });
 const failure = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x0" });
 
@@ -84,31 +87,36 @@ function fieldOf(node, name) {
   return element ? element.text.trim() : null;
 }
 
-// One file of the Workflows folder, read only when it is a regular file inside that folder and within the size limit.
-async function containedText(root, fileName) {
+// One companion file of a Workflows folder, matched by base name without case, as text within the size limit.
+function companionText(files, fileName) {
   if (!fileName) return null;
-  const real = await fs.realpath(path.join(root, path.basename(String(fileName).replace(/\\/g, "/")))).catch(() => null);
-  if (!real || path.dirname(real) !== root || (await fs.stat(real)).size > FILE_LIMIT) return null;
-  return readLocalFile(real, { root, maxBytes: FILE_LIMIT, encoding: "utf8" });
+  const file = files.get(path.basename(String(fileName).replace(/\\/g, "/")).toLowerCase());
+  try { return file ? file.read(FILE_LIMIT).toString("utf8") : null; } catch { return null; }
 }
 
 /**
  * The workflow facts of the Solution sources: every Workflows/*.data.xml with a WorkflowId, its XAML (classic) or JSON
- * (cloud flow) text read through the folder's confinement. Facts are plain values; seedWorkflows turns them into rows.
+ * (cloud flow) text. The folder name matches without case, in a directory or a Solution ZIP layer (solutionLayerFiles).
+ * Facts are plain values; seedWorkflows turns them into rows.
  */
-export async function readSolutionWorkflows(layers = []) {
+export async function readSolutionWorkflows(layers = [], { diagnostic = () => {} } = {}) {
   const facts = [];
   for (const layer of layers) {
     if (!layer.dir) continue;
-    const root = await fs.realpath(path.join(layer.dir, "Workflows")).catch(() => null);
-    if (!root) continue;
-    for (const name of await fs.readdir(root)) {
+    let files;
+    try {
+      files = solutionLayerFiles(layer, /^workflows$/i).filter((file) => /^[^/]+\/[^/]+$/.test(file.name));
+    } catch (error) {
+      diagnostic({ code: "SOLUTION_LAYER_COMPONENTS_UNREADABLE", source: layer.dir, message: error.message });
+      continue;
+    }
+    const byName = new Map(files.map((file) => [file.name.slice(file.name.indexOf("/") + 1).toLowerCase(), file]));
+    for (const file of files) {
+      const name = file.name.slice(file.name.indexOf("/") + 1);
       if (!/\.data\.xml$/i.test(name)) continue;
-      const real = await fs.realpath(path.join(root, name)).catch(() => null);
-      if (!real || path.dirname(real) !== root || (await fs.stat(real)).size > FILE_LIMIT) continue;
       let xml;
       try {
-        xml = parseSolutionXml(await readLocalFile(real, { root, maxBytes: FILE_LIMIT, encoding: "utf8" }));
+        xml = parseSolutionXml(file.read(FILE_LIMIT).toString("utf8"));
       } catch {
         continue;
       }
@@ -116,8 +124,8 @@ export async function readSolutionWorkflows(layers = []) {
       const id = bare(fieldOf(node, "WorkflowId"));
       if (!isGuid(id)) continue;
       const stem = name.replace(/\.data\.xml$/i, "");
-      const xaml = await containedText(root, fieldOf(node, "XamlFileName") ?? (/\.json$/i.test(stem) ? null : stem));
-      const json = await containedText(root, fieldOf(node, "JsonFileName") ?? (/\.json$/i.test(stem) ? stem : null));
+      const xaml = companionText(byName, fieldOf(node, "XamlFileName") ?? (/\.json$/i.test(stem) ? null : stem));
+      const json = companionText(byName, fieldOf(node, "JsonFileName") ?? (/\.json$/i.test(stem) ? stem : null));
       facts.push({
         id,
         name: fieldOf(node, "Name") ?? fieldOf(node, "UniqueName") ?? id,
@@ -137,6 +145,9 @@ export async function readSolutionWorkflows(layers = []) {
         istransacted: flag(fieldOf(node, "IsTransacted")),
         asyncautodelete: flag(fieldOf(node, "AsyncAutodelete")),
         syncworkflowlogonfailure: flag(fieldOf(node, "SyncWorkflowLogOnFailure")),
+        // Business rules (category 2) run on the server only for scope 2 (Entity); the form id scopes a Form rule.
+        processtriggerscope: numeric(fieldOf(node, "ProcessTriggerScope"), null),
+        processtriggerformid: isGuid(bare(fieldOf(node, "ProcessTriggerFormId"))) ? bare(fieldOf(node, "ProcessTriggerFormId")) : null,
         xaml,
         clientdata: json,
       });
@@ -181,16 +192,28 @@ function activationRowOf(definition, id, activationId) {
 }
 
 // Solution rows win on reseed: a Solution definition's row, and the activation rows of a Solution definition, are replaced.
+// A definition an earlier seed wrote (state.dataverse.sourceSeeded.workflow) that is gone from the sources is deactivated and
+// removed with its activation rows, as a Solution upgrade removes absent components. Returns { added, changed, removed }.
 function seedWorkflows(store, facts) {
   const organizationId = organizationIdOf(store);
-  if (!organizationId) return;
+  const counts = { added: 0, changed: 0, removed: 0 };
+  if (!organizationId) return counts;
   const table = rowsOf(store, "workflow");
+  const seeded = ((store.state.dataverse ??= {}).sourceSeeded ??= {});
   const ids = new Set(facts.map((fact) => fact.id));
+  const gone = new Set((seeded.workflow ?? []).filter((id) => !ids.has(id)));
+  const present = new Set(table.filter((row) => Number(row.type) !== TYPE.activation).map((row) => bare(row.workflowid)));
   for (let index = table.length - 1; index >= 0; index -= 1) {
-    const row = table[index];
-    if (ids.has(bare(row.workflowid)) || (Number(row.type) === TYPE.activation && ids.has(lookupId(row.parentworkflowid)))) store.removeRow("workflow", table, index);
+    const row = table[index], id = bare(row.workflowid), parent = Number(row.type) === TYPE.activation ? lookupId(row.parentworkflowid) : null;
+    if (ids.has(id) || (parent && ids.has(parent))) store.removeRow("workflow", table, index);
+    else if (gone.has(id) || (parent && gone.has(parent))) { store.removeRow("workflow", table, index); if (!parent) counts.removed += 1; }
   }
+  // A gone definition whose row the Solution data import already dropped still counts once (its activation was removed above).
+  for (const id of gone) if (!present.has(id)) counts.removed += 1;
+  for (const fact of facts) counts[present.has(fact.id) ? "changed" : "added"] += 1;
   for (const row of rowsOfFacts(facts, organizationId)) store.insertRow("workflow", table, structuredClone(row));
+  seeded.workflow = [...ids];
+  return counts;
 }
 
 // ---- Activation (W1) -------------------------------------------------------------------------------------------------
@@ -239,10 +262,10 @@ function syncActivation(api, operation, id) {
   if (Number(row.statecode) === STATE_ACTIVATED) {
     const activationId = activation?.workflowid ?? activationIdOf(organizationId, id);
     if (!activation) store.insertRow("workflow", table, activationRowOf(row, id, activationId));
-    row.activeworkflowid = lookup("workflow", activationId);
+    store.mutateRow("workflow", table, table.indexOf(row), { activeworkflowid: lookup("workflow", activationId) });
   } else {
     if (activation) store.removeRow("workflow", table, table.indexOf(activation));
-    row.activeworkflowid = null;
+    store.mutateRow("workflow", table, table.indexOf(row), { activeworkflowid: null });
   }
 }
 
@@ -268,19 +291,7 @@ export function workflowsWithActivation(workflows, store) {
 
 /** Trusted classic workflow handlers: a pack's `workflows` maps a workflow id or unique name to a function (see docs). */
 export function workflowHandlers(packs = []) {
-  const result = new Map();
-  for (const pack of packs) {
-    if (pack.workflows === undefined) continue;
-    const entries = pack.workflows;
-    if (!entries || typeof entries !== "object" || Array.isArray(entries)) throw new Error(`Data pack ${pack.id}: workflows must map workflow ids or unique names to functions`);
-    for (const [name, handler] of Object.entries(entries)) {
-      const key = bare(name).trim();
-      if (!key || typeof handler !== "function") throw new Error(`Data pack ${pack.id}: invalid workflows handler`);
-      if (result.has(key)) throw new Error(`Ambiguous workflows registration for ${name}`);
-      result.set(key, handler);
-    }
-  }
-  return result;
+  return new Map([...collectPackExport(packs, "workflows")].map(([key, { value }]) => [key, value]));
 }
 
 // Which run a classic workflow gets: an override (placeholder, mock or disabled), its pack handler, or the placeholder.
@@ -320,7 +331,7 @@ async function runClassic(api, config, run) {
   }
   const trace = [];
   const previous = store.flowChain;
-  store.flowChain = { id: outer?.id ?? randomUUID(), depth: (outer?.depth ?? 0) + 1 };
+  store.flowChain = { id: outer?.id ?? (api.ids ?? systemIds).uuid(), depth: (outer?.depth ?? 0) + 1 };
   let message;
   try {
     const result = await choice.handler({
@@ -337,8 +348,8 @@ async function runClassic(api, config, run) {
 // workflowlog row (a background run is also linked to its asyncoperation). Skipped for a successful async-autodelete run.
 function writeLog(store, api, run, { status, message = null, error = null, startedon }) {
   if (run.row.asyncautodelete && status === LOG_STATUS.succeeded) return;
-  rowsOf(store, "workflowlog").push({
-    workflowlogid: randomUUID(),
+  store.insertRow("workflowlog", rowsOf(store, "workflowlog"), {
+    workflowlogid: (api.ids ?? systemIds).uuid(),
     asyncoperationid: run.jobId ? lookup("asyncoperation", run.jobId) : null,
     status,
     stepname: "Simulator",
@@ -354,7 +365,7 @@ function writeLog(store, api, run, { status, message = null, error = null, start
 // processsession row for a real-time failure whose workflow asks for its log on failure (syncworkflowlogonfailure).
 function writeProcessSession(store, api, run, error) {
   rowsOf(store, "processsession").push({
-    processsessionid: randomUUID(), name: run.row.name, stepname: "Simulator", processid: lookup("workflow", bare(run.row.workflowid)),
+    processsessionid: (api.ids ?? systemIds).uuid(), name: run.row.name, stepname: "Simulator", processid: lookup("workflow", bare(run.row.workflowid)),
     regardingobjectid: run.regarding ? lookup(run.regarding.logicalName, run.regarding.id) : null,
     regardingobjecttypecode: run.regarding?.logicalName ?? null, errorcode: errorNumber(error), errortext: error.message,
     startedon: new Date(api.clock()).toISOString(), completedon: new Date(api.clock()).toISOString(),
@@ -387,10 +398,18 @@ function runCloudFlow(api, config, run) {
   }
   if (flow.mode !== "exported" || !flow.definition) throw canceled(PLACEHOLDER_CANCEL);
   const input = { ...structuredClone(run.target.row), SdkMessage: "Update" }; // unverified: LC-W2g, the message the flow receives
-  return api.change(() => api.runAtomic(() => executeFlowDefinition({
+  // Not isolated: each connector write is its own SDK boundary, so a later failed action keeps earlier completed writes
+  // (the HTTP and trigger paths do the same; mirage/docs/operations.md).
+  // Connector actions go through the host's connector runtime and the flow's own connection references. With the host's
+  // run store (api.flowRuns) the run is a tracked flowrun that can wait and resume (flow-runtime.mjs runTrackedFlow).
+  // unverified: the flowrun triggertype text of an ExecuteWorkflow run.
+  return runTrackedFlow({
+    runs: api.flowRuns ?? null, processId: bare(run.row.workflowid), trigger: "ExecuteWorkflow",
+    wrap: (fn) => api.change(() => api.store.transact(async () => await fn(), { cloneResult: false })),
     definition: flow.definition, input, store: api.store, serviceProfile: flow.serviceProfile, steps: flow.steps,
+    connectors: flow.connectors, connectionReferences: flow.connectionReferences, secrets: flow.secrets,
     diagnostic: (entry) => config.diagnostic?.({ ...entry, workflowId: bare(run.row.workflowid) }),
-  })));
+  });
 }
 
 // ---- ExecuteWorkflow (W2) --------------------------------------------------------------------------------------------
@@ -458,7 +477,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
       regardingobjectid: lookup(regarding.logicalName, regarding.id), primaryentitytype: regarding.logicalName,
       workflowactivationid: activation ? lookup("workflow", activation.workflowid) : null,
     },
-  }, () => attempt(api, config, { ...run, jobId }));
+  }, inRunContext(store, currentRequest()?.correlationId, caller, () => attempt(api, config, { ...run, jobId })));
   return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "asyncoperations/$entity"), asyncoperationid: jobId } };
 }
 
@@ -479,9 +498,9 @@ async function createFromTemplate(api, c) {
   if (typeof name !== "string" || !name) throw invalid("WorkflowName is required.", "0x80040203"); // unverified: message text
   if (Number(template?.type) !== TYPE.template) throw invalid("Only a workflow template can be copied.", "0x80040203"); // unverified: LC
   api.principals.authorize({ user: c.user, entity: "workflow", operation: "create", mapping: store.resolveMapping("workflow") });
-  const id = randomUUID();
+  const id = (api.ids ?? systemIds).uuid();
   const copy = {
-    workflowid: id, workflowidunique: randomUUID(), ...Object.fromEntries(COMMON.map((key) => [key, template[key] ?? null])),
+    workflowid: id, workflowidunique: (api.ids ?? systemIds).uuid(), ...Object.fromEntries(COMMON.map((key) => [key, template[key] ?? null])),
     name, type: TYPE.definition, statecode: 0, statuscode: STATUS.draft, activeworkflowid: null,
     ...(template.xaml !== undefined ? { xaml: template.xaml } : {}), ...(template.clientdata !== undefined ? { clientdata: template.clientdata } : {}),
   };
@@ -530,36 +549,64 @@ function inScope(store, definition, record) {
   return false;
 }
 
+// A background classic run gets its own request context: the starting request's correlation as the parent, mode async,
+// the run's caller as principal.
+const inRunContext = (store, correlationId, principal, fn) => () => runWithRequest(
+  createRequestContext({ correlationId: correlationId ?? undefined, clock: store.clock, ids: store.ids }).child({ mode: "async", principal }), fn);
+
 // Background triggers. A committed write (portal or API: the store records both) starts one job per matching definition.
-// The job runs like any classic run (placeholder, handler or mock) on a later tick, so the write's response never waits for it.
-function onCommitted(api, config, events) {
+// Selection runs inside the triggering transaction (a data.mjs commit stager): the Ready asyncoperation rows commit or roll
+// back with the write, and the store's durable job runner (committed-work.mjs) runs them on a later tick, so the write's
+// response never waits. A restart resumes Ready rows; a run whose claim rolls back three times ends Failed.
+// The row carries operationtype 10 (Workflow) from staging to completion.
+const JOB_KIND = "workflow";
+function stageBackgroundRuns(api, config, events) {
   const { store } = api;
+  const entries = [];
   for (const event of events) {
     const changed = (event.submittedAttributes ?? []).map((name) => String(name).toLowerCase());
     for (const definition of classicDefinitions(store, event.entity)) {
       if (Number(definition.mode) !== 0 || !triggerFires(definition, event.operation, changed) || !inScope(store, definition, event.row)) continue;
-      startBackgroundRun(api, config, definition, event).catch((error) => api.log?.("classic workflow trigger failed", { message: error?.message }));
+      const mapping = store.resolveMapping(event.entity), logical = mapping.logicalName, id = bare(event.row?.[mapping.idColumn]);
+      const callerId = idOf(definition.owninguser) || idOf(store.tableRows("systemuser")[0]?.systemuserid);
+      const activation = activationOf(store, definition.workflowid);
+      entries.push({ definitionId: bare(definition.workflowid), callerId, chain: event.chain ?? null, event,
+        columns: { name: definition.name, operationtype: JOB_TYPE, regardingobjectid: lookup(logical, id), primaryentitytype: logical,
+          workflowactivationid: activation ? lookup("workflow", activation.workflowid) : null, ...ownerColumns(store, { id: callerId, logical_name: "systemuser" }) } });
     }
   }
+  return stageCommittedJobs(store, { kind: JOB_KIND, entries });
 }
 
-async function startBackgroundRun(api, config, definition, event) {
+// One background run: claim the Ready row (Locked, In Progress), run like any classic run (placeholder, handler or mock),
+// then complete it Succeeded, Failed or Canceled. A row that left Ready (canceled through the Web API) is not run.
+async function runBackgroundJob(api, config, { id, payload, event }) {
   const { store } = api;
-  const mapping = store.resolveMapping(event.entity);
-  const logical = mapping.logicalName;
-  const id = bare(event.row?.[mapping.idColumn]);
-  const callerId = idOf(definition.owninguser) || idOf(store.tableRows("systemuser")[0]?.systemuserid);
-  const activation = activationOf(store, definition.workflowid);
-  const run = {
-    row: definition, target: { logicalName: logical, id, row: event.row }, caller: { systemuserid: callerId }, inputs: {},
-    regarding: { logicalName: logical, id }, realtime: false, chain: event.chain ?? null,
-  };
-  let jobId = null;
-  jobId = await api.systemJob({
-    name: definition.name, operationtype: JOB_TYPE, callerId,
-    columns: { regardingobjectid: lookup(logical, id), primaryentitytype: logical, workflowactivationid: activation ? lookup("workflow", activation.workflowid) : null },
-  }, () => attempt(api, config, { ...run, jobId }));
-  return jobId;
+  const stamp = () => new Date(api.clock()).toISOString();
+  let claimed = false;
+  await api.change(() => store.transact(() => {
+    const { rows, index } = liveJob(store, id);
+    if (index < 0 || Number(rows[index].statecode) !== 0) return;
+    Object.assign(rows[index], { statecode: 2, statuscode: 20, startedon: stamp() });
+    claimed = true;
+  }));
+  if (!claimed) return;
+  let patch;
+  try {
+    const definition = workflowRow(store, payload.definitionId);
+    if (!definition) throw canceled("The workflow definition is no longer available.");
+    const mapping = store.resolveMapping(event.entity), logical = mapping.logicalName, rowId = bare(event.row?.[mapping.idColumn]);
+    const run = { row: definition, target: { logicalName: logical, id: rowId, row: event.row }, caller: { systemuserid: payload.callerId }, inputs: {},
+      regarding: { logicalName: logical, id: rowId }, realtime: false, chain: payload.chain ?? null, jobId: id };
+    const message = await inRunContext(store, event.correlationId ?? payload.chain?.id, run.caller, () => attempt(api, config, run))();
+    patch = { statecode: 3, statuscode: JOB_STATUS.succeeded, completedon: stamp(), message: message ?? null };
+  } catch (error) {
+    patch = { statecode: 3, statuscode: error?.jobStatus ?? JOB_STATUS.failed, completedon: stamp(), message: error.message, errorcode: errorNumber(error) };
+  }
+  await api.change(() => store.transact(() => {
+    const { rows, index } = liveJob(store, id);
+    if (index >= 0) Object.assign(rows[index], patch);
+  }));
 }
 
 // Real-time triggers run inside the write. beforeWrite sees the submitted attributes, which afterWrite does not, so each
@@ -573,7 +620,8 @@ function noteWrite(c, mapping, { operation, data, existing }) {
 }
 
 // A real-time run is part of the write: a throw rejects the write, and the write's transaction rolls it back. Only handler and
-// mock runs act; a placeholder records its diagnostic and lets the write succeed. The Web API path only (record hooks).
+// mock runs act; a placeholder records its diagnostic and lets the write succeed. Every write through the record hooks runs
+// them: Web API, SDK and portal /_api writes alike.
 // ponytail: a real-time failure keeps no workflowlog or processsession row (the write's rollback removes them); write them
 // outside the rolled-back transaction when syncworkflowlogonfailure must be seen after a refusal.
 async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
@@ -589,6 +637,9 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
   for (const definition of classicDefinitions(store, logical)) {
     if (Number(definition.mode) !== 1 || !triggerFires(definition, operation, entry.changed) || !inScope(store, definition, record)) continue;
     const run = { row: definition, target: { logicalName: logical, id: rowId, row: record }, caller: c.caller ?? null, inputs: {}, regarding: { logicalName: logical, id: rowId }, realtime: true, jobId: null };
+    // A pack handler may change any state directly: promote the write's row journal to a full backup first (as an executing
+    // plug-in step does), so its writes roll back and persist with the request. Core-only runs stay on the journal.
+    if (classicChoice(config, definition).mode === "handler") store.promoteRowTransaction();
     try {
       await runClassic(api, config, run);
     } catch (error) {
@@ -639,9 +690,15 @@ export function classicWorkflowsView(store, overrides = {}) {
 const subscriptions = new WeakMap();
 export function workflowExtension(config = {}) {
   const settings = { handlers: new Map(), overrides: {}, cloudFlow: null, diagnostic: null, ...config };
-  const seed = (api) => api.store.transact(() => seedWorkflows(api.store, settings.facts ?? []));
+  // facts: the Solution workflow facts, or a getter over the current sources (source-organization-extensions.mjs refresh).
+  const factsOf = () => (typeof settings.facts === "function" ? settings.facts() : settings.facts) ?? [];
+  const seed = (api) => api.store.transact(() => { seedWorkflows(api.store, factsOf()); });
   return {
     name: "dataverse-workflows",
+    /** Reseeds definitions and activations from facts inside the caller's transaction; returns { workflow: { added, changed, removed } }. */
+    sync(api, facts = factsOf()) {
+      return { workflow: seedWorkflows(api.store, facts) };
+    },
     install(api) {
       api.recordHooks.add("beforeWrite", (c, mapping, info) => {
         if (mapping.logicalName === "workflow") return workflowWriteRule(c, mapping, info);
@@ -651,8 +708,13 @@ export function workflowExtension(config = {}) {
         if (mapping.logicalName === "workflow") syncActivation(api, info.operation, info.id);
         return afterWriteTriggers(api, settings, c, mapping, info);
       });
+      // Background runs are durable committed jobs (committed-work.mjs): the stager writes their Ready rows inside the
+      // triggering commit, and the store's one job runner runs them FIFO with its recovery and poison rules.
       subscriptions.get(api.store)?.();
-      subscriptions.set(api.store, api.store.addCommittedEvents((events) => onCommitted(api, settings, events)));
+      const jobs = committedJobs(api.store);
+      const unstage = api.store.addCommitStager((events) => stageBackgroundRuns(api, settings, events));
+      const unregister = jobs.register(JOB_KIND, (job) => runBackgroundJob(api, settings, job), settings.diagnostic ? { diagnostic: settings.diagnostic } : {});
+      subscriptions.set(api.store, () => { unstage(); unregister(); });
       api.registry.register({
         name: "ExecuteWorkflow", kind: "action", binding: "entity", entity: "workflow", csdl: EXECUTE_CSDL,
         handle: (c) => executeWorkflow(api, settings, c, bare(c.target?.id), c.body),

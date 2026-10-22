@@ -1,3 +1,5 @@
+import { bindSiteSettings, effectiveEnvironmentVariables } from './secret-resolver.mjs';
+
 const safeName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 512 && !['__proto__', 'prototype', 'constructor'].includes(name) && !/[\u0000-\u001f\u007f]/.test(name);
 const truth = value => value === true || value === 1 || (typeof value === 'string' && value.toLowerCase() === 'true');
 const invalid = message => Object.assign(new Error(message), { status: 400, code: 'InvalidPortalOverride' });
@@ -24,9 +26,23 @@ export function validatePortalOverrides(value = {}) {
   return value;
 }
 
+/**
+ * E2: site settings bound to environment variables (importer `settingEnvironmentVariables`) take the effective value of
+ * `state`; a Secret binding resolves through `resolver` as `principalId` and stays unset otherwise. Returns the source
+ * with those settings, so applyPortalOverrides still lets portalOverrides.settings win. The bound source feeds rendering
+ * only: /_sim site-setting entries read the unbound source, and page inspection redacts every name in the explicit
+ * `secretSettingNames` list (carried through applyPortalOverrides), so a resolved secret never reaches /_sim payloads.
+ */
+export async function bindPortalEnvironment(source, state, { resolver = null, principalId = null, diagnostic = () => {} } = {}) {
+  const bindings = source?.settingEnvironmentVariables;
+  if (!bindings || !Object.keys(bindings).length) return source;
+  const { settings, secretNames } = await bindSiteSettings(source.settings ?? {}, bindings, effectiveEnvironmentVariables(state), { resolver, principalId, diagnostic });
+  return { ...source, settings, secretSettingNames: [...secretNames] };
+}
+
 export function applyPortalOverrides(source, overrides = {}) {
   validatePortalOverrides(overrides);
-  const portal = { ...source };
+  const portal = { ...source, secretSettingNames: [...source.secretSettingNames ?? []] };
   for (const section of ['settings', 'snippets']) {
     portal[section] = { ...source[section] };
     for (const [name, value] of Object.entries(overrides[section] ?? {})) {

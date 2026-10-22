@@ -6,6 +6,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {Worker,MessageChannel,receiveMessageOnPort} from 'node:worker_threads';
 import {DataError} from './data-error.mjs';
+import {collectPackExport} from './pack-exports.mjs';
 import {localOrganizationService,validateServiceProfile,sdkValueToRecord} from './local-organization-service.mjs';
 import {queryExpressionToFetch,prepareFetchForSdk,fetchResultToSdkCollection} from './plugin-sdk-query.mjs';
 import {isExactNumeric} from './exact-numeric.mjs';
@@ -23,7 +24,12 @@ function clrParentIdentity(executable){
 }
 const pooledHosts=new Map();
 process.once('exit',()=>{for(const session of pooledHosts.values())if(session.pid)try{process.kill(session.pid);}catch{}});
-export const clrExecutionDepth=()=>executionDepth;
+// One Depth per synchronous execution chain, shared by CLR steps and JavaScript handlers (exported-plugins.mjs), so an
+// alternating JS/CLR chain is capped at eight in total and each side reports the same contiguous Depth. Both paths run
+// synchronously (CLR waits with Atomics.wait), so the counter is balanced within one call stack.
+export const pluginExecutionDepth=()=>executionDepth;
+export const enterPluginExecution=()=>++executionDepth;
+export const leavePluginExecution=()=>{executionDepth--;};
 function clrTimeout(descriptor){
  const value=descriptor.timeoutMs;
  if(value!==undefined&&(!Number.isSafeInteger(value)||value<=0))fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
@@ -175,7 +181,7 @@ export async function prepareClrRuntime(descriptor,{compiler}={}){
   throw cause;
  }
 }
-export function pluginRuntimeDescriptors(packs=[]){const descriptors=new Map();for(const pack of packs)for(const[id,descriptor]of Object.entries(pack.pluginRuntimes??{})){const key=canon(id);if(!uuid.test(key)||descriptors.has(key))fail('Invalid or ambiguous CLR plugin step registration.');descriptors.set(key,descriptor);}return descriptors;}
+export function pluginRuntimeDescriptors(packs=[]){let collected;try{collected=collectPackExport(packs,'pluginRuntimes');}catch(error){fail(error.message);}return new Map([...collected].map(([key,{value}])=>[key,value]));}
 export async function preparePluginRuntimes(packs=[]){const runtimes=new Map();for(const[id,descriptor]of pluginRuntimeDescriptors(packs))runtimes.set(id,await prepareClrRuntime(descriptor));return runtimes;}
 const typed=(type,value)=>({$type:type,value});
 export function recordToSdkEntity(store,entity,row,columns={allColumns:true}){
@@ -224,17 +230,18 @@ export function sdkQueryParameters(query){
  if(query.topCount!=null)params.$top=query.topCount;else if(query.pageInfo?.count>0)params.$top=query.pageInfo.count;if(!query.columnSet?.allColumns&&query.columnSet?.columns?.length)params.$select=query.columnSet.columns.map(name).join(',');return params;
 }
 export function dispatchSdkCall(args){const {store,message}=args,previous=store.pluginParentContext;if(message.parentContext){if(message.parentContext.$type!=='ExecutionContext'||Buffer.byteLength(JSON.stringify(message.parentContext))>4*1024*1024)fail('SDK ParentContext is invalid or excessive.','LocalPluginInputLimit',413);store.pluginParentContext=structuredClone(message.parentContext);}try{return dispatchSdkCallCore(args);}finally{store.pluginParentContext=previous;}}
-function dispatchSdkCallCore({store,profile,message,callerProfiles=[]}){
+function dispatchSdkCallCore({store,profile,message,callerProfiles=[],diagnostic}){
  const selected=message.userId===null?profile:[profile,...callerProfiles].find(candidate=>canon(candidate.userId)===canon(message.userId));
  if(!selected)fail('SDK impersonation is not covered by the configured backend profiles.','LocalPluginImpersonationUnsupported',501);
  validateServiceProfile(selected);
  const previousExecutionUser=store.pluginExecutionUserId;store.pluginExecutionUserId=selected.userId;
- try{return dispatchSdkCallAuthorized({store,profile:selected,message});}finally{store.pluginExecutionUserId=previousExecutionUser;}
+ try{return dispatchSdkCallAuthorized({store,profile:selected,message,diagnostic});}finally{store.pluginExecutionUserId=previousExecutionUser;}
 }
-function dispatchSdkCallAuthorized({store,profile,message}){
+function dispatchSdkCallAuthorized({store,profile,message,diagnostic}){
  const readExecute=message.method==='Execute'&&['Retrieve','RetrieveMultiple'].includes(message.arguments?.[0]?.requestName);
  if(store.pluginReadOnly&&['Create','Update','Delete','Associate','Disassociate','Execute'].includes(message.method)&&!readExecute)fail('SDK writes from a RetrieveMultiple observer require a serialized read-operation transaction adapter.','LocalPluginReadWriteUnsupported',501);
- const service=localOrganizationService(store,profile);if(message.userId!==null&&canon(message.userId)!==canon(profile.userId))fail('SDK impersonation is not covered by the configured backend profile.','LocalPluginImpersonationUnsupported',501);
+ // The organization's internal entries (store.recordPipeline): an SDK call runs the Web API write rules and read projection.
+ const service=localOrganizationService(store,profile,undefined,{diagnostic});if(message.userId!==null&&canon(message.userId)!==canon(profile.userId))fail('SDK impersonation is not covered by the configured backend profile.','LocalPluginImpersonationUnsupported',501);
  // null factory user requests Dataverse SYSTEM. It must be explicitly bound, never granted by default.
  if(message.userId===null&&profile.allowSystemFactory!==true)fail('CreateOrganizationService(null) requires explicit system-factory authorization.','LocalPluginImpersonationUnsupported',501);
  const args=message.arguments??[];switch(message.method){
@@ -242,7 +249,10 @@ function dispatchSdkCallAuthorized({store,profile,message}){
    const request=args[0],parameters=request?.parameters?.values;
    if(request?.$type!=='OrganizationRequest'||request.parameters?.$type!=='ParameterCollection'||!parameters||typeof parameters!=='object'||Array.isArray(parameters))fail('SDK Execute requires a typed OrganizationRequest and ParameterCollection.','LocalPluginSdkUnsupported',501);
    const shapes={Create:['Target'],Update:['Target'],Delete:['Target'],Retrieve:['Target','ColumnSet'],RetrieveMultiple:['Query'],CreateMultiple:['Targets'],UpdateMultiple:['Targets'],Associate:['Target','Relationship','RelatedEntities'],Disassociate:['Target','Relationship','RelatedEntities']},shape=shapes[request.requestName];
-   if(!shape||Object.keys(parameters).some(key=>!shape.includes(key)&&!['tag','partitionId','SessionToken'].includes(key))||shape.some(key=>!Object.hasOwn(parameters,key)))fail('Unsupported SDK Execute request or parameters: '+request.requestName,'LocalPluginSdkUnsupported',501);
+   // UnMaskedData (Learn optional-parameters#return-unmasked-data): Retrieve and RetrieveMultiple only, exact case, a boolean.
+   const optional=['tag','partitionId','SessionToken',...(['Retrieve','RetrieveMultiple'].includes(request.requestName)?['UnMaskedData']:[])];
+   if(!shape||Object.keys(parameters).some(key=>!shape.includes(key)&&!optional.includes(key))||shape.some(key=>!Object.hasOwn(parameters,key)))fail('Unsupported SDK Execute request or parameters: '+request.requestName,'LocalPluginSdkUnsupported',501);
+   if(parameters.UnMaskedData!=null&&typeof parameters.UnMaskedData!=='boolean')fail('SDK UnMaskedData requires a boolean.','LocalPluginSdkUnsupported',501);
    for(const key of ['partitionId','SessionToken'])if(parameters[key]!=null&&typeof parameters[key]!=='string')fail('SDK '+key+' requires a string.','LocalPluginSdkUnsupported',501);
    if(Object.hasOwn(parameters,'tag')&&(typeof parameters.tag!=='string'||Buffer.byteLength(parameters.tag)>8192))fail('SDK tag requires a bounded string.','LocalPluginSdkUnsupported',501);
    const inherited=message.parentContext?.values?.SharedVariables?.values;
@@ -252,7 +262,7 @@ function dispatchSdkCallAuthorized({store,profile,message}){
    if(['CreateMultiple','UpdateMultiple'].includes(method)){const targets=parameters.Targets;if(targets?.$type!=='EntityCollection'||!Array.isArray(targets.entities))fail('Bulk SDK request requires a typed Targets EntityCollection.');arguments_=[targets];}
    if(['Delete','Retrieve'].includes(method)){const target=parameters.Target;if(target?.$type!=='EntityReference')fail('SDK '+method+'Request requires an EntityReference.');arguments_=[target.logicalName,target,...(method==='Retrieve'?[parameters.ColumnSet]:[])];}
    const previousTag=store.pluginSdkTag;store.pluginSdkTag=parameters.tag;
-   try{return invokeSdkMethod({store,service,message:{...message,method,arguments:arguments_,requestOptions:{partitionId:parameters.partitionId,sessionToken:parameters.SessionToken}}},true);}finally{store.pluginSdkTag=previousTag;}
+   try{return invokeSdkMethod({store,service,message:{...message,method,arguments:arguments_,requestOptions:{partitionId:parameters.partitionId,sessionToken:parameters.SessionToken,...(parameters.UnMaskedData===true?{unmask:true}:{})}}},true);}finally{store.pluginSdkTag=previousTag;}
   }
   default:return invokeSdkMethod({store,service,message},false);
  }
@@ -280,8 +290,8 @@ function executeSdkMethod({store,service,message,responseToken}){
   case 'Associate':case 'Disassociate':return service.associate(args[0],sdkValueToRecord(args[1]),args[2],args[3],message.method==='Associate',{responseToken});
   case 'Retrieve':return recordToSdkEntity(store,args[0],service.get(args[0],args[1],args[2],{responseToken,...message.requestOptions}),args[2]);
   case 'RetrieveMultiple':{const query=args[0];let rows,entity=query.entityName;if(query.$type==='FetchExpression'||query.$type==='QueryExpression'&&(query.linkEntities?.length||query.pageInfo?.count>0||query.pageInfo?.returnTotalRecordCount===true)){
-   const xml=query.$type==='FetchExpression'?query.query:queryExpressionToFetch(query,store);entity=/<entity\s[^>]*name=["'](\w+)["']/i.exec(xml)?.[1];const answer=service.fetch(xml,{sdkResult:true,sdkQuery:query,sdkResponseToken:responseToken});return answer.sdkCollection??fetchResultToSdkCollection(store,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet});
-  }else if(['QueryExpression','QueryByAttribute'].includes(query.$type)){const params=sdkQueryParameters(query),primary=service.mapping(entity).idColumn;if(!query.columnSet?.allColumns&&!query.columnSet?.columns?.length)params.$select=primary;if(params.$select&&!params.$select.split(',').includes(primary))params.$select+=','+primary;const answer=service.query(entity,params,{responseToken,sdkQuery:query});if(answer.sdkCollection)return answer.sdkCollection;rows=answer.value;}
+   const xml=query.$type==='FetchExpression'?query.query:queryExpressionToFetch(query,store);entity=/<entity\s[^>]*name=["'](\w+)["']/i.exec(xml)?.[1];const answer=service.fetch(xml,{sdkResult:true,sdkQuery:query,sdkResponseToken:responseToken,unmask:message.requestOptions?.unmask===true});return answer.sdkCollection??fetchResultToSdkCollection(store,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet});
+  }else if(['QueryExpression','QueryByAttribute'].includes(query.$type)){const params=sdkQueryParameters(query),primary=service.mapping(entity).idColumn;if(!query.columnSet?.allColumns&&!query.columnSet?.columns?.length)params.$select=primary;if(params.$select&&!params.$select.split(',').includes(primary))params.$select+=','+primary;const answer=service.query(entity,params,{responseToken,sdkQuery:query,unmask:message.requestOptions?.unmask===true});if(answer.sdkCollection)return answer.sdkCollection;rows=answer.value;}
   else fail('Unsupported SDK query structure.','LocalPluginSdkUnsupported',501);return {$type:'EntityCollection',entities:rows.map(row=>recordToSdkEntity(store,entity,row,query.columnSet??{allColumns:true})),entityName:entity,minActiveRowVersion:'-1',moreRecords:false,totalRecordCount:-1,pagingCookie:null};}
   default:fail('Unsupported SDK service method: '+message.method,'LocalPluginSdkUnsupported',501);
  }
@@ -399,7 +409,7 @@ function executeClrSnapshot(runtime,input,{store,diagnostic},snapshot,session){
      diagnostic({code:'PLUGIN_CLR_HOST_STARTED',pid:ownedPid,pooled:Boolean(session)});
     }else if(message.kind==='rpc'){
      let value,error;
-     try{if(++calls>1000)fail('CLR SDK call limit exceeded.','LocalPluginCallLimit',413);value=dispatchSdkCall({store,profile:runtime.descriptor.serviceProfile,callerProfiles:runtime.descriptor.sdkCallerProfiles,message});}
+     try{if(++calls>1000)fail('CLR SDK call limit exceeded.','LocalPluginCallLimit',413);value=dispatchSdkCall({store,profile:runtime.descriptor.serviceProfile,callerProfiles:runtime.descriptor.sdkCallerProfiles,message,diagnostic});}
      catch(cause){error={code:cause.code??'LocalPluginSdkError',message:cause.message};const inner=cause.details?.innerCode??(cause.code==='NotFound'?'0x80040217':null);if(/^0x[a-f\d]{8}$/i.test(inner??''))error.organizationServiceFault={errorCode:parseInt(inner,16)|0,message:cause.message,timestamp:new Date().toISOString(),errorDetails:cause.details?.sourceException?.exceptionDetails??{},provenance:'Local modeled SDK fault; native timestamp/correlation/stack are not available'};}
      port1.postMessage({kind:'rpc-answer',value,error,...(session?{invocationId}:{})});
     }else if(message.kind==='trace'){
@@ -445,5 +455,5 @@ export function clrContext({runtime,store,step,entity,operation,stage,target,rec
   const values=operation==='create'?{id:typed('Guid',record[primary])}:operation==='createmultiple'?{Ids:{$type:'GuidArray',values:record.bulkIds.map(value=>typed('Guid',value))}}:operation==='retrieve'?{BusinessEntity:frame.entity}:operation==='retrievemultiple'?{BusinessEntityCollection:frame.collection}:{};
   frame.outputParameters={$type:'ParameterCollection',values:{...frame.outputParameters.values,...values}};frame.systemOutputsPopulated=true;
  }
- return {expectedAssemblyName:step.assemblyName??null,context:{InterfaceVersion:context.interfaceVersion??4,...(context.interfaceVersion===7?{InitiatingUserAgent:context.initiatingUserAgentPresent?'Mirage observed user-agent presence; value withheld':null,EnvironmentId:context.environmentId,TenantId:typed('Guid',context.tenantId),IsApplicationUser:context.isApplicationUser}:{}),IsPortalsClientCall:portalRequest,PortalsContactId:typed('Guid',portalContactId),RequestId:typed('Guid',frame.requestId??=randomUUID()),SecondaryEntityName:context.secondaryEntityName??'',Stage:stage,Mode:step.contract?.mode??0,Depth:parent?Number(parent.values.Depth)+1:depth,MessageName:messageName,PrimaryEntityName:entity,PrimaryEntityId:typed('Guid',record[primary]),UserId:typed('Guid',context.executionUserId??store.pluginExecutionUserId??descriptor.serviceProfile.userId),InitiatingUserId:parent?.values.InitiatingUserId??typed('Guid',context.initiatingUserId),OrganizationId:typed('Guid',context.organizationId),OrganizationName:context.organizationName??'',BusinessUnitId:typed('Guid',context.businessUnitId),CorrelationId:typed('Guid',frame.correlationId??=parent?.values.CorrelationId?.value??randomUUID()),OperationId:typed('Guid',frame.operationId??=randomUUID()),OperationCreatedOn:typed('DateTime',frame.createdOn??=new Date().toISOString()),IsInTransaction:store.pluginInTransaction===true,IsExecutingOffline:false,IsOfflinePlayback:false,IsolationMode:step.isolationMode??2,OwningExtension:{$type:'EntityReference',logicalName:'sdkmessageprocessingstep',id:step.id,name:step.name},ParentContext:preValidationParent||parent||null,...(bulk?{PreEntityImagesCollection:bulkImages(frame.previousRecords??[],false),PostEntityImagesCollection:bulkImages(stage===40?frame.records??[]:[],true)}:{PreEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(preImages).length?[{$type:'EntityImageCollection',values:preImages}]:[]},PostEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(postImages).length?[{$type:'EntityImageCollection',values:postImages}]:[]}})},inputParameters:{$type:'ParameterCollection',values:{...(portalRequest?context.portalInputParameters??{}:{}),...(frame.associationParameters??(bulk?{Targets:{$type:'EntityCollection',entities:frame.targets,moreRecords:false,totalRecordCount:-1,pagingCookie:null}}:operation==='retrievemultiple'?{Query:frame.query}:operation==='retrieve'?{Target:{$type:'EntityReference',logicalName:entity,id:record[primary]},ColumnSet:{$type:'ColumnSet',...frame.columns}}:{Target:operation==='delete'?{$type:'EntityReference',logicalName:entity,id:record[primary]}:recordToSdkEntity(store,entity,{...target,[primary]:record[primary]})})),...externalParameters}},outputParameters:frame.outputParameters,sharedVariables:frame.sharedVariables??{$type:'ParameterCollection',values:{}},preImages,postImages};
+ return {expectedAssemblyName:step.assemblyName??null,context:{InterfaceVersion:context.interfaceVersion??4,...(context.interfaceVersion===7?{InitiatingUserAgent:context.initiatingUserAgentPresent?'Mirage observed user-agent presence; value withheld':null,EnvironmentId:context.environmentId,TenantId:typed('Guid',context.tenantId),IsApplicationUser:context.isApplicationUser}:{}),IsPortalsClientCall:portalRequest,PortalsContactId:typed('Guid',portalContactId),RequestId:typed('Guid',frame.requestId??=randomUUID()),SecondaryEntityName:context.secondaryEntityName??'',Stage:stage,Mode:step.contract?.mode??0,Depth:Math.max(depth,parent?Number(parent.values.Depth)+1:0),MessageName:messageName,PrimaryEntityName:entity,PrimaryEntityId:typed('Guid',record[primary]),UserId:typed('Guid',context.executionUserId??store.pluginExecutionUserId??descriptor.serviceProfile.userId),InitiatingUserId:parent?.values.InitiatingUserId??typed('Guid',context.initiatingUserId),OrganizationId:typed('Guid',context.organizationId),OrganizationName:context.organizationName??'',BusinessUnitId:typed('Guid',context.businessUnitId),CorrelationId:typed('Guid',frame.correlationId??=parent?.values.CorrelationId?.value??randomUUID()),OperationId:typed('Guid',frame.operationId??=randomUUID()),OperationCreatedOn:typed('DateTime',frame.createdOn??=new Date().toISOString()),IsInTransaction:store.pluginInTransaction===true,IsExecutingOffline:false,IsOfflinePlayback:false,IsolationMode:step.isolationMode??2,OwningExtension:{$type:'EntityReference',logicalName:'sdkmessageprocessingstep',id:step.id,name:step.name},ParentContext:preValidationParent||parent||null,...(bulk?{PreEntityImagesCollection:bulkImages(frame.previousRecords??[],false),PostEntityImagesCollection:bulkImages(stage===40?frame.records??[]:[],true)}:{PreEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(preImages).length?[{$type:'EntityImageCollection',values:preImages}]:[]},PostEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(postImages).length?[{$type:'EntityImageCollection',values:postImages}]:[]}})},inputParameters:{$type:'ParameterCollection',values:{...(portalRequest?context.portalInputParameters??{}:{}),...(frame.associationParameters??(bulk?{Targets:{$type:'EntityCollection',entities:frame.targets,moreRecords:false,totalRecordCount:-1,pagingCookie:null}}:operation==='retrievemultiple'?{Query:frame.query}:operation==='retrieve'?{Target:{$type:'EntityReference',logicalName:entity,id:record[primary]},ColumnSet:{$type:'ColumnSet',...frame.columns}}:{Target:operation==='delete'?{$type:'EntityReference',logicalName:entity,id:record[primary]}:recordToSdkEntity(store,entity,{...target,[primary]:record[primary]})})),...externalParameters}},outputParameters:frame.outputParameters,sharedVariables:frame.sharedVariables??{$type:'ParameterCollection',values:{}},preImages,postImages};
 }

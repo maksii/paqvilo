@@ -180,6 +180,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
     ? Object.fromEntries(Object.entries(mappings).filter(([name]) => wanted.has(name)))
     : mappings;
   const environmentVariables = schema.environmentVariables;
+  const connectionReferences = schema.connectionReferences ?? [];
   const values = Object.values(filtered);
   return {
     roots: scan.inputs.filter((input) => input.type !== "missing" && input.type !== "unsupported").map((input) => input.input),
@@ -190,6 +191,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
     mappings: filtered,
     relationships,
     environmentVariables,
+    connectionReferences,
     diagnostics: schema.diagnostics,
     schema,
     stats: {
@@ -202,12 +204,17 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
       exactPrimaryIds: values.filter((m) => !m.idColumnInferred).length,
       completeTables: values.filter((m) => m.schemaComplete).length,
       environmentVariables: environmentVariables.length,
+      connectionReferences: connectionReferences.length,
       cache: scan.cache?.stats,
     },
   };
 }
 
-/** Rows that solution layers contribute to bootstrapped tables (environment variables). */
+/**
+ * Rows that solution layers contribute to bootstrapped tables: environment variables and connection references. A
+ * connection reference the Solution declares is seeded with `connectionid: null`; a deployment-profile entry of the
+ * same logical name binds it (its ConnectionId and ConnectorId win), as PAC deployment settings do.
+ */
 export function solutionSeedRows(metadata, { environmentVariables: overrides = {}, connectionReferences = [] } = {}) {
   const definitions = [],
     values = [];
@@ -243,12 +250,19 @@ export function solutionSeedRows(metadata, { environmentVariables: overrides = {
       });
   }
   const seeds = definitions.length ? { [ENV_DEFINITION]: definitions, [ENV_VALUE]: values } : {};
-  if (connectionReferences.length) seeds.connectionreference = connectionReferences.map(reference => ({
-    connectionreferenceid: sourceRecordId('connectionreference', reference.logicalName.toLowerCase()),
-    connectionreferencelogicalname: reference.logicalName,
-    connectionid: reference.connectionId, connectorid: reference.connectorId,
-    statecode: 0, statuscode: 1,
-  }));
+  const declared = new Map((metadata.connectionReferences ?? []).map(reference => [reference.logicalName.toLowerCase(), reference]));
+  const bound = new Map(connectionReferences.map(reference => [reference.logicalName.toLowerCase(), reference]));
+  const names = [...new Set([...declared.keys(), ...bound.keys()])];
+  if (names.length) seeds.connectionreference = names.map(name => {
+    const solution = declared.get(name), profile = bound.get(name);
+    return Object.fromEntries(Object.entries({
+      connectionreferenceid: sourceRecordId('connectionreference', name),
+      connectionreferencelogicalname: profile?.logicalName ?? solution.logicalName,
+      connectionreferencedisplayname: solution?.displayName,
+      connectionid: profile?.connectionId ?? null, connectorid: profile?.connectorId ?? solution?.connectorId,
+      statecode: 0, statuscode: 1,
+    }).filter(([, value]) => value !== undefined));
+  });
   return seeds;
 }
 
@@ -279,6 +293,7 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   // created through the metadata API is the user's and stays.
   const dataverseSeeded = (mapping) =>
     (mapping?.dataverseOnly === true || mapping?.standardTable === true) && mapping.dataverseMetadata?.createdByMetadataApi !== true;
+  const solutionRelationships = new Set(previous.relationshipMappings ?? []), relationshipsTaken = [];
   for (const [name, mapping] of Object.entries(metadata.mappings)) {
     const existing = result.mappings[name];
     if (!existing || imported(existing) || dataverseSeeded(existing)) {
@@ -288,8 +303,14 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
       // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
       // and create defaults (column defaults, state/status pairs) when it names none (as a preset
       // layered over the imported mappings does): a record created through it gets what Dataverse sets.
-      for (const key of ["relationships", "nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults", "labels"])
+      for (const key of ["nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults", "labels"])
         if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
+      // Relationships an earlier import gave this configured mapping follow the Solution (a relationship added to the
+      // source since then declares its navigation too); relationships the mapping declared itself stay.
+      if (mapping.relationships !== undefined && (existing.relationships === undefined || solutionRelationships.has(name))) {
+        existing.relationships = structuredClone(mapping.relationships);
+        relationshipsTaken.push(name);
+      }
     }
     result.tables[name] ??= [];
   }
@@ -331,6 +352,11 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   }
   // Source-derived rows: upsert by primary key and remove rows that left the source.
   const seeds = solutionSeedRows(metadata, { environmentVariables, connectionReferences });
+  const boundReferences = new Set((connectionReferences ?? []).map(reference => reference.logicalName.toLowerCase()));
+  for (const reference of metadata.connectionReferences ?? [])
+    if (!boundReferences.has(reference.logicalName.toLowerCase()))
+      importDiagnostics.push({ code: "SOLUTION_CONNREF_UNBOUND", severity: "warning", logicalName: reference.logicalName, ...(reference.connectorId ? { connectorId: reference.connectorId } : {}),
+        message: "The Solution declares this connection reference, but no deployment profile binds a ConnectionId; actions through it are unbound." });
   if (seeds.connectionreference && !result.mappings.connectionreference) result.mappings.connectionreference = {
     entitySet: 'connectionreferences', idColumn: 'connectionreferenceid', inferred: true,
   };
@@ -429,6 +455,7 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     fingerprint: metadata.fingerprint,
     ...(metadata.contentFingerprint !== undefined ? { contentFingerprint: metadata.contentFingerprint } : {}),
     ...(Object.keys(seeded).length ? { seededRows: seeded } : {}),
+    ...(relationshipsTaken.length ? { relationshipMappings: relationshipsTaken } : {}),
   };
   // Solution diagnostics describe the current layers only; earlier imports are replaced.
   result.simulator.importDiagnostics = [

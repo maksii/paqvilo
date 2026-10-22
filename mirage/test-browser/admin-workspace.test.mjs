@@ -176,7 +176,7 @@ test("deep links open records and portal items; access rules, personas and diagn
   assert.equal(await page.getByLabel("Filter audit by path", { exact: true }).inputValue(), "/missing-page/");
   // The rendered 404 page may add correlated Liquid reads; every listed request is for this path.
   await page.waitForFunction(() => {
-    const rows = [...document.querySelectorAll("tbody tr")];
+    const rows = [...document.querySelectorAll('table[data-table="audit"] tbody tr')];
     return rows.length >= 1 && rows.every((row) => row.textContent.includes("/missing-page/"));
   });
   assert.deepEqual(errors, []);
@@ -202,6 +202,8 @@ test("scenario drafts keep focus and selection when delayed persona and contact 
   });
   await page.goto(`${app.url}/_sim/#scenarios`, { waitUntil: 'commit' });
   await personas.arrived;
+  // "Save a scenario" is a collapsed section (RA-24).
+  await page.locator('[data-disclosure="scenario-save"] > summary').click();
   const name = page.getByLabel('Scenario name', { exact: true });
   await name.focus();
   personas.release();
@@ -255,6 +257,7 @@ test("scenarios, environment variables, references, enrichment, state transfer a
   const { app, context, page, errors, notice, evidence } = await fixture(t, { liveBridge: bridge, project, observed });
   // Saved scenario: preset + persona + permission mode, applied in one change.
   await page.goto(`${app.url}/_sim/#scenarios`);
+  await page.locator('[data-disclosure="scenario-save"] > summary').click();
   await page.getByLabel("Scenario name", { exact: true }).fill("Alex in sandbox");
   await page.getByLabel("Preset", { exact: true }).selectOption("only-alex");
   await page.getByLabel("Persona", { exact: true }).selectOption("alex");
@@ -302,6 +305,7 @@ test("scenarios, environment variables, references, enrichment, state transfer a
 
   // Enrichment: validation reads nothing; running imports complete pages through the bridge.
   const plan = [{ entity: "item", fetchXml: '<fetch><entity name="item"><attribute name="name"/></entity></fetch>', pageSize: 10, maxPages: 1 }];
+  await page.locator('[data-disclosure="reference-enrichment"] > summary').click();
   await page.getByLabel("Enrichment plan (JSON array)", { exact: true }).fill(JSON.stringify([{ ...plan[0], mode: "invalid" }]));
   await page.getByRole("button", { name: "Validate plan", exact: true }).click();
   await page.locator("#enrichment-report").getByText("mode", { exact: false }).waitFor();
@@ -318,6 +322,7 @@ test("scenarios, environment variables, references, enrichment, state transfer a
 
   // Runtime state: export, then import the export to roll the reference rows back.
   await page.goto(`${app.url}/_sim/#runtime`);
+  await page.locator('[data-disclosure="runtime-fingerprints"] > summary').click();
   await page.getByRole("heading", { name: "Fingerprints", exact: true }).waitFor();
   // Bootstrap facts come from status.bootstrap; this fixture loads no Solution layers.
   const fact = (title) => page.locator(".row").filter({ has: page.getByText(title, { exact: true }) }).locator(".row-detail");
@@ -369,7 +374,7 @@ test("live logs stream requests and Liquid reads with type/text filters, pause, 
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   const before = await page.locator(".log-row").count();
   await portal.goto(`${app.url}/secure/`);
-  await page.getByText("new entries waiting", { exact: false }).waitFor();
+  await page.locator("#log-status").getByText("new entries waiting", { exact: false }).waitFor();
   assert.equal(await page.locator(".log-row").count(), before, "paused logs do not move");
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await page.locator(".log-row").filter({ hasText: "GET /secure/" }).first().waitFor();
@@ -382,10 +387,10 @@ test("live logs stream requests and Liquid reads with type/text filters, pause, 
   await page.getByRole("button", { name: "Show correlated requests", exact: true }).click();
   await page.getByRole("heading", { name: "Request audit", exact: true }).waitFor();
   await page.getByRole("button", { name: /^Correlation / }).waitFor();
-  await page.waitForFunction(() => document.querySelector("tbody")?.textContent.includes("/secure/"));
+  await page.waitForFunction(() => document.querySelector('table[data-table="audit"] tbody')?.textContent.includes("/secure/"));
   // An anonymous visitor is redirected to the local sign-in page.
   await page.locator('[data-audit-filter="status"]').selectOption("3xx");
-  await page.waitForFunction(() => document.querySelector("tbody").textContent.includes("/secure/") && document.querySelectorAll("tbody tr").length === 1);
+  await page.waitForFunction(() => document.querySelector('table[data-table="audit"] tbody')?.textContent.includes("/secure/") && document.querySelectorAll('table[data-table="audit"] tbody tr').length === 1);
   assert.deepEqual(errors, []);
 });
 

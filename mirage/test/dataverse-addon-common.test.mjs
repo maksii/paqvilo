@@ -52,7 +52,7 @@ describe("addon handler registration", () => {
   });
 
   it("a dataverseMessages entry must be a function", () => {
-    assert.throws(() => addonHandlers([{ id: "a", dataverseMessages: { ContosoX: "text" } }]), /invalid dataverseMessages handler for ContosoX/);
+    assert.throws(() => addonHandlers([{ id: "a", dataverseMessages: { ContosoX: "text" } }]), /Data pack a: dataverseMessages must map message names to functions/);
     assert.throws(() => addonHandlers([{ id: "a", dataverseMessages: [] }]), /dataverseMessages must map message names to functions/);
   });
 

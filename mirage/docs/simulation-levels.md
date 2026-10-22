@@ -109,6 +109,28 @@ and credential hashes persist there. They do not become business DATA merely
 because a table has no declared pack owner. Undeclared business writes fail with
 `SimulationDataTargetRequired`; they never silently fall back to a sidecar.
 
+The control plane is private runtime state at every level: process definitions
+and their activation rows (`workflow`), environment variable definitions and
+values, connection references and the Power Pages configuration tables of both
+data models (the configuration tables Learn lists for the portals Web API, and
+the `powerpagesite`/`powerpagecomponent`/`mspp_*` tables), together with the
+deployment-profile pin and the operation choices (`/_sim/api/operations`,
+including explicit local flow activation). At level `simulation` only business
+tables need a pack DATA owner, so flow activation, a deployment-profile switch
+and a preset apply all work there; the preset's business rows are written to its
+DATA file. Process run history (`workflowlog`, `processsession`) is
+runtime-owned like `asyncoperation` and `plugintracelog`: at simulation and deep
+simulation it is kept in the private runtime state, so a classic workflow run on
+a business table needs a DATA owner only for the business table itself.
+
+Workflow rows have one writer: the organization seeds each Solution definition
+with its exported activation state and its activation row, and a state
+replacement (a `/_sim/` save) keeps them; the Solution component rows of forms,
+views, site maps and apps are materialized as before. A preset that replaces an
+organization table (for example `customapi`) keeps the rows the Solution sources
+seeded in that table: the preset's rows win by id, the Solution's other rows
+stay.
+
 Dry run does not load or save that checkpoint and disables persistent source,
 asset, evidence and certificate caches. Record edits, local registrations and
 password/secret hashes stay in memory. Configuration edits explicitly saved

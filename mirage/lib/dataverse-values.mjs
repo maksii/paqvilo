@@ -37,6 +37,24 @@ export function foldText(value, collation = "CI_AI") {
     text = text.normalize("NFD").replace(DIACRITICS, "");
   return text.toLowerCase();
 }
+/**
+ * Bucket key for equality under the column collation (groupby, distinct, countdistinct, TDS comparisons): text folds
+ * case and accents as foldText does, a lookup or GUID is its bare lowercase id, a number its exact canonical digits
+ * (so 1, 1.0 and an exact 1 agree), null, undefined and "" are one empty key. Filters use the same folding.
+ */
+export function equalityKey(value, collation = "CI_AI") {
+  const raw = isExactNumeric(value) ? value : scalar(value);
+  if (raw == null || raw === "") return "\u0000";
+  if (isExactNumeric(raw) || typeof raw === "number") {
+    const parts = decimalParts(raw);
+    return parts ? `n:${parts.coefficient}e${-parts.scale}` : `n:${raw}`;
+  }
+  if (typeof raw === "boolean") return `b:${raw}`;
+  const guid = guidKey(raw);
+  if (guid) return `g:${guid}`;
+  if (typeof raw === "string") return `s:${foldText(raw, collation)}`;
+  return `j:${JSON.stringify(raw)}`;
+}
 const collators = new Map();
 export function textCollator(collation = "CI_AI") {
   if (!collators.has(collation))

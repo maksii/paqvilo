@@ -1,5 +1,4 @@
 import {identityProviderSettings,identityProviderAssets} from '../mirage/lib/identity-provider-settings.mjs';
-import {dataverseSettings} from '../mirage/lib/dataverse-settings.mjs';
 // Configuration, from the most general to the most specific:
 //
 //   paqvilo.config.yml        the team's catalogue: every portal, its source folder, its
@@ -11,22 +10,16 @@ import {dataverseSettings} from '../mirage/lib/dataverse-settings.mjs';
 //
 // Later ones win. Nothing in lense/ needs to change to add a portal or an environment.
 import fs from 'node:fs';
-import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
-import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
-import { renderSettings } from '../mirage/lib/render-settings.mjs';
-import { platformConfig } from '../mirage/lib/platform-config.mjs';
 import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
-import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
 import { validateDebuggerMode } from './browser-profile.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
-import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
-import { simulationSettings } from '../mirage/lib/simulation-settings.mjs';
-import { modelDrivenSettings } from '../mirage/lib/model-driven-settings.mjs';
+import { resolveCatalogueSettings } from '../mirage/lib/config-keys.mjs';
+import '../mirage/lib/provider-modules.mjs';
 
 /**
  * @typedef {object} RouteRule
@@ -229,6 +222,13 @@ export function catalogueRoot(base, local = {}, settings = {}) {
   return root;
 }
 
+/**
+ * A site whose Mirage runtime is standalone (model-driven, dataverse-api) and that names no portal export and no environment:
+ * it runs only as a local Mirage (mirage dev/start --site), never as a Lense target, so it needs neither.
+ */
+export const mirageOnlySite = site => !site?.source && !Object.keys(site?.environments ?? {}).length
+  && typeof site?.mirage?.runtime?.kind === 'string' && site.mirage.runtime.kind !== 'power-pages';
+
 export function isExtract(dir) {
   return detectFormat(dir) !== null;
 }
@@ -245,33 +245,10 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
   if (value.presetConfiguration !== undefined && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error('mirage.presetConfiguration must be data-only or apply');
   if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
   if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
+  // Every key resolves through its row in mirage/lib/config-keys.mjs; compat and head become localOverrides.
   return {
-    ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
-    ...(value.runtime !== undefined ? { runtime: runtimeSettings(value.runtime) } : {}),
-    ...(value.simulation !== undefined ? { simulation: simulationSettings(value.simulation) } : {}),
-    ...(value.modelDriven !== undefined ? { modelDriven: modelDrivenSettings(value.modelDriven, 'mirage.modelDriven', configDir) } : {}),
-    ...(value.dataverse!==undefined?{dataverse:dataverseSettings(value.dataverse,'mirage.dataverse')}:{}),
-    ...contentPolicyDefaults(value),
-    project: value.project ? path.resolve(configDir, value.project) : null,
-    ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir, {sourceRoot,sourceDir}) } : {}),
+    ...resolveCatalogueSettings(value, { configDir, sourceRoot, sourceDir }),
     ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
-    solutionRoots: (value.solutionRoots ?? []).map((root) => path.resolve(sourceRoot, root)),
-    // Solution roots are a set layered in their dependency order; explicit keeps the listed order.
-    solutionOrder: value.solutionOrder === 'explicit' ? 'explicit' : 'derived',
-    dataPacks: (value.dataPacks ?? []).map((entry) => (typeof entry === 'string'
-      ? { id: null, module: path.resolve(configDir, entry) }
-      : { id: entry.id ?? null, module: path.resolve(configDir, entry.module) })),
-    port: Number.isInteger(value.port) ? value.port : null,
-    preset: value.preset ?? null,
-    ...(value.presetConfiguration ? {presetConfiguration:value.presetConfiguration} : {}),
-    ...(value.presetMode ? { presetMode: value.presetMode } : {}),
-    ...(value.render !== undefined ? { render: renderSettings(value.render) } : {}),
-    ...(value.personaContexts !== undefined ? { personaContexts: personaContextSettings(value.personaContexts) } : {}),
-    ...(value.platform !== undefined ? { platform: platformConfig(value.platform) } : {}),
-    // Passed through as configured; the Mirage validates it (observedConfig).
-    observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,
-    // standard or enhanced, only when configured; otherwise the source decides (lib/importer.mjs dataModel).
-    ...(value.dataModel ? { dataModel: value.dataModel } : {}),
   };
 }
 
@@ -297,6 +274,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   const site = Object.hasOwn(sites, siteName) ? sites[siteName] : null;
   if (!site) throw Object.assign(new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`), { code: initial && opts.site !== undefined ? 'invalid_argument' : 'configuration_error' });
   const siteFrom = opts.site ? 'command line' : s.PAQVILO_SITE ? settings.origin.PAQVILO_SITE : path.basename(configFile);
+  if (mirageOnlySite(site)) throw Object.assign(new Error(`Site "${siteName}" is a ${site.mirage.runtime.kind} Mirage site without a portal: it is not a Lense target. Start it with "npx paqvilo mirage dev --site ${siteName}".`), { code: 'mirage_only_site' });
 
   // --- which environment
   const envNames = Object.keys(site.environments);
@@ -391,17 +369,23 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     if (conflicts.length) throw new Error(`portals=all cannot be combined with ${conflicts.join(', ')}. Configure each portal with sites or PAQVILO_<SITE>_SOURCE / PAQVILO_<SITE>_ENV_<NAME>, or use --portals selected.`);
   }
   const validSources = new Set();
-  let initial = resolveConfig(catalogue, opts, { validSources });
-  if (initial.portals === 'selected') return { mode: 'selected', initial, targets: [initial] };
+  let initial;
+  try { initial = resolveConfig(catalogue, opts, { validSources }); } catch (error) {
+    // portals=all covers the portal sites; a Mirage-only default site does not select a Lense target.
+    if (error.code !== 'mirage_only_site' || opts.site !== undefined || (opts.portals ?? catalogue.settings.values.PAQVILO_PORTALS ?? catalogue.root.portals) !== 'all') throw error;
+    initial = null;
+  }
+  if (initial?.portals === 'selected') return { mode: 'selected', initial, targets: [initial] };
   const targets = [];
   const byOrigin = new Map();
   for (const [site, entry] of Object.entries(catalogue.sites)) {
+    if (mirageOnlySite(entry)) continue;
     const environments = Object.keys(entry.environments);
     if (!environments.length) throw new Error(`Site "${site}" has no environments configured for portals=all`);
     for (const env of environments) {
-      const target = site === initial.siteName && env === initial.envName ? initial
+      const target = site === initial?.siteName && env === initial?.envName ? initial
         : resolveConfig(catalogue, { ...opts, site, env }, { initial: false, validSources, checkSource: false });
-      if(target.caution && !catalogue.root.includeCaution && !(site===initial.siteName&&opts.env===env))continue;
+      if(target.caution && !catalogue.root.includeCaution && !(site===initial?.siteName&&opts.env===env))continue;
       if (target !== initial) target.chosen = { site: 'configured portal coverage', env: 'configured portal coverage' };
       const previous = byOrigin.get(target.origin);
       if (previous) throw new Error(`Duplicate portal origin ${target.origin}: "${previous.siteName} @ ${previous.envName}" and "${site} @ ${env}". Each origin must identify exactly one portal/environment in portals=all.`);
@@ -410,6 +394,10 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     }
   }
   if(!targets.includes(initial))initial=targets[0];
+  // Every site is a Mirage-only site: a valid catalogue with no Lense target (list succeeds and names them; dev refuses).
+  const mirageOnly = Object.entries(catalogue.sites).filter(([, entry]) => mirageOnlySite(entry)).map(([site]) => site);
+  if (!initial && mirageOnly.length === Object.keys(catalogue.sites).length && mirageOnly.length)
+    throw Object.assign(new Error(`Every configured site is a Mirage site without a portal (${mirageOnly.join(', ')}): there is no Lense target. Start one with "npx paqvilo mirage dev --site <site>".`), { code: 'mirage_only_site' });
   if(!initial)throw new Error('No non-caution targets are configured; select an environment explicitly or set includeCaution: true.');
   return { mode: 'all', initial, targets };
 }

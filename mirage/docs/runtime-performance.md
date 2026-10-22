@@ -116,3 +116,122 @@ measurements are not cold browser page-ready clocks. Starts within each run shar
 one process and warm filesystem/module caches; these samples do not reproduce the
 consumer's ARM64 datasets or establish p95/cold-process performance. No source
 inputs or records were removed. Receipts remain in ignored `.paqvilo/`.
+
+## Write-volume seams
+
+The record store keeps these indexes and caches on its write path. Each is derived from
+the row operations (`insertRow`, `writeRow`, `mutateRow`, `removeRow`) or from commits, and
+each falls back to the previous scan when it cannot prove its answer.
+
+- **Row indexes.** `rowKeyIndex(rows, name, keyOf)` caches the positions of a row array by a
+  derived key. The row operations update every cached index of the array; a removal shifts the
+  later positions instead of discarding the index. The primary-key index checks that the row at a
+  cached position still carries the key, and rebuilds once if it does not, so an edit made outside
+  the row operations cannot return a wrong row. Duplicate primary-key checks, alternate-key
+  uniqueness and alternate-key lookups (`findByKey`) use indexes that live for one transaction, so a
+  direct edit between transactions is never missed. Alternate-key lookups keep `valuesEqual`
+  semantics: only plain non-date strings are bucketed, and other values stay in a list that every
+  lookup scans. CreateMultiple, UpsertMultiple by key and imports cost O(1) per row within one request.
+- **Reads by id.** Single-record and id-list reads find their rows through the primary-key index
+  before the row-security filter, instead of filtering the whole table. Row filters receive the
+  stored row without a copy; the security read filter only reads it, and a backend profile
+  predicate copies the row itself.
+- **Relationship graph.** One delete operation memoises `referencesTo(table)` and the many-to-many
+  intersect list for its whole cascade, so a cascade tree walks the mappings once per table instead
+  of once per deleted row. The memo lasts one operation because mappings have no revision counter.
+- **Per-table revisions.** `store.tablesRevision(tables)` changes when a commit may have changed one
+  of the named tables. An incremental row transaction names the tables it wrote (and, defensively, any
+  table whose row count changed); every other commit advances all tables. The security index rebuilds
+  its principals, roles and privileges only when those tables change, and its shares only when
+  `principalobjectaccess` changes. GrantAccess, ModifyAccess and RevokeAccess are journaled row writes.
+- **Key-set paging.** A Web API collection page that continues from a cookie this runtime issued
+  resumes after the previous page's last row. The paging cookie carries the last and first values of
+  every `$orderby` column, then the primary key (Learn page-results: the cookie holds data about the
+  first and last record). The next page resumes after that saved tuple with the full sort's order and a
+  bounded heap, without sorting the rest of the result, so a cursor row that was deleted, or updated out
+  of the filter, between pages skips nothing, and a row inserted before the cursor does not repeat. The
+  `@odata.nextLink` shape is unchanged. A secured column's values never travel in the cookie; such a
+  page, an order over a navigation path, a multi-select choice, an untyped column or a lookup without
+  one N:1 target resumes after the cursor row by id, and uses the offset when that row is gone. A nested
+  expansion cookie uses the offset.
+- **FetchXML paging cookies.** A FetchXML paging cookie carries the last row's order values and
+  primary key, so the next page resumes after that tuple (key-set paging) and a cursor row deleted
+  between pages skips nothing. A null order value travels as an empty `last` value, the marker the OData
+  skip token uses, and resumes nulls first ascending. Orders on lookup, choice, state and status columns
+  sort by name or label, which the cookie does not carry: such a page resumes at its page offset, so a
+  cursor row deleted between pages shifts the next page by one row.
+- **Computed columns in queries.** Calculated and formula columns register with the store
+  (`store.setComputedColumns`). Every query engine reads rows of a table with computed columns as read
+  copies whose computed columns compute lazily, once per row per query, so `$filter`, `$orderby`,
+  `$apply`, FetchXML conditions, orders and aggregates, the property route and every row projection see
+  the computed value. A table without computed columns is read as stored, with no copy.
+- **SDK savepoints.** A plug-in SDK call journals its own row writes in a nested row transaction
+  instead of copying the whole state first. If a handler that may write arbitrary state runs inside the
+  call, the savepoint is promoted to the full copy, as every write is. An independent PreValidation
+  commit still copies the state once to advance the caller's rollback point.
+- **Section copies.** A journaled commit already compares every non-table section with the copy its
+  row transaction took. When that copy is equal, the next row transaction reuses it if the store has
+  committed nothing since. Mappings are nearly all of those bytes. Like the journal itself, this relies
+  on sections changing only inside store transactions.
+- **Grid rows.** Model-driven row capabilities find the row through the primary-key index, and lookup
+  display names build one id map per target table and page.
+- **Service protection.** Expired admissions leave the 300-second window as a prefix, without a
+  filter per request. A user whose clock moved backwards keeps the filter.
+
+Single-record Web API GET still reads each table's rows once per request in the response formatter
+(`webapi-format.mjs` `storedRow`, for the ETag and lookup names). This step is O(rows) without copying
+them.
+
+### Measurements
+
+These are sequential scratch measurements on Windows x64 with Node 24.13.1, on the same host before
+and after the change. "Handler" runs the Web API record handlers in process with the standard tables
+seeded (3,746 relationships) and no extensions. "Runtime" is a complete local organization over HTTP.
+"Old" switches the seam back in the same process. They are observations, not budgets.
+
+| Seam | Scenario | Before | After |
+| --- | --- | ---: | ---: |
+| Row indexes | Handler CreateMultiple, 2,500 / 5,000 rows | 1,052 / 3,744 ms | 151 / 278 ms |
+| Row indexes | Handler UpsertMultiple by alternate key, 2,500 / 5,000 rows | 1,922 / 7,289 ms | 147 / 268 ms |
+| Reads by id | Handler: 500 single-record GETs over 5,000 rows | 6,039 ms | 776 ms |
+| Reads by id | Runtime: 200 single-record GETs over 1,000 / 2,000 rows | 956 / 1,504 ms | 497 / 555 ms |
+| Relationship graph | Handler: cascade delete of 1,000 children (5,000 parents) | 468 ms | 45 ms |
+| Relationship graph | Handler: cascade delete of 2,000 children (10,000 parents) | 3,014 ms | 80 ms |
+| Relationship graph | Runtime: cascade delete of 200 / 400 children | 422 / 349 ms | 77 / 90 ms |
+| Key-set paging | Handler: 5,000 rows, 500 per page, one insert before the cursor | 288 ms, 5,001 rows, one repeated | 165 ms, 5,000 distinct rows |
+| Key-set paging | Handler: the same with 10,000 rows | 592 ms | 482 ms |
+| Security index | 300 × (row write + authorize), 2,000 users, 20,000 shares (old: rebuild per commit) | 3,519 ms | 2,361 ms |
+| SDK savepoints | 100 creates, each with 10 joined SDK creates, 20,000 rows (old: two full copies per call) | 32,419 ms | 12,164 ms |
+| Section copies | Runtime: 300 single-record PATCHes, journaled state | 6,605 ms | 4,681 ms |
+| Dirty-set hashing | Simulation: 50 runtime-table writes, 20,000 rows elsewhere (old: hash every table) | 15,205 ms | 12,291 ms |
+| Grid rows | 250 row capabilities over 20,000 rows (old: linear find) | 87 ms | 8 ms |
+| Service protection | 20,000 admissions inside one window (old: filter per request) | 3,462 ms | 117 ms |
+
+The runtime CreateMultiple and UpsertMultiple costs stayed about 5 ms per row. That cost scales
+linearly, and most of it is the rollup module's write hooks, which read the field definitions of every
+table on each write (`dataverse-rollup.mjs` `rollupsSourcedFrom`). The simulation write still serializes
+the complete runtime file on each transaction.
+
+### Write-volume gate
+
+`mirage/test-volume/write-volume.test.mjs` is not part of the ordinary suite. Run it explicitly:
+
+```sh
+node --test mirage/test-volume/write-volume.test.mjs
+```
+
+It runs each scenario on fresh fixtures at N = 2,500 and 2N = 5,000 rows. It asserts the ratio between
+the two times, never absolute milliseconds. Linear work stays near 2×, and a per-row table scan reaches
+about 4×. The bound is 3×, or 1.6× for single-record reads, which should not grow. A scenario passes
+when any of three attempts stays under its bound. The scenarios are:
+
+- CreateMultiple.
+- UpsertMultiple by alternate key.
+- 2,000 single-record reads through `store.query` with the row-security filter.
+- Paging through every row at 500 per page with an insert before the cursor. Every row must appear
+  exactly once; the gate times the cost per page.
+- A cascade delete of 1,000 and 2,000 children.
+- A Basic-depth reader paging a deep share graph of 12 teams, where every second row is shared.
+
+With the row indexes switched off, the gate failed. CreateMultiple measured 963 → 3,228 ms,
+UpsertMultiple 2,258 → 9,401 ms and the single-record reads 644 → 1,217 ms.

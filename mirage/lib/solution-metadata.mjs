@@ -154,8 +154,8 @@ export async function importSolutionMetadata(
   const names = entities?.length ? new Set(entities.map(norm)) : null;
   const diagnostics = [];
   const fingerprint = createHash("sha256");
-  const files = scan.layers.flatMap((layer) =>
-    layer.files.filter((file) => ["entity", "form", "view"].includes(file.kind)).map((file) => ({ ...file, entity: norm(file.entityDir) })),
+  const files = scan.layers.flatMap((layer, layerIndex) =>
+    layer.files.filter((file) => ["entity", "form", "view"].includes(file.kind)).map((file) => ({ ...file, entity: norm(file.entityDir), layerIndex })),
   );
   const parse = async (file) => {
     if (file.parsed) return file.parsed;
@@ -208,19 +208,26 @@ export async function importSolutionMetadata(
   await mapLimit(candidates.filter((f) => f.kind !== "entity"), IO_CONCURRENCY, parse);
   const forms = [],
     views = [];
-  for (const layer of scan.layers) for (const document of layer.documents) {
-    const components = document.facts.appComponents;
-    for (const form of components?.forms ?? []) if (!names || names.has(form.entity)) forms.push({ ...form, name: pickLabel(form.nameLabels, lcid) ?? form.name, file: document.file });
-    for (const view of components?.views ?? []) if (!names || names.has(view.entity)) views.push({ ...view, name: pickLabel(view.nameLabels, lcid) ?? view.name, file: document.file });
-    if (components?.forms?.length || components?.views?.length || document.facts.apps?.length || document.facts.appMaps?.length) fingerprint.update(document.hash ?? '');
+  // Rows are collected layer by layer: embedded components, then that layer's parsed FormXml/SavedQueries files.
+  // The dedupe below keeps the last row, so the later selected layer wins whichever way it carries the component.
+  for (const [layerIndex, layer] of scan.layers.entries()) {
+    for (const document of layer.documents) {
+      const components = document.facts.appComponents;
+      for (const form of components?.forms ?? []) if (!names || names.has(form.entity)) forms.push({ ...form, name: pickLabel(form.nameLabels, lcid) ?? form.name, file: document.file });
+      for (const view of components?.views ?? []) if (!names || names.has(view.entity)) views.push({ ...view, name: pickLabel(view.nameLabels, lcid) ?? view.name, file: document.file });
+      if (components?.forms?.length || components?.views?.length || document.facts.apps?.length || document.facts.appMaps?.length) fingerprint.update(document.hash ?? '');
+    }
+    for (const file of candidates) {
+      if (file.layerIndex !== layerIndex) continue;
+      if (file.kind === "form") forms.push(...file.parsed.forms);
+      else if (file.kind === "view") views.push(...file.parsed.views);
+    }
   }
   const entityDocs = new Map(
     scan.layers.flatMap((layer) => layer.documents.map((doc) => [doc.file, doc.hash])),
   );
   for (const file of candidates) {
     fingerprint.update(file.path).update("\0").update(file.hash ?? entityDocs.get(file.path) ?? "").update("\0");
-    if (file.kind === "form") forms.push(...file.parsed.forms);
-    else if (file.kind === "view") views.push(...file.parsed.views);
   }
   // Table columns come from the merged schema; only tables with exported definitions are listed.
   const tables = {};
@@ -253,8 +260,9 @@ export async function importSolutionMetadata(
     for (const row of rows) {
       const key = `${row.entity}/${row.id}`;
       const before = map.get(key);
+      // One source file read both as an embedded component and as a parsed file is not a layer variant.
       if (
-        before &&
+        before && before.file !== row.file &&
         (kind === "form"
           ? before.xml !== row.xml
           : before.fetchXml !== row.fetchXml)

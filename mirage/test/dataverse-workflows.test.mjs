@@ -359,7 +359,7 @@ describe("dataverse workflows: Solution sources and handler packs", () => {
     const handler = () => ({});
     assert.equal(workflowHandlers([{ id: "a", workflows: { [WF(40)]: handler } }]).get(WF(40)), handler);
     assert.throws(() => workflowHandlers([{ id: "a", workflows: { Invented: handler } }, { id: "b", workflows: { invented: handler } }]), /Ambiguous workflows registration/);
-    assert.throws(() => workflowHandlers([{ id: "a", workflows: { Invented: "not a function" } }]), /invalid workflows handler/);
+    assert.throws(() => workflowHandlers([{ id: "a", workflows: { Invented: "not a function" } }]), /workflows must map workflow ids or unique names to functions/);
   });
 });
 
@@ -557,7 +557,8 @@ describe("dataverse workflows: a portal write is unchanged by a background trigg
       triggeroncreate: false, triggerondelete: false, triggeronupdateattributelist: "name", primaryentity: "contoso_widget",
       statecode: 1, statuscode: 2, runas: 0, istransacted: true, asyncautodelete: false, syncworkflowlogonfailure: false,
     };
-    // A real-time definition on the same table, with a mock run: a portal write must not run it (its log would show).
+    // A real-time definition on the same table, with a mock run: a portal write is a Dataverse write, so it runs inside the
+    // write as it does for a Web API write (its log shows) and, succeeding, leaves the response unchanged.
     const realtime = { ...trigger, workflowid: WF(52), name: "Invented real-time", mode: 1, triggeronupdateattributelist: "name" };
     const exchange = async (workflow, overrides = {}) => {
       const app = await createSimulator({ sourceDir: source, port: 0, watch: false, dataverse: { enabled: true }, initial: { ...base, tables: { ...base.tables, workflow } } });
@@ -591,6 +592,6 @@ describe("dataverse workflows: a portal write is unchanged by a background trigg
     assert.equal(withTrigger.body, without.body);
     assert.deepEqual(without.jobs, []);
     assert.deepEqual(withTrigger.jobs, [{ name: "Invented 51", statuscode: 32, regarding: widget }]);
-    assert.deepEqual(withTrigger.logs, [], "the real-time mock did not run inside the portal write");
+    assert.deepEqual(withTrigger.logs, ["Invented real-time mock"], "the real-time mock ran inside the portal write");
   });
 });

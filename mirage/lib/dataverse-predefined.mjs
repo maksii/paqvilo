@@ -128,9 +128,9 @@ function sendAppNotification(api) {
     const recipientId = body.Recipient?.systemuserid;
     if (!GUID_TEXT.test(idOf(recipientId))) throw new DataError("Recipient must name a systemuser.", 400, "InvalidRequest"); // unverified: message text
     if (!api.principals.byId(recipientId)) throw notFound("systemuser", recipientId);
-    await api.change(() => api.store.transact(() => {
+    await api.change(() => api.store.transact(async () => {
       api.principals.authorize({ user: c.user, entity: "appnotification", operation: "write" });
-      api.store.createRecord("appnotification", {
+      await api.store.createRecordAsync("appnotification", {
         appnotificationid: randomUUID(), title: body.Title, body: body.Body ?? null,
         icontype: body.IconType ?? 0, priority: body.Priority ?? 1, toasttype: body.ToastType ?? 0, expiry: body.Expiry ?? null, // unverified: defaults
         recipient: { id: recipientId, logical_name: "systemuser", name: "" },

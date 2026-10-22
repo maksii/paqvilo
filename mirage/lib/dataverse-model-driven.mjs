@@ -1,8 +1,66 @@
-import { randomUUID } from 'node:crypto';
+import { currentRequest } from './request-context.mjs';
+import { systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { createDataverseHandler } from './dataverse-api.mjs';
+import { isSecuredField } from './dataverse-fls.mjs';
+import { Readable } from 'node:stream';
+import { gunzipSync } from 'node:zlib';
+
+/** The in-process Web API behind Xrm.WebApi.execute/executeMultiple in the model-driven host: the organization's own
+ * router (custom APIs, actions, functions, CRUD, $batch change sets) answers as the selected staff principal. The
+ * principal comes from the signed staff session, never from a bearer token, so this works with HTTP Dataverse disabled.
+ * organization: the runtime or a getter. Returns async ({ method, path, headers, body, principal, host }) → { status, headers, body }. */
+export function createModelDrivenWebApi({ organization }) {
+  const current = () => typeof organization === 'function' ? organization() : organization;
+  const handlers = new WeakMap();
+  const handlerFor = (runtime, hostname) => {
+    let byHost = handlers.get(runtime);
+    if (!byHost) handlers.set(runtime, byHost = new Map());
+    if (!byHost.has(hostname)) {
+      // The staff session already authenticated the caller: the bearer check accepts only this request's marker.
+      const authority = { verifyBearer: header => header?.startsWith('Mirage-Staff ') ? { ok: true, claims: { staff: header.slice(13) } } : { ok: false, reason: 'missing' } };
+      const principals = { ...runtime.principals, resolve: claims => { const user = runtime.principals.byId(claims.staff); return user ? { user, reason: user.isdisabled === true ? 'disabled' : null } : { user: null, reason: 'unknown' }; } };
+      byHost.set(hostname, createDataverseHandler({ store: runtime.store, change: runtime.change, settings: runtime.settings, operations: runtime.registry, routes: runtime.routes,
+        api: runtime.api, authority, principals, metadata: runtime.metadata, recordHandlers: runtime.records, changes: runtime.changes, tenantId: runtime.tenantId,
+        organizationId: runtime.organizationId, environmentId: runtime.environmentId, host: hostname, clock: runtime.clock, limits: runtime.limits }));
+    }
+    return byHost.get(hostname);
+  };
+  // privilegeError({ principal, entity, operation }): the error the organization's privilege check (principals.authorize, no
+  // row) answers for the staff user, or null when the user holds the privilege. Mobile offline snapshots it per table.
+  const privilegeError = ({ principal, entity, operation }) => {
+    const runtime = current(), user = runtime?.principals.byId(principal?.principalId);
+    if (!user) return null;
+    try { runtime.principals.authorize({ user, entity, operation, mapping: runtime.store.resolveMapping(entity) }); return null; }
+    catch (error) { if ([401, 403].includes(error.status)) return error; throw error; }
+  };
+  return Object.assign(async ({ method, path, headers = {}, body, principal, host }) => {
+    const runtime = current();
+    if (!runtime) throw new DataError('The organization runtime is unavailable.', 503, 'OrganizationUnavailable');
+    // Never bare SYSTEM: only a resolved staff session or the explicit local administrator (staff-session.mjs resolve) acts.
+    if (!['staff', 'local-admin'].includes(principal?.kind)) throw new DataError('The Web API bridge needs a staff session or the local administrator.', 401, 'StaffPrincipalUnavailable');
+    const user = runtime.principals.byId(principal?.principalId);
+    if (!user || user.applicationid || user.accessmode === 4 && principal.kind !== 'local-admin') throw new DataError('The selected staff user is unavailable or disabled.', 401, 'StaffPrincipalUnavailable');
+    const hostname = /^[a-z0-9.-]+$|^\[[0-9a-f:]+\]$/i.test(new URL(`http://${host ?? 'localhost'}`).hostname) ? new URL(`http://${host ?? 'localhost'}`).hostname : 'localhost';
+    const req = Readable.from(body ? [Buffer.from(body)] : []);
+    Object.assign(req, { method, url: path, socket: {}, headers: { ...headers, host: host ?? 'localhost', authorization: `Mirage-Staff ${user.systemuserid}` } });
+    const out = { status: 200, headers: {}, chunks: [] };
+    await new Promise((resolve, reject) => {
+      const listeners = [];
+      const res = { headersSent: false, setHeader: (name, value) => { out.headers[name.toLowerCase()] = value; }, set statusCode(value) { out.status = value; }, get statusCode() { return out.status; },
+        on: (event, listener) => { if (event === 'finish') listeners.push(listener); return res; },
+        end: payload => { if (payload !== undefined) out.chunks.push(Buffer.from(payload)); res.headersSent = true; for (const listener of listeners) listener(); resolve(); },
+        destroy: () => reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed')) };
+      handlerFor(runtime, hostname)(req, res).catch(reject);
+    });
+    let payload = Buffer.concat(out.chunks);
+    if (out.headers['content-encoding'] === 'gzip') { payload = gunzipSync(payload); delete out.headers['content-encoding']; }
+    return { status: out.status, headers: out.headers, body: payload.toString('utf8') };
+  }, { privilegeError });
+}
 
 /** Local administration uses the organization record pipeline, including its
  * validation, plug-ins, workflows, audit and optimistic concurrency. The host
@@ -35,7 +93,7 @@ export function createModelDrivenRecordService({ organization, store = organizat
     return records.handle({ method, url, origin: url.origin, version: 'v9.2', route: parseDataverseRoute(url.pathname),
       prefer: parsePrefer('return=representation,odata.include-annotations="*"' + (options.pageSize ? `,odata.maxpagesize=${options.pageSize}` : '')),
       headers: { ...(options.etag ? { 'if-match': options.etag } : {}) }, body,
-      ...context(options), requestId: randomUUID() });
+      ...context(options), requestId: currentRequest()?.requestId ?? currentRequest()?.correlationId ?? (organization?.ids ?? systemIds).uuid() });
   };
   const get = (entity, id, options = {}) => read(async () => {
     const response = await request('GET', entity, id, options);
@@ -55,11 +113,18 @@ export function createModelDrivenRecordService({ organization, store = organizat
       ...(response.body?.['@odata.nextLink'] ? { nextLink: response.body['@odata.nextLink'] } : {}),
       ...(response.body?.['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'] ? { fetchXmlPagingCookie: response.body['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'] } : {}) };
   });
+  // The stored row with this exact id (case-insensitive), found through the store's primary-key index:
+  // a grid page asks once per row, so a table scan per row would make the page O(pageSize x rows).
+  const storedRow = (entity, mapping, id) => {
+    const wanted = String(id).toLowerCase(), same = row => String(row[mapping.idColumn]).toLowerCase() === wanted, rows = store.tableRows(entity);
+    const subset = typeof id === 'string' && rows === store.state.tables?.[mapping.logicalName] && typeof store.primaryKeySubset === 'function' ? store.primaryKeySubset(mapping, [id]) : null;
+    return subset ? subset.find(same) : rows.find(same);
+  };
   const capabilities = (entity, options = {}, { id, fields = {} } = {}) => {
     const { user } = context(options), mapping = store.resolveMapping(entity);
     // Values remain internal to authorization. Only rights for the requested
     // row leave this boundary, and every row right includes its read check.
-    const row = id ? store.tableRows(entity).find(row => String(row[mapping.idColumn]).toLowerCase() === String(id).toLowerCase()) : undefined;
+    const row = id ? storedRow(entity, mapping, id) : undefined;
     const permits = operation => {
       try { organization.principals.authorize({ user, entity, operation, mapping, row: operation === 'create' ? undefined : row }); return !id || operation === 'create' || Boolean(row); }
       catch (error) { if ([401, 403, 404].includes(error.status)) return false; throw error; }
@@ -74,6 +139,8 @@ export function createModelDrivenRecordService({ organization, store = organizat
     return { read: canRead, create: canCreate, update: canUpdate, delete: canDelete,
       ...(storage.reason ? { reason: storage.reason } : {}),
       fields: Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, {
+        // A column under field-level security says so (PCF context.parameters.<p>.security.secured).
+        secured: isSecuredField(store.fieldDefinition?.(entity, name, organization?.api.metadataFields) ?? field),
         read: canRead && (fieldRights ? fieldRights[name].read : fls?.canRead(user, entity, name, id) !== false),
         create: canCreate && !field.isPrimaryId && (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false && (fieldRights ? fieldRights[name].create : fls?.canWrite(user, entity, name, 'create') !== false),
         update: canUpdate && !field.isPrimaryId && (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false && (fieldRights ? fieldRights[name].update : fls?.canWrite(user, entity, name, 'update', id) !== false),
@@ -95,7 +162,7 @@ export function createModelDrivenRecordService({ organization, store = organizat
       if (!targetEntity && id && targetId) {
         // A legacy editor may resubmit an unchanged id without its type. The
         // stored reference is authoritative only for that exact existing id.
-        const existing = store.tableRows(entity).find(row => String(row[mapping.idColumn]).toLowerCase() === String(id).toLowerCase())?.[name];
+        const existing = storedRow(entity, mapping, id)?.[name];
         const same = String(existing?.id ?? '').replace(/[{}]/g, '').toLowerCase() === String(targetId).replace(/[{}]/g, '').toLowerCase();
         if (same) targetEntity = existing?.logical_name ?? existing?.logicalName ?? existing?.entity;
       }

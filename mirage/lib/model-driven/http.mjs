@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
+import { createOfflineSessions } from './offline.mjs';
 
 const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'client-runtime.mjs': 'text/javascript; charset=utf-8', 'pcf-runtime.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'date-control.mjs': 'text/javascript; charset=utf-8', 'date-control.css': 'text/css; charset=utf-8', 'duration-control.mjs': 'text/javascript; charset=utf-8', 'duration-control.css': 'text/css; charset=utf-8', 'choice-control.mjs': 'text/javascript; charset=utf-8', 'lookup-dialog.mjs': 'text/javascript; charset=utf-8', 'lookup-control.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8', 'controls.css': 'text/css; charset=utf-8' };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
@@ -19,8 +20,17 @@ const metadataOnly = async (catalogue, data, actor, res, { index = false, entity
   return { ...catalogue, tables };
 };
 
-export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn(), principal = () => ({}), clientAssets = () => new Map() }) {
-  return async (req, res, url) => {
+// Admin-adjacent route, listed in status `adminAdjacentRoutes` on both hosts (status `routes` holds /_sim/api prefixes only): any Web API request as the selected staff user, or as the
+// explicit local administrator when no staff cookie is set (staff-session.mjs); CSRF-checked, POST only.
+// /_apps/api/offline: the staff session's mobile offline state for one app (offline.mjs): GET ?app= status; POST
+// { app, action: 'mode', mode } | { app, action: 'sync' } | { app, action: retrieve|retrieveMultiple|create|update|delete, entity, id, options, data }.
+export const routes = Object.freeze(['/_apps/api/webapi', '/_apps/api/offline']);
+
+// offlineState: where mobile offline sessions persist (offline.mjs offlineSessionState over the host's store); memory without it.
+export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn(), principal = () => ({}), clientAssets = () => new Map(), webApi = null, offlineState = null }) {
+  const offline = createOfflineSessions({ webApi, catalogue: () => read(async () => catalogue.async?.() ?? catalogue()), state: offlineState });
+  // handler.offlineSessions(): every staff session's offline summary, for the /_sim/ administration.
+  return Object.assign(async (req, res, url) => {
     const shell = url.pathname === '/main.aspx' || /^\/_apps\/?$/.test(url.pathname);
     const asset = /^\/_apps\/assets\/([^/]+)$/.exec(url.pathname);
     const api = /^\/_apps\/api(?:\/(.*))?$/.exec(url.pathname);
@@ -32,8 +42,12 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       if (url.pathname.startsWith('/_apps/resources/') || url.pathname.startsWith('/_apps/controls/')) {
         if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
         const resource = clientAssets().get(url.pathname);
-        if (!resource || url.search) throw fail('Trusted client asset not found.', 404);
-        res.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
+        // A web resource page may take the native ?data= parameter; every other asset is served without a query.
+        if (!resource || url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))) throw fail('Trusted client asset not found.', 404);
+        // A trusted HTML web resource page opens inside the app (navigateTo, side panes, SiteMap) and runs its own scripts.
+        res.setHeader('content-security-policy', /^text\/html/.test(resource.mime)
+          ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
+          : "default-src 'none'; frame-ancestors 'none'");
         res.writeHead(200, { 'content-type': resource.mime }); res.end(req.method === 'HEAD' ? undefined : resource.data); return true;
       }
       if (shell || asset) {
@@ -53,6 +67,34 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw fail('Method not allowed.', 405);
       if (method !== 'GET' && req.headers['x-sim-csrf'] !== csrf()) throw fail('Missing simulator CSRF token.', 403);
       const actor = principal(req);
+      if (api[1] === 'offline') {
+        if (!['staff', 'local-admin'].includes(actor?.kind)) throw Object.assign(fail('Mobile offline needs a staff session or the local administrator.', 401), { code: 'StaffPrincipalUnavailable' });
+        const input = method === 'GET' ? { app: url.searchParams.get('app'), action: 'status' } : method === 'POST' ? await readBody(req) : null;
+        if (!input || typeof input !== 'object' || typeof input.app !== 'string' || !input.app || input.app.length > 128) throw fail('Provide the app id and a GET status or POST action.', input ? 400 : 405);
+        if (input.entity !== undefined && !/^[a-z_][a-z\d_]*$/.test(input.entity) || input.id !== undefined && !/^\{?[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\}?$/i.test(String(input.id))
+          || input.options !== undefined && (typeof input.options !== 'string' || input.options.length > 65536)) throw fail('Provide a table logical name, a GUID record id and text query options.', 400);
+        const host = req.headers.host;
+        const result = input.action === 'status' ? await offline.status(actor, input.app, host)
+          : input.action === 'mode' ? await offline.setMode(actor, input.app, input.mode, host)
+            : input.action === 'sync' ? await offline.sync(actor, input.app, host)
+              : await offline.execute(actor, input.app, { operation: input.action, entity: input.entity, id: input.id, options: input.options ?? '', data: input.data }, host);
+        json(res, 200, result); return true;
+      }
+      if (api[1] === 'webapi') {
+        // Xrm.WebApi.execute/executeMultiple: one Web API request (operation, CRUD or $batch) as the staff principal.
+        if (method !== 'POST') throw fail('The Web API bridge requires POST.', 405);
+        const input = await readBody(req);
+        if (!input || typeof input !== 'object' || !['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(input.method) || typeof input.path !== 'string'
+          || !/^\/api\/data\/v9\.\d(?:\/|$)/.test(input.path) || input.path.length > 32768 || (input.body !== undefined && typeof input.body !== 'string')) throw fail('Provide a Web API method, /api/data/v9.x path and text body.', 400);
+        if (!webApi) throw Object.assign(fail('This host does not provide the in-process Web API for Xrm.WebApi.execute.', 501), { code: 'WebApiExecuteUnavailable' });
+        // Learn xrm-webapi/online: execute and executeMultiple are online only; nothing reaches the organization while the
+        // app's session is offline. unverified: the native code (the offline family's OfflineModeRequired is used).
+        if (typeof req.headers['x-mirage-app'] === 'string' && offline.recordsFor(actor, req.headers['x-mirage-app']))
+          throw Object.assign(fail('Xrm.WebApi.execute and executeMultiple work only while the app is online.', 409), { code: 'OfflineModeRequired' });
+        const headers = Object.fromEntries(Object.entries(input.headers ?? {}).filter(([name, value]) => /^(?:content-type|prefer|if-match|if-none-match|accept)$/i.test(name) && typeof value === 'string').map(([name, value]) => [name.toLowerCase(), value]));
+        const result = await webApi({ method: input.method, path: input.path, headers, body: input.body, principal: actor, host: req.headers.host });
+        json(res, 200, { status: result.status, headers: result.headers ?? {}, body: result.body ?? '' }); return true;
+      }
       const tableMetadata = /^metadata\/([a-z][\w]*)$/i.exec(api[1] ?? '');
       if (!api[1] || api[1] === 'index' || tableMetadata) {
         if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
@@ -69,21 +111,25 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       if (!route) throw fail('Model-driven endpoint not found.', 404);
       const [, entity, encodedId] = route, id = encodedId ? decodeURIComponent(encodedId) : null;
       if (id && (!/^[\w{}-]{1,128}$/.test(id))) throw fail('Invalid record ID.', 400);
+      // The shell names its app (x-mirage-app): while that staff session is offline, records come from its offline copy.
+      const records = typeof req.headers['x-mirage-app'] === 'string' ? offline.recordsFor(actor, req.headers['x-mirage-app']) : null;
+      const reader = records ? { ...actor, recordService: records } : actor;
       if (method === 'GET') {
         let query;
         try { query = JSON.parse(url.searchParams.get('query') ?? '{}'); } catch { throw fail('Invalid grid query JSON.', 400); }
         if (!query || typeof query !== 'object' || Array.isArray(query)) throw fail('Provide a grid query object.', 400);
-        if (id) json(res, 200, await data.get(entity, id, actor, query));
-        else json(res, 200, await data.list(entity, query, actor));
+        if (id) json(res, 200, await data.get(entity, id, reader, query));
+        else json(res, 200, await data.list(entity, query, reader));
       } else {
         if (method === 'POST' && id || method !== 'POST' && !id) throw fail('Invalid record operation.', 405);
         const values = method === 'DELETE' ? {} : await readBody(req);
-        const result = await change(() => data.write(entity, id, values, { remove: method === 'DELETE', etag: req.headers['if-match'], ...actor }));
+        const write = () => data.write(entity, id, values, { remove: method === 'DELETE', etag: req.headers['if-match'], ...reader });
+        const result = records ? await write() : await change(write);
         json(res, method === 'POST' ? 201 : 200, result);
       }
     } catch (error) {
       if (!res.destroyed) json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'ModelDrivenError' } });
     }
     return true;
-  };
+  }, { offlineSessions: () => offline.list() });
 }

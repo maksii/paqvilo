@@ -137,7 +137,9 @@ test('model-driven app catalogue imports solution navigation, forms and views al
   assert.equal(catalogue.tables.x_item.forms[0].source, 'solution');
   assert.equal(catalogue.tables.x_item.views[0].name, 'Stocked items');
   assert.equal(catalogue.tables.x_item.rows, undefined);
-  const shell = await fetch(origin + '/main.aspx'); assert.equal(shell.status, 200); assert.match(await shell.text(), /Model|Power Pages Management/);
+  const shell = await fetch(origin + '/main.aspx'); assert.equal(shell.status, 200); assert.match(await shell.text(), /<title>Mirage Apps<\/title>[\s\S]*<strong>Mirage Apps<\/strong>/);
+  assert.equal(catalogue.apps.find(app => app.id === 'power-pages-management')?.name, 'Mirage Site Manager');
+  assert.equal(catalogue.apps.find(app => app.id === 'power-pages-management')?.uniqueName, 'mspp_PowerPageManagement');
   assert.match(shell.headers.get('content-security-policy'), /connect-src 'self'/);
 });
 

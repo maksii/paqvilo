@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -43,7 +44,11 @@ describe('implicit OData read companions', () => {
       fields: { x_name: { dataverseType: 'nvarchar' }, x_date: { dataverseType: 'datetime' } } };
     state.tables.x_virtual = [{ x_virtualid: ID, x_name: 'Declared virtual row', x_date: '2026-10-20T10:30:00Z' }];
     store = await new DataStore({ state }).init();
-    api = await startDataverseApi({ store, log: () => {}, schema: () => ({ tables: { x_component: {
+    // The virtual table has no provider: it declares the local fallback, so its seeded row is read locally (without the
+    // declaration a providerless virtual table answers 501 VirtualProviderMissing).
+    const extensions = EXTENSIONS.map((entry) => entry.name !== 'dataverse-virtual-providers' ? entry
+      : { ...entry, install: (target, options) => entry.install(target, { ...options, virtualTables: { x_virtual: { fallback: 'local' } } }) });
+    api = await startDataverseApi({ store, log: () => {}, extensions, schema: () => ({ tables: { x_component: {
       logicalName: 'x_component', primaryIdAttribute: 'x_componentid', primaryNameAttribute: 'x_name',
       // A selected Solution may omit system columns whose observed formatting facts are held by the mapping.
       attributes: Object.fromEntries(Object.entries(state.mappings.x_component.fields).filter(([name]) => name !== 'statuscode')

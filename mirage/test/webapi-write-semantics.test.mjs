@@ -167,6 +167,24 @@ test("one-to-many associations update the referencing row's version and modified
   assert.equal(rows("contact").find((row) => row.contactid === G(12)).versionnumber, 9);
 });
 
+// Navigation names are case-sensitive (OData): a bind on a name no relationship declares answers the undeclared-property
+// error (0x80048d19) and stores nothing, never a raw key; the declared navigation still binds.
+test("an @odata.bind on an undeclared navigation name answers 400 0x80048d19 and stores nothing", async (t) => {
+  const { app, json, rows } = await start(t);
+  // The portal /_api wraps it in its generic 9004010A envelope (webapi-handler.mjs payload errors).
+  const wrong = await json("/_api/contacts", { method: "POST", body: { fullname: "Wrong case", "ParentCustomerId@odata.bind": `/accounts(${G(1)})` } });
+  assert.equal(wrong.status, 400, JSON.stringify(wrong.body));
+  assert.equal(wrong.body.error.code, "9004010A");
+  // The store write every writer reaches (Web API, portal, SDK, connector) refuses it with the native inner code.
+  assert.throws(() => app.store.createRecord("contact", { fullname: "Direct", "ParentCustomerId@odata.bind": `/accounts(${G(1)})` }, { admin: true }),
+    (error) => error.status === 400 && error.details?.innerCode === "0x80048d19" && /An undeclared property 'ParentCustomerId'/.test(error.message));
+  assert.equal(rows("contact").length, 2);
+  assert.equal(rows("contact").some((row) => Object.hasOwn(row, "ParentCustomerId")), false);
+  const right = await json("/_api/contacts", { method: "POST", body: { fullname: "Right case", "parentcustomerid@odata.bind": `/accounts(${G(1)})` } });
+  assert.equal(right.status, 204, JSON.stringify(right.body));
+  assert.equal(rows("contact").find((row) => row.fullname === "Right case")?.parentcustomerid?.id, G(1));
+});
+
 test("deleting a referenced row applies the relationship's CascadeDelete", async () => {
   const store = (cascadeDelete) => new DataStore({ state: fixture({ cascadeDelete }) });
   // Restrict refuses the delete while a contact references the account.

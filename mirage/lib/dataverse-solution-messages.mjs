@@ -16,10 +16,12 @@ import { randomUUID } from "node:crypto";
 import { registerInternalMessage } from "./dataverse-addon-common.mjs";
 import { DataError } from "./data-error.mjs";
 import { contextUrl } from "./dataverse-odata.mjs";
-import { uuidV5 } from "./dataverse-security.mjs";
+import { SECURITY_LAYERS, uuidV5 } from "./dataverse-security.mjs";
+import { organizationRecord } from "./organization-context.mjs";
 import {
   requireMetadataPrivilege, addSolutionComponents, componentObjectId, solutionRowOf, SOLUTION_COMPONENT_TYPE,
   DEFAULT_SOLUTION, assertUnpatched, boundFields, dropGlobalSet, dropRelationship, lastMetadataSeq,
+  managedLayerId, layerStack, activeOnTop, projectManagedFlags,
 } from "./dataverse-metadata-relationships.mjs";
 import { createColumn, dropColumn, dropTable, updateTable } from "./dataverse-metadata-tables.mjs";
 import { removeSolutionAssetLayers, reassignSolutionAssetLayers } from './dataverse-solution-assets.mjs';
@@ -32,15 +34,16 @@ const SOLUTION_TABLES = new Set(["solution", "publisher", "importjob", "solution
 const notFound = (message, code) => new DataError(message, 404, code); // unverified: message texts and codes (no Learn text)
 const invalid = (message) => new DataError(message, 400, "InvalidRequest"); // unverified
 
-// Every component the store holds, with its key, componenttype code and object id.
-export function componentsOf(state) {
+// Every component the store holds, with its key, componenttype code and object id (a metadata component's MetadataId in the
+// store's organization, componentObjectId).
+export function componentsOf(state, organizationId = organizationRecord(state)?.organizationid) {
   const out = [];
   const seen = new Set();
   const push = (entry) => {
     const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? "")}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ ...entry, key, id: entry.id ?? componentObjectId(entry), type: entry.type ?? SOLUTION_COMPONENT_TYPE[entry.kind] ?? PAYLOAD_COMPONENTS[entry.kind] });
+    out.push({ ...entry, key, id: entry.id ?? componentObjectId(entry, organizationId), type: entry.type ?? SOLUTION_COMPONENT_TYPE[entry.kind] ?? PAYLOAD_COMPONENTS[entry.kind] });
   };
   for (const [logical, mapping] of Object.entries(state.mappings ?? {})) {
     if (SOLUTION_TABLES.has(logical)) continue; // the solution service tables are not solution components
@@ -239,7 +242,7 @@ const solutionEntity = (row) => ({
 function missingOf(store, archive) {
   const known = (logical) => store.state.mappings?.[logical] !== undefined || archive.entities.some((e) => lower(e.logicalName) === lower(logical));
   const detail = (type, logical, schemaName, solution) => ({
-    DisplayName: schemaName ?? logical, Id: componentObjectId({ kind: type === 10 ? "relationship" : "entity", logical, name: type === 10 ? schemaName : null }),
+    DisplayName: schemaName ?? logical, Id: componentObjectId({ kind: type === 10 ? "relationship" : "entity", logical, name: type === 10 ? schemaName : null }, organizationRecord(store)?.organizationid),
     ParentDisplayName: null, ParentId: null, ParentSchemaName: null, SchemaName: schemaName ?? logical, Solution: solution ?? null, Type: type,
   });
   const out = [];
@@ -301,7 +304,7 @@ function promotable(store, uniquename) {
 // The objectids a solution holds (its solutioncomponent rows), lower-cased.
 const heldBy = (store, solutionid) => new Set(membersOf(store, solutionid).map((r) => lower(r.objectid)));
 // Metadata id of a table or column: the id the metadata reader gives it (dataverse-metadata.mjs metadataIdOf). Managed layers are keyed by it.
-export const metadataIdOf = (api, kind, logical, name = null) => lower(uuidV5(api.settings.organizationId, [kind, logical, name].filter((part) => part != null).join(":")));
+export const metadataIdOf = managedLayerId;
 
 // The plan for removing a set of solutions (Learn: uninstall deletes a managed solution's components; DeleteAndPromote deletes the
 // base solution and its patches). A component is removed when a removed solution holds it, no solution outside the removed ones
@@ -347,9 +350,44 @@ function applyRemoval(api, plan) {
   for (const c of removed) if (c.kind === "entity" && state.mappings[c.logical]) dropTable(api, c.logical);
   for (const c of removed) if (c.kind === "optionset" && boundFields(api, c.logical).length === 0) dropGlobalSet(api, c.logical);
   const origin = state.dataverse?.componentOrigin ?? {};
-  const layers = state.dataverse?.managedLayers ?? {};
   for (const id of plan.removedIds) delete origin[id];
-  for (const c of removed) if (c.kind === "entity" || c.kind === "attribute") delete layers[metadataIdOf(api, c.kind, c.logical, c.kind === "attribute" ? c.name : null)];
+  popLayers(api, plan.removing, removed);
+}
+// Removes the removed solutions' layers from every managed stack (Learn solution-layers-alm: "If you uninstall a managed
+// solution, the managed solution below it takes effect"; removing-dependencies: only that layer is removed). A removed
+// component's stack goes with it. When the top changed and no unmanaged customization sits on top, the new top definition is
+// restored into live metadata; an emptied stack leaves the remaining definition unmanaged. A Solution security role or field
+// security profile (SECURITY_LAYERS kinds) gets the grants of the layer below unless it was changed after its last import
+// (activeOnTop); its last layer removes the component, its grants and its user/team associations.
+function popLayers(api, removing, removed = []) {
+  const state = api.store.state;
+  const layers = state.dataverse?.managedLayers ?? {};
+  const gone = new Set(removed.map((c) => managedLayerId(api, c.kind, c.logical, c.kind === "entity" ? null : c.name)));
+  for (const [id, layer] of Object.entries(layers)) {
+    if (gone.has(id)) { delete layers[id]; continue; }
+    const stack = layerStack(layer);
+    const kept = stack.filter((entry) => !removing.has(lower(entry.solutionid)));
+    if (kept.length === stack.length) continue;
+    const topChanged = kept.at(-1) !== stack.at(-1);
+    layer.stack = kept;
+    const security = SECURITY_LAYERS[layer.kind];
+    if (security) {
+      if (!kept.length) {
+        security.remove(api.store, layer.logical);
+        delete layers[id];
+      } else if (topChanged && !layer.activeOnTop) layer.applied = security.apply(api.store, layer.logical, kept.at(-1).body ?? []);
+      continue;
+    }
+    if (!kept.length) { delete layers[id]; continue; }
+    if (topChanged && LAYER_KINDS.has(layer.kind) && restorable(api, layer) && !activeOnTop(api, layer)) restoreLayer(api, null, layer);
+  }
+  projectManagedFlags(api);
+}
+// The live definition a restore replaces exists: the column, or a table the metadata API owns (updateTable's guard).
+function restorable(api, layer) {
+  const mapping = api.store.state.mappings[layer.logical];
+  if (!mapping) return false;
+  return layer.kind === "attribute" ? Object.hasOwn(mapping.fields ?? {}, layer.name) : mapping.dataverseMetadata?.createdByMetadataApi === true;
 }
 function promote(api, uniquename) {
   const { store } = api;
@@ -719,31 +757,28 @@ function dependencyMetadataInfo(store, edge, baseOf) {
   };
 }
 
-// Managed layers (Learn: solution layers). A managed import records the managed definition of each table and column it brings
-// (state.dataverse.managedLayers, keyed by metadata id; dataverse-solutions.mjs apply). The unmanaged customization on top is
-// active when the import kept an existing definition, or when a metadata change came after the import. Removing the active
-// customization restores the managed definition. Only a table or a column has a layer (Learn: RemoveActiveCustomization).
+// Managed layers (Learn: solution layers). A managed import pushes the managed definition of each table and column it brings
+// onto the component's ordered stack (state.dataverse.managedLayers, keyed by metadata id; dataverse-solutions.mjs apply;
+// keys and relationships get an ownership-only stack). The unmanaged customization on top is active when the import kept an
+// existing definition, or when a metadata change came after the layer's last managed write. Removing the active customization
+// restores the top managed definition. Only a table or a column has a restorable layer (Learn: RemoveActiveCustomization).
 const LAYER_KINDS = new Set(["entity", "attribute"]);
 function layerOf(api, kind, id) {
   const layer = api.store.state.dataverse?.managedLayers?.[lower(id)];
   if (!LAYER_KINDS.has(kind)) throw new DataError(`RemoveActiveCustomizations is not supported for components of type ${kind}.`, 400, "InvalidRequest", { innerCode: "0x8004F059" }); // unverified: status
-  if (!layer || layer.kind !== kind) throw new DataError(`RemoveActiveCustomization is not supported for solution layer {'${id}'} because it is not Active layer.`, 400, "InvalidRequest", { innerCode: "0x8004F076" }); // unverified: status
+  if (!layer || layer.kind !== kind || !layerStack(layer).length) throw new DataError(`RemoveActiveCustomization is not supported for solution layer {'${id}'} because it is not Active layer.`, 400, "InvalidRequest", { innerCode: "0x8004F076" }); // unverified: status
   return layer;
 }
-// True when a customization sits on top of the managed layer.
-function activeOnTop(api, layer) {
-  if (layer.activeOnTop === true) return true;
-  return (api.store.state.dataverse?.metadataLog ?? []).some((entry) => entry.seq > layer.seq && entry.op === "change" && entry.kind === layer.kind
-    && lower(entry.logical) === lower(layer.logical) && (layer.kind === "entity" || lower(entry.name ?? "") === lower(layer.name)));
-}
-// Restores the managed definition, through the overwrite path of the import: a column is replaced, a table is updated in place.
+// Restores the top managed definition, through the overwrite path of the import: a column is replaced, a table is updated in
+// place. ctx is the request (null inside an uninstall or promote: no request URL is answered).
 function restoreLayer(api, ctx, layer) {
-  const c = { api, origin: ctx.origin, version: ctx.version, headers: {}, caller: ctx.caller };
+  const c = { api, origin: ctx?.origin ?? "", version: ctx?.version ?? "v9.2", headers: {}, caller: ctx?.caller };
   const key = `LogicalName='${layer.logical}'`;
+  const body = layerStack(layer).at(-1).body;
   if (layer.kind === "attribute") {
     delete api.store.state.mappings[layer.logical].fields[layer.name];
-    createColumn(c, key, structuredClone(layer.body));
-  } else updateTable(c, key, structuredClone(layer.body));
+    createColumn(c, key, structuredClone(body));
+  } else updateTable(c, key, structuredClone(body));
   layer.activeOnTop = false;
   layer.seq = lastMetadataSeq(api);
 }
@@ -752,7 +787,22 @@ function removeActive(api, ctx, kind, id) {
   const layer = layerOf(api, kind, id);
   if (!activeOnTop(api, layer)) return false;
   restoreLayer(api, ctx, layer);
+  projectManagedFlags(api);
   return true;
+}
+// The layers of one component, bottom first, as msdyn_componentlayer rows: one per managed solution, then the Active
+// (unmanaged) layer when a customization sits on top. unverified: Dataverse serves these through the msdyn_componentlayer
+// virtual table; the function name, the row columns kept here and msdyn_order numbering are this simulator's.
+function componentLayers(api, kind, id) {
+  const layer = api.store.state.dataverse?.managedLayers?.[lower(id)];
+  if (!layer || (kind && layer.kind !== kind)) return [];
+  const solutions = rowsOf(api.store, "solution");
+  const nameOf = (solutionid) => solutions.find((s) => lower(s.solutionid) === lower(solutionid))?.uniquename ?? null;
+  const row = (solution, version, order) => ({ msdyn_componentid: lower(id), msdyn_solutioncomponentname: layer.kind, msdyn_name: layer.name ?? layer.logical,
+    msdyn_solutionname: solution, msdyn_solutionversion: version, msdyn_order: order });
+  const rows = layerStack(layer).map((entry, index) => row(nameOf(entry.solutionid), entry.version ?? null, index + 1));
+  if (rows.length && activeOnTop(api, layer)) rows.push(row("Active", null, rows.length + 1));
+  return rows;
 }
 
 function layerOperations(api) {
@@ -808,6 +858,16 @@ function layerOperations(api) {
         return asyncResponse(ctx, "Microsoft.Dynamics.CRM.BulkRemoveActiveCustomizationsAsyncResponse", { AsyncOperationId: asyncId });
       },
     },
+    {
+      name: "RetrieveComponentLayers", kind: "function", binding: "unbound", // unverified: see componentLayers
+      signature: { params: [["ComponentId", "Edm.Guid"], ["SolutionComponentName", "Edm.String"]], response: [["Layers", "Collection(mscrm.crmbaseentity)"]] },
+      async handle(ctx) {
+        privilege(ctx);
+        const id = requireText(ctx.params?.ComponentId, "ComponentId").replace(/[{}']/g, "");
+        const kind = ctx.params?.SolutionComponentName ? lower(String(ctx.params.SolutionComponentName).replace(/'/g, "")) : null;
+        return asyncResponse(ctx, "Microsoft.Dynamics.CRM.RetrieveComponentLayersResponse", { Layers: componentLayers(api, kind, id) });
+      },
+    },
   ];
 }
 
@@ -856,7 +916,9 @@ export function installSolutionMessages(api, tools = {}) {
         await write(() => {
           addSolutionComponents(api, solution, chosen, { defaultSolution: false });
           const row = solutionRowOf(store, solution);
-          id = store.state.tables.solutioncomponent.find((r) => lower(r.solutionid) === lower(row.solutionid) && r.objectid === component.id)?.solutioncomponentid ?? null;
+          id = store.state.tables.solutioncomponent.find((r) => lower(r.solutionid) === lower(row.solutionid) && lower(r.objectid) === lower(component.id))?.solutioncomponentid ?? null;
+          // Never a false success: a component that wrote no solutioncomponent row is refused and the write rolls back.
+          if (id == null) throw invalid(`The solution component ${component.id} of type ${component.type} cannot be added to a solution.`); // unverified: message text
         });
         return { status: 200, body: { "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.AddSolutionComponentResponse"), id } };
       },

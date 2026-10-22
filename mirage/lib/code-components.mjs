@@ -4,6 +4,10 @@ import { readLocalFile } from '../../lense/local-file.mjs';
 import { createHash } from 'node:crypto';
 import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
 import { portalLanguage } from './portal-languages.mjs';
+import { pcfAdmission } from './model-driven/pcf-runtime.mjs';
+
+/** The one PCF admission rule of the Power Pages and model-driven hosts (control type, dataset, platform libraries). */
+export { pcfAdmission };
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const canonical = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
@@ -190,8 +194,9 @@ export function renderCodeComponent({ name, args = {}, portal, catalog, identity
   if (!control) return unsupported(`Code component ${schema} was not found in the selected solution sources.`);
   const features = featureEligibility(control.features);
   if (features.some(feature => !feature.eligible)) return unsupported(`Code component ${schema} has feature declarations that are not eligible for the Power Pages host.`, { reason: 'PCF_FEATURE_DECLARATIONS_UNSUPPORTED', features });
-  if (control.type !== 'standard') return unsupported(`Code component ${schema} requires a React host and its declared platform libraries. The local host currently supports standard controls.`);
-  if (control.libraries?.length) return unsupported(`Code component ${schema} requires platform libraries (${control.libraries.map(item => item.name + ' ' + item.version).join(', ')}). These libraries are not supplied by the local host.`);
+  // The Power Pages host supplies no platform libraries: virtual (React) components answer PCF_VIRTUAL_UNSUPPORTED.
+  const admission = pcfAdmission({ ...control, name: schema });
+  if (!admission.admitted) return unsupported(admission.reason, { reason: admission.code });
   if (nativeBinding) {
     const properties = nativeBinding.properties;
     if (control.dataset || typeof nativeBinding.id !== 'string' || !nativeBinding.id || !Array.isArray(properties) || !properties.length || properties.some(name => !control.properties.some(property => property.name === name && property.usage === 'bound'))) return unsupported(`Code component ${schema} has no valid single-field native binding to its declared bound properties. Input-only and dataset properties cannot save this field.`);

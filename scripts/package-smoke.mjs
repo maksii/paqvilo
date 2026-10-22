@@ -86,7 +86,7 @@ try {
   if (!appShell.ok || !(await appShell.text()).includes('/_apps/assets/app.mjs')) throw new Error('Installed model-driven shell is missing.');
   for (const asset of ['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css']) if (!(await fetch(session.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed model-driven asset is missing: ${asset}`);
   const apps = await fetch(session.url + '/_apps/api').then(response => response.json());
-  if (apps.version !== 1 || !apps.apps.some(app => app.id === apps.defaultApp && app.name === 'Power Pages Management')) throw new Error('Installed default management application is unavailable.');
+  if (apps.version !== 1 || !apps.apps.some(app => app.id === apps.defaultApp && app.name === 'Mirage Site Manager')) throw new Error('Installed default management application is unavailable.');
 } finally {
   if (session) cli('mirage', 'stop', '--site', 'example', '--json');
 }

@@ -9,9 +9,10 @@
 import { DataError } from "./data-error.mjs";
 import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import { createMetadataService } from "./dataverse-metadata.mjs";
-import { removeRelationshipsOf, assignValue, optionFrom, requireMetadataPrivilege, logMetadataChange, withSolutionMembership } from "./dataverse-metadata-relationships.mjs";
+import { removeRelationshipsOf, assignValue, optionFrom, requireMetadataPrivilege, logMetadataChange, withSolutionMembership, assertNotManaged, managedLayerOf, layerStack, projectManagedFlags } from "./dataverse-metadata-relationships.mjs";
 import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from "./dataverse-security.mjs";
 import { pluralizeEntitySetName } from "./solution-standard.mjs";
+import { equalityKey } from "./dataverse-values.mjs";
 import { assertElasticColumn, assertElasticKey, assertElasticTable, builtInKey, isElastic, SYSTEM_ATTRIBUTES, tableTypeOf } from "./dataverse-elastic.mjs";
 
 // unverified: customization prefix of 2 to 8 letters, then an underscore and a name (the quote and space forms are refused).
@@ -268,6 +269,15 @@ function columnNamed(api, logical, mapping, attributeId) {
   return name;
 }
 
+// A managed component accepts an update only while its top managed layer is customizable; the update is an unmanaged layer on
+// top of it (the metadata log entry makes activeOnTop true; RemoveActiveCustomization restores the managed definition).
+function assertCustomizable(api, kind, logical, name, label) {
+  const top = layerStack(managedLayerOf(api, kind, logical, name)).at(-1);
+  if (!top || top.customizable !== false) return;
+  // Learn web-service-error-codes EntityIsNotCustomizable; unverified: the code for a column and the HTTP status.
+  throw fail(`The specified ${kind === "entity" ? "entity" : "attribute"} ${label} is not customizable`, 400, "ManagedComponentModification", "0x80047008");
+}
+
 const entityIdUrl = (c, logical) => urlOf(c, `EntityDefinitions(${ids(c.api).metadataId("entity", logical)})`);
 const attributeIdUrl = (c, logical, name) => urlOf(c, `EntityDefinitions(${ids(c.api).metadataId("entity", logical)})/Attributes(${ids(c.api).metadataId("attribute", logical, name)})`);
 
@@ -350,6 +360,7 @@ export function updateTable(c, key, body) {
 }
 
 function deleteTable(c, key) {
+  assertNotManaged(c.api, "entity", tableNameOf(c.api, key), null, tableNameOf(c.api, key));
   const { logical } = userTable(c.api, key);
   dropTable(c.api, logical);
   return { status: 204 };
@@ -380,6 +391,7 @@ export function createColumn(c, key, body) {
 function updateColumn(c, key, attributeId, body) {
   const { logical, mapping } = anyTable(c.api, key);
   const name = columnNamed(c.api, logical, mapping, attributeId);
+  assertCustomizable(c.api, "attribute", logical, name, `${logical}.${name}`);
   const field = customColumnOf(c.api, logical, mapping, name);
   const facts = field.columnMetadata;
   if (body.SchemaName !== undefined && String(body.SchemaName).toLowerCase() !== name) throw fail(`The schema name of ${name} cannot change.`); // unverified
@@ -408,6 +420,7 @@ function updateColumn(c, key, attributeId, body) {
 function deleteColumn(c, key, attributeId) {
   const { logical, mapping } = anyTable(c.api, key);
   const name = columnNamed(c.api, logical, mapping, attributeId);
+  assertNotManaged(c.api, "attribute", logical, name, `${logical}.${name}`);
   const facts = customColumnOf(c.api, logical, mapping, name).columnMetadata;
   if (facts.isPrimaryName) throw fail("The primary name column cannot be deleted."); // unverified
   if ((mapping.alternateKeys ?? []).some((k) => k.attributes.includes(name))) throw fail(`${name} is used by an alternate key.`); // unverified
@@ -449,7 +462,8 @@ export function createKey(c, key, body) {
   }
   const bytes = attributes.reduce((sum, attribute) => sum + KEY_BYTES[mapping.fields[attribute].dataverseType](mapping.fields[attribute]), 0);
   if (bytes > MAX_KEY_BYTES) throw fail(`The key is ${bytes} bytes; a key can be at most ${MAX_KEY_BYTES} bytes.`); // unverified
-  mapping.alternateKeys = [...keys, { name, schemaName, attributes, labels: labelMap(body.DisplayName) ?? {} }];
+  // Learn define-alternate-keys-entity: a new key is Pending until its index job (activateKey) has validated the data.
+  mapping.alternateKeys = [...keys, { name, schemaName, attributes, labels: labelMap(body.DisplayName) ?? {}, indexStatus: "Pending" }];
   logMetadataChange(api, "change", "entity", logical);
   const keyId = ids(api).metadataId("key", logical, name);
   return { status: 204, headers: { "OData-EntityId": urlOf(c, `EntityDefinitions(${ids(api).metadataId("entity", logical)})/Keys(${keyId})`) } };
@@ -461,10 +475,67 @@ function deleteKey(c, key, keyId) {
   const keys = mapping.alternateKeys ?? [];
   const found = keys.find((k) => guidOf(ids(api).metadataId("key", logical, k.name)) === guidOf(keyId));
   if (!found) throw fail(`Key ${keyId} does not exist.`, 404, "NotFound"); // unverified
+  assertNotManaged(api, "key", logical, found.name, `${logical}.${found.name}`);
   if (found.builtIn) throw fail(`${found.name} is the built-in key of an elastic table and cannot be deleted.`); // unverified: LC-E1c
   mapping.alternateKeys = keys.filter((k) => k !== found);
   logMetadataChange(api, "change", "entity", logical);
   return { status: 204 };
+}
+
+// The duplicate non-empty value tuples of a key's columns, compared with the collation equality of the record pipeline.
+function keyDuplicates(api, logical, key) {
+  const seen = new Map();
+  const duplicates = [];
+  for (const row of api.store.state.tables?.[logical] ?? []) {
+    const values = key.attributes.map((name) => row[name]);
+    if (values.some((value) => value == null || value === "")) continue;
+    const tuple = values.map((value) => equalityKey(value)).join("\u0001");
+    // The first row's values name the duplicate tuple.
+    if (!seen.has(tuple)) seen.set(tuple, values);
+    else if (seen.get(tuple) !== true) {
+      duplicates.push(seen.get(tuple));
+      seen.set(tuple, true);
+    }
+  }
+  return duplicates;
+}
+
+/**
+ * The index job of an alternate key (Learn define-alternate-keys-entity#monitor-index-creation-for-alternate-keys): the key is
+ * Pending, then a system job named "Create index for {key} for table {table}" checks the rows. Unique values make the key Active;
+ * duplicate values make it Failed and fail the job with the duplicate tuples, and ReactivateEntityKey runs the job again once
+ * the data is fixed. A key that is not Active neither resolves a key segment nor enforces uniqueness. Returns the job id.
+ */
+export async function activateKey(api, logical, keyName, callerId = null) {
+  const keyOf = () => (api.store.state.mappings[logical]?.alternateKeys ?? []).find((k) => k.name === keyName);
+  const write = (fn) => api.change(() => api.store.transact(fn));
+  const key = keyOf();
+  if (!key) return null;
+  await write(() => { const k = keyOf(); if (k) k.indexStatus = "Pending"; });
+  const evaluate = async () => {
+    let duplicates = [];
+    await write(() => {
+      const k = keyOf();
+      if (!k) return;
+      duplicates = keyDuplicates(api, logical, k);
+      k.indexStatus = duplicates.length ? "Failed" : "Active";
+      if (!duplicates.length && k.deactivated) k.deactivated = false;
+    });
+    if (duplicates.length) {
+      const sample = duplicates.slice(0, 5).map((values) => `(${values.join(", ")})`).join(", ");
+      // unverified: the native job message; the code is MultipleRecordsFoundByEntityKey from Learn web-service-error-codes.
+      throw fail(`More than one record exists for entity ${logical} with entity key involving attributes ${key.attributes.join(", ")}: ${sample}${duplicates.length > 5 ? ` and ${duplicates.length - 5} more` : ""}.`, 400, "InvalidRequest", "0x8006089D");
+    }
+    return null;
+  };
+  if (typeof api.systemJob !== "function") {
+    await evaluate().catch(() => {}); // no job host: the status alone records the outcome
+    return null;
+  }
+  // unverified: asyncoperation operationtype 63 for the index job.
+  const jobId = await api.systemJob({ name: `Create index for ${key.schemaName ?? key.name} for table ${logical}`, operationtype: 63, callerId }, evaluate);
+  await write(() => { const k = keyOf(); if (k) k.asyncJob = jobId; });
+  return jobId;
 }
 
 // PublishXml and PublishAllXml are accepted and do nothing: changes already apply to the simulated model.
@@ -477,14 +548,34 @@ function publish(c) {
 // Privilege for a write: table writes need prv*Entity, column and key writes prv*Attribute (keys: unverified).
 const privilegeFor = (method, segment) => (VERB[method] ? `prv${VERB[method]}${segment ? "Attribute" : "Entity"}` : null);
 
-export function install(api) {
+/**
+ * Seeded alternate keys (Solution sources, state, presets and packs: a key without indexStatus) over rows that already hold
+ * duplicate values never become Active: the key is Failed, as its index job would end, and ALTERNATE_KEY_DUPLICATES names the
+ * duplicate values. Unique seeded keys stay as they are (Active). Runs inside a store transaction at install and reseed.
+ */
+export function failDuplicateSeededKeys(api, diagnostic = () => {}) {
+  for (const [logical, mapping] of Object.entries(api.store.state.mappings ?? {})) {
+    for (const key of mapping.alternateKeys ?? []) {
+      if (key.indexStatus !== undefined || key.builtIn || !(key.attributes ?? []).length) continue;
+      const duplicates = keyDuplicates(api, logical, key);
+      if (!duplicates.length) continue;
+      key.indexStatus = "Failed";
+      diagnostic({ code: "ALTERNATE_KEY_DUPLICATES", severity: "warning", entity: logical, key: key.name, attributes: [...key.attributes], duplicates: duplicates.slice(0, 20),
+        message: `Alternate key ${key.name} of ${logical} is Failed: ${duplicates.length} value tuple(s) of ${key.attributes.join(", ")} repeat. Fix the rows and call ReactivateEntityKey.` });
+    }
+  }
+}
+
+export async function install(api) {
   api.addRoute((pathname, method) => method !== "GET" && WRITE_PATH.test(pathname), (c) => handleMetadataWrite({ ...c, api }));
+  if (api.store) await api.store.transact(() => failDuplicateSeededKeys(api, api.diagnostic));
 }
 
 // runs on every reseed (/_sim/ reset, state import) inside the change queue: the store only, never api.change.
-// The custom columns are kept in state.dataverse.customColumns; a reset mapping gets them back from there.
+// The custom columns are kept in state.dataverse.customColumns; a reset mapping gets them back from there, and its managed
+// flags from the layer stacks.
 export function reset(api) {
-  return api.store.transact(() => reapplyCustomColumns(api.store));
+  return api.store.transact(() => { reapplyCustomColumns(api.store); projectManagedFlags(api); failDuplicateSeededKeys(api, api.diagnostic); });
 }
 
 /** Dispatches one metadata write. The privilege is checked first; each change then runs in one store transaction. */
@@ -504,12 +595,16 @@ export async function handleMetadataWrite(c) {
   // Every write first re-applies the custom columns, so a mapping reset by a Solution reload gets them back.
   const write = (fn) => api.change(() => api.store.transact(() => { reapplyCustomColumns(api.store); return withSolutionMembership(api, c.headers, fn); }));
   if (!segment && !key && method === "POST") return write(() => createTable(c, body));
-  if (!segment && key && method === "PUT") return write(() => updateTable(c, key, body));
+  if (!segment && key && method === "PUT") return write(() => { const logical = tableNameOf(api, key); assertCustomizable(api, "entity", logical, null, logical); return updateTable(c, key, body); });
   if (!segment && key && method === "DELETE") return write(() => deleteTable(c, key));
   if (segment === "Attributes" && key && !segmentKey && method === "POST") return write(() => createColumn(c, key, body));
   if (segment === "Attributes" && key && segmentKey && method === "PUT") return write(() => updateColumn(c, key, segmentKey, body));
   if (segment === "Attributes" && key && segmentKey && method === "DELETE") return write(() => deleteColumn(c, key, segmentKey));
-  if (segment === "Keys" && key && !segmentKey && method === "POST") return write(() => createKey(c, key, body));
+  if (segment === "Keys" && key && !segmentKey && method === "POST") {
+    const result = await write(() => createKey(c, key, body));
+    await activateKey(api, tableNameOf(api, key), lower(body.SchemaName).trim(), c.caller?.systemuserid ?? null);
+    return result;
+  }
   if (segment === "Keys" && key && segmentKey && method === "DELETE") return write(() => deleteKey(c, key, segmentKey));
   throw fail(`${method} is not supported for ${route.set}${segment ? `/${segment}` : ""}.`, 405, "MethodNotAllowed"); // unverified: PATCH on definitions
 }

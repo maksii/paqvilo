@@ -68,12 +68,12 @@ async function runModelDriven(args, action, progress) {
   const overlay = createModelDrivenOverlay({ origin, imported, mappings, ownsRequest: request => request.frame?.().page?.() === page,
     onApplied: event => { if (event.count === 1) console.log(`Applied local Solution resource: ${event.resource}`); inspector?.refresh(); } });
   if (action === 'inspect') {
-    const report = { ...overlay.report(), trustedExtensions: project.modelDriven.trustedExtensions };
+    const report = { ...overlay.report(), trustedExtensions: project.modelDriven?.trustedExtensions ?? false };
     if (args.json) console.log(JSON.stringify(report));
     else console.log(`${report.resources.length} declared Solution resources; ${report.unbound.length} require exact native resource mappings.\n${JSON.stringify(report, null, 2)}`);
     return 0;
   }
-  if (!project.modelDriven.trustedExtensions) throw new Error('Set modelDriven.trustedExtensions: true in the project to execute local Solution code in the model-driven browser.');
+  if (!project.modelDriven?.trustedExtensions) throw new Error('Set modelDriven.trustedExtensions: true in the project to execute local Solution code in the model-driven browser.');
   const destination = args.path ?? '/main.aspx';
   const url = new URL(destination, origin);
   if (!destination.startsWith('/') || destination.startsWith('//') || destination.includes('\\') || url.origin !== origin) throw new Error('--path must be local to the selected environment origin.');

@@ -26,10 +26,26 @@ export function createServiceProtection({
     return s;
   }
 
+  // Entries are appended in clock order, so the expired ones lead each list: drop that prefix in place.
+  // A clock that moved backwards (an injected test clock) breaks the order; such a user keeps the full filter.
+  const expiredPrefix = (list, now, at) => {
+    let count = 0;
+    while (count < list.length && now - at(list[count]) >= WINDOW_MS) count++;
+    if (count) list.splice(0, count);
+  };
   function prune(s, now) {
-    s.requests = s.requests.filter((at) => now - at < WINDOW_MS);
-    s.executed = s.executed.filter((e) => now - e.at < WINDOW_MS);
+    if (s.unordered) {
+      s.requests = s.requests.filter((at) => now - at < WINDOW_MS);
+      s.executed = s.executed.filter((e) => now - e.at < WINDOW_MS);
+      return;
+    }
+    expiredPrefix(s.requests, now, (at) => at);
+    expiredPrefix(s.executed, now, (e) => e.at);
   }
+  const append = (s, list, entry, at) => {
+    if (list.length && at < (typeof list.at(-1) === "number" ? list.at(-1) : list.at(-1).at)) s.unordered = true;
+    list.push(entry);
+  };
 
   // unverified: Retry-After is the seconds until the oldest counted entry leaves the window (rounded up).
   const retryAfter = (oldestAt, now) => Math.max(1, Math.ceil(((oldestAt ?? now) + WINDOW_MS - now) / 1000));
@@ -82,7 +98,7 @@ export function createServiceProtection({
         return reject(`Number of concurrent requests exceeded the limit of ${concurrentRequests}.`, "0x80072326", 1);
       }
 
-      s.requests.push(now);
+      append(s, s.requests, now, now);
       s.active += 1;
       let released = false;
       return {
@@ -91,7 +107,8 @@ export function createServiceProtection({
           if (released) return;
           released = true;
           s.active -= 1;
-          s.executed.push({ at: clock(), ms: Math.max(0, Number(durationMs) || 0) });
+          const at = clock();
+          append(s, s.executed, { at, ms: Math.max(0, Number(durationMs) || 0) }, at);
         },
       };
     },

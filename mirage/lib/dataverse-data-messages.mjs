@@ -477,7 +477,12 @@ function installRetentionMessages(api) {
     if (!logical) throw invalid("FetchXml requires an entity.");
     authorize(api, c, logical, "read");
     const xml = String(input.FetchXml).replace(/<fetch\b[^>]*>/i, (opening) => opening.replace(/\s+datasource\s*=\s*(?:"[^"]*"|'[^']*')/i, "").replace(/>$/, ' datasource="retained">'));
-    const result = api.store.fetchXml(xml, c.identity), rows = result.entities ?? [];
+    // Column security as on every FetchXML read: a masked operand answers 0x80041155 and the workbook carries what the caller
+    // receives (hidden columns null through datasourceRows, masked columns masked).
+    const secured = api.store.recordPipeline?.secureInternal?.(c, logical, { fetchXml: xml }) ?? {};
+    const view = { unmask: false, single: false };
+    const result = api.store.fetchXml(xml, c.identity, secured);
+    const rows = (result.entities ?? []).map((row) => api.fieldSecurity?.mask?.(c.user, logical, row, { view }) ?? row);
     const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
     const workbook = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Retained data"><Table><Row>${columns.map((name) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(name)}</Data></Cell>`).join("")}</Row>${rows.map((row) => `<Row>${columns.map((name) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(String(row[name]?.value ?? row[name] ?? ""))}</Data></Cell>`).join("")}</Row>`).join("")}</Table></Worksheet></Workbook>`;
     authorize(api, c, "retaineddataexcel", "create");

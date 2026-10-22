@@ -19,7 +19,7 @@ test('Explicit disabled and mock choices remain selectable for source-unsupporte
 });
 test('Close consumes callbacks captured at the saved commit boundary, including bounded descendants',async()=>{
  const store=data(),notes=[],handlers=new Map([[id,context=>{if(context.record.title==='Root')store.sdkMutation(()=>store.createRecord('widget',{title:'Child'},{admin:true}));}]]),items=()=>pluginCatalogue({plugins:{steps:[step]},handlers}),runner=createAsyncPluginRunner({store,items,handlers,runtimes:new Map(),diagnostic:n=>notes.push(n)});
- store.dispatchCommittedEvents([{entity:'widget',operation:'create',row:{widgetid:id,title:'Root'},target:{title:'Root'},submittedAttributes:['title']}]);
+ await store.transact(()=>{for(const e of [{entity:'widget',operation:'create',row:{widgetid:id,title:'Root'},target:{title:'Root'},submittedAttributes:['title']}])store.recordCommittedEvent(e.entity,e.operation,e.row,e.submittedAttributes,{target:e.target});});
  await runner.close();assert.equal(notes.filter(n=>n.code==='PLUGIN_ASYNC_COMPLETED').length,2);assert.equal(store.snapshot().tables.widget[0].title,'Child');assert.deepEqual(runner.status(),{pending:0,closed:true});
 });
 test('A failing consumer does not drop another accepted consumer or reject a committed write',async()=>{

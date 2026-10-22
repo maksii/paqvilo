@@ -51,6 +51,9 @@ and every mapped profile path, including nonselected profiles, without executing
 pack code. Output contains diagnostic codes, status and paths, not deployment or
 observed values. Doctor may probe ignored state/cache and loopback port availability;
 it does not contact a portal. Initial `--check`/`configure` still work before cloning.
+In a repository without commits, the markup baseline is skipped with a warning ("the
+repository has no commits yet") instead of failing `lense doctor` and `init --ready`;
+changed scope (`scope: changed`) still needs an existing commit.
 
 Adoption diagnostics name missing dependency, script and private-ignore wiring.
 Into-existing generation remains additive; generation success does not integrate an

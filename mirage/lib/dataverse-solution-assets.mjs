@@ -32,7 +32,7 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
   for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
   return value >>> 0;
 });
-const crc32 = (bytes) => {
+export const crc32 = (bytes) => {
   let crc = 0xffffffff;
   for (const value of bytes) crc = crcTable[(crc ^ value) & 0xff] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
@@ -68,9 +68,13 @@ function checkedEntries(input, limits) {
   });
 }
 
-/** Stored/deflated single-disk ZIP, including data descriptors. Symlinks, encryption and ZIP64 fail explicitly. */
+/**
+ * Stored/deflated single-disk ZIP, including data descriptors. Symlinks, encryption and ZIP64 fail explicitly.
+ * `include(name)` selects the files to return: every directory and local header is still validated, but only selected
+ * entries are inflated and CRC-checked.
+ */
 export function readSolutionAssetEntries(input, options = {}) {
-  const limits = limitsOf(options);
+  const limits = limitsOf(options), include = options.include ?? (() => true);
   if (!Buffer.isBuffer(input) && !(input instanceof Uint8Array)) fail("Solution archive must be bytes.");
   const bytes = Buffer.from(input);
   if (bytes.length > limits.archiveBytes) fail("Solution archive exceeds the compressed size limit.", "ArchiveLimit");
@@ -114,6 +118,8 @@ export function readSolutionAssetEntries(input, options = {}) {
     const rangeEnd = body + packed;
     if (ranges.some(([left, right]) => local < right && rangeEnd > left)) fail("Overlapping solution ZIP entries.");
     ranges.push([local, rangeEnd]);
+    cursor += 46 + nameLength + extraLength + commentLength;
+    if (!name.endsWith("/") && !include(name)) continue;
     const compressed = bytes.subarray(body, rangeEnd);
     let data;
     try { data = method === 0 ? Buffer.from(compressed) : inflateRawSync(compressed, { maxOutputLength: Math.max(1, Math.min(limits.entryBytes, unpacked)) }); }
@@ -121,7 +127,6 @@ export function readSolutionAssetEntries(input, options = {}) {
     if (data.length !== unpacked || crc32(data) !== crc) fail("Solution asset size or CRC does not match its directory.");
     if (!name.endsWith("/")) entries.push({ name, data });
     else if (data.length) fail("A solution directory entry contains file data.");
-    cursor += 46 + nameLength + extraLength + commentLength;
   }
   if (cursor !== end) fail("Trailing or missing solution ZIP directory entries.");
   return entries;

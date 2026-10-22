@@ -166,6 +166,20 @@ function uuidV5(namespace, name) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * The MetadataId of a metadata component, the one id every caller uses: the metadata reader, solution membership
+ * (solutioncomponent.objectid), AddSolutionComponent and the component messages, dependencies, managed layers and
+ * import/export. Learn (AddSolutionComponentRequest.ComponentId): for solution components that derive from MetadataBase the
+ * component id is the MetadataId. Entity `entity:<table>`, column `attribute:<table>:<column>`, key `key:<table>:<key>`,
+ * local choice `optionset:<table>:<column>`, global choice `optionset:<name>`, relationship `relationship:<schema name>`
+ * in lower case (relationship schema names match case-insensitively).
+ */
+export function metadataComponentId(organizationId, kind, logical, name = null) {
+  // Every part is lower case: logical names, key names and global choice names match case-insensitively (RC4a-17).
+  const parts = (kind === "relationship" ? [name ?? logical] : [logical, name]).filter((part) => part != null).map((part) => String(part).toLowerCase());
+  return uuidV5(organizationId, `${kind}:${parts.join(":")}`).toLowerCase();
+}
+
 // Localized label block; labels is an lcid-keyed object (Solution exports), fallback a plain text.
 function labelBlock(labels, fallback, lcid) {
   const entries = Object.entries(labels ?? {})
@@ -525,7 +539,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   // relationshipsOf reads only state.mappings; the service has the mappings, not the store.
   const storeOf = () => ({ state: { mappings: mappingRoot() } });
   const baseAt = clock();
-  const metadataIdOf = (kind, ...parts) => uuidV5(organizationId, `${kind}:${parts.join(":")}`);
+  const metadataIdOf = (kind, logical, name = null) => metadataComponentId(organizationId, kind, logical, name);
 
   function logicalNames() {
     const names = [...Object.keys(schemaRoot()?.tables ?? {}), ...Object.keys(mappingRoot()), ...Object.keys(virtualRoot().tables ?? {})];
@@ -623,6 +637,8 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     // Elastic tables take no charts, duplicate detection or N:N relationships (Learn, create-edit-elastic-tables).
     if (elastic) Object.assign(shape, { CanCreateCharts: false, IsDuplicateDetectionEnabled: false, CanManyToMany: false });
     const result = withOverrides(shape, dm);
+    // EntityMetadata.IsManaged: true while a managed layer holds the table (dataverse-metadata-relationships.mjs projectManagedFlags).
+    result.IsManaged = dm.managedLayer === true;
     result.TableType = src.isVirtual ? "Virtual" : elastic ? "Elastic" : "Standard";
     for (const [property, field] of [["DataSourceId", "dataSourceId"], ["DataProviderId", "dataProviderId"]])
       result[property] = src.s && Object.hasOwn(src.s, field) ? src.s[field] : dm[property] ?? null;
@@ -709,6 +725,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     if (typeof meta.RequiredLevel?.Value === "number") meta.RequiredLevel = { ...meta.RequiredLevel, Value: REQUIRED_NAMES[meta.RequiredLevel.Value] };
     const custom = PREFIX.test(name);
     const dm = def.dataverseMetadata ?? {};
+    if (def.managedLayer === true) meta.IsManaged = true; // a managed layer holds the column (projectManagedFlags)
     // unverified: file default size and mapping keys (maxSizeInKB, canStoreFullImage, isPrimaryImage, globalOptionSet) are assumed, not documented.
     if (type === "file") meta.MaxSizeInKB = facts.maxSizeInKB ?? null;
     if (type === "image") Object.assign(meta, { MaxSizeInKB: facts.maxSizeInKB ?? 10240, CanStoreFullImage: facts.canStoreFullImage ?? false, IsPrimaryImage: facts.isPrimaryImage ?? null });
@@ -762,7 +779,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       EntityKeyIndexStatus: k.indexStatus ?? "Active",
       AsyncJob: k.asyncJob ?? "00000000-0000-0000-0000-000000000000",
       IsCustomizable: { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "iscustomizable" },
-      IsManaged: false,
+      IsManaged: k.managedLayer === true,
       DisplayName: labelBlock(k.labels, k.name, lcid),
       HasChanged: null,
     }));
@@ -795,7 +812,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   function fromMapping(logical, nav, rel) {
     // Writer-stored labels (relationship writer: displayLabels / descriptionLabels on the mapping relationship) travel with the record.
     const labels = { displayLabels: rel.displayLabels, descriptionLabels: rel.descriptionLabels, relationshipBehavior: rel.relationshipBehavior,
-      introducedVersion: rel.introducedVersion, isCustomizable: rel.isCustomizable, isManaged: rel.isManaged, isCustomRelationship: rel.isCustomRelationship,
+      introducedVersion: rel.introducedVersion, isCustomizable: rel.isCustomizable, isManaged: rel.managedLayer === true || rel.isManaged, isCustomRelationship: rel.isCustomRelationship,
       isValidForAdvancedFind: rel.isValidForAdvancedFind, securityTypes: rel.securityTypes, associatedMenu: rel.associatedMenu, menu1: rel.menu1, menu2: rel.menu2 };
     const schemaName = relationshipSchemaName(logical, nav, rel);
     if (rel.intersect) {
@@ -926,7 +943,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       : optionOf({ ...o, value: o.Value ?? o.value, label: o.Label ?? o.label ?? String(o.Value ?? o.value), labels: o.labels }, lcid));
     return {
       "@odata.type": "#Microsoft.Dynamics.CRM.OptionSetMetadata",
-      MetadataId: set.MetadataId ?? metadataIdOf("optionset", name),
+      MetadataId: metadataIdOf("optionset", name),
       Name: name,
       DisplayName: set.DisplayName !== undefined ? block(set.DisplayName, name) : labelBlock(set.displayLabels, name, lcid),
       Description: set.Description !== undefined ? block(set.Description, null) : labelBlock(set.descriptionLabels, null, lcid),

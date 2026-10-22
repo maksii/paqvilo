@@ -255,7 +255,10 @@ test('staged attachments survive failed validation and are consumed only once by
   app.store.setPluginPipeline(() => {}, () => false);
   assert.equal((await post({ title: 'Saved note' }, fileControls)).status, 200);
   assert.equal(app.store.state.tables.annotation.length, 1);
-  assert.equal(app.store.state.tables.annotation[0].documentbody, 'YWJj');
+  // The body is read through the portal's note read path: storage routing may hold it outside the row (__blobkey).
+  const savedNote = await fetch(app.url + `/_entity/annotation/${app.store.state.tables.annotation[0].annotationid}`);
+  assert.equal(savedNote.status, 200);
+  assert.equal(Buffer.from(await savedNote.arrayBuffer()).toString('base64'), 'YWJj');
   const repeated = await post({ title: 'Must not duplicate note' }, fileControls);
   assert.equal(repeated.status, 400);
   assert.equal(app.store.state.tables.annotation.length, 1);

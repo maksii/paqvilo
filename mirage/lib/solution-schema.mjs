@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
 import { inflateRawSync } from "node:zlib";
+import { crc32 } from './dataverse-solution-assets.mjs';
 import {metadataNumeric} from './exact-numeric.mjs';
 import {
   parseSolutionXml,
@@ -11,11 +12,17 @@ import {
   childText,
   labelsOf,
   pickLabel,
+  serializeXml,
 } from "./solution-xml.mjs";
+import { classifyYamlPath, yamlNode, yamlEntityNode, yamlComponentNode, YAML_ROOTS } from './solution-yaml.mjs';
 import { SolutionFileCache, fileStamp, mapLimit } from "./solution-cache.mjs";
 import { parsePluginDocument } from './exported-plugins.mjs';
-import { parseAppDefinitions, embeddedAppComponents } from './model-driven/solution.mjs';
+import { DataError } from './data-error.mjs';
+import { parseAppDefinitions, embeddedAppComponents, parseDashboards } from './model-driven/solution.mjs';
 import { solutionDocumentComponents } from './dataverse-solution-components.mjs';
+import YAML from 'yaml';
+import { INVENTORY_TREE_DIRS, CANVAS_MSAPP_LIMIT, classifyInventoryPath, inventoryFacts, inventoryEntry, missingDependencies,
+  connectionReferenceFacts, mergeInventory, inventoryCode, canvasMsappRecord, inventoryRecord, COMPONENT_BY_TYPE, securityDefinitions } from './solution-inventory.mjs';
 import {
   standardTable,
   standardOptionSet,
@@ -26,12 +33,13 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@22";
+export const SCHEMA_PARSER_ID = "schema@25";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
 // Directories of an unpacked solution tree that carry table metadata.
-const TREE_DIRS = /^(?:appmodules|appmodulesitemaps|sitemaps|workflows|entities|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
+// Inventory folders (solution-inventory.mjs) are listed, not imported.
+const TREE_DIRS = new RegExp(`^(?:appmodules|appmodulesitemaps|sitemaps|workflows|entities|entityrelationships|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages|${INVENTORY_TREE_DIRS.join('|')})$`, 'i');
 // Every standard Dataverse table owns these columns; a definition that exports its
 // primary key and all of them is a full table export rather than a column patch.
 const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", "statecode", "statuscode"];
@@ -89,9 +97,12 @@ export function classifySolutionPath(relative) {
     if (['environmentvariablevalue.json', 'environmentvariablevalues.json', 'environmentvariablevalue.xml', 'environmentvariablevalues.xml'].includes(file))
       return { kind: 'envvalue', envDir: parts.at(-2) };
   }
-  return null;
+  // The YAML source-control format names the values file environment_variable_values.json:
+  // https://learn.microsoft.com/power-platform/alm/solution-source-control-yaml-format#component-type-support
+  if (file === 'environment_variable_values.json' && lower.length > 1) return { kind: 'envvalue', envDir: parts.at(-2) };
+  return classifyInventoryPath(parts, lower);
 }
-const SCHEMA_KINDS = new Set(["app", "form", "view", "workflow", "entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
+const SCHEMA_KINDS = new Set(["app", "form", "view", "workflow", "entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin", "inventory"]);
 
 async function manifestOf(dir) {
   let entries;
@@ -111,10 +122,111 @@ async function manifestOf(dir) {
   }
 }
 
-/** Unpacked solution trees at `dir` or one level below it (Other/Solution.xml present). */
+/**
+ * The YAML source-control format (Dataverse Git integration, `pac solution clone`): `solutions/<name>/solution.yml`
+ * below the repository root. Detection follows SolutionPackager's rule:
+ * https://learn.microsoft.com/power-platform/alm/solution-source-control-yaml-format#format-auto-detection
+ */
+async function yamlManifestsOf(dir) {
+  let entries;
+  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return []; }
+  const folder = entries.find((e) => e.isDirectory() && !e.isSymbolicLink() && /^solutions$/i.test(e.name));
+  if (!folder) return [];
+  const manifests = [];
+  let solutions = [];
+  try { solutions = await fs.readdir(path.join(dir, folder.name), { withFileTypes: true }); } catch { return []; }
+  for (const solution of solutions.filter((e) => e.isDirectory() && !e.isSymbolicLink()).sort((a, b) => compare(a.name, b.name))) {
+    let files = [];
+    try { files = await fs.readdir(path.join(dir, folder.name, solution.name), { withFileTypes: true }); } catch { continue; }
+    const manifest = files.find((e) => e.isFile() && /^solution\.ya?ml$/i.test(e.name));
+    if (manifest) manifests.push({ name: solution.name, file: path.join(dir, folder.name, solution.name, manifest.name) });
+  }
+  return manifests;
+}
+
+// The solution.yml facts with its rootcomponents.yml and missingdependencies.yml, read as one SolutionManifest node by the
+// XML↔YAML element rule (solution-yaml.mjs), so root components and missing dependencies feed the same inventory and graph
+// rows as Solution.xml. UniqueName falls back to the folder name. An unparsable file is SOLUTION_YAML_INVALID.
+async function yamlSolutionFacts(manifest, diagnostics = []) {
+  const folder = path.dirname(manifest.file);
+  const read = async (name, root) => {
+    let text;
+    try { text = await fs.readFile(path.join(folder, name), "utf8"); } catch { return null; }
+    try { return yamlNode(text, root); } catch (error) {
+      diagnostics.push({ code: "SOLUTION_YAML_INVALID", severity: "error", source: path.join(folder, name), message: error.message.split("\n")[0] });
+      return null;
+    }
+  };
+  const document = await read(path.basename(manifest.file), "SolutionManifest");
+  const extra = [await read("rootcomponents.yml", "RootComponents"), await read("missingdependencies.yml", "MissingDependencies")].filter(Boolean);
+  const node = { name: "SolutionManifest", attrs: {}, children: [...(document ? (document.name === "SolutionManifest" ? document.children : [document]) : []), ...extra], text: "" };
+  const facts = solutionFacts(node);
+  const deep = (name) => descendants(node, name)[0]?.text.trim() || undefined;
+  return compact({ ...facts, uniqueName: facts.uniqueName ?? deep("UniqueName") ?? manifest.name, version: facts.version ?? deep("Version") });
+}
+
+// The component paths a YAML solution's solutioncomponents.yml lists (`- Path: entities/x_item`), lower case, without slashes
+// at the ends; empty when the file is absent.
+async function yamlComponentPaths(manifest) {
+  let document;
+  try { document = YAML.parse(await fs.readFile(path.join(path.dirname(manifest.file), "solutioncomponents.yml"), "utf8"), { maxAliasCount: 100 }); } catch { return []; }
+  const paths = [];
+  const visit = (value, depth = 0) => {
+    if (!value || typeof value !== "object" || depth > 6) return;
+    for (const [key, item] of Object.entries(value)) {
+      if (key.toLowerCase() === "path" && typeof item === "string") paths.push(item.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "").toLowerCase());
+      else visit(item, depth + 1);
+    }
+  };
+  visit(document);
+  return paths.filter(Boolean);
+}
+
+// The YAML component documents of one layer as schema documents: one Customizations.xml-shaped <Entity> per table folder and
+// one document per option set or relationship file, parsed by parseSchemaDocument; other documents are kept. A YAML file that
+// names no component is SOLUTION_YAML_COMPONENT_NOT_IMPORTED (status unsupported).
+// ponytail: the assembled table document is reparsed on every scan (its parts are cached); cache it by its parts' hashes if
+// YAML repositories grow large enough for that to matter.
+function yamlDocuments(documents, diagnostics) {
+  const kept = [], tables = new Map();
+  const notImported = (doc) => diagnostics.push({ code: "SOLUTION_YAML_COMPONENT_NOT_IMPORTED", severity: "error", status: "unsupported", source: doc.file, part: doc.part,
+    message: `The YAML ${doc.part} file names no ${YAML_ROOTS[doc.part]} the schema reads, so it is not imported.` });
+  const parsed = (file, node, info) => {
+    const xml = serializeXml(node);
+    try { return { file, kind: info.kind, facts: parseSchemaDocument(xml, { ...info, path: file }), hash: createHash("sha256").update(xml).digest("hex") }; }
+    catch (error) { diagnostics.push({ code: "SOLUTION_YAML_INVALID", severity: "error", source: file, message: error.message }); return null; }
+  };
+  for (const doc of documents) {
+    if (doc.kind !== "yaml") kept.push(doc);
+    else if (doc.entityDir) {
+      const key = doc.entityDir.toLowerCase();
+      if (!tables.has(key)) tables.set(key, { dir: doc.entityDir, parts: [] });
+      tables.get(key).parts.push(doc);
+    } else {
+      const node = yamlComponentNode(doc.part, structuredClone(doc.node));
+      const result = node && parsed(doc.file, node, { kind: doc.part === "optionset" ? "optionset" : "relationships" });
+      if (result) kept.push(result); else if (!node) notImported(doc);
+    }
+  }
+  for (const { dir, parts } of tables.values()) {
+    const { node, unread } = yamlEntityNode(dir, parts.map((part) => ({ part: part.part, node: structuredClone(part.node), formType: part.formType })));
+    for (const { index } of unread) notImported(parts[index]);
+    const folder = parts[0].file.replace(/([\\/]entities[\\/][^\\/]+)[\\/].*$/i, "$1");
+    const result = parsed(folder, node, { kind: "entity", entityDir: dir });
+    if (result) kept.push(result);
+  }
+  return kept;
+}
+
+/**
+ * Unpacked solution trees at `dir` or one level below it: classic trees have Other/Solution.xml; YAML source-control
+ * repositories have solutions/<name>/solution.yml and return `{ format: 'yaml', solutions }`.
+ */
 export async function discoverSolutionTrees(dir) {
   const own = await manifestOf(dir);
   if (own) return [{ dir, manifest: own }];
+  const yaml = await yamlManifestsOf(dir);
+  if (yaml.length) return [{ dir, manifest: yaml[0].file, format: "yaml", solutions: yaml }];
   let entries;
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -128,11 +240,15 @@ export async function discoverSolutionTrees(dir) {
     const candidate = path.join(dir, entry.name);
     const manifest = await manifestOf(candidate);
     if (manifest) trees.push({ dir: candidate, manifest });
+    else {
+      const yaml = await yamlManifestsOf(candidate);
+      if (yaml.length) trees.push({ dir: candidate, manifest: yaml[0].file, format: "yaml", solutions: yaml });
+    }
   }
   return trees;
 }
 
-async function walkFiles(dir, accept = () => true) {
+async function walkFiles(dir, accept = () => true, failures = []) {
   const files = [];
   let level = [dir];
   while (level.length) {
@@ -141,7 +257,8 @@ async function walkFiles(dir, accept = () => true) {
       let entries;
       try {
         entries = await fs.readdir(current, { withFileTypes: true });
-      } catch {
+      } catch (error) {
+        failures.push({ code: "SOLUTION_FOLDER_READ_FAILED", severity: "error", source: current, message: error.message });
         return;
       }
       for (const entry of entries) {
@@ -451,6 +568,7 @@ function solutionFacts(root) {
     rootComponents: descendants(manifest, "RootComponent").map((c) =>
       compact({ type: num(c.attrs.type), schemaName: c.attrs.schemaName, id: c.attrs.id, behavior: num(c.attrs.behavior) }),
     ),
+    missingDependencies: missingDependencies(manifest),
   });
 }
 
@@ -503,6 +621,19 @@ function envValueFacts(text, kind, envDir) {
 /** Parse one solution document into schema facts. */
 export function parseSchemaDocument(text, info = {}) {
   const facts = { entities: [], relationships: [], optionSets: [], envDefinitions: [], envValues: [] };
+  if (info.kind === "inventory") {
+    // Component files are listed, never imported: no table, form or row comes from them.
+    if (typeof text === "string" && /\.xml$/i.test(info.path ?? info.name ?? "") && /<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("XML external declarations are not supported");
+    facts.inventory = inventoryEntry(String(info.path ?? info.name ?? "").replaceAll("\\", "/"), { size: info.size ?? null, text: typeof text === "string" ? text : null,
+      component: info.component, componentName: info.componentName });
+    facts.connectionReferences = connectionReferenceFacts(facts.inventory);
+    // Unpacked Dashboards/*.xml feed the model-driven dashboard host (model-driven/solution.mjs parseDashboards).
+    if (info.component === "dashboard" && typeof text === "string" && /\.xml$/i.test(info.path ?? info.name ?? "")) {
+      const dashboards = parseDashboards(parseSolutionXml(text, { recover: true }));
+      if (dashboards.length) facts.dashboards = dashboards;
+    }
+    return facts;
+  }
   if (info.kind === "envvalue") {
     facts.envValues = envValueFacts(text, info.kind, info.envDir);
     return facts;
@@ -516,6 +647,12 @@ export function parseSchemaDocument(text, info = {}) {
   if (root.recovered) facts.recovered = root.recovered;
   if (info.kind === "solution" || root.name === "ImportExportXml" && child(root, "SolutionManifest"))
     facts.solution = solutionFacts(root);
+  const inventory = inventoryFacts(root, info);
+  if (inventory.length) {
+    facts.inventory = inventory;
+    const references = connectionReferenceFacts(inventory);
+    if (references.length) facts.connectionReferences = references;
+  }
   if (info.kind === "envdef" || root.name === "environmentvariabledefinition") {
     facts.envDefinitions.push(envDefinitionFacts(root, info.envDir));
     return facts;
@@ -559,6 +696,7 @@ export function readSolutionZip(buffer) {
       throw new Error("Invalid solution ZIP directory.");
     const flags = buffer.readUInt16LE(offset + 8),
       method = buffer.readUInt16LE(offset + 10),
+      crc = buffer.readUInt32LE(offset + 16),
       size = buffer.readUInt32LE(offset + 20),
       uncompressed = buffer.readUInt32LE(offset + 24),
       nameLength = buffer.readUInt16LE(offset + 28),
@@ -572,6 +710,20 @@ export function readSolutionZip(buffer) {
     const classified = classifySolutionPath(name);
     if (!classified || !SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind)) continue;
     if (flags & 1) throw new Error("Encrypted solution XML entries are not supported.");
+    // Binary inventory payloads (.msapp) and oversized component files keep name and size; `read()` inflates on demand.
+    if (classified.kind === "inventory" && (!/\.(?:xml|json|ya?ml)$/i.test(name) || uncompressed > XML_LIMIT)) {
+      const entryOffset = localOffset;
+      documents.push({ name, size: uncompressed, ...classified, read: (limit = CANVAS_MSAPP_LIMIT) => {
+        if (uncompressed > limit) throw new Error("Solution archive entry exceeds its read limit.");
+        if (entryOffset + 30 > buffer.length || buffer.readUInt32LE(entryOffset) !== 0x04034b50) throw new Error("Invalid solution archive entry header.");
+        const dataOffset = entryOffset + 30 + buffer.readUInt16LE(entryOffset + 26) + buffer.readUInt16LE(entryOffset + 28);
+        const compressed = buffer.subarray(dataOffset, dataOffset + size);
+        const bytes = method === 0 ? compressed : method === 8 ? inflateRawSync(compressed, { maxOutputLength: limit }) : null;
+        if (!bytes || bytes.length !== uncompressed || crc32(bytes) !== crc) throw new Error("Invalid solution archive entry.");
+        return bytes;
+      } });
+      continue;
+    }
     if (uncompressed > XML_LIMIT || size > XML_LIMIT || localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50)
       throw new Error("Invalid or oversized solution XML entry.");
     const dataOffset = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
@@ -610,7 +762,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
       stat = await fs.stat(absolute);
     } catch (error) {
       inputs.push({ input: absolute, type: "missing" });
-      diagnostics.push({ code: "SOLUTION_ROOT_READ_FAILED", source: absolute, message: error.message });
+      diagnostics.push({ code: "SOLUTION_ROOT_READ_FAILED", severity: "error", source: absolute, message: error.message });
       continue;
     }
     if (stat.isDirectory()) {
@@ -619,14 +771,31 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
       inputs.push(input);
       if (!trees.length) trees.push({ dir: absolute, manifest: null, loose: true });
       for (const tree of trees) {
+        const yaml = tree.format === "yaml";
         const files = (
-          await walkFiles(tree.dir, tree.loose ? () => true : (name) => TREE_DIRS.test(name))
+          await walkFiles(tree.dir, tree.loose ? () => true : (name) => TREE_DIRS.test(name), diagnostics)
         ).flatMap((file) => {
-          const classified = classifySolutionPath(path.relative(tree.dir, file));
-          return classified ? [{ path: file, ...classified }] : [];
+          const relative = path.relative(tree.dir, file);
+          const classified = (yaml && classifyYamlPath(relative)) || classifySolutionPath(relative);
+          return classified ? [{ path: file, ...classified, ...(yaml ? { relative: relative.replaceAll("\\", "/").toLowerCase() } : {}) }] : [];
         });
-        input.trees.push(layers.length);
-        layers.push({ inputIndex, input: absolute, dir: tree.dir, manifestFile: tree.manifest, loose: Boolean(tree.loose), type: "directory", files });
+        if (!yaml) {
+          input.trees.push(layers.length);
+          layers.push({ inputIndex, input: absolute, dir: tree.dir, manifestFile: tree.manifest, loose: Boolean(tree.loose), type: "directory", files });
+          continue;
+        }
+        // A YAML repository: one layer per solution, holding the component paths its solutioncomponents.yml lists (Learn:
+        // "solutioncomponents.yml in each solution controls which component paths belong to that solution"); a solution
+        // without that list holds every component folder.
+        for (const solution of tree.solutions) {
+          const paths = await yamlComponentPaths(solution);
+          // A listed path names a component folder or a component file without its extension (optionsets/x_status).
+          const stem = (file) => file.relative.replace(/\.[^./]+$/, "");
+          const member = (file) => !paths.length || paths.some((entry) => file.relative === entry || stem(file) === entry || file.relative.startsWith(`${entry}/`));
+          input.trees.push(layers.length);
+          layers.push({ inputIndex, input: absolute, dir: tree.dir, manifestFile: solution.file, loose: false, type: "directory", format: "yaml", yamlSolutions: [solution],
+            files: files.filter(member).map((file) => ({ ...file })) });
+        }
       }
     } else if (/\.zip$/i.test(absolute)) {
       inputs.push({ input: absolute, type: "zip", trees: [layers.length] });
@@ -638,6 +807,7 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
       inputs.push({ input: absolute, type: "unsupported" });
       diagnostics.push({
         code: "SOLUTION_ROOT_UNSUPPORTED",
+        severity: "error",
         source: absolute,
         message: "Use an unpacked solution directory, XML metadata or solution ZIP.",
       });
@@ -658,30 +828,61 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
   // file identity. Additions, deletions, root/order changes and errors invalidate.
   const inventory = value => JSON.stringify(value.map(layer => [layer.inputIndex, layer.input, layer.dir, layer.type, layer.manifestFile,
     layer.files.map(file => [file.path, file.kind, file.stamp, file.error])]));
-  if (previous && previous.order === order && !diagnostics.length && !previous.diagnostics.length &&
+  // Inventory diagnostics describe listed components, not a read failure, so they do not prevent reuse.
+  if (previous && previous.order === order && !diagnostics.length && !previous.diagnostics.some((d) => !d.inventory) &&
       JSON.stringify(inputs) === JSON.stringify(previous.inputs) && inventory(layers) === inventory([...previous.layers].sort((a, b) => a.inputIndex - b.inputIndex || a.discoveryIndex - b.discoveryIndex))) return previous;
   layers.forEach((layer, discoveryIndex) => { layer.discoveryIndex = discoveryIndex; });
   const parseFile = async (file) => {
     if (file.error) {
-      diagnostics.push({ code: "SOLUTION_XML_READ_FAILED", source: file.path, message: file.error });
+      diagnostics.push({ code: "SOLUTION_XML_READ_FAILED", severity: "error", source: file.path, message: file.error });
       return [];
     }
+    if (file.kind === "inventory" && /\.msapp$/i.test(file.path)) {
+      if (file.size > CANVAS_MSAPP_LIMIT) return [{ file: file.path, kind: file.kind, facts: { inventory: [await canvasMsappRecord(null, { name: file.componentName, size: file.size })] }, hash: `size:${file.size}` }];
+      try {
+        const { value, hash } = await cache.parse(file.path, SCHEMA_PARSER_ID + ":msapp",
+          async (bytes) => ({ inventory: [await canvasMsappRecord(bytes, { name: file.componentName, size: bytes.length })] }), { stamp: file.stamp }, { binary: true });
+        return [{ file: file.path, kind: file.kind, facts: value, hash }];
+      } catch (error) {
+        diagnostics.push({ code: "SOLUTION_INVENTORY_READ_FAILED", severity: "error", source: file.path, message: error.message });
+        return [];
+      }
+    }
+    if (file.kind === "inventory" && file.size > XML_LIMIT)
+      return [{ file: file.path, kind: file.kind, facts: parseSchemaDocument(null, file), hash: `size:${file.size}` }];
     if (file.size > XML_LIMIT && file.kind !== "zip") {
-      diagnostics.push({ code: "SOLUTION_XML_TOO_LARGE", source: file.path, message: "XML file exceeds the metadata size limit." });
+      diagnostics.push({ code: "SOLUTION_XML_TOO_LARGE", severity: "error", source: file.path, message: "XML file exceeds the metadata size limit." });
       return [];
     }
     try {
+      // A YAML component file is cached as its XML node; the table folder is assembled per layer below.
+      if (file.kind === "yaml") {
+        const { value, hash } = await cache.parse(file.path, SCHEMA_PARSER_ID + ":yaml", (text) => yamlNode(text, YAML_ROOTS[file.part]), { stamp: file.stamp });
+        return [{ file: file.path, kind: file.kind, part: file.part, entityDir: file.entityDir, formType: file.formType, node: value, hash }];
+      }
       if (file.kind === "zip") {
         const { value, hash } = await cache.parse(
           file.path,
           SCHEMA_PARSER_ID + ":zip",
-          (buffer) =>
-            readSolutionZip(buffer).map((entry) => ({
-              name: entry.name,
-              kind: entry.kind,
-              facts: parseSchemaDocument(entry.xml, entry),
-              hash: createHash("sha256").update(entry.xml).digest("hex"),
-            })),
+          async (buffer) => {
+            const parsed = [];
+            for (const entry of readSolutionZip(buffer)) {
+              if (entry.read) {
+                // A canvas app payload is inflated only within the canvas size limit.
+                const msapp = /\.msapp$/i.test(entry.name);
+                let bytes = null, failure = null;
+                try { bytes = msapp && entry.size <= CANVAS_MSAPP_LIMIT ? entry.read() : null; } catch (error) { failure = error; }
+                // A corrupted payload stays listed by name and size; the cached record carries the read failure.
+                const facts = failure ? { inventory: [inventoryRecord({ component: 'canvasapp', name: entry.componentName, msapp: { size: entry.size },
+                  diagnostics: [{ code: 'SOLUTION_INVENTORY_READ_FAILED', severity: 'error', message: failure.message }] })] }
+                  : msapp ? { inventory: [await canvasMsappRecord(bytes, { name: entry.componentName, size: entry.size })] } : parseSchemaDocument(null, entry);
+                parsed.push({ name: entry.name, kind: entry.kind, facts, hash: bytes ? createHash("sha256").update(bytes).digest("hex") : `size:${entry.size}` });
+                continue;
+              }
+              parsed.push({ name: entry.name, kind: entry.kind, facts: parseSchemaDocument(entry.xml, entry), hash: createHash("sha256").update(entry.xml).digest("hex") });
+            }
+            return parsed;
+          },
           { stamp: file.stamp },
           { binary: true },
         );
@@ -691,25 +892,92 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
       return [{ file: file.path, kind: file.kind, facts: value, hash }];
     } catch (error) {
       diagnostics.push({
-        code: file.kind === "envvalue" ? "SOLUTION_ENVVAR_INVALID" : "SOLUTION_XML_INVALID",
+        code: file.kind === "envvalue" ? "SOLUTION_ENVVAR_INVALID" : file.kind === "yaml" ? "SOLUTION_YAML_INVALID" : "SOLUTION_XML_INVALID",
+        severity: "error",
         source: file.path,
-        message: error.message,
+        // A YAML parser message quotes the offending lines: only its first line (position) is reported.
+        message: file.kind === "yaml" ? error.message.split("\n")[0] : error.message,
       });
       return [];
     }
   };
-  const schemaFiles = allFiles.filter((file) => SCHEMA_KINDS.has(file.kind) || file.kind === "zip");
+  const schemaFiles = allFiles.filter((file) => SCHEMA_KINDS.has(file.kind) || file.kind === "zip" || file.kind === "yaml");
   const parsed = await mapLimit(schemaFiles, IO_CONCURRENCY, parseFile);
   const byFile = new Map(schemaFiles.map((file, index) => [file, parsed[index]]));
   for (const layer of layers) {
     layer.documents = layer.files.flatMap((file) => byFile.get(file) ?? []);
+    if (layer.format === "yaml") layer.documents = yamlDocuments(layer.documents, diagnostics);
     const manifest = layer.documents.find((doc) => doc.facts.solution)?.facts.solution;
     if (manifest) layer.solution = manifest;
-    layer.name = manifest?.uniqueName ?? path.basename(layer.dir);
+    else if (layer.format === "yaml") layer.solution = await yamlSolutionFacts(layer.yamlSolutions[0], diagnostics);
+    layer.name = layer.solution?.uniqueName ?? path.basename(layer.dir);
+    // A directory without a Solution manifest that yields no document (nothing classified, or only a ZIP that holds no
+    // Solution part) would load an empty organization: it blocks strict preflight.
+    if (layer.loose && !layer.documents.length)
+      diagnostics.push({ code: "SOLUTION_ROOT_EMPTY", severity: "error", source: layer.input, message: "The directory holds no Solution: no Other/Solution.xml, solutions/*/solution.yml, metadata XML or Solution ZIP." });
   }
   const ordered = orderSolutionLayers(layers, { order, diagnostics });
   ordered.forEach((layer, index) => (layer.index = index));
-  return { inputs, layers: ordered, diagnostics, cache, order };
+  return { inputs, layers: ordered, diagnostics, cache, order, inventory: ordered.flatMap((layer) => layerInventory(layer, diagnostics)) };
+}
+
+/**
+ * The reload guard both hosts call before any state changes: a scan with an error-severity diagnostic the last accepted
+ * scan did not have (a root renamed or unreadable mid-checkout, malformed XML) is rejected, so registrations, portal and
+ * metadata stay as they were. Startup accepts any scan; a root missing since startup still reloads.
+ */
+export function assertReloadableScan(previous, next) {
+  if (!previous || !next) return;
+  const key = (d) => `${d.code}|${d.source ?? ""}|${d.layer ?? ""}|${d.name ?? ""}`;
+  const known = new Set(previous.diagnostics.filter((d) => d.severity === "error").map(key));
+  const added = next.diagnostics.filter((d) => d.severity === "error" && !known.has(key(d)));
+  if (added.length) throw new DataError(`Source reload rejected: ${added.map((d) => `${d.code} ${d.source ?? d.name ?? ""}`.trim()).join("; ")}`,
+    409, "SOURCE_RELOAD_REJECTED", { diagnostics: added.map(({ code, source, message }) => ({ code, source, message })) });
+}
+
+/**
+ * The inventory records of one ordered layer (one per component and name; see solution-inventory.mjs), stamped with
+ * the layer and its format, plus Solution.xml root components without a source and missing dependencies. Pushes one
+ * diagnostic per inventory-level component kind (`inventory: true`).
+ */
+function layerInventory(layer, diagnostics) {
+  const format = layer.format ?? "xml";
+  const records = mergeInventory(layer.documents.flatMap((doc) =>
+    (doc.facts.inventory ?? []).map((record) => ({ ...record, solution: layer.name, layer: layer.index, source: doc.file, format }))));
+  const find = (type, schemaName, id) => {
+    const component = COMPONENT_BY_TYPE[type];
+    const key = id ? norm(id).replace(/[{}]/g, "") : null;
+    return records.find((record) => (!component || record.component === component) && (key && record.id === key || schemaName && record.name.toLowerCase() === norm(schemaName)));
+  };
+  for (const root of layer.solution?.rootComponents ?? []) {
+    const component = COMPONENT_BY_TYPE[root.type];
+    if (!component || ["table", "environmentvariable", "webresource", "customcontrol"].includes(component) || !(root.schemaName ?? root.id)) continue;
+    const existing = find(root.type, root.schemaName, root.id);
+    if (existing) existing.root = true;
+    else records.push({ ...inventoryRecord({ component, id: root.id, name: root.schemaName ?? root.id, solution: layer.name, layer: layer.index,
+      source: layer.manifestFile ?? layer.dir, format }), root: true, sourceMissing: true });
+  }
+  for (const { required, dependent } of layer.solution?.missingDependencies ?? []) {
+    const record = dependent && find(dependent.type, dependent.schemaName, dependent.id);
+    if (record) record.dependencies.push({ component: COMPONENT_BY_TYPE[required.type] ?? `type:${required.type}`, name: required.schemaName ?? required.id ?? "", missing: true });
+  }
+  // A YAML solution whose component folders load nothing (no table, option set, relationship, environment variable,
+  // connection reference, app or listed component) would run as an empty organization: it blocks strict preflight.
+  const FACTS = ["entities", "relationships", "optionSets", "envDefinitions", "envValues", "connectionReferences", "apps", "appMaps"];
+  if (layer.format === "yaml" && !records.length && !layer.documents.some((doc) => doc.facts?.plugins || FACTS.some((key) => doc.facts?.[key]?.length)))
+    diagnostics.push({ code: "SOLUTION_YAML_EMPTY", severity: "error", status: "missing", layer: layer.name, source: layer.manifestFile ?? layer.dir,
+      message: `The YAML solution ${layer.name} loads no component from its folders; check solutioncomponents.yml and the component folders.` });
+  const kinds = new Map();
+  for (const record of records) if (record.level === "inventory") kinds.set(record.component, [...(kinds.get(record.component) ?? []), record.name]);
+  for (const [component, names] of kinds)
+    diagnostics.push({ code: inventoryCode(component), inventory: true, component, layer: layer.name, count: names.length, names: names.slice(0, 20),
+      message: `${names.length} ${component} component(s) are listed as inventory; Paqvilo does not host or execute them.` });
+  for (const record of records) {
+    if (record.component === "canvasapp" && !record.msapp && !record.sourceMissing)
+      diagnostics.push({ code: "SOLUTION_CANVAS_MSAPP_MISSING", inventory: true, layer: layer.name, name: record.name, message: "The Solution declares a canvas app without its .msapp file." });
+    for (const diagnostic of record.diagnostics ?? []) diagnostics.push({ ...diagnostic, inventory: true, layer: layer.name, name: record.name });
+  }
+  return records;
 }
 
 /**
@@ -832,6 +1100,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
   const optionSets = {};
   const envDefinitions = {};
   const envValues = {};
+  const connectionReferences = {};
   const fingerprint = createHash("sha256");
   const ensureTable = (name, origin) =>
     (tables[name] ??= {
@@ -922,6 +1191,12 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         envDefinitions[norm(definition.schemaName)] = { ...definition, source: doc.file, layer: layer.index };
       for (const value of facts.envValues ?? [])
         envValues[norm(value.schemaName)] = { ...value, source: doc.file, layer: layer.index };
+      // Solution connection references (Customizations.xml <connectionreferences>, YAML connectionreferences/): the later
+      // layer replaces the fields it exports. Deployment profiles bind their connection ids (solution-data.mjs).
+      for (const reference of facts.connectionReferences ?? []) {
+        const key = norm(reference.logicalName);
+        connectionReferences[key] = { ...connectionReferences[key], ...reference, source: doc.file, layer: layer.index };
+      }
     }
   }
   // Environment variables are rows of two documented system tables.
@@ -1156,6 +1431,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
     relationships,
     optionSets,
     environmentVariables,
+    connectionReferences: Object.values(connectionReferences).sort((a, b) => compare(norm(a.logicalName), norm(b.logicalName))),
     targets: Object.fromEntries(Object.entries(targets).map(([key, set]) => [key, [...set].sort()])),
     diagnostics,
     standardRelationships: standardCount,
@@ -1163,6 +1439,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
     annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest("hex"),
     contentFingerprint: solutionContentFingerprint(scan.layers, { lcid }),
+    ...securityDefinitions(scan.inventory ?? [], { managed: new Set(scan.layers.filter((l) => String(l.solution?.managed) === "1").map((l) => String(l.name).toLowerCase())) }),
   };
 }
 

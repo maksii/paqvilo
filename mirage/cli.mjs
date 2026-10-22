@@ -18,6 +18,7 @@ import { loadOrganizationSources } from './lib/solution-runtime-source.mjs';
 import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
 import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
+import { runtimeOptions, configuredSettingKeys } from './lib/config-keys.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let parsed;
@@ -64,6 +65,9 @@ try {
       'materialize-persona-memberships': { type: 'boolean' },
       help: { type: "boolean" },
       json: { type: "boolean" },
+      // preflight: a scenario JSON file { id, requires: [...] } scopes blocking; --strict blocks on every unsatisfied requirement.
+      scenario: { type: "string" },
+      strict: { type: "boolean" },
       "no-watch": { type: "boolean" },
       // Live create, update and delete requests are impossible without this runtime flag.
       "allow-live-writes": { type: "boolean" },
@@ -74,7 +78,8 @@ try {
   });
 } catch (error) {
   console.error(error.message);
-  process.exit(1);
+  // preflight reports invocation errors with exit code 2.
+  process.exit(process.argv[2] === 'preflight' ? 2 : 1);
 }
 const { values: args, positionals } = parsed;
 const stateDir = path.resolve(args['state-dir'] ?? path.join(
@@ -91,6 +96,8 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage serve --project mirage.project.yml --port 8787
   paqvilo mirage serve --project mirage.project.yml --portal PORTAL_ID
   paqvilo mirage inspect --source PATH --json
+  paqvilo mirage preflight (--project FILE [--portal ID] | --config FILE --site ID [--env ID] | --source DIR [--solution-root DIR ...]) [--runtime KIND] [--scenario FILE] [--strict] [--json]
+    exit 0: nothing blocking in scope; 1: blocking requirement(s); 2: invocation or configuration error
   paqvilo mirage render --source PATH --path /PAGE/ --output .paqvilo/page.html
   paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
   paqvilo mirage capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME
@@ -159,7 +166,32 @@ try {
       throw new Error("--data-model must be standard or enhanced.");
     if (project && args.portal && !project.portals.some((p) => p.id === args.portal))
       throw new Error(`Portal '${args.portal}' is not configured in ${project.configFile}`);
-    if (runtime.kind !== 'power-pages') {
+    if (command === 'preflight') {
+      // Same input resolution as serve; sources are loaded without listeners (lib/capability-report.mjs).
+      const { preflight, preflightExitCode } = await import('./lib/capability-report.mjs');
+      let options;
+      if (runtime.kind !== 'power-pages') {
+        if (args.source || args.portal) throw new Error('Standalone runtimes select a project or solution roots without a portal or source.');
+        options = { ...runtimeOptions({ project, catalogue: profileMirage }), solutionRoots: project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [],
+          solutionOrder: project?.solutionOrder ?? args['solution-order'] ?? profileMirage?.solutionOrder };
+      } else if (project) {
+        const portal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
+        options = { ...runtimeOptions({ project, portal }), sourceDir: portal.sourceDir, solutionRoots: portal.solutionRoots, solutionOrder: project.solutionOrder, dataModel: portal.dataModel ?? undefined };
+      } else {
+        const { loadConfig } = await import('../lense/config.mjs');
+        const cfg = args.source && !args.site ? null : await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
+        const sourceDir = args.source ? path.resolve(args.source) : cfg.sourceDir, siteMirage = cfg?.mirageConfig ?? null;
+        const roots = await resolveSolutionRoots({ sourceDir, explicitRoots: args['solution-root'], explicitOrder: args['solution-order'], catalogue: siteMirage });
+        options = { ...runtimeOptions({ catalogue: siteMirage }), sourceDir, solutionRoots: roots.roots, solutionOrder: roots.order, dataModel: args['data-model'] ?? siteMirage?.dataModel ?? undefined };
+      }
+      const scenario = args.scenario ? { ...JSON.parse(await fs.readFile(path.resolve(args.scenario), 'utf8')), file: args.scenario } : null;
+      const report = await preflight({ ...options, runtime, simulation, project: project && projectSummary(project), lcid: project?.lcid,
+        dataPacks: [...(options.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))], scenario, strict: args.strict === true });
+      if (args.json) console.log(JSON.stringify(report, null, 2));
+      else console.log([`Preflight (${report.runtime.kind}): ${report.summary.total} requirements, ${report.summary.satisfied} satisfied, ${report.summary.blocking} blocking.`,
+        ...report.requirements.filter((row) => row.inScope && row.status !== 'satisfied').map((row) => `  ${row.blocking ? 'BLOCKING ' : ''}${row.status} ${row.id}${row.message ? ` - ${row.message}` : ''}`)].join('\n'));
+      process.exitCode = preflightExitCode(report);
+    } else if (runtime.kind !== 'power-pages') {
       if (!['serve', 'inspect'].includes(command)) throw new Error(`${command} requires a Power Pages runtime.`);
       if (args.source || args.portal || args.cdp) throw new Error('Standalone runtimes select a project or solution roots without a portal, source, or live browser.');
       const roots = project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [];
@@ -173,11 +205,12 @@ try {
       } else {
         const stateFile = path.resolve(args.state ?? (project ? projectStateFile(project, 'organization', path.join(stateDir, 'simulator/projects')) : path.join(stateDir, 'simulator', runtime.kind, 'state.json')));
         let stop;
-        const simulator = await createSimulator({ onStartup: reportStartup, runtime, simulation, modelDriven: project?.modelDriven ?? profileMirage?.modelDriven, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
-          stateFile, port: runtimePort(args.port), project: project && projectSummary(project), dataverse: project?.dataverse ?? profileMirage?.dataverse, platform: project?.platform ?? profileMirage?.platform,
+        // Settings of every registered key (config-keys.mjs); command-line choices follow.
+        const simulator = await createSimulator({ ...runtimeOptions({ project, catalogue: profileMirage }), configuredSettings: configuredSettingKeys({ project, catalogue: profileMirage }), onStartup: reportStartup, runtime, simulation, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
+          stateFile, port: runtimePort(args.port), project: project && projectSummary(project),
           projectRoot: project ? path.dirname(project.configFile) : args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),
           dataPacks: [...profileMirage?.dataPacks ?? [], ...(args['pack-module'] ?? []).map(module => ({ module }))],
-          setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : undefined, environmentVariables: project?.environmentVariables,
+          setup: args.config ? { config: path.resolve(args.config), site: args.site, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : project ? { project: project.configFile, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : undefined,
           preset: args.preset, presetMode: args['preset-mode'], watch: !args['no-watch'] && project?.watch !== false,
           onShutdown: () => stop?.() });
         const discovery = path.join(stateDir, 'simulator', `session-${process.pid}.json`);
@@ -252,22 +285,18 @@ try {
               })()
             : projectStateFile(project, portal.id, path.join(stateDir, "simulator/projects"));
           const simulator = await createSimulator({
+            ...runtimeOptions({ project, portal }),
+            configuredSettings: configuredSettingKeys({ project, portal }),
             onStartup: reportStartup,
-            setup: args.config ? { config: path.resolve(args.config) } : { project: project.configFile },
+            setup: args.config ? { config: path.resolve(args.config), site: args.site, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : { project: project.configFile, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) },
             sourceDir: portal.sourceDir,
-            contentPolicyDefaults:portal,
             stateFile,
             preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
             port: port ? port + index : 0,
             origin: projectOrigin(project, portal) ?? args.origin,
             solutionRoots: portal.solutionRoots,
-            solutionOrder: project.solutionOrder,
-            environmentVariables: project.environmentVariables,
             project: projectSummary(project, portal.id),
             deploymentProfile: portal.deploymentProfile ?? undefined,
-            deploymentProfiles: portal.deploymentProfiles,
-            observed: portal.observed,
-            dataModel: portal.dataModel ?? undefined,
             watch: !args["no-watch"] && project.watch !== false,
             onShutdown: () => stop?.(),
             // A source with zero recognised pages is refused, naming its layout.
@@ -463,30 +492,23 @@ try {
       const solutionRoots = resolvedRoots.roots;
       let stop;
       const simulator = await createSimulator({
+        // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
+        ...runtimeOptions({ project, portal: configuredPortal, catalogue: siteMirage }),
+        configuredSettings: configuredSettingKeys({ project, portal: configuredPortal, catalogue: siteMirage }),
         onStartup: reportStartup,
-        setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : null,
-              sourceDir,
+        setup: args.config ? { config: path.resolve(args.config), site: args.site, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : project ? { project: project.configFile, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : null,
+        sourceDir,
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
-        localOverrides: siteMirage?.localOverrides,
-        contentPolicyDefaults:{...configuredPortal,...siteMirage},
-        render: siteMirage?.render,
-        personaContexts: siteMirage?.personaContexts,
-        identityProvider: siteMirage?.identityProvider,
-        dataverse: siteMirage?.dataverse,
-        runtime, simulation, modelDriven: project?.modelDriven ?? siteMirage?.modelDriven,
+        runtime, simulation,
         projectRoot: args.config ? path.dirname(path.resolve(args.config)) : project?.configFile ? path.dirname(project.configFile) : process.cwd(),
-        platform: siteMirage?.platform ?? configuredPortal?.platform,
-              ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
+        ...(project ? { project: projectSummary(project, configuredPortal.id) } : {}),
         stateFile,
         preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
         port,
         origin,
         solutionRoots,
         solutionOrder: resolvedRoots.order,
-        // Observed site behaviour the export cannot express (project portal or catalogue site).
-        observed: project ? configuredPortal.observed : siteMirage?.observed,
         deploymentProfile,
-        deploymentProfiles: siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles,
         dataModel,
         watch: command === "serve" && !args["no-watch"] && project?.watch !== false,
         ...(command === "serve" ? { onShutdown: () => stop?.() } : {}),
@@ -636,7 +658,7 @@ try {
   }
 } catch (error) {
   console.error(error.message);
-  process.exitCode = 1;
+  process.exitCode = command === 'preflight' ? 2 : 1;
 }
 
 /** Portal source and solution roots for data commands, resolved like serve. */

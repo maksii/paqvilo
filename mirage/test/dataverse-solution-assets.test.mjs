@@ -1,6 +1,7 @@
 // ZIP and persistence transport tests use invented package names and bytes. No filesystem extraction or network access.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import {
   SolutionArchiveError, appendSolutionAssetLayer, latestSolutionAssetEntries, readSolutionAssetEntries,
   reassignSolutionAssetLayers, removeSolutionAssetLayers, solutionAssetLayers, writeSolutionAssetEntries,
@@ -121,4 +122,19 @@ test("persisted asset limits bound the combined layers and a refused append leav
   assert.deepEqual(state, before);
   assert.throws(() => appendSolutionAssetLayer(state, PATCH, [file("patch.xml", "1")], {}, { layers: 1 }), refused("ArchiveLimit"));
   assert.deepEqual(state, before);
+});
+
+test("solution ZIP include option validates every header but inflates and CRC-checks only selected entries", () => {
+  const media = randomBytes(64 * 1024);
+  const zip = writeSolutionAssetEntries([file("Src/App.pa.yaml", "App:\n"), { name: "Assets/media.bin", data: media }]);
+  // A flipped payload byte in the excluded entry: inflating or CRC-checking it would fail.
+  const flipped = Buffer.from(zip), at = flipped.indexOf(Buffer.from("Assets/media.bin"));
+  flipped[at + "Assets/media.bin".length + 100] ^= 0xff;
+  assert.throws(() => readSolutionAssetEntries(flipped), refused("InvalidArchive"));
+  const selected = readSolutionAssetEntries(flipped, { include: (name) => name.endsWith(".pa.yaml") });
+  assert.deepEqual(selected.map((entry) => [entry.name, entry.data.toString()]), [["Src/App.pa.yaml", "App:\n"]]);
+  // The excluded entry's local header is still validated.
+  const header = Buffer.from(zip);
+  header.writeUInt32LE(0, at - 30);
+  assert.throws(() => readSolutionAssetEntries(header, { include: (name) => name.endsWith(".pa.yaml") }), refused("InvalidArchive"));
 });

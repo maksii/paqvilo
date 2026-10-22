@@ -635,10 +635,14 @@ export function inspectPage(portal, route, {
     snippet.overridden = Object.hasOwn(overrides.snippets ?? {}, name);
     snippet.deleted = !Object.hasOwn(portal.snippets ?? {}, name);
   }
+  // A setting bound to a Secret environment variable is classified by name: inspection never prints the bound value.
+  const secretNames = new Set(portal.secretSettingNames ?? []);
   for (const setting of report.siteSettings) {
     const name = setting.name;
-    setting.value = preview(portal.settings?.[name], 400);
-    setting.sourceValue = preview(sourcePortal.settings?.[name], 400);
+    const secret = secretNames.has(name);
+    setting.value = secret ? '[secret]' : preview(portal.settings?.[name], 400);
+    setting.sourceValue = secret ? '[secret]' : preview(sourcePortal.settings?.[name], 400);
+    if (secret) setting.secret = true;
     setting.overridden = Object.hasOwn(overrides.settings ?? {}, name);
     setting.deleted = !Object.hasOwn(portal.settings ?? {}, name);
   }

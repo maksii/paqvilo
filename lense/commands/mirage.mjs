@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import YAML from 'yaml';
-import { loadCatalogue, loadConfig, loadDevTargets } from '../config.mjs';
+import { loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
 import { readStartupPhases } from '../startup-progress.mjs';
 
@@ -329,7 +329,7 @@ export async function stopOwnedSessions({ paths = DEFAULT_PATHS, sourceDir = nul
       stale.push({ entry, reason: !alive ? 'process exited' : 'process ID now belongs to another program' });
       continue;
     }
-    const selected = pids ? pids.includes(entry.pid) : folders.some((folder) => samePath(entry.sourceDir, folder));
+    const selected = Boolean(pids?.includes(entry.pid)) || folders.some((folder) => samePath(entry.sourceDir, folder));
     if (selected) targets.push(entry);
   }
   const results = [];
@@ -484,6 +484,13 @@ function liveWritesText(value) {
  * The stop summary: how many sessions were stopped for `scope` (`none` when there were none), and
  * how many owned records were kept because their process could not be verified.
  */
+/** Owned standalone sessions of one runtime kind: of the selected project, else of this catalogue site, else unscoped. */
+async function standaloneSessionPids(paths, cfg, kind, selectedProject = null) {
+  return (await ownedSessions(paths)).filter(entry => entry.identity?.runtime?.kind === kind
+    && (selectedProject ? samePath(entry.project, selectedProject.configFile) : !entry.project &&
+      (cfg.configFile ? samePath(entry.identity?.scope?.configFile, cfg.configFile) && entry.identity.scope.siteName === cfg.siteName : !entry.identity?.scope))).map(entry => entry.pid);
+}
+
 function stopSummary(report, scope, none) {
   const count = report.stopped.length, kept = report.unverified?.length ?? 0;
   const verdict = count
@@ -529,12 +536,19 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       ? (await import('../../mirage/lib/project-config.mjs')).projectStateFile(projectInfo, standalone ? 'organization' : portalId, path.join(miragePaths(cfg, args).discoveryRoot, 'projects'))
       : path.join(miragePaths(cfg, args).discoveryRoot, cfg.siteName, 'state.json');
   const solutionRoots = (await launchSolutionRoots(sourceDir, args, projectInfo)).map((item) => resolved(item));
+  // The registered settings (mirage/lib/config-keys.mjs) as the Mirage CLI resolves them, then the command-line choices.
+  const { runtimeOptions, runtimeIdentity } = await import('../../mirage/lib/config-keys.mjs');
+  const options = runtimeOptions({ project: projectInfo, portal: projectInfo?.portals.find((item) => item.id === portalId) ?? null, catalogue: cfg.mirageConfig });
+  options.runtime = runtime;
+  if (args.simulation) options.simulation = { level: args.simulation };
   return {
     identity: {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
       runtime, simulation: args.simulation ? { level: args.simulation } : projectInfo?.simulation ?? null,
       modelDriven: projectInfo?.modelDriven ?? cfg.mirageConfig?.modelDriven ?? { trustedExtensions: false },
       dataverse: projectInfo?.dataverse ?? cfg.mirageConfig?.dataverse ?? null,
+      // Compared by identityMatches: every identity row of the settings table (secrets hashed).
+      settings: runtimeIdentity(options),
       scope: cfg.configFile ? { configFile: resolved(cfg.configFile), siteName: cfg.siteName } : null,
       stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only', allowLiveWrites: args['allow-live-writes'] === true,
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
@@ -552,22 +566,28 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   };
 }
 
+// Identities record runtimeIdentity() as settings; one written before that compares its per-key fields.
+function settingsMatch(left, right) {
+  if (left.settings && right.settings) return JSON.stringify(left.settings) === JSON.stringify(right.settings);
+  return JSON.stringify(left.runtime ?? { kind: 'power-pages' }) === JSON.stringify(right.runtime ?? { kind: 'power-pages' })
+    && JSON.stringify(left.simulation ?? null) === JSON.stringify(right.simulation ?? null)
+    && JSON.stringify(left.modelDriven ?? { trustedExtensions: false }) === JSON.stringify(right.modelDriven ?? { trustedExtensions: false })
+    && JSON.stringify(left.dataverse ?? null) === JSON.stringify(right.dataverse ?? null)
+    && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
+    && JSON.stringify(left.platform ?? null) === JSON.stringify(right.platform ?? null)
+    && JSON.stringify(left.deploymentProfiles ?? null) === JSON.stringify(right.deploymentProfiles ?? null);
+}
+
 function identityMatches(left, right) {
   return Boolean(left && right && (left.sourceDir || right.sourceDir ? samePath(left.sourceDir, right.sourceDir) : true)
     && samePath(left.stateFile, right.stateFile)
     && (left.project ?? null) === (right.project ?? null)
     && (left.portal ?? null) === (right.portal ?? null)
     && JSON.stringify(left.scope ?? null) === JSON.stringify(right.scope ?? null)
-    && JSON.stringify(left.runtime ?? { kind: 'power-pages' }) === JSON.stringify(right.runtime ?? { kind: 'power-pages' })
-    && JSON.stringify(left.simulation ?? null) === JSON.stringify(right.simulation ?? null)
-    && JSON.stringify(left.modelDriven ?? { trustedExtensions: false }) === JSON.stringify(right.modelDriven ?? { trustedExtensions: false })
-    && JSON.stringify(left.dataverse ?? null) === JSON.stringify(right.dataverse ?? null)
+    && settingsMatch(left, right)
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetConfiguration ?? 'data-only') === (right.presetConfiguration ?? 'data-only')
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
-    && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
-    && JSON.stringify(left.platform ?? null) === JSON.stringify(right.platform ?? null)
-    && JSON.stringify(left.deploymentProfiles ?? null) === JSON.stringify(right.deploymentProfiles ?? null)
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
     && left.solutionOrder === right.solutionOrder
     && JSON.stringify(left.solutionRoots ?? []) === JSON.stringify(right.solutionRoots ?? [])
@@ -575,7 +595,7 @@ function identityMatches(left, right) {
 }
 
 // ------------------------------------------------------------------------------ start
-async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
+async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mirage start' } = {}) {
   let interrupted = false, child, cleanup;
   const controller = new AbortController();
   const interrupt = () => {
@@ -587,7 +607,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
   process.on('SIGTERM', interrupt);
   const check = () => { if (interrupted) throw new Error('Mirage startup was interrupted; the starting process was stopped.'); };
   try {
-    return await startRuntime(cfg, args, paths, { check, signal: controller.signal, cancelled: () => interrupted, child: value => { child = value; }, cleanup: value => { cleanup = value; } });
+    return await startRuntime(cfg, args, paths, { command, check, signal: controller.signal, cancelled: () => interrupted, child: value => { child = value; }, cleanup: value => { cleanup = value; } });
   } catch (error) {
     // The direct child handle is ours even if its OS start identity could not
     // yet be read. Do not leave a detached importer after early cancellation.
@@ -653,7 +673,9 @@ async function startRuntime(cfg, args, paths, startup) {
   const logHandle = await fs.open(log, 'a');
   try {
     startup.check();
-    child = spawn(process.execPath, [cli, ...values], { cwd: cfg.configDir ?? process.cwd(), detached: true, stdio: ['ignore', logHandle.fd, logHandle.fd], windowsHide: true });
+    // The /_setup/ page this child mounts names the command and catalogue site that started it (lense/setup/server.mjs).
+    const setupRuntime = JSON.stringify({ command: startup.command, ...(cfg.configFile ? { site: cfg.catalogueSite ?? cfg.siteName } : {}) });
+    child = spawn(process.execPath, [cli, ...values], { cwd: cfg.configDir ?? process.cwd(), detached: true, stdio: ['ignore', logHandle.fd, logHandle.fd], windowsHide: true, env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime } });
     startup.child(child);
   } catch (error) { await logHandle.close(); throw new Error(`Could not start Mirage: ${error.message}. Startup log: ${log}`); }
   await logHandle.close();
@@ -765,6 +787,10 @@ async function matchingPacks(cfg, dataPacks) {
 /** Writes a Mirage project file for the selected catalogue site and validates it by loading it. */
 export async function initProject(cfg, args = {}) {
   const configured = cfg.mirageConfig ?? { solutionRoots: [], dataPacks: [] };
+  // A standalone site is configured completely by its catalogue mapping; a project file only describes portals.
+  if (cfg.runtime?.kind && cfg.runtime.kind !== 'power-pages' && !cfg.sourceDir)
+    return { action: 'init', site: cfg.siteName, writesFiles: [], skipped: `Site "${cfg.siteName}" is a ${cfg.runtime.kind} Mirage site; its catalogue settings configure it and no project file is written.`,
+      next: `npx paqvilo mirage dev --site ${cfg.siteName}` };
   const file = path.resolve(args.out ?? configured.project ?? path.join(path.dirname(miragePaths(cfg, args).discoveryRoot), 'mirage', `${cfg.siteName}.project.yml`));
   if (!/\.(?:ya?ml|json)$/i.test(file)) throw new Error('The Mirage project file must end in .yml, .yaml or .json');
   if (isDirectory(file)) throw new Error(`${file} is a folder; name a project file`);
@@ -1031,7 +1057,10 @@ async function portalConfigs(cfg, args, action) {
   for (const site of Object.keys(catalogue.sites)) {
     if (site === cfg.siteName) { entries.push({ site, cfg }); continue; }
     try {
-      entries.push({ site, cfg: await loadConfig({ ...shared, site, env: undefined, portals: 'selected' }) });
+      // A Mirage-only site resolves as `mirage start --site <id>` resolves it (standalone runtime, no portal or environment).
+      entries.push({ site, cfg: mirageOnlySite(catalogue.sites[site])
+        ? (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, site, shared)
+        : await loadConfig({ ...shared, site, env: undefined, portals: 'selected' }) });
     } catch (error) {
       entries.push({ site, error });
     }
@@ -1149,13 +1178,16 @@ async function runPortals({ cfg, args, action, plans, paths, stop, initialSite }
     return running.length === portals.length ? 0 : 1;
   }
   for (const item of summary) console.log(item.error ? `mirage   ${item.site.padEnd(8)} FAILED: ${item.error}` : `mirage   ${item.site.padEnd(8)} ${item.url}  (${item.started ? 'started' : 'already running'}, pid ${item.pid})  admin ${item.adminUrl}  live writes ${item.liveWrites ?? 'not reported'}`);
-  if (!running.length) throw new Error('No Mirage portal could start; see the messages above.');
-  const { selection, live, note } = await portalSelection({ ...cfg, siteName: initialSite }, args, running);
-  if (note) console.log(`live        not offered: ${note}`);
-  console.log(`switch      ${running.length} local Mirage portal(s) and ${live} live target(s) in the panel's portal selector`);
-  console.log('stop        Ctrl+C here or close the browser: the browser and the Mirages started here stop');
-  const { default: runDev } = await import('./dev.mjs');
+  // Mirage-only sites (standalone runtimes) run beside the portals; only portals enter the Lense portal selector.
+  const portalSessions = running.filter((portal) => !(portal.cfg?.runtime?.kind && portal.cfg.runtime.kind !== 'power-pages'));
+  for (const item of running.filter((portal) => !portalSessions.includes(portal))) console.log(`app         ${item.site.padEnd(8)} ${item.session.url}${item.cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/'} (${item.cfg.runtime.kind}; open it beside the portals)`);
   try {
+    if (!portalSessions.length) throw new Error('No Mirage portal could start; see the messages above. A Mirage-only site opens its own browser with "npx paqvilo mirage dev --site <id>".');
+    const { selection, live, note } = await portalSelection({ ...cfg, siteName: initialSite }, args, portalSessions);
+    if (note) console.log(`live        not offered: ${note}`);
+    console.log(`switch      ${portalSessions.length} local Mirage portal(s) and ${live} live target(s) in the panel's portal selector`);
+    console.log('stop        Ctrl+C here or close the browser: the browser and the Mirages started here stop');
+    const { default: runDev } = await import('./dev.mjs');
     return await runDev(selection.initial, { ...args, devSelection: selection });
   } finally {
     await stopStarted(portals, paths, stop);
@@ -1178,8 +1210,10 @@ async function miragePortals(cfg, args, action, paths) {
     return projects.some((project) => project.error) ? 1 : 0;
   }
   if (action === 'stop') {
-    const folders = entries.filter((entry) => entry.cfg).map((entry) => entry.cfg.sourceDir);
-    const report = await stopOwnedSessions({ paths, sourceDirs: folders });
+    const folders = entries.filter((entry) => entry.cfg?.sourceDir).map((entry) => entry.cfg.sourceDir);
+    const pids = [];
+    for (const { cfg: site } of entries) if (site?.runtime?.kind && site.runtime.kind !== 'power-pages') pids.push(...await standaloneSessionPids(paths, site, site.runtime.kind));
+    const report = await stopOwnedSessions({ paths, sourceDirs: folders, pids });
     if (report.remaining.length) throw new Error(`Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`);
     print({ action: 'stop', message: stopSummary(report, `${entries.length} catalogue portals`, 'the catalogue portals'), ...report }, args.json);
     return 0;
@@ -1273,6 +1307,10 @@ function print(value, json) {
     if (value.stop) console.log(`Stop:      ${value.stop}`);
     return;
   }
+  if (value.action === 'init' && value.skipped) {
+    console.log(`No Mirage project written: ${value.skipped}\nnext: ${value.next}`);
+    return;
+  }
   if (value.action === 'init') {
     console.log(`Mirage project written: ${value.file}`);
     console.log(`  portal     ${value.portal.id}  ${value.portal.sourceDir}${value.portal.origin ? `  (${value.portal.origin})` : ''}`);
@@ -1333,10 +1371,7 @@ export default async function mirage(cfg, args, positionals = []) {
     const selectedProject = effective.project ? await loadProject(effective.project) : null;
     if ((selectedProject?.runtime ?? cfg.runtime)?.kind && (selectedProject?.runtime ?? cfg.runtime).kind !== 'power-pages') {
       const kind = (selectedProject?.runtime ?? cfg.runtime).kind;
-      const pids = (await ownedSessions(paths)).filter(entry => entry.identity?.runtime?.kind === kind
-        && (selectedProject ? samePath(entry.project, selectedProject.configFile) : !entry.project &&
-          (cfg.configFile ? samePath(entry.identity?.scope?.configFile, cfg.configFile) && entry.identity.scope.siteName === cfg.siteName : !entry.identity?.scope))).map(entry => entry.pid);
-      const report = await stopOwnedSessions({ paths, pids });
+      const report = await stopOwnedSessions({ paths, pids: await standaloneSessionPids(paths, cfg, kind, selectedProject) });
       if (report.remaining.length) throw new Error('An owned standalone Mirage session did not stop.');
       print({ action: 'stop', message: stopSummary(report, selectedProject?.configFile ?? kind, selectedProject?.configFile ?? kind), ...report }, args.json); return 0;
     }
@@ -1363,7 +1398,7 @@ export default async function mirage(cfg, args, positionals = []) {
     else process.stdout.write(result.stdout);
     return exitCode;
   }
-  const session = await start(cfg, effective, { paths });
+  const session = await start(cfg, effective, { paths, command: `mirage ${action}` });
   args.startup?.phase('runtime listener', session.started ? 'listening; application readiness pending' : 'reused; application readiness pending');
   const { launch } = session;
   const adminUrl = adminUrlOf(session.url);

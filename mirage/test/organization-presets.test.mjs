@@ -24,3 +24,12 @@ test('preset preservation follows ownership flags while explicit entries keep re
   assert.deepEqual(replaced.mappings.systemuser, { idColumn: 'alternate' });
   assert.notEqual(next.tables.systemuser, previous.tables.systemuser, 'Preset state owns independent copies.');
 });
+
+test('a preset replacing a plug-in table keeps the steps the Solution seeded under plugin:<table>', () => {
+  const step = (id, name) => ({ sdkmessageprocessingstepid: id, name });
+  const previous = { mappings: {}, tables: { sdkmessageprocessingstep: [step('a', 'Solution step'), step('b', 'runtime step')] },
+    dataverse: { sourceSeeded: { 'plugin:sdkmessageprocessingstep': ['a'] } } };
+  const preset = { tables: { sdkmessageprocessingstep: [step('c', 'preset step')] } };
+  const next = preserveOrganizationPresetSections(previous, preset, structuredClone(preset));
+  assert.deepEqual(next.tables.sdkmessageprocessingstep.map(row => row.name), ['Solution step', 'preset step']);
+});

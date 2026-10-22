@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
 import { DataError } from "./data.mjs";
+import { isSecuredField } from "./dataverse-fls.mjs";
 import { portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
 import { schemaFromFormXml, nativeControlKind, nativeRangeMessage, nativeDateOnly, resolveFormRecord } from "./platform.mjs";
@@ -449,8 +450,7 @@ async function writeUnit(provider, work) {
     if (typeof provider.transact === "function" && typeof provider.createRecord === "function")
       return await provider.transact(() =>
         work({
-          create: (entity, values, identity) => provider.createRecord(entity, values, identity),
-          update: (entity, id, values, identity) => provider.updateRecord(entity, id, values, identity),
+          ...portalRecordWrites(provider),
           associate: (entity, id, navigation, targetId, identity) => provider.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
         }),
         { incremental: true },
@@ -463,7 +463,41 @@ async function writeUnit(provider, work) {
   }
 }
 
+/**
+ * A portal form's record writes on a local store, inside the caller's store transaction: through the organization's
+ * internal entries (dataverse-records.mjs, store.recordPipeline) when the store has an organization, so a form submission
+ * runs the organization rules (state defaults, record hooks, audit and version columns, alternate-key answers) like any
+ * other write; the form has authorized the write with its own permission checks. Without an organization the store writes.
+ * options are the store write options of the caller (e.g. portalRequest); values are not coerced, as before.
+ * Every portal write outside the Web API (forms, list and subgrid actions, notes, server logic's Dataverse connector) uses
+ * this one path, so enhanced authorization's principal (portal-authorization.mjs) and column security apply to all of them.
+ */
+export function portalRecordWrites(store, options = {}) {
+  const records = store.recordPipeline;
+  const internal = (identity) => [{ identity, portal: true, caller: null, method: "POST", headers: {}, ...store.portalAuthorization?.principal(identity) },
+    { authorized: true, writeOptions: { coerce: false, dataverseWebApi: false, ...options } }];
+  return {
+    create: (entity, values, identity) => {
+      if (!records) return store.createRecordAsync(entity, values, identity, options);
+      const [c, opts] = internal(identity);
+      return records.createInternal(c, entity, { ...values }, opts);
+    },
+    update: (entity, id, values, identity) => {
+      if (!records) return store.updateRecordAsync(entity, id, values, identity, options);
+      const [c, opts] = internal(identity);
+      return records.updateInternal(c, entity, id, { ...values }, opts);
+    },
+    remove: (entity, id, identity) => {
+      if (!records) return store.removeRecordAsync(entity, id, identity, options);
+      const [c, opts] = internal(identity);
+      return records.removeInternal(c, entity, id, opts);
+    },
+  };
+}
+
 /** The note-text prefix that marks portal-visible notes: site setting KnowledgeManagement/NotesFilter, `*WEB*` by default. */
+// The provider key of a cloud attachment: attachments/<uuid>/<file name in key characters>.
+const cloudKey = (name) => `attachments/${randomUUID()}/${String(name).toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 200) || "file"}`;
 export const notesFilter = (portal) => siteSetting(portal ?? {}, "KnowledgeManagement/NotesFilter") ?? "*WEB*";
 
 /** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */
@@ -488,6 +522,10 @@ export async function submitPortalForm(
     language = {},
     // Internal same-page adapter only; public JSON submissions retain their validation contract.
     nativePostback = false,
+    // Cloud attachments (FileStorage/CloudStorageAccount): () => the guarded provider of storage route portalCloudAttachments
+    // (throws ProviderError when the route is unset or not ready); diagnostic receives the refusal.
+    cloudAttachments = null,
+    diagnostic = () => {},
   },
 ) {
   const text = (value, fallback = "") => formText(value, fallback, language);
@@ -663,6 +701,18 @@ export async function submitPortalForm(
   if (!current) fail(`Entity '${schema.entity}' With Id = ${canonical(recordId)} Does Not Exist`, 404, "FormRecordNotFound");
   const scalar = (value) => value?.id ?? value?.value ?? value;
   const empty = (value) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length);
+  // A secured column the form read masked or null (column security of the reader, data.mjs get) and posted back unchanged
+  // is no change: writing it would replace the stored value with its mask or with null.
+  if (!create) {
+    const rows = store.tableRows?.(mapping.logicalName) ?? [], stored = rows[store.rowIndex?.(mapping, rows, recordId) ?? -1];
+    for (const column of Object.keys(changed)) {
+      const read = current[column], posted = changed[column];
+      if (!stored || !isSecuredField(store.fieldDefinition?.(mapping.logicalName, column)) || read === stored[column]) continue;
+      if (!((empty(read) && empty(posted)) || String(scalar(read)) === String(scalar(posted)))) continue;
+      delete changed[column];
+      for (const name of Object.keys(values)) if (canonical(name) === column) delete values[name];
+    }
+  }
   const assigned = new Set();
   let contactRecord;
   if (create && portalField(componentMetadata, "associatecurrentportaluser", false) === true) {
@@ -863,7 +913,7 @@ export async function submitPortalForm(
   // Attach file: one annotation per uploaded file, as native forms store notes. Every file
   // is checked before anything is written.
   const attachments = Array.isArray(body.attachments) ? body.attachments : [];
-  const notes = [];
+  const notes = [], cloudUploads = [];
   if (attachments.length) {
     if (!truthy(portalField(componentMetadata, "attachfile"))) fail("This native form does not accept attachments", 403, "FormAttachmentNotEnabled");
     // Advanced form steps name multiple files with their own column (adx_allowmultiplefiles), as the markup reads it.
@@ -875,6 +925,20 @@ export async function submitPortalForm(
     const fullname = identity?.fullname ?? identity?.name ?? "";
     const contactId = canonical(identity?.contactId ?? identity?.id);
     const annotationMapping = store.resolveMapping("annotation");
+    // FileStorage/CloudStorageAccount set: the file goes to storage route portalCloudAttachments and the note is Learn's
+    // placeholder <name>.txt holding { Name, Type, Size, Url }. No route: PROVIDER_ROUTE_MISSING fails the save; the bytes
+    // never fall back to the note. unverified: Url is the provider key here; native carries the blob's URL.
+    let cloud = null;
+    if (String(siteSetting(portal, "FileStorage/CloudStorageAccount") ?? "").trim()) {
+      try {
+        cloud = cloudAttachments?.() ?? null;
+        if (!cloud) throw Object.assign(new Error("Storage route portalCloudAttachments is not configured; set providers.routes.portalCloudAttachments."), { diagnostic: "PROVIDER_ROUTE_MISSING" });
+      } catch (error) {
+        const code = error.diagnostic ?? "PROVIDER_ROUTE_MISSING";
+        diagnostic({ code, severity: "error", form: componentId, message: `FileStorage/CloudStorageAccount is set, but the attachment cannot be stored: ${error.message}` });
+        fail(`The attachment cannot be stored in cloud storage: ${error.message}`, 500, code);
+      }
+    }
     const objectBinding = Object.entries(annotationMapping.relationships ?? {}).find(([, relation]) => relation.many === false && relation.from === "objectid" && relation.entity === canonical(schema.entity));
     for (const file of attachments) {
       if (!file || typeof file.name !== "string" || typeof file.content !== "string") fail("Attachment requires a name and base64 content", 400, "FormAttachmentInvalid");
@@ -888,14 +952,15 @@ export async function submitPortalForm(
         return String(file.type ?? "").toLowerCase() === pattern;
       }))
         fail(text(portalField(componentMetadata, "attachfiletypeerrormessage"), `${file.name} is not of the file type(s) "${accept}".`), 400, "FormAttachmentType");
+      const placeholder = cloud ? { key: cloudKey(file.name), type: String(file.type || "application/octet-stream") } : null;
+      if (placeholder) cloudUploads.push({ ...placeholder, content: file.content });
+      const stored = placeholder ? Buffer.from(JSON.stringify({ Name: file.name, Type: placeholder.type, Size: size, Url: placeholder.key })) : null;
       notes.push((savedId) => ({
         subject: `Note created on ${now().toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "")} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ""}`,
         notetext: notesFilter(portal),
         objecttypecode: schema.entity,
-        filename: file.name.slice(0, 255),
-        mimetype: String(file.type || "application/octet-stream").slice(0, 255),
-        documentbody: file.content,
-        filesize: size,
+        ...(stored ? { filename: `${file.name}.txt`.slice(0, 255), mimetype: "text/plain", documentbody: stored.toString("base64"), filesize: stored.length }
+          : { filename: file.name.slice(0, 255), mimetype: String(file.type || "application/octet-stream").slice(0, 255), documentbody: file.content, filesize: size }),
         ...(objectBinding ? { [`${objectBinding[0]}@odata.bind`]: `/${mapping.entitySet}(${savedId})` } : { objectid: { id: savedId, logical_name: schema.entity } }),
       }));
     }
@@ -906,6 +971,9 @@ export async function submitPortalForm(
   // depend on the saved row, including plugin changes, so resolve those inside
   // the provider's existing write unit before changing the session history.
   if (session) requiredAdvancedFormStep(portal, formSchema, schema.nextStepId);
+  // Cloud attachment bytes are put before the write unit; a failed unit deletes them again.
+  const cloudStore = cloudUploads.length ? cloudAttachments() : null;
+  for (const upload of cloudUploads) await cloudStore.put(upload.key, Buffer.from(upload.content, "base64"), { contentType: upload.type });
   const { record, savedId, next } = await writeUnit(writeProvider, async (operations) => {
     const record = create ? await operations.create(schema.entity, values, identity) : await operations.update(schema.entity, recordId, values, identity);
     const savedId = canonical(record?.[mapping.idColumn] ?? recordId);
@@ -916,6 +984,9 @@ export async function submitPortalForm(
     for (const note of notes) await operations.create("annotation", note(savedId), identity);
     const next = session ? nextAdvancedFormStep(portal, formSchema, schema.nextStepId, { ...current, ...record }) : null;
     return { record, savedId, next };
+  }).catch(async (error) => {
+    for (const upload of cloudUploads) await cloudStore.delete(upload.key).catch(() => {});
+    throw error;
   });
   // Outcome: success message, redirect, or the next multistep step.
   const savedRecord = { ...current, ...record };

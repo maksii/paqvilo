@@ -15,6 +15,7 @@ import { loadCatalogue, resolveMirageConfig } from '../../lense/config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 import { scanSolutionSources, buildSolutionSchema } from './solution-schema.mjs';
 import { sourceDirectoryDigest } from './solution-cache.mjs';
+import { runtimeOptions, configuredSettingKeys } from './config-keys.mjs';
 
 const immutable = value => {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -70,19 +71,12 @@ export async function createMirageContext({ packs = [], config, site, env, repo,
     packs: Object.freeze([...loaded]), presetLibrary: library,
     DataStore: BoundDataStore,
     createSimulator: settings => createSimulator({
-      runtime: project?.runtime ?? cfg?.mirageConfig.runtime,
-      simulation: project?.simulation ?? cfg?.mirageConfig.simulation,
-      modelDriven: project?.modelDriven ?? cfg?.mirageConfig.modelDriven,
-      dataverse: project?.dataverse ?? cfg?.mirageConfig.dataverse,
-      platform: cfg?.mirageConfig.platform ?? selected?.platform,
-      render: cfg?.mirageConfig.render,
-      dataModel: selected?.dataModel ?? cfg?.mirageConfig.dataModel,
-      contentPolicyDefaults:{...selected,...cfg?.mirageConfig},
-      personaContexts: cfg?.mirageConfig.personaContexts,
-      identityProvider: cfg?.mirageConfig.identityProvider,
+      // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
+      ...runtimeOptions({ project, portal: selected, catalogue: cfg?.mirageConfig }),
+      configuredSettings: configuredSettingKeys({ project, portal: selected, catalogue: cfg?.mirageConfig }),
       ...(cfg?.configFile?{projectRoot:path.dirname(cfg.configFile)}:{}),
-      ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, deploymentProfile: selected?.deploymentProfile, deploymentProfiles: profileConfig, observed: selected?.observed ?? cfg.mirageConfig.observed, localOverrides: cfg.mirageConfig.localOverrides } : {}),
-      ...(project ? { project: projectSummary(project, selected.id), environmentVariables: project.environmentVariables } : {}),
+      ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, deploymentProfile: selected?.deploymentProfile, deploymentProfiles: profileConfig } : {}),
+      ...(project ? { project: projectSummary(project, selected.id) } : {}),
       ...settings, packs: loaded,
       ...(settings?.sourceDir === undefined && settings?.solutionRoots === undefined && portal ? {importedSources:{sourceDir,portal,portalDigest,solutionScan,solutionSchema,solutionData:metadata,solutionRoots,solutionOrder,profilesFingerprint:activeProfiles?.fingerprint,pagesFile:activeProfiles?.pagesFile,deploymentProfile:selected?.deploymentProfile,dataModel:selected?.dataModel ?? cfg?.mirageConfig.dataModel}} : {}),
     }),

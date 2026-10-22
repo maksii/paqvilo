@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { importSolutionData, applySolutionData } from '../lib/solution-data.mjs';
 import { emptyState } from '../lib/data.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
-import { solutionContentFingerprint, solutionContentPath } from '../lib/solution-content-fingerprint.mjs';
+import { solutionContentFingerprint, solutionContentPath, solutionLayerFiles } from '../lib/solution-content-fingerprint.mjs';
 
 const xml = name => `<ImportExportXml><Entities><Entity><Name>sample_item</Name><EntityInfo><entity Name="sample_item"><attributes><attribute><LogicalName>sample_itemid</LogicalName><Type>primarykey</Type></attribute><attribute><LogicalName>${name}</LogicalName><Type>nvarchar</Type></attribute></attributes><EntitySetName>sample_items</EntitySetName></entity></EntityInfo></Entity></Entities></ImportExportXml>`;
 
@@ -47,4 +49,25 @@ test('content identity uses relative filenames, logical layer identities and sel
   assert.notEqual(solutionContentFingerprint([a]), solutionContentFingerprint([{ ...a, solution: { uniqueName: 'renamed' } }]));
   assert.notEqual(solutionContentFingerprint([a]), solutionContentFingerprint([{ ...a, documents: [{ ...a.documents[0], file: `${a.dir}/Entities/item/Renamed.xml` }] }]));
   assert.notEqual(solutionContentFingerprint([a, b]), solutionContentFingerprint([a, { ...b, documents: [{ ...b.documents[0], hash: 'a' }] }]));
+});
+
+test('a ZIP layer listing never inflates entries outside the requested folders and is memoised per archive stamp', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fingerprint-zip-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const archive = path.join(root, 'invented.zip'), msappName = 'CanvasApps/x_app_DocumentUri.msapp';
+  const write = async flow => {
+    const zip = writeSolutionAssetEntries([{ name: 'workflows/x_flow.json', data: Buffer.from(flow) }, { name: msappName, data: randomBytes(5 * 1024 * 1024) }]);
+    // Corrupt the 5 MB .msapp payload: any inflate/CRC of it fails, so a successful listing proves it was skipped.
+    zip[zip.indexOf(Buffer.from(msappName)) + msappName.length + 1024] ^= 0xff;
+    await fs.writeFile(archive, zip);
+  };
+  await write('{"v":1}');
+  const layer = { type: 'zip', dir: archive };
+  const first = solutionLayerFiles(layer, /^workflows$/i);
+  assert.deepEqual(first.map(file => [file.name, file.read().toString()]), [['workflows/x_flow.json', '{"v":1}']]);
+  assert.equal(solutionLayerFiles(layer, /^workflows$/i)[0], first[0]);
+  assert.deepEqual(solutionLayerFiles(layer).map(file => file.name), ['workflows/x_flow.json']);
+  assert.throws(() => solutionLayerFiles(layer, /^canvasapps$/i), /CRC/);
+  await write('{"v":22}');
+  assert.equal(solutionLayerFiles(layer, /^workflows$/i)[0].read().toString(), '{"v":22}');
 });

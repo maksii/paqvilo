@@ -61,5 +61,11 @@ export function assertAttachmentPolicy(state,entity,row,changes=row){
  const mime=String(row.mimetype??'application/octet-stream').toLowerCase().split(';')[0].trim();
  if(extension&&list(p.BlockedAttachments).includes(extension))throw new DataError('Attachment extension is blocked by the organization.',400,'AttachmentTypeBlocked');
  const allowed=list(p.AllowedMimeTypes);if(list(p.BlockedMimeTypes).includes(mime)||allowed.length&&!allowed.includes(mime))throw new DataError('Attachment MIME type is blocked by the organization.',400,'AttachmentTypeBlocked');
- if(typeof body==='string'&&Buffer.byteLength(body,'utf8')>p.MaxUploadFileSize)throw new DataError('Attachment file size is too big.',400,'AttachmentTooLarge',{innerCode:'0x80044a02'});
+ if(typeof body==='string')assertAttachmentSize(state,Buffer.byteLength(body,'utf8'));
+}
+// The one attachment size rule for annotation documentbody and activitymimeattachment body, whichever path writes them
+// (record writes, block commits, UploadBlock). Learn (attachment-annotation-files#file-size-limits): MaxUploadFileSize
+// applies to the file's Base64 encoding, so the unit is the encoded length; the limit honours /_sim overrides.
+export function assertAttachmentSize(state,base64Length){
+ if(base64Length>platformValues(state).MaxUploadFileSize)throw new DataError('Attachment file size is too big.',400,'AttachmentTooLarge',{innerCode:'0x80044a02'});
 }

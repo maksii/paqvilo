@@ -51,6 +51,21 @@ test('offline doctor diagnoses the extract and unavailable baseline without fetc
   assert.equal(inspectCheckout(cfg).ready, false);
 });
 
+test('offline doctor skips the baseline with a note in a repository without commits', (t) => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unborn-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  fs.cpSync(fx.dir, dir, { recursive: true, filter: (source) => path.basename(source) !== '.git' });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  execFileSync('git', ['init', '-q'], { cwd: dir, env, stdio: 'ignore', windowsHide: true });
+  const cfg = { siteName: 'test', envName: 'dev', origin: 'https://portal.example', sourceDir: dir, site: structuredClone(SITE) };
+  cfg.site.markup.enabled = true;
+  const report = inspectCheckout(cfg);
+  assert.equal(report.ready, true, JSON.stringify(report.errors));
+  assert.ok(report.warnings.some((w) => /has no commits yet/.test(w)));
+  cfg.site.scope = 'changed';
+  assert.equal(inspectCheckout(cfg).ready, false, 'changed scope still needs a baseline');
+});
+
 test('standalone CLI resolves the baseline in the portal repository and discovers its extracts', () => {
   const file = fx.file('standalone-catalogue.yml');
   fs.writeFileSync(file, 'sourceRoot: missing-checkout\nsites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example\n');

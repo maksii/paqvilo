@@ -4,7 +4,8 @@
 import http from "node:http";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
-import { organizationContext as inBatch, runAtomic } from "./dataverse-transaction-context.mjs";
+import { ownsChange, runOwned, runAtomic } from "./dataverse-transaction-context.mjs";
+import { createRequestContext, currentRequest, runWithRequest } from "./request-context.mjs";
 export { runAtomic } from "./dataverse-transaction-context.mjs";
 import { createOrganizationRuntime } from "./dataverse-organization.mjs";
 export { dataverseOrganizationId } from "./dataverse-organization.mjs";
@@ -36,7 +37,7 @@ import {
   preferMalformedResponse,
   preferenceApplied,
 } from "./dataverse-odata.mjs";
-import { stringifyExactJson } from "./exact-numeric.mjs";
+import { parseExactJson, stringifyExactJson } from "./exact-numeric.mjs";
 
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
 const GLOBAL_DISCO = "https://globaldisco.crm.dynamics.com";
@@ -442,7 +443,8 @@ function boundFunction(d, c, route, common) {
   if (c.method !== "GET") return notFound(c);
   // RetrievePrincipalAccess is bound to systemuser, team and organization; RetrieveUserPrivileges to systemuser only.
   const subjectSets = route.name === "RetrievePrincipalAccess" ? ["systemusers", "teams", "organizations"] : ["systemusers"];
-  if (!subjectSets.includes(route.set) || !route.key) throw notImplementedFeature(route.name);
+  // A function is not bound to any other type, so the segment resolves to no resource (no 501 on a native path).
+  if (!subjectSets.includes(route.set) || !route.key) return notFound(c);
   const subjectId = parseKey(route.key)?.id ?? route.key;
   if (route.name === "RetrieveUserPrivileges") {
     return {
@@ -453,8 +455,7 @@ function boundFunction(d, c, route, common) {
       },
     };
   }
-  if (route.name === "RetrievePrincipalAccess") return principalAccess(d, c, route, subjectId, common);
-  throw notImplementedFeature(route.name);
+  return principalAccess(d, c, route, subjectId, common);
 }
 
 const invalidArgument = () => new DataError("Invalid argument.", 400, "InvalidKey");
@@ -494,8 +495,8 @@ async function shareAction(d, c, route, common) {
     await SHARE_ACTIONS[route.name](d.store, share);
     await writeAudit(d.api, { entity: target.logical, id: target.id, action: SHARE_AUDIT[route.name], identity: common.identity });
   };
-  // Inside a $batch the batch already holds the change slot (see inBatch); a nested change call would wait on itself.
-  await (inBatch.getStore() ? run() : d.change(run));
+  // Inside a $batch the batch already holds the change slot (see ownsChange); a nested change call would wait on itself.
+  await (ownsChange() ? run() : d.change(run));
   return { status: 204 };
 }
 
@@ -584,7 +585,9 @@ function metadataRead(c, metadata, route) {
 }
 
 function metadataCall(d, c, route) {
-  if (c.method !== "GET") throw notImplementedFeature("Metadata provisioning");
+  // A metadata write is an extension route (dataverse-metadata-tables.mjs, -relationships.mjs), at top level and inside a $batch;
+  // a verb no route takes is the Web API's 405.
+  if (c.method !== "GET") return methodNotAllowed(c);
   return metadataRead(c, d.metadata, route);
 }
 
@@ -690,6 +693,23 @@ async function dataApi(d, c, route) {
 // The bearer check, caller resolution and impersonation for every route that acts as a caller (Web API, extension routes, SOAP).
 // handle({ user, caller, identity, bodyBuffer }) runs inside the service-protection admission. An unauthenticated request throws
 // the same 401 everywhere; a disabled or unknown caller gets the Dataverse envelope.
+// CallerObjectId / MSCRMCallerID impersonation (Learn impersonate-another-user-web-api): { user } for the impersonated
+// principal, { user: null } without the headers, { refused } with the envelope of an invalid or disabled target. A top-level
+// request and each $batch part (Learn execute-batch-operations: a part's own headers control it) resolve it here.
+function impersonatedUser(d, caller, headers, requestId) {
+  const callerObjectId = headers.callerobjectid;
+  const callerId = headers.mscrmcallerid;
+  if (callerObjectId === undefined && callerId === undefined) return { user: null };
+  if (!d.principals.canImpersonate(caller)) throw privilegeDenied(d, caller, "prvActOnBehalfOfAnotherUser");
+  const byObjectId = callerObjectId !== undefined;
+  const value = String(byObjectId ? callerObjectId : callerId);
+  if (!GUID_TEXT.test(value)) return { refused: envelope(400, "0x80048d1A", INVALID_CALLER, requestId) };
+  const target = byObjectId ? d.principals.byObjectId(value) : d.principals.byId(value);
+  if (!target) return { refused: byObjectId ? envelope(400, "0x80040203", "Invalid argument.", requestId) : unknownCaller(value, requestId) };
+  if (target.isdisabled === true) return { refused: disabledEnvelope(target, requestId) };
+  return { user: d.principals.effectivePrincipal(caller, target) };
+}
+
 async function authenticated(d, c, handle) {
   const { req, origin, requestId, meta } = c;
   const verdict = d.authority.verifyBearer(req.headers.authorization, { origin, tenantId: d.tenantId });
@@ -709,23 +729,17 @@ async function authenticated(d, c, handle) {
     // A groups claim keeps the caller's group teams current before the identity reads them.
     if (Array.isArray(verdict.claims.groups)) await d.change(() => syncGroupMembership(d.store, caller, verdict.claims.groups));
 
-    let user = caller;
-    const callerObjectId = req.headers.callerobjectid;
-    const callerId = req.headers.mscrmcallerid;
-    if (callerObjectId !== undefined || callerId !== undefined) {
-      if (!d.principals.canImpersonate(caller)) throw privilegeDenied(d, caller, "prvActOnBehalfOfAnotherUser");
-      const byObjectId = callerObjectId !== undefined;
-      const value = String(byObjectId ? callerObjectId : callerId);
-      if (!GUID_TEXT.test(value)) return envelope(400, "0x80048d1A", INVALID_CALLER, requestId);
-      const target = byObjectId ? d.principals.byObjectId(value) : d.principals.byId(value);
-      if (!target) return byObjectId ? envelope(400, "0x80040203", "Invalid argument.", requestId) : unknownCaller(value, requestId);
-      if (target.isdisabled === true) return disabledEnvelope(target, requestId);
-      user = d.principals.effectivePrincipal(caller, target);
-    }
+    const impersonation = impersonatedUser(d, caller, req.headers, requestId);
+    if (impersonation.refused) return impersonation.refused;
+    const user = impersonation.user ?? caller;
 
     const { identity } = organizationPrincipalContext(d.store, user, { caller, appId: verdict.claims.appid });
     const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
-    return await handle({ user, caller, identity, bodyBuffer });
+    // The request context names who asked (the caller) and who executes (the impersonated user) from here on.
+    const context = currentRequest();
+    const run = () => handle({ user, caller, identity, bodyBuffer });
+    return await (context ? runWithRequest(context.with({ initiator: { kind: verdict.claims.appid ? "app" : "staff", id: caller.systemuserid },
+      principal: { systemUserId: user.systemuserid, callerId: caller.systemuserid } }), run) : run());
   } finally {
     admission.release(d.clock() - started);
   }
@@ -745,8 +759,10 @@ function extensionContext(c, { user, caller, identity, bodyBuffer }) {
 function bodyOf(method, headers, bodyBuffer, route) {
   if (!bodyBuffer.length || !BODY_METHODS.has(method) || !/json/i.test(headers["content-type"] ?? "")) return undefined;
   try {
-    return JSON.parse(bodyBuffer.toString("utf8"));
+    // Exact parse: a decimal, money or Int64 literal a double cannot hold keeps its digits (exact-numeric.mjs).
+    return parseExactJson(bodyBuffer.toString("utf8"));
   } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     const set = route?.set ?? route?.name ?? "";
     throw new DataError(
       `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: ${error.message}`,
@@ -905,15 +921,29 @@ async function batchCall(d, c, common) {
       return envelope(400, "", `The request URI '${target.href}' is not supported inside a batch.`, c.requestId);
     }
     if (!METHODS.has(method)) return envelope(405, "", `The requested resource does not support http method '${method}'.`, c.requestId);
+    // A part's own CallerObjectId / MSCRMCallerID impersonates for that part; without them the batch's principal acts.
+    const partHeaders = { authorization: c.req.headers.authorization, ...headers };
+    const impersonation = impersonatedUser(d, common.caller, partHeaders, c.requestId);
+    if (impersonation.refused) return impersonation.refused;
+    const user = impersonation.user ?? common.user;
+    const identity = impersonation.user ? organizationPrincipalContext(d.store, user, { caller: common.caller, appId: common.identity?.dataverse?.appId }).identity : common.identity;
+    // Extension routes (metadata writes and the other api.addRoute writes) answer inside a batch as they do at top level. In a
+    // changeset they run in its transaction, so a metadata change rolls back with the changeset (Learn
+    // execute-batch-operations-using-web-api "Change sets": a failing operation rolls back every completed one).
+    const extension = (d.routes ?? []).find((entry) => !entry.anonymous && entry.match(target.pathname, method));
+    if (extension) {
+      return extension.handler(extensionContext({ method, url: target, origin: c.origin, prefer: parsePrefer(headers?.prefer), requestId: c.requestId, req: { method, headers: partHeaders } },
+        { user, caller: common.caller, identity, bodyBuffer: Buffer.from(body ?? "", "utf8") }));
+    }
     return handleDataRequest(d, {
       method,
       url: target,
       route,
-      headers: { authorization: c.req.headers.authorization, ...headers },
+      headers: partHeaders,
       bodyBuffer: Buffer.from(body ?? "", "utf8"),
-      user: common.user,
+      user,
       caller: common.caller,
-      identity: common.identity,
+      identity,
       prefer: parsePrefer(headers?.prefer),
       origin: c.origin,
       requestId: c.requestId,
@@ -946,7 +976,7 @@ async function batchCall(d, c, common) {
   const continueOnError = common.prefer.continueOnError;
   // ponytail: the whole batch takes one slot in the server's change queue, so no other write lands while a changeset runs.
   // Ceiling: a long batch holds writers back; split the batch if that matters.
-  const result = await d.change(() => inBatch.run(true, () => executeBatch(parsed, { dispatch, origin: c.origin, base: new URL("./", c.url).href, continueOnError })));
+  const result = await d.change(() => runOwned(() => executeBatch(parsed, { dispatch, origin: c.origin, base: new URL("./", c.url).href, continueOnError })));
   const applied = preferenceApplied(common.prefer);
   return applied ? { ...result, headers: { ...result.headers, "Preference-Applied": applied } } : result;
 }
@@ -1002,6 +1032,7 @@ async function route(d, c) {
 
 // Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
 // becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
+const DATA_PLANE = /^\/api\/data\/v\d+(?:\.\d+)*(?:\/|$)/i;
 export function createDataverseHandler(deps) {
   const limits = deps.limits ?? createServiceProtection({ ...(deps.settings?.serviceProtection ?? {}), clock: deps.clock });
   const d = { ...deps, change: deps.change ?? ((fn) => fn()), limits, requests: deps.requests ?? [], hostNames: allowedHostNames(deps.host ?? "127.0.0.1") };
@@ -1014,6 +1045,17 @@ export function createDataverseHandler(deps) {
     const meta = { appId: null, userId: null, grant: null, kind: "data" };
     const prefer = parsePrefer(req.headers.prefer);
     const c = { req, url: null, origin, requestId, meta, prefer, method: req.method === "HEAD" ? "GET" : req.method };
+    // Dashboard counters (runtime-counters.mjs): dataverseRequests and dataverseRequests.failed count data-plane Web API
+    // requests (/api/data/v*, not $metadata); token, discovery, metadata document, SOAP and every other request on this
+    // listener count as dataverseRequests.other. TDS has its own listener and is not counted.
+    res.on("finish", () => {
+      const counters = d.store?.counters;
+      if (!counters) return;
+      const pathname = c.url?.pathname ?? "";
+      if (meta.kind !== "data" || !DATA_PLANE.test(pathname) || /\/\$metadata$/i.test(pathname)) return counters.increment("dataverseRequests.other");
+      counters.increment("dataverseRequests");
+      if (res.statusCode >= 400) counters.increment("dataverseRequests.failed");
+    });
     res.on("finish", () =>
       remember(d.requests, {
         at: started,
@@ -1042,7 +1084,13 @@ export function createDataverseHandler(deps) {
         if (req.method === "OPTIONS" && (preflight || req.headers.authorization === undefined)) {
           meta.kind = "options";
           result = { status: 204 };
-        } else result = await route(d, c);
+        } else {
+          // One request context per call: x-ms-correlation-request-id (when it is a plain token) or the request id correlates
+          // the committed events, jobs and web hooks this request causes.
+          const context = createRequestContext({ organization: d.api ? { organizationId: d.organizationId, clock: d.clock, ids: d.api.ids } : null,
+            correlationId: req.headers["x-ms-correlation-request-id"] ?? requestId, requestId });
+          result = await runWithRequest(context, () => route(d, c));
+        }
       }
     } catch (error) {
       result = dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, logical: error?.details?.logical, method: c.method });
@@ -1197,13 +1245,15 @@ export async function startDataverseApi({
     reseed: organization.reseed,
     requests: () => requests.map((entry) => ({ ...entry })),
     issueManagedIdentityToken: authority.issueManagedIdentityToken,
+    // Code apps (code-apps-http.mjs authorityTokenIssuer) mint staff tokens for this origin through the same authority.
+    issueAccessToken: authority.issueAccessToken,
     // Called by the local administration shell while it owns the host's change
     // queue. Reuse the record pipeline without entering that queue a second time.
     writeLocalRecord: createModelDrivenRecordService({
       organization,
       store, records: recordHandlers, origin: () => origin,
       principal: () => principals.byId(uuidV5(organizationId, 'systemuser:SYSTEM')),
-      run: fn => inBatch.run(true, () => runAtomic(api, fn)),
+      run: fn => runOwned(() => runAtomic(api, fn)),
     }),
     close,
     handle,

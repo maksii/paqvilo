@@ -158,3 +158,81 @@ test('selected frame assets resolve relative URLs against the embedded document 
   const text=await page.locator('#paqvilo-xray .content').innerText();assert.match(text,/Web file/);assert.match(text,/Embedded image/);assert.doesNotMatch(text,/Unrelated host image/);
   const evidence=await page.evaluate(inspectRenderedPage);assert.ok(evidence.assets.some(asset=>asset.path==='/embedded/assets/icon.svg'));
 });
+
+// Frame input guards are installed synchronously on activation, independent of reports and geometry scans.
+async function guardFixture(browser,top='<iframe id="first" src="/form"></iframe>'){
+  const page=await browser.newPage();
+  const button=extra=>`<button id="next" onclick="try{top.actions++}catch{top.postMessage('act','*')}">Next</button>${extra}`;
+  await page.context().route('**/*',async route=>{const path=new URL(route.request().url()).pathname;if(path==='/slow.png'){await new Promise(resolve=>setTimeout(resolve,1500));return route.fulfill({contentType:'image/png',body:''});}return route.fulfill({contentType:'text/html',body:path==='/form'?button(''):path==='/slow-form'?button('<img src="/slow.png">'):`<script>window.actions=0;addEventListener('message',event=>{if(event.data==='act')actions++;});</script>${top}`});});
+  const data={origin:'http://127.0.0.1:11111',token:'frame-guard-test'};await page.goto(data.origin);await page.evaluate(xrayUi,data);
+  return {page,data,report:{page:{name:'Invented page'},componentIndex:{forms:[]},columns:[]}};
+}
+const actions=page=>page.evaluate(()=>window.actions);
+
+test('frame activation is guarded synchronously when inspection is toggled with focus in a frame',async t=>{
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  for(let run=0;run<10;run++){
+    const {page,data,report}=await guardFixture(browser);
+    await page.evaluate(({data,report})=>{document.getElementById('first').contentDocument.getElementById('next').focus();const api=document.getElementById('paqvilo-xray').__px;api.update(data,report);api.toggle(true);},{data,report});
+    await page.keyboard.press('Enter');assert.equal(await actions(page),0,`run ${run}`);
+    await page.close();
+  }
+});
+
+test('frame guards do not depend on an inspection report',async t=>{
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  const {page,data}=await guardFixture(browser),next=page.frameLocator('#first').locator('#next');
+  await page.evaluate(data=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,null);api.toggle(true);},data);
+  await next.evaluate(node=>node.focus());await page.keyboard.press('Enter');await page.keyboard.press(' ');await next.dispatchEvent('click');
+  await page.waitForTimeout(200);await next.evaluate(node=>node.focus());await page.keyboard.press('Enter');
+  assert.equal(await actions(page),0);
+  await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.toggle(false));await next.dispatchEvent('click');assert.equal(await actions(page),1);
+});
+
+test('a frame navigated after activation is guarded before its load event',async t=>{
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  // Without a report no geometry scan runs; Enter is pressed from the first sight of the next document until shortly before load.
+  for(let run=0;run<10;run++){
+    const {page,data}=await guardFixture(browser);
+    await page.evaluate(data=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,null);api.toggle(true);const frame=document.getElementById('first');window.loaded=false;frame.addEventListener('load',()=>{window.loaded=true;});frame.src='/slow-form';},data);
+    await page.waitForFunction(()=>{const doc=document.getElementById('first').contentDocument;return doc?.location.pathname==='/slow-form'&&doc.getElementById('next');},null,{polling:'raf'});
+    for(const wait of [0,100,400]){
+      if(wait)await page.waitForTimeout(wait);
+      await page.evaluate(()=>document.getElementById('first').contentDocument.getElementById('next').focus());await page.keyboard.press('Enter');
+    }
+    assert.equal(await page.evaluate(()=>window.loaded),false,'the slow image still delays the frame load event');
+    assert.equal(await actions(page),0,`run ${run}`);
+    await page.close();
+  }
+});
+
+test('frames added to a pre-existing shadow root of a large page stay guarded after the geometry scan',async t=>{
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  const {page,data,report}=await guardFixture(browser,'<div>'+'<span>x</span>'.repeat(5000)+'</div><div id="host"></div><script>window.root=document.getElementById("host").attachShadow({mode:"open"});root.innerHTML="<p>empty</p>";</script>');
+  await page.evaluate(({data,report})=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,report);api.toggle(true);},{data,report});
+  await page.waitForTimeout(400);
+  await page.evaluate(()=>new Promise(resolve=>{const frame=document.createElement('iframe');frame.id='late';frame.src='/form';frame.onload=resolve;window.root.append(frame);}));
+  await page.evaluate(()=>{const doc=window.root.getElementById('late').contentDocument;doc.getElementById('next').focus();const event=new doc.defaultView.KeyboardEvent('keydown',{key:'Enter',cancelable:true,bubbles:true});doc.getElementById('next').dispatchEvent(event);window.listenerGuard=event.defaultPrevented;});
+  assert.equal(await page.evaluate(()=>window.listenerGuard),true,'the frame document has its own listener guard');
+  await page.evaluate(()=>window.root.getElementById('late').contentDocument.getElementById('next').focus());await page.keyboard.press('Enter');
+  assert.equal(await actions(page),0);
+});
+
+test('focus cannot stay in closed-shadow-root or cross-origin frames while inspecting, including focus already inside a closed root at activation',async t=>{
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  const top='<div id="host"></div><script>window.closedRoot=document.getElementById("host").attachShadow({mode:"closed"});closedRoot.innerHTML=\'<iframe id="sf" src="/form"></iframe>\';</script><iframe id="cross" src="http://localhost:11112/form"></iframe>';
+  const closedNext='window.closedRoot.getElementById("sf").contentDocument.getElementById("next")';
+  const {page,data}=await guardFixture(browser,top);
+  await page.waitForFunction(f=>Boolean((0,eval)(f)),closedNext);await page.frameLocator('#cross').locator('#next').waitFor();
+  await page.evaluate(data=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,null);api.toggle(true);},data);
+  await page.evaluate(f=>(0,eval)(f).focus(),closedNext);await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);assert.equal(await actions(page),0,"closed root frame");
+  await page.frameLocator('#cross').locator('#next').focus();await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);assert.equal(await actions(page),0);
+  // Focus already inside a closed root's frame is invisible to the overlay; activation takes focus unconditionally.
+  const boundary=await guardFixture(browser,top);
+  await boundary.page.waitForFunction(f=>Boolean((0,eval)(f)),closedNext);
+  await boundary.page.evaluate(f=>(0,eval)(f).focus(),closedNext);
+  await boundary.page.evaluate(({f,data})=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,null);api.toggle(true);},{f:closedNext,data});
+  await boundary.page.keyboard.press('Enter');assert.equal(await actions(boundary.page),0);
+});

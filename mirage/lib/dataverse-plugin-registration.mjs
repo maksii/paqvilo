@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { organizationRecord } from './organization-context.mjs';
 // Plug-in registration through the Dataverse API (Learn: plug-in registration tables). Seeds sdkmessage and
 // sdkmessagefilter, mirrors the Solution's registrations into rows, and checks writes to the registration tables with
@@ -8,7 +9,7 @@ import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
 import { SDK_MESSAGES, pluginUnsupported } from './exported-plugins.mjs';
 import { InvalidAssembly, inspectAssembly, inspectSigningCertificate } from './clr-assembly-reader.mjs';
-import { isLoopbackUrl } from './dataverse-webhooks.mjs';
+import { isLoopbackUrl, loopbackFetch, messagingOf, serviceEndpointTarget } from './dataverse-webhooks.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 
 const NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse'); // same as dataverse-api.mjs DATAVERSE_NAMESPACE
@@ -147,7 +148,7 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       filteringattributes: (step.filteringAttributes ?? []).join(',') || null,
       statecode: step.enabled === false ? 1 : 0, statuscode: step.enabled === false ? 2 : 1,
       sdkmessageid: message, sdkmessagefilterid: entity && message ? filterId(org, step.message, entity) : null,
-      eventhandler: step.typeId ?? null, plugintypeid: step.typeId ?? null, impersonatinguserid: step.impersonatingUserId ?? null,
+      eventhandler: step.typeId ?? step.serviceEndpointId ?? step.eventHandlerId ?? null, plugintypeid: step.typeId ?? null, impersonatinguserid: step.impersonatingUserId ?? null,
       organizationid: org,
     });
     for (const image of step.images ?? []) {
@@ -216,9 +217,22 @@ export function overlayRegisteredSteps(plugins, store) {
   const seededStep = new Map(seeded.sdkmessageprocessingstep.map((row) => [String(row.sdkmessageprocessingstepid).toLowerCase(), row]));
   const norm = (value) => (value == null ? '' : String(value).toLowerCase());
   const sameFields = (row, expected) => Object.keys(expected).every((key) => norm(row[key]) === norm(expected[key]));
+  // A Solution step whose bare EventHandler named no exported plug-in type (eventHandlerId) resolves against the organization's
+  // rows: a serviceendpoint row makes it a service endpoint step, a plugintype row of a registered assembly a plug-in step;
+  // with neither it stays unsupported (handler unresolved).
+  const resolved = (step) => {
+    if (!step.eventHandlerId || step.serviceEndpointId || step.assemblyId) return step;
+    const endpoint = rowById(store, 'serviceendpoint', 'serviceendpointid', step.eventHandlerId);
+    const type = endpoint ? null : rowById(store, 'plugintype', 'plugintypeid', step.eventHandlerId);
+    const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', type?.pluginassemblyid);
+    if (!endpoint && !assembly) return step;
+    const next = endpoint ? { ...step, serviceEndpointId: String(endpoint.serviceendpointid).toLowerCase() }
+      : { ...step, typeId: String(type.plugintypeid).toLowerCase(), typeName: type.typename ?? null, assemblyId: String(assembly.pluginassemblyid).toLowerCase(), assemblyName: assembly.name ?? null };
+    return { ...next, unsupported: pluginUnsupported(next) };
+  };
   const steps = [], solutionIds = new Set();
-  for (const step of plugins?.steps ?? []) {
-    const id = String(step.id).toLowerCase();
+  for (const source of plugins?.steps ?? []) {
+    const step = resolved(source), id = String(step.id).toLowerCase();
     solutionIds.add(id);
     const row = rowOf(id);
     if (!row) continue;
@@ -423,7 +437,7 @@ function registrationWrite(api) {
 // Registered by dataverse-extensions.mjs. Seeds the messages and filters; the hooks validate the seven registration tables.
 export function install(api) {
   api.recordHooks.add('beforeWrite', registrationWrite(api));
-  api.registry?.register?.(triggerServiceEndpointCheck);
+  api.registry?.register?.(triggerServiceEndpointCheck(api));
   api.registry?.register?.({
     name: 'GetPluginCertificateInfo', kind: 'function', binding: 'unbound',
     signature: {
@@ -456,24 +470,32 @@ export function install(api) {
 
 // TriggerServiceEndpointCheck (P7): probes a web hook endpoint. Only a contract 8 (webhook) endpoint on a loopback URL is contacted
 // (the guard is shared with the webhook delivery in dataverse-webhooks.mjs); the probe is a POST answered with any 2xx.
-// unverified: LC-P7a, the probe body, the headers and the error texts.
+// Queue (2), Topic (5) and Queue Persistent (6) endpoints pass when a messaging provider (api.providers.messaging) maps them to
+// a bus entity; nothing is sent. unverified: LC-P7a, the probe body, the headers and the error texts; the 2/5/6 answer reuses
+// the web hook's success shape (204).
 const WEBHOOK_CONTRACT = 8;
-const triggerServiceEndpointCheck = {
+const BUS_CONTRACTS = new Set([2, 5, 6]);
+const triggerServiceEndpointCheck = (api) => ({
   name: 'TriggerServiceEndpointCheck', kind: 'action', binding: 'entity', entity: 'serviceendpoint',
   async handle(ctx) {
     const row = ctx.target?.row;
     if (!row) throw fail('The web service endpoint was not found.', '0x80040217');
+    const messaging = BUS_CONTRACTS.has(Number(row.contract)) ? messagingOf(api.providers?.messaging ?? null) : null;
+    if (messaging) {
+      if (!serviceEndpointTarget(messaging, row)) throw fail('The service endpoint has no providers.messaging.endpoints mapping in the simulator.', '0x80040203');
+      return { status: 204 };
+    }
     if (Number(row.contract) !== WEBHOOK_CONTRACT) throw fail('The endpoint check supports only web hook (contract 8) endpoints.', '0x80040203');
     if (!isLoopbackUrl(row.url)) throw fail('The endpoint check reaches only loopback URLs in the simulator.', '0x80040203');
     const url = new URL(String(row.url));
-    const response = await fetch(url, {
+    const response = await loopbackFetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-ms-dynamics-request-name': 'TriggerServiceEndpointCheck' },
       body: JSON.stringify({ MessageName: 'TriggerServiceEndpointCheck' }), signal: AbortSignal.timeout(60_000),
     }).catch(() => null);
     if (!response?.ok) throw fail('Endpoint unavailable', '0x80040265');
     return { status: 204 };
   },
-};
+});
 
 export function reset(api) {
   return api.store.transact(() => seed(api));
@@ -481,9 +503,38 @@ export function reset(api) {
 
 // Server-side extension that mirrors the Solution's plug-in registrations. Registered after the custom API extension, so the
 // custom API messages exist when the rows are written. plugins is solution-metadata's plugins (importSolutionPlugins output).
+// plugins may be a getter over the current sources (source-organization-extensions.mjs refresh). sync(api) reseeds inside the
+// caller's transaction and removes the Solution rows an earlier seed wrote (state.dataverse.sourceSeeded) whose registration
+// is gone from the sources; it returns { table: { added, changed, removed } }.
 export function solutionPluginExtension(plugins) {
-  const seedSolution = (api) => api.store.transact(() => seed(api, plugins));
-  return { name: 'dataverse-plugin-registration-solution', install: seedSolution, reset: seedSolution };
+  const pluginsOf = () => (typeof plugins === 'function' ? plugins() : plugins);
+  const sync = (api) => {
+    const { store } = api, current = pluginsOf();
+    const seeded = ((store.state.dataverse ??= {}).sourceSeeded ??= {});
+    const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase();
+    const rows = current ? solutionPluginRows(current, { organizationId: org }) : {};
+    const changes = {};
+    // Images before steps before types before assemblies, so no removed row is left pointing at a removed parent.
+    for (const logical of ['sdkmessageprocessingstepimage', 'sdkmessageprocessingstep', 'plugintype', 'pluginassembly']) {
+      const idColumn = `${logical}id`, key = `plugin:${logical}`, next = new Set((rows[logical] ?? []).map((row) => String(row[idColumn]).toLowerCase()));
+      const table = store.state.tables[logical] ?? [], present = new Map(table.map((row) => [String(row[idColumn]).toLowerCase(), row]));
+      const counts = { added: 0, changed: 0, removed: 0 };
+      for (let i = table.length - 1; i >= 0; i--) {
+        const id = String(table[i][idColumn]).toLowerCase();
+        if ((seeded[key] ?? []).includes(id) && !next.has(id)) { store.removeRow(logical, table, i); counts.removed += 1; }
+      }
+      for (const row of rows[logical] ?? []) {
+        const existing = present.get(String(row[idColumn]).toLowerCase());
+        if (!existing) counts.added += 1; else if (!isDeepStrictEqual(existing, row)) counts.changed += 1;
+      }
+      seeded[key] = [...next];
+      changes[logical] = counts;
+    }
+    seed(api, current ?? null);
+    return changes;
+  };
+  const seedSolution = (api) => api.store.transact(() => { sync(api); });
+  return { name: 'dataverse-plugin-registration-solution', install: seedSolution, reset: seedSolution, sync };
 }
 
 export const EXTENSION = { name: 'dataverse-plugin-registration', install, reset };

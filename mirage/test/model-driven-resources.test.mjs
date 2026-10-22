@@ -162,7 +162,9 @@ test('PCF overriding declarations remove stale executables, preserve unrelated c
     assert.deepEqual(rejected.pcf.controls.map(control => control.name), ['fx.Other']);
     assert.ok(bodies(rejected).includes('window.Other = true;')); assert.ok(bodies(rejected).includes('window.Events = true;'));
     assert.ok(!bodies(rejected).some(body => /window\.(?:Base|Override) =/.test(body)));
-    assert.ok(rejected.diagnostics.some(item => item.code === 'PCF_IMPORT_FAILED' && item.file === manifest));
+    // Diagnostics carry project-relative paths (<layer folder>/<path inside layer>), never absolute local paths.
+    assert.ok(rejected.diagnostics.some(item => item.code === 'PCF_IMPORT_FAILED'
+      && item.file === `${path.basename(override)}/Controls/different-folder/ControlManifest.xml`));
     const directRejected = await importCodeComponents([base, override].map(dir => ({ type: 'directory', dir })));
     assert.equal(directRejected.assets.size, 1, 'The Power Pages asset map also drops the superseded bundle.');
     const fixed = await load(base, override, recovered);

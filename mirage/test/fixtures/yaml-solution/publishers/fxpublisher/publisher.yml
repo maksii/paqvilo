@@ -1,0 +1,16 @@
+Publisher:
+  UniqueName: fxpublisher
+  LocalizedNames:
+    LocalizedName:
+      '@description': Fx Publisher
+      '@languagecode': '1033'
+  Descriptions:
+  EMailAddress:
+    '@xsi:nil': 'true'
+    '@xmlns:xsi': http://www.w3.org/2001/XMLSchema-instance
+  SupportingWebsiteUrl:
+    '@xsi:nil': 'true'
+    '@xmlns:xsi': http://www.w3.org/2001/XMLSchema-instance
+  CustomizationPrefix: x
+  CustomizationOptionValuePrefix: '10000'
+  Addresses:

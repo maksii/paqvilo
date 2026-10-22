@@ -413,7 +413,7 @@ export default async function dev(cfg, args) {
   args = { ...args, startup: progress };
   progress.phase('local setup');
   const { startSetupServer } = await import('../setup/server.mjs');
-  const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.siteName, sourceDir: cfg.sourceDir, portalUrl: cfg.origin } });
+  const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.catalogueSite ?? (cfg.mirage ? String(cfg.siteName).replace(/ Mirage$/, '') : cfg.siteName), command: cfg.mirage ? 'mirage dev' : 'lense dev', sourceDir: cfg.sourceDir, portalUrl: cfg.origin } });
   console.log(`setup       ${setup.url}`);
   try { return await develop(cfg, args, setup); }
   finally { progress.close(); await setup.close(); }

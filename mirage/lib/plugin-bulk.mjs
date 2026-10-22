@@ -6,7 +6,7 @@ const uuid=/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail=(message,code='LocalPluginBulkUnsupported',status=501)=>{throw new DataError(message,status,code);};
 /** Explicit standard-table source capability only. Mixed single/multiple source
  * stage ordering needs native evidence; this adapter never silently reorders it. */
-export function executeBulkRecords({store,entity,operation,targets,identity,authorize,responseToken}){
+export function executeBulkRecords({store,entity,operation,targets,identity,authorize,responseToken,write}){
  const mapping=store.resolveMapping(entity),primary=mapping.idColumn,update=operation==='updatemultiple',single=update?'update':'create';
  if(!['createmultiple','updatemultiple'].includes(operation)||!Array.isArray(targets)||!targets.length||targets.length>1000)fail('Bulk SDK targets must contain 1-1000 records of one supported message.');
  if(store.pluginPipeline&&store.pluginPipelineActive({entity:mapping.logicalName,operation:single}))fail('Mixed single-record and bulk registrations require source-qualified native merged-pipeline ordering.');
@@ -34,7 +34,7 @@ export function executeBulkRecords({store,entity,operation,targets,identity,auth
     authorize(single,update?{...current,...values}:values,current);
     return {target,values};
   });
-  const rows=writes.map(({target,values})=>update?store.updateRecord(entity,target.id,values,identity,{coerce:true}):store.createRecord(entity,{...values,...(target.id!==emptyId?{[primary]:target.id}:{})},identity,{coerce:true}));
+  const rows=writes.map(({target,values})=>{const data=update?values:{...values,...(target.id!==emptyId?{[primary]:target.id}:{})};return write?write(update,target.id,data):update?store.updateRecord(entity,target.id,data,identity,{coerce:true}):store.createRecord(entity,data,identity,{coerce:true});});
   holder.bulkIds=rows.map(row=>row[primary]);phase(40,rows);return {rows,ids:holder.bulkIds};
  }finally{store.pluginInTransaction=inherited;}
 }

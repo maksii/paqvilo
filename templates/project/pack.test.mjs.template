@@ -5,7 +5,10 @@ import pack from '../pack.mjs';
 import { mirage } from '{{support}}';
 
 test('pack contract and empty preset work without portal sources', async () => {
-  assert.equal(validatePack(pack), pack);
+  // validatePack returns a frozen snapshot of the pack's exports: same id and keys, safe from later changes.
+  const validated = validatePack(pack);
+  assert.equal(validated.id, pack.id);
+  assert.deepEqual(Object.keys(validated), Object.keys(pack));
   const store = new mirage.DataStore();
   await store.applyPreset('{{pack}}-empty');
   assert.deepEqual(store.snapshot().tables, {});

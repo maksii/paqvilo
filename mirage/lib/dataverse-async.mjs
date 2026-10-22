@@ -7,12 +7,12 @@
 //  - A custom API call with Prefer: respond-async is a background operation (backgroundoperations row): 202 with its
 //    status monitor location. The status monitor, GET or DELETE on /api/backgroundoperation/<id>, is outside /api/data.
 // Invented data only.
-import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { fromBulkDeleteJson, toFetchXml } from "./dataverse-soap-query.mjs";
 import { dataverseIdentity, ownerColumns, privilegeDeniedError } from "./dataverse-security.mjs";
 import { dataverseError, parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
-import { isLoopbackUrl } from "./dataverse-webhooks.mjs";
+import { isLoopbackUrl, loopbackFetch } from "./dataverse-webhooks.mjs";
+import { createScheduler, systemIds } from "./runtime-clock.mjs";
 
 const BULK_DELETE_TYPE = 13; // asyncoperation.operationtype: Bulk Delete
 // asyncoperation.operationtype: Bulk Duplicate Detection (Learn, system job reference). Used by dataverse-duplicates.mjs.
@@ -101,7 +101,7 @@ function seedMappings(store) {
         message: { dataverseType: "nvarchar" }, friendlymessage: { dataverseType: "nvarchar" }, errorcode: { dataverseType: "int" },
         startedon: { dataverseType: "datetime" }, completedon: { dataverseType: "datetime" }, postponeuntil: { dataverseType: "datetime" },
         recurrencepattern: { dataverseType: "nvarchar" }, recurrencestarttime: { dataverseType: "datetime" },
-        submission: { dataverseType: "nvarchar" }, regardingobjectid: { dataverseType: "lookup" }, ...user,
+        submission: { dataverseType: "nvarchar" }, data: { dataverseType: "nvarchar" }, regardingobjectid: { dataverseType: "lookup" }, ...user,
       },
     },
     bulkdeleteoperation: {
@@ -228,15 +228,37 @@ function identityFor(store, user) {
   return { admin: true, id: user.systemuserid, systemUserId: user.systemuserid, businessUnitId: identityData.businessUnitId, dataverse };
 }
 
-// Default scheduler: the next turn of the event loop, or after delayMs (unref'd so it never holds the process open).
-const later = (task, delayMs = 0) => {
-  if (delayMs > 0) setTimeout(task, delayMs).unref();
-  else setImmediate(task);
+// The organization's scheduler (runtime-clock.mjs) clamps long delays, tracks its tasks and is closed with the API. An API
+// object without one (a direct install in a test) gets its own, keyed by the API: several simulators can share a process.
+// The organization's scheduler is the store's shared one (committed jobs and flow runs use it too): an API keeps the handles
+// it scheduled there, so closing it cancels only its own tasks.
+const fallbackSchedulers = new WeakMap(), ownHandles = new WeakMap(), closedApis = new WeakSet();
+const schedulerOf = (api) => {
+  if (api.scheduler) return api.scheduler;
+  if (!fallbackSchedulers.has(api)) fallbackSchedulers.set(api, createScheduler({ clock: api.clock ?? Date.now }));
+  return fallbackSchedulers.get(api);
 };
+/** Default schedule: the next turn of the event loop, or after delayMs on an unref'd timer, through the API's scheduler. */
+export function defaultSchedule(api, task, delayMs = 0) {
+  if (closedApis.has(api)) return;
+  const scheduler = schedulerOf(api);
+  if (scheduler === fallbackSchedulers.get(api)) { scheduler.schedule(task, delayMs, { name: "dataverse-async" }); return; }
+  if (!ownHandles.has(api)) ownHandles.set(api, new Set());
+  const handles = ownHandles.get(api);
+  const handle = scheduler.schedule(() => { handles.delete(handle); return task(); }, delayMs, { name: "dataverse-async" });
+  if (handle !== null) handles.add(handle);
+}
+/** Stops the API's tasks: its own fallback scheduler is closed, its tasks on a shared one are cancelled; nothing is scheduled again. */
+export function close(api) {
+  closedApis.add(api);
+  fallbackSchedulers.get(api)?.close();
+  for (const handle of ownHandles.get(api) ?? []) api.scheduler?.cancel(handle);
+  ownHandles.delete(api);
+}
 // Milliseconds until a postponed job's time; 0 when it is not postponed or already due.
 const waitFor = (now, postponeuntil) => (postponeuntil ? Math.max(0, Date.parse(postponeuntil) - now) : 0);
 // ponytail: a plain POST with no retry; a failed callback is logged and the operation keeps its result.
-const postCallback = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+const postCallback = (url, body) => loopbackFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
 
 /**
  * Registers the BulkDelete action, the background operation call path and the system-table write rules.
@@ -252,10 +274,11 @@ export function reset(api) {
   return api.store.transact(() => seedMappings(api.store));
 }
 
-export async function install(api, { schedule = later, pageSize = 5000, notify = postCallback } = {}) {
+export async function install(api, { schedule = (task, delayMs) => defaultSchedule(api, task, delayMs), pageSize = 5000, notify = postCallback } = {}) {
   const { store } = api;
   seedMappings(store);
   const stamp = () => new Date(api.clock()).toISOString();
+  const uuid = () => (api.ids ?? systemIds).uuid();
   const write = (fn) => api.change(() => store.transact(fn));
   const setRow = (logical, id, patch) => write(() => {
     const row = rowOf(store, logical, id);
@@ -275,7 +298,7 @@ export async function install(api, { schedule = later, pageSize = 5000, notify =
   // One Ready bulk delete job and its operation row. The submission (QuerySet and submitter ids, no tokens) is kept on the
   // job row, so the job runs again after a restart.
   async function enqueue(submission, { name, postponeuntil = null, recurrencepattern = null, recurrencestarttime = null }) {
-    const jobId = randomUUID();
+    const jobId = uuid();
     const owner = ownerColumns(store, { id: submission.callerId, logical_name: "systemuser" });
     await write(() => {
       store.state.tables.asyncoperation.push({
@@ -283,7 +306,7 @@ export async function install(api, { schedule = later, pageSize = 5000, notify =
         postponeuntil, recurrencepattern, recurrencestarttime, submission: JSON.stringify(submission), ...owner,
       });
       store.state.tables.bulkdeleteoperation.push({
-        bulkdeleteoperationid: randomUUID(), asyncoperationid: jobId, name, successcount: 0, failurecount: 0,
+        bulkdeleteoperationid: uuid(), asyncoperationid: jobId, name, successcount: 0, failurecount: 0,
         isrecurring: Boolean(recurrencepattern), ...owner,
       });
     });
@@ -296,7 +319,7 @@ export async function install(api, { schedule = later, pageSize = 5000, notify =
   // does not run it again (it stays Ready); a postponed or recurring system job is not modelled.
   // columns: extra asyncoperation values (dataverse-workflows.mjs). A work() error with jobStatus 32 ends the job Canceled.
   api.systemJob = async ({ name, operationtype, regardingobjectid = null, callerId, columns = {} }, work) => {
-    const jobId = randomUUID();
+    const jobId = uuid();
     const owner = ownerColumns(store, { id: callerId, logical_name: "systemuser" });
     await write(() => {
       store.state.tables.asyncoperation.push({
@@ -366,7 +389,7 @@ export async function install(api, { schedule = later, pageSize = 5000, notify =
     await write(() => {
       const op = jobOperation(store, jobId);
       store.state.tables.bulkdeletefailure.push({
-        bulkdeletefailureid: randomUUID(), name: `${mapping.logicalName} ${id}`, errornumber: errorNumber(error),
+        bulkdeletefailureid: uuid(), name: `${mapping.logicalName} ${id}`, errornumber: errorNumber(error),
         errordescription: error.message, asyncoperationid: jobId, bulkdeleteoperationid: op?.bulkdeleteoperationid ?? null,
         regardingobjectid: { id, logical_name: mapping.logicalName }, orderedqueryindex: queryIndex,
       });
@@ -382,7 +405,7 @@ export async function install(api, { schedule = later, pageSize = 5000, notify =
     if (wait > 0) return defer(() => start(jobId), wait);
     const submission = JSON.parse(row.submission);
     const token = {};
-    const requestId = randomUUID();
+    const requestId = uuid();
     active.set(jobId, token);
     // A cancel or pause request moves the job to Canceling or Pausing, so the run stops at its next row.
     const live = () => {
@@ -587,7 +610,7 @@ export async function install(api, { schedule = later, pageSize = 5000, notify =
       const mapping = store.resolveMapping("backgroundoperation");
       api.principals.authorize({ user: call.user, entity: "backgroundoperation", operation: "read", mapping });
       api.principals.authorize({ user: call.user, entity: "backgroundoperation", operation: "write", mapping });
-      const id = randomUUID();
+      const id = uuid();
       const owner = ownerColumns(store, { id: call.caller.systemuserid, logical_name: "systemuser" });
       const location = monitorOf(call.origin, id);
       await write(() => {

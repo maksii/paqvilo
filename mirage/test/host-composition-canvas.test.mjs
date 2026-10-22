@@ -1,0 +1,85 @@
+// Project `canvas` configuration (canvas-source.mjs canvasSettings): enabled false unmounts the /_apps/canvas/ surface and
+// reports it disabled; canvas.sources adds project apps to the inventory; a missing path is CANVAS_SOURCE_MISSING.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createSimulator } from '../api.mjs';
+
+const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
+
+async function start(t, canvas) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const [relative, content] of Object.entries({
+    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'apps/fx_invented/Src/HomeScreen.pa.yaml': HOME,
+  })) {
+    await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+    await fs.writeFile(path.join(root, relative), content);
+  }
+  const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
+    simulation: { level: 'dry-run' }, canvas, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
+  t.after(() => sim.close());
+  return sim;
+}
+
+test('canvas.enabled false unmounts /_apps/canvas/ and reports the surface disabled', async t => {
+  const sim = await start(t, { enabled: false });
+  const response = await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } });
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).error.code, 'CanvasAppsDisabled');
+  assert.equal(sim.state().capabilities.canvas, 'disabled');
+  assert.ok(sim.state().diagnostics.some(entry => entry.code === 'CANVAS_DISABLED'));
+});
+
+test('canvas.sources adds a project canvas app to the inventory', async t => {
+  const sim = await start(t, { sources: ['apps/fx_invented'] });
+  const listing = await (await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } })).json();
+  assert.deepEqual(listing.apps.map(app => [app.uniqueName, app.screens]), [['fx_invented', 1]]);
+  assert.equal(sim.state().capabilities.canvas, 'behaviour');
+  const report = await sim.preflight();
+  assert.ok(report.modules.some(record => record.name === 'canvasapp:fx_invented' && record.level === 'behaviour'));
+  // A project canvas app gets the canvas:app row a Solution app gets, and the rendering boundary row.
+  const rows = Object.fromEntries(report.requirements.filter(row => row.kind === 'canvas').map(row => [row.id, row.status]));
+  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'placeholder' });
+  // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
+  const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
+  assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);
+});
+
+test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing preflight requirement', async t => {
+  const sim = await start(t, { sources: ['apps/does-not-exist.msapp'] });
+  assert.ok(sim.state().diagnostics.some(entry => entry.code === 'CANVAS_SOURCE_MISSING' && entry.source === 'apps/does-not-exist.msapp'));
+  const report = await sim.preflight({ scenario: { id: 'fx-canvas', requires: ['canvas-source:*'] } });
+  const row = report.requirements.find(item => item.id === 'canvas-source:apps/does-not-exist.msapp');
+  assert.equal(row.status, 'missing');
+  assert.equal(row.reason, 'CANVAS_SOURCE_MISSING');
+  assert.equal(row.blocking, true);
+});
+
+test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-pp-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const [relative, content] of Object.entries({
+    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'portal/website.yml': 'adx_websiteid: fixture\nadx_name: Invented site',
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true',
+  })) {
+    await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+    await fs.writeFile(path.join(root, relative), content);
+  }
+  const sim = await createSimulator({ sourceDir: path.join(root, 'portal'), solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
+    simulation: { level: 'dry-run' }, canvas: { enabled: false } });
+  t.after(() => sim.close());
+  for (const suffix of ['/_apps/canvas/', '/_apps/canvas/x_app']) {
+    const response = await fetch(sim.url + suffix, { headers: { accept: 'application/json' } });
+    assert.equal(response.status, 404, suffix);
+    assert.equal((await response.json()).error.code, 'CanvasAppsDisabled');
+  }
+  const status = await (await fetch(sim.url + '/_sim/api/status')).json();
+  assert.equal(status.capabilities.canvas, 'disabled');
+  const dashboard = await (await fetch(sim.url + '/_sim/api/dashboard')).json();
+  assert.equal(dashboard.nodes.find(node => node.id === 'app:canvas')?.status, 'disabled');
+});

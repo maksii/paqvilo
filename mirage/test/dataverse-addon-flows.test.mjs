@@ -7,6 +7,8 @@ import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
 import { EXTENSIONS } from "../lib/dataverse-extensions.mjs";
 import { addonHandlerExtension, addonHandlers } from "../lib/dataverse-addon-common.mjs";
+import { install } from "../lib/dataverse-addon-flows.mjs";
+import { createFlowRunStore } from "../lib/flow-runs.mjs";
 
 const APP_ID = "66666666-6666-6666-6666-666666666666";
 const SECRET_VAR = "PAQVILO_FLOWS_SECRET";
@@ -208,5 +210,31 @@ describe("desktop flow messages over HTTP", () => {
     const empty = await call("flowmachinegroups", G.empty, "DeleteFlowMachineGroup");
     assert.equal(empty.status, 204);
     assert.equal(rowOf("flowmachinegroup", "flowmachinegroupid", G.empty), undefined);
+  });
+});
+
+describe("cancel all cloud flow runs is one write", () => {
+  it("a fault after the flow run store cancels nothing: the cancel rolls back with the row write", async () => {
+    const state = emptyState();
+    state.tables.workflow = [{ workflowid: W.runs, name: "Invented flow with runs", statecode: 1, statuscode: 2 }];
+    state.tables.flowrun = [{ flowrunid: id(71), workflowid: W.runs, name: "Invented open row", status: "Running" }];
+    const store = await new DataStore({ state }).init();
+    const flowRuns = createFlowRunStore({ store, diagnostic: () => {} });
+    const run = await flowRuns.start({ processId: W.runs });
+    // The second step cannot read a row: the poisoned row is appended after the flow run cancel, so the row loop throws.
+    const cancelAll = flowRuns.cancelAll;
+    flowRuns.cancelAll = async (processId) => {
+      const count = await cancelAll(processId);
+      const poisoned = { flowrunid: id(72), name: "Invented poisoned row", status: "Running" };
+      Object.defineProperty(poisoned, "workflowid", { enumerable: true, get() { throw new Error("Invented fault"); } });
+      store.state.tables.flowrun.push(poisoned);
+      return count;
+    };
+    const registered = new Map();
+    const api = { store, clock: () => 0, change: (fn) => fn(), flowRuns, registry: { register: (spec) => registered.set(spec.name, spec) } };
+    install(api);
+    await assert.rejects(registered.get("CancelAllCloudFlowRuns").handle({ target: { id: W.runs } }), /Invented fault/);
+    assert.equal(flowRuns.get(run.id).status, "Running", "the flow run cancel rolled back");
+    assert.equal(store.state.tables.flowrun.find((row) => row.flowrunid === id(71)).status, "Running");
   });
 });

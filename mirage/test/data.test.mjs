@@ -22,7 +22,8 @@ test('enforced unknown navigation bindings reject create and plugin updates atom
     () => store.update('contacts', 'c1', { firstname: 'Synthetic', 'unknown@odata.bind': '/accounts(a1)' }, user),
   ]) {
     const before = store.snapshot();
-    await assert.rejects(write(), error => error.code === 'MissingRelationship' && error.status === 400);
+    // OData undeclared navigation property (0x80048d19), refused at normalizeRecord before any write.
+    await assert.rejects(write(), error => error.code === 'InvalidLookup' && error.details?.innerCode === '0x80048d19' && error.status === 400);
     assert.deepEqual(store.snapshot(), before);
   }
 });
@@ -928,7 +929,8 @@ test("lookup bindings resolve explicit entity mappings and presets are persisten
     {
       firstname: "X",
       lastname: "Y",
-      "parentcustomerid@odata.bind": "/accounts(a1)",
+      // The declared navigation (the column name is not a navigation once a relationship covers it).
+      "account@odata.bind": "/accounts(a1)",
     },
     user,
   );

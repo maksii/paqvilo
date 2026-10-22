@@ -188,7 +188,16 @@ export function compileCosmosQuery(text, parameters = {}) {
       default: throw unsupported();
     }
   };
-  return (documents) => {
+  // The JSON paths the query compares (WHERE and ORDER BY), for the caller's column-security operand rule.
+  const operands = [];
+  const collect = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.path) operands.push(node.path);
+    for (const value of Object.values(node)) if (value && typeof value === "object") (Array.isArray(value) ? value : [value]).forEach(collect);
+  };
+  collect(where);
+  order.forEach(({ value }) => collect(value));
+  const run = (documents) => {
     let rows = documents.filter((document) => !where || evaluate(where, document) === true);
     if (order.length) rows.sort((left, right) => {
       for (const item of order) {
@@ -204,4 +213,6 @@ export function compileCosmosQuery(text, parameters = {}) {
     if (top != null) rows = rows.slice(0, top);
     return rows.slice(offset, limit == null ? undefined : offset + limit);
   };
+  run.operands = operands;
+  return run;
 }

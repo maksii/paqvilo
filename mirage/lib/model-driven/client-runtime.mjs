@@ -1,5 +1,7 @@
 // A bounded client API for explicitly trusted, locally exported Solution scripts.
 // Scripts execute through ordinary same-origin script elements; no expressions are evaluated.
+import { ANONYMOUS_STAFF_CONTEXT, staffFormatting } from './pcf-runtime.mjs';
+
 const loadedLibraries = new Map();
 const normalizeLibrary = value => String(value ?? '').replace(/^\$webresource:/i, '');
 const blockedNames = new Set(['__proto__', 'prototype', 'constructor']);
@@ -77,6 +79,161 @@ function writeData(data, table, tables) {
   return values;
 }
 
+/** A trusted, imported HTML web resource for a page destination, else the reason it cannot open. */
+export function webResourcePage(clientExtensions, name) {
+  const wanted = String(name ?? '').replace(/^\$webresource:/i, '');
+  const resource = clientExtensions?.resources?.find(entry => entry.type === 'page' && entry.name.toLowerCase() === wanted.toLowerCase());
+  if (!resource) return { reason: `The HTML web resource ${wanted} is not imported from the selected Solution sources (MD_NAV_WEBRESOURCE).` };
+  if (clientExtensions.trusted !== true) return { reason: 'Trust local Solution client extensions in configuration to open HTML web resource pages.' };
+  return { url: resource.url, resource };
+}
+
+const API_ROOT = '/api/data/v9.2';
+const bareId = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
+const executeError = (message, status, code) => Object.assign(new Error(message), { status, ...(code !== undefined ? { code } : {}),
+  ...(/^0x[\da-f]+$/i.test(String(code ?? '')) ? { errorCode: Number.parseInt(code, 16) } : {}) });
+const boundaryOf = value => /boundary=("?)([^";\r\n]+)\1/i.exec(String(value ?? ''))?.[2];
+/** The embedded responses of a $batch answer, split on the declared boundaries only (a nested change set recurses):
+ * each is "HTTP/1.1 <status> <text>", its headers, a blank line and its body. */
+export function batchResponses(body, boundary) {
+  if (!boundary) return [];
+  const result = [];
+  for (const chunk of body.split(`--${boundary}`).slice(1)) {
+    if (chunk.startsWith('--')) break;
+    const part = chunk.replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+    const blank = /\r?\n\r?\n/.exec(part);
+    const head = blank ? part.slice(0, blank.index) : part, rest = blank ? part.slice(blank.index + blank[0].length) : '';
+    const nested = boundaryOf(/^content-type:([^\r\n]*)/im.exec(head)?.[1]);
+    if (nested) { result.push(...batchResponses(rest, nested)); continue; }
+    const match = /^HTTP\/1\.1 (\d{3})([^\r\n]*)(?:\r?\n([\s\S]*?))?(?:\r?\n\r?\n([\s\S]*))?$/.exec(rest);
+    if (match) result.push({ status: Number(match[1]), statusText: match[2].trim(),
+      headers: Object.fromEntries(String(match[3] ?? '').split(/\r?\n/).filter(Boolean).map(line => [line.slice(0, line.indexOf(':')).trim().toLowerCase(), line.slice(line.indexOf(':') + 1).trim()])), body: match[4] ?? '' });
+  }
+  return result;
+}
+
+/** Xrm.WebApi.execute/executeMultiple (Learn: xrm-webapi/online/execute, executemultiple) over the organization's Web
+ * API through host.webApi({ method, path, headers, body }) → { status, headers, body }: actions (operationType 0) POST,
+ * functions (1) GET with parameter aliases, CRUD (2) record requests; a nested array in executeMultiple is one $batch
+ * change set (all or nothing). Unknown operations answer the organization's own 404 error. */
+export function createWebApiExecute(host, assertLive = () => {}) {
+  const tableOf = entity => { const table = host.tables?.[entity]; if (!table?.entitySet) throw executeError(`Xrm.WebApi.execute: table ${entity} is not imported.`, 400); return table; };
+  const recordPath = reference => { if (!reference?.entityType || !reference.id) throw executeError('Xrm.WebApi.execute needs an entity reference with entityType and id.', 400); return `${tableOf(reference.entityType).entitySet}(${bareId(reference.id)})`; };
+  // An { entityType, id } reference becomes the typed entity the Web API expects; other values pass unchanged.
+  const actionValue = (value, type) => type?.structuralProperty === 5 && value?.entityType && value.id && !value['@odata.type']
+    ? { '@odata.type': `Microsoft.Dynamics.CRM.${value.entityType}`, [tableOf(value.entityType).idColumn]: bareId(value.id) } : value;
+  const functionValue = (value, type) => {
+    if (value === null || value === undefined) return 'null';
+    if (type?.structuralProperty === 3) {
+      const name = typeof value === 'number' ? type.enumProperties?.find(entry => entry.value === value)?.name : value;
+      if (name === undefined) throw executeError(`Xrm.WebApi.execute: ${value} is not a member of ${type.typeName}.`, 400);
+      return `${type.typeName}'${name}'`;
+    }
+    if (type?.structuralProperty === 5 && typeof value === 'object') {
+      const entity = value.entityType ?? String(value['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
+      const id = value.id ?? (entity && host.tables?.[entity] ? value[host.tables[entity].idColumn] : undefined);
+      return JSON.stringify(entity && id ? { '@odata.id': recordPath({ entityType: entity, id }) } : value);
+    }
+    if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+    if (value instanceof Date) return value.toISOString();
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  };
+  const payloadOf = request => { if (!request.payload || typeof request.payload !== 'object' || Array.isArray(request.payload)) throw executeError('Xrm.WebApi.execute Create and Update need a payload object.', 400); return request.payload; };
+  function toHttp(request) {
+    const meta = typeof request?.getMetadata === 'function' ? request.getMetadata() : null;
+    if (!meta || typeof meta.operationName !== 'string' || !meta.operationName || ![0, 1, 2].includes(meta.operationType)) throw executeError('Xrm.WebApi.execute requires a request whose getMetadata() gives operationName and operationType 0, 1 or 2.', 400);
+    const { operationName: name, operationType: type, boundParameter, parameterTypes = {} } = meta;
+    const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (type === 2) {
+      if (name === 'Create') return { method: 'POST', path: `${API_ROOT}/${tableOf(request.etn).entitySet}`, ...json(payloadOf(request)) };
+      if (name === 'Retrieve') return { method: 'GET', path: `${API_ROOT}/${recordPath(request.entityReference)}${request.columns?.length ? `?$select=${request.columns.map(encodeURIComponent).join(',')}` : ''}` };
+      if (name === 'Update') return { method: 'PATCH', path: `${API_ROOT}/${recordPath({ entityType: request.etn, id: request.id })}`, ...json(payloadOf(request)) };
+      if (name === 'Delete') return { method: 'DELETE', path: `${API_ROOT}/${recordPath(request.entityReference)}` };
+      if (name === 'Associate' || name === 'Disassociate') {
+        if (typeof request.relationship !== 'string' || !/^[A-Za-z_]\w*$/.test(request.relationship)) throw executeError(`Xrm.WebApi.execute ${name} needs a relationship name.`, 400);
+        const target = `${API_ROOT}/${recordPath(request.target)}/${request.relationship}`;
+        if (name === 'Disassociate') return { method: 'DELETE', path: `${target}(${bareId(request.relatedEntityId)})/$ref` };
+        if (!Array.isArray(request.relatedEntities) || request.relatedEntities.length !== 1) throw executeError('Xrm.WebApi.execute Associate sends one related record per request locally; use executeMultiple for several.', 400);
+        return { method: 'POST', path: `${target}/$ref`, ...json({ '@odata.id': `${API_ROOT}/${recordPath(request.relatedEntities[0])}` }) };
+      }
+      throw executeError(`Xrm.WebApi.execute does not know the CRUD operation ${name}.`, 400);
+    }
+    if (!/^[A-Za-z_][\w.]*$/.test(name)) throw executeError('Xrm.WebApi.execute operation name is invalid.', 400);
+    const bound = boundParameter === 'entity' ? `${recordPath(request.entity)}/Microsoft.Dynamics.CRM.${name}` : boundParameter == null ? name : null;
+    if (!bound) throw executeError(`Xrm.WebApi.execute bound parameter ${boundParameter} is not supported; use null or entity.`, 400);
+    const parameters = Object.keys(parameterTypes).filter(key => key !== boundParameter && request[key] !== undefined);
+    if (type === 0) return { method: 'POST', path: `${API_ROOT}/${bound}`, ...json(Object.fromEntries(parameters.map(key => [key, actionValue(request[key], parameterTypes[key])]))) };
+    const aliases = parameters.map((key, index) => [key, `@p${index + 1}`]);
+    const query = aliases.map(([key, alias]) => `${alias}=${encodeURIComponent(functionValue(request[key], parameterTypes[key]))}`).join('&');
+    return { method: 'GET', path: `${API_ROOT}/${bound}(${aliases.map(([key, alias]) => `${key}=${alias}`).join(',')})${query ? `?${query}` : ''}` };
+  }
+  const response = (http, result) => {
+    const text = typeof result.body === 'string' ? result.body : result.body == null ? '' : JSON.stringify(result.body);
+    if (result.status >= 400) {
+      let error; try { error = JSON.parse(text).error; } catch { error = null; }
+      throw executeError(error?.message ?? `The Web API answered ${result.status}.`, result.status, error?.code);
+    }
+    return { ok: true, status: result.status, statusText: result.statusText ?? '', headers: result.headers ?? {}, url: http.path, type: 'json',
+      json: async () => text ? JSON.parse(text) : null, text: async () => text };
+  };
+  const send = async http => { assertLive(); const result = await host.webApi(http); assertLive(); return result; };
+  async function execute(request) {
+    if (typeof host.webApi !== 'function') throw executeError('Xrm.WebApi.execute needs the host Web API bridge.', 501, 'WebApiExecuteUnavailable');
+    const http = toHttp(request);
+    return response(http, await send(http));
+  }
+  async function changeSet(requests) {
+    const http = requests.map(toHttp), batch = `batch_${crypto.randomUUID()}`, set = `changeset_${crypto.randomUUID()}`;
+    const parts = http.map((item, index) => [`--${set}`, 'Content-Type: application/http', 'Content-Transfer-Encoding: binary', `Content-ID: ${index + 1}`, '',
+      `${item.method} ${item.path} HTTP/1.1`, ...Object.entries(item.headers ?? {}).map(([name, value]) => `${name}: ${value}`), '', item.body ?? ''].join('\r\n'));
+    const body = [`--${batch}`, `Content-Type: multipart/mixed; boundary=${set}`, '', ...parts, `--${set}--`, `--${batch}--`, ''].join('\r\n');
+    const result = await send({ method: 'POST', path: `${API_ROOT}/$batch`, headers: { 'content-type': `multipart/mixed; boundary=${batch}` }, body });
+    const contentType = Object.entries(result.headers ?? {}).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+    const responses = batchResponses(String(result.body ?? ''), boundaryOf(contentType) ?? /^\s*--([^\r\n]+)/.exec(String(result.body ?? ''))?.[1]);
+    // A failed change set answers the failing request's error (Learn: executeMultiple rejects with that error).
+    const failed = responses.find(item => item.status >= 400) ?? (result.status >= 400 ? result : null);
+    if (failed) response({ path: `${API_ROOT}/$batch` }, failed);
+    return responses.map((item, index) => response(http[index], item));
+  }
+  async function executeMultiple(requests) {
+    if (typeof host.webApi !== 'function') throw executeError('Xrm.WebApi.executeMultiple needs the host Web API bridge.', 501, 'WebApiExecuteUnavailable');
+    if (!Array.isArray(requests) || !requests.length || requests.length > 1000) throw executeError('Xrm.WebApi.executeMultiple requires an array of 1 to 1000 requests.', 400);
+    const results = [];
+    // ponytail: top-level requests run one after another (native sends one $batch; each is independent there too).
+    for (const item of requests) results.push(...Array.isArray(item) ? await changeSet(item) : [await execute(item)]);
+    return results;
+  }
+  return { execute, executeMultiple, toHttp };
+}
+
+/** Validated Xrm.Navigation.navigateTo input (Learn: xrm-navigation/navigateto). entityrecord, entitylist and
+ * webresource pages open inline (target 1) or in a dialog (target 2, position 1 center or 2 side); a custom page (Learn
+ * navigateTo "custom": name, optional entityName and recordId, read in the page with Param) opens the headless canvas
+ * host of the canvas app with that logical name (the shell checks it exists); a dashboard page opens one of the app's Solution dashboards
+ * (`dashboards`, the catalogue app's list; without dashboardId its first, Learn: "the app navigates to the default
+ * dashboard") and rejects with DashboardPageUnsupported when the sources hold no such dashboard. */
+export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dashboards = []) {
+  const type = pageInput?.pageType;
+  if (type === 'custom') {
+    if (typeof pageInput.name !== 'string' || !pageInput.name.trim()) throw new Error('navigateTo needs the logical name of the custom page in name.');
+    // Learn ("Navigate to a custom page using client API"): "The recordId parameter must be a GUID".
+    if (pageInput.recordId !== undefined && !/^{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}?$/i.test(String(pageInput.recordId))) throw new Error('navigateTo: the custom page recordId must be a GUID.');
+  }
+  const dashboard = type === 'dashboard' && (pageInput.dashboardId ? dashboards.find(candidate => candidate.id === bareId(pageInput.dashboardId)) : dashboards[0]);
+  if (type === 'dashboard' && !dashboard) throw Object.assign(new Error(`Dashboard ${pageInput.dashboardId || '(default)'} is not in this app's Solution sources.`), { code: 'DashboardPageUnsupported' });
+  if (!['entityrecord', 'entitylist', 'webresource', 'dashboard', 'custom'].includes(type)) throw new Error('navigateTo needs pageType entityrecord, entitylist, webresource, dashboard or custom.');
+  if (!['webresource', 'dashboard', 'custom'].includes(type) && !Object.hasOwn(tables, pageInput.entityName ?? '')) throw new Error(`navigateTo: table ${pageInput.entityName ?? ''} is not imported.`);
+  if (type === 'webresource' && (typeof pageInput.webresourceName !== 'string' || !pageInput.webresourceName)) throw new Error('navigateTo needs a webresourceName for a web resource page.');
+  const options = navigationOptions ?? {};
+  if (![undefined, 1, 2].includes(options.target) || ![undefined, 1, 2].includes(options.position)) throw new Error('navigateTo target must be 1 (inline) or 2 (dialog) and position 1 (center) or 2 (side).');
+  const input = type === 'entityrecord' ? { pageType: type, entityName: pageInput.entityName, ...(pageInput.entityId ? { entityId: bareId(pageInput.entityId) } : {}), ...(pageInput.formId ? { formId: bareId(pageInput.formId) } : {}), ...(pageInput.data ? { data: pageInput.data } : {}) }
+    : type === 'entitylist' ? { pageType: type, entityName: pageInput.entityName, ...(pageInput.viewId ? { viewId: bareId(pageInput.viewId) } : {}) }
+      : type === 'dashboard' ? { pageType: type, dashboardId: dashboard.id }
+      : type === 'custom' ? { pageType: type, name: pageInput.name.trim(), ...(pageInput.entityName ? { entityName: String(pageInput.entityName) } : {}), ...(pageInput.recordId !== undefined ? { recordId: bareId(pageInput.recordId) } : {}) }
+      : { pageType: type, webresourceName: pageInput.webresourceName, ...(pageInput.data !== undefined ? { data: String(pageInput.data) } : {}) };
+  return [input, { target: options.target ?? 1, position: options.position ?? 1, ...(options.width !== undefined ? { width: options.width } : {}), ...(options.height !== undefined ? { height: options.height } : {}), ...(options.title ? { title: String(options.title) } : {}) }];
+}
+
 export function createFormClientRuntime(host) {
   let live = true, depth = 0, saving = false;
   const activeEvents = new Map();
@@ -95,7 +252,10 @@ export function createFormClientRuntime(host) {
     if (field.type === 'lookup') return [{ id: `{${String(value.id ?? value).replace(/[{}]/g, '')}}`, name: value.name ?? '', entityType: value.entity ?? value.logicalName ?? field.targets?.[0] }];
     return value;
   };
-  const attributes = Object.values(host.table.fields).map(field => {
+  // Learn (formContext.data.entity.attributes): only columns added to the form are available. The form's bindings
+  // (body, header, footer) are host.form.attributes; a form without them exposes its controls' columns.
+  const formNames = host.form?.attributes ?? [...new Set(host.controlNames().map(name => host.controlField(name)).filter(Boolean))];
+  const attributes = formNames.map(name => host.table.fields[name]).filter(Boolean).map(field => {
     const name = field.name;
     return client({ getName: () => name, getValue: () => clientValue(name, fieldValue(name)), getInitialValue: () => clientValue(name, initial[name]),
       setValue: value => { assertLive(); const next = field.type === 'date' && value instanceof Date ? value.toISOString() : field.type === 'lookup' && Array.isArray(value) ? value.length ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name } : null : value; host.write(name, next); },
@@ -110,7 +270,7 @@ export function createFormClientRuntime(host) {
     }, `attribute(${name})`);
   });
   function makeControl(name, fieldName = host.controlField(name)) {
-    return client({ getName: () => name, getAttribute: () => attributes.find(attribute => attribute.getName() === fieldName),
+    return client({ getName: () => name, getAttribute: () => attributes.find(attribute => attribute.getName() === fieldName) ?? null,
       getDisabled: () => host.controlState(name, 'disabled'), setDisabled: value => host.controlState(name, 'disabled', Boolean(value)),
       getVisible: () => !host.controlState(name, 'hidden'), setVisible: value => host.controlState(name, 'hidden', !value),
       getLabel: () => host.controlState(name, 'label'), setLabel: value => host.controlState(name, 'label', String(value)),
@@ -179,12 +339,44 @@ export function createFormClientRuntime(host) {
     updateRecord: async (entity, id, data) => { if (host.metadata) await prepareTable(entity); const values = writeData(data, host.tables[entity], host.tables); const current = await request(entity, id); await request(entity, id, { method: 'PATCH', data: values, etag: current.etag }); return { id, entityType: entity }; },
     deleteRecord: async (entity, id) => { const current = await request(entity, id); await request(entity, id, { method: 'DELETE', etag: current.etag }); return { id, entityType: entity }; },
   }, 'Xrm.WebApi');
-  const webApi = client({ ...onlineWebApi, online: onlineWebApi }, 'Xrm.WebApi');
+  const operations = createWebApiExecute(host, assertLive);
+  const online = client({ ...Object.fromEntries(Object.keys(onlineWebApi).map(key => [key, onlineWebApi[key]])), execute: operations.execute, executeMultiple: operations.executeMultiple }, 'Xrm.WebApi');
+  // Xrm.WebApi.offline (Learn: xrm-webapi/offline) reads and writes the session's offline copy through host.offline
+  // ({ isOffline(), tables(), request(body) }, the shell's /_apps/api/offline); the server refuses its CRUD while online.
+  // In offline mode Xrm.WebApi's own CRUD uses the offline store (Learn: xrm-webapi, "the source is the offline data store").
+  const isOffline = () => Boolean(host.offline?.isOffline());
+  const offlineCall = async (action, body) => {
+    assertLive();
+    if (!host.offline) throw executeError('Xrm.WebApi.offline needs the host offline store.', 501, 'OfflineSyncUnavailable');
+    const result = await host.offline.request({ action, ...body }); assertLive(); return result;
+  };
+  const isAvailableOffline = entity => (host.offline?.tables() ?? []).includes(entity);
+  const offline = client({
+    retrieveRecord: async (entity, id, options = '') => offlineCall('retrieve', { entity, id: bareId(id), options }),
+    // ponytail: maxPageSize is not applied offline (the offline nextLink is deprecated per Learn); the whole result returns.
+    retrieveMultipleRecords: async (entity, options = '') => offlineCall('retrieveMultiple', { entity, options }),
+    createRecord: async (entity, data) => offlineCall('create', { entity, data }),
+    updateRecord: async (entity, id, data) => offlineCall('update', { entity, id: bareId(id), data }),
+    deleteRecord: async (entity, id) => offlineCall('delete', { entity, id: bareId(id) }),
+    isAvailableOffline,
+  }, 'Xrm.WebApi.offline');
+  const routed = Object.fromEntries(['retrieveRecord', 'retrieveMultipleRecords', 'createRecord', 'updateRecord', 'deleteRecord'].map(name => [name, (...args) => (isOffline() ? offline : online)[name](...args)]));
+  const webApi = client({ ...Object.fromEntries(Object.keys(online).map(key => [key, online[key]])), ...routed, isAvailableOffline, online, offline }, 'Xrm.WebApi');
+  const staff = host.staffContext ?? (host.user ? { ...ANONYMOUS_STAFF_CONTEXT, anonymous: false, userId: host.user.userId ?? host.user.principalId ?? host.user.id ?? '', userName: host.user.userName ?? host.user.name ?? '' } : ANONYMOUS_STAFF_CONTEXT);
+  const roles = staff.roles.map(role => ({ ...role, getName: () => role.name }));
   const Xrm = client({ Page: formContext, WebApi: webApi,
     Navigation: client({ openAlertDialog: options => host.alert(options.text ?? '', options.title ?? 'Message'), openConfirmDialog: options => host.confirm(options.text ?? '', options.title ?? 'Confirm').then(confirmed => ({ confirmed })), openForm: options => host.openForm(options),
+      navigateTo: (pageInput, navigationOptions) => { try { return host.openPage(...pageRequest(pageInput, navigationOptions, host.tables, host.dashboards)); } catch (error) { return Promise.reject(error); } },
     }, 'Xrm.Navigation'),
+    ...(host.sidePanes ? { App: client({ sidePanes: host.sidePanes }, 'Xrm.App') } : {}),
     Utility: client({ getGlobalContext: () => client({ getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
-      userSettings: client({ userId: host.user?.userId ?? host.user?.principalId ?? host.user?.id ?? '', userName: host.user?.userName ?? host.user?.name ?? '' }, 'globalContext.userSettings'), client: client({ getClient: () => 'Web', getClientState: () => 'Online' }, 'globalContext.client'),
+      // Learn (getGlobalContext.userSettings): the server-built staff context, the same one the PCF context reads.
+      userSettings: client({ userId: staff.userId, userName: staff.userName, languageId: staff.languageId, isRTL: staff.isRTL, securityRoles: [...staff.securityRoles], roles: collection(roles),
+        transactionCurrency: staff.transactionCurrency ? { id: staff.transactionCurrency.id, entityType: 'transactioncurrency', name: staff.transactionCurrency.name } : null,
+        transactionCurrencyId: staff.transactionCurrency?.id ?? null, dateFormattingInfo: staff.dateFormattingInfo,
+        getTimeZoneOffsetMinutes: () => staffFormatting(staff).getTimeZoneOffsetMinutes() }, 'globalContext.userSettings'),
+      // Learn getGlobalContext.client: the Offline state belongs to the mobile app (the simulated device while offline).
+      client: client({ getClient: () => isOffline() ? 'Mobile' : 'Web', getClientState: () => isOffline() ? 'Offline' : 'Online', isOffline }, 'globalContext.client'),
     }, 'globalContext') }, 'Xrm.Utility'),
   }, 'Xrm');
   return { formContext, Xrm, dispatch,

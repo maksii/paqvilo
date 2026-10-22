@@ -143,7 +143,7 @@ test("install seeds the field security tables itself and exposes api.fieldSecuri
   assert.equal(store.state.mappings.fieldpermission.dataverseOnly, true);
   assert.equal(store.tableRows("fieldsecurityprofile").filter((p) => p.fieldsecurityprofileid === SYSTEM_ADMINISTRATOR_PROFILE_ID).length, 1);
   assert.deepEqual(ops.map((o) => o.entity).sort(), ["systemuser", "team"]);
-  assert.deepEqual(Object.keys(api.fieldSecurity).sort(), ["assertAggregate", "canRead", "canWrite", "capabilities", "mask"]);
+  assert.deepEqual(Object.keys(api.fieldSecurity).sort(), ["assertAggregate", "canRead", "canWrite", "capabilities", "diagnostics", "mask", "maskValue", "maskedFor", "maskedOperand", "rowMask"]);
 });
 
 test("IsSecured is read from either spelling and an { Value } wrapper; dataverseMetadata overrides columnMetadata", () => {

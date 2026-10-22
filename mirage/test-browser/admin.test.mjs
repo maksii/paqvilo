@@ -66,7 +66,9 @@ test(
           const url = new URL(req.url, "http://127.0.0.1");
           if (
             url.pathname === "/__sim/" ||
-            ["/__sim/app.mjs", "/__sim/style.css", "/__sim/persona-manager.mjs", "/__sim/persona-picker.mjs", "/__sim/persona-picker.css", "/__sim/persona-search.mjs", "/__sim/persona-picker-view.mjs"].includes(url.pathname)
+            // Admin assets by pattern, as both hosts serve them (D1); the two shared lib modules by name.
+            (/^\/__sim\/[a-z0-9-]+\.(?:mjs|css)$/.test(url.pathname) &&
+              fs.existsSync(new URL(`../${["persona-search.mjs","persona-picker-view.mjs"].includes(url.pathname.split("/").at(-1))?"lib":"admin"}/${url.pathname.split("/").at(-1)}`, import.meta.url)))
           ) {
             const file =
               url.pathname === "/__sim/"
@@ -457,6 +459,8 @@ test(
     await page.getByRole("button", { name: "Save identity" }).click();
     await page.getByText("Configuration saved.", { exact: true }).waitFor();
     assert.deepEqual(workspace.config.identity.roles, ["Tester", "Authority"]);
+    // The preset picker is a collapsed section on this view.
+    await page.locator('[data-ui-section="preset-picker"] > summary').click();
     await page
       .getByLabel("Available preset", { exact: true })
       .selectOption("preset1");
@@ -573,6 +577,8 @@ test(
           item.body.cdpUrl === "http://127.0.0.1:9222",
       ),
     );
+    // Capture forms are collapsed task tools (RA-20).
+    await page.locator('[data-disclosure="shell-capture"] > summary').click();
     await page
       .getByLabel("Portal page path", { exact: true })
       .fill("/workspace/");
@@ -608,6 +614,7 @@ test(
       /Static file unavailable/,
     );
     assert.equal(workspace.config.shellProfile.stylesheets[0], "/captured.css");
+    await page.locator('[data-disclosure="asset-capture"] > summary').click();
     await page
       .getByLabel("Static file paths")
       .fill("/static/theme.css\n/static/portal.js");
@@ -642,12 +649,7 @@ test(
           item.body.paths[0] === "/static/theme.css",
       ),
     );
-    await page
-      .locator("#snippet-composition-form")
-      .locator("..")
-      .locator("summary")
-      .first()
-      .click();
+    await page.locator('[data-disclosure="snippet-compositions"] > summary').click();
     await page
       .getByLabel("Observed page path", { exact: true })
       .fill("/owned-products/");
@@ -814,7 +816,7 @@ test(
     page.setDefaultTimeout(10_000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(simulator.adminUrl);
+    await page.goto(simulator.adminUrl + "#overview");
     await page
       .getByRole("heading", { name: "Your local portal workspace" })
       .waitFor();

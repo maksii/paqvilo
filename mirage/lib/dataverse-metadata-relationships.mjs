@@ -13,10 +13,11 @@
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { contextUrl, entityUrl } from "./dataverse-odata.mjs";
-import { privilegeDeniedError, uuidV5 } from "./dataverse-security.mjs";
+import { privilegeDeniedError } from "./dataverse-security.mjs";
 import { pluralizeEntitySetName } from "./solution-standard.mjs";
 import { relationshipsOf, standardGlobalOptionSets } from "./dataverse-standard.mjs";
 import { assertElasticManyToMany, assertElasticOneToMany, isElastic, partitionColumnOf } from "./dataverse-elastic.mjs";
+import { metadataComponentId } from "./dataverse-metadata.mjs";
 
 const ROUTE = /^\/api\/data\/v[\d.]+\/(RelationshipDefinitions|GlobalOptionSetDefinitions)(?:\(([^()]*)\))?\/?$/i;
 const FIRST_VALUE = 100000000; // unverified: option values start from a publisher prefix base; the base is not modelled
@@ -27,9 +28,10 @@ const lower = (value) => String(value ?? "").toLowerCase();
 const bad = (message) => new DataError(message, 400, "InvalidRequest"); // unverified: InvalidRequest code
 const missing = (what) => new DataError(`${what} does not exist.`, 404, "NotFound"); // unverified: NotFound code
 const orgId = (api) => api.settings.organizationId;
-const relationshipId = (api, schemaName) => uuidV5(orgId(api), `relationship:${schemaName}`);
-const attributeId = (api, logical, name) => uuidV5(orgId(api), `attribute:${logical}:${name}`);
-const globalId = (api, name) => uuidV5(orgId(api), `optionset:${name}`);
+// Every metadata id is the reader's MetadataId (dataverse-metadata.mjs metadataComponentId).
+const relationshipId = (api, schemaName) => metadataComponentId(orgId(api), "relationship", schemaName);
+const attributeId = (api, logical, name) => metadataComponentId(orgId(api), "attribute", logical, name);
+const globalId = (api, name) => metadataComponentId(orgId(api), "optionset", name);
 const mappings = (api) => api.store.state.mappings;
 const globalSets = (api) => {
   const dv = (api.store.state.dataverse ??= {});
@@ -49,6 +51,71 @@ export function logMetadataChange(api, op, kind, logical, name = null) {
   log.push({ seq: (log.at(-1)?.seq ?? 0) + 1, at, op, kind, logical, name });
 }
 
+// Managed layer stacks (Learn power-platform/alm/solution-layers-alm). state.dataverse.managedLayers is keyed by the component's
+// metadata id (managedLayerId, the id the metadata reader gives it) and holds { kind, logical, name, stack, activeOnTop, seq }:
+// stack is the ordered managed layers [{ solutionid, version, body, seq }], the last entry on top. A non-empty stack makes the
+// component managed (managedOwner); dataverse-solutions.mjs pushes on a managed import and dataverse-solution-messages.mjs pops on
+// uninstall and promote. A record of the earlier single-layer shape ({ body, solutionid }) reads as a one-entry stack.
+export const managedLayerId = (api, kind, logical, name = null) => metadataComponentId(orgId(api), kind, logical, name);
+export function layerStack(layer) {
+  if (!layer) return [];
+  if (!Array.isArray(layer.stack)) {
+    layer.stack = layer.body !== undefined ? [{ solutionid: layer.solutionid ?? null, version: null, body: layer.body, seq: layer.seq ?? 0 }] : [];
+    delete layer.body;
+    delete layer.solutionid;
+  }
+  return layer.stack;
+}
+export const managedLayerOf = (api, kind, logical, name = null) => api.store.state.dataverse?.managedLayers?.[managedLayerId(api, kind, logical, name)] ?? null;
+/** The solution id of the top managed layer of a component, or null when no managed solution holds a layer of it. */
+export function managedOwner(api, kind, logical, name = null) {
+  return layerStack(managedLayerOf(api, kind, logical, name)).at(-1)?.solutionid ?? null;
+}
+// A managed component may be deleted only by the uninstall or upgrade that owns its layer (Learn: solution-concepts-alm, "You
+// can't edit components directly within a managed solution"; removing-dependencies, "Managed components").
+export function assertNotManaged(api, kind, logical, name, label) {
+  const owner = managedOwner(api, kind, logical, name);
+  if (!owner) return;
+  const solution = (api.store.state.tables?.solution ?? []).find((row) => lower(row.solutionid) === lower(owner))?.uniquename ?? owner;
+  const noun = { entity: "Entity", attribute: "Attribute", relationship: "Relationship", key: "EntityKey" }[kind] ?? kind;
+  // Learn web-service-error-codes InvalidDeleteOnProtectedComponent; unverified: the HTTP status and the solution name in the text.
+  throw new DataError(`You cannot delete ${noun} ${label}. Deletion cannot be performed when ${noun} is managed (solution ${solution}).`, 400,
+    "ManagedComponentModification", { innerCode: "0x8004F013" });
+}
+
+// True when an unmanaged customization sits on top of the managed stack: the import kept an existing definition (activeOnTop),
+// or a metadata change came after the layer's last managed write (seq).
+export function activeOnTop(api, layer) {
+  if (layer.activeOnTop === true) return true;
+  return (api.store.state.dataverse?.metadataLog ?? []).some((entry) => entry.seq > (layer.seq ?? 0) && entry.op === "change" && entry.kind === layer.kind
+    && lower(entry.logical) === lower(layer.logical) && (layer.kind === "entity" || lower(entry.name ?? "") === lower(layer.name)));
+}
+// Projects ownership onto the definitions the metadata reader serves (IsManaged): managedLayer is true on a table's
+// dataverseMetadata, a column (mapping field and its customColumns copy), an alternate key and a relationship entry while a
+// managed layer holds them, and absent otherwise. The stacks stay the source of truth; this runs after every stack change and
+// on reseed, so a reloaded mapping gets its flags back.
+export function projectManagedFlags(api) {
+  const state = api.store.state;
+  const owned = new Set(Object.entries(state.dataverse?.managedLayers ?? {}).filter(([, layer]) => layerStack(layer).length).map(([id]) => id));
+  const has = owned.size ? (kind, logical, name) => owned.has(managedLayerId(api, kind, logical, name)) : () => false;
+  const mark = (target, on) => { if (!target) return; if (on) target.managedLayer = true; else delete target.managedLayer; };
+  for (const [logical, mapping] of Object.entries(state.mappings ?? {})) {
+    const tableOwned = has("entity", logical);
+    if (tableOwned) (mapping.dataverseMetadata ??= {}).managedLayer = true;
+    else if (mapping.dataverseMetadata) delete mapping.dataverseMetadata.managedLayer;
+    const bucket = state.dataverse?.customColumns?.[logical] ?? {};
+    for (const [name, field] of Object.entries(mapping.fields ?? {})) {
+      if (!field || typeof field !== "object") continue;
+      const on = has("attribute", logical, name);
+      if (on && field.managedLayer !== true) mapping.fields[name] = { ...field, managedLayer: true }; // a field object may be shared
+      else if (!on && field.managedLayer) mapping.fields[name] = (({ managedLayer, ...rest }) => rest)(field);
+      mark(bucket[name], on);
+    }
+    for (const key of mapping.alternateKeys ?? []) mark(key, has("key", logical, key.name));
+    for (const [nav, rel] of Object.entries(mapping.relationships ?? {})) mark(rel, has("relationship", null, schemaOf(logical, nav, rel)));
+  }
+}
+
 // Solution membership. A metadata write that names a solution in the MSCRM.SolutionUniqueName header adds the components it
 // creates to that solution: state.dataverse.solutionComponents[uniqueName] = [{ kind, logical, name }]. The components are
 // the "add" entries the write appended to metadataLog (kinds: entity, attribute, relationship, optionset).
@@ -66,13 +133,15 @@ export function addSolutionComponents(api, solution, entries, options) {
 }
 
 // solutioncomponent rows (Learn: solutioncomponent table). A component joins the named solution and the Default solution (Learn:
-// the solution header adds it to the default solution too). objectid is a name-derived GUID, stable across export and import.
+// the solution header adds it to the default solution too). objectid is the component's MetadataId (Learn
+// AddSolutionComponentRequest.ComponentId: for MetadataBase components the component id is the MetadataId), the id the metadata
+// reader returns, so it is stable across export and import into the same organization.
 // ponytail: the Default solution row is created on first use with no publisher; the bag above stays the export source.
-export const SOLUTION_COMPONENT_TYPE = { entity: 1, attribute: 2, optionset: 9, relationship: 10 };
-const COMPONENT_NAMESPACE = "3f0a9c4e-7b21-4d6e-9a58-1c2e8f0b7d13";
+export const SOLUTION_COMPONENT_TYPE = { entity: 1, attribute: 2, optionset: 9, relationship: 10, key: 14 };
 export const DEFAULT_SOLUTION = "Default";
 export const DEFAULT_SOLUTION_ID = "fd140aaf-4df4-11dd-bd17-0019b9312238"; // the Default solution's fixed id (Learn: Work with solutions)
-export const componentObjectId = (entry) => uuidV5(COMPONENT_NAMESPACE, `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? "")}`);
+/** The solution component id (MetadataId) of a metadata component entry { kind, logical, name } in an organization. */
+export const componentObjectId = (entry, organizationId) => metadataComponentId(organizationId, entry.kind, lower(entry.logical), entry.name == null ? null : lower(entry.name));
 export function solutionRowOf(store, uniquename, { create = false } = {}) {
   const rows = (store.state.tables.solution ??= []);
   let row = rows.find((s) => lower(s.uniquename) === lower(uniquename));
@@ -89,11 +158,13 @@ export function addSolutionComponentRows(api, solution, entries, { defaultSoluti
     const row = solutionRowOf(store, name, { create: name === DEFAULT_SOLUTION });
     if (!row) continue; // a header that names no solution row adds the component to the Default solution only
     for (const entry of entries) {
-      const componenttype = SOLUTION_COMPONENT_TYPE[entry.kind];
+      // A payload component (form, view, web resource, ...) carries its own type and row id; a metadata component its MetadataId.
+      const metadata = SOLUTION_COMPONENT_TYPE[entry.kind] !== undefined;
+      const componenttype = metadata ? SOLUTION_COMPONENT_TYPE[entry.kind] : entry.type;
       if (componenttype === undefined) continue;
-      const objectid = componentObjectId(entry);
-      if (rows.some((r) => lower(r.solutionid) === lower(row.solutionid) && r.objectid === objectid && r.componenttype === componenttype)) continue;
-      rows.push({ solutioncomponentid: randomUUID(), solutionid: row.solutionid, objectid, componenttype, rootcomponentbehavior: 0, ismetadata: true });
+      const objectid = metadata ? componentObjectId(entry, orgId(api)) : lower(entry.id);
+      if (rows.some((r) => lower(r.solutionid) === lower(row.solutionid) && lower(r.objectid) === objectid && r.componenttype === componenttype)) continue;
+      rows.push({ solutioncomponentid: randomUUID(), solutionid: row.solutionid, objectid, componenttype, rootcomponentbehavior: 0, ismetadata: metadata });
     }
   }
 }
@@ -123,13 +194,21 @@ export function withSolutionMembership(api, headers, fn) {
 }
 
 // Privilege for a metadata write: the seeded prv*Entity / prv*Attribute names that System Administrator and System Customizer
-// hold (dataverse-security.mjs). The caller is c.caller, else c.user; a request without one is refused.
+// hold (dataverse-security.mjs). Every metadata write and metadata message checks here. A request without a caller is refused.
+// Impersonation (Learn impersonate-another-user): the impersonator (c.caller) needs prvActOnBehalfOfAnotherUser, and the
+// privileges that apply are the intersection of the impersonator's and the impersonated user's (c.user), so the write is
+// allowed only when both hold the privilege (principals.effectivePrincipal / privileges).
 export function requireMetadataPrivilege(api, c, privilege, entity) {
-  const caller = c.caller ?? c.user;
+  const caller = c.caller ?? c.user, user = c.user ?? caller;
   if (!caller) throw new DataError(`A metadata write needs an authenticated caller for ${privilege}.`, 403, "PrivilegeDenied"); // unverified
-  const held = api.principals.privileges(caller);
+  const impersonating = lower(caller.systemuserid) !== lower(user.systemuserid);
+  if (impersonating && !api.principals.canImpersonate(caller)) {
+    throw privilegeDeniedError(caller, "prvActOnBehalfOfAnotherUser", "systemuser", { roleCount: api.principals.roles(caller).length, privilegeCount: api.principals.privileges(caller).size });
+  }
+  const acting = impersonating && !user.impersonator ? api.principals.effectivePrincipal(caller, user) : user;
+  const held = api.principals.privileges(acting);
   if (held.has(privilege)) return;
-  throw privilegeDeniedError(caller, privilege, entity, { roleCount: api.principals.roles(caller).length, privilegeCount: held.size });
+  throw privilegeDeniedError(acting, privilege, entity, { roleCount: api.principals.roles(acting).length, privilegeCount: held.size });
 }
 
 // Label blocks: the default-language text, and labels keyed by LanguageCode (the shape optionOf reads).
@@ -397,6 +476,7 @@ export function dropRelationship(api, schema) {
 
 function deleteRelationship(api, key) {
   const schema = schemaByKey(api, key);
+  assertNotManaged(api, "relationship", null, schema, schema);
   guardHits(api, schema, entriesOf(api, schema));
   dropRelationship(api, schema);
   return { status: 204 };

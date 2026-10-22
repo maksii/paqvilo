@@ -18,6 +18,39 @@ const tableNavigation = value => {
   } catch { return undefined; }
 };
 
+/** Non-table SubArea destinations, each with a distinct code: web resources and dashboards whose definition the
+ * sources hold are hosted (the catalogue resolves the dashboard); custom pages open the headless canvas host of their canvas
+ * app (the shell answers a missing one with CustomPageNotFound); external URLs are not hosted. */
+export const DASHBOARD_MISSING_REASON = 'The dashboard definition is not in the sources (MD_NAV_DASHBOARD).';
+/** A custom page is a canvas app the model-driven app includes (Learn "Add a custom page to your model-driven app"; solution
+ * component type 300 Canvas App, Learn solutioncomponent): it resolves only against the app's own type-300 AppModuleComponent
+ * and a canvas app the canvas host holds (`canvasApps`: unique names, or null without a canvas host). One rule for the
+ * catalogue, the shell (app.customPages) and the source graph.
+ * unverified: an exported AppModule names a custom page's component by its schemaName (the canvas app's logical name). */
+export function customPageResolution(app, page, canvasApps) {
+  const name = String(page ?? '').toLowerCase();
+  if (!(app?.components ?? []).some(component => component.type === 300 && component.entity === name))
+    return { supported: false, reason: `Custom page ${page} is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).` };
+  if (!Array.isArray(canvasApps)) return { supported: false, reason: `Custom page ${page} needs the canvas host, which is not enabled in this runtime (MD_NAV_CUSTOM_PAGE).` };
+  if (!canvasApps.some(candidate => String(candidate).toLowerCase() === name)) return { supported: false, reason: `Custom page ${page} has no canvas app in the canvas sources (MD_NAV_CUSTOM_PAGE).` };
+  return { supported: true };
+}
+function pageNavigation(attrs) {
+  const url = String(attrs.Url ?? '');
+  if (attrs.DefaultDashboard || /^\/?main\.aspx\?(?:.*&)?pagetype=dashboard(?:&|$)/i.test(url)) {
+    // unverified: a dashboard SubArea Url names its dashboard as main.aspx?pagetype=dashboard&id=<guid>.
+    const dashboard = id(attrs.DefaultDashboard ?? new URL(url, 'http://local.invalid/').searchParams.get('id'));
+    return { kind: 'dashboard', code: 'MD_NAV_DASHBOARD', ...(dashboard ? { dashboard } : {}), supported: false, reason: DASHBOARD_MISSING_REASON };
+  }
+  // unverified: an exported custom-page SubArea carries main.aspx?pagetype=custom&name=<logical name> in Url.
+  const custom = /^\/?main\.aspx\?(?:.*&)?pagetype=custom(?:&|$)/i.test(url) ? new URL(url, 'http://local.invalid/').searchParams.get('name') : null;
+  if (custom !== null) return { kind: 'custom', code: 'MD_NAV_CUSTOM_PAGE', page: custom, ...customPageResolution(null, custom, null) };
+  const resource = /^\$webresource:(.+)$/i.exec(url)?.[1];
+  if (resource) return { kind: 'webresource', code: 'MD_NAV_WEBRESOURCE', webresource: resource };
+  if (url) return { kind: 'url', code: 'MD_NAV_URL', supported: false, reason: 'External URL pages are not hosted locally (MD_NAV_URL).' };
+  return undefined;
+}
+
 /** Data-only navigation. URLs, scripts and resource IDs are never executed as app code. */
 export function parseSiteMap(root, { lcid = 1033 } = {}) {
   if (typeof root === 'string') root = parseSolutionXml(root);
@@ -28,12 +61,11 @@ export function parseSiteMap(root, { lcid = 1033 } = {}) {
     groups: (area.children ?? []).filter(node => node.name === 'Group').map(group => ({
       id: group.attrs.Id, title: title(group, lcid) ?? group.attrs.Id, titleLabels: titleLabels(child(group, 'Titles')),
       items: (group.children ?? []).filter(node => node.name === 'SubArea').map(item => {
-        const destination = item.attrs.Entity ? { entity: item.attrs.Entity.toLowerCase() } : tableNavigation(item.attrs.Url);
+        const destination = item.attrs.Entity ? { entity: item.attrs.Entity.toLowerCase() } : tableNavigation(item.attrs.Url) ?? pageNavigation(item.attrs);
         return {
         id: item.attrs.Id, title: title(item, lcid), titleLabels: titleLabels(child(item, 'Titles')), entity: item.attrs.Entity?.toLowerCase(),
         ...destination,
-        // Non-table destinations have no renderer yet. Keep their place and explain it.
-        supported: Boolean(destination), reason: destination ? undefined : 'This navigation type is not supported locally yet.',
+        supported: destination?.supported ?? Boolean(destination), reason: destination?.reason ?? (destination ? undefined : 'This navigation type is not supported locally yet.'),
       }; }),
     })),
   }));
@@ -63,8 +95,54 @@ export function parseAppDefinitions(root, { lcid = 1033 } = {}) {
   }));
   if (!maps.length && !apps.length && nodes(root, 'SiteMap').length)
     maps.push({ navigation: parseSiteMap(root, { lcid }) });
-  return { apps, appMaps: maps };
+  const dashboards = parseDashboards(root, { lcid });
+  return { apps, appMaps: maps, ...(dashboards.length ? { dashboards } : {}) };
 }
+
+const SUBGRID_CLASS = 'e7a81278-8635-4d9e-8d4d-59480b391c5b';
+const DASHBOARD_CONTROL_KINDS = { '9fdf5f91-88b1-47f4-ad53-c11efc01a01d': 'web resource', 'fd2a7985-3187-444e-908d-6624b21f69c0': 'IFRAME' };
+/** Organization-owned dashboards (systemform type 0; Learn understand-dashboards-dashboard-components-formxml) as
+ * { id, name, components }: a list (sub-grid control with TargetEntityType/ViewId) is a `grid` component the shell renders
+ * over the view query engine; a chart (VisualizationId), web resource, IFRAME or any other control is a component with
+ * `supported: false` and its reason, listed on the page. Reads `<Dashboard>` elements and type 0 `<systemform>` elements. */
+export function parseDashboards(root, { lcid = 1033 } = {}) {
+  const found = new Map();
+  const add = (node, form) => {
+    const formId = id(childText(node, 'FormId') ?? childText(node, 'formid') ?? descendants(node, 'formid')[0]?.text);
+    if (!formId || !form || found.has(formId)) return;
+    const components = descendants(form, 'cell').flatMap(cell => {
+      const control = child(cell, 'control');
+      if (!control) return [];
+      const classid = id(control.attrs.classid), parameter = name => descendants(control, name)[0]?.text.trim();
+      const base = { id: control.attrs.id ?? cell.attrs.id ?? classid, name: label(child(cell, 'labels'), lcid) ?? control.attrs.id ?? classid };
+      if (classid !== SUBGRID_CLASS) return [{ ...base, kind: DASHBOARD_CONTROL_KINDS[classid] ?? 'control', classid, supported: false,
+        reason: `${DASHBOARD_CONTROL_KINDS[classid] ?? `Control ${classid}`} components are not rendered on local dashboards.` }];
+      const entity = parameter('TargetEntityType')?.toLowerCase(), chart = id(parameter('VisualizationId'));
+      // unverified: without ChartGridMode a component with a VisualizationId opens as its chart; All shows the chart and its list.
+      const mode = parameter('ChartGridMode') ?? (chart ? 'Chart' : 'Grid');
+      return [
+        ...(mode !== 'Chart' ? [{ ...base, kind: 'grid', entity, view: id(parameter('ViewId')), pageSize: Number(parameter('RecordsPerPage')) || 10,
+          searchEnabled: parameter('EnableQuickFind') === 'true', viewPickerEnabled: parameter('EnableViewPicker') === 'true',
+          views: parameter('ViewIds')?.split(',').map(value => id(value.trim())).filter(Boolean) }] : []),
+        ...(chart && mode !== 'Grid' ? [{ ...base, kind: 'chart', entity, chart, supported: false, reason: 'Charts are not rendered on local dashboards.' }] : []),
+      ];
+    });
+    found.set(formId, { id: formId, name: label(child(node, 'LocalizedNames'), lcid) ?? formId, components });
+  };
+  for (const node of nodes(root, 'Dashboard')) add(node, descendants(node, 'form')[0]);
+  for (const systemform of nodes(root, 'systemform')) if (childText(systemform, 'type') === '0') add(systemform, child(systemform, 'form'));
+  return [...found.values()];
+}
+
+/** The one dashboard verdict (catalogue page and source-graph requirement row): `tables` maps a logical name to
+ * `{ views: [{ id }] }`; a list whose table or view is not there is unsupported with its reason. */
+export const dashboardPage = (dashboard, tables) => ({ ...dashboard, components: (dashboard.components ?? []).map(component => {
+  if (component.kind !== 'grid') return component;
+  const table = Object.hasOwn(tables, component.entity ?? '') ? tables[component.entity] : undefined;
+  const reason = !table ? `The list table ${component.entity ?? ''} has no imported metadata or local mapping.`
+    : component.view && !(table.views ?? []).some(view => view.id === component.view) ? 'The list view is not imported for its table.' : undefined;
+  return { ...component, supported: !reason, ...(reason ? { reason } : {}) };
+}) });
 
 /** Packed Customizations.xml carries forms and saved queries under each Entity. */
 export function embeddedAppComponents(root, { entity: enclosingEntity, lcid = 1033, file } = {}) {
@@ -101,8 +179,10 @@ export function compileForm(form, fields, lcid = 1033) {
     const candidate = candidates.find(entry => entry.attributes.formFactor === '0') ?? candidates.find(entry => entry.attributes.formFactor == null);
     if (!candidate?.attributes.name) return undefined;
     const node = parseSolutionXml(candidate.xml), parameters = child(node, 'parameters');
-    return { name: candidate.attributes.name, bindings: Object.fromEntries((parameters?.children ?? []).map(parameter => [parameter.name,
-      String(parameter.attrs.type).toLowerCase() === 'bound' ? { field: parameter.text.trim() } : { value: parameter.text.trim() }])) };
+    // A dataset component binds <data-set name="…"> with its view and table; scalar properties stay field/value bindings.
+    return { name: candidate.attributes.name, bindings: Object.fromEntries((parameters?.children ?? []).map(parameter => parameter.name === 'data-set'
+      ? [parameter.attrs.name, { dataset: { view: id(childText(parameter, 'ViewId')) || undefined, entity: childText(parameter, 'TargetEntityType')?.toLowerCase(), relationship: childText(parameter, 'RelationshipName') || undefined } }]
+      : [parameter.name, String(parameter.attrs.type).toLowerCase() === 'bound' ? { field: parameter.text.trim() } : { value: parameter.text.trim() }])) };
   };
   const sourceControl = control => ({ id: control.attrs.id ?? null, uniqueId: control.attrs.uniqueid ?? null,
     classId: control.attrs.classid ?? null, attributes: { ...control.attrs }, xml: serializeXml(control),
@@ -137,10 +217,11 @@ export function compileForm(form, fields, lcid = 1033) {
         const control = child(cell, 'control');
         if (!control) return [{ ...position, spacer: true, supported: true, visible: cell.attrs.visible !== 'false' }];
         const name = control.attrs.datafieldname;
-        if (id(control.attrs.classid) === 'e7a81278-8635-4d9e-8d4d-59480b391c5b') {
+        if (id(control.attrs.classid) === SUBGRID_CLASS) {
           const parameter = name => descendants(control, name)[0]?.text.trim();
+          const datasetPcf = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id)) ? pcfBinding(control) : undefined;
           return [{ ...position, sourceControl: sourceControl(control), label: label(child(cell, 'labels'), lcid) ?? control.attrs.id, visible: cell.attrs.visible !== 'false',
-            supported: true, subgrid: { entity: parameter('TargetEntityType')?.toLowerCase(), view: id(parameter('ViewId')), relationship: parameter('RelationshipName'),
+            ...(datasetPcf ? { pcf: datasetPcf } : {}), supported: true, subgrid: { entity: parameter('TargetEntityType')?.toLowerCase(), view: id(parameter('ViewId')), relationship: parameter('RelationshipName'),
               pageSize: Number(parameter('RecordsPerPage')) || 10, searchEnabled: parameter('EnableQuickFind') === 'true',
               viewPickerEnabled: parameter('EnableViewPicker') === 'true', views: parameter('ViewIds')?.split(',').map(value => id(value.trim())).filter(Boolean) } }];
         }
@@ -156,7 +237,13 @@ export function compileForm(form, fields, lcid = 1033) {
       }),
     })),
   }));
-  return { id: form.id, name: form.name, tabs, source: 'solution',
+  // formContext attributes are the columns bound anywhere on this form (body, header, footer); others are absent.
+  const attributes = [...new Set(descendants(root, 'control').map(control => control.attrs.datafieldname?.toLowerCase()).filter(name => name && fields[name]))];
+  // Header and footer cells keep their control names (Learn formContext.getControl: `header_<column>`); the shell does not
+  // render them, so their state setters refuse by name. Business process flow stage columns are not compiled (BPFs do not run).
+  const regionControls = ['header', 'footer'].flatMap(region => descendants(root, region).flatMap(node => descendants(node, 'control')).map(control => ({ region,
+    id: control.attrs.id ?? `${region}_${control.attrs.datafieldname?.toLowerCase()}`, name: control.attrs.datafieldname?.toLowerCase() }))).filter(control => control.name && fields[control.name]);
+  return { id: form.id, name: form.name, tabs, attributes, regionControls, source: 'solution',
     hasScripts: descendants(root, 'Library').length > 0 || descendants(root, 'event').length > 0,
     libraries: descendants(root, 'Library').map(node => node.attrs.name).filter(Boolean),
     clientEvents: descendants(root, 'event').map(node => ({ name: String(node.attrs.name ?? '').toLowerCase(), attribute: node.attrs.attribute, active: node.attrs.active !== 'false',

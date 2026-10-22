@@ -12,6 +12,19 @@ const mime = name => /\.css$/i.test(name) ? 'text/css; charset=utf-8' : /\.js$/i
 const token = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const inside = (root, file) => { const rel = path.relative(root, file); return rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); };
 const readEntry = async entry => entry.data ?? entry.load();
+// Diagnostics name paths as `<Solution layer>/<path inside it>`, never as local absolute paths.
+function projectPath(value, roots) {
+  if (typeof value !== 'string' || !(path.isAbsolute(value) || /^[a-z]:[\\/]/i.test(value))) return value;
+  for (const root of roots) for (const dir of root.dirs) if (inside(dir, value)) return `${root.label}/${path.relative(dir, value).replaceAll('\\', '/')}`;
+  return path.basename(value);
+}
+const projectText = (text, roots) => text.replace(/(^|[\s'"(=])((?:[a-z]:)?[\\/][^\s'"`()<>|]+)/gi, (match, lead, value) => lead + projectPath(value, roots));
+function projectDiagnostic(entry, roots) {
+  const safe = { ...entry };
+  for (const key of ['source', 'file', 'sourceFile']) if (typeof safe[key] === 'string') safe[key] = projectPath(safe[key], roots);
+  if (typeof safe.message === 'string') safe.message = projectText(safe.message, roots);
+  return safe;
+}
 
 function importBudget(requested = {}) {
   const ceilings = { bytes: SOLUTION_ASSET_LIMITS.totalBytes, entries: SOLUTION_ASSET_LIMITS.entries, layers: SOLUTION_ASSET_LIMITS.layers };
@@ -66,7 +79,9 @@ async function layerEntries(layer, budget) {
 }
 
 /** Only selected Solution sources contribute executable code. No remote resolution or fallback. */
-export async function importModelDrivenResources(layers = [], { codeComponents, limits, clientSources } = {}) {
+export async function importModelDrivenResources(layers = [], { codeComponents, limits, clientSources, diagnostic = () => {}, projectRoot = null } = {}) {
+  // A resource names its source file relative to the project root when one is given (status payloads never show absolute paths).
+  const shown = file => (projectRoot && path.isAbsolute(file) ? path.relative(projectRoot, file).replaceAll('\\', '/') : file);
   const resources = new Map(), assets = new Map(), ribbonDocuments = [], actionDocuments = [], diagnostics = [];
   const budget = importBudget(limits), fileReads = new Map();
   // PCF discovery reads manifests and localized/image resources too. Admit every
@@ -77,8 +92,34 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
     return encoding ? data.toString(encoding) : data;
   };
   const limited = error => error.code === 'MODEL_CLIENT_IMPORT_LIMIT' || error.code === 'ArchiveLimit';
-  const failLimit = (error, source) => ({ resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [],
+  // Roots are known once the layers are resolved; earlier failures carry only messages.
+  let roots = [];
+  // Every return path reports its diagnostics once to the caller, with project-relative paths.
+  const finish = result => {
+    const safe = result.diagnostics.map(entry => projectDiagnostic(entry, roots));
+    for (const entry of safe) diagnostic(entry);
+    return { ...result, diagnostics: safe };
+  };
+  const failLimit = (error, source) => finish({ resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [],
     diagnostics: [...diagnostics, { code: 'MODEL_CLIENT_IMPORT_LIMIT', source, message: error.message }] });
+  // A clientSources entry named <Library>@<version>.js is a project-supplied PCF platform library
+  // (React, ReactDOM, Fluent): served under /_apps/controls/platform/ and never an npm dependency of Mirage.
+  const platformLibraries = [];
+  if (clientSources !== undefined) {
+    const libraryFiles = clientSources.filter(source => /\.js$/i.test(source));
+    for (const file of libraryFiles) {
+      const match = /^([A-Za-z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
+      try {
+        if (!match) throw new Error(`Platform library files are named <Library>@<version>.js (${path.basename(file)}).`);
+        const real = await fs.realpath(file), data = await readBudgetedFile(real, path.dirname(real), budget);
+        const url = `/_apps/controls/platform/${token(real)}/${encodeURIComponent(match[1])}.js`;
+        assets.set(url, { data, mime: 'text/javascript; charset=utf-8', file: real, name: `platform/${match[1]}@${match[2]}` });
+        platformLibraries.push({ name: match[1], version: match[2], url, source: shown(real) });
+      } catch (error) { if (limited(error)) return failLimit(error, file); diagnostics.push({ code: 'MODEL_PCF_PLATFORM_LIBRARY_INVALID', source: file, message: error.message }); }
+    }
+    clientSources = clientSources.filter(source => !libraryFiles.includes(source));
+    if (!clientSources.length && libraryFiles.length) clientSources = undefined;
+  }
   if (clientSources !== undefined) {
     try {
       layers = await Promise.all(clientSources.map(async source => {
@@ -87,8 +128,9 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
         return { type: stat.isDirectory() ? 'directory' : 'zip', dir };
       }));
       codeComponents = undefined;
-    } catch (error) { return { resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [], diagnostics: [{ code: 'MODEL_CLIENT_SOURCE_INVALID', message: error.message }] }; }
+    } catch (error) { return finish({ resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [], diagnostics: [{ code: 'MODEL_CLIENT_SOURCE_INVALID', message: error.message }] }); }
   }
+  roots = await Promise.all(layers.filter(layer => layer?.dir).map(async layer => ({ label: path.basename(layer.dir), dirs: [layer.dir, await fs.realpath(layer.dir).catch(() => layer.dir)] })));
   for (const layer of layers) {
     let entries;
     try { budget.take('layers', 1); entries = await layerEntries(layer, budget); }
@@ -120,7 +162,7 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
           const unpacked = /^webresources\//i.test(entry.name) && /\.data\.xml$/i.test(entry.name)
             && entry.name.replace(/^webresources\//i, '').replace(/\.data\.xml$/i, '') === name ? entry.name.replace(/\.data\.xml$/i, '') : null;
           const id = childText(node, 'WebResourceId') ?? childText(node, 'webresourceid');
-          if (name && [2, 3, 5, 6, 7, 11].includes(type)) definitions.push({ name, type, file, unpacked, id });
+          if (name && [1, 2, 3, 5, 6, 7, 11].includes(type)) definitions.push({ name, type, file, unpacked, id });
         }
       } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_CLIENT_XML_INVALID', source: entry.name, message: error.message }); }
     }
@@ -135,9 +177,10 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
         if (!entry) throw new Error('Declared WebResource file is missing or oversized.');
         const data = await readEntry(entry);
         if (data.length > limit) throw new Error('Declared WebResource file is missing or oversized.');
+        // ponytail: an HTML page is served at its hashed /_apps/resources/ URL, so its relative links to sibling web resources do not resolve; upgrade by serving web resources under their names.
         const imageMime = { 5: 'image/png', 6: 'image/jpeg', 7: 'image/gif', 11: 'image/svg+xml' }[definition.type];
-        resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: imageMime ? 'image' : definition.type === 3 ? 'script' : 'style', source: entry.file ?? `${layer.dir}!/${entry.name}` });
-        assets.set(url, { data, mime: imageMime ?? (definition.type === 3 ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8'), ...(imageMime ? { passive: true } : {}), file: entry.file, name: definition.name });
+        resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style', source: entry.file ? shown(entry.file) : `${shown(layer.dir)}!/${entry.name}` });
+        assets.set(url, { data, mime: imageMime ?? (definition.type === 3 ? 'text/javascript; charset=utf-8' : definition.type === 1 ? 'text/html; charset=utf-8' : 'text/css; charset=utf-8'), ...(imageMime ? { passive: true } : {}), file: entry.file, name: definition.name });
       } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_WEBRESOURCE_UNRESOLVED', name: definition.name, message: error.message }); }
     }
   }
@@ -181,7 +224,7 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
     try { const command = parseAppActionCommand(entry.data.toString('utf8'), { webresourcesById }); if (!command) throw new Error('Expected an AppAction definition.'); return [{ ...command, sourceKind: command.source, source: entry.source }]; }
     catch (error) { diagnostics.push({ code: 'MODEL_APP_ACTION_INVALID', source: entry.name, message: error.message }); return []; }
   });
-  return { resources: [...resources.values()], pcf: { controls }, assets, ribbonDocuments, appActions, diagnostics };
+  return finish({ resources: [...resources.values()], pcf: { controls, ...(platformLibraries.length ? { platformLibraries } : {}) }, assets, ribbonDocuments, appActions, diagnostics });
 }
 
 export function clientExtensionCatalogue(imported, settings) {

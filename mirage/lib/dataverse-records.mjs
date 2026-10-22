@@ -5,15 +5,17 @@ import { organizationRecord } from './organization-context.mjs';
 // metadata, objectTypeCode and clock are accepted for the router contract and unused so far.
 import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
+import { handoffPluginResponse } from "./plugin-response.mjs";
 import { isElastic, recordKey, samePartition } from "./dataverse-elastic.mjs";
-import { parseEntityReference } from "./data.mjs";
+import { parseEntityReference, parseFetchXml } from "./data.mjs";
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from "./fetchxml-engine.mjs";
-import { compileODataPredicate, expressionPaths, parseApply, parseExpand, parseODataExpression, parseOrderBy, parseSelect, splitTopLevel } from "./odata-query.mjs";
+import { expressionPaths, parseApply, parseExpand, parseODataExpression, parseOrderBy, parseSelect, splitTopLevel } from "./odata-query.mjs";
 import { assertExpand, assertExpandText, childLinks } from "./dataverse-expand.mjs";
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from "./webapi-format.mjs";
-import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName } from "./dataverse-security.mjs";
-import { dateTimeBehavior, fieldKind, formattedValue, isDateOnlyField } from "./dataverse-values.mjs";
+import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from "./dataverse-security.mjs";
+import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField } from "./dataverse-values.mjs";
 import { fixedScaleNumeric } from "./exact-numeric.mjs";
+import { isSecuredField, maskedOperand } from "./dataverse-fls.mjs";
 import { createChangeLog, encodeDeltaToken, nextRowVersion } from "./dataverse-changes.mjs";
 import { standardNavigation } from "./dataverse-standard.mjs";
 import {
@@ -44,6 +46,8 @@ const ALLOWED_QUERY = new Set([
   "$select", "$filter", "$expand", "$orderby", "$top", "$count", "$apply", "$skiptoken", "$deltatoken", "$id",
   "fetchXml", "fetchxml", "savedQuery", "userQuery",
   "partitionId",
+  // Learn optional-parameters#return-unmasked-data: case-sensitive; any other casing keeps the 0x80060888 refusal.
+  "UnMaskedData",
 ]);
 const TRACKING_REJECTS = ["$filter", "$orderby", "$expand", "$top"];
 const MONEY_SCALE = 4;
@@ -67,15 +71,26 @@ const ignoredSystem = (key) => SYSTEM_IGNORED.has(key.endsWith(BIND) ? key.slice
 const LOOKUP_SYSTEM = new Set([...Object.keys(SYSTEM_AUDIT), ...Object.keys(SYSTEM_OWNER)]);
 
 // Records hooks (api.recordHooks.add(name, fn)). Several functions may share a name and run in the order added.
-// query and stream answer with the first result that is not undefined; project, beforeWrite and afterWrite run them all.
+// query and stream answer with the first result that is not undefined; project, source, beforeWrite and afterWrite run them all.
+// source (c, mapping, { single, id }) runs, awaited, before a Web API read answers from the store: a collection, $count or
+// navigation read (single false; c.url carries the query options) or a single record, property or $value read (single true,
+// id the addressed primary key, null for an alternate key). A hook may refresh the rows the read then answers from (the
+// virtual-table providers do); a throw answers the read with its error.
+// external (c, mapping, { operation, id }) is the main-operation stage (native stage 30): it runs after the store write has
+// passed every check (ETag, alternate keys, required columns, store plug-ins) and before the afterWrite hooks, inside the
+// write's transaction, so a write refused locally never reaches it and its throw rolls the local write back. The hooks share
+// one info object: an external hook that re-keys the row sets info.id for the afterWrite hooks.
+// add(name, fn, module): module names the registering module in refusals (moduleOf); the function name stands in without it.
 export function createRecordHooks() {
-  const byName = new Map();
+  const byName = new Map(), modules = new WeakMap();
   return {
-    add(name, fn) {
+    add(name, fn, module) {
       if (typeof fn !== "function") throw new TypeError(`Record hook ${name} must be a function.`);
+      if (module) modules.set(fn, String(module));
       byName.set(name, [...(byName.get(name) ?? []), fn]);
     },
     list: (name) => byName.get(name) ?? [],
+    moduleOf: (fn) => modules.get(fn) ?? (fn.name || "an unnamed record hook"),
   };
 }
 
@@ -214,24 +229,30 @@ function linkOf(c, base, name, token, { raw = false } = {}) {
 const nextLinkOf = (c, base, token) => linkOf(c, base, "$skiptoken", skipTokenQueryValue(decodeURIComponent(token)));
 const deltaLinkOf = (c, base, token) => linkOf(c, base, "$deltatoken", encodeDeltaToken(token), { raw: true });
 
-function withKeyViolation(mapping, data, fn) {
+// An alternate-key duplicate from the store answers the Web API's 412 Entity Key wording. fn may answer a promise (a store write on
+// the asynchronous pipeline, data.mjs createRecordAsync); its rejection is translated the same way.
+export function withKeyViolation(mapping, data, fn) {
   try {
-    return fn();
+    const result = fn();
+    return typeof result?.then === "function" ? result.catch((error) => { throw keyViolation(mapping, data, error); }) : result;
   } catch (error) {
-    if (error?.code !== "DuplicateRecord" || !String(error.message).startsWith("A record that has the attribute values")) throw error;
-    const attributesOf = (key) => key.attributes ?? key.keyAttributes ?? [];
-    const keys = mapping.alternateKeys ?? [];
-    const key = keys.find((item) => attributesOf(item).every((name) => name in data)) ?? keys[0];
-    if (!key) throw error;
-    const columns = attributesOf(key);
-    const keyName = key.name ?? columns.join("_");
-    throw new DataError(
-      `Entity Key ${keyName} violated. A record with the same value for ${columns.join(", ")} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`,
-      412,
-      "DuplicateRecord",
-      { innerCode: "0x80060892", keyName, columns },
-    );
+    throw keyViolation(mapping, data, error);
   }
+}
+function keyViolation(mapping, data, error) {
+  if (error?.code !== "DuplicateRecord" || !String(error.message).startsWith("A record that has the attribute values")) return error;
+  const attributesOf = (key) => key.attributes ?? key.keyAttributes ?? [];
+  const keys = mapping.alternateKeys ?? [];
+  const key = keys.find((item) => attributesOf(item).every((name) => name in data)) ?? keys[0];
+  if (!key) return error;
+  const columns = attributesOf(key);
+  const keyName = key.name ?? columns.join("_");
+  return new DataError(
+    `Entity Key ${keyName} violated. A record with the same value for ${columns.join(", ")} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`,
+    412,
+    "DuplicateRecord",
+    { innerCode: "0x80060892", keyName, columns },
+  );
 }
 
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
@@ -246,7 +267,10 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // state changes commit or roll back with the write; a throw rolls the write back.
   const runWriteHooks = async (name, ...args) => { for (const hook of hookList(name)) await hook(...args); };
   const beforeWrite = (c, mapping, info) => runWriteHooks("beforeWrite", c, mapping, info);
-  const afterWrite = (c, mapping, info) => runWriteHooks("afterWrite", c, mapping, info);
+  const afterWrite = async (c, mapping, info) => { await runWriteHooks("external", c, mapping, info); await runWriteHooks("afterWrite", c, mapping, info); };
+  const source = (c, mapping, info) => runWriteHooks("source", c, mapping, info);
+  // The single-row source call for a keyed route (entity, property, $value, navigation parent).
+  const sourceKey = (c, mapping) => source(c, mapping, { single: true, id: parseKey(c.route.key)?.id ?? null });
   // Async-capable first answer: the first hook whose result is not undefined wins.
   const firstAnswer = async (name, ...args) => {
     for (const hook of hookList(name)) {
@@ -277,7 +301,13 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       return filters.get(name)(row);
     };
   };
-  const secured = (c, extra = {}) => queryOptions({ ...extra, backendRowsFilter: rowsFilterOf(c) });
+  // Column security for the same reads: the store evaluates every table's rows with the columns the caller cannot read nulled
+  // (api.fieldSecurity.rowMask), so no filter, order, aggregate, join, lambda or $expand option observes a hidden value.
+  const rowsOptionsOf = (c) => {
+    const fs = fieldSecurity?.();
+    return { backendRowsFilter: rowsFilterOf(c), ...(fs?.rowMask ? { backendRowsMask: (name) => fs.rowMask(c.user, name) } : {}) };
+  };
+  const secured = (c, extra = {}) => queryOptions({ ...extra, ...rowsOptionsOf(c) });
   // Field metadata as this layer reads it: the system lookups are always declared, so a null lookup serializes as _x_value.
   const systemFields = (logical) => {
     let m;
@@ -349,6 +379,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // A write that gives a money column a non-null value stores the base currency on the row, once the organization has one.
   // A row never given a money value has no currency lookup; setting a money value supplies one.
   function currencyOnWrite(mapping, row) {
+    // An explicit currency lookup (a body bind resolved to the column) is kept, not replaced by the base currency.
+    if (row?.transactioncurrencyid != null) return {};
     const given = Object.keys(row ?? {}).some((key) => !key.includes("@") && row[key] != null && isMoney(mapping, key));
     const base = given ? baseCurrency() : null;
     return base ? { transactioncurrencyid: base.transactioncurrencyid } : {};
@@ -396,6 +428,10 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   };
   const isMember = (mapping, name) =>
     name === mapping.idColumn || Boolean(navigationOf(mapping, name)) || Boolean(store.fieldDefinition(mapping.logicalName, name, fieldsOf));
+  // A nav@odata.bind names a navigation (case-sensitive), never a column; the system lookups bind on their column name.
+  // ponytail: as data.mjs normalizeRecord, a lookup column no relationship covers binds on its exact name.
+  const undeclaredLookup = (mapping, nav) => fieldKind(mapping.fields?.[nav]) === "lookup" && !Object.values(mapping.relationships ?? {}).some((rel) => rel?.from === nav);
+  const isBindable = (mapping, nav) => Boolean(navigationOf(mapping, nav)) || (LOOKUP_SYSTEM.has(nav) && isMember(mapping, nav)) || nav === "transactioncurrencyid" || undeclaredLookup(mapping, nav);
   const undeclared = (set, nav) =>
     invalid(
       `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: An undeclared property '${nav}' which only has property annotations in the payload but no property value was found in the payload. In OData, only declared navigation properties and declared named streams can be represented as properties without values`,
@@ -408,7 +444,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       if (CONTROL.has(key) || (key.includes("@") && !key.endsWith(BIND))) continue;
       if (key.endsWith(BIND)) {
         const nav = key.slice(0, -BIND.length);
-        if (!isMember(mapping, nav)) throw undeclared(mapping.entitySet, nav);
+        if (!isBindable(mapping, nav)) throw undeclared(mapping.entitySet, nav);
         continue;
       }
       // A plain lookup, owner or customer value is untyped: lookups are set through @odata.bind (a navigation object is a deep insert).
@@ -459,6 +495,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     }
     assertExpand(items, mapping, relationshipOf);
     assertExpandReadable(c, mapping, items);
+    if (security()) assertUnmaskedQuery(c, mapping, { filter, orderby: params.get("$orderby"), expand: items }, aliases);
   }
 
   // Formats one row, adds the owner navigation annotation the formatter leaves out and shapes money columns.
@@ -496,7 +533,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (!held && formatted[CURRENCY] === undefined && currencySelected(c) && Object.keys(formatted).some((key) => !key.includes("@") && isMoney(mapping, key))) formatted[CURRENCY] = null;
     if (options?.allColumns) fillColumns(c, mapping, formatted);
     if (options?.expand?.length) pageExpansions(c, mapping, row, formatted, options.expand, { collection: options.single !== true });
-    projectRow(c, mapping, formatted, options?.expand);
+    projectRow(c, mapping, formatted, options?.expand, options?.single === true);
     return formatted;
   }
 
@@ -643,14 +680,17 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (organizationId && child._organizationid_value === undefined && ownershipOf(target.logicalName, undefined, target) === "org") child._organizationid_value = organizationId;
   }
 
-  // project hooks see the row, then each expanded row under it (in its own table, with its own nested expansions).
-  function projectRow(c, mapping, formatted, expand = []) {
+  // The read projection: project hooks see the row, then each expanded row under it (in its own table, with its own
+  // nested expansions). Computed columns already hold their computed value (store.setComputedColumns); the hooks then
+  // apply column security (null) and masking rules (masked unless UnMaskedData and CanReadUnmasked allow it).
+  // single is a single-record read (entity, property, $value); collections, FetchXML and $expand rows are not.
+  function projectRow(c, mapping, formatted, expand = [], single = false) {
     const all = metadata?.recordFields?.(mapping.logicalName, { includeNonOData: true });
     if (all) for (const [name, field] of Object.entries(all)) {
       if ((field.dataverseMetadata?.IsValidODataAttribute ?? field.columnMetadata?.isValidODataAttribute) !== false) continue;
       for (const key of Object.keys(formatted)) if (key === name || key.startsWith(`${name}@`)) delete formatted[key];
     }
-    runHooks("project", c, mapping, formatted);
+    runHooks("project", c, mapping, formatted, { single });
     for (const spec of expand) {
       const rel = navigationOf(mapping, spec.navigation);
       const value = formatted[spec.navigation];
@@ -783,119 +823,141 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     return { status: 200, headers: applied ? { "Preference-Applied": applied } : {}, body };
   }
 
-  // Column-level security (api.fieldSecurity). unverified: live capture. The platform docs do not say how a $filter or $orderby
-  // on a secured column behaves, so here such a column reads as null for the caller: a $filter runs over the masked rows and
-  // a $orderby drops its hidden items (equal nulls tie, so the rest of the sort decides).
+  // Column-level security (api.fieldSecurity). A column the caller cannot read is nulled in the store's query context
+  // (rowsOptionsOf), so every $filter, $orderby, $apply step, lambda and $expand option evaluates it as null: a right and a
+  // wrong guess answer alike. unverified: live capture; the platform docs do not say how such a filter behaves.
+  // A readable secured column with a masking rule the read does not unmask (a collection read: UnMaskedData with
+  // CanReadUnmasked All Records unmasks) is never a filter, order or aggregate operand at any path depth: Learn
+  // web-service-error-codes 0x80041155 CannotFilterOnMaskedAttribute. One rule: api.fieldSecurity.maskedFor.
   const security = () => fieldSecurity?.();
-  const hiddenColumn = (c, logical, name) => {
-    const fs = security();
-    return Boolean(fs) && !fs.canRead(c.user, logical, String(name ?? "").replace(/^_(.+)_value$/, "$1"));
+  // The table and column a property path ends on, through its navigation segments (lambda paths come qualified from the root).
+  const columnOf = (logical, segments) => {
+    let mapping = store.resolveMapping(logical);
+    for (const segment of segments.slice(0, -1)) {
+      const rel = navigationOf(mapping, segment);
+      if (!rel) return null;
+      mapping = store.resolveMapping(rel.entity);
+    }
+    return { logical: mapping.logicalName, column: String(segments.at(-1) ?? "").replace(/^_(.+)_value$/, "$1") };
   };
-  const hiddenIn = (c, logical, ast) => expressionPaths(ast).some(([name, ...rest]) => rest.length === 0 && hiddenColumn(c, logical, name));
+  const maskedPath = (c, logical, segments) => {
+    const target = columnOf(logical, segments);
+    return Boolean(target && security()?.maskedFor?.(c.user, target.logical, target.column, { unmask: c.unmasked === true, single: false }));
+  };
+  const maskedIn = (c, logical, ast) => expressionPaths(ast).some((path) => maskedPath(c, logical, path));
+  // unverified: Learn names filtering only; an order on a masked column is refused the same way (it is the same oracle).
+  const assertUnmasked = (c, logical, paths) => {
+    if (paths.some((path) => maskedPath(c, logical, path))) throw maskedOperand();
+  };
+  const orderPaths = (orderby) => (orderby ? splitTopLevel(orderby).map((item) => item.trim().split(/\s+/)[0].split("/")) : []);
   const aliasesOf = (params) => Object.fromEntries([...params].filter(([name]) => name.startsWith("@")));
-  // Ids both narrowings keep; null is no narrowing.
-  const intersectIds = (a, b) => {
-    if (a == null || b == null) return a ?? b;
-    const keep = new Set(b.map((id) => String(id).toLowerCase()));
-    return a.filter((id) => keep.has(String(id).toLowerCase()));
-  };
-  // The ids whose masked row satisfies the filter: the store's own predicate, run over each row with its hidden columns nulled.
-  function maskedIds(c, mapping, ast) {
-    const logical = mapping.logicalName;
-    const ctx = store.queryContext(c.identity, { metadata: readFieldsOf, backendRowsFilter: rowsFilterOf(c), dialect: "dataverse" });
-    const predicate = compileODataPredicate(ast, mapping, ctx);
-    return store.query(logical, new URLSearchParams(), c.identity, undefined, secured(c)).value
-      .filter((row) => predicate(security().mask(c.user, logical, row)))
-      .map((row) => row[mapping.idColumn]);
-  }
-  // Drops the hidden items of a $orderby from out; the rest of the sort stands.
-  function dropHiddenOrder(c, logical, params, out) {
-    const orderby = params.get("$orderby");
-    if (!orderby) return;
-    const kept = splitTopLevel(orderby).filter((item) => !hiddenColumn(c, logical, item.trim().split(/\s+/)[0]));
-    if (kept.length) out.set("$orderby", kept.join(",")); else out.delete("$orderby");
-  }
-  // A collection's $filter and $orderby narrowed for hidden columns: the params to run, and the ids the rows must be in (null: no narrowing).
-  function securedQuery(c, mapping, params) {
-    const out = new URLSearchParams(params);
-    let ids = null;
-    if (!security()) return { params: out, ids };
-    const filter = params.get("$filter");
-    if (filter) {
-      const ast = parseODataExpression(filter, { dialect: "dataverse", aliases: aliasesOf(params), rejectNotOnQueryFunctions: true });
-      if (hiddenIn(c, mapping.logicalName, ast)) {
-        out.delete("$filter");
-        ids = maskedIds(c, mapping, ast);
-      }
+  // A query's $filter and $orderby on mapping, then each $expand option on its target table, at every depth.
+  function assertUnmaskedQuery(c, mapping, { filter, orderby, expand = [] }, aliases) {
+    if (filter && maskedIn(c, mapping.logicalName, parseODataExpression(filter, { dialect: "dataverse", aliases, rejectNotOnQueryFunctions: true }))) throw maskedOperand();
+    assertUnmasked(c, mapping.logicalName, orderPaths(orderby));
+    for (const item of expand) {
+      const rel = navigationOf(mapping, item.navigation);
+      if (rel) assertUnmaskedQuery(c, store.resolveMapping(rel.entity), item, aliases);
     }
-    dropHiddenOrder(c, mapping.logicalName, params, out);
-    return { params: out, ids };
   }
-  // $apply: a filter step on a hidden column leaves the pipeline and its masked matches narrow the rows instead. Aggregates and
-  // groupings over a secured column the caller cannot read are refused (assertAggregate).
-  function applyNarrowed(c, mapping, params) {
+  // $apply: a filter step on a masked path is refused; every groupby and aggregate path is resolved to its table and column
+  // and checked by assertAggregate (hidden 403, masked 400).
+  function assertApply(c, mapping, params) {
+    if (!security()) return;
     const logical = mapping.logicalName;
-    const out = new URLSearchParams(params);
-    let ids = null;
-    if (!security()) return { params: out, ids };
     const steps = parseApply(params.get("$apply"), { dialect: "dataverse", aliases: aliasesOf(params) });
-    const reads = steps.flatMap((step) => [...(step.properties ?? []), ...(step.aggregates ?? []).map((item) => item.path)]);
-    security().assertAggregate(c, mapping, reads.filter((path) => path?.length === 1).map(([name]) => name));
-    const parts = splitTopLevel(params.get("$apply").trim(), "/");
-    const kept = [];
-    steps.forEach((step, index) => {
-      if (step.kind === "filter" && hiddenIn(c, logical, step.ast)) ids = intersectIds(ids, maskedIds(c, mapping, step.ast));
-      else kept.push(parts[index]);
-    });
-    if (ids != null) {
-      if (kept.length) out.set("$apply", kept.join("/"));
-      else out.delete("$apply");
-    }
-    dropHiddenOrder(c, logical, params, out);
-    return { params: out, ids };
+    const reads = steps.flatMap((step) => [
+      ...(step.properties ?? []).map((path) => ({ path, method: "groupby" })),
+      ...(step.aggregates ?? []).filter((item) => item.path).map((item) => ({ path: item.path, method: item.method })),
+    ]);
+    security().assertAggregate(c, mapping, reads.flatMap(({ path, method }) => {
+      const target = columnOf(logical, path);
+      return target ? [{ ...target, method }] : [];
+    }));
+    for (const step of steps) if (step.kind === "filter" && maskedIn(c, logical, step.ast)) throw maskedOperand();
   }
-  // The entity and link-entity elements of a FetchXML document, each with the attribute names it reads.
+  // The entity and link-entity elements of a FetchXML document, each with the attributes it reads ({ column, method }: the
+  // aggregate, "groupby" or none) and the attribute names its conditions (attribute and valueof) and orders compare
+  // (operands; a condition's entityname moves it to that alias's frame). all: the frame has <all-attributes/>. Read from the
+  // same decoded document the engine runs (parseFetchXml), so character references and entities name the same column here.
   function fetchFrames(xml) {
-    const frames = [], open = [];
-    for (const [, closing, tag, attrs, empty] of xml.matchAll(/<(\/?)(entity|link-entity|attribute)\b([^<>]*?)(\/?)>/gi)) {
-      if (closing) {
-        if (!/^attribute$/i.test(tag)) open.pop();
-        continue;
+    const fetch = parseFetchXml(xml);
+    const frames = [], named = [];
+    const truthy = (value) => /^(?:true|1)$/i.test(String(value ?? "").trim());
+    const visit = (node, frame) => {
+      for (const child of node.children ?? []) {
+        if (child.name === "entity" || child.name === "link-entity") {
+          const next = { entity: child.attrs.name, alias: child.attrs.alias, attributes: [], operands: [], all: false };
+          frames.push(next);
+          visit(child, next);
+        } else if (child.name === "all-attributes") {
+          if (frame) frame.all = true;
+        } else if (child.name === "attribute") {
+          if (frame && child.attrs.name) frame.attributes.push({ column: child.attrs.name, method: truthy(child.attrs.groupby) ? "groupby" : child.attrs.aggregate?.toLowerCase() });
+        } else {
+          if (child.name === "condition" || child.name === "order") {
+            for (const key of ["attribute", "valueof"]) if (child.attrs[key]) named.push({ frame, entityname: child.attrs.entityname, attribute: child.attrs[key] });
+          }
+          visit(child, frame);
+        }
       }
-      const name = /\bname\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1];
-      if (/^attribute$/i.test(tag)) {
-        if (name) open.at(-1)?.attributes.push(name);
-        continue;
-      }
-      const frame = { entity: name, attributes: [] };
-      frames.push(frame);
-      if (!empty) open.push(frame);
+    };
+    visit(fetch, null);
+    for (const { frame, entityname, attribute } of named) {
+      const owner = entityname ? frames.find((item) => item.alias === entityname) ?? frames.find((item) => item.entity === entityname) : frame;
+      owner?.operands.push(attribute);
     }
-    return frames.filter((frame) => frame.entity);
+    return { aggregate: truthy(fetch.attrs.aggregate), distinct: truthy(fetch.attrs.distinct), frames: frames.filter((frame) => frame.entity) };
+  }
+  // A FetchXML document's column-security operand rule, for the Web API and SDK reads alike. Aggregates read raw columns: a
+  // hidden secured one is refused (403) and a masked one too (400 0x80041155), on the root or any link-entity, as $apply is.
+  // A condition or order on a masked column is refused, as $filter and $orderby are, and so is distinct="true" over one (it
+  // groups on the clear value, the same equality oracle as groupby). Hidden columns in conditions and orders read null.
+  function assertFetchOperands(c, xml) {
+    if (!security()) return;
+    const { aggregate, distinct, frames } = fetchFrames(xml);
+    for (const frame of frames) {
+      const target = store.resolveMapping(frame.entity);
+      if (aggregate) security().assertAggregate(c, target, frame.attributes.map((item) => ({ logical: target.logicalName, ...item })));
+      else if (distinct) assertUnmasked(c, target.logicalName, (frame.all ? Object.keys(readFieldsOf(target.logicalName)) : frame.attributes.map((item) => item.column)).map((name) => [name]));
+      assertUnmasked(c, target.logicalName, frame.operands.map((name) => [name]));
+    }
+  }
+  /**
+   * SDK reads (local organization service): the Web API column-security rules for a FetchXML text or OData params read
+   * outside the handlers. Throws for a masked operand (400 0x80041155) or a hidden aggregate (403); returns the store
+   * options that null the columns the caller cannot read ({ backendRowsMask } or {}).
+   */
+  function secureInternal(c, logical, { fetchXml = null, params = null, unmask = false } = {}) {
+    const fs = security();
+    if (!fs) return {};
+    const context = { ...internalContext(c), unmasked: unmask === true };
+    if (fetchXml != null) assertFetchOperands(context, fetchXml);
+    else {
+      const p = new URLSearchParams(params instanceof URLSearchParams ? params : Object.entries(params ?? {}).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)]));
+      const mapping = store.resolveMapping(logical);
+      assertUnmaskedQuery(context, mapping, { filter: p.get("$filter"), orderby: p.get("$orderby"), expand: parseExpand(p.get("$expand")) }, aliasesOf(p));
+      if (p.has("$apply")) assertApply(context, mapping, p);
+    }
+    return context.user && fs.rowMask ? { backendRowsMask: (name) => fs.rowMask(context.user, name) } : {};
   }
   // Formatted FetchXML row: hidden secured columns are nulled on the root and on each link-entity under its alias prefix.
   // An attribute given its own alias keeps that key, which the prefix does not reach, so it is nulled by key.
   function maskFetched(c, mapping, row, info) {
     const fs = security();
     if (!fs) return row;
-    let out = fs.mask(c.user, mapping.logicalName, row);
-    for (const [alias, logical] of Object.entries(info.aliases ?? {})) out = fs.mask(c.user, logical, out, { prefix: `${alias}.` });
+    // A FetchXML result is a multiple-record read: masking rules apply unless UnMaskedData and CanReadUnmasked All Records.
+    const view = { unmask: c.unmasked === true, single: false };
+    let out = fs.mask(c.user, mapping.logicalName, row, { view });
+    for (const [alias, logical] of Object.entries(info.aliases ?? {})) out = fs.mask(c.user, logical, out, { prefix: `${alias}.`, view });
     for (const column of info.columns ?? []) {
-      if (!column.aliased || fs.canRead(c.user, column.entity, column.attribute)) continue;
-      out[column.key] = null;
+      if (!column.aliased || out[column.key] == null) continue;
+      const value = fs.maskValue(c.user, column.entity, column.attribute, out[column.key], view);
+      if (value === out[column.key]) continue;
+      out[column.key] = value;
       for (const key of Object.keys(out)) if (key.startsWith(`${column.key}@`)) delete out[key];
     }
     return out;
-  }
-
-  // The paging cookie carries the values of a single $orderby column (first and last row), as encodeSkipToken writes them.
-  function orderColumnOf(url, rows) {
-    const specs = parseOrderBy(url.searchParams.get("$orderby"));
-    if (specs.length !== 1 || specs[0].path.length !== 1 || rows.length === 0) return null;
-    const name = specs[0].path[0];
-    const last = rows.at(-1)[name];
-    const first = rows[0][name];
-    return last === undefined || first === undefined ? null : { name, last, first };
   }
 
   // Collection page with Dataverse paging: maxpagesize (cap 5000) or the default page; $skiptoken names the next page.
@@ -907,15 +969,19 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const offset = pageOffset(url, pageSize);
     // Tracked paging: the token minted on the first page travels in the $skiptoken, so the delta link starts there.
     const delta = tracked ? (carriedDelta(url) ?? changes.token()) : null;
-    const narrowed = securedQuery(c, mapping, collectionParams(c, mapping));
-    const params = narrowed.params;
+    const params = collectionParams(c, mapping);
     // observed: parity case query.track-changes: a tracked page without $orderby answers in row-version (creation/update) order.
     // The sort is internal: links and context are built from the caller's url, so the order is not echoed.
     if (tracked && !params.has("$orderby")) params.set("$orderby", "versionnumber asc");
-    const paging = { params, offset, pageSize, preferenceApplied: null, nextLink: () => null };
-    const scope = intersectIds(ids, narrowed.ids);
-    const options = secured(c, scope ? { ids: scope } : {});
-    const result = scope?.length === 0 ? emptyPage() : store.query(mapping.logicalName, params, c.identity, paging, options);
+    // The cookie's last order-column values and row id let the store resume after that tuple instead of re-counting the
+    // offset (key-set paging), so a cursor row deleted or updated out of the filter since skips nothing (Learn page-results).
+    // Only this function's own cookies name the last row of the page in this order; an expansion's nested cookie
+    // (pageExpansions, which carries countOfRecords) names a row of the unsorted related set and keeps the offset.
+    const cookie = offset > 0 ? decodeSkipToken(url.searchParams.get("$skiptoken")) : null;
+    const after = cookie && cookie.countOfRecords === undefined ? { id: cookie.lastId, values: cookie.orderValues ?? {} } : null;
+    const paging = { params, offset, pageSize, after, preferenceApplied: null, nextLink: () => null };
+    const options = secured(c, ids ? { ids } : {});
+    const result = ids?.length === 0 ? emptyPage() : store.query(mapping.logicalName, params, c.identity, paging, options);
     const rows = result.value;
     const total = result.paging?.totalCount ?? rows.length;
     const counted = url.searchParams.get("$count") === "true";
@@ -933,7 +999,9 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
         lastId: rows.at(-1)[idColumn],
         firstId: rows[0][idColumn],
         idColumn,
-        orderColumn: orderColumnOf(url, rows),
+        // A secured column's values never travel in the cookie (they may be hidden or masked for the caller); such a
+        // page resumes after the cursor row by id instead.
+        orderColumns: (result.paging.order ?? []).filter((column) => !isSecuredField(readDefinition(mapping, column.name.replace(/^_(.+)_value$/, "$1")))),
       });
       // An extra attribute on the cookie carries the delta token; decodeSkipToken reads the paging attributes around it.
       const token = tracked ? cookie.replace(" />", ` deltatoken="${delta}" />`) : cookie;
@@ -955,8 +1023,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   function applyPage(c, mapping) {
     assertQueryMembers(c, mapping, c.url.searchParams);
-    const narrowed = applyNarrowed(c, mapping, new URLSearchParams(c.url.searchParams));
-    const result = store.query(mapping.logicalName, narrowed.params, c.identity, undefined, secured(c, narrowed.ids ? { ids: narrowed.ids } : {}));
+    assertApply(c, mapping, c.url.searchParams);
+    const result = store.query(mapping.logicalName, new URLSearchParams(c.url.searchParams), c.identity, undefined, secured(c));
     const value = result.value.map((row) => keepAnnotations(aggregateValues(mapping, row, formatRow(c, mapping, row, { etag: false })), c.include));
     const body = { "@odata.context": contextFor(c, mapping.entitySet), ...(result["@odata.count"] !== undefined ? { "@odata.count": result["@odata.count"] } : {}) };
     return { status: 200, body: { ...addMetadataVersion(c, body), value } };
@@ -982,11 +1050,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     for (const [, linked] of xml.matchAll(/<link-entity\b[^>]*?\bname\s*=\s*["']([^"']+)["']/gi)) {
       authorize(c, linked, "read", store.resolveMapping(linked));
     }
-    // Aggregates read raw columns: a hidden secured one is refused, on the root or on any link-entity.
-    if (security() && /<fetch\b[^>]*\baggregate\s*=\s*["']true["']/i.test(xml)) {
-      for (const frame of fetchFrames(xml)) security().assertAggregate(c, store.resolveMapping(frame.entity), frame.attributes);
-    }
-    const fetched = store.fetchXml(xml, c.identity, { metadata: readFieldsOf, backendRowsFilter: rowsFilterOf(c) });
+    assertFetchOperands(c, xml);
+    const fetched = store.fetchXml(xml, c.identity, { metadata: readFieldsOf, ...rowsOptionsOf(c) });
     const info = fetched.columns;
     const columns = (info.columns ?? []).filter((col) => col.alias == null && !col.aliased && !col.aggregate).map((col) => col.attribute);
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.push(mapping.idColumn);
@@ -1039,6 +1104,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       throw invalid("Link entities are not supported", "0x80048d0b");
     authorize(c, mapping.logicalName, "read", mapping);
     const readFilter = filterOf(c, mapping);
+    await source(c, mapping, { single: false, id: null });
     const answer = await firstAnswer("query", c, mapping);
     if (answer !== undefined) return answer.fetchXml != null ? fetchXmlPage(c, mapping, answer.fetchXml, { order: answer.columnOrder }) : answer;
     assertPredefinedAnswered(url);
@@ -1055,6 +1121,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   async function countRecords(c) {
     const { mapping, url } = c;
     authorize(c, mapping.logicalName, "read", mapping);
+    await source(c, mapping, { single: false, id: null });
     if (url.searchParams.has("$deltatoken")) {
       assertTableTracking(c, mapping, filterOf(c, mapping));
       const { changed, deleted } = await deltaChanges(c, mapping);
@@ -1071,13 +1138,13 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (url.searchParams.has("$filter")) params.set("$filter", url.searchParams.get("$filter"));
     params.set("$select", mapping.idColumn);
     assertQueryMembers(c, mapping, params);
-    const narrowed = securedQuery(c, mapping, params);
-    const result = store.query(mapping.logicalName, narrowed.params, c.identity, undefined, secured(c, narrowed.ids ? { ids: narrowed.ids } : {}));
+    const result = store.query(mapping.logicalName, params, c.identity, undefined, secured(c));
     return { status: 200, body: String(Math.min(result.value.length, isElastic(mapping) ? 500 : PAGE_CAP)) };
   }
 
-  function getEntity(c) {
+  async function getEntity(c) {
     const { mapping } = c;
+    await sourceKey(c, mapping);
     const key = lookupKey(c, mapping, c.route.key);
     if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, "read", mapping, key.row);
@@ -1143,7 +1210,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
         authorize(c, target.logicalName, "append", target);
         authorize(c, mapping.logicalName, "appendto", mapping);
         const childData = await deepPayload(c, target, createPayload(target, child));
-        await beforeWrite(c, target, { operation: "create", data: childData, existing: null });
+        await beforeWrite(c, target, { operation: "create", data: childData, existing: null, deep: true });
         children.push(childData);
       }
       data[key] = Array.isArray(value) ? children : children[0];
@@ -1199,14 +1266,26 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // Audit and ownership columns are written by the store after coercion, whether or not the mapping declares them.
   // The store calls this per row it writes, so a deep-inserted child gets the columns of its own table.
   // A created or updated row takes the next org-wide row version (state.rowVersion, persisted): its versionnumber, and the ETag W/"<versionnumber>".
+  // Without a user (createInternal when the organization has no SYSTEM user) no audit or ownership columns are written.
+  // A portal write (internal entries, c.portal) is made by the site's application user: its observed name, as the store
+  // stamps it on rows the portal creates (observed.portalApplicationUser), names createdby and modifiedby. Under enhanced
+  // authorization the write runs as the visitor's mapped user (portal-authorization.mjs), whose name the columns keep.
+  const portalUser = (c) => c.portal && store.observed?.portalApplicationUser && !store.portalAuthorization?.principalId(c.identity)
+    ? { id: store.observed.portalApplicationUserId ?? null, logical_name: "systemuser", name: store.observed.portalApplicationUser } : null;
   const systemColumns = (c, create) => (mapping, input) => ({
-    ...principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create }),
+    ...(c.user ? principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create }) : {}),
+    ...(portalUser(c) ? { ...(create ? { createdby: portalUser(c) } : {}), modifiedby: portalUser(c) } : {}),
     versionnumber: nextRowVersion(store),
     ...currencyOnWrite(mapping, input),
     ...timeZoneOnWrite(mapping, input),
   });
   const createOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, true), bypassCustomPlugins: c.bypassCustomPlugins === true });
-  const updateOptions = (c, extra = {}) => writeOptions({ partitionId: c.partitionId, ...extra, systemColumns: systemColumns(c, false), bypassCustomPlugins: c.bypassCustomPlugins === true });
+  // An object extra.systemColumns (an internal writer's kept stamps, e.g. CalculateRollupField's modifiedon) lands over the stamps.
+  const updateOptions = (c, extra = {}) => {
+    const kept = extra.systemColumns && typeof extra.systemColumns === "object" ? extra.systemColumns : null;
+    const stamps = systemColumns(c, false);
+    return writeOptions({ partitionId: c.partitionId, ...extra, systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps, bypassCustomPlugins: c.bypassCustomPlugins === true });
+  };
 
   async function createData(c, mapping, body) {
     const data = createPayload(mapping, body);
@@ -1239,9 +1318,12 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     return !mapping.intersect || Boolean(mapping.stateStatusDefaults || store.fieldDefinition(mapping.logicalName, "statecode", fieldsOf) || store.fieldDefinition(mapping.logicalName, "statuscode", fieldsOf));
   }
 
-  async function updateData(c, mapping, body, existing) {
+  // addressed: the alternate key columns the URL names; an update drops body values for them (Learn use-upsert: the server
+  // removes the data that uses the same keys as the key attributes, so a key cannot change through the key that addresses it).
+  async function updateData(c, mapping, body, existing, addressed = []) {
     const data = bindsOf(c, mapping, payload(mapping, body), existing);
     delete data[mapping.idColumn];
+    for (const name of addressed) delete data[name];
     await beforeWrite(c, mapping, { operation: "update", data, existing });
     return data;
   }
@@ -1266,22 +1348,28 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       authorize(c, logical, key.row ? "update" : "create", mapping, key.row ?? undefined);
       if (Object.keys(data).some((name) => name.endsWith(BIND))) authorize(c, logical, "append", mapping);
       await beforeWrite(c, mapping, { operation: "upsert", data, existing: key.row });
-      const result = store.elasticUpsertRecord(logical, key.id ?? data[mapping.idColumn], data, c.identity,
+      const result = await store.elasticUpsertRecordAsync(logical, key.id ?? data[mapping.idColumn], data, c.identity,
         (key.row ? updateOptions : createOptions)(c, { ifMatch, ifNoneMatch, partitionId: c.partitionId }));
       await afterWrite(c, mapping, { operation: "upsert", id: result.row[mapping.idColumn] });
       return { created: result.created, id: result.row[mapping.idColumn] };
     }
     if (key.row) {
       authorize(c, logical, "update", mapping, key.row);
-      const data = await updateData(c, mapping, body, key.row);
-      withKeyViolation(mapping, data, () => store.updateRecord(logical, key.row[mapping.idColumn], data, c.identity, updateOptions(c, { ifMatch, ifNoneMatch })));
+      // An elastic row's partitionid key is its partition: a body that changes it stays refused (elastic tables), not dropped.
+      // The body's values for the URL's alternate key are dropped (Learn use-upsert, "If the record exists"). The same rule
+      // applies to an If-Match: * update through an alternate key; Learn describes the drop only for Upsert.
+      // unverified: If-Match: * update via an alternate key with a body change to that key (not captured live)
+      const data = await updateData(c, mapping, body, key.row, isElastic(mapping) ? [] : Object.keys(key.alternate ?? {}));
+      await withKeyViolation(mapping, data, () => store.updateRecordAsync(logical, key.row[mapping.idColumn], data, c.identity, updateOptions(c, { ifMatch, ifNoneMatch })));
       await afterWrite(c, mapping, { operation: "update", id: key.row[mapping.idColumn] });
       return { created: false, id: key.row[mapping.idColumn] };
     }
     const data = await createData(c, mapping, body);
-    if (key.alternate) Object.assign(data, key.alternate);
+    // Learn use-upsert: a create keeps the key values the body sets, even when they differ from the URL, and copies only the
+    // missing ones from the URL.
+    if (key.alternate) for (const [name, value] of Object.entries(key.alternate)) { if (!Object.hasOwn(data, name)) data[name] = value; }
     else data[mapping.idColumn] = key.id;
-    const row = withKeyViolation(mapping, data, () => store.createRecord(logical, data, c.identity, createOptions(c, { ifNoneMatch })));
+    const row = await withKeyViolation(mapping, data, () => store.createRecordAsync(logical, data, c.identity, createOptions(c, { ifNoneMatch })));
     await afterWrite(c, mapping, { operation: "create", id: row[mapping.idColumn] });
     return { created: true, id: row[mapping.idColumn] };
   }
@@ -1291,8 +1379,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const body = bodyOf(mapping.entitySet, c.body);
     const row = await runWrite(async () => {
       const data = await createData(c, mapping, body);
-      const created = withKeyViolation(mapping, data, () =>
-        store.createRecord(mapping.logicalName, data, c.identity, createOptions(c, { ifNoneMatch: c.headers["if-none-match"] })),
+      const created = await withKeyViolation(mapping, data, () =>
+        store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c, { ifNoneMatch: c.headers["if-none-match"] })),
       );
       await afterWrite(c, mapping, { operation: "create", id: created[mapping.idColumn] });
       return created;
@@ -1313,11 +1401,17 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   async function patchEntity(c) {
     const { mapping } = c;
     const body = bodyOf(mapping.entitySet, c.body);
-    const key = lookupKey(c, mapping, c.route.key);
-    const outcome = await runWrite(() =>
-      upsertNow(c, mapping, key, body, { ifMatch: c.headers["if-match"], ifNoneMatch: c.headers["if-none-match"] }),
-    );
-    const location = entityUrl(c.origin, c.version, mapping.entitySet, isElastic(mapping) ? recordKey(mapping, { [mapping.idColumn]: outcome.id, partitionid: c.partitionId }) : key.alternate ? key.text : outcome.id);
+    // The key row is read inside the write slot, so concurrent upserts of one new key create once and then update.
+    let key;
+    const outcome = await runWrite(() => {
+      key = lookupKey(c, mapping, c.route.key);
+      return upsertNow(c, mapping, key, body, { ifMatch: c.headers["if-match"], ifNoneMatch: c.headers["if-none-match"] });
+    });
+    // The location names the stored row: the URL key while the row still carries those key values, else its id (an
+    // upsert-create keeps the body's differing key values, Learn use-upsert, so the URL key would not find it).
+    const stored = key.alternate && rowOf(c, mapping, outcome.id);
+    const urlKeyHolds = key.alternate && stored && Object.entries(key.alternate).every(([name, value]) => String(stored[name] ?? "").toLowerCase() === String(value ?? "").toLowerCase());
+    const location = entityUrl(c.origin, c.version, mapping.entitySet, isElastic(mapping) ? recordKey(mapping, { [mapping.idColumn]: outcome.id, partitionid: c.partitionId }) : urlKeyHolds ? key.text : outcome.id);
     if (!c.prefer.representation) return { status: 204, headers: { "OData-EntityId": location, Location: location } };
     // An update answers every column but drops the null ones (observed: every PATCH 200 body); an upsert-create keeps its own column set.
     const represented = outcome.created
@@ -1328,12 +1422,13 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   async function deleteEntity(c) {
     const { mapping } = c;
-    const key = lookupKey(c, mapping, c.route.key);
-    if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
-    authorize(c, mapping.logicalName, "delete", mapping, key.row);
+    // Resolved and authorized inside the write slot, against the row as earlier queued writes left it.
     await runWrite(async () => {
+      const key = lookupKey(c, mapping, c.route.key);
+      if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
+      authorize(c, mapping.logicalName, "delete", mapping, key.row);
       await beforeWrite(c, mapping, { operation: "delete", existing: key.row });
-      store.removeRecord(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(c, { ifMatch: c.headers["if-match"] }));
+      await store.removeRecordAsync(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(c, { ifMatch: c.headers["if-match"] }));
       await afterWrite(c, mapping, { operation: "delete", id: key.row[mapping.idColumn] });
     });
     return { status: 204 };
@@ -1354,6 +1449,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   async function getNavigation(c, rel) {
     const { mapping, route } = c;
     const key = parentRow(c, mapping, "read");
+    await source(c, store.resolveMapping(rel.entity), { single: false, id: null });
     const { target, rows } = relatedRows(c, mapping, key.row, rel, route.segmentKey);
     if (rel.many === false) {
       const [row] = rows;
@@ -1387,11 +1483,16 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (!hasProperty(mapping, segment)) throw new DataError(`Resource not found for the segment '${segment}'`, 404, "UnknownEntity", { httpStatus: 404, innerCode: "0x80060888", route: true });
     const params = new URLSearchParams({ $select: segment });
     const projected = store.query(mapping.logicalName, params, c.identity, undefined, secured(c, { id })).value[0];
-    return projected?.[segment] ?? null;
+    if (!projected) return null;
+    // The property and $value routes go through the same read projection as the entity read (column security, masking).
+    const formatted = { [mapping.idColumn]: projected[mapping.idColumn] ?? id, [segment]: projected[segment] ?? null };
+    projectRow(c, mapping, formatted, [], true);
+    return formatted[segment] ?? null;
   }
 
-  function getProperty(c) {
+  async function getProperty(c) {
     const { mapping, route } = c;
+    await sourceKey(c, mapping);
     const rel = navigationOf(mapping, route.segment);
     if (rel) return getNavigation(c, rel);
     const key = parentRow(c, mapping, "read");
@@ -1400,7 +1501,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     return { status: 200, body: { "@odata.context": contextFor(c, `${mapping.entitySet}(${route.key})/${route.segment}`), value } };
   }
 
-  function getValue(c) {
+  async function getValue(c) {
+    await sourceKey(c, c.mapping);
     const key = parentRow(c, c.mapping, "read");
     // A raw value of an unknown property: Dataverse names the $value segment, not the property.
     if (!hasProperty(c.mapping, c.route.segment)) {
@@ -1415,7 +1517,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const key = parentRow(c, mapping, "update");
     await runWrite(async () => {
       const data = await updateData(c, mapping, { [segment]: value }, key.row);
-      store.updateRecord(mapping.logicalName, key.row[mapping.idColumn], data, c.identity, updateOptions(c));
+      await store.updateRecordAsync(mapping.logicalName, key.row[mapping.idColumn], data, c.identity, updateOptions(c));
       await afterWrite(c, mapping, { operation: "update", id: key.row[mapping.idColumn] });
     });
     return { status: 204 };
@@ -1463,12 +1565,10 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const child = rowOf(c, target, ref.id);
     if (!child) throw notFoundRecord(target.logicalName, ref.id);
     authorize(c, target.logicalName, "append", target, child);
-    // changeAssociationRecord, not store.associate: that one opens its own transaction, which would queue behind this one.
-    await runWrite(async () => {
-      await beforeWrite(c, mapping, { operation: "associate", data: { relationship: route.segment, id: child[target.idColumn] }, existing: parent.row });
-      store.changeAssociationRecord(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity, true, updateOptions(c));
-      await afterWrite(c, mapping, { operation: "associate", id: parent.row[mapping.idColumn], relationship: route.segment });
-    });
+    // The shared association pipeline (associationSteps), authorized above; changeAssociationRecord, not store.associate:
+    // that one opens its own transaction, which would queue behind this one.
+    await runWrite(() => drive(associationSteps(c, mapping.logicalName, parent.row[mapping.idColumn], route.segment, [child[target.idColumn]], true,
+      { authorized: true, writeOptions: { partitionId: c.partitionId } })));
     return { status: 204 };
   }
 
@@ -1480,7 +1580,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const parent = parentRow(c, mapping, "update");
     await runWrite(async () => {
       const data = await updateData(c, mapping, { [`${route.segment}${BIND}`]: `/${ref.set}(${ref.id})` }, parent.row);
-      store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c));
+      await store.updateRecordAsync(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c));
       await afterWrite(c, mapping, { operation: "update", id: parent.row[mapping.idColumn], relationship: route.segment });
     });
     return { status: 204 };
@@ -1494,7 +1594,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       const parent = parentRow(c, mapping, "update");
       await runWrite(async () => {
         const data = await updateData(c, mapping, { [`${route.segment}${BIND}`]: null }, parent.row);
-        store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c));
+        await store.updateRecordAsync(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c));
         await afterWrite(c, mapping, { operation: "update", id: parent.row[mapping.idColumn], relationship: route.segment });
       });
       return { status: 204 };
@@ -1505,11 +1605,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const child = rowOf(c, target, childId);
     if (!child) throw notFoundRecord(target.logicalName, childId);
     authorize(c, target.logicalName, "append", target, child);
-    await runWrite(async () => {
-      await beforeWrite(c, mapping, { operation: "disassociate", data: { relationship: route.segment, id: child[target.idColumn] }, existing: parent.row });
-      store.changeAssociationRecord(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity, false, updateOptions(c));
-      await afterWrite(c, mapping, { operation: "disassociate", id: parent.row[mapping.idColumn], relationship: route.segment });
-    });
+    await runWrite(() => drive(associationSteps(c, mapping.logicalName, parent.row[mapping.idColumn], route.segment, [child[target.idColumn]], false,
+      { authorized: true, writeOptions: { partitionId: c.partitionId } })));
     return { status: 204 };
   }
 
@@ -1549,7 +1646,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
         await runWrite(async () => {
           if (route.name === "CreateMultiple") {
             const data = await createData(item, mapping, target);
-            const row = store.createRecord(mapping.logicalName, data, c.identity, createOptions(item));
+            const row = await store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(item));
             ids.push(row[mapping.idColumn]);
             await afterWrite(item, mapping, { operation: "create", id: row[mapping.idColumn] });
           } else {
@@ -1559,7 +1656,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
               if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
               authorize(item, mapping.logicalName, "delete", mapping, key.row);
               await beforeWrite(item, mapping, { operation: "delete", existing: key.row });
-              store.removeRecord(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(item));
+              await store.removeRecordAsync(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(item));
               await afterWrite(item, mapping, { operation: "delete", id: key.row[mapping.idColumn] });
             } else {
               await upsertNow(item, mapping, key, target, { ifMatch: route.name === "UpdateMultiple" ? "*" : undefined });
@@ -1590,7 +1687,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
         const created = [];
         for (const target of targets) {
           const data = await createData(c, mapping, target);
-          created.push(withKeyViolation(mapping, data, () => store.createRecord(mapping.logicalName, data, c.identity, createOptions(c))));
+          created.push(await withKeyViolation(mapping, data, () => store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c))));
         }
         for (const row of created) await afterWrite(c, mapping, { operation: "create", id: row[mapping.idColumn] });
         return created;
@@ -1681,13 +1778,320 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     }
   }
 
-  return {
+  // ---- Internal writes: the organization mutation pipeline for every caller that is not a Web API request ---------------
+  // Callers: the SDK IOrganizationService (local-organization-service.mjs: CLR plug-ins and the flow Dataverse connector), the
+  // portal /_api and portal forms, activity messages, and note, attachment and SharePoint rows (dataverse-files.mjs
+  // createThroughPipeline). Each entry runs the Web API rules below in the caller's store transaction (none of its own).
+  //
+  // Context c: { user?, userId?, identity?, caller?, requestId?, portal? }. Without c.user, c.userId names the acting
+  // systemuser (an SDK backend profile) and resolves to that user, else to the organization SYSTEM user; c.portal acts as
+  // the SYSTEM user and stamps the site's observed application user (observed.portalApplicationUser) as createdby/modifiedby.
+  // Options: authorized (the caller has authorized the write itself: explicit backend grants or portal table permissions;
+  // principals.authorize is skipped), writeOptions (extra store write options, e.g. sdkResponseToken, portalRequest,
+  // metadata, coerce), partitionId (elastic rows), sync and deferred.
+  // sync: the entry returns its result instead of a promise, for a synchronous caller (an SDK call inside the store's
+  // synchronous plug-in pipeline). Every hook still runs inline and in order, so the synchronous rule hooks (business rules,
+  // calculated and formula refusal, currency, state transitions, duplicates, column security, rollup marking, cascade, system
+  // columns) take effect exactly as on the Web API. A beforeWrite hook is a pre-operation rule: one that answers a promise
+  // (an asynchronous Power Fx adapter, attachment storage) cannot finish before the store write, so the call is refused with
+  // 501 SdkAsyncPreOperationUnsupported naming the hook's module, inside the caller's savepoint and before the store write.
+  // An external (main-operation) promise, an asynchronous virtual-table provider, is refused the same way inside the savepoint,
+  // which rolls the store write back. An afterWrite promise (audit association rows, a real-time classic
+  // workflow) is pushed to `deferred`, finishes after the call returns, and the caller reports its failure
+  // (SDK_DEFERRED_EFFECT). ponytail: the afterWrite remainder runs outside the call's savepoint; hook classes declared at
+  // registration would let the pipeline move such hooks wholly to post-commit work.
+  function* writeHooks(name, ...args) {
+    if (name === "afterWrite") yield* writeHooks("external", ...args);
+    for (const hook of hookList(name)) yield { name, hook, value: hook(...args) };
+  }
+  // A "store" step is the store write itself (yielded by createSteps/updateSteps/removeSteps): its value goes back into the
+  // steps. On the synchronous drive it is the stored row (data.mjs createRecord: the plug-in pipeline posts I/O steps through
+  // the synchronous I/O bridge); on the asynchronous drive it is the promise of data.mjs createRecordAsync, awaited here.
+  function drive(steps, { sync = false, deferred = [] } = {}) {
+    if (sync) {
+      let sent;
+      for (let step = steps.next(); ; step = steps.next(sent)) {
+        if (step.done) return step.value;
+        const { name, hook, value } = step.value;
+        sent = value;
+        if (typeof value?.then !== "function") continue;
+        if (name === "afterWrite") {
+          deferred.push(value);
+          continue;
+        }
+        value.catch?.(() => {}); // refused below: its own failure is not reported a second time
+        const module = hooks.moduleOf?.(hook) ?? (hook.name || "an unnamed record hook");
+        throw new DataError(`The ${name === "external" ? "main-operation" : "pre-operation"} record hook of ${module} is asynchronous; a synchronous SDK write cannot wait for it.`, 501, "SdkAsyncPreOperationUnsupported");
+      }
+    }
+    return (async () => {
+      let sent;
+      for (let step = steps.next(); ; step = steps.next(sent)) {
+        if (step.done) return step.value;
+        sent = await step.value.value;
+      }
+    })();
+  }
+  const systemUser = () => {
+    const organizationId = organizationRecord(store)?.organizationid;
+    return organizationId ? principals.byId?.(uuidV5(organizationId, "systemuser:SYSTEM")) ?? null : null;
+  };
+  const internalContext = (c) => {
+    if (c.user) return c;
+    if (c.userId != null) return { ...c, user: principals.byId?.(c.userId) ?? systemUser() };
+    if (c.portal) return { ...c, user: systemUser() };
+    return c;
+  };
+  // Hooks see the caller's context; the audit columns name its user, or SYSTEM when it has none.
+  const actorOf = (c) => (c.user ? c : { ...c, user: systemUser() });
+  // append on the table and appendTo on each looked-up row of { id, logical_name } lookups.
+  function authorizeLookups(c, mapping, data) {
+    const lookups = Object.entries(data).filter(([column, value]) => !LOOKUP_SYSTEM.has(column) && value !== null && typeof value === "object"
+      && !Array.isArray(value) && value.id != null && value.logical_name != null);
+    if (lookups.length) authorize(c, mapping.logicalName, "append", mapping);
+    for (const [, value] of lookups) {
+      let target;
+      try { target = store.resolveMapping(value.logical_name); } catch { continue; }
+      const row = store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
+      authorize(c, target.logicalName, "appendto", target, row);
+    }
+  }
+  // The stored row a write addresses, as the hooks' `existing`; the store write itself checks the caller's identity.
+  const existingRow = (mapping, id, partitionId) => {
+    const rows = store.tableRows(mapping.logicalName);
+    const row = rows[store.rowIndex(mapping, rows, id, partitionId === undefined ? {} : { partitionId })];
+    if (!row) throw notFoundRecord(mapping.logicalName, id);
+    return structuredClone(row);
+  };
+
+  /**
+   * Creates one internal row (a row a message, an SDK call, a connector action or a portal surface builds, not a Web API
+   * request body) through the Web API create rules; returns the stored row. Applied exactly as on a Web API create:
+   * create authorization, append on the table and appendTo on each looked-up row, the state-0 statecode/statuscode defaults
+   * (hasStateColumns/defaultStatus), the beforeWrite/afterWrite hooks, createOptions write options (coerce, metadata,
+   * dataverseWebApi, bypassCustomPlugins, plug-in steps in the store), the owner from an ownerid lookup, audit columns, the
+   * row version, base currency and time zone rule version (systemColumns), and the 412 alternate-key answer (withKeyViolation).
+   * Differs from a Web API create:
+   * - lookups are { id, logical_name } values (a portal payload's @odata.bind keys go to the store as they are): an unknown
+   *   lookup table is skipped and a missing looked-up row is checked for appendTo at table depth instead of answering 404;
+   *   ownerid takes no assign check (no bind to authorize);
+   * - createPayload's body rules (annotation and system-column filtering, overriddencreatedon) and deep insert do not apply;
+   * - without a user (see internalContext) nothing is authorized (the caller runs the admin pipeline and checked organization
+   *   privileges itself) and the audit columns name the organization SYSTEM user; options.authorized skips authorization too;
+   * - no store transaction of its own and no If-None-Match unless writeOptions carries it.
+   */
+  function createInternal(c, logical, data, options = {}) {
+    return drive(createSteps(internalContext(c), logical, data, options), options);
+  }
+  function* createSteps(c, logical, data, { authorized = false, writeOptions: extra = {}, sync = false }) {
+    const mapping = store.resolveMapping(logical);
+    if (c.user && !authorized) {
+      authorize(c, mapping.logicalName, "create", mapping);
+      authorizeLookups(c, mapping, data);
+    }
+    if (!("statecode" in data) && hasStateColumns(mapping)) data.statecode = 0;
+    if (!("statuscode" in data) && hasStateColumns(mapping)) {
+      const status = defaultStatus(mapping);
+      if (status !== undefined) data.statuscode = status;
+    }
+    yield* writeHooks("beforeWrite", c, mapping, { operation: "create", data, existing: null });
+    const write = sync ? store.createRecord : store.createRecordAsync;
+    const row = yield { name: "store", value: withKeyViolation(mapping, data, () => write.call(store, mapping.logicalName, data, c.identity ?? {}, createOptions(actorOf(c), extra))) };
+    yield* writeHooks("afterWrite", c, mapping, { operation: "create", id: row[mapping.idColumn], sync });
+    return row;
+  }
+
+  /**
+   * Updates one row through the Web API update rules: update authorization on the stored row, append/appendTo for
+   * { id, logical_name } lookups, the beforeWrite/afterWrite hooks with the stored row as `existing`, updateOptions (modifiedby,
+   * row version, currency, time zone) and withKeyViolation. id is a primary key or a store key text (alternate keys).
+   * Returns the stored row. Same context, options and differences as createInternal; the primary key column is never written.
+   */
+  function updateInternal(c, logical, id, data, options = {}) {
+    return drive(updateSteps(internalContext(c), logical, id, data, options), options);
+  }
+  function* updateSteps(c, logical, id, data, { authorized = false, writeOptions: extra = {}, partitionId, sync = false }) {
+    const mapping = store.resolveMapping(logical);
+    const existing = existingRow(mapping, id, partitionId);
+    if (c.user && !authorized) {
+      authorize(c, mapping.logicalName, "update", mapping, existing);
+      authorizeLookups(c, mapping, data);
+    }
+    delete data[mapping.idColumn];
+    yield* writeHooks("beforeWrite", c, mapping, { operation: "update", data, existing });
+    const write = sync ? store.updateRecord : store.updateRecordAsync;
+    const row = yield { name: "store", value: withKeyViolation(mapping, data, () => write.call(store, mapping.logicalName, id, data, c.identity ?? {},
+      updateOptions(actorOf(c), { ...(partitionId === undefined ? {} : { partitionId }), ...extra }))) };
+    yield* writeHooks("afterWrite", c, mapping, { operation: "update", id: existing[mapping.idColumn], sync });
+    return row;
+  }
+
+  /** Deletes one row through the Web API delete rules: delete authorization, the hooks, updateOptions (cascaded rows). */
+  function removeInternal(c, logical, id, options = {}) {
+    return drive(removeSteps(internalContext(c), logical, id, options), options);
+  }
+  function* removeSteps(c, logical, id, { authorized = false, writeOptions: extra = {}, partitionId, sync = false }) {
+    const mapping = store.resolveMapping(logical);
+    const existing = existingRow(mapping, id, partitionId);
+    if (c.user && !authorized) authorize(c, mapping.logicalName, "delete", mapping, existing);
+    yield* writeHooks("beforeWrite", c, mapping, { operation: "delete", existing });
+    const write = sync ? store.removeRecord : store.removeRecordAsync;
+    const result = yield { name: "store", value: write.call(store, mapping.logicalName, id, c.identity ?? {}, updateOptions(actorOf(c), { ...(partitionId === undefined ? {} : { partitionId }), ...extra })) };
+    yield* writeHooks("afterWrite", c, mapping, { operation: "delete", id: existing[mapping.idColumn], sync });
+    return result;
+  }
+
+  /**
+   * Associates (associateInternal) or disassociates (disassociateInternal) one row with related rows through a
+   * collection-valued navigation, under the Web API $ref rules; every caller (the Web API $ref routes, the SDK
+   * Associate/Disassociate, the portal /_api $ref) runs these steps:
+   * - appendTo on the row and append on each related row (Learn, security-concepts: Append / Append To), unless the caller
+   *   is unauthenticated (see internalContext) or options.authorized;
+   * - the beforeWrite hooks ({ operation, data: { relationship, id: relatedId }, existing }) and afterWrite hooks
+   *   ({ operation, id, relationship, relatedId }) once per related row (audit rows, security rules, committed work);
+   * - the Associate/Disassociate plug-in stages 10, 20 and 40 (store.pluginPipeline, with Target, Relationship and
+   *   RelatedEntities; skipped for c.bypassCustomPlugins) around store.changeAssociationRecord, which applies the
+   *   relationship rules and the caller identity's store permissions (portal table permissions).
+   * options: authorized, writeOptions (partitionId, portalRequest, sdkResponseToken), sync, deferred (as createInternal), and
+   * write: a caller-supplied write that replaces the plug-in stages and changeAssociationRecord (the SDK service's
+   * executeAssociation, which runs the stages with its explicit grants); with write, the related rows are not looked up.
+   * Signature: associateInternal(c, logical, id, navigation, relatedIds, options) -> null (or a promise of null without sync).
+   */
+  function associateInternal(c, logical, id, navigation, relatedIds, options = {}) {
+    return drive(associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), true, options), options);
+  }
+  /** The Disassociate counterpart of associateInternal: same context, arguments, options and rules. */
+  function disassociateInternal(c, logical, id, navigation, relatedIds, options = {}) {
+    return drive(associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), false, options), options);
+  }
+  function* associationSteps(c, logical, id, navigation, relatedIds, associate, { authorized = false, writeOptions: extra = {}, write = null, sync = false }) {
+    const mapping = store.resolveMapping(logical);
+    const operation = associate ? "associate" : "disassociate";
+    const { partitionId, sdkResponseToken, portalRequest } = extra;
+    const existing = existingRow(mapping, id, partitionId ?? undefined);
+    const rowId = existing[mapping.idColumn];
+    let rel = null, target = null;
+    if (!write) {
+      rel = navigationOf(mapping, navigation);
+      if (!rel || rel.many === false) throw new DataError(`'${navigation}' is not a collection-valued navigation of ${mapping.logicalName}; set a single-valued one through its lookup.`, 400, "InvalidAssociation");
+      target = store.resolveMapping(rel.entity);
+      const related = relatedIds.map((relatedId) => existingRow(target, relatedId));
+      if (c.user && !authorized) {
+        authorize(c, mapping.logicalName, "appendto", mapping, existing);
+        for (const row of related) authorize(c, target.logicalName, "append", target, row);
+      }
+    }
+    for (const relatedId of relatedIds) yield* writeHooks("beforeWrite", c, mapping, { operation, data: { relationship: navigation, id: relatedId }, existing });
+    // Without sync each stage's post and the referencing row's update steps are awaited (drive), never the synchronous bridge.
+    if (write) yield { name: "store", value: write() };
+    else {
+      // unverified: the Relationship schema name falls back to the navigation name when the mapping names none.
+      const parameters = {
+        Target: { $type: "EntityReference", logicalName: mapping.logicalName, id: rowId, name: null },
+        Relationship: { $type: "Relationship", schemaName: rel.schemaName ?? navigation, primaryEntityRole: null },
+        RelatedEntities: { $type: "EntityReferenceCollection", values: relatedIds.map((relatedId) => ({ $type: "EntityReference", logicalName: target.logicalName, id: relatedId, name: null })) },
+      };
+      const holder = structuredClone(existing), inherited = store.pluginInTransaction;
+      const phase = function* (stage) {
+        if (c.bypassCustomPlugins === true || !store.pluginPipeline || !store.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
+        if (stage !== 10) store.pluginInTransaction = !isElastic(mapping);
+        const frame = yield { name: "store", value: store.pluginPipeline({ entity: mapping.logicalName, operation, stage, associationParameters: parameters, record: holder, identity: c.identity ?? {}, changedAttributes: [], portalRequest: portalRequest === true, ...(sync ? {} : { awaitIo: true }) }) };
+        if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, sdkResponseToken);
+      };
+      try {
+        yield* phase(10);
+        yield* phase(20);
+        const change = sync ? store.changeAssociationRecord : store.changeAssociationRecordAsync;
+        for (const relatedId of relatedIds)
+          yield { name: "store", value: change.call(store, mapping.logicalName, rowId, navigation, relatedId, c.identity ?? {}, associate, updateOptions(actorOf(c), extra)) };
+        yield* phase(40);
+      } finally {
+        store.pluginInTransaction = inherited;
+      }
+    }
+    for (const relatedId of relatedIds) yield* writeHooks("afterWrite", c, mapping, { operation, id: rowId, relationship: navigation, relatedId });
+    return null;
+  }
+
+  /**
+   * Reads one stored row for a non-Web API reader (SDK Retrieve) through the shared read projection: the computed
+   * (calculated and formula) columns, then every project hook (column security, masking unless options.unmask, image
+   * columns), applied to the row before the store's Retrieve plug-in steps see it. Synchronous. Returns the store's answer
+   * (null when absent); getOptions (sdkColumns, sdkResponseToken, skipPluginRead) pass to store.get. Authorization is the
+   * caller's: the SDK service checks its explicit grants first.
+   */
+  // A virtual table is never read from its local mirror here: handlers.virtualProviders (set by
+  // dataverse-virtual-providers.mjs) answers the provider's synchronous retrieveSync or refuses with 501.
+  function readInternal(c, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
+    const context = internalContext(c), mapping = store.resolveMapping(logical);
+    const virtual = handlers.virtualProviders?.readSync(context, mapping.logicalName, { single: true, id });
+    if (virtual) return virtual.rows[0] ? projectInternal(context, mapping.logicalName, virtual.rows[0], { unmask, single: true }) : null;
+    return store.get(mapping.logicalName, id, context.identity ?? {}, {
+      ...getOptions, ...(partitionId === undefined ? {} : { partitionId }),
+      project: (row) => projectInternal(context, mapping.logicalName, withComputedInPlace(mapping, row), { unmask, single: true }),
+    });
+  }
+  // The computed (calculated and formula) columns of a read copy, computed from the stored row: every one when the copy is
+  // the stored row's clone, else only those the copy carries.
+  function withComputedInPlace(mapping, row, stored = row) {
+    const computed = store.computedColumns(mapping.logicalName);
+    if (!computed || !stored) return row;
+    const read = store.withComputed(mapping.logicalName, [stored])[0];
+    for (const column of computed.keys()) if (stored === row || Object.hasOwn(row, column)) row[column] = read[column];
+    return row;
+  }
+  /** The project hooks over one stored-shape row (SDK RetrieveMultiple rows, whose computed columns the store query fills). */
+  function projectInternal(c, logical, row, { unmask = false, single = false } = {}) {
+    const context = internalContext(c), mapping = store.resolveMapping(logical);
+    runHooks("project", { ...context, unmasked: unmask === true, url: context.url ?? new URL("http://localhost/") }, mapping, row, { single: single === true });
+    return row;
+  }
+  /** Column security and masking over a FetchXML answer's raw rows (root and link-entity aliases), as a Web API FetchXML read. */
+  function projectFetchedInternal(c, logical, answer) {
+    if (!security() || !Array.isArray(answer?.entities)) return answer;
+    const context = internalContext(c), mapping = store.resolveMapping(logical), info = answer.columns ?? {};
+    answer.entities = answer.entities.map((row) => maskFetched(context, mapping, row, info));
+    return answer;
+  }
+
+  /**
+   * The read projection every read route uses, exported for reads outside the Web API (SDK Retrieve and
+   * RetrieveMultiple): context { user, identity, url? }, logical, a row shaped as a Web API read; options
+   * { select (column list kept, with the id), unmask (UnMaskedData), single (a Retrieve; false for RetrieveMultiple) }.
+   * Applies computed columns, column security, then masking rules, in place, and returns the row.
+   */
+  function readProjection(context, logical, row, { select = null, unmask = false, single = true } = {}) {
+    const mapping = store.resolveMapping(logical);
+    if (store.computedColumns(mapping.logicalName)) {
+      const rows = store.tableRows(mapping.logicalName);
+      withComputedInPlace(mapping, row, rows[store.rowIndex(mapping, rows, row[mapping.idColumn])] ?? null);
+    }
+    if (Array.isArray(select)) {
+      const keep = new Set([...select, mapping.idColumn]);
+      for (const key of Object.keys(row)) if (!keep.has(key.split("@")[0])) delete row[key];
+    }
+    projectRow({ ...context, unmasked: unmask === true, url: context.url ?? new URL("http://localhost/") }, mapping, row, [], single === true);
+    return row;
+  }
+
+  const handlers = {
+    projectRow: readProjection,
+    createInternal,
+    updateInternal,
+    removeInternal,
+    associateInternal,
+    disassociateInternal,
+    readInternal,
+    projectInternal,
+    projectFetchedInternal,
+    secureInternal,
     async handle(ctx) {
       checkQuery(ctx.url);
       const mapping = mappingForSet(ctx.route.set);
       const c = {
         ...ctx,
         mapping,
+        unmasked: ctx.url.searchParams.get("UnMaskedData") === "true",
         include: ctx.prefer.annotations == null ? null : annotationMatcher(ctx.prefer.annotations),
         // Money formatted values carry the organization currency symbol, "$" when none is configured.
         formatter: createWebApiFormatter({
@@ -1709,6 +2113,13 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       return response;
     },
     // Unsubscribes the change log from the store; the API calls it when it closes.
-    close: () => changes.close(),
+    close: () => {
+      changes.close();
+      if (store.recordPipeline === handlers) delete store.recordPipeline;
+    },
   };
+  // The organization's internal write and read entries, for callers that hold only the store (the SDK bridge of a CLR
+  // plug-in, the flow Dataverse connector, the portal /_api and forms). One organization owns a store.
+  store.recordPipeline = handlers;
+  return handlers;
 }

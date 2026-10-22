@@ -140,7 +140,8 @@ test('the attach-file control uploads through the file API and posts the annotat
   assert.match(body, /AttachFile_HiddenField_AnnotationIds"\r\n\r\n\["[0-9a-f-]{36}"\]/);
   const note = app.store.snapshot().tables.annotation[0];
   assert.equal(note.filename, 'note.txt');
-  assert.equal(Buffer.from(note.documentbody, 'base64').toString(), 'attached text');
+  // The body is read through the portal's note read path: storage routing may hold it outside the row (__blobkey).
+  assert.equal(await (await fetch(`${app.url}/_entity/annotation/${note.annotationid}`)).text(), 'attached text');
   assert.deepEqual(errors, []);
 });
 
@@ -170,7 +171,7 @@ test('a failed attachment save preserves the selected file in the browser for re
   assert.equal((await response).status(), 200);
   await page.locator('#MessageLabel').filter({ hasText: 'Attached' }).waitFor();
   assert.equal(app.store.state.tables.annotation.length, 1);
-  assert.equal(Buffer.from(app.store.state.tables.annotation[0].documentbody, 'base64').toString(), 'retained text');
+  assert.equal(await (await fetch(`${app.url}/_entity/annotation/${app.store.state.tables.annotation[0].annotationid}`)).text(), 'retained text');
   assert.equal(uploadRequests, 2, 'Retry reuses the completed upload without uploading the file again');
   assert.deepEqual(errors, []);
 });

@@ -86,7 +86,7 @@ function decodeJwt(token) {
  *   portal's data records that contact's identity at the provider (async).
  * - allowRedirect(url): whether a post_logout_redirect_uri is on the portal's origin.
  */
-export async function startIdentityProvider({ host = "127.0.0.1", port = 0, providers, users, personaCatalog = () => null, registration = () => ({}), settings = {}, assets = [], fullPicker = null, provision = async () => {}, allowRedirect = () => false }) {
+export async function startIdentityProvider({ host = "127.0.0.1", port = 0, providers, users, personaCatalog = () => null, registration = () => ({}), settings = {}, assets = [], fullPicker = null, provision = async () => {}, allowRedirect = () => false, clock = () => Date.now() }) {
   settings = identityProviderSettings(settings);
   const builtinAssets = new Map(await Promise.all(["persona-chooser-client.mjs", "persona-chooser.css"].map(async name => ["/_idp/"+name, await fs.readFile(new URL(name, import.meta.url))])));
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -182,7 +182,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
   /** Claims of `user` in an id_token for `params` (nonce, acr) and the hashes of the codes/tokens it accompanies. */
   const idTokenClaims = (provider, params, user, { code = null, accessToken = null } = {}) => {
     const { name, given, family } = nameParts(user);
-    const now = Math.floor(Date.now() / 1000);
+    const now = Math.floor(clock() / 1000);
     const acr = params.acr_values.split(/\s+/).filter(Boolean)[0];
     return {
       aud: params.client_id,
@@ -216,7 +216,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
   };
   const issueAccessToken = (provider, params, user) => {
     const token = randomBytes(32).toString("base64url");
-    remember(accessTokens, token, { slug: provider.slug, clientId: params.client_id, user, scope: params.scope, expires: Date.now() + TOKEN_LIFETIME_S * 1000 });
+    remember(accessTokens, token, { slug: provider.slug, clientId: params.client_id, user, scope: params.scope, expires: clock() + TOKEN_LIFETIME_S * 1000 });
     return token;
   };
   /** The authorization response for `user`, as the response type asks. */
@@ -234,7 +234,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
         acr: params.acr_values,
         challenge: params.code_challenge || null,
         method: params.code_challenge ? params.code_challenge_method || "plain" : null,
-        expires: Date.now() + CODE_LIFETIME_MS,
+        expires: clock() + CODE_LIFETIME_MS,
       });
     const accessToken = type.includes("token") ? issueAccessToken(provider, params, user) : null;
     const fields = {
@@ -244,7 +244,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
       state: params.state,
     };
     const session = randomBytes(18).toString("base64url");
-    remember(sessions, session, { subject: user.subject, provider: provider.slug, user, at: Date.now() });
+    remember(sessions, session, { subject: user.subject, provider: provider.slug, user, at: clock() });
     return deliver(res, params, fields, { "set-cookie": `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Lax` });
   };
   const chooser = (provider, params, extras, list, query) => {
@@ -299,11 +299,11 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
     if (form.client_id && form.client_id !== provider.clientId) return "The client_id does not match the client assertion.";
     const audiences = Array.isArray(aud) ? aud : [aud];
     if (!audiences.includes(tokenEndpoint(provider)) && !audiences.includes(authority(provider))) return "The client assertion's audience is not this token endpoint.";
-    const now = Date.now() / 1000;
+    const now = clock() / 1000;
     if (!(Number(exp) > now - 60)) return "The client assertion has expired.";
     if (typeof jti !== "string" || !jti) return "The client assertion has no jti.";
     if (assertions.has(`${provider.slug}|${jti}`)) return "The client assertion was already used (jti replay).";
-    remember(assertions, `${provider.slug}|${jti}`, Date.now());
+    remember(assertions, `${provider.slug}|${jti}`, clock());
     return null;
   }
   /** PKCE (RFC 7636): the code_verifier for the code's challenge; an error message or null. */
@@ -321,7 +321,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
     const entry = codes.get(String(form.code ?? ""));
     if (!entry || entry.slug !== provider.slug) return tokenError(res, "invalid_grant", "The authorization code is unknown.");
     codes.delete(String(form.code));
-    if (entry.used || Date.now() > entry.expires) return tokenError(res, "invalid_grant", "The authorization code has expired or was already redeemed.");
+    if (entry.used || clock() > entry.expires) return tokenError(res, "invalid_grant", "The authorization code has expired or was already redeemed.");
     if (form.redirect_uri !== entry.redirectUri) return tokenError(res, "invalid_grant", "The redirect_uri is not the one the code was issued for.");
     if (entry.clientId !== provider.clientId) return tokenError(res, "invalid_grant", "The code was issued to another client.");
     const pkce = verifyPkce(entry, form.code_verifier);
@@ -339,7 +339,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
   function userinfo(req, res, provider) {
     const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
     const entry = bearer ? accessTokens.get(bearer) : null;
-    if (!entry || entry.slug !== provider.slug || Date.now() > entry.expires)
+    if (!entry || entry.slug !== provider.slug || clock() > entry.expires)
       return json(res, 401, { error: "invalid_token", error_description: bearer ? "The access token is unknown or expired." : "A Bearer access token is required." }, { "www-authenticate": `Bearer error="invalid_token"` });
     return json(res, 200, userInfoClaims(entry.user));
   }

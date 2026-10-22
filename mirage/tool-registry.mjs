@@ -19,7 +19,7 @@ export const MIRAGE_TOOLS = Object.freeze({
 });
 export const mirageToolHelp = name => `Usage: paqvilo mirage ${name} ${MIRAGE_TOOLS[name]}\n`;
 export const MIRAGE_LIFECYCLE = Object.freeze(['init', 'dev', 'start', 'status', 'stop']);
-export const MIRAGE_CORE_COMMANDS = Object.freeze(['serve', 'inspect', 'render', 'capture-shell', 'capture-stylesheets', 'capture-snippet-composition', 'verify', 'data']);
+export const MIRAGE_CORE_COMMANDS = Object.freeze(['serve', 'inspect', 'render', 'capture-shell', 'capture-stylesheets', 'capture-snippet-composition', 'verify', 'data', 'preflight']);
 export const MIRAGE_COMMANDS = Object.freeze([...new Set(['demo', ...MIRAGE_LIFECYCLE, ...MIRAGE_CORE_COMMANDS, ...Object.keys(MIRAGE_TOOLS)])]);
 export function unknownMirageCommand(command) {
   const distance = candidate => {

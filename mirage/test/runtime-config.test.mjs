@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runtimeSettings } from '../lib/runtime-config.mjs';
+import { RUNTIME_KINDS, runtimeSettings, runtimeCapabilities } from '../lib/runtime-config.mjs';
+import { createCapabilityRegistry } from '../lib/capability-registry.mjs';
 import { resolveProjectConfig } from '../lib/project-config.mjs';
 import { appCatalogue } from '../lib/model-driven/catalogue.mjs';
 
@@ -29,4 +30,12 @@ test('solution catalogue has no Power Pages provider and chooses an imported def
   assert.deepEqual(Object.keys(result.tables), ['x_item']);
   assert.equal(appCatalogue().defaultApp, null);
   assert.throws(() => appCatalogue({ ...input, defaultApp: '88888888-8888-4888-8888-888888888888' }), /not imported/);
+});
+test('R3-11: the legacy capability summary is booleans only', () => {
+  for (const kind of RUNTIME_KINDS) {
+    const registry = createCapabilityRegistry({ runtime: { kind } });
+    registry.add({ name: 'setup', kind: 'host-surface', level: 'behaviour' });
+    for (const summary of [runtimeCapabilities({ kind }), registry.summary()])
+      for (const [key, value] of Object.entries(summary)) assert.equal(typeof value, 'boolean', `${kind} ${key}`);
+  }
 });

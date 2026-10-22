@@ -9,7 +9,7 @@ import {validateOperationOverrides} from '../lib/operation-catalogue.mjs';
 
 const recordId='20000000-0000-0000-0000-000000000001';
 const sdkEntity=(title,id=recordId)=>({$type:'Entity',logicalName:'fx_widget',id,attributes:{fx_title:title}});
-async function fixture(t,{unsupported=false}={}){
+async function fixture(t,{unsupported=false,enhanced=false}={}){
  const first=await pluginFixture(t),initial=first.app.store.snapshot();await first.app.close();
  for(let number=3;number<=11;number++){
   const file=path.join(first.solution,'SdkMessageProcessingSteps',pluginId(number)+'.xml');
@@ -17,6 +17,8 @@ async function fixture(t,{unsupported=false}={}){
  }
  for(const [number,options] of [[20,{message:'RetrieveMultiple',stage:40}],[21,{message:'RetrieveMultiple',stage:20}],[22,{message:'CreateMultiple',stage:20}],[23,{message:'Retrieve',stage:40}],[24,{message:'CreateMultiple',stage:40}]])await fs.writeFile(path.join(first.solution,'SdkMessageProcessingSteps',pluginId(number)+'.xml'),stepXml(number,options));
  if(unsupported)await fs.writeFile(path.join(first.solution,'SdkMessageProcessingSteps',pluginId(25)+'.xml'),stepXml(25,{stage:20}).replace('</SdkMessageProcessingStep>','<ImpersonatingUserId>10000000-0000-0000-0000-000000000001</ImpersonatingUserId></SdkMessageProcessingStep>'));
+ // An enhanced-authorization site maps visitors to Dataverse users and provisions the site's application user on portal requests.
+ if(enhanced)await fs.writeFile(path.join(first.portal,'website.yml'),'adx_websiteid: fixture\nadx_name: Widget plugin fixture\nadx_enhancedauthorization: 3');
  initial.tables.fx_widget=[{fx_widgetid:recordId,fx_title:'Stored original'}];
  const app=await createSimulator({sourceDir:first.portal,solutionRoots:[first.solution],initial,watch:false});t.after(()=>app.close());
  const admin=(number,body)=>fetch(app.url+'/__sim/api/operations/'+encodeURIComponent('plugin-step:'+pluginId(number)),{method:'PATCH',headers:{'content-type':'application/json','x-sim-csrf':app.state().csrf},body:JSON.stringify({mode:'mock',body})});
@@ -48,6 +50,15 @@ test('Admin rejects mock result shape or stage mismatches before changing saved 
   const response=await admin(number,body);assert.equal(response.status,400,JSON.stringify(body));
  }
  assert.deepEqual(app.store.snapshot(),before);
+});
+
+test('On an enhanced-authorization site a refused admin mock leaves no side effect: no application user or role is provisioned',async t=>{
+ const {app,admin}=await fixture(t,{enhanced:true}),before=app.store.snapshot();
+ assert.equal(app.store.portalAuthorization.describe().model,'enhanced');
+ assert.equal((await admin(20,{target:{fx_title:'Wrong read output'}})).status,400);
+ assert.equal((await fetch(app.url+'/__sim/api/operations')).status,200);
+ assert.deepEqual(app.store.snapshot(),before);
+ assert.ok(!app.store.tableRows('systemuser').some(row=>/^# Portals-/.test(row.fullname??'')));
 });
 
 test('Plugin mock Double values admit invariant finite wire text and reject invalid values',()=>{

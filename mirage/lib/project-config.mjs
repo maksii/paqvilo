@@ -3,7 +3,6 @@ import path from "node:path";
 import {contentPolicyDefaults} from './content-policy-defaults.mjs';
 import { createHash } from "node:crypto";
 import YAML from "yaml";
-import { platformConfig } from './platform-config.mjs';
 import { importPortal } from "./importer.mjs";
 import { importSolutionMetadata } from "./solution-metadata.mjs";
 import { importSolutionData } from "./solution-data.mjs";
@@ -12,18 +11,24 @@ import { SolutionFileCache } from "./solution-cache.mjs";
 import { applyObserved } from "./redirects.mjs";
 import { isTenantAuthority } from "./external-login.mjs";
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
-import { dataverseSettings } from './dataverse-settings.mjs';
-import { runtimeSettings } from './runtime-config.mjs';
 import { loadOrganizationSources } from './solution-runtime-source.mjs';
-import { simulationSettings } from './simulation-settings.mjs';
-import { modelDrivenSettings } from './model-driven-settings.mjs';
+import { parseSetting, projectKeys } from './config-keys.mjs';
+import './provider-modules.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
-const KNOWN_KEYS = new Set([
+// Structural project keys; every setting key is a row of config-keys.mjs (projectKeys()).
+const PROJECT_ONLY_KEYS = [
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins", "dataverse", "runtime", "simulation", "modelDriven",
-]);
+  "presets", "lcid", "watch", "stateDirectory", "state_directory",
+];
+const KNOWN_KEYS = new Set([...PROJECT_ONLY_KEYS, ...projectKeys()]);
+// Setting rows resolved by dedicated code below (per portal, async or path-bearing); the loop parses the others.
+const RESOLVED_SEPARATELY = new Set(["runtime", "solutionOrder", "dataPacks", "deploymentProfiles", "confinePortalPages", "externalAssets", "externalFrameOrigins", "environmentVariables"]);
+// A resolved project carries a setting only when the file sets it, so a default (simulation, modelDriven, platform,
+// dataverse) never masks a catalogue site's value in runtimeOptions(); readers take the default through defaultedSetting().
+/** A project setting: the file's value, else the row's default. */
+export const defaultedSetting = (project, key) => project?.[key] ?? parseSetting(key, undefined);
 
 function list(value, label) {
   if (value == null) return [];
@@ -352,11 +357,15 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     throw new Error("Project configuration must be an object");
   if (!VERSIONS.includes(raw.version))
     throw new Error(`Project configuration version must be ${VERSIONS.join(" or ")}`);
-  if (raw.version >= 2)
-    for (const key of Object.keys(raw))
-      if (!KNOWN_KEYS.has(key)) throw new Error(`Unknown project configuration key '${key}'`);
+  // Version 2 rejects unknown keys; version 1 stays lenient and reports them as diagnostics.
+  const diagnostics = [];
+  for (const key of Object.keys(raw)) {
+    if (KNOWN_KEYS.has(key)) continue;
+    if (raw.version >= 2) throw new Error(`Unknown project configuration key '${key}'`);
+    diagnostics.push({ code: "PROJECT_CONFIG_KEY_UNKNOWN", severity: "warning", key, message: `Unknown project configuration key '${key}' is ignored.` });
+  }
   const portalEntries = list(raw.portals, "portals").map(normalizePortal);
-  const runtime = runtimeSettings(raw.runtime);
+  const runtime = parseSetting("runtime", raw.runtime);
   if (!portalEntries.length && runtime.kind === 'power-pages') throw new Error("At least one portal source is required");
   const solutionEntries = list(raw.solutions, "solutions").map(normalizeSolution);
   const unique = (entries, kind) => {
@@ -402,7 +411,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     return {
       ...portal,
       ...contentPolicyDefaults(raw), ...contentPolicyDefaults(portal),
-      platform: platformConfig(portal.platform ?? raw.platform, `portals.${portal.id}.platform`),
+      platform: parseSetting("platform", portal.platform ?? raw.platform, { label: `portals.${portal.id}.platform` }),
       deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {sourceDir,sourceRoot:base}),
       sourceDir,
       solutions: selected.map((solution) => solution.id),
@@ -438,14 +447,19 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
   for (const [name, value] of Object.entries(environmentVariables))
     if (!/^[a-z][\w.]*$/i.test(name) || !["string", "number", "boolean"].includes(typeof value))
       throw new Error(`environmentVariables.${name} must be a string, number or boolean value`);
+  const settings = {};
+  for (const key of projectKeys()) {
+    if (RESOLVED_SEPARATELY.has(key)) continue;
+    const value = key === "dataverse" ? raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined) : raw[key];
+    if (value === undefined) continue;
+    settings[key] = parseSetting(key, value, { base, diagnostics });
+  }
   return {
     configFile: absoluteConfig,
     stateNamespace: createHash("sha256").update(absoluteConfig).update("\0").update(portals.map((p) => p.sourceDir).join("\0")).digest("hex").slice(0, 16),
     version: raw.version,
     runtime,
-    simulation: simulationSettings(raw.simulation),
-    modelDriven: modelDrivenSettings(raw.modelDriven, 'modelDriven', base),
-    platform: platformConfig(raw.platform, 'platform'),
+    ...settings,
     defaultPortal,
     lcid,
     watch: raw.watch ?? null,
@@ -457,8 +471,8 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     references,
     defaultReference,
     dataPacks,
-    dataverse: dataverseSettings(raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined), "dataverse"),
     environmentVariables: Object.fromEntries(Object.entries(environmentVariables).map(([name, value]) => [name, String(value)])),
+    diagnostics,
   };
 }
 
@@ -482,9 +496,9 @@ export function projectSummary(project, portalId = null) {
     configFile: project.configFile,
     version: project.version,
     runtime: project.runtime ?? { kind: 'power-pages' },
-    simulation: project.simulation ?? null,
-    modelDriven: project.modelDriven ?? modelDrivenSettings(),
-    platform: project.platform ?? null,
+    simulation: defaultedSetting(project, "simulation"),
+    modelDriven: defaultedSetting(project, "modelDriven"),
+    platform: defaultedSetting(project, "platform"),
     portal: portalId,
     defaultPortal: project.defaultPortal,
     lcid: project.lcid,
@@ -506,7 +520,7 @@ export function projectSummary(project, portalId = null) {
 /** Import all configured sources locally and deterministically; this performs no network access. */
 export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, cacheFile } = {}) {
   if (project.runtime?.kind && project.runtime.kind !== 'power-pages') {
-    const organization = await loadOrganizationSources({ solutionRoots: project.solutionRoots, solutionOrder: project.solutionOrder, modelDriven: project.modelDriven, lcid, cacheFile });
+    const organization = await loadOrganizationSources({ solutionRoots: project.solutionRoots, solutionOrder: project.solutionOrder, modelDriven: defaultedSetting(project, "modelDriven"), lcid, cacheFile });
     return { project, portals: [], solutionData: organization.solutionData, organization };
   }
   const cache = await SolutionFileCache.open(cacheFile ?? null);

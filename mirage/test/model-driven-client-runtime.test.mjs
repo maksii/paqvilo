@@ -34,7 +34,7 @@ test('client attribute types and choice labels derive from exported metadata', (
   const { runtime } = runtimeFixture({ table: { entity: 'x_item', idColumn: 'x_itemid', fields: {
     x_amount: { name: 'x_amount', type: 'number', dataverseType: 'money' }, x_decimal: { name: 'x_decimal', type: 'number', dataverseType: 'decimal' },
     x_choice: { name: 'x_choice', type: 'number', options: [{ value: 1, label: 'One' }] },
-  } } });
+  } }, form: { clientEvents: [], attributes: ['x_amount', 'x_decimal', 'x_choice'] } });
   assert.equal(runtime.formContext.getAttribute('x_amount').getAttributeType(), 'money');
   assert.equal(runtime.formContext.getAttribute('x_decimal').getAttributeType(), 'decimal');
   assert.equal(runtime.formContext.getAttribute('x_choice').getAttributeType(), 'optionset');
@@ -53,7 +53,8 @@ test('global context reports the selected local staff without inventing security
   const { runtime } = runtimeFixture({ user: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Invented staff', roles: ['Basic User'] } });
   const settings = runtime.Xrm.Utility.getGlobalContext().userSettings;
   assert.equal(settings.userId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'); assert.equal(settings.userName, 'Invented staff');
-  assert.throws(() => settings.securityRoles, /does not support/);
+  // Without a server-built staff context the host answers the documented anonymous roles (none), never invented ids.
+  assert.deepEqual(settings.securityRoles, []);
 });
 
 test('WebApi sends query options unchanged to the canonical local staff query engine', async () => {
@@ -113,7 +114,7 @@ test('WebApi binds imported single-valued relationships without guessing entity 
 test('multiselect form values expose numeric arrays and Xrm writes translate native choice strings', async () => {
   const field = { name: 'x_choices', type: 'multiselect', options: [{ value: 1, label: 'One' }, { value: 2, label: 'Two' }] };
   const table = { entity: 'x_item', idColumn: 'x_itemid', fields: { x_choices: field } };
-  const { runtime, record, requests } = runtimeFixture({ table, tables: { x_item: table } });
+  const { runtime, record, requests } = runtimeFixture({ table, tables: { x_item: table }, form: { clientEvents: [], attributes: ['x_choices'] } });
   record.x_choices = '1,2';
   const attribute = runtime.formContext.getAttribute('x_choices');
   assert.equal(attribute.getAttributeType(), 'multiselectoptionset');

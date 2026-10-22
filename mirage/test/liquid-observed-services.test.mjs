@@ -24,7 +24,8 @@ test('missing named components keep the pinned behavior unless the site opts in'
   assert.equal(await engine.renderString("a{% webform name:'Missing' %}b"), 'ab');
   assert.equal(await engine.renderString("a{% entitylist result name:'Missing' %}body{% endentitylist %}b"), 'abodyb');
   assert.equal(await engine.renderString("a{% entityview result name:'Missing' %}body{% endentityview %}b"), 'abodyb');
-  await assert.rejects(engine.renderString("{% searchindex result name:'Missing' %}body{% endsearchindex %}"), error => error.status === 501);
+  // searchindex runs portal search (lib/portal-search.mjs): without an indexed table it answers no results and a diagnostic.
+  assert.equal(await engine.renderString("{% searchindex result name:'Missing' %}{{ searchindex.approximate_total_hits }}|{{ searchindex.results.size }}{% endsearchindex %}"), '0|0');
   await assert.rejects(engine.renderString("{% chart id:'chart' viewid:'view' %}"), error => error.status === 501);
 });
 

@@ -1,0 +1,9 @@
+MissingDependencies:
+  MissingDependency:
+  - Required:
+      '@type': '20'
+      '@id': '{77777777-7777-4777-8777-777777777781}'
+      '@displayName': Fx Role
+    Dependent:
+      '@type': '1'
+      '@schemaName': x_item

@@ -706,3 +706,23 @@ export function buildPermissionModel(
     },
   };
 }
+
+/**
+ * Power Pages document control permissions (Learn, configure/manage-sharepoint-documents, step 5): the parent table
+ * permission needs Read and Append To (Write to upload); the child permission on Document Location needs Read to list,
+ * Create, Write and Append to upload, and Delete to delete. `location` is the record's active document location, or null
+ * before the first upload creates it (the child permission is then tested against that prospective location).
+ * Returns { list, upload, delete } for `identity` through the store's table-permission evaluation.
+ */
+export function portalDocumentAccess(store, { entity, row, location = null }, identity = {}) {
+  const LOCATION = "sharepointdocumentlocation";
+  const mapping = store.resolveMapping(entity);
+  const child = location ?? { regardingobjectid: { id: row?.[mapping.idColumn], logical_name: mapping.logicalName }, statecode: 0 };
+  const can = (logical, operation, target) => Boolean(target) && store.allowed(logical, operation, target, identity);
+  const parent = can(mapping.logicalName, "read", row) && can(mapping.logicalName, "appendTo", row);
+  return {
+    list: parent && can(LOCATION, "read", child),
+    upload: parent && can(mapping.logicalName, "update", row) && ["create", "update", "append"].every((operation) => can(LOCATION, operation, child)),
+    delete: parent && can(LOCATION, "delete", child),
+  };
+}

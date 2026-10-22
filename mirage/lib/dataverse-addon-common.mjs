@@ -16,6 +16,7 @@
 // featureNotEnabled is the web service error 0x80061113. The HTTP status of featureNotEnabled is unverified.
 // ponytail: argsOf, idOf and respond are copies of the helpers in dataverse-app-messages.mjs (not exported there).
 import { DataError } from "./data-error.mjs";
+import { collectPackExport } from "./pack-exports.mjs";
 import { contextUrl } from "./dataverse-odata.mjs";
 
 const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
@@ -40,18 +41,7 @@ export function respond(c, name, payload) {
 // Trusted pack handlers: a pack's dataverseMessages maps a message name (exact, case-sensitive) to async (ctx) => body | undefined.
 // Returns Map(name -> { handler, pack }), where pack is the pack id that supplied it.
 export function addonHandlers(packs = []) {
-  const result = new Map();
-  for (const pack of packs) {
-    if (pack.dataverseMessages === undefined) continue;
-    const entries = pack.dataverseMessages;
-    if (!entries || typeof entries !== "object" || Array.isArray(entries)) throw new Error(`Data pack ${pack.id}: dataverseMessages must map message names to functions`);
-    for (const [name, handler] of Object.entries(entries)) {
-      if (!name.trim() || typeof handler !== "function") throw new Error(`Data pack ${pack.id}: invalid dataverseMessages handler for ${name}`);
-      if (result.has(name)) throw new Error(`Ambiguous dataverseMessages registration for ${name}`);
-      result.set(name, { handler, pack: pack.id ?? null });
-    }
-  }
-  return result;
+  return new Map([...collectPackExport(packs, "dataverseMessages")].map(([name, { value, pack }]) => [name, { handler: value, pack: pack ?? null }]));
 }
 
 // Attaches the handlers to the API (api.addonHandlers). Install it after every add-on module: it fails when a pack names a
@@ -124,4 +114,32 @@ export function aiUnavailable() {
 // A message that needs a feature the organization has not enabled (web service error 0x80061113).
 export function featureNotEnabled() {
   return new DataError("This operation couldn't be completed because this feature isn’t enabled for your organization.", 400, "FeatureNotEnabled", { innerCode: "0x80061113" });
+}
+
+// Pack overrides from the runtime's pack export registry: api.packExport(name) is a Map of key -> { value, pack }, converted to
+// the plain object a module's validator reads. undefined when the runtime has no registry or no pack exports the name.
+export function packOverrides(api, name) {
+  const found = api.packExport?.(name);
+  return found && Object.fromEntries([...found].map(([key, { value }]) => [key, value]));
+}
+
+// Once-per-key diagnostics for the Dataverse extension modules: report(entry, key) records an entry (severity warning unless the
+// entry names one) and forwards it to `diagnostic` the first time its key is seen; clear() starts again (a reseed).
+export function onceReporter(diagnostic = null) {
+  const seen = new Set();
+  const diagnostics = [];
+  return {
+    diagnostics,
+    report(entry, key) {
+      if (seen.has(key)) return;
+      seen.add(key);
+      const recorded = { severity: "warning", ...entry };
+      diagnostics.push(recorded);
+      diagnostic?.(recorded);
+    },
+    clear() {
+      seen.clear();
+      diagnostics.length = 0;
+    },
+  };
 }

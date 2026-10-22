@@ -715,7 +715,9 @@ test("alternate keys are unique and duplicate primary keys are rejected", async 
   });
   const duplicateKey = await json("/_api/accounts", { method: "POST", body: { name: "Copy", accountnumber: "ACC-0001" } });
   assert.equal(duplicateKey.status, 412);
-  assert.equal(duplicateKey.body.error.innererror.code, "0x80040237");
+  // Learn web-service-error-codes 0x80060892 DuplicateRecordEntityKey; 0x80040237 stays for If-None-Match: * and a duplicate
+  // primary key. unverified: portal /_api inner code for a duplicate alternate key not captured live (Learn web-service-error-codes)
+  assert.equal(duplicateKey.body.error.innererror.code, "0x80060892");
   const duplicateId = await json("/_api/accounts", { method: "POST", body: { name: "Copy", accountid: G(1) } });
   assert.equal(duplicateId.status, 412);
 });

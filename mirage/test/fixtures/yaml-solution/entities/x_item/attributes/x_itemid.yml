@@ -1,0 +1,9 @@
+attribute:
+  '@PhysicalName': x_itemId
+  Type: primarykey
+  Name: x_itemid
+  LogicalName: x_itemid
+  RequiredLevel: systemrequired
+  ValidForCreateApi: '1'
+  ValidForUpdateApi: '0'
+  ValidForReadApi: '1'

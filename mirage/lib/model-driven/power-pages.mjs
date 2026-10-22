@@ -105,7 +105,7 @@ export function powerPagesTables(portal, metadata = {}) {
 
 export function defaultManagementApp(portal) {
   const prefix = prefixOf(portal);
-  return { id: 'power-pages-management', uniqueName: 'mspp_PowerPageManagement', name: 'Power Pages Management', source: 'platform-default',
+  return { id: 'power-pages-management', uniqueName: 'mspp_PowerPageManagement', name: 'Mirage Site Manager', source: 'platform-default',
     navigation: [{ id: 'management', title: 'Power Pages', groups: managementGroups.map(([title, items]) => ({ id: title.toLowerCase(), title,
       items: items.map(([kind, title, raw = kind]) => ({ id: kind, title,
         entity: systemTables.has(kind) ? kind === 'contact' ? 'contact' : `adx_${raw}` : prefix + raw, supported: true })) })) }] };

@@ -10,6 +10,8 @@ import { validatePackDataFiles } from './pack-data-files.mjs';
 import { simulationSettings, simulationReport } from './simulation-settings.mjs';
 import { jsonChunks } from './state-stream.mjs';
 import { readStateFile } from './state-storage.mjs';
+import { INTERNAL_TABLES } from './dataverse-organization.mjs';
+import { WEBAPI_UNSUPPORTED_TABLES, POWER_PAGES_TABLES } from './webapi-policy.mjs';
 import { publishTransactionalFiles, recoverTransactionalFiles } from './transactional-files.mjs';
 
 // Platform infrastructure belongs to the private runtime, independently of the
@@ -21,9 +23,23 @@ const runtimeTables = new Set([
   'fieldsecurityprofile', 'fieldpermission', 'systemuserprofiles', 'teamprofiles',
   'transactioncurrency', 'usersettings', 'audit', 'plugintracelog',
   'asyncoperation', 'backgroundoperation', 'bulkdeleteoperation', 'bulkdeletefailure',
+  // Process run history (a classic workflow run's log and a real-time failure's session), as asyncoperation.
+  'workflowlog', 'processsession',
+  // Process definitions and their activation rows: Solution-seeded control plane (activation, deactivation), never pack DATA.
+  'workflow',
+  // Plug-in registrations, service endpoints, Dataverse Functions and masking rules: Solution-seeded control plane at every
+  // level, never pack DATA (a preset that carries them replaces the runtime rows; organization-presets keeps the seeded ones).
+  'sdkmessageprocessingstep', 'sdkmessageprocessingstepimage', 'plugintype', 'pluginassembly', 'serviceendpoint',
+  'fxexpression', 'maskingrule', 'attributemaskingrule',
+  // Deployment-profile state: a profile switch rewrites environment variable values and connection references.
+  'environmentvariabledefinition', 'environmentvariablevalue', 'connectionreference',
   'importjob', 'import', 'importfile', 'importlog', 'importmap',
   'solution', 'solutioncomponent', 'publisher', 'dependency', 'dependencynode',
   'solutionhistory', 'solutionhistorydata', 'solutioncomponentconfiguration',
+  ...INTERNAL_TABLES,
+  // Power Pages configuration (Learn's configuration tables, both data models): the export seeds it and a deployment
+  // profile switch rewrites it (enhanced authorization, site settings); site state, never business DATA.
+  ...WEBAPI_UNSUPPORTED_TABLES, ...POWER_PAGES_TABLES.values(),
 ]);
 const metadataKeys = Object.freeze([
   'globalOptionSets', 'customColumns', 'metadataLog', 'solutionComponents',
@@ -52,6 +68,14 @@ const schemaOf = state => ({ mappings: state.mappings ?? {}, ...Object.fromEntri
   schemaRecords: Object.fromEntries(schemaTables.map(table => [table, state.tables?.[table] ?? []])),
 });
 const rowHashes = state => new Map(Object.entries(state.tables ?? {}).map(([table, rows]) => [table, hash(rows)]));
+// The table hashes after a transaction that names its written tables (DataStore passes the row
+// transaction's touched tables): unchanged tables keep their baseline hash instead of being rehashed.
+const dirtyRowHashes = (state, baseline, dirty) => {
+  const tables = state.tables ?? {}, rows = new Map(baseline);
+  for (const table of baseline.keys()) if (!Object.hasOwn(tables, table)) rows.delete(table);
+  for (const table of Object.keys(tables)) if (!baseline.has(table) || dirty.has(table)) rows.set(table, hash(tables[table]));
+  return rows;
+};
 const rowIdentity = (row, mapping, idColumn = mapping?.idColumn) => JSON.stringify([
   guidKey(row[idColumn]) ?? String(row[idColumn]).toLowerCase(), ...(isElastic(mapping) ? [row.partitionid ?? null] : []),
 ]);
@@ -111,7 +135,7 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
         throw fail(`Pack DATA changed outside this runtime: ${entry.file}. Restart from the updated data.`, 'PackDataConflict', 409);
     }
   };
-  const capture = state => { schemaHash = hash(schemaOf(state)); baselineRows = rowHashes(state); reportCache = null; };
+  const capture = (state, rows = rowHashes(state), schema = hash(schemaOf(state))) => { schemaHash = schema; baselineRows = rows; reportCache = null; };
   const ownerFor = table => owners.get(table) ?? (newTablesOwner && !runtimeTables.has(table) && !schemaTables.includes(table) && !initialRows.has(table) ? { entry: newTablesOwner, path: [...newTablesOwner.newTablesPath, table], idColumn: null } : null);
   const validateRows = (table, rows, owner, state) => {
     if (!Array.isArray(rows)) throw fail(`Pack data for ${table} must be an array.`);
@@ -129,6 +153,8 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
   };
   return {
     schemaRecordsAuthoritative: table => authoritativeSchemaRecords.has(table),
+    /** Whether a pack DATA file persists this table (simulation/deep): dataverse-storage-routing keeps its small bodies inline. */
+    packOwned: table => !memory && Boolean(ownerFor(table)),
     recordCapabilities(table) {
       const schemaTable = schemaTables.includes(table);
       const writable = !blocked && (schemaTable ? settings.level === 'deep' && Boolean(schemaOwner) : memory || owners.has(table) || runtimeTables.has(table));
@@ -207,14 +233,16 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
         } finally { publication.active = false; }
       });
     },
-    async save(state) {
+    async save(state, { tables } = {}) {
       if (blocked) throw fail(blocked, 'PersistenceRecoveryRequired', 500);
       const sourcePublication = sourcePublications.getStore()?.active === true;
       const currentSchema = hash(schemaOf(state)), schemaChanged = active && !sourcePublication && currentSchema !== schemaHash;
       if (schemaChanged && settings.level !== 'deep') throw fail('Schema changes require deep simulation. Record edits are allowed in the current level.', 'SimulationSchemaDisabled', 403);
       if (schemaChanged && !schemaOwner) throw fail('Deep simulation requires an explicitly declared schemaPath in an existing pack DATA file.', 'SimulationSchemaTargetRequired', 409);
       if (memory) { reportCache = null; return; }
-      const rows = rowHashes(state);
+      // ponytail: the schema hash above stays whole-state (schema changes are refused below deep simulation even in
+      // dry run, and sections have no row journal); only row hashing is limited to the transaction's tables.
+      const rows = tables instanceof Set && active && !sourcePublication ? dirtyRowHashes(state, baselineRows, tables) : rowHashes(state);
       const changed = active && !sourcePublication ? [...new Set([...baselineRows.keys(), ...rows.keys()])].filter(table => rows.get(table) !== baselineRows.get(table)) : [];
       for (const table of changed) if (!ownerFor(table) && !runtimeTables.has(table) && !(schemaOwner && schemaTables.includes(table)))
         throw fail(`Table ${table} has no declared writable pack DATA file. Declare its owner or use dry run.`, 'SimulationDataTargetRequired', 409);
@@ -245,7 +273,7 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
           if (result.file === runtimeFile) runtimeDigest = result.digest;
           else { const entry = descriptors.find(item => item.file === result.file); entry.digest = result.digest; entry.document = documents.get(entry); }
         }
-        capture(state);
+        capture(state, rows, currentSchema);
         if (schemaChanged) for (const table of schemaTables) authoritativeSchemaRecords.add(table);
         for (const table of changed) { const owner = ownerFor(table); if (owner && !owners.has(table)) owners.set(table, { ...owner, idColumn: state.mappings[table].idColumn }); }
       } catch (error) { if (error.code === 'PersistenceRecoveryRequired') { blocked = error.message; reportCache = null; } throw error; }

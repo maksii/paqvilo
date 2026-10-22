@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { loadCatalogue, resolveMirageConfig } from './config.mjs';
+import { loadCatalogue, mirageOnlySite, resolveMirageConfig } from './config.mjs';
 import YAML from 'yaml';
 import { readLocalFileSync } from './local-file.mjs';
 import { loadConfig } from './config.mjs';
@@ -109,10 +109,12 @@ export function checkProject(directory, { config, processEnv = process.env } = {
     };
     folder(catalogue.sourceRoot, 'sourceRoot');
     for (const [name, site] of Object.entries(catalogue.sites)) {
-      if (!Object.keys(site.environments).length) add('selection', `sites.${name}: configure at least one environment`, `sites.${name}.environments`);
+      // A Mirage-only site (standalone runtime) needs no environment and no portal export.
+      const mirageOnly = mirageOnlySite(site);
+      if (!mirageOnly && !Object.keys(site.environments).length) add('selection', `sites.${name}: configure at least one environment`, `sites.${name}.environments`);
       if (site.defaultEnv && !Object.hasOwn(site.environments, site.defaultEnv)) add('selection', `sites.${name}.defaultEnv does not name a configured environment`, `sites.${name}.defaultEnv`);
       if (site.sourceDir) folder(site.sourceDir, `sites.${name}.source`);
-      else add('missing-source', `sites.${name}.source: select a portal export folder`, `sites.${name}.source`, 'warning');
+      else if (!mirageOnly) add('missing-source', `sites.${name}.source: select a portal export folder`, `sites.${name}.source`, 'warning');
       for (const [env, settings] of Object.entries(site.environments)) {
         origin(settings.url, `sites.${name}.environments.${env}`);
       }

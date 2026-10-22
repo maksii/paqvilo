@@ -62,7 +62,7 @@ async function parameters(req, url) {
  * Handle /_services/auth/token and /_services/auth/publickey. `contact` is the signed-in
  * contact row (or null), `origin` the site origin used as the issuer.
  */
-export async function handleImplicitGrant(req, res, url, { portal, identity, contact, origin }) {
+export async function handleImplicitGrant(req, res, url, { portal, identity, contact, origin, clock = () => Date.now() }) {
   const route = /^\/_services\/auth\/(token|publickey)\/?$/i.exec(url.pathname)?.[1]?.toLowerCase();
   if (!route) return false;
   if (!enabled(portal)) return false;
@@ -97,7 +97,7 @@ export async function handleImplicitGrant(req, res, url, { portal, identity, con
     if (!/^[A-Za-z0-9-]{1,36}$/.test(clientId) || !registered.includes(clientId))
       return tokenError(res, 400, "PortalSTS0001", "Client Id provided in the request is not a valid client Id registered for this portal. Please check the parameter and try again.");
   }
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor(clock() / 1000);
   const lifetime = tokenLifetime(portal);
   const field = (name) => contact?.[name] ?? identity?.[name] ?? "";
   const claims = {

@@ -56,6 +56,97 @@ and loopback fixtures; they do not certify complete Power Pages parity.
   after name/ID matching.
 - **Security checks:** the required Security gate checks open CodeQL findings for
   the analyzed ref after processing, in addition to successful analysis jobs.
+- **One shell for setup and `/_sim/`:** both pages share one sidebar, top bar and
+  component styles, an **Areas** switch, and the Paqvilo wordmark with the area label
+  (`PROJECT SETUP`, `SIMULATOR WORKSPACE`). See [setup](setup.md).
+- **Infrastructure dashboard:** `/_sim/` opens on an Infrastructure view with a system
+  map, activity tiles, a request and diagnostics feed, node details and on-demand
+  preflight, fed by the new read-only `GET /_sim/api/dashboard` on both hosts. See
+  [simulation administration](../mirage/docs/sim-administration.md#infrastructure-feed).
+- **New `/_sim/` views:** Providers & services, Flows & jobs, Capabilities & preflight and
+  Data packs (`GET /_sim/api/packs`); the sidebar is grouped, and views follow the routes
+  each host publishes in `status.routes`. The standalone host serves the environment
+  routes, and `/_sim/` sends a strict Content-Security-Policy and `nosniff` on both hosts.
+- **Setup journey:** a ten-stage progress rail, four example templates, a settings
+  catalogue covering every key, linked project files as `project:<site>` layers, a
+  System map (planned or live) and a restart banner with the exact command, driven by
+  the runtime identity rather than the file contents. See [setup](setup.md#journey).
+- **Shared host composition:** the offline `mirage preflight` composes the same host
+  description a running host reports; pack `storageProviders`, `messageProviders` and
+  `outboxHandlers` are instantiated by both hosts; provider `preflight()` probes report
+  readiness. See [capabilities and preflight](../mirage/docs/capabilities-and-preflight.md#preflight).
+- **Persistence:** every persistent level keeps blobs under `<stateDirectory>/blobs`; pack
+  DATA notes up to 64 KiB stay inline; missing stored objects read as null with
+  `STORAGE_OBJECT_MISSING`. See [storage providers](../mirage/docs/storage-providers.md).
+- **Committed jobs:** asynchronous plug-in, web hook, row-trigger flow and classic
+  background workflow jobs are staged inside the triggering transaction. A web hook to a
+  non-loopback endpoint ends Canceled instead of Succeeded.
+- **Record pipeline:** SDK calls from plug-ins, flow Dataverse actions and portal writes
+  run the organization record pipeline and read projection; masking rules, exact JSON
+  numbers, collation-aware grouping, key-set paging for Web API and FetchXML, and
+  calculated columns in filters and orders. See [Dataverse API](../mirage/docs/dataverse-api.md).
+- **Solution security and layers:** Solution roles and field security profiles are
+  imported; managed layers, alternate key activation jobs and delegated-token caller
+  resolution follow the documented rules.
+- **Flows and connectors:** Until and the data operations, Recurrence and on-demand HTTP
+  Request triggers, pack `flowActions` and `flowTriggers`, Solution custom connectors at
+  contract, more Dataverse connector operations, frozen parameters on resume and
+  `ReplayDiverged`. See [operations](../mirage/docs/operations.md).
+- **Portal surfaces:** global search and the default `/search/` page, modern lists and the
+  `$pages` client API, the local document control, server logic bridges and `ServerLogic/*`
+  site settings. See [forms and lists](../mirage/docs/forms-lists-parity.md#modern-lists-and-the-client-api).
+- **Model-driven host:** `Xrm.WebApi.execute`, `navigateTo` and side panes, one staff
+  context with user settings, dataset PCF controls and project-supplied platform
+  libraries for virtual controls. See [model-driven client API](../mirage/docs/model-driven-client-api.md).
+- **Sources and organization seams:** YAML source-control repositories import tables,
+  forms and views; source load failures become preflight rows; virtual tables read
+  through their provider; Dataverse Functions and automated low-code plug-ins
+  evaluate on the core Power Fx engine; project `canvas` sources and switch.
+- **Power Fx engine:** formula columns, Dataverse Functions (also defined in a Solution's
+  `fxexpressions/` folder), automated low-code plug-ins and canvas apps evaluate on
+  Mirage's own Power Fx interpreter, with delegation to the store and the
+  `POWERFX_DELEGATION` warning. See [Canvas apps](../mirage/docs/canvas-apps.md#power-fx).
+- **Canvas apps:** screens, controls, formulas, data sources and navigation run headlessly
+  at `/_apps/canvas/<app>` and `POST /_apps/api/canvas/<app>`; apps are not rendered.
+  See [Canvas apps](../mirage/docs/canvas-apps.md).
+- **Azurite:** `providers.storage` `kind: azurite` is a core Blob REST transport with
+  Shared Key authorization and a `timeoutMs` bound. See [storage providers](../mirage/docs/storage-providers.md#azurite).
+- **Service Bus emulator:** `providers.messaging` `kind: servicebus-emulator` is a core
+  AMQP 1.0 bus with an `amqpPort` setting; synchronous service endpoint steps send
+  through it. See [messaging](../mirage/docs/messaging-and-outbox.md#service-bus-emulator).
+- **Provider lifecycle:** composition failures, host close and settle attempt every
+  provider (`PROVIDER_CLOSE_FAILED`, `PROVIDER_SETTLE_FAILED`), and pack factories
+  register what they open with `own(resource)`.
+- **Source reloads:** a reload whose Solution scan has a new error is rejected with
+  `SOURCE_RELOAD_REJECTED` and changes nothing. See [standalone organization](../mirage/docs/standalone-organization.md).
+- **Enhanced authorization:** a site in the enhanced Power Pages authorization model runs
+  it locally (mapped Dataverse users and security roles, column security profiles);
+  `portal:enhanced-authorization` is satisfied. See [Dataverse](../mirage/docs/dataverse-parity.md#enhanced-authorization).
+- **Portal reads and column security:** every portal read masks secured columns as a
+  Dataverse read by the reading principal and refuses filters over masked columns;
+  Dataverse queries evaluate unreadable secured columns as null. See [Dataverse](../mirage/docs/dataverse-parity.md#column-security-on-portal-reads).
+- **Portal file columns and client API:** `/_api` file and image column routes,
+  `$pages` forms and controls, file column methods and `languages.setActive`, and
+  subfolders in the document control. See [forms and lists](../mirage/docs/forms-lists-parity.md#modern-lists-and-the-client-api).
+- **Mobile offline:** a model-driven app with a Solution mobile offline profile goes
+  offline per staff session; `Xrm.WebApi.offline` reads and writes the session copy.
+  See [model-driven client API](../mirage/docs/model-driven-client-api.md).
+- **Model-driven dashboards:** Solution dashboards open in the app with their lists;
+  other components are listed as not rendered. See [model-driven apps](../mirage/docs/model-driven-apps.md).
+- **Cloud flows:** Recurrence `timeZone` and `schedule`, the Dataverse "When an action is
+  performed" trigger, waits that hold only their branch, waiting child flows, loop
+  replay, List rows `$expand`, `fetchXml` and paging, and custom connector body media
+  types and OAuth client credentials. See [operations](../mirage/docs/operations.md).
+- **Virtual tables:** the provider runs as the main operation inside the transaction and
+  can enlist with `begin`, `commit` and `rollback`; SDK writes use `createSync`,
+  `updateSync` and `deleteSync`. See [Dataverse contract modules](../mirage/docs/dataverse-contract-modules.md#virtual-providers).
+- **Metadata and upsert:** metadata privileges under impersonation use both users'
+  privileges, solution components use the `MetadataId`, and an alternate-key upsert
+  follows Learn's key precedence. See [Dataverse API](../mirage/docs/dataverse-api.md).
+- **Mirage-only sites:** a `model-driven` or `dataverse-api` site without a portal export
+  passes `init --check`, `lense list` and `lense doctor`. See [configuration](configuration.md#select-a-catalogue).
+- **Lense X-ray:** Inspect keeps focus out of embedded frames, so Enter and Space cannot
+  activate a control in a frame. See [Lense](lense.md).
 
 ### Upgrade notes
 

@@ -1,0 +1,154 @@
+# Storage providers
+
+Mirage has one small storage contract for file bytes, one default implementation on local disk, and an Azurite provider over the Blob REST API. Dataverse file and image columns, notes and email attachments are routed through it by `dataverse-storage-routing.mjs` (see [Routing](#routing)); the Power Pages host reads and writes portal notes, web files, cloud attachments and staged uploads through the same router (see [Portal routes](#portal-routes)). The modules below are the contract, the providers, the router and the shared test suite.
+
+| Module | Content | Level |
+| --- | --- | --- |
+| `mirage/lib/storage-provider.mjs` | `ProviderError`, `validateKey`, `assertProvider`, `guardProvider`, `storageSettings`, `createStorageRouter` | behaviour |
+| `mirage/lib/storage-local-disk.mjs` | `createLocalDiskStorage({ root, id, clock, ids, maxBytes, sasBaseUrl })` | behaviour |
+| `mirage/lib/storage-memory.mjs` | `createMemoryStorage({ id, clock, ids })` | behaviour |
+| `mirage/lib/storage-azurite.mjs` | `createAzuriteStorage({ id, settings, env, clock })` (alias `create`), `azuriteDescriptor`, `parseConnectionString(text, source)`, `sharedKeyStringToSign(...)`, `serviceSasStringToSign(...)`, `BLOB_API_VERSION`, `preflight({ blobEndpoint, timeoutMs, source })` | behaviour with a usable connection string, else contract |
+| `paqvilo/mirage/testing` | `runStorageContract(test, makeProvider, { skip, label, clock })`, `STORAGE_CONTRACT_CASES` | test helper |
+
+## Contract
+
+A provider is an object with a `descriptor` and the operations the descriptor declares:
+
+| Member | Semantics |
+| --- | --- |
+| `descriptor` | `{ id, name, kind, version, level, operations, requires, principal, stateOwner, lifecycle, fidelity: { notes } }` (capability record shape) |
+| `put(key, body, { contentType, metadata, ifMatch, ifNoneMatch, blockId, signal })` | `body` is a Buffer or an AsyncIterable of Buffers. Atomic; returns `{ key, size, sha256, etag, version, lastModified, contentType, metadata }`. With `blockId` it stages a block and returns `{ key, blockId, size }`. |
+| `commit(key, blockIds, options)` | Assembles staged blocks in the listed order (a block may repeat) and publishes them like `put`. |
+| `get(key, { range: { start, end }, ifNoneMatch, signal })` | Metadata plus `body` (AsyncIterable). `end` is inclusive. A matching `ifNoneMatch` returns `notModified: true` and `body: null`. |
+| `head(key)` | Metadata, or `null` when absent. |
+| `delete(key, { ifMatch })` | Idempotent; returns whether the object existed. |
+| `list(prefix, { pageSize, continuation })` | `{ items: [{ key, size, etag, lastModified }], continuation }`, sorted by key. The prefix may end with `/`. |
+| `sas(key, { permission: 'r' \| 'w' \| 'rw', expiresOn })` and `verifySas(url, { permission })` | Signed URL and its server-side check. `verifySas` returns `{ key, permission, expiresOn }`. |
+| `close()` | Releases handles; later calls answer `Unavailable`. |
+| `preflight()` (optional) | Returns `{ ready, reason? }` within 2 s; absent means declared (placeholder). |
+
+Preflight (offline and live) calls `preflight()` with a 2-second bound, as local-service probes are: `ready: true` is `satisfied`, `ready: false` (or no answer in time, or a throw) is `missing` with the reason. An instantiated provider without `preflight()` is reported `placeholder` with `resolution: { by: 'declared' }` and the message that its reachability is not probed; it is never `satisfied`. The built-in `local-disk` provider answers ready once its root opens; the in-memory provider answers ready while open. `assertProvider` rejects a `preflight` that is not a function.
+
+Errors are `ProviderError` (a `DataError`) with `code` and HTTP `status`: `NotFound` 404, `PreconditionFailed` 412, `Conflict` 409 (`ifNoneMatch: '*'` on an existing object), `TooLarge` 413, `InvalidKey` 400, `InvalidRange` 416, `Unavailable` 503, `Unauthorized` 401, `Unsupported` 501. Each carries the `provider` id and an optional `diagnostic`. Messages never contain a URL query, a SAS signature, a connection string or a rejected key.
+
+Keys match `[a-z0-9][a-z0-9-_./]{0,1023}` after lower-casing, with no leading `/`, `\` or NUL, and no `..`, `.` or empty segment (an empty or `.` segment would alias another key after URL normalisation). `validateKey(key, provider, { prefix: true })` checks a list prefix, which may also end with `/`. `guardProvider(provider)` validates keys and list prefixes before the implementation sees them, answers `Unsupported` for undeclared operations and maps connection failures (`ECONNREFUSED`, timeouts and similar) to `Unavailable`. The router and the contract suite always go through it.
+
+## Local disk
+
+`createLocalDiskStorage({ root })` keeps immutable content-addressed bytes in `objects/<sha256>` and an `index.json` of key → `{ sha256, size, etag, version, contentType, metadata, lastModified }`. Uploads stream to `tmp/` while hashing and are renamed into place; the index is written to a temporary file, synced and renamed. Blocks stage under `staging/<sha256(key)>/`. Every path is derived from hex digests or generated ids and is checked against the root with `path.relative`. Objects are read through an opened descriptor (`O_NOFOLLOW` where available). Replaced or deleted bytes are removed once no key references them; `compact()` removes any remaining unreferenced objects and abandoned temporary files. SAS URLs are HMAC-SHA256 signed (`se`, `sp`, `sig`) with a per-process secret under `sasBaseUrl` (default `/_sas/storage/<id>/`). Use a root under the project's state directory, normally `<stateDirectory>/blobs`.
+
+## In memory
+
+`createMemoryStorage({ id = 'memory', clock, ids })` (`mirage/lib/storage-memory.mjs`) keeps bytes in this process only: they are lost on restart. Its descriptor has level `behaviour`, `stateOwner: 'memory'` and the fidelity note "In-process memory: lost on restart." It passes the shared contract suite. The hosts use it only when a runtime has no state directory: `dry-run`, or no state file. That runtime creates every `local-disk` storage id (`local` included) as an in-memory provider under the same id, so every default route is ready and `forRoute('annotations')` never answers `PROVIDER_NOT_READY` there. Every persistent level (`simulation`, `deep` and the configuration without a level) uses local disk under `<stateDirectory>/blobs`: pack DATA rows keep the storage key (`__blobkey`) and never the bytes, and the simulation report lists the blob directory as a target (`kind: 'blobs'`). `persistentLevel(level)` and `stateDirectoryOf({ stateFile, simulation })` in `organization-host.mjs` are the one rule both hosts use.
+
+At `simulation` and `deep`, a note body (`annotation.documentbody`) or attachment body (`activitymimeattachment.body`) of a table that a pack DATA file owns stays inline in the DATA row (base64, the same format as the legacy inline state) while it is at most 64 KiB (decoded bytes); a larger body is stored in `<stateDirectory>/blobs` and the row keeps only its internal key. A committed DATA file therefore reads on another machine for every body up to 64 KiB; a larger body needs the same `<stateDirectory>/blobs`. The threshold is fixed (`PACK_INLINE_BODY_LIMIT` in `dataverse-storage-routing.mjs`); file and image column bytes always live in the private state and its blob store.
+
+## Routes
+
+| Route | Default | Intended consumer | Mock vs behaviour |
+| --- | --- | --- | --- |
+| `dataverseFiles` | `local` | Dataverse file and image columns | behaviour (local disk) |
+| `annotations` | `local` | `annotation.documentbody`, `activitymimeattachment.body` | behaviour (local disk) |
+| `portalWebFiles` | `export` | portal web files; `export` serves them from the export directory; read from the provider when `WebFiles/StorageLocation` is `AzureBlobStorage` | behaviour |
+| `portalCloudAttachments` | unset | portal form attachments when `FileStorage/CloudStorageAccount` is set | unset → `forRoute` throws `Unsupported` with diagnostic `PROVIDER_ROUTE_MISSING`, never a silent fallback |
+| `sharepointDocuments` | `local` | SharePoint document integration | behaviour (local disk) |
+
+`createStorageRouter({ config, providers })` takes `storageSettings()` output and a map of created providers. `forRoute(name)` returns the guarded provider, `null` for `export`, and throws `Unavailable` with diagnostic `PROVIDER_NOT_READY` when the route names a declared provider that was not created. `routes()` returns the route table; `describe()` lists each configured provider with its descriptor, `ready` and the routes that use it.
+
+## Routing
+
+The Dataverse extension `dataverse-storage-routing` (`mirage/lib/dataverse-storage-routing.mjs`, installed after `dataverse-files`) takes the router from its `storage` install option, else `api.providers.storage`. With a router:
+
+| What | Provider key | State keeps |
+| --- | --- | --- |
+| File and image columns, temporary files (route `dataverseFiles`) | `files/<fileId>` | `state.dataverse.files[fileId]`: `entity`, `recordId`, `column`, `name`, `mimeType`, `size`, `createdOn`, `key`; no `data` |
+| `annotation.documentbody`, `activitymimeattachment.body` (route `annotations`) | `annotations/<rowId>/<n>`, `n` growing with each new body | the row with a null body column, its `filename`, `mimetype`, `filesize` and an internal `__blobkey` |
+
+- Per key: `dataverse-files` picks the provider from the key, so an `annotations/` key goes to route `annotations` and every other key to route `dataverseFiles`. One route can be served while the other is not; bytes whose route has no provider stay inline base64 in state. Reading a key whose provider this runtime does not have answers 503 `StorageUnavailable`.
+- Writes: `PATCH` uploads, chunked uploads, block messages and SAS uploads stage their bytes in the provider (`put` with `blockId`, then `commit`), so a block upload is never joined in memory. Image values on record writes, and note or attachment bodies on Web API, SOAP and block-commit creates, are put in a `beforeWrite` hook. Only canonical base64 bodies move; other text stays inline and reads back as written. The note size rule (`MaxUploadFileSize`) is checked before a body leaves the row.
+- Reads: downloads, ranges and `DownloadBlock` read from the provider (`get` with a range). A response that carries an image or note body column (selected, or all columns) reads it in the `project` hook, so Web API and SOAP answers are unchanged; a `$select` without the column reads nothing, and `__blobkey` never appears in a response. `GetFileSasUrl` answers the provider's `sas()` URL (local disk: `/_sas/storage/<id>/<key>`, served by `dataverse-files` after `verifySas`); no byte copy is kept in memory.
+- In-flight keys: an upload holds its key from before the `put` until the write that owns it settles (an upload or block commit until its row write finishes, a record write's image or note body until that write commits or rolls back). The release check and the sweep skip a held key.
+- Rollback and deletes: the provider `put` happens before the row transaction. Keys a write replaces or releases, and keys of deleted rows (cascades and portal deletes included, seen in the committed-events phase), are checked after commit, outside the caller's transaction. In one transaction the check finds the keys that no committed row or recycle-bin snapshot references, drops their file entries and reads each object's ETag; the delete then runs with `ifMatch` on that ETag, so bytes put again under the same key after the check are kept. A failed delete other than `PreconditionFailed` reports `STORAGE_DELETE_FAILED`. Bytes stored by a transaction that then failed are orphans until the next sweep.
+- Sweep: the sweep lists `files/` and `annotations/` first. Then, in one transaction, it removes file entries whose row is gone and collects the listed objects that no entry, row or recycle-bin snapshot references and that are not in flight. Each one is deleted with `ifMatch` on its listed ETag. A sweep that removes something reports `STORAGE_SWEPT` with `removed` and `entries`. When the runtime has an outbox (`api.providers.outbox`), the sweep also runs `outbox.sweep()` and adds its result as `outbox: { deleted, pending }` (see [Messaging and outbox](messaging-and-outbox.md#outbox)). Install and reset each sweep once.
+- Migration: install and reset move inline legacy bytes (file entries with `data`, inline note and attachment bodies) to the provider once, in one `DataStore.transact`, and report one `STORAGE_MIGRATED` diagnostic with `counts` (`files`, `annotations`, `attachments`, `bytes`). Recycle-bin snapshot files stay inline: they hold row JSON, whose bytes are already keys.
+- `api.storageRouting` exposes `settle()` (awaits post-commit releases), `sweep()` and `diagnostics()`. `attachmentBody(api, logical, row)` returns a note or attachment body, inline or from the provider, for code that reads rows directly. `describe()` reports level `behaviour` with storage routes and `contract` without; operations `dataverseFiles`, `annotations`, `attachments`, `sweep`; requires `provider:storage/dataverseFiles` and `provider:storage/annotations`.
+
+**Missing stored objects.** At start and after a reset, the storage router checks once that every key referenced by a file entry, note, attachment or recycle-bin snapshot exists in its provider. Missing objects are reported as one `STORAGE_OBJECTS_MISSING` diagnostic (severity error) with the count and the first keys; a provider that cannot answer is not judged. A missing object never fails a read: a row or collection read answers that row's body as `null` and records `STORAGE_OBJECT_MISSING` (entity, id and key, never bytes) once per key; a `$value` read of the body answers 404 with the code `STORAGE_OBJECT_MISSING`. An image column whose blob is missing reads as null with the same `STORAGE_OBJECT_MISSING` diagnostic.
+
+Without a router, or for a route `forRoute` refuses (reported as a diagnostic), bytes stay base64 in state as before; deleting a row still drops the file entries nothing references. Both hosts give the extension their router (`api.providers.storage`), so routed note bodies leave state in every runtime. Code that reads note rows straight from state sees a null body for a routed note and reads it through `attachmentBody`; plug-ins and audit see the null body and the internal `__blobkey` as well.
+
+## Portal routes
+
+The Power Pages host reads and writes these routes:
+
+- Note readers. The notes service, the note download (`/_entity/annotation/<id>`) and the portal Web API (`/_api/annotations`, an entity, a collection or the `documentbody` property) read a routed body through the host's `attachmentBody` (the stored row by id, inline or from the provider). A note body under `$expand` of another table is not read back.
+- Web files. When the site setting `WebFiles/StorageLocation` is `AzureBlobStorage`, an exported web file's bytes are the object `webfiles/<webfileid>/<filename>` (lower case) of route `portalWebFiles`. A route left at `export`, an unavailable provider or a missing object answers 503 with diagnostic `WEBFILE_CLOUD_STORAGE_UNAVAILABLE`; the export file is never served in its place. The project puts the objects (for example with its own provider over the same directory). The importer still needs the web file record and its exported file to know the URL.
+- Cloud attachments. When the site setting `FileStorage/CloudStorageAccount` is set, a basic or advanced form attachment is put on route `portalCloudAttachments` as `attachments/<uuid>/<file name>` before the record is written, and the note is the placeholder `<name>.txt` (`text/plain`) whose body is the JSON `{ Name, Type, Size, Url }`, `Url` being the provider key. A failed save deletes the put object again. With the route unset, the save fails with a 500 `PROVIDER_ROUTE_MISSING` and the same diagnostic; the bytes never fall back to the note.
+- Staged uploads. `/_api/file/InitializeFileUpload/note` and `/_api/file/UploadFileBlock/note` put each block on route `annotations` under `staged/<id>` (`put` with `blockId`); the last block commits them, and the form save reads the object and deletes it. Pending uploads stay bounded to 50 files and one hour; blocks of an upload abandoned before its last block stay in the provider's staging area.
+
+## Configuration keys
+
+`storageSettings(value, label, { stateDirectory })` validates the `storage` and `routes` members of a `providers` object and returns the other members unchanged.
+
+```yaml
+providers:
+  storage:
+    local:   { kind: local-disk, root: blobs }          # root resolves under the state directory
+    emulator: { kind: azurite, connectionString: env:PAQVILO_AZURITE_CONNECTION, container: paqvilo-attachments, start: external }
+  routes:
+    portalCloudAttachments: emulator
+```
+
+| Key | Rule |
+| --- | --- |
+| `storage.<id>` | id matches `[a-z][a-z0-9-]{0,63}`; `local` (`kind: local-disk`) always exists |
+| `storage.<id>.kind` | `local-disk`, `azurite` or `pack:<packId>/<name>`; keys are strict per kind |
+| `storage.<id>.root` | local-disk only; resolves under the runtime's private state directory and must stay inside it. A runtime without one (dry run) and the offline `mirage preflight` check the same rule and use in-memory storage for that id, so a `root` the running host accepts never fails preflight |
+| `storage.<id>.connectionString` | `env:NAME` only; literal strings are rejected and never echoed |
+| `storage.<id>.container` | Blob container name rules; azurite default `paqvilo` |
+| `storage.<id>.start` | azurite only; `external` (Paqvilo never starts Azurite) |
+| `storage.<id>.timeoutMs` | azurite only; per-request bound until the response headers arrive, 100 to 600000 ms, default 30000 |
+| `storage.<id>.options` | pack kinds only; plain object passed to the pack factory |
+| `routes.<route>` | one of the routes above; value is a storage id, or `export` for `portalWebFiles` only |
+
+## Pack storage providers
+
+A `providers.storage.<id>` entry with `kind: 'pack:<packId>/<name>'` is created by that pack's `storageProviders.<name>` factory, called once per host as `factory({ id, kind, settings, stateDirectory, clock, ids })`. Factories are synchronous; a provider opens connections on first use. The result must pass the provider shape check and declare `descriptor.id` equal to the id. A factory that throws, returns a promise or returns an invalid provider fails host start with `PROVIDER_FACTORY_FAILED` naming the pack. Each factory input also carries `own(resource)`. A factory calls it to register a resource it opened, such as a connection or a timer, as an object with optional `settle()` and `close()`. Ownership is taken before validation. When composition fails, Mirage settles and closes, in reverse creation order, the instances created before the failure, the rejected instance, a provider returned as a promise once the promise resolves, and every resource registered with `own()`. That includes a factory that throws after opening one. A rejected instance is never returned. A declared entry with no factory stays not ready: its routes answer `PROVIDER_NOT_READY`, a `PROVIDER_NOT_REGISTERED` diagnostic is reported and preflight lists `provider:storage/<id>` as missing. The host settles and closes pack providers in reverse creation order when it closes; settle and close are attempted separately for each provider, so a failing settle still closes it. Failures are reported together as `PROVIDER_CLOSE_FAILED` naming each provider and cause; the next host close (or `closeProviders`) retries only the providers whose close failed, without settling them again. Settling the host settles every provider and reports failures together as `PROVIDER_SETTLE_FAILED`.
+
+## Azurite
+
+Core implements the storage contract against Azurite over the Blob REST API with native `fetch` and Shared Key authorization ([Authorize with Shared Key](https://learn.microsoft.com/rest/api/storageservices/authorize-with-shared-key)): every request carries `x-ms-date`, `x-ms-version: 2021-08-06` and `Authorization: SharedKey <account>:<signature>`, the HMAC-SHA256 of the Learn StringToSign under the base64-decoded account key. There is no dependency and Paqvilo never starts Azurite (`start: external`). Core instantiates every `azurite` entry; a pack `storageProviders` export is not consulted for it.
+
+`providers.storage.<id>.connectionString` names an environment variable (`env:NAME`); the host reads it once when it composes the providers. Two forms are accepted: `UseDevelopmentStorage=true` (the documented `devstoreaccount1` account at `http://127.0.0.1:10000/devstoreaccount1`) and `AccountName=…;AccountKey=…;BlobEndpoint=…`. The endpoint must be loopback and carry no query or credentials; a non-loopback endpoint is refused without network (`PROVIDER_NOT_LOOPBACK`) and the message names the variable, never the host. The account key stays in the provider's memory: it never appears in descriptors, state, diagnostics, errors or `/_sim` payloads.
+
+With a usable connection string the provider is at level `behaviour`; with an unset (`PROVIDER_SECRET_MISSING`), invalid (`PROVIDER_CONNECTION_STRING_INVALID`, `PROVIDER_ENDPOINT_INVALID`) or non-loopback one it is at level `contract` and every operation answers `503 Unavailable` with that reason.
+
+Every request is bounded by `providers.storage.<id>.timeoutMs` (an integer from 100 to 600000, default 30000) until the response headers arrive; when it fires the operation answers `503 Unavailable` (`PROVIDER_UNREACHABLE`, "no answer within N ms"). A streamed download is not cut off once its headers have arrived.
+
+Operations map to Blob REST: `put` is Put Blob (`x-ms-blob-type: BlockBlob`) for bodies up to 4 MiB; a larger body is split into 4 MiB blocks (the last one smaller), each sent with Put Block, then committed with Put Block List; `put` with `blockId` is Put Block and `commit` is Put Block List (block ids are base64 SHA-256 digests so every id of a blob has the same length); `get` is Get Blob with `x-ms-range`; `head` is Get Blob Properties; `delete` is Delete Blob; `list` is List Blobs with `prefix`, `maxresults` and `marker`. `ifMatch` and `ifNoneMatch` are sent as `If-Match` and `If-None-Match`. The provider's container (`container`, default `paqvilo`) is created with Create Container on the first write; when a write answers 404 `ContainerNotFound` later (for example after an in-memory Azurite restart), the container is created again and the write retried once. `sas()` returns a service SAS (`sv=2021-08-06`, `sr=b`) that addresses the Azurite endpoint directly, and `verifySas()` checks it with the same key.
+
+Azure errors map to provider errors by status, with the Azure error code (`x-ms-error-code`) as the diagnostic: 404 `BlobNotFound` is `NotFound` (or `PreconditionFailed` for a conditional write), 412 `ConditionNotMet` is `PreconditionFailed` (`Conflict` for a create-only write with `If-None-Match: *`), 409 is `Conflict`, 416 `InvalidRange` is `InvalidRange`, 401 and 403 (`AuthenticationFailed`) are `Unauthorized`, 413 is `TooLarge`, 400 `InvalidBlockList` on commit is `NotFound`, any other 400 is `Unsupported` and anything else is `Unavailable`. A refused or timed-out connection is `Unavailable` (`PROVIDER_UNREACHABLE`).
+
+`preflight()` sends an authorized List Containers within 2 seconds and is ready only when the endpoint answers 200 with an `EnumerationResults` body; otherwise it reports the status and Azure error code, or why the endpoint is unreachable. The exported `preflight({ blobEndpoint })` is an unauthenticated loopback reachability probe and never reports readiness. `health()` returns the last observed state (`ready` true, false with its reason, or null before any request); the router's `describe()` carries it, and the dashboard's Azurite node shows `ready`, `error` (the endpoint failed or refused the key), `missing` (no usable connection string) or `declared` (not contacted yet), with the reasons in its detail and on the Services page.
+
+Header names in CanonicalizedHeaders are sorted by ordinal (code unit) comparison; metadata names must be C# identifiers (ASCII letters, digits and underscore, not starting with a digit), otherwise `put` answers `InvalidKey`.
+
+Fidelity notes from [Use the Azurite emulator](https://learn.microsoft.com/azure/storage/common/storage-use-azurite#differences-between-azurite-and-azure-storage): Azurite supports Blob, Queue and Table (Table in preview) and not Azure Files or Data Lake Storage Gen2; error status codes align with Azure Storage while messages can differ; there is no scale or performance guarantee. Metadata names come back lower-case, and `commit()` reports no `sha256`.
+
+## Running the contract suite against a project adapter
+
+A project that supplies its own provider runs the same suite. Core runs the suite against local disk, the in-memory provider and the Azurite transport; the Azurite run uses `mirage/testing/azurite-fake.mjs`, a test-only loopback Blob endpoint that verifies Shared Key signatures independently:
+
+```js
+import test from 'node:test';
+import { runStorageContract } from 'paqvilo/mirage/testing';
+import { createInventedBlobStorage } from '../storage/blob.mjs';
+
+runStorageContract(test, async (t) => {
+  const storage = await createInventedBlobStorage({ container: `contract-${Date.now()}` });
+  t.after(() => storage.close());
+  return storage;
+}, { label: 'project blob', skip: [] });
+```
+
+`makeProvider(t)` must return a fresh, empty provider. `clock` (default the system clock) sets the SAS expiries, so a provider built on a fixed clock passes the same way. Cases (`STORAGE_CONTRACT_CASES`): `round-trip`, `range`, `conditions`, `block-commit`, `list-paging`, `sas`, `key-rejection`, `large-stream` (a 20 MiB AsyncIterable body with a reused chunk buffer, read back in chunks), `unavailable` (closed provider and connection-failure mapping), `delete`, `head`. Skip a case only when the adapter does not declare the matching operation.

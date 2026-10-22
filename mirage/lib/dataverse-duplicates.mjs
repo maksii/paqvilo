@@ -177,14 +177,14 @@ function beforeWrite(store, c, mapping, { operation, data, existing }) {
 const publish = (api) => async (c) => {
   const { store } = api;
   const rule = c.target.row;
-  const jobId = await api.change(() => store.transact(() => {
+  const jobId = await api.change(() => store.transact(async () => {
     api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
     const others = publishedRules(store, (r) => same(r.baseentityname, rule.baseentityname) && !same(r.duplicateruleid, rule.duplicateruleid));
     if (others.length >= MAX_PUBLISHED_PER_TABLE) {
       // unverified: the error code and message for the sixth published rule.
       throw new DataError(`Table ${rule.baseentityname} already has ${MAX_PUBLISHED_PER_TABLE} published duplicate rules.`, 400, 'InvalidRequest');
     }
-    store.updateRecord('duplicaterule', c.target.id, { statecode: 1, statuscode: PUBLISHED }, c.identity);
+    await store.updateRecordAsync('duplicaterule', c.target.id, { statecode: 1, statuscode: PUBLISHED }, c.identity);
     return randomUUID(); // unverified: the simulation completes synchronously; the job id is not tracked.
   }));
   return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.PublishDuplicateRuleResponse'), JobId: jobId } };
@@ -197,9 +197,9 @@ const unpublish = (api) => async (c) => {
   const id = body.DuplicateRuleId ?? c.params?.DuplicateRuleId;
   const rule = id == null ? undefined : store.tableRows('duplicaterule').find((r) => same(r.duplicateruleid, id));
   if (!rule) throw new DataError(`duplicaterule With Id = ${id} Does Not Exist`, 404, 'NotFound');
-  await api.change(() => store.transact(() => {
+  await api.change(() => store.transact(async () => {
     api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
-    store.updateRecord('duplicaterule', rule.duplicateruleid, { statecode: 0, statuscode: 0 }, c.identity);
+    await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, { statecode: 0, statuscode: 0 }, c.identity);
   }));
   return { status: 204 }; // unverified: return type of UnpublishDuplicateRule not read.
 };
@@ -306,15 +306,15 @@ const compoundUpdateRule = (api) => async (c) => {
   const ruleValues = pick(entity, TABLES.duplicaterule.fields);
   delete ruleValues.duplicateruleid;
   const children = (Array.isArray(body.ChildEntities) ? body.ChildEntities : []).map((child) => ({ id: child.duplicateruleconditionid, values: pick(child, TABLES.duplicaterulecondition.fields) }));
-  await api.change(() => store.transact(() => {
+  await api.change(() => store.transact(async () => {
     api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
-    store.updateRecord('duplicaterule', rule.duplicateruleid, ruleValues, c.identity);
+    await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, ruleValues, c.identity);
     for (const child of children) {
       const condition = store.tableRows('duplicaterulecondition').find((r) => same(r.duplicateruleconditionid, child.id));
       if (!condition) throw new DataError(`duplicaterulecondition With Id = ${child.id} Does Not Exist`, 404, 'NotFound');
       const values = { ...child.values };
       delete values.duplicateruleconditionid;
-      store.updateRecord('duplicaterulecondition', condition.duplicateruleconditionid, values, c.identity);
+      await store.updateRecordAsync('duplicaterulecondition', condition.duplicateruleconditionid, values, c.identity);
     }
   }, { isolated: true }));
   return { status: 204 };

@@ -1,12 +1,17 @@
-import { organizationRecord } from './organization-context.mjs';
+import { assertAttachmentSize } from './platform-settings.mjs';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_SESSIONS } from './dataverse-settings.mjs';
 // Simulated Dataverse file and image columns: single and chunked uploads, ranged
 // downloads, the block messages, and image value rules on record writes.
 // Upload sessions live in memory, so a restart drops in-flight uploads.
-// ponytail: file bytes sit in state JSON as base64; move them to a side file under .paqvilo/ if state size matters.
-import { randomUUID, randomBytes, createHmac, timingSafeEqual } from "node:crypto";
+// Bytes: with a storage route (setFileStorage, set by dataverse-storage-routing.mjs) entries keep `key` (files/<fileId>) and the
+// provider holds the bytes; without one they stay in state JSON as base64 `data`.
+import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
+import { systemClock, systemIds } from "./runtime-clock.mjs";
 import { DataError } from "./data-error.mjs";
 import { contextUrl, parseDataverseRoute, parseKey } from "./dataverse-odata.mjs";
 import { guidKey } from "./dataverse-values.mjs";
+import { contentDisposition, fileNameHeader } from "./response-headers.mjs";
+import { authorizeGrant, validateServiceProfile } from "./local-organization-service.mjs";
 
 const CHUNK_SIZE = 4194304;
 const BLOCK_LIMIT = 4194304; // unverified: per-block bound (the docs say under 4 MB)
@@ -28,7 +33,8 @@ const MAGIC = [
 ];
 const EXPOSE = "x-ms-file-size, x-ms-file-name, mimetype";
 const EXPOSE_RANGE = "x-ms-file-size, x-ms-file-name, x-ms-chunk-size, mimetype";
-// ponytail: the 15-minute session TTL is a guess [unverified]; expired sessions are dropped on the next session start or lookup.
+// ponytail: the 15-minute idle TTL is a guess [unverified]; it counts from a session's last use, and expired sessions are
+// dropped on the next session start or lookup.
 const SESSION_TTL_MS = 15 * 60 * 1000;
 // CSDL for the six actions, so $metadata lists their parameters and response types (Web API action reference).
 const CSDL = {
@@ -146,11 +152,17 @@ const imageFailure = (logical, id, column) => invalid(
   IMAGE_INNER,
 );
 const mb = (bytes) => Number((bytes / 1048576).toFixed(2)); // unverified: MB rounding in the image size message
-const nowIso = () => new Date().toISOString();
 const sameGuid = (a, b) => guidKey(a) != null && guidKey(a) === guidKey(b);
 const header = (c, name) => {
   if (typeof c.headers?.get === "function") return c.headers.get(name) ?? undefined;
   return Object.entries(c.headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
+};
+// Node decodes header bytes as latin1; a name a client sent as raw UTF-8 bytes is decoded back when it is valid UTF-8.
+const utf8Header = (value) => {
+  const text = String(value);
+  if (!/[\x80-\xff]/.test(text) || /[^\x00-\xff]/.test(text)) return text;
+  const decoded = Buffer.from(text, "latin1").toString("utf8");
+  return decoded.includes("�") ? text : decoded;
 };
 const mimeOf = (c) => String(header(c, "content-type") ?? "").split(";")[0].trim() || "application/octet-stream";
 // Small built-in map: a file column's mimetype comes from the file name's extension (native reports text/plain for .txt).
@@ -173,11 +185,13 @@ const kindOf = (def) => {
   const type = String(def?.dataverseType ?? def?.columnMetadata?.type ?? "").toLowerCase();
   return type === "file" || type === "image" ? type : null;
 };
+// Solution-imported columns live in mapping.fieldMetadata; project mappings in mapping.fields.
+const columnsOf = (mapping) => mapping?.fields ?? mapping?.fieldMetadata ?? {};
 const fileColumn = (mapping, column) => {
-  const kind = kindOf(mapping?.fields?.[column]);
-  return kind ? { column, kind, def: mapping.fields[column] } : null;
+  const def = columnsOf(mapping)[column], kind = kindOf(def);
+  return kind ? { column, kind, def } : null;
 };
-const imageColumns = (mapping) => Object.entries(mapping.fields ?? {}).filter(([, def]) => kindOf(def) === "image");
+const imageColumns = (mapping) => Object.entries(columnsOf(mapping)).filter(([, def]) => kindOf(def) === "image");
 // unverified: the primary image column is named entityimage
 const isPrimary = (column, def) => def?.isPrimary === true || column === "entityimage";
 const maxBytes = (kind, def) => Number(def?.MaxSizeInKB ?? def?.columnMetadata?.MaxSizeInKB ?? DEFAULT_MAX_KB[kind]) * 1024;
@@ -194,10 +208,10 @@ function sniffImage(bytes) {
   return MAGIC.find(([, signature]) => signature.every((byte, i) => bytes[i] === byte))?.[0] ?? null;
 }
 
-// Validates bytes for one column and returns the file entry; the caller places it on a row.
-function prepared({ logical, id = null, column, kind, def, name, bytes, mimeType }) {
-  assertSize(kind, maxBytes(kind, def), bytes.length);
-  const detected = kind === "image" ? sniffImage(bytes) : null;
+// Validates one column's file (its size and first bytes) and returns the entry without its bytes; the caller stores them.
+function prepared({ logical, id = null, column, kind, def, name, size, head, mimeType, now = Date.now() }) {
+  assertSize(kind, maxBytes(kind, def), size);
+  const detected = kind === "image" ? sniffImage(head) : null;
   if (kind === "image" && !detected) throw imageFailure(logical, id, column);
   return {
     entity: logical,
@@ -205,14 +219,93 @@ function prepared({ logical, id = null, column, kind, def, name, bytes, mimeType
     column,
     name: name || column,
     mimeType: detected ?? mimeOfName(name) ?? mimeType ?? "application/octet-stream",
-    size: bytes.length,
-    data: bytes.toString("base64"),
-    createdOn: nowIso(),
+    size,
+    createdOn: new Date(now).toISOString(),
   };
 }
 
 const filesOf = (store) => (store.state.dataverse ??= {}).files ??= {};
 const filesRead = (store) => store.state.dataverse?.files ?? {};
+
+// ---- Storage routes -----------------------------------------------------------------------------------------------------
+// api -> { files, annotations, released(keys) }: guarded providers for the dataverseFiles and annotations routes, and the
+// routing module's post-commit release (it deletes the keys no committed row references).
+const storageByApi = new WeakMap();
+/** Routes this api's file bytes through storage providers; null keeps them in state as base64. */
+export function setFileStorage(api, storage) {
+  if (storage) storageByApi.set(api, storage);
+  else storageByApi.delete(api);
+}
+export const fileKey = (fileId) => `files/${String(fileId).toLowerCase()}`;
+export const ATTACHMENT_COLUMNS = Object.freeze({ annotation: "documentbody", activitymimeattachment: "body" });
+const BLOB_KEY = /^annotations\/([0-9a-f-]{36})\/(\d+)$/;
+/** The provider key of a note or attachment row's bytes, only when it is the row's own key (annotations/<rowId>/<n>). */
+export function blobKeyOf(logical, row) {
+  const match = BLOB_KEY.exec(String(row?.__blobkey ?? ""));
+  const idColumn = logical === "annotation" ? "annotationid" : "activitymimeattachmentid";
+  return match && match[1] === guidKey(row[idColumn]) ? row.__blobkey : null;
+}
+
+/** The storage keys a row holds: files/<fileId> per file or image column, and a note or attachment row's own blob key. */
+export function storedKeysOf(store, logical, row) {
+  let mapping;
+  try { mapping = store.resolveMapping(logical); } catch { return []; }
+  const keys = Object.entries(columnsOf(mapping)).filter(([, def]) => kindOf(def)).map(([column]) => guidKey(row?.[column])).filter(Boolean).map(fileKey);
+  const blob = ATTACHMENT_COLUMNS[mapping.logicalName] ? blobKeyOf(mapping.logicalName, row) : null;
+  return blob ? [...keys, blob] : keys;
+}
+
+/** Reads stored bytes (a file entry, or { key } of a provider object), optionally one inclusive byte range. */
+export async function readStoredBytes(api, entry, range) {
+  if (entry?.data != null) {
+    const all = Buffer.from(String(entry.data), "base64");
+    return range ? all.subarray(range.start, range.end + 1) : all;
+  }
+  const storage = storageByApi.get(api);
+  const provider = String(entry?.key ?? "").startsWith("annotations/") ? storage?.annotations : storage?.files;
+  if (!entry?.key || !provider) throw new DataError("The file bytes are held by a storage provider this runtime does not have.", 503, "StorageUnavailable");
+  const { body } = await provider.get(entry.key, range ? { range } : {});
+  // ponytail: responses are Buffers, so a download is buffered once; stream when routes answer AsyncIterable bodies.
+  const chunks = [];
+  for await (const chunk of body) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+// A project hook cannot await, so it puts a per-request marker string in the column (deferBytes) and the wrapped
+// api.records.handle replaces each marker in the response with the loaded base64 before it answers; the records layer copies
+// rows after projection, so only a value survives. A caller that bypasses the handler gets null for the column.
+const PENDING = Symbol("pendingBytes");
+export function deferBytes(c, target, column, load) {
+  const pending = c?.[PENDING];
+  if (!pending) return void (target[column] = null);
+  const marker = `${pending.nonce}:${pending.loads.size}`;
+  pending.loads.set(marker, load);
+  target[column] = marker;
+}
+function replaceMarkers(value, loaded) {
+  if (Array.isArray(value)) value.forEach((item, i) => { if (typeof item === "string" && loaded.has(item)) value[i] = loaded.get(item); else replaceMarkers(item, loaded); });
+  else if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const [key, item] of Object.entries(value)) {
+      if (typeof item === "string" && loaded.has(item)) value[key] = loaded.get(item);
+      else replaceMarkers(item, loaded);
+    }
+  }
+}
+/** Wraps api.records.handle once so deferred bytes are read before the response leaves (Web API, SOAP, TDS and internal callers). */
+export function hydrateResponses(api) {
+  const records = api.records;
+  if (typeof records?.handle !== "function" || records[PENDING]) return;
+  const handle = records.handle;
+  records[PENDING] = true;
+  records.handle = async (ctx) => {
+    const pending = { nonce: `\u0000paqvilo-bytes:${randomBytes(9).toString("base64url")}`, loads: new Map() };
+    const result = await handle.call(records, { ...ctx, [PENDING]: pending });
+    if (!pending.loads.size) return result;
+    const loaded = new Map(await Promise.all([...pending.loads].map(async ([marker, load]) => [marker, await load()])));
+    replaceMarkers(result?.body, loaded);
+    return result;
+  };
+}
 
 function recordOf(store, mapping, id) {
   const row = store.tableRows(mapping.logicalName).find((r) => sameGuid(r[mapping.idColumn], id));
@@ -253,22 +346,34 @@ function mappingOfSet(store, set) {
   }
 }
 
-// Releases the file currently on a column. Caller holds the store transaction.
-function release(store, row, column, kind) {
+// Releases the file currently on a column, adding its key to `released`. Caller holds the store transaction.
+function release(store, row, column, kind, released = []) {
   const files = filesOf(store);
-  if (row[column] && files[row[column]]) delete files[row[column]];
+  if (row[column] && files[row[column]]) {
+    released.push(fileKey(row[column]));
+    delete files[row[column]];
+  }
   row[column] = null;
   if (kind === "file") row[`${column}_name`] = null;
 }
 
 // Puts a new file on a row, releasing the one it replaces. Returns the new file id.
-function place(store, row, column, kind, entry) {
-  release(store, row, column, kind);
-  const fileId = randomUUID();
+function place(store, row, column, kind, entry, fileId, released) {
+  release(store, row, column, kind, released);
   filesOf(store)[fileId] = entry;
   row[column] = fileId;
   if (kind === "file") row[`${column}_name`] = entry.name;
   return fileId;
+}
+
+/**
+ * Creates one row a message builds on the caller's behalf (block-committed notes and attachments, delivered email
+ * attachments, SharePoint document locations) through the records layer's internal create (dataverse-records.mjs
+ * createInternal, whose JSDoc lists what differs from a Web API create): authorization, state defaults, write hooks,
+ * plug-in steps, system columns and the 412 alternate-key answer. Call it inside the caller's store transaction; returns the stored row.
+ */
+export function createThroughPipeline(api, c, logical, data) {
+  return api.records.createInternal(c, logical, data);
 }
 
 // Upload and download sessions per API (api -> continuation token -> session). install registers them; reset clears them.
@@ -288,7 +393,8 @@ export function install(api) {
   const sasInline = new Map();
   sasInlineByApi.set(api, sasInline);
   const sasSecret = randomBytes(32);
-  const clock = () => api.clock?.() ?? Date.now();
+  const clock = () => api.clock?.() ?? (api.store?.clock ?? systemClock).now();
+  const uuid = () => (api.ids ?? api.store?.ids ?? systemIds).uuid();
   const sasSignature = (key, expiry, permission) => createHmac("sha256", sasSecret).update(`${key}\n${expiry}\n${permission}`).digest("base64url");
   const sasUrl = (c, key, permission) => {
     const expiry = new Date(clock() + 3600_000).toISOString();
@@ -296,28 +402,107 @@ export function install(api) {
   };
   sessionsByApi.set(api, sessions);
   const purge = () => {
-    const cutoff = Date.now() - SESSION_TTL_MS;
-    for (const [token, session] of sessions) if (session.createdAt < cutoff) sessions.delete(token);
+    const cutoff = clock() - SESSION_TTL_MS;
+    for (const [token, session] of sessions) if (session.touchedAt < cutoff) sessions.delete(token);
     for (const [key, entry] of sasInline) if (entry.expiresAt <= clock()) sasInline.delete(key);
+  };
+  // Memory bounds (simulator settings maxUploadSessions and maxUploadBytes): open upload sessions, and bytes held in memory by
+  // upload sessions plus inline note/attachment SAS copies. unverified: native limits and wording; refusals use the module's
+  // 400 InvalidRequest, as its other size limits do.
+  const maxSessions = () => api.settings?.maxUploadSessions ?? MAX_UPLOAD_SESSIONS;
+  const maxBuffered = () => api.settings?.maxUploadBytes ?? MAX_UPLOAD_BYTES;
+  const heldBy = (session) => (session.mode === "range" ? session.received : session.mode === "blocks" ? session.bytes : 0);
+  const buffered = () => {
+    let total = 0;
+    for (const session of sessions.values()) total += heldBy(session);
+    for (const entry of sasInline.values()) total += String(entry.data).length;
+    return total;
+  };
+  // Refuses growing one session (or a new SAS copy, session null) to `size` bytes past the byte budget.
+  const reserve = (session, size) => {
+    if (buffered() - (session ? heldBy(session) : 0) + size > maxBuffered()) {
+      throw invalid(`The simulator buffers at most ${maxBuffered()} bytes of in-flight uploads (dataverse.maxUploadBytes).`);
+    }
   };
   const openSession = (token, session) => {
     purge();
-    sessions.set(token, { ...session, createdAt: Date.now() });
+    if (session.mode !== "download" && [...sessions.values()].filter((s) => s.mode !== "download").length >= maxSessions()) {
+      throw invalid(`The simulator allows at most ${maxSessions()} open upload sessions (dataverse.maxUploadSessions).`);
+    }
+    sessions.set(token, { ...session, touchedAt: clock() });
   };
+  // Every use of a session is activity: the idle TTL restarts.
   const liveSession = (token) => {
     purge();
-    return sessions.get(token);
+    const session = sessions.get(token);
+    if (session) session.touchedAt = clock();
+    return session;
   };
+  // Note and attachment sessions follow the organization attachment rule (Base64 length); file and image columns follow MaxSizeInKB.
+  const assertSessionSize = (session, size) => (session.role
+    ? assertAttachmentSize(store.state, 4 * Math.ceil(size / 3))
+    : assertSize(session.kind, maxBytes(session.kind, session.def), size));
   const write = (fn) => change(() => store.transact(fn));
+  const storage = () => storageByApi.get(api) ?? null;
+  // Per key: one route may be served while the other is not (a declared provider that is missing keeps its bytes in state).
+  const routed = (key) => Boolean(key.startsWith("annotations/") ? storage()?.annotations : storage()?.files);
+  // In-flight keys, which the routing sweep and release flush skip: held from before a put until the owning write settles.
+  const hold = (key) => storage()?.hold?.(key) ?? (() => {});
+  const providerOf = (key) => {
+    const provider = key.startsWith("annotations/") ? storage()?.annotations : storage()?.files;
+    if (!provider) throw new DataError("The file bytes are held by a storage provider this runtime does not have.", 503, "StorageUnavailable");
+    return provider;
+  };
+  // Rollback safety: bytes reach the provider before the row transaction; a write hands the keys it released to the routing
+  // module after it settles, which deletes those no committed row references. Bytes a failed write stored are swept as orphans.
+  const writeFiles = async (fn) => {
+    const released = [];
+    try {
+      return await write(() => fn(released));
+    } finally {
+      if (released.length) storage()?.released(released);
+    }
+  };
+  // Stores a prepared entry's bytes: provider put under files/<fileId>, or base64 on the entry.
+  const keep = async (entry, fileId, bytes) => {
+    if (!routed(fileKey(fileId))) entry.data = bytes.toString("base64");
+    else {
+      entry.key = fileKey(fileId);
+      await storage().files.put(entry.key, bytes, { contentType: entry.mimeType });
+    }
+    return entry;
+  };
+  const sizeOf = (block) => (typeof block === "number" ? block : block?.length ?? 0);
+  // A routed upload session stages its blocks in the provider under the key its bytes will have; in memory otherwise.
+  // The A7 caps still count a routed session's bytes, so open sessions bound the provider's staging area too.
+  // ponytail: blocks of a session that expires or is reset stay in the provider's staging area; clear staging by age in
+  // the provider if abandoned uploads pile up.
+  const stageBlock = async (session, blockId, body) => {
+    if (!routed(session.key)) return session.blocks.set(blockId, body);
+    await providerOf(session.key).put(session.key, body, { blockId });
+    session.blocks.set(blockId, body.length);
+  };
+  // Joins the listed blocks: committed by the provider (never joined in memory) or concatenated. Returns { size, head, bytes? }.
+  const joinBlocks = async (session, list, contentType) => {
+    if (!routed(session.key)) {
+      const bytes = Buffer.concat(list.map((blockId) => session.blocks.get(String(blockId))));
+      return { size: bytes.length, head: bytes, bytes };
+    }
+    const { size } = await providerOf(session.key).commit(session.key, list.map(String), { contentType });
+    const head = size ? await readStoredBytes(api, { key: session.key }, { start: 0, end: Math.min(size, 16) - 1 }) : Buffer.alloc(0);
+    return { size, head };
+  };
+  // c.authorized: the caller checked its own explicit grants (fileContentInternal); no role check then.
   const authorize = (c, mapping, operation, row) =>
-    principals.authorize({ user: c.user, entity: mapping.logicalName, operation, row, mapping });
+    c.authorized === true ? undefined : principals.authorize({ user: c.user, entity: mapping.logicalName, operation, row, mapping });
   const sessionOf = (token, mode) => {
     const session = liveSession(String(token ?? ""));
     if (session?.mode !== mode) throw invalid("The file continuation token is not valid.");
     return session;
   };
   const fileName = (c) => {
-    const name = header(c, "x-ms-file-name") ?? c.url.searchParams.get("x-ms-file-name");
+    const sent = header(c, "x-ms-file-name");
+    const name = sent != null ? utf8Header(sent) : c.url.searchParams.get("x-ms-file-name");
     if (!name) throw invalid("x-ms-file-name is required.");
     return name;
   };
@@ -345,19 +530,21 @@ export function install(api) {
     if (token) return chunk(c, { mapping, id, column, kind, def, token });
     const name = fileName(c);
     if (String(header(c, "x-ms-transfer-mode") ?? "").toLowerCase() === "chunked") {
-      const continuation = randomUUID();
-      openSession(continuation, { mode: "range", entity: mapping.logicalName, id, column, kind, def, name, received: 0, total: null, chunks: [] });
+      const continuation = uuid();
+      const fileId = uuid();
+      openSession(continuation, { mode: "range", entity: mapping.logicalName, id, column, kind, def, name, received: 0, total: null, chunks: [], fileId, key: fileKey(fileId) });
       const location = `${c.origin}/api/data/${c.version}/${c.route.set}(${c.route.key})/${column}?sessiontoken=${continuation}`;
       return {
         status: 200,
         headers: { "Accept-Ranges": "bytes", Location: location, "x-ms-chunk-size": String(CHUNK_SIZE), "Access-Control-Expose-Headers": "x-ms-chunk-size" },
       };
     }
-    const bytes = Buffer.from(c.bodyBuffer ?? []);
-    await write(() => {
-      const entry = prepared({ logical: mapping.logicalName, id, column, kind, def, name, bytes, mimeType: mimeOf(c) });
-      place(store, recordOf(store, mapping, id), column, kind, entry);
-    });
+    const bytes = Buffer.from(c.bodyBuffer ?? []), fileId = uuid();
+    const unhold = hold(fileKey(fileId));
+    try {
+      const entry = await keep(prepared({ logical: mapping.logicalName, id, column, kind, def, name, size: bytes.length, head: bytes, mimeType: mimeOf(c), now: clock() }), fileId, bytes);
+      await writeFiles((released) => place(store, recordOf(store, mapping, id), column, kind, entry, fileId, released));
+    } finally { unhold(); }
     return { status: 204 };
   }
 
@@ -379,19 +566,30 @@ export function install(api) {
     } else if (session.total !== total) {
       throw invalid("Content-Range size changed during the upload.");
     }
-    session.chunks.push(bytes);
+    reserve(session, end + 1);
+    if (routed(session.key)) {
+      await storage().files.put(session.key, bytes, { blockId: `r${start}` });
+      session.chunks.push(`r${start}`);
+    } else session.chunks.push(bytes);
+    if (start === 0) session.head = bytes.subarray(0, 16);
     session.received = end + 1;
     if (session.received < total) return { status: 206, headers: { "OData-Version": "4.0" } };
     sessions.delete(token);
-    const data = Buffer.concat(session.chunks);
-    await write(() => {
-      const entry = prepared({ logical: mapping.logicalName, id, column, kind, def, name: session.name, bytes: data, mimeType: mimeOf(c) });
-      place(store, recordOf(store, mapping, id), column, kind, entry);
-    });
+    const data = routed(session.key) ? null : Buffer.concat(session.chunks);
+    const entry = prepared({ logical: mapping.logicalName, id, column, kind, def, name: session.name, size: total, head: session.head ?? Buffer.alloc(0), mimeType: mimeOf(c), now: clock() });
+    const unhold = hold(session.key);
+    try {
+      if (data) entry.data = data.toString("base64");
+      else {
+        entry.key = session.key;
+        await storage().files.commit(session.key, session.chunks, { contentType: entry.mimeType });
+      }
+      await writeFiles((released) => place(store, recordOf(store, mapping, id), column, kind, entry, session.fileId, released));
+    } finally { unhold(); }
     return { status: 204, headers: { "OData-Version": "4.0" } };
   }
 
-  function download(c, { mapping, id, column, kind, def }) {
+  async function download(c, { mapping, id, column, kind, def }) {
     const row = recordOf(store, mapping, id);
     authorize(c, mapping, "read", row);
     const entry = row[column] ? filesRead(store)[row[column]] : null;
@@ -404,16 +602,16 @@ export function install(api) {
     }
     // unverified: canStoreFullImage defaults to false, as the metadata does, so size=full answers 204 unless the column stores full images.
     if (kind === "image" && c.url.searchParams.get("size") === "full" && def?.canStoreFullImage !== true) return { status: 204 };
-    const bytes = Buffer.from(entry.data, "base64");
-    // unverified: the disposition is inline with the bare name; native's quoting for names with spaces is not observed.
+    const size = entry.data != null ? Buffer.from(String(entry.data), "base64").length : entry.size;
+    // unverified: the disposition is inline; the RFC 6266 quoted fallback plus filename* keeps any name a valid header.
     const base = {
-      "x-ms-file-size": String(bytes.length), "x-ms-file-name": entry.name, mimetype: entry.mimeType,
-      "Content-Disposition": `inline; filename=${entry.name}`, "Access-Control-Expose-Headers": EXPOSE,
+      "x-ms-file-size": String(size), "x-ms-file-name": fileNameHeader(entry.name), mimetype: entry.mimeType,
+      "Content-Disposition": contentDisposition("inline", entry.name), "Access-Control-Expose-Headers": EXPOSE,
     };
     const range = header(c, "range");
     // observed: parity case image.thumbnail; an image without size=full answers the thumbnail with no file headers at all.
     const thumbnail = kind === "image" && c.url.searchParams.get("size") !== "full";
-    if (range === undefined) return { status: 200, headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) }, body: bytes };
+    if (range === undefined) return { status: 200, headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) }, body: await readStoredBytes(api, entry) };
     const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
     if (!match) throw plain(invalid("The Range header must be bytes=start-end."));
     const start = Number(match[1]);
@@ -421,28 +619,79 @@ export function install(api) {
     const unsatisfiable = () => plain(new DataError(
       "Chunk range used in this call is either not valid or it is bigger than allowed 4 MB.", 416, "InvalidRange", { innerCode: RANGE_INNER },
     ));
-    if (start >= bytes.length) throw unsatisfiable();
-    const end = match[2] === "" ? bytes.length - 1 : Math.min(Number(match[2]), bytes.length - 1);
+    if (start >= size) throw unsatisfiable();
+    const end = match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1);
     if (end < start) throw unsatisfiable();
     return {
       status: 206,
       headers: {
         ...base, "Access-Control-Expose-Headers": EXPOSE_RANGE, "x-ms-chunk-size": String(CHUNK_SIZE), "OData-Version": "4.0",
-        "Content-Range": `bytes ${start}-${end}/${bytes.length}`,
+        "Content-Range": `bytes ${start}-${end}/${size}`,
       },
-      body: bytes.subarray(start, end + 1),
+      body: await readStoredBytes(api, entry, { start, end }),
     };
   }
 
   async function clear(c, { mapping, id, column, kind }) {
     authorize(c, mapping, "update", recordOf(store, mapping, id));
-    await write(() => release(store, recordOf(store, mapping, id), column, kind));
+    await writeFiles((released) => release(store, recordOf(store, mapping, id), column, kind, released));
     return { status: 204 };
   }
 
+  /**
+   * The file and image column entry for callers outside the Web API (the flow Dataverse connector's
+   * GetEntityFileImageFieldContent and UpdateEntityFileImageFieldContent): store.recordPipeline.fileContentInternal(
+   * { principal, operation: 'download' | 'upload', entity, id, column, size, content, fileName }) -> { statusCode, body }.
+   * principal is an explicit local backend profile (local-organization-service.mjs): download needs its read grant on the
+   * row, upload its update grant. Both run the Web API download and single-request upload closures (size limits, storage
+   * routing, released bytes, the 204 of an empty image). A download answers the flow file shape { $content-type, $content }
+   * (base64); an upload takes content as a Buffer, base64 text or that shape, and answers 204 with {}.
+   * unverified: the connector's exact response shapes for these two actions.
+   */
+  // The portal Web API (webapi-handler.mjs fileColumnRequest) also calls it, with operation 'delete' (the column's DELETE)
+  // and contentType (the upload's Content-Type); fileContentInternal.kindOf(entity, column) answers 'file', 'image' or null.
+  async function fileContentInternal({ principal, operation, entity, id, column, size = null, content = null, fileName = null, contentType = null, defaultName = false } = {}) {
+    validateServiceProfile(principal);
+    const mapping = store.resolveMapping(entity);
+    const found = fileColumn(mapping, column);
+    if (!found) throw invalid(`'${column}' is not a file or image column of ${mapping.logicalName}.`);
+    if (!guidKey(id)) throw invalid("The record id must be a GUID.");
+    const row = recordOf(store, mapping, id);
+    const download = operation === "download";
+    if (!download && operation !== "upload" && operation !== "delete") throw invalid("The file operation must be download, upload or delete.");
+    authorizeGrant(store, principal, mapping.logicalName, download ? "read" : "update", row);
+    if (operation === "delete") return { statusCode: (await clear({ authorized: true }, { mapping, id, ...found })).status, body: {} };
+    const url = new URL(`http://localhost/${download && size === "full" ? "?size=full" : ""}`);
+    if (download) {
+      const answer = await downloadFile({ authorized: true, url, headers: {} }, { mapping, id, ...found });
+      if (answer.status === 204) return { statusCode: 204, body: {} };
+      const entry = filesRead(store)[row[column]];
+      const bytes = Buffer.from(answer.body ?? []);
+      // file: the stored entry's name, size and MIME type, for callers that send their own download headers (the portal /_api).
+      return { statusCode: 200, body: { "$content-type": entry?.mimeType ?? "application/octet-stream", "$content": bytes.toString("base64") },
+        file: { name: entry?.name ?? column, size: bytes.length, mimeType: entry?.mimeType ?? "application/octet-stream" } };
+    }
+    const shaped = content !== null && typeof content === "object" && !Buffer.isBuffer(content) && !(content instanceof Uint8Array);
+    const raw = shaped ? content.$content : content;
+    if (raw == null) throw invalid("The file content is required.");
+    const bytes = Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), "base64");
+    // defaultName (the portal /_api, whose Learn sample sends no name): the stored file's name, else <column>.bin.
+    // unverified: the name the platform stores for a nameless portal upload.
+    const name = fileName || (defaultName ? filesRead(store)[row[column]]?.name ?? `${column}.bin` : null);
+    if (!name) throw invalid("x-ms-file-name is required.");
+    const type = shaped ? content["$content-type"] : contentType;
+    const answer = await upload({ authorized: true, url, headers: { "x-ms-file-name": name, ...(type ? { "content-type": type } : {}) }, bodyBuffer: bytes },
+      { mapping, id, ...found });
+    return { statusCode: answer.status ?? 204, body: {} };
+  }
+  const downloadFile = (c, target) => download(c, target);
+  fileContentInternal.kindOf = (entity, column) => fileColumn(store.resolveMapping(entity), column)?.kind ?? null;
+  api.records.fileContentInternal = fileContentInternal;
+
+  // Synchronous without a storage route; a routed write returns the provider puts' promise (awaited inside the write).
   function beforeWrite(c, mapping, { operation, data, existing }) {
     if (operation !== "create" && operation !== "update") return;
-    const files = filesOf(store);
+    const files = filesOf(store), puts = [];
     for (const [column, def] of imageColumns(mapping)) {
       if (!data || !Object.hasOwn(data, column)) continue;
       const value = data[column];
@@ -468,11 +717,15 @@ export function install(api) {
       const bytes = Buffer.from(value, "base64");
       // unverified: a record write with bytes that are not a supported image answers "Invalid argument." (0x80040203), not the $value wording.
       if (!sniffImage(bytes)) throw invalid("Invalid argument.");
-      const entry = prepared({ logical: mapping.logicalName, id, column, kind: "image", def, name: column, bytes });
-      const fileId = randomUUID();
-      files[fileId] = entry;
+      const fileId = uuid();
+      const entry = files[fileId] = prepared({ logical: mapping.logicalName, id, column, kind: "image", def, name: column, size: bytes.length, head: bytes, now: clock() });
+      if (routed(fileKey(fileId))) {
+        storage().holdWrite?.(fileKey(fileId));
+        puts.push(keep(entry, fileId, bytes));
+      } else entry.data = bytes.toString("base64");
       data[column] = fileId;
     }
+    return puts.length ? Promise.all(puts).then(() => undefined) : undefined;
   }
 
   // Runs after a create or update has committed. A create stored its images before the record had an id, so the
@@ -488,11 +741,16 @@ export function install(api) {
     for (const column of columns) {
       if (row[column] && files[row[column]]) files[row[column]].recordId = id;
     }
+    const released = [];
     for (const [fileId, entry] of Object.entries(files)) {
       const replaced = entry.entity === mapping.logicalName && columns.includes(entry.column)
         && sameGuid(entry.recordId, id) && row[entry.column] !== fileId;
-      if (replaced) delete files[fileId];
+      if (replaced) {
+        released.push(fileKey(fileId));
+        delete files[fileId];
+      }
     }
+    if (released.length) storage()?.released(released);
   }
 
   // Read returns image columns as base64 with the companion columns Dataverse adds.
@@ -514,7 +772,16 @@ export function install(api) {
         const fileId = raw?.[column] ?? null;
         const entry = fileId ? files[fileId] : null;
         const stamp = entry ? Date.parse(entry.createdOn) : null; // unverified: _timestamp format
-        row[column] = entry ? entry.data : null;
+        if (entry?.data == null && entry?.key) deferBytes(c, row, column, async () => {
+          // A blob the provider no longer has reads as null with a diagnostic, like storage routing (STORAGE_OBJECT_MISSING).
+          try { return (await readStoredBytes(api, entry)).toString("base64"); }
+          catch (error) {
+            if (error?.code !== "NotFound") throw error;
+            storageByApi.get(api)?.missing?.(mapping.logicalName, key, entry.key);
+            return null;
+          }
+        });
+        else row[column] = entry ? entry.data : null;
         row[`${column}id`] = fileId;
         row[`${column}_timestamp`] = stamp;
         row[`${column}_url`] = entry
@@ -524,25 +791,27 @@ export function install(api) {
     }
   }
 
-  // Annotation and attachment block messages. The limit is organization.maxuploadfilesize (platform-settings default 5242880).
-  // unverified: the limit is applied to raw bytes; the setting's own text says base64-encoded.
-  const uploadLimit = () => Number(organizationRecord(store)?.maxuploadfilesize ?? 5242880);
+  // Annotation and attachment block messages. Their size limit is platform-settings assertAttachmentSize (MaxUploadFileSize
+  // against the Base64 length, /_sim overrides honoured), checked per block here and again by the record pipeline at commit.
   // Learn: Initialize*BlocksUpload takes Target and answers a continuation token. Upload is create-only, so the
   // session names the table being created and the Target the new row regards. unverified: Target semantics.
   function initBlocksUpload(c, logical, name) {
     const input = bodyOf(c);
     const { mapping, id } = targetOf(store, input.Target);
     principals.authorize({ user: c.user, entity: logical, operation: "create" });
-    const token = randomUUID();
+    const token = uuid(), rowId = uuid();
     openSession(token, {
-      mode: "blocks", entity: mapping.logicalName, id, role: logical, kind: "file", def: { MaxSizeInKB: Math.floor(uploadLimit() / 1024) },
-      name: null, blockLength: null, bytes: 0, blocks: new Map(),
+      mode: "blocks", entity: mapping.logicalName, id, role: logical, kind: "file", def: {},
+      name: null, blockLength: null, bytes: 0, blocks: new Map(), rowId, key: `annotations/${rowId}/1`,
     });
     return reply(c, name, { FileContinuationToken: token });
   }
 
   // Commit creates one row (annotation or activitymimeattachment) regarding the session's Target, with the joined bytes as base64
-  // text. unverified: the row's filename, mimetype and objectid/activityid mapping; the commit's Target argument is not read.
+  // text, through the record create pipeline (blocked extensions and MIME types, size, ownership, plug-ins, audit, hooks, events).
+  // Learn: the commit's Target carries filename and mimetype; FileName/MimeType parameters are also read. The mimetype falls
+  // back to the file name's extension. objectid (and an attachment's activityid) is the lookup { id, logical_name } of the session's
+  // Target, as other note writers store it. unverified: the activityid mapping.
   async function commitRowBlocks(c, logical, name) {
     const input = bodyOf(c);
     const token = String(input.FileContinuationToken ?? "");
@@ -552,36 +821,47 @@ export function install(api) {
     const parts = list.map((blockId) => session.blocks.get(String(blockId)));
     if (!list.length || parts.some((part) => part === undefined)) throw invalid("BlockList names a block that was not uploaded.");
     principals.authorize({ user: c.user, entity: logical, operation: "create" });
-    const bytes = Buffer.concat(parts);
-    assertSize("file", uploadLimit(), bytes.length);
-    const id = randomUUID();
-    const row = { filesize: bytes.length, filename: input.FileName ?? null, mimetype: null, createdon: nowIso() };
-    if (logical === "annotation") {
-      Object.assign(row, { annotationid: id, objectid: session.id, objecttypecode: session.entity, documentbody: bytes.toString("base64"), isdocument: true });
-    } else {
-      Object.assign(row, { activitymimeattachmentid: id, objectid: session.id, objecttypecode: session.entity, activityid: session.id, body: bytes.toString("base64") });
-    }
-    await write(() => {
-      (store.state.tables[logical] ??= []).push(row);
-    });
+    const target = input.Target && typeof input.Target === "object" ? input.Target : {};
+    const filename = input.FileName ?? target.filename ?? null;
+    const mimetype = input.MimeType ?? target.mimetype ?? mimeOfName(filename) ?? "application/octet-stream";
+    // A routed session's blocks are committed by the provider; the row carries the key and the routing hooks serve the column.
+    const unhold = hold(session.key);
+    let size;
+    try {
+      const joined = await joinBlocks(session, list, mimetype);
+      size = joined.size;
+      const body = joined.bytes ? joined.bytes.toString("base64") : null;
+      const id = session.rowId, regarding = { id: session.id, logical_name: session.entity };
+      const row = { filesize: size, filename, mimetype, ...(joined.bytes ? {} : { __blobkey: session.key }) };
+      if (logical === "annotation") {
+        Object.assign(row, { annotationid: id, objectid: regarding, objecttypecode: session.entity, documentbody: body, isdocument: true });
+        if (target.subject != null) row.subject = target.subject;
+      } else {
+        Object.assign(row, { activitymimeattachmentid: id, objectid: regarding, objecttypecode: session.entity, activityid: regarding, body });
+      }
+      await write(() => createThroughPipeline(api, c, logical, row));
+    } finally { unhold(); }
+    const id = session.rowId;
     sessions.delete(token);
     const answer = logical === "annotation" ? { AnnotationId: id } : { ActivityMimeAttachmentId: id };
-    return reply(c, name, { ...answer, FileSizeInBytes: bytes.length });
+    return reply(c, name, { ...answer, FileSizeInBytes: size });
   }
 
   // Learn: Initialize*BlocksDownload takes Target (the annotation or activitymimeattachment row) and answers the same shape as
   // InitializeFileBlocksDownload. unverified: the answer shape and error wording for a row with no bytes.
-  function initBlocksDownload(c, logical, column, name) {
+  async function initBlocksDownload(c, logical, column, name) {
     const input = bodyOf(c);
     const { mapping, id } = targetOf(store, input.Target);
     if (mapping.logicalName !== logical) throw invalid(`Target must be a ${logical} row.`);
     const row = recordOf(store, mapping, id);
     authorize(c, mapping, "read", row);
-    if (row[column] == null) throw missing(`No file found for ${logical} ${id}.`);
-    const token = randomUUID();
-    openSession(token, { mode: "download", fileId: null, data: row[column], entity: logical, id });
+    const key = row[column] == null ? blobKeyOf(logical, row) : null;
+    if (row[column] == null && !key) throw missing(`No file found for ${logical} ${id}.`);
+    const size = key ? (await providerOf(key).head(key))?.size ?? 0 : Buffer.from(String(row[column]), "base64").length;
+    const token = uuid();
+    openSession(token, { mode: "download", fileId: null, ...(key ? { key, size } : { data: row[column] }), entity: logical, id });
     return reply(c, name, {
-      FileSizeInBytes: Buffer.from(String(row[column]), "base64").length, FileName: row.filename ?? "", FileContinuationToken: token, IsChunkingSupported: true,
+      FileSizeInBytes: size, FileName: row.filename ?? "", FileContinuationToken: token, IsChunkingSupported: true,
     });
   }
 
@@ -590,8 +870,8 @@ export function install(api) {
       const input = bodyOf(c), size = Number(input.FileSize), name = String(input.FileName ?? "");
       if (!name || !Number.isInteger(size) || size <= 0) throw invalid("FileName and a positive FileSize are required.");
       assertSize("file", maxBytes("file", {}), size);
-      const token = randomUUID(), recordId = randomUUID();
-      openSession(token, { mode: "blocks", entity: null, id: recordId, column: null, kind: "file", def: {}, name, expectedSize: size, creator: c.user?.systemuserid, blockLength: null, bytes: 0, blocks: new Map() });
+      const token = uuid(), recordId = uuid(), fileId = uuid();
+      openSession(token, { mode: "blocks", entity: null, id: recordId, column: null, kind: "file", def: {}, name, expectedSize: size, creator: c.user?.systemuserid, blockLength: null, bytes: 0, blocks: new Map(), fileId, key: fileKey(fileId) });
       return reply(c, "InitializeTemporaryFileBlocksUpload", { FileContinuationToken: token, RecordId: recordId });
     },
     async InitializeAnnotationBlocksUpload(c) {
@@ -626,8 +906,8 @@ export function install(api) {
       const name = String(input.FileName ?? "");
       if (!name) throw invalid("FileName is required.");
       authorize(c, mapping, "update", recordOf(store, mapping, id));
-      const token = randomUUID();
-      openSession(token, { mode: "blocks", entity: mapping.logicalName, id, ...found, name, blockLength: null, bytes: 0, blocks: new Map() });
+      const token = uuid(), fileId = uuid();
+      openSession(token, { mode: "blocks", entity: mapping.logicalName, id, ...found, name, blockLength: null, bytes: 0, blocks: new Map(), fileId, key: fileKey(fileId) });
       return reply(c, "InitializeFileBlocksUpload", { FileContinuationToken: token });
     },
 
@@ -641,11 +921,12 @@ export function install(api) {
       }
       if (block.length > BLOCK_LIMIT) throw invalid("BlockData is larger than one block.");
       // Blocks count against MaxSizeInKB as they arrive; a re-sent BlockId replaces its earlier bytes.
-      const replaced = session.blocks.get(String(input.BlockId))?.length ?? 0;
-      assertSize(session.kind, maxBytes(session.kind, session.def), session.bytes - replaced + block.length);
+      const replaced = sizeOf(session.blocks.get(String(input.BlockId)));
+      assertSessionSize(session, session.bytes - replaced + block.length);
+      reserve(session, session.bytes - replaced + block.length);
+      await stageBlock(session, String(input.BlockId), block);
       session.bytes += block.length - replaced;
       session.blockLength ??= blockId.length;
-      session.blocks.set(String(input.BlockId), block);
       return { status: 204 };
     },
 
@@ -659,19 +940,26 @@ export function install(api) {
       const mapping = session.entity ? store.resolveMapping(session.entity) : null;
       if (mapping) authorize(c, mapping, "update", recordOf(store, mapping, session.id));
       else if (session.creator !== c.user?.systemuserid) throw invalid("The file continuation token is not valid.");
-      const bytes = Buffer.concat(parts);
-      if (session.expectedSize != null && bytes.length !== session.expectedSize) throw invalid("The uploaded size does not match FileSize.");
-      let fileId;
-      await write(() => {
+      const listed = parts.reduce((total, part) => total + sizeOf(part), 0);
+      if (session.expectedSize != null && listed !== session.expectedSize) throw invalid("The uploaded size does not match FileSize.");
+      const fileId = session.fileId, unhold = hold(session.key);
+      let size;
+      try {
+        const joined = await joinBlocks(session, list, input.MimeType);
+        size = joined.size;
         const entry = prepared({
           logical: session.entity, id: session.id, column: session.column, kind: session.kind, def: session.def,
-          name: input.FileName || session.name, bytes, mimeType: input.MimeType,
+          name: input.FileName || session.name, size, head: joined.head, mimeType: input.MimeType, now: clock(),
         });
-        if (mapping) fileId = place(store, recordOf(store, mapping, session.id), session.column, session.kind, entry);
-        else { fileId = randomUUID(); filesOf(store)[fileId] = { ...entry, creator: session.creator }; }
-      });
+        if (joined.bytes) entry.data = joined.bytes.toString("base64");
+        else entry.key = session.key;
+        await writeFiles((released) => {
+          if (mapping) place(store, recordOf(store, mapping, session.id), session.column, session.kind, entry, fileId, released);
+          else filesOf(store)[fileId] = { ...entry, creator: session.creator };
+        });
+      } finally { unhold(); }
       sessions.delete(token);
-      return reply(c, "CommitFileBlocksUpload", { FileId: fileId, FileSizeInBytes: bytes.length });
+      return reply(c, "CommitFileBlocksUpload", { FileId: fileId, FileSizeInBytes: size });
     },
 
     async InitializeFileBlocksDownload(c) {
@@ -683,7 +971,7 @@ export function install(api) {
       authorize(c, mapping, "read", row);
       const entry = row[found.column] ? filesRead(store)[row[found.column]] : null;
       if (!entry) throw missing(`No file found for ${found.column} of ${mapping.logicalName} record ${id}.`); // unverified: error wording
-      const token = randomUUID();
+      const token = uuid();
       openSession(token, { mode: "download", fileId: row[found.column], entity: mapping.logicalName, id });
       return reply(c, "InitializeFileBlocksDownload", {
         FileSizeInBytes: entry.size, FileName: entry.name, FileContinuationToken: token, IsChunkingSupported: true,
@@ -693,8 +981,8 @@ export function install(api) {
     async DownloadBlock(c) {
       const input = bodyOf(c);
       const session = sessionOf(input.FileContinuationToken, "download");
-      // An annotation or attachment download carries its base64 bytes in the session (see initBlocksDownload).
-      const entry = session.data != null ? { data: session.data } : filesRead(store)[session.fileId];
+      // An annotation or attachment download carries its base64 bytes or provider key in the session (see initBlocksDownload).
+      const entry = session.data != null ? { data: session.data } : session.key ? { key: session.key, size: session.size } : filesRead(store)[session.fileId];
       if (!entry) throw missing(`File ${session.fileId} does not exist.`);
       const mapping = store.resolveMapping(session.entity);
       authorize(c, mapping, "read", recordOf(store, mapping, session.id));
@@ -704,8 +992,9 @@ export function install(api) {
         throw invalid("Offset must be a whole number and BlockLength one or more.");
       }
       // unverified: a negative Offset answers the whole file and ignores BlockLength (native: Offset -1, BlockLength 16 returned all 23 bytes).
-      const data = Buffer.from(entry.data, "base64");
-      const block = offset < 0 ? data : data.subarray(offset, offset + length);
+      const size = entry.data != null ? Buffer.from(String(entry.data), "base64").length : entry.size;
+      const block = offset >= size ? Buffer.alloc(0)
+        : await readStoredBytes(api, entry, offset < 0 ? undefined : { start: offset, end: Math.min(offset + length, size) - 1 });
       return reply(c, "DownloadBlock", { Data: block.toString("base64") });
     },
 
@@ -716,16 +1005,17 @@ export function install(api) {
       if (!entry) throw missing(`File ${input.FileId} does not exist.`);
       if (entry.entity == null) {
         if (entry.creator !== c.user?.systemuserid) throw missing(`File ${input.FileId} does not exist.`);
-        await write(() => { delete filesOf(store)[key]; });
+        await writeFiles((released) => { delete filesOf(store)[key]; released.push(fileKey(key)); });
         return { status: 204 };
       }
       const mapping = store.resolveMapping(entry.entity);
       authorize(c, mapping, "update", recordOf(store, mapping, entry.recordId));
       const found = fileColumn(mapping, entry.column);
-      await write(() => {
+      await writeFiles((released) => {
         const row = recordOf(store, mapping, entry.recordId);
-        if (guidKey(row[entry.column]) === key) release(store, row, entry.column, found?.kind);
+        if (guidKey(row[entry.column]) === key) release(store, row, entry.column, found?.kind, released);
         delete filesOf(store)[key];
+        released.push(fileKey(key));
       });
       return { status: 204 };
     },
@@ -760,19 +1050,31 @@ export function install(api) {
     if (!row) throw missing(`${mapping.logicalName} With Id = ${id} Does Not Exist`);
     authorize(c, mapping, "read", row);
     let key, entry;
+    // A routed note or file is signed by its provider; no byte copy is kept.
+    const providerSas = async (storedKey) => {
+      const url = await providerOf(storedKey).sas(storedKey, { permission: "r", expiresOn: clock() + 3600_000 });
+      return /^https?:/i.test(url) ? url : `${c.origin}${url}`;
+    };
     if (["annotation", "activitymimeattachment"].includes(mapping.logicalName)) {
       if (input.FileAttributeName !== "") throw invalid("FileAttributeName must be empty for notes and attachments.");
-      key = `inline:${randomUUID()}`;
+      key = `inline:${uuid()}`;
       const bytes = row[mapping.logicalName === "annotation" ? "documentbody" : "body"];
+      const blobKey = bytes == null ? blobKeyOf(mapping.logicalName, row) : null;
+      if (blobKey) return (async () => {
+        const size = (await providerOf(blobKey).head(blobKey))?.size ?? 0;
+        return reply(c, "GetFileSasUrl", { Result: { FileName: row.filename ?? "", FileSizeInBytes: size, MimeType: row.mimetype ?? "application/octet-stream", SasUrl: await providerSas(blobKey) } });
+      })();
       if (bytes == null) throw missing("No file attachment found.");
-      entry = { name: row.filename ?? "", mimeType: row.mimetype ?? "application/octet-stream", data: bytes, size: Buffer.from(String(bytes), "base64").length };
-      purge(); sasInline.set(key, { ...entry, expiresAt: clock() + 3600_000 });
+      purge(); reserve(null, String(bytes).length);
+      entry ={ name: row.filename ?? "", mimeType: row.mimetype ?? "application/octet-stream", data: bytes, size: Buffer.from(String(bytes), "base64").length };
+      sasInline.set(key, { ...entry, expiresAt: clock() + 3600_000 });
     } else {
       const found = fileColumn(mapping, input.FileAttributeName);
       if (!found) throw invalid("FileAttributeName is not a file or image column.");
       if (found.kind === "image" && found.def?.canStoreFullImage !== true) throw invalid("GetFileSasUrl only works for image columns that store full images.");
       key = row[found.column]; entry = filesRead(store)[key];
       if (!entry) throw missing("No file attachment found.");
+      if (entry.data == null && entry.key) return providerSas(entry.key).then((SasUrl) => reply(c, "GetFileSasUrl", { Result: { FileName: entry.name, FileSizeInBytes: entry.size, MimeType: entry.mimeType, SasUrl } }));
     }
     return reply(c, "GetFileSasUrl", { Result: { FileName: entry.name, FileSizeInBytes: entry.size, MimeType: entry.mimeType, SasUrl: sasUrl(c, key, "r") } });
   } });
@@ -791,24 +1093,62 @@ export function install(api) {
     const failure = () => ({ status: 403, body: { error: { code: "AuthenticationFailed", message: "Signature not valid or expired." } } });
     if (!expiry || !Number.isFinite(Date.parse(expiry)) || clock() >= Date.parse(expiry) || bytes.length !== Buffer.byteLength(expected) || !timingSafeEqual(bytes, Buffer.from(expected))) return failure();
     if (permission === "w" && c.method === "PUT" && key.startsWith("upload:")) {
-      const session = sessionOf(key.slice(7), "blocks"), chunks = [];
+      const session = sessionOf(key.slice(7), "blocks"), blockId = Buffer.from("sas").toString("base64");
       let received = 0;
       // Anonymous routes run before the authenticated body's reader. Verify the capability first, then enforce
       // the same column size limit while streaming; a large request never materializes an unbounded buffer.
-      for await (const chunk of c.bodyBuffer != null ? [c.bodyBuffer] : c.req ?? []) {
-        const bytes = Buffer.from(chunk); received += bytes.length;
-        assertSize(session.kind, maxBytes(session.kind, session.def), received);
-        chunks.push(bytes);
+      async function* checked() {
+        for await (const chunk of c.bodyBuffer != null ? [c.bodyBuffer] : c.req ?? []) {
+          const bytes = Buffer.from(chunk); received += bytes.length;
+          assertSessionSize(session, received);
+          reserve(session, received);
+          yield bytes;
+        }
       }
-      const block = Buffer.concat(chunks);
-      assertSize(session.kind, maxBytes(session.kind, session.def), block.length);
-      session.blocks.clear(); session.blocks.set(Buffer.from("sas").toString("base64"), block); session.bytes = block.length; session.blockLength = 3;
+      let block = null;
+      // A routed session streams the body straight into the provider's staged block.
+      if (routed(session.key)) await providerOf(session.key).put(session.key, checked(), { blockId });
+      else { const chunks = []; for await (const bytes of checked()) chunks.push(bytes); block = Buffer.concat(chunks); }
+      assertSessionSize(session, received);
+      session.blocks.clear(); session.blocks.set(blockId, block ?? received); session.bytes = received; session.blockLength = 3;
       return { status: 201 };
     }
     if (permission !== "r" || c.method !== "GET" || key.startsWith("upload:")) return failure();
     purge();
     const entry = filesRead(store)[key] ?? sasInline.get(key);
     if (entry?.data == null) return { status: 404, body: { error: { code: "NotFound", message: "File not found." } } };
-    return { status: 200, body: Buffer.from(entry.data, "base64"), headers: { "Content-Type": entry.mimeType ?? "application/octet-stream", "Content-Disposition": `attachment; filename="${String(entry.name ?? "download").replace(/[\r\n"\\]/g, "_")}"` } };
+    return { status: 200, body: Buffer.from(entry.data, "base64"), headers: sasHeaders(entry.mimeType, entry.name) };
   }, { anonymous: true });
+  // Provider SAS URLs (storage-local-disk.mjs answers /_sas/storage/<id>/<key>): the provider verifies the signature, the
+  // name and type come from the file entry or the note row that still holds the key, so a released key answers 404.
+  const denied = () => ({ status: 403, body: { error: { code: "AuthenticationFailed", message: "Signature not valid or expired." } } });
+  api.addRoute((pathname) => pathname.startsWith("/_sas/storage/"), async (c) => {
+    const routes = storage();
+    if (!routes || c.method !== "GET") return denied();
+    for (const provider of new Set([routes.files, routes.annotations])) {
+      let key;
+      try { ({ key } = await provider.verifySas(c.url.href, { permission: "r" })); } catch { continue; }
+      const meta = describeKey(key);
+      if (!meta) return { status: 404, body: { error: { code: "NotFound", message: "File not found." } } };
+      return { status: 200, body: await readStoredBytes(api, { key }), headers: sasHeaders(meta.mimeType, meta.name) };
+    }
+    return denied();
+  }, { anonymous: true });
+  // { name, mimeType } of the file entry or note/attachment row holding a provider key; null when nothing holds it.
+  function describeKey(key) {
+    if (key.startsWith("files/")) {
+      const entry = filesRead(store)[key.slice(6)];
+      return entry?.key === key ? { name: entry.name, mimeType: entry.mimeType } : null;
+    }
+    for (const logical of Object.keys(ATTACHMENT_COLUMNS)) {
+      const row = (store.state.tables[logical] ?? []).find((r) => blobKeyOf(logical, r) === key);
+      if (row) return { name: row.filename, mimeType: row.mimetype };
+    }
+    return null;
+  }
 }
+
+const sasHeaders = (mimeType, name) => ({
+  "Content-Type": mimeType ?? "application/octet-stream",
+  "Content-Disposition": contentDisposition("attachment", name ?? "download"),
+});

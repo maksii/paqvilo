@@ -22,6 +22,10 @@ async function fixture(t) {
   const server = http.createServer(async (req, res) => {
     if (req.url === '/bundle.js') { scripts++; res.setHeader('content-type', 'text/javascript'); res.end(bundle); return; }
     if (req.url === '/registered.js' || req.url === '/namespace.js') { scripts++; res.setHeader('content-type', 'text/javascript'); res.end(bundle + (req.url === '/registered.js' ? ';ComponentFramework.registerControl("Invented.Input",InventedExports.Input);' : ';window.Invented={Input:InventedExports.Input};')); return; }
+    // Invented UMD stand-ins for project-supplied platform libraries and a virtual component bundle.
+    if (req.url === '/react.js') { res.setHeader('content-type', 'text/javascript'); res.end('window.React={createElement:(type,props)=>({type,props})};'); return; }
+    if (req.url === '/reactdom.js') { res.setHeader('content-type', 'text/javascript'); res.end('window.ReactDOM={render(view,node){node.textContent="virtual:"+view.props.value;window.renders=(window.renders||0)+1;},unmountComponentAtNode(node){node.textContent="";window.unmounts=(window.unmounts||0)+1;}};'); return; }
+    if (req.url === '/virtual.js') { res.setHeader('content-type', 'text/javascript'); res.end('ComponentFramework.registerControl("Invented.Virtual",class{init(context,notify,state,container){window.virtualInit=arguments.length;}updateView(context){window.virtualSettings=context.userSettings;return React.createElement("span",{value:context.parameters.value.raw});}destroy(){}});'); return; }
     if (req.url === '/slow.js') { setTimeout(() => { res.setHeader('content-type', 'text/javascript'); res.end(bundle); }, 50); return; }
     if (req.url.startsWith('/assets/')) {
       const name = req.url.slice('/assets/'.length);
@@ -160,7 +164,7 @@ test('PCF trust, unsupported contracts and remote URLs fail visibly without exec
   assert.equal(await page.evaluate(() => control.supported), false);
   assert.equal(scriptCount(), 0);
   await page.evaluate(() => { document.querySelector('main').replaceChildren(); return mount({ ...options, clientExtensions: { trusted: true, pcf: { controls: [{ ...extensions.pcf.controls[0], controlType: 'virtual' }] } } }); });
-  assert.match(await page.locator('main').innerText(), /Only standard scalar/);
+  assert.match(await page.locator('main').innerText(), /requires platform libraries/);
   await page.evaluate(() => { document.querySelector('main').replaceChildren(); return mount({ ...options, clientExtensions: { trusted: true, pcf: { controls: [{ ...extensions.pcf.controls[0], resources: { code: ['https://example.invalid/control.js'] } }] } } }); });
   assert.match(await page.locator('main').innerText(), /local Mirage origin/);
   assert.equal(scriptCount(), 0);
@@ -248,5 +252,23 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   await page.getByRole('button', { name: 'Use identity', exact: true }).click();
   await page.waitForFunction(id => window.pcfContext?.userSettings.userId === id, staff.systemuserid);
   assert.deepEqual(await page.evaluate(() => ({ id: pcfContext.userSettings.userId, name: pcfContext.userSettings.userName })), { id: staff.systemuserid, name: 'Invented component staff' });
+  assert.deepEqual(errors, []);
+});
+
+test('a virtual PCF mounts through project-supplied React platform libraries and is refused without them', async t => {
+  const { page, errors } = await fixture(t);
+  const virtual = { name: 'publisher.InventedVirtual', constructor: 'Invented.Virtual', controlType: 'virtual', libraries: [{ name: 'React', version: '16.14.0' }],
+    properties: [{ name: 'value', ofType: 'SingleLine.Text', usage: 'bound' }], resources: { code: ['/virtual.js'] } };
+  const platformLibraries = [{ name: 'React', version: '16.14.0', url: '/react.js' }, { name: 'ReactDOM', version: '16.14.0', url: '/reactdom.js' }];
+  await page.evaluate(virtual => mount({ pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } }, clientExtensions: { trusted: true, pcf: { controls: [virtual] } } }), virtual);
+  assert.match(await page.locator('main').innerText(), /requires platform libraries \(React 16\.14\.0\)\. Supply React@16\.14\.0\.js, ReactDOM@16\.14\.0\.js/);
+  await page.evaluate(([virtual, platformLibraries]) => { document.querySelector('main').replaceChildren(); return mount({ pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } }, clientExtensions: { trusted: true, pcf: { controls: [virtual], platformLibraries } } }); }, [virtual, platformLibraries]);
+  assert.equal(await page.locator('.model-driven-pcf').textContent(), 'virtual:Initial');
+  assert.equal(await page.evaluate(() => window.virtualInit), 3, 'a virtual component gets no container');
+  assert.deepEqual(await page.evaluate(() => [virtualSettings.languageId, virtualSettings.securityRoles]), [1033, []]);
+  await page.evaluate(() => control.setValue('Changed'));
+  await page.waitForFunction(() => document.querySelector('.model-driven-pcf').textContent === 'virtual:Changed');
+  await page.evaluate(() => control.destroy());
+  assert.equal(await page.evaluate(() => window.unmounts), 1);
   assert.deepEqual(errors, []);
 });

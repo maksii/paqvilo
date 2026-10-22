@@ -1,0 +1,447 @@
+/* Infrastructure dashboard ("mission control") for /_sim/ and /_setup/, rendered by dashboard-map.mjs.
+   Every selector is prefixed `dm-`; tokens are `--dm-*` on :root (kit status tokens `--ui-*` are reused when present).
+   Light theme only. The wide map geometry below (heights, gaps, paddings) must match GEOMETRY in dashboard-map.mjs. */
+:root {
+  --dm-font: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --dm-ink: #1b2537;
+  --dm-ink-2: #3d4a60;
+  --dm-muted: #5d6a80;
+  --dm-line: #dfe3ea;
+  --dm-surface: #ffffff;
+  --dm-canvas: #f4f6fa;
+  --dm-radius: 12px;
+  --dm-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 2px 8px rgba(16, 24, 40, 0.05);
+  --dm-shadow-raised: 0 4px 10px rgba(16, 24, 40, 0.10), 0 12px 28px rgba(16, 24, 40, 0.12);
+  --dm-ok: var(--ui-ok, #1f7a4d);
+  --dm-warn: var(--ui-warn, #b26b00);
+  --dm-bad: var(--ui-bad, #a92a38);
+  --dm-info: var(--ui-info, #2f5fd0);
+  --dm-off: #8a94a6;
+  --dm-ok-bg: var(--ui-ok-bg, #eaf7f0);
+  --dm-warn-bg: var(--ui-warn-bg, #fff5df);
+  --dm-bad-bg: var(--ui-bad-bg, #fff0f2);
+  --dm-info-bg: var(--ui-info-bg, #eef2ff);
+  --dm-focus: var(--ui-focus, #5b7cff);
+  /* Product accents, used sparingly (icon tiles, band stripes). */
+  --dm-pages: #5048c8;
+  --dm-apps: #86339f;
+  --dm-dataverse: #0e7a43;
+  --dm-automate: #1d5fd1;
+  --dm-azure: #0767b5;
+  --dm-neutral: #56637a;
+  /* Connectors */
+  --dm-wire: #8e9ab0;
+  --dm-wire-soft: #b2bccd;
+  --dm-active: #1c64f2;
+  --dm-hot: #3b2fd0;
+  /* Hero */
+  --dm-hero-a: #0b1430;
+  --dm-hero-b: #13295e;
+  --dm-hero-c: #1b4a8c;
+}
+
+.dm-dashboard { container: dm-dash / inline-size; font-family: var(--dm-font); color: var(--dm-ink); }
+.dm-dashboard code { font-family: var(--ui-mono, Consolas, "Courier New", monospace); font-size: 0.92em; overflow-wrap: anywhere; }
+.dm-muted { color: var(--dm-muted); }
+.dm-section { margin: 28px 0 0; }
+.dm-section-head h2, .dm-dashboard .dm-section > h2 { margin: 0 0 4px; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.dm-section-head .ui-help { margin: 0 0 12px; max-width: 900px; font-size: 14px; }
+
+/* ---------- Hero ---------- */
+.dm-hero {
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px 32px; align-items: center;
+  margin: 0 0 18px; padding: 24px 28px; border-radius: 16px; color: #e8eeff;
+  background: radial-gradient(120% 140% at 100% 0%, rgba(80, 140, 255, 0.28) 0%, rgba(80, 140, 255, 0) 55%), linear-gradient(135deg, var(--dm-hero-a) 0%, var(--dm-hero-b) 55%, var(--dm-hero-c) 100%);
+  box-shadow: 0 10px 30px rgba(11, 20, 48, 0.25);
+}
+.dm-hero.is-planned { background: radial-gradient(120% 140% at 100% 0%, rgba(140, 120, 255, 0.25) 0%, rgba(140, 120, 255, 0) 55%), linear-gradient(135deg, #131a33 0%, #252c5c 60%, #3a3f86 100%); }
+.dm-hero-main { display: grid; gap: 12px; min-width: 0; }
+.dm-brand { display: flex; align-items: center; gap: 14px; }
+.dm-mark { display: inline-grid; place-items: center; flex: none; width: 46px; height: 46px; border-radius: 12px; background: rgba(255, 255, 255, 0.10); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18); color: #9cc2ff; }
+.dm-mark svg { width: 28px; height: 28px; }
+.dm-eyebrow { margin: 0; color: #9fb3dc; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.dm-hero h2 { margin: 2px 0 0; color: #fff; font-size: 24px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.2; }
+.dm-live { display: inline-flex; align-items: center; gap: 8px; justify-self: start; padding: 4px 12px 4px 10px; border-radius: 999px; background: rgba(46, 204, 113, 0.14); box-shadow: inset 0 0 0 1px rgba(46, 204, 113, 0.35); color: #b6f2cd; font-size: 13px; font-weight: 600; }
+.dm-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.6); animation: dm-breathe 2s ease-out infinite; }
+.dm-live.is-planned { background: rgba(160, 150, 255, 0.16); box-shadow: inset 0 0 0 1px rgba(170, 160, 255, 0.4); color: #d6d2ff; }
+.dm-live.is-planned .dm-live-dot { background: #b3abff; animation: none; }
+.dm-live.is-starting { background: rgba(255, 196, 70, 0.14); box-shadow: inset 0 0 0 1px rgba(255, 196, 70, 0.4); color: #ffe3a3; }
+.dm-live.is-starting .dm-live-dot { background: #ffc446; }
+@keyframes dm-breathe { 0% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.55); } 80%, 100% { box-shadow: 0 0 0 7px rgba(61, 220, 132, 0); } }
+.dm-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.dm-chips li { display: inline-flex; gap: 6px; padding: 4px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); font-size: 13px; }
+.dm-chips span { color: #9fb3dc; }
+.dm-chips strong { color: #fff; font-weight: 600; }
+.dm-hero-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; color: #9fb3dc; font-size: 13px; }
+.dm-hero-meta code { padding: 1px 6px; border-radius: 6px; background: rgba(0, 0, 0, 0.25); color: #dfe8ff; }
+.dm-hero-health { display: flex; align-items: center; gap: 20px; }
+.dm-health-ring { position: relative; flex: none; width: 112px; height: 112px; }
+.dm-health-value { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; line-height: 1.1; }
+.dm-health-value strong { color: #fff; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+.dm-health-value span { color: #9fb3dc; font-size: 12px; }
+.dm-ring-lg .dm-arc-track { stroke: rgba(255, 255, 255, 0.12); }
+.dm-hero-stats { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13.5px; color: #c9d6f2; }
+.dm-hero-stats li { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.dm-hero-stats strong { min-width: 1.6em; color: #fff; font-weight: 700; text-align: right; }
+.dm-ribbon { grid-column: 1 / -1; margin: 2px 0 0; padding: 10px 14px; border-radius: 10px; background: rgba(170, 160, 255, 0.16); box-shadow: inset 0 0 0 1px rgba(170, 160, 255, 0.35); color: #ece9ff; font-size: 14px; font-weight: 600; }
+.dm-ribbon.is-starting { background: rgba(255, 196, 70, 0.14); box-shadow: inset 0 0 0 1px rgba(255, 196, 70, 0.4); color: #ffe9b8; }
+
+/* ---------- Status dots and rings ---------- */
+.dm-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--dm-off); }
+.dm-dot.is-listening, .dm-dot.is-ready, .is-listening > .dm-dot, .is-ready > .dm-dot, .is-ok > .dm-dot { background: var(--dm-ok); }
+.dm-dot.is-planned, .dm-dot.is-declared, .is-planned > .dm-dot, .is-declared > .dm-dot, .is-info > .dm-dot { background: var(--dm-info); }
+.dm-dot.is-placeholder, .is-placeholder > .dm-dot, .is-warn > .dm-dot { background: var(--dm-warn); }
+.dm-dot.is-missing, .dm-dot.is-error, .is-missing > .dm-dot, .is-error > .dm-dot, .is-bad > .dm-dot { background: var(--dm-bad); }
+.dm-dot.is-listening { box-shadow: 0 0 0 3px rgba(31, 122, 77, 0.16); }
+.dm-arc-track { stroke: #e7eaf0; }
+.dm-arc.is-ok { stroke: var(--dm-ok); }
+.dm-arc.is-info { stroke: #4f86e8; }
+.dm-arc.is-planned { stroke: #7f9cf5; }
+.dm-arc.is-warn { stroke: #e0a030; }
+.dm-arc.is-off { stroke: #b9c1cf; }
+.dm-arc.is-bad { stroke: #d6455a; }
+.dm-ring-lg .dm-arc.is-ok { stroke: #3ddc84; }
+.dm-ring-lg .dm-arc.is-planned { stroke: #a7a0ff; }
+.dm-ring-lg .dm-arc.is-warn { stroke: #ffc446; }
+.dm-ring-lg .dm-arc.is-off { stroke: #7b88a6; }
+.dm-ring-lg .dm-arc.is-bad { stroke: #ff6b81; }
+
+/* ---------- KPI tiles ---------- */
+.dm-kpis { margin: 0 0 4px; }
+.dm-kpi-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.dm-kpi { position: relative; display: grid; grid-template-rows: auto auto 30px auto auto; gap: 2px; min-width: 0; padding: 12px 14px 10px; border-radius: var(--dm-radius); background: var(--dm-surface); box-shadow: 0 0 0 1px var(--dm-line), var(--dm-shadow); }
+.dm-kpi::before { content: ""; position: absolute; left: 14px; right: 14px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: var(--dm-info); }
+.dm-kpi.is-ok::before { background: var(--dm-ok); }
+.dm-kpi.is-warn::before { background: var(--dm-warn); }
+.dm-kpi.is-bad::before { background: var(--dm-bad); }
+.dm-kpi.is-neutral::before { background: #b9c1cf; }
+.dm-kpi-label { color: var(--dm-muted); font-size: 13px; font-weight: 600; }
+.dm-kpi-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.dm-kpi-value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.dm-delta { display: inline-flex; align-items: center; gap: 2px; color: var(--dm-muted); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.dm-delta svg { width: 14px; height: 14px; }
+.dm-delta.is-up { color: var(--dm-active); }
+.dm-delta.is-down { color: var(--dm-ink-2); }
+.dm-spark { display: block; width: 100%; height: 30px; overflow: visible; }
+.dm-spark-line { stroke: var(--dm-active); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.dm-spark-area { fill: rgba(28, 100, 242, 0.08); }
+.dm-spark-base { stroke: var(--dm-line); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.dm-kpi-detail, .dm-kpi-top { overflow: hidden; color: var(--dm-muted); font-size: 12.5px; white-space: nowrap; text-overflow: ellipsis; }
+.dm-kpi-trend { color: #7a8599; font-size: 11.5px; }
+.dm-kpi-top { color: var(--dm-ink-2); white-space: normal; }
+.dm-kpi-diagnostics { grid-template-rows: auto auto 1fr auto; }
+
+/* ---------- Legend ---------- */
+.dm-legend { display: grid; gap: 6px; margin: 0 0 12px; padding: 10px 14px; border-radius: var(--dm-radius); background: var(--dm-surface); box-shadow: 0 0 0 1px var(--dm-line); }
+.dm-legend-list { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 0; list-style: none; color: var(--dm-muted); font-size: 12.5px; }
+.dm-legend-list li { display: inline-flex; align-items: center; gap: 6px; }
+.dm-legend-list strong { color: var(--dm-ink); font-weight: 600; }
+.dm-swatch { flex: none; overflow: visible; }
+
+/* ---------- Map frame, canvas and bands (wide geometry) ---------- */
+.dm-map { container: dm-map / inline-size; }
+.dm-frame { max-width: 100%; border-radius: 16px; background: var(--dm-canvas); box-shadow: inset 0 0 0 1px var(--dm-line); }
+.dm-canvas { position: relative; display: flex; flex-direction: column; gap: 48px; padding: 16px 0; }
+.dm-wires, .dm-wire-labels { position: absolute; left: 0; top: 0; z-index: 1; overflow: visible; pointer-events: none; }
+.dm-wire-labels { z-index: 25; }
+.dm-node:is(:hover, :focus-visible) { z-index: 35; }
+.dm-band { position: relative; margin: 0 10px; border-radius: 14px; background: rgba(255, 255, 255, 0.55); box-shadow: inset 0 0 0 1px #e3e7ee, inset 4px 0 0 var(--dm-band, var(--dm-neutral)); }
+.dm-band { --dm-band-bg: #fafbfd; }
+.dm-band-people { --dm-band: #6b7891; }
+.dm-band-experiences { --dm-band: var(--dm-pages); }
+.dm-band-endpoints { --dm-band: var(--dm-dataverse); }
+.dm-band-organization { --dm-band: var(--dm-dataverse); background: rgba(236, 248, 241, 0.6); --dm-band-bg: #f1f8f4; }
+.dm-band-providers { --dm-band: var(--dm-azure); background: rgba(235, 243, 252, 0.6); --dm-band-bg: #f0f5fb; }
+.dm-band-externals { --dm-band: #7d8aa3; background: rgba(240, 242, 247, 0.7); --dm-band-bg: #f3f4f8; }
+.dm-band-head { display: grid; grid-template-columns: auto auto minmax(0, 1fr); grid-template-rows: 26px 20px; column-gap: 10px; align-items: center; box-sizing: border-box; height: 60px; padding: 8px 5% 6px 2%; }
+.dm-band-index { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--dm-band, var(--dm-neutral)); color: #fff; font-size: 12px; font-weight: 700; }
+.dm-band-head > * { position: relative; z-index: 3; }
+.dm-band-head h3, .dm-band-desc { justify-self: start; max-width: 100%; box-sizing: border-box; padding: 0 6px 0 2px; border-radius: 4px; background: var(--dm-band-bg, #fafbfd); }
+.dm-band-head h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.005em; white-space: nowrap; }
+.dm-pill { justify-self: start; padding: 2px 10px; border-radius: 999px; background: var(--dm-info-bg); color: var(--dm-info); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.dm-pill.is-ok { background: var(--dm-ok-bg); color: var(--dm-ok); }
+.dm-pill.is-warn { background: var(--dm-warn-bg); color: var(--dm-warn); }
+.dm-pill.is-bad { background: var(--dm-bad-bg); color: var(--dm-bad); }
+.dm-pill.is-neutral { background: #eef1f6; color: var(--dm-muted); }
+.dm-band-desc { grid-column: 2 / -1; margin: 0; overflow: hidden; color: var(--dm-muted); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+.dm-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-auto-rows: 110px; row-gap: 14px; column-gap: 0; box-sizing: border-box; padding: 4px 5% 24px 2%; }
+.dm-band-empty { grid-column: 1 / -1; align-self: center; margin: 0 7px; padding: 14px; border: 1px dashed #c9d0dc; border-radius: var(--dm-radius); color: var(--dm-muted); font-size: 13px; text-align: center; }
+
+.dm-skeleton { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.dm-skeleton li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: center; padding: 12px 14px; border-radius: var(--dm-radius); background: var(--dm-surface); box-shadow: 0 0 0 1px var(--dm-line); }
+.dm-skeleton li > span:last-child { grid-column: 2; color: var(--dm-muted); font-size: 13px; }
+.dm-skeleton .dm-band-index { background: var(--dm-band, var(--dm-neutral)); }
+
+/* ---------- Cards ---------- */
+.dm-card {
+  position: relative; z-index: 2; display: flex; flex-direction: column; gap: 6px; box-sizing: border-box; min-width: 0; height: 110px; margin: 0 7px; padding: 12px 14px 10px;
+  border-radius: var(--dm-radius); background: var(--dm-surface); box-shadow: 0 0 0 1px var(--dm-line), var(--dm-shadow); color: var(--dm-ink);
+  cursor: pointer; transition: box-shadow 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+}
+.dm-card:hover { box-shadow: 0 0 0 1px #b8c3d6, var(--dm-shadow-raised); transform: translateY(-1px); }
+.dm-card:focus { outline: none; }
+.dm-card:focus-visible, .dm-group-face:focus-visible, .dm-member:focus-visible { outline: 3px solid var(--dm-focus); outline-offset: 2px; }
+.dm-card-head { display: flex; align-items: center; gap: 9px; min-width: 0; height: 30px; }
+.dm-card-head .dm-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dm-glyph { display: inline-grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 8px; background: color-mix(in srgb, var(--dm-fam, var(--dm-neutral)) 11%, white); color: var(--dm-fam, var(--dm-neutral)); }
+.dm-glyph .dm-icon { width: 19px; height: 19px; }
+.dm-monogram { font-size: 14px; font-weight: 700; }
+.dm-fam-pages { --dm-fam: var(--dm-pages); }
+.dm-fam-apps { --dm-fam: var(--dm-apps); }
+.dm-fam-dataverse { --dm-fam: var(--dm-dataverse); }
+.dm-fam-automate { --dm-fam: var(--dm-automate); }
+.dm-fam-azure { --dm-fam: var(--dm-azure); }
+.dm-fam-neutral { --dm-fam: var(--dm-neutral); }
+.dm-fam-off { --dm-fam: var(--dm-off); }
+.dm-name { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 14px; font-weight: 600; line-height: 16px; overflow-wrap: anywhere; }
+.dm-ringed { position: relative; display: inline-grid; place-items: center; flex: none; width: 34px; height: 34px; margin: -2px 0; color: var(--dm-fam, var(--dm-neutral)); }
+.dm-ringed .dm-ring { position: absolute; inset: 0; }
+.dm-group .dm-status .dm-dot { display: none; }
+.dm-ringed .dm-icon { width: 17px; height: 17px; }
+.dm-status { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--dm-ink-2); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.dm-status.is-missing, .dm-status.is-error, .dm-status.is-bad { color: var(--dm-bad); }
+.dm-status.is-placeholder, .dm-status.is-warn { color: #8a5300; }
+.dm-status.is-disabled { color: var(--dm-muted); }
+.dm-facts { overflow: hidden; color: var(--dm-muted); font-size: 12.5px; white-space: nowrap; text-overflow: ellipsis; }
+.dm-card.is-disabled { background: #f7f8fb; box-shadow: none; outline: 1px dashed #c3cad6; outline-offset: -1px; }
+.dm-card.is-disabled .dm-name { color: var(--dm-muted); }
+.dm-card.is-planned, .dm-card.is-declared { box-shadow: none; outline: 1px dashed #9db3ea; outline-offset: -1px; }
+.dm-card.is-missing, .dm-card.is-error { box-shadow: 0 0 0 1px #eab4bd, inset 4px 0 0 var(--dm-bad), var(--dm-shadow); background: #fffafa; }
+.dm-card.is-placeholder { box-shadow: 0 0 0 1px #ecd7ad, var(--dm-shadow); }
+.dm-card:is(.is-disabled, .is-planned, .is-declared):focus-visible { outline: 3px solid var(--dm-focus); outline-offset: 2px; }
+/* Connections as text: read by screen readers always, shown as a tooltip on hover/focus (wide) or inline (narrow). */
+.dm-links { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.dm-node:is(:hover, :focus-visible) .dm-links, .dm-group:not([open]) .dm-group-face:is(:hover, :focus-visible) .dm-links {
+  left: 0; top: calc(100% + 8px); z-index: 40; width: max-content; max-width: 300px; height: auto; margin: 0; padding: 8px 10px; overflow: visible; clip-path: none;
+  border-radius: 8px; background: #172036; color: #eef2fb; font-size: 12.5px; font-weight: 500; line-height: 1.4; white-space: normal; box-shadow: var(--dm-shadow-raised); pointer-events: none;
+}
+.dm-end:is(:hover, :focus-visible, :focus-within) .dm-links { left: auto; right: 0; }
+.dm-band-externals .dm-node:is(:hover, :focus-visible) .dm-links { top: auto; bottom: calc(100% + 8px); }
+
+/* Capability group cards (details/summary) and their member list */
+.dm-group { padding: 0; }
+.dm-group-face { display: flex; flex-direction: column; gap: 6px; box-sizing: border-box; height: 100%; padding: 12px 14px 10px; border-radius: var(--dm-radius); list-style: none; cursor: pointer; }
+.dm-group-face::-webkit-details-marker { display: none; }
+.dm-group-face:focus { outline: none; }
+.dm-group-face .dm-name { padding-right: 4px; }
+.dm-chevron { position: absolute; right: 14px; bottom: 13px; width: 7px; height: 7px; border-right: 2px solid var(--dm-muted); border-bottom: 2px solid var(--dm-muted); transform: rotate(45deg); transition: transform 0.15s ease; }
+.dm-group[open] .dm-chevron { transform: rotate(-135deg); bottom: 9px; }
+.dm-group[open] { z-index: 30; box-shadow: 0 0 0 2px var(--dm-fam, var(--dm-dataverse)), var(--dm-shadow-raised); }
+.dm-group.is-error { box-shadow: 0 0 0 1px #eab4bd, inset 4px 0 0 var(--dm-bad), var(--dm-shadow); }
+.dm-group .dm-facts { padding-right: 18px; }
+.dm-pop { position: absolute; left: 0; top: calc(100% + 8px); z-index: 50; box-sizing: border-box; width: 340px; max-width: 80vw; max-height: 360px; overflow: auto; padding: 10px 6px 6px; border-radius: var(--dm-radius); background: var(--dm-surface); box-shadow: 0 0 0 1px var(--dm-line), var(--dm-shadow-raised); cursor: default; }
+.dm-end .dm-pop { left: auto; right: 0; }
+.dm-pop-head { margin: 0 8px 6px; color: var(--dm-muted); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.dm-members { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.dm-member { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 9px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.dm-member:hover { background: #f1f4f9; }
+.dm-member-name { font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.dm-member-state { grid-column: 2; color: var(--dm-muted); font-size: 12.5px; }
+.dm-member.is-missing .dm-member-state, .dm-member.is-error .dm-member-state { color: var(--dm-bad); font-weight: 600; }
+.dm-member.is-placeholder .dm-member-state { color: #8a5300; }
+
+/* ---------- Connectors ---------- */
+.dm-wire { stroke: var(--dm-wire); fill: none; }
+.dm-seg { stroke-width: 1.6; stroke-linecap: round; }
+.dm-wire.is-reads .dm-seg { stroke: var(--dm-wire-soft); stroke-width: 1.3; }
+.dm-wire.is-bus .dm-seg { stroke-dasharray: 7 4; stroke-linecap: butt; }
+.dm-wire.is-storage .dm-seg { stroke-width: 2.2; stroke-dasharray: 0.1 4.5; }
+.dm-wire.is-webhook .dm-seg { stroke-dasharray: 14 5; stroke-linecap: butt; }
+.dm-wire.is-process .dm-seg { stroke-width: 4.4; stroke-linecap: square; }
+.dm-seg-inner { stroke: var(--dm-canvas); stroke-width: 1.6; stroke-linecap: square; }
+.dm-wire.is-disabled, .dm-wire.is-declared, .dm-wire.is-placeholder { opacity: 0.55; }
+.dm-wire.is-planned .dm-seg { stroke: #8fa3d8; }
+.dm-wire.is-missing .dm-seg, .dm-wire.is-error .dm-seg { stroke: var(--dm-bad); }
+.dm-wire.is-active .dm-seg { stroke: color-mix(in srgb, var(--dm-active) 60%, var(--dm-wire)); }
+.dm-pulse { stroke: var(--dm-active); stroke-width: 3.2; stroke-linecap: round; stroke-dasharray: 1 15; animation: dm-flow 0.9s linear infinite; }
+@keyframes dm-flow { to { stroke-dashoffset: -16; } }
+.dm-arrow { fill: var(--dm-wire); }
+.dm-wire-label { opacity: 0; fill: var(--dm-ink); font: 600 11.5px var(--dm-font); stroke: #fff; stroke-width: 4px; stroke-linejoin: round; paint-order: stroke; }
+.dm-legend .dm-wire.is-process .dm-seg-inner { stroke: var(--dm-surface); }
+.dm-legend .dm-pulse { animation-duration: 1.2s; }
+
+/* Hover/focus path highlight: any hovered card dims the map; the rules at the end set --dm-on: 1 on the hovered card's path. */
+.dm-canvas:has(.dm-card:hover, .dm-card:focus-within) .dm-wire { opacity: calc(0.12 + 0.88 * var(--dm-on, 0)); }
+.dm-canvas:has(.dm-card:hover, .dm-card:focus-within) .dm-wire .dm-seg { stroke: color-mix(in srgb, var(--dm-hot) calc(var(--dm-on, 0) * 100%), var(--dm-wire)); stroke-width: calc(1.6px + 0.9px * var(--dm-on, 0)); }
+.dm-canvas:has(.dm-card:hover, .dm-card:focus-within) .dm-wire.is-process .dm-seg { stroke-width: calc(4.4px + 0.8px * var(--dm-on, 0)); }
+.dm-canvas:has(.dm-card:hover, .dm-card:focus-within) .dm-wire-label { opacity: var(--dm-on, 0); }
+.dm-canvas:has(.dm-card:hover, .dm-card:focus-within) .dm-card:not(:hover, :focus-within) { opacity: calc(0.5 + 0.5 * var(--dm-on, 0)); }
+.dm-canvas:has(.dm-card:hover, .dm-card:focus-within) .dm-card:not(:hover, :focus-within, .is-disabled) { box-shadow: 0 0 0 calc(1px + 1px * var(--dm-on, 0)) color-mix(in srgb, var(--dm-hot) calc(var(--dm-on, 0) * 100%), var(--dm-line)), var(--dm-shadow); }
+
+/* ---------- Drawer ---------- */
+.dm-drawer { border-left-color: var(--dm-active); box-shadow: var(--dm-shadow); }
+.dm-drawer-head { gap: 10px; }
+.dm-drawer-head h3 { font-size: 17px; }
+.dm-drawer-meaning { margin: 8px 0 4px; color: var(--dm-muted); font-size: 13.5px; }
+.dm-drawer-sub { margin: 12px 0 4px; font-size: 13px; font-weight: 650; color: var(--dm-ink-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.dm-drawer-links { margin: 0; padding-left: 18px; font-size: 13.5px; }
+.dm-drawer-links li { margin: 2px 0; }
+
+/* ---------- Narrow containers: no connectors, cards wrap, connections as text ---------- */
+@container dm-map (max-width: 879px) {
+  .dm-wires, .dm-wire-labels { display: none; }
+  .dm-canvas { gap: 12px; padding: 10px 0; }
+  .dm-band { margin: 0 8px; }
+  .dm-band-head { grid-template-rows: auto auto; height: auto; row-gap: 6px; padding: 12px 12px 4px 16px; }
+  .dm-band-head h3 { white-space: normal; }
+  .dm-pill { grid-column: 2 / -1; grid-row: 2; }
+  .dm-band-desc { grid-column: 1 / -1; grid-row: 3; white-space: normal; }
+  .dm-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: auto; row-gap: 10px; padding: 8px 8px 14px 10px; }
+  .dm-card { height: auto; min-height: 110px; margin: 0 4px; }
+  .dm-card:hover { transform: none; }
+  .dm-links, .dm-node:is(:hover, :focus-visible) .dm-links, .dm-group:not([open]) .dm-group-face:is(:hover, :focus-visible) .dm-links {
+    position: static; width: auto; height: auto; max-width: none; margin: 2px 0 0; padding: 0; overflow: visible; clip-path: none; background: none; box-shadow: none;
+    color: var(--dm-muted); font-size: 12px; font-weight: 400; line-height: 1.35; white-space: normal;
+  }
+  .dm-facts { white-space: normal; }
+  .dm-group-face { height: auto; padding-bottom: 26px; }
+  .dm-group[open] { grid-column: 1 / -1; }
+  .dm-pop { position: static; width: auto; max-width: none; max-height: none; margin: 0 6px 8px; box-shadow: inset 0 0 0 1px var(--dm-line); }
+}
+@container dm-map (max-width: 560px) {
+  .dm-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dm-card { padding: 10px 10px 10px; }
+  .dm-card-head { gap: 8px; }
+  .dm-glyph { width: 28px; height: 28px; }
+  .dm-name { font-size: 13.5px; }
+  .dm-legend-list { gap: 4px 12px; }
+}
+@container dm-dash (max-width: 760px) {
+  .dm-hero { grid-template-columns: minmax(0, 1fr); padding: 20px 18px; }
+  .dm-hero h2 { font-size: 20px; }
+  .dm-hero-health { justify-content: flex-start; }
+  .dm-kpi-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .dm-kpi-value { font-size: 22px; }
+}
+@container dm-dash (max-width: 400px) {
+  .dm-hero-health { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dm-pulse { animation: none; stroke-dasharray: none; opacity: 0.35; }
+  .dm-live-dot { animation: none; }
+  .dm-card, .dm-chevron { transition: none; }
+  .dm-card:hover { transform: none; }
+}
+
+/* ---------- Path highlight rules (generated): hovering or focusing card n sets --dm-on on everything on its path (class dm-p<n>). ---------- */
+.dm-canvas:has(.dm-k0:hover, .dm-k0:focus-within) .dm-p0 { --dm-on: 1; }
+.dm-canvas:has(.dm-k1:hover, .dm-k1:focus-within) .dm-p1 { --dm-on: 1; }
+.dm-canvas:has(.dm-k2:hover, .dm-k2:focus-within) .dm-p2 { --dm-on: 1; }
+.dm-canvas:has(.dm-k3:hover, .dm-k3:focus-within) .dm-p3 { --dm-on: 1; }
+.dm-canvas:has(.dm-k4:hover, .dm-k4:focus-within) .dm-p4 { --dm-on: 1; }
+.dm-canvas:has(.dm-k5:hover, .dm-k5:focus-within) .dm-p5 { --dm-on: 1; }
+.dm-canvas:has(.dm-k6:hover, .dm-k6:focus-within) .dm-p6 { --dm-on: 1; }
+.dm-canvas:has(.dm-k7:hover, .dm-k7:focus-within) .dm-p7 { --dm-on: 1; }
+.dm-canvas:has(.dm-k8:hover, .dm-k8:focus-within) .dm-p8 { --dm-on: 1; }
+.dm-canvas:has(.dm-k9:hover, .dm-k9:focus-within) .dm-p9 { --dm-on: 1; }
+.dm-canvas:has(.dm-k10:hover, .dm-k10:focus-within) .dm-p10 { --dm-on: 1; }
+.dm-canvas:has(.dm-k11:hover, .dm-k11:focus-within) .dm-p11 { --dm-on: 1; }
+.dm-canvas:has(.dm-k12:hover, .dm-k12:focus-within) .dm-p12 { --dm-on: 1; }
+.dm-canvas:has(.dm-k13:hover, .dm-k13:focus-within) .dm-p13 { --dm-on: 1; }
+.dm-canvas:has(.dm-k14:hover, .dm-k14:focus-within) .dm-p14 { --dm-on: 1; }
+.dm-canvas:has(.dm-k15:hover, .dm-k15:focus-within) .dm-p15 { --dm-on: 1; }
+.dm-canvas:has(.dm-k16:hover, .dm-k16:focus-within) .dm-p16 { --dm-on: 1; }
+.dm-canvas:has(.dm-k17:hover, .dm-k17:focus-within) .dm-p17 { --dm-on: 1; }
+.dm-canvas:has(.dm-k18:hover, .dm-k18:focus-within) .dm-p18 { --dm-on: 1; }
+.dm-canvas:has(.dm-k19:hover, .dm-k19:focus-within) .dm-p19 { --dm-on: 1; }
+.dm-canvas:has(.dm-k20:hover, .dm-k20:focus-within) .dm-p20 { --dm-on: 1; }
+.dm-canvas:has(.dm-k21:hover, .dm-k21:focus-within) .dm-p21 { --dm-on: 1; }
+.dm-canvas:has(.dm-k22:hover, .dm-k22:focus-within) .dm-p22 { --dm-on: 1; }
+.dm-canvas:has(.dm-k23:hover, .dm-k23:focus-within) .dm-p23 { --dm-on: 1; }
+.dm-canvas:has(.dm-k24:hover, .dm-k24:focus-within) .dm-p24 { --dm-on: 1; }
+.dm-canvas:has(.dm-k25:hover, .dm-k25:focus-within) .dm-p25 { --dm-on: 1; }
+.dm-canvas:has(.dm-k26:hover, .dm-k26:focus-within) .dm-p26 { --dm-on: 1; }
+.dm-canvas:has(.dm-k27:hover, .dm-k27:focus-within) .dm-p27 { --dm-on: 1; }
+.dm-canvas:has(.dm-k28:hover, .dm-k28:focus-within) .dm-p28 { --dm-on: 1; }
+.dm-canvas:has(.dm-k29:hover, .dm-k29:focus-within) .dm-p29 { --dm-on: 1; }
+.dm-canvas:has(.dm-k30:hover, .dm-k30:focus-within) .dm-p30 { --dm-on: 1; }
+.dm-canvas:has(.dm-k31:hover, .dm-k31:focus-within) .dm-p31 { --dm-on: 1; }
+.dm-canvas:has(.dm-k32:hover, .dm-k32:focus-within) .dm-p32 { --dm-on: 1; }
+.dm-canvas:has(.dm-k33:hover, .dm-k33:focus-within) .dm-p33 { --dm-on: 1; }
+.dm-canvas:has(.dm-k34:hover, .dm-k34:focus-within) .dm-p34 { --dm-on: 1; }
+.dm-canvas:has(.dm-k35:hover, .dm-k35:focus-within) .dm-p35 { --dm-on: 1; }
+.dm-canvas:has(.dm-k36:hover, .dm-k36:focus-within) .dm-p36 { --dm-on: 1; }
+.dm-canvas:has(.dm-k37:hover, .dm-k37:focus-within) .dm-p37 { --dm-on: 1; }
+.dm-canvas:has(.dm-k38:hover, .dm-k38:focus-within) .dm-p38 { --dm-on: 1; }
+.dm-canvas:has(.dm-k39:hover, .dm-k39:focus-within) .dm-p39 { --dm-on: 1; }
+.dm-canvas:has(.dm-k40:hover, .dm-k40:focus-within) .dm-p40 { --dm-on: 1; }
+.dm-canvas:has(.dm-k41:hover, .dm-k41:focus-within) .dm-p41 { --dm-on: 1; }
+.dm-canvas:has(.dm-k42:hover, .dm-k42:focus-within) .dm-p42 { --dm-on: 1; }
+.dm-canvas:has(.dm-k43:hover, .dm-k43:focus-within) .dm-p43 { --dm-on: 1; }
+.dm-canvas:has(.dm-k44:hover, .dm-k44:focus-within) .dm-p44 { --dm-on: 1; }
+.dm-canvas:has(.dm-k45:hover, .dm-k45:focus-within) .dm-p45 { --dm-on: 1; }
+.dm-canvas:has(.dm-k46:hover, .dm-k46:focus-within) .dm-p46 { --dm-on: 1; }
+.dm-canvas:has(.dm-k47:hover, .dm-k47:focus-within) .dm-p47 { --dm-on: 1; }
+.dm-canvas:has(.dm-k48:hover, .dm-k48:focus-within) .dm-p48 { --dm-on: 1; }
+.dm-canvas:has(.dm-k49:hover, .dm-k49:focus-within) .dm-p49 { --dm-on: 1; }
+.dm-canvas:has(.dm-k50:hover, .dm-k50:focus-within) .dm-p50 { --dm-on: 1; }
+.dm-canvas:has(.dm-k51:hover, .dm-k51:focus-within) .dm-p51 { --dm-on: 1; }
+.dm-canvas:has(.dm-k52:hover, .dm-k52:focus-within) .dm-p52 { --dm-on: 1; }
+.dm-canvas:has(.dm-k53:hover, .dm-k53:focus-within) .dm-p53 { --dm-on: 1; }
+.dm-canvas:has(.dm-k54:hover, .dm-k54:focus-within) .dm-p54 { --dm-on: 1; }
+.dm-canvas:has(.dm-k55:hover, .dm-k55:focus-within) .dm-p55 { --dm-on: 1; }
+.dm-canvas:has(.dm-k56:hover, .dm-k56:focus-within) .dm-p56 { --dm-on: 1; }
+.dm-canvas:has(.dm-k57:hover, .dm-k57:focus-within) .dm-p57 { --dm-on: 1; }
+.dm-canvas:has(.dm-k58:hover, .dm-k58:focus-within) .dm-p58 { --dm-on: 1; }
+.dm-canvas:has(.dm-k59:hover, .dm-k59:focus-within) .dm-p59 { --dm-on: 1; }
+.dm-canvas:has(.dm-k60:hover, .dm-k60:focus-within) .dm-p60 { --dm-on: 1; }
+.dm-canvas:has(.dm-k61:hover, .dm-k61:focus-within) .dm-p61 { --dm-on: 1; }
+.dm-canvas:has(.dm-k62:hover, .dm-k62:focus-within) .dm-p62 { --dm-on: 1; }
+.dm-canvas:has(.dm-k63:hover, .dm-k63:focus-within) .dm-p63 { --dm-on: 1; }
+.dm-canvas:has(.dm-k64:hover, .dm-k64:focus-within) .dm-p64 { --dm-on: 1; }
+.dm-canvas:has(.dm-k65:hover, .dm-k65:focus-within) .dm-p65 { --dm-on: 1; }
+.dm-canvas:has(.dm-k66:hover, .dm-k66:focus-within) .dm-p66 { --dm-on: 1; }
+.dm-canvas:has(.dm-k67:hover, .dm-k67:focus-within) .dm-p67 { --dm-on: 1; }
+.dm-canvas:has(.dm-k68:hover, .dm-k68:focus-within) .dm-p68 { --dm-on: 1; }
+.dm-canvas:has(.dm-k69:hover, .dm-k69:focus-within) .dm-p69 { --dm-on: 1; }
+.dm-canvas:has(.dm-k70:hover, .dm-k70:focus-within) .dm-p70 { --dm-on: 1; }
+.dm-canvas:has(.dm-k71:hover, .dm-k71:focus-within) .dm-p71 { --dm-on: 1; }
+.dm-canvas:has(.dm-k72:hover, .dm-k72:focus-within) .dm-p72 { --dm-on: 1; }
+.dm-canvas:has(.dm-k73:hover, .dm-k73:focus-within) .dm-p73 { --dm-on: 1; }
+.dm-canvas:has(.dm-k74:hover, .dm-k74:focus-within) .dm-p74 { --dm-on: 1; }
+.dm-canvas:has(.dm-k75:hover, .dm-k75:focus-within) .dm-p75 { --dm-on: 1; }
+.dm-canvas:has(.dm-k76:hover, .dm-k76:focus-within) .dm-p76 { --dm-on: 1; }
+.dm-canvas:has(.dm-k77:hover, .dm-k77:focus-within) .dm-p77 { --dm-on: 1; }
+.dm-canvas:has(.dm-k78:hover, .dm-k78:focus-within) .dm-p78 { --dm-on: 1; }
+.dm-canvas:has(.dm-k79:hover, .dm-k79:focus-within) .dm-p79 { --dm-on: 1; }
+.dm-canvas:has(.dm-k80:hover, .dm-k80:focus-within) .dm-p80 { --dm-on: 1; }
+.dm-canvas:has(.dm-k81:hover, .dm-k81:focus-within) .dm-p81 { --dm-on: 1; }
+.dm-canvas:has(.dm-k82:hover, .dm-k82:focus-within) .dm-p82 { --dm-on: 1; }
+.dm-canvas:has(.dm-k83:hover, .dm-k83:focus-within) .dm-p83 { --dm-on: 1; }
+.dm-canvas:has(.dm-k84:hover, .dm-k84:focus-within) .dm-p84 { --dm-on: 1; }
+.dm-canvas:has(.dm-k85:hover, .dm-k85:focus-within) .dm-p85 { --dm-on: 1; }
+.dm-canvas:has(.dm-k86:hover, .dm-k86:focus-within) .dm-p86 { --dm-on: 1; }
+.dm-canvas:has(.dm-k87:hover, .dm-k87:focus-within) .dm-p87 { --dm-on: 1; }
+.dm-canvas:has(.dm-k88:hover, .dm-k88:focus-within) .dm-p88 { --dm-on: 1; }
+.dm-canvas:has(.dm-k89:hover, .dm-k89:focus-within) .dm-p89 { --dm-on: 1; }
+.dm-canvas:has(.dm-k90:hover, .dm-k90:focus-within) .dm-p90 { --dm-on: 1; }
+.dm-canvas:has(.dm-k91:hover, .dm-k91:focus-within) .dm-p91 { --dm-on: 1; }
+.dm-canvas:has(.dm-k92:hover, .dm-k92:focus-within) .dm-p92 { --dm-on: 1; }
+.dm-canvas:has(.dm-k93:hover, .dm-k93:focus-within) .dm-p93 { --dm-on: 1; }
+.dm-canvas:has(.dm-k94:hover, .dm-k94:focus-within) .dm-p94 { --dm-on: 1; }
+.dm-canvas:has(.dm-k95:hover, .dm-k95:focus-within) .dm-p95 { --dm-on: 1; }
+.dm-canvas:has(.dm-k96:hover, .dm-k96:focus-within) .dm-p96 { --dm-on: 1; }
+.dm-canvas:has(.dm-k97:hover, .dm-k97:focus-within) .dm-p97 { --dm-on: 1; }
+.dm-canvas:has(.dm-k98:hover, .dm-k98:focus-within) .dm-p98 { --dm-on: 1; }
+.dm-canvas:has(.dm-k99:hover, .dm-k99:focus-within) .dm-p99 { --dm-on: 1; }
+.dm-canvas:has(.dm-k100:hover, .dm-k100:focus-within) .dm-p100 { --dm-on: 1; }
+.dm-canvas:has(.dm-k101:hover, .dm-k101:focus-within) .dm-p101 { --dm-on: 1; }
+.dm-canvas:has(.dm-k102:hover, .dm-k102:focus-within) .dm-p102 { --dm-on: 1; }
+.dm-canvas:has(.dm-k103:hover, .dm-k103:focus-within) .dm-p103 { --dm-on: 1; }
+.dm-canvas:has(.dm-k104:hover, .dm-k104:focus-within) .dm-p104 { --dm-on: 1; }
+.dm-canvas:has(.dm-k105:hover, .dm-k105:focus-within) .dm-p105 { --dm-on: 1; }
+.dm-canvas:has(.dm-k106:hover, .dm-k106:focus-within) .dm-p106 { --dm-on: 1; }
+.dm-canvas:has(.dm-k107:hover, .dm-k107:focus-within) .dm-p107 { --dm-on: 1; }
+.dm-canvas:has(.dm-k108:hover, .dm-k108:focus-within) .dm-p108 { --dm-on: 1; }
+.dm-canvas:has(.dm-k109:hover, .dm-k109:focus-within) .dm-p109 { --dm-on: 1; }
+.dm-canvas:has(.dm-k110:hover, .dm-k110:focus-within) .dm-p110 { --dm-on: 1; }
+.dm-canvas:has(.dm-k111:hover, .dm-k111:focus-within) .dm-p111 { --dm-on: 1; }
+.dm-canvas:has(.dm-k112:hover, .dm-k112:focus-within) .dm-p112 { --dm-on: 1; }
+.dm-canvas:has(.dm-k113:hover, .dm-k113:focus-within) .dm-p113 { --dm-on: 1; }
+.dm-canvas:has(.dm-k114:hover, .dm-k114:focus-within) .dm-p114 { --dm-on: 1; }
+.dm-canvas:has(.dm-k115:hover, .dm-k115:focus-within) .dm-p115 { --dm-on: 1; }
+.dm-canvas:has(.dm-k116:hover, .dm-k116:focus-within) .dm-p116 { --dm-on: 1; }
+.dm-canvas:has(.dm-k117:hover, .dm-k117:focus-within) .dm-p117 { --dm-on: 1; }
+.dm-canvas:has(.dm-k118:hover, .dm-k118:focus-within) .dm-p118 { --dm-on: 1; }
+.dm-canvas:has(.dm-k119:hover, .dm-k119:focus-within) .dm-p119 { --dm-on: 1; }

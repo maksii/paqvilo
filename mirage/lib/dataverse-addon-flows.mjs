@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { argsOf, featureNotEnabled, registerAddon, registerInternalMessage, respond } from "./dataverse-addon-common.mjs";
-import { isLoopbackUrl } from "./dataverse-webhooks.mjs";
+import { isLoopbackUrl, loopbackFetch } from "./dataverse-webhooks.mjs";
 
 const key = (value) => String(value ?? "").toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
@@ -131,7 +131,7 @@ function operations(api) {
     await write(() => Object.assign(rowOf("flowsession", sessionId), { statuscode, completedon: stamp(), outputs: outputs === null ? null : JSON.stringify(outputs) }));
     // The callback is posted to loopback only (dataverse-webhooks.mjs isLoopbackUrl); a failed post changes nothing.
     if (args.callbackUrl && isLoopbackUrl(args.callbackUrl)) {
-      await fetch(args.callbackUrl, { method: "POST", redirect: "error", signal: AbortSignal.timeout(5000), headers: { "content-type": "application/json" }, body: JSON.stringify({ flowsessionId: sessionId, statuscode }) }).catch(() => {});
+      await loopbackFetch(args.callbackUrl, { method: "POST", signal: AbortSignal.timeout(5000), headers: { "content-type": "application/json" }, body: JSON.stringify({ flowsessionId: sessionId, statuscode }) }).catch(() => {});
     }
   };
 
@@ -139,9 +139,13 @@ function operations(api) {
     AddRequiredDesktopFlowComponentsToSolutions: addRequired("workflow"),
     AddRequiredUIElementCollectionComponentsToSolutions: addRequired("desktopflowmodule"),
 
+    // With the host's flow run store (api.flowRuns, flow-runs.mjs) its Running and Waiting runs are cancelled there, which
+    // also stops their wait timers and cancels pending approvals; other open flowrun rows are cancelled in place.
     CancelAllCloudFlowRuns: async (c) => {
       const workflow = boundRow(c, "workflow");
-      await write(() => {
+      // One write: the flow run store's writes join it (nested), so a failure in either step cancels nothing.
+      await write(async () => {
+        if (api.flowRuns) await api.flowRuns.cancelAll(workflow.workflowid);
         for (const run of tableOf("flowrun")) if (sameId(run.workflowid, workflow.workflowid) && RUN_OPEN.has(run.status)) run.status = "Cancelled";
       });
       return undefined;

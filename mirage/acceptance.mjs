@@ -7,6 +7,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { createCapabilityRegistry } from "./lib/capability-registry.mjs";
 import { chromium } from "playwright-core";
 import { editRichText, assertRichText } from "./lib/richtext-actions.mjs";
 import {
@@ -112,6 +113,19 @@ const expectedFields = (record, fields, contains) =>
       record[name].includes(value),
   );
 
+/**
+ * Reads GET /_sim/api/preflight of the local simulator, rebuilds its capability registry from the report's modules and
+ * asserts every required capability is executable (behaviour or above). Throws CapabilityUnavailable with the gaps.
+ */
+export async function assertAcceptanceCapabilities({ localUrl, requires = [], timeout = 15000 }) {
+  const response = await fetch(new URL("/__sim/api/preflight", loopback(localUrl).origin), { signal: AbortSignal.timeout(timeout) });
+  if (!response.ok) throw new Error(`Simulator preflight returned HTTP ${response.status}`);
+  const report = await response.json();
+  const registry = createCapabilityRegistry();
+  registry.addAll(report.modules ?? []);
+  return registry.assertExecutable(requires);
+}
+
 /** Run explicit actions against exported portal UI; record failures rather than converting partial flows into passes. */
 export async function runAcceptance({
   localUrl,
@@ -127,6 +141,10 @@ export async function runAcceptance({
   // Optional async hook run on the local browser context before the flows, e.g. a
   // paqvilo-mirage-auth session sign-in of the persona under test.
   prepareContext = null,
+  // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
+  // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
+  requires = null,
+  strict = false,
 }) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number.');
   if (navigationCommitReserveMs !== undefined && (!Number.isFinite(navigationCommitReserveMs) || navigationCommitReserveMs < 0 || navigationCommitReserveMs >= timeout)) throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
@@ -173,6 +191,7 @@ export async function runAcceptance({
   };
   const state = await readState();
   requireLocal(state);
+  if (strict && requires?.length) await assertAcceptanceCapabilities({ localUrl: local.origin, requires, timeout });
   if (
     !state.status?.sourceFingerprint ||
     !state.status?.implementationFingerprint
@@ -1136,6 +1155,8 @@ if (
         origin: { type: "string" },
         cdp: { type: "string" },
         plan: { type: "string" },
+        requires: { type: "string", multiple: true },
+        strict: { type: "boolean", default: false },
         output: {
           type: "string",
           default: ".paqvilo/simulator/acceptance/evidence",
@@ -1149,6 +1170,8 @@ if (
       cdpUrl: values.cdp,
       outputDir: values.output,
       flows,
+      requires: values.requires ?? null,
+      strict: values.strict,
     });
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.passed ? 0 : 1;

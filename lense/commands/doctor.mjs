@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { loadCatalogue, loadConfig, TOOL_ROOT } from '../config.mjs';
+import { loadCatalogue, loadConfig, mirageOnlySite, TOOL_ROOT } from '../config.mjs';
 import { OverlaySession } from '../session.mjs';
 import { mirageReadiness, observedText } from './mirage.mjs';
 import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
@@ -59,7 +59,9 @@ export function inspectSourceYaml(sourceDir) {
 export function inspectCheckout(cfg, { started = performance.now(), session = new OverlaySession(cfg) } = {}) {
   const errors = [];
   const warnings = [...session.model.warnings];
-  if (!session.baseline.available) {
+  if (!session.baseline.available && session.baseline.unborn && cfg.site.scope !== 'changed') {
+    warnings.push(`Baseline "${cfg.site.markup.baseline}" is skipped: the repository has no commits yet. Commit the sources to enable changed scope and markup patches.`);
+  } else if (!session.baseline.available) {
     const message = `Baseline "${cfg.site.markup.baseline}" is unavailable. Use an existing local commit/ref for changed scope and markup patches.`;
     (cfg.site.scope === 'changed' || cfg.site.markup.enabled ? errors : warnings).push(message);
   }
@@ -97,6 +99,15 @@ export async function collectDoctor(args, { processEnv = process.env } = {}) {
   const dependencies = dependencyReadiness(TOOL_ROOT);
   for (const site of names) {
     try {
+      // A Mirage-only site (standalone runtime, no portal export, no environment): only the Mirage checks apply.
+      const name = site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite;
+      if (mirageOnlySite(catalogue.sites[name])) {
+        const cfg = (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, {});
+        const mirage = await mirageReadiness(cfg, { dependencies });
+        reports.push({ site: name, environment: null, runtime: cfg.runtime.kind, errors: [], warnings: [], lenseReady: true, sourcesReady: true,
+          mirage, ready: !args.mirage || mirage.ready });
+        continue;
+      }
       const cfg = await loadConfig({ ...args, site, ...(args.all ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] } : {}) }, processEnv);
       const started = performance.now();
       const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
@@ -142,7 +153,7 @@ export default async function doctor(_cfg, args) {
     console.log('Offline checkout diagnostics (no browser or portal requests)');
     if (warning) console.log(`WARNING: ${warning}`);
     for (const item of reports) {
-      console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}${item.mirage ? ` · Lense ${item.lenseReady ? 'ready' : 'NOT READY'} · Sources ${item.sourcesReady ? 'ready' : 'NOT READY'} · Mirage ${item.mirage.ready ? 'ready' : 'NOT READY'}${args.mirage ? '' : ' (use --mirage to gate Sources and Mirage)'}` : ''}`);
+      console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}${item.mirage ? ` · Lense ${item.runtime ? `not applicable (${item.runtime} Mirage site)` : item.lenseReady ? 'ready' : 'NOT READY'} · Sources ${item.sourcesReady ? 'ready' : 'NOT READY'} · Mirage ${item.mirage.ready ? 'ready' : 'NOT READY'}${args.mirage ? '' : ' (use --mirage to gate Sources and Mirage)'}` : ''}`);
       if (item.counts) console.log(`  ${item.format}: ${item.counts.pages} pages, ${item.counts.mappedWebFiles}/${item.counts.webFiles} mapped web files, ${item.counts.inlineSources} inline sources (${item.elapsedMs} ms)`);
       for (const error of item.errors) console.log(`  ERROR: ${error.message ?? error}`);
       for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);

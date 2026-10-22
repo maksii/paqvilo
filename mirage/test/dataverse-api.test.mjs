@@ -317,6 +317,7 @@ describe("dataverse API router", () => {
     assert.equal(shared.status, 200);
     assert.ok(shared.rights.split(", ").includes("ReadAccess"), `team rights: ${shared.rights}`);
     assert.equal((await access("teams(cccccccc-0000-4000-8000-000000000000)")).status, 404);
+    assert.equal((await access(`widgets(${widgetId})`)).status, 404, "a function bound to no such type resolves to no resource, never 501");
     const organization = await access(`organizations(${organizationId})`);
     assert.equal(organization.status, 200);
     assert.equal(organization.rights, "None", "the widget is user-owned, so the organization holds no rights on it");

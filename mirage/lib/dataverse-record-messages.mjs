@@ -37,7 +37,8 @@ const authorize = (api, ctx, mapping, operation, row) =>
 const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
 const fieldOf = (api, mapping, column) => facts(api.store.fieldDefinition(mapping.logicalName, column, api.metadataFields));
 // Secured columns the caller cannot read are nulled; without a fieldSecurity module the row passes through.
-const maskRow = (api, ctx, logical, row) => api.fieldSecurity?.mask?.(ctx.user, logical, row) ?? row;
+// Every use is an answer the caller receives, so masking rules apply as on a collection read (no UnMaskedData here).
+const maskRow = (api, ctx, logical, row) => api.fieldSecurity?.mask?.(ctx.user, logical, row, { view: { unmask: false, single: false } }) ?? row;
 
 // Entity-typed object: @odata.type names the table, its key column carries the id.
 function typedRef(api, value, allowed = null) {
@@ -152,11 +153,16 @@ async function merge(api, ctx) {
   }
   for (const child of children) authorize(api, ctx, child.childMapping, "append", child.row);
 
-  await write(api, () => {
-    api.store.updateRecord(mapping.logicalName, targetRow[idColumn], { ...copied, ...content }, ctx.identity);
-    api.store.updateRecord(mapping.logicalName, subRow[idColumn], subordinateChanges, ctx.identity);
+  // The three writes run the record pipeline (hooks, column security, audit, plug-in steps, modifiedby and version stamps);
+  // the privileges were checked above. Without an organization (a bare store) there is no pipeline to run.
+  const updated = (logical, id, data) => api.records?.updateInternal
+    ? api.records.updateInternal(ctx, logical, id, data, { authorized: true })
+    : api.store.updateRecordAsync(logical, id, data, ctx.identity);
+  await write(api, async () => {
+    await updated(mapping.logicalName, targetRow[idColumn], { ...copied, ...content });
+    await updated(mapping.logicalName, subRow[idColumn], subordinateChanges);
     for (const { childMapping, row, nav } of children) {
-      api.store.updateRecord(childMapping.logicalName, row[childMapping.idColumn], { [`${nav}@odata.bind`]: `${mapping.entitySet}(${target.id})` }, ctx.identity);
+      await updated(childMapping.logicalName, row[childMapping.idColumn], { [`${nav}@odata.bind`]: `${mapping.entitySet}(${target.id})` });
     }
   });
   return { status: 204 };
@@ -203,7 +209,8 @@ async function initializeFrom(api, ctx) {
   };
 }
 
-// CalculateRollupField: reruns the column's FetchXML aggregate and stores the value with its date and state.
+// CalculateRollupField: recalculates through api.rollups.recalculate when dataverse-rollup.mjs is installed; otherwise reruns
+// the column's FetchXML aggregate and stores the value with its date and state.
 // Reads under the read privilege and keeps modifiedon. ponytail: the aggregate itself ignores FLS.
 // unverified: the {id} placeholder, the aggregate alias convention and the Calculated state (1) are assumed.
 async function calculateRollupField(api, ctx) {
@@ -216,14 +223,20 @@ async function calculateRollupField(api, ctx) {
   if (Number(enumValue(definition.sourceType)) !== ROLLUP_SOURCE_TYPE || !definition.formulaDefinition) throw invalid(`The ${name} column has no rollup definition.`);
   authorize(api, ctx, mapping, "read", row);
 
-  const answer = await api.store.fetchXml(definition.formulaDefinition.replaceAll("{id}", target.id), ctx.identity);
-  const value = answer.entities?.[0]?.[name] ?? null;
-  const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
-  await write(api, () => api.store.updateRecord(mapping.logicalName, row[mapping.idColumn], {
-    [name]: value, [`${name}_date`]: now, [`${name}_state`]: 1,
-  }, ctx.identity, { systemColumns: { modifiedon: row.modifiedon } }));
+  // dataverse-rollup.mjs, when installed, owns the evaluation (pack rollups, its subset parser and the state-2 diagnostics).
+  let result;
+  if (api.rollups?.recalculate) result = await api.rollups.recalculate(mapping.logicalName, row[mapping.idColumn], name);
+  else {
+    const answer = await api.store.fetchXml(definition.formulaDefinition.replaceAll("{id}", target.id), ctx.identity);
+    result = { value: answer.entities?.[0]?.[name] ?? null, date: new Date(api.clock ? api.clock() : Date.now()).toISOString(), state: 1 };
+    const values = { [name]: result.value, [`${name}_date`]: result.date, [`${name}_state`]: result.state };
+    const kept = { systemColumns: { modifiedon: row.modifiedon } };
+    await write(api, () => api.records?.updateInternal
+      ? api.records.updateInternal(ctx, mapping.logicalName, row[mapping.idColumn], values, { authorized: true, writeOptions: kept })
+      : api.store.updateRecordAsync(mapping.logicalName, row[mapping.idColumn], values, ctx.identity, kept));
+  }
   const payload = maskRow(api, ctx, mapping.logicalName, {
-    [mapping.idColumn]: row[mapping.idColumn], [name]: value, [`${name}_date`]: now, [`${name}_state`]: 1,
+    [mapping.idColumn]: row[mapping.idColumn], [name]: result.value, [`${name}_date`]: result.date, [`${name}_state`]: result.state,
   });
   return { status: 200, body: { "@odata.context": contextFor(ctx, `${mapping.entitySet}/$entity`), ...payload } };
 }
@@ -232,7 +245,8 @@ async function calculateRollupField(api, ctx) {
 // current status lists TransitionData, be one of its allowed targets. NewState is the statecode
 // value as a string, or the invariant name or label of that statecode option.
 // unverified: TransitionData is read as an array of allowed status values; metadata today exports it as null.
-async function isValidStateTransition(api, ctx) {
+// Exported: dataverse-state-transitions.mjs calls this evaluator for its enforced-table answer.
+export async function isValidStateTransition(api, ctx) {
   const params = ctx.params ?? {};
   const entity = referenceOf(api, params.Entity, "Entity");
   const row = rowOf(api, entity.mapping, entity.id);
@@ -241,7 +255,8 @@ async function isValidStateTransition(api, ctx) {
   const options = fieldOf(api, entity.mapping, "statuscode").options ?? [];
   const status = Number(params.NewStatus);
   const next = options.find((option) => Number(option.value) === status);
-  if (!next) throw new DataError(`The status ${params.NewStatus} is not valid for ${entity.mapping.logicalName}.`, 400, "InvalidValue", { innerCode: "0x80044331" });
+  // unverified: 0x8004F00E (InvalidStateCodeStatusCode) for an unknown status; 0x80044331 is StringLengthTooLong.
+  if (!next) throw new DataError(`The status ${params.NewStatus} is not valid for ${entity.mapping.logicalName}.`, 400, "InvalidValue", { innerCode: "0x8004F00E" });
   const current = options.find((option) => Number(option.value) === Number(row.statuscode));
   const allowed = current?.TransitionData;
   const stateValue = Number(next.state ?? 0);
@@ -298,7 +313,8 @@ export function install(api) {
   register("Merge", "action", merge, CSDL.Merge);
   register("InitializeFrom", "function", initializeFrom, CSDL.InitializeFrom);
   register("CalculateRollupField", "function", calculateRollupField, CSDL.CalculateRollupField);
-  register("IsValidStateTransition", "function", isValidStateTransition, CSDL.IsValidStateTransition);
+  // dataverse-state-transitions.mjs answers through api.stateTransitions.isValid (which calls this evaluator) when installed.
+  register("IsValidStateTransition", "function", (api, ctx) => api.stateTransitions?.isValid?.(ctx) ?? isValidStateTransition(api, ctx), CSDL.IsValidStateTransition);
   register("FormatAddress", "function", formatAddress, CSDL.FormatAddress);
 }
 

@@ -10,6 +10,8 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
+import { systemClock, systemIds } from "./runtime-clock.mjs";
+import { currentRequest } from "./request-context.mjs";
 import {
   builtinPresets,
   resolvePreset,
@@ -32,7 +34,7 @@ import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } fro
 import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
 import { validateExperimentPresets } from './experiment-presets.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error-details.mjs";
-import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric} from './exact-numeric.mjs';
+import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric,parseNumericLiteral} from './exact-numeric.mjs';
 import {odataToSdkQuery} from './plugin-query.mjs';
 import {compilePermissionFetchXml,serializePermissionFetchXml} from './permission-query.mjs';
 import {preparePortalFetchXml} from './portal-fetchxml.mjs';
@@ -69,6 +71,11 @@ import {
   parseDateValue,
   dateTimeRangeError,
   valuesEqual,
+  looksLikeDate,
+  guidKey,
+  foldText,
+  makeSortKey,
+  compareSortKeys,
 } from "./dataverse-values.mjs";
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
@@ -383,6 +390,209 @@ const field = (row, name) =>
     : name.startsWith("_") && name.endsWith("_value")
       ? scalar(row[name.slice(1, -6)])
       : name.split("/").reduce((v, k) => v?.[k], row);
+const insertSorted = (list, value) => {
+  if (!list.length || list.at(-1) < value) { list.push(value); return; }
+  let low = 0, high = list.length;
+  while (low < high) { const middle = (low + high) >> 1; if (list[middle] < value) low = middle + 1; else high = middle; }
+  list.splice(low, 0, value);
+};
+/**
+ * Ascending row positions by a derived key, for one row array: Map<key, positions>.
+ * keyOf(row) answers a string key, null (the row can never match) or undefined (the row
+ * cannot be keyed: a `wild` index keeps it in a list that every lookup also scans; any other
+ * index becomes `linear` and callers scan). The maintenance methods answer false when the
+ * owner should drop the index instead of updating it.
+ */
+export class RowKeyIndex {
+  constructor(rows, keyOf, { frame, wild = false } = {}) {
+    this.keyOf = keyOf; this.frame = frame; this.wild = wild ? [] : null;
+    this.map = new Map(); this.linear = false; this.length = rows.length;
+    for (let index = 0; index < rows.length; index++)
+      if (!this.add(keyOf(rows[index]), index)) { this.linear = true; this.map.clear(); break; }
+  }
+  add(key, index) {
+    if (key === null) return true;
+    if (key === undefined) { if (!this.wild) return false; insertSorted(this.wild, index); return true; }
+    const list = this.map.get(key);
+    if (list) insertSorted(list, index); else this.map.set(key, [index]);
+    return true;
+  }
+  delete(key, index) {
+    const list = key === undefined ? this.wild : key === null ? null : this.map.get(key);
+    const at = list ? list.indexOf(index) : -1;
+    if (at < 0) return;
+    list.splice(at, 1);
+    if (!list.length && key != null) this.map.delete(key);
+  }
+  get(key) { return this.map.get(key) ?? []; }
+  appended(rows, row) {
+    if (this.linear || this.length !== rows.length - 1) return false;
+    this.length = rows.length;
+    return this.add(this.keyOf(row), rows.length - 1);
+  }
+  moved(rows, index, previousRow, row, previousKey = this.keyOf(previousRow)) {
+    if (this.linear || this.length !== rows.length) return false;
+    const key = this.keyOf(row);
+    if (key === previousKey) return true;
+    if (previousKey === undefined && !this.wild) return false;
+    this.delete(previousKey, index);
+    return this.add(key, index);
+  }
+  removed(rows, index, row) {
+    if (this.linear || this.length !== rows.length + 1) return false;
+    this.delete(this.keyOf(row), index);
+    const shift = (list) => { for (let i = 0; i < list.length; i++) if (list[i] > index) list[i]--; };
+    for (const list of this.map.values()) shift(list);
+    if (this.wild) shift(this.wild);
+    this.length = rows.length;
+    return true;
+  }
+}
+const primaryKeyFns = new Map();
+/** Primary-key index key: string ids only (other values keep the linear coercive scan). */
+const primaryKeyOf = (column) => {
+  if (!primaryKeyFns.has(column)) primaryKeyFns.set(column, (row) => { const value = row?.[column]; return typeof value === "string" ? comparable(value) : undefined; });
+  return primaryKeyFns.get(column);
+};
+const duplicateAlternateKey = (key, attributes, values) => new DataError(
+  `A record that has the attribute values ${values.join(", ")} already exists. The entity key ${key.name ?? attributes.join("_")} requires that this set of attributes contains unique values. Select unique values and try again.`,
+  412,
+  "DuplicateRecord",
+  { innerCode: "0x80040237" },
+);
+/** Alternate-key uniqueness index key: the store's equality per column; a row with an empty column never clashes. */
+const alternateKeyOf = (attributes) => (row) => {
+  const parts = [];
+  for (const name of attributes) {
+    const value = field(row, name);
+    if (value == null) return null;
+    parts.push(comparable(value));
+  }
+  return parts.join("\u0000");
+};
+/**
+ * Key-segment lookup index key (findByKey): a bucket that every valuesEqual match shares. Only
+ * plain non-date strings are bucketed (GUID key, else collation-folded text); other values are
+ * `undefined` and stay in the index's always-scanned list. Candidates are verified with valuesEqual.
+ */
+const keySegmentOf = (names) => (row) => {
+  const parts = [];
+  let wild = false;
+  for (const name of names) {
+    const value = field(row, name);
+    const bucket = keySegmentBucket(value);
+    if (bucket === null) return null;
+    if (bucket === undefined) wild = true;
+    else parts.push(bucket);
+  }
+  return wild ? undefined : parts.join("\u0000");
+};
+const keySegmentBucket = (value) => {
+  if (value == null || isExactNumeric(value)) return value == null ? null : undefined;
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? (value.id ?? value.value ?? value) : value;
+  if (raw == null) return null;
+  if (typeof raw !== "string" || looksLikeDate(raw)) return undefined;
+  const guid = guidKey(raw);
+  return guid ? `g${guid}` : `t${foldText(raw)}`;
+};
+/** Restore `current` to `saved` in place, keeping the identity of tables, rows and sections that callers hold. */
+const restoreInPlace = (current, saved) => {
+  if (Array.isArray(current) && Array.isArray(saved)) {
+    for (let i = 0; i < saved.length; i++) current[i] = restoreInPlace(current[i], saved[i]);
+    current.length = saved.length;
+    return current;
+  }
+  if (current && saved && typeof current === "object" && typeof saved === "object" && !Array.isArray(current) && !Array.isArray(saved)) {
+    for (const key of Object.keys(current)) if (!own(saved, key)) delete current[key];
+    for (const [key, value] of Object.entries(saved)) current[key] = restoreInPlace(current[key], value);
+    return current;
+  }
+  return clone(saved);
+};
+/**
+ * Key-set continuation for a paged query: the rows strictly after the cursor, in the same order sortRows
+ * gives a public page (keys, then the primary-key tie breaker, then input position), keeping only the
+ * first `limit` of them. `before` counts the rows up to and including the cursor, which is the offset
+ * the page continues from. The cursor is { id, values } (the previous page's last order-column values,
+ * as cursorText wrote them, by path, and its primary key): the page resumes after that tuple, so a
+ * cursor row deleted or filtered out since skips nothing. A bare id (or values that cannot be read
+ * back, see cursorValue) resumes after that row while it is still in the result; null otherwise, and
+ * the caller then uses the offset.
+ */
+export function keysetPage(rows, specs, { mapping, valueOf, definition, lookupName, collation = "CI_AI" }, cursor, limit) {
+  const keyed = rows.map((row, index) => ({
+    row,
+    index,
+    keys: specs.map((spec) => makeSortKey(valueOf(row, spec.path), { definition: definition(spec.path), rawChoice: false, lookupName })),
+    pk: makeSortKey(row?.[mapping.idColumn], { definition: { dataverseType: "primarykey" } }),
+  }));
+  const compare = (a, b) => {
+    for (let i = 0; i < specs.length; i++) {
+      const result = compareSortKeys(a.keys[i], b.keys[i], collation);
+      if (result) return specs[i].descending ? -result : result;
+    }
+    return compareSortKeys(a.pk, b.pk, collation) || a.index - b.index;
+  };
+  const afterId = cursor !== null && typeof cursor === "object" ? cursor.id : cursor;
+  const saved = cursor?.values ? specs.map((spec) => cursorValue(cursor.values, spec.path, definition(spec.path), mapping)) : null;
+  // The saved tuple stands in for the cursor row; index Infinity puts that row itself (same key and id) before it.
+  const last = saved && !saved.includes(undefined)
+    ? { index: Infinity, keys: saved.map((value, i) => makeSortKey(value, { definition: definition(specs[i].path), rawChoice: false, lookupName })),
+      pk: makeSortKey(afterId, { definition: { dataverseType: "primarykey" } }) }
+    : keyed.find((entry) => equal(entry.row[mapping.idColumn], afterId));
+  if (!last) return null;
+  // The `limit` smallest rows after `last`, through a bounded max-heap: O(n log limit), not a full sort.
+  const heap = [];
+  let after = 0;
+  const swap = (i, j) => { const item = heap[i]; heap[i] = heap[j]; heap[j] = item; };
+  const up = (i) => { while (i > 0) { const parent = (i - 1) >> 1; if (compare(heap[i], heap[parent]) <= 0) break; swap(i, parent); i = parent; } };
+  const down = (i) => {
+    for (;;) {
+      const left = 2 * i + 1, right = left + 1;
+      let largest = i;
+      if (left < heap.length && compare(heap[left], heap[largest]) > 0) largest = left;
+      if (right < heap.length && compare(heap[right], heap[largest]) > 0) largest = right;
+      if (largest === i) return;
+      swap(i, largest); i = largest;
+    }
+  };
+  for (const entry of keyed) {
+    if (compare(entry, last) <= 0) continue;
+    after++;
+    if (heap.length < limit) { heap.push(entry); up(heap.length - 1); }
+    else if (limit > 0 && compare(entry, heap[0]) < 0) { heap[0] = entry; down(0); }
+  }
+  return { before: keyed.length - after, rows: heap.sort(compare).map((entry) => entry.row) };
+}
+/** The text a paging cookie carries for an order-column value: "" for null, a lookup's id, a choice's value, exact digits. */
+export function cursorText(value) {
+  const raw = isExactNumeric(value) ? value.value : value !== null && typeof value === "object" ? (value.id ?? value.value ?? null) : value;
+  return raw == null ? "" : String(raw);
+}
+/**
+ * The order-column value a paging cookie saved (cursorText), read back in the column's type so its sort key equals
+ * the row's own. undefined when it cannot be read back exactly; keysetPage then resumes after the cursor row by id.
+ */
+// ponytail: multi-segment paths, multi-select choices, untyped columns and lookups without a single N:1 target fall
+// back to the cursor row; a typed cursor per path kind is the upgrade.
+function cursorValue(values, path, definition, mapping) {
+  const name = path.join("/");
+  if (path.length !== 1 || !own(values, name)) return undefined;
+  const text = values[name];
+  if (text === "" || text == null) return null;
+  const kind = fieldKind(definition);
+  if (["integer", "number", "decimal", "money", "double"].includes(kind)) return decimalParts(text) ? parseNumericLiteral(text) : undefined;
+  if (kind === "boolean") return text === "true" || text === "1";
+  if (kind === "choice") return Number.isFinite(Number(text)) ? Number(text) : undefined;
+  if (kind === "lookup") {
+    // A bare _x_value path reads the lookup id (columnValue); the lookup column itself sorts by the target's name.
+    if (/^_.+_value$/.test(name)) return text;
+    const rel = Object.values(mapping.relationships ?? {}).find((item) => item?.many === false && item.from === name);
+    return rel?.entity ? { id: text, logical_name: rel.entity } : undefined;
+  }
+  if (["string", "datetime", "primarykey", "guid"].includes(kind)) return text;
+  return undefined;
+}
 /** Small non-resolving XML parser: external entities and doctypes are rejected. */
 export function parseFetchXml(source) {
   return parseXmlDocument(source, { root: "fetch" });
@@ -687,8 +897,11 @@ function normalizeState(state, presetLibrary = builtinPresets, platform = state?
 }
 
 export class DataStore {
-  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, persistence, storageAdapter = null } = {}) {
+  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, persistence, storageAdapter = null, clock = systemClock, ids = systemIds } = {}) {
     this.file = file;
+    // The record pipeline's time and GUID source (runtime-clock.mjs); createOrganizationRuntime shares it with its API.
+    this.clock = clock;
+    this.ids = ids;
     this.presetLibrary = presetLibrary;
     this.platformConfig = platformConfig(platform);
     this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
@@ -728,6 +941,25 @@ export class DataStore {
       this.siteRevision = (this.siteRevision ?? 0) + 1;
     }
     return `${this.revision}.${this.siteRevision ?? 0}`;
+  }
+  /**
+   * A key that changes whenever a commit may have changed one of `tables` (or the site tables, or the
+   * state graph itself). Incremental row transactions name the tables they touched; any other commit
+   * advances every table. Derived indexes (security) rebuild only when their own tables change.
+   */
+  tablesRevision(tables) {
+    const site = this.dataRevision().split(".")[1];
+    if (this.tablesStateSeen !== this.state) { this.tablesStateSeen = this.state; this.tableEpoch = (this.tableEpoch ?? 0) + 1; }
+    let key = `${this.tableEpoch ?? 0}.${site}`;
+    for (const table of tables) key += `.${this.tableRevisions?.get(table) ?? 0}`;
+    return key;
+  }
+  /** Advance revision after a commit; `tables` names what an incremental commit touched (null: anything). */
+  committed(tables = null) {
+    this.revision++;
+    if (tables === null) { this.tableEpoch = (this.tableEpoch ?? 0) + 1; return; }
+    this.tableRevisions ??= new Map();
+    for (const table of tables) this.tableRevisions.set(table, (this.tableRevisions.get(table) ?? 0) + 1);
   }
   async init({ restoredState, restoredStorage } = {}) {
     if (this.storageAdapter) {
@@ -837,7 +1069,8 @@ export class DataStore {
   async #saveState() {
     if (this.storageAdapter) {
       const started = performance.now();
-      await this.storageAdapter.save(this.state);
+      // An unpromoted row transaction names the tables it wrote, so the adapter rehashes only those.
+      await this.storageAdapter.save(this.state, this.rowTransaction && !this.rowTransaction.promoted ? { tables: this.rowTransaction.touchedTables() } : {});
       this.recordSave(performance.now() - started, 'simulation');
       return;
     }
@@ -925,6 +1158,11 @@ export class DataStore {
     const frame = transactionFrames.getStore(), boundary = this.pluginRollbackBoundary;
     return frame?.store === this && !frame.closed && typeof boundary?.ensureSnapshot === 'function' && boundary.backup === null;
   }
+  /** True inside an open transaction of this store in this async context: a new transact here would queue behind it. */
+  inTransaction() {
+    const frame = transactionFrames.getStore();
+    return frame?.store === this && !frame.closed;
+  }
   ensureReadSnapshot() {
     this.promoteRowTransaction();
     this.pluginRollbackBoundary?.ensureSnapshot?.();
@@ -962,7 +1200,7 @@ export class DataStore {
       if (isolated) frame.working = clone(this._state);
       // Arbitrary extension callbacks retain the established full rollback
       // boundary. Core CRUD/declarative handlers use the bounded undo journal.
-      const rowTransaction = incremental ? new RowTransaction(this) : null;
+      const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
       const previousRows = this.rowTransaction; this.rowTransaction = rowTransaction;
       const boundary = { backup: lazyReadSnapshot || rowTransaction ? null : clone(this.state), independentCommit: false,eventCount:0 };
       boundary.persistenceBackup = boundary.backup;
@@ -978,12 +1216,18 @@ export class DataStore {
       try {
         if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
         const result = await fn();
-        if (!skipSaveIfUnchanged || boundary.independentCommit || boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup)) {
+        const staged = this.stageOnCommit(this.committedEventCandidates);
+        if (staged.length || !skipSaveIfUnchanged || boundary.independentCommit || boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup)) {
           await this.save();
-          this.revision++;
+          this.committed(rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null);
+          // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
+          const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
+          if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
         }
         if (isolated) this._state = frame.working;
         this.dispatchCommittedEvents(this.committedEventCandidates);
+        this.afterStagedCommit(staged);
+        for (const note of boundary.commitNotes ?? []) try { note(); } catch { /* a note never changes the outcome */ }
         // Read query results own their projection and may carry nonenumerable
         // SDK/paging/column metadata required by the transport adapter.
         return cloneResult ? clone(result) : result;
@@ -992,6 +1236,7 @@ export class DataStore {
         this.rowIndexes = null;
         const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
         if (rollback !== null) this.state = clone(rollback);
+        for (const note of boundary.rollbackNotes ?? []) try { note(error); } catch { /* a note never changes the failure */ }
         // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
         // Restore only those rows after rollback: earlier standard-table writes remain transactional.
         if (!error.persistenceFailure && boundary.elasticWrites?.size) {
@@ -1005,10 +1250,12 @@ export class DataStore {
               else rows.push(clone(row));
             }
             this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
-            await this.save(); this.revision++;
-            if (isolated) this._state = frame.working;
             const retained = boundary.independentCommit && !isolated ? this.committedEventCandidates.slice(0, boundary.eventCount) : [];
-            this.dispatchCommittedEvents([...new Set([...retained, ...(boundary.elasticEvents ?? [])])]);
+            const events = [...new Set([...retained, ...(boundary.elasticEvents ?? [])])], staged = this.stageOnCommit(events);
+            await this.save(); this.committed();
+            if (isolated) this._state = frame.working;
+            this.dispatchCommittedEvents(events);
+            this.afterStagedCommit(staged);
           } catch (saveError) {
             this.state = boundary.persistenceBackup ?? retentionBackup;
             this.rowIndexes = null;
@@ -1016,8 +1263,10 @@ export class DataStore {
           }
         } else if (!error.persistenceFailure && boundary.independentCommit && !isolated) {
           try {
-            await this.save(); this.revision++;
-            this.dispatchCommittedEvents(this.committedEventCandidates.slice(0, boundary.eventCount));
+            const events = this.committedEventCandidates.slice(0, boundary.eventCount), staged = this.stageOnCommit(events);
+            await this.save(); this.committed();
+            this.dispatchCommittedEvents(events);
+            this.afterStagedCommit(staged);
           } catch (saveError) {
             if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
             this.rowIndexes = null;
@@ -1043,35 +1292,60 @@ export class DataStore {
     const run = this.queue.then(() => this.save());
     this.queue = run.catch(() => {}); return run;
   }
+  // Row writes go through writeRow/mutateRow/insertRow/removeRow, which keep every cached
+  // row index of that array (rowIndexes: rows -> Map<name, RowKeyIndex>) current.
   writeRow(table, rows, index, row) {
     validateRowIndex(rows, index);
-    const cached = this.rowIndexes?.get(rows);
-    if (cached && !equal(rows[index]?.[cached.column], row[cached.column])) this.rowIndexes.delete(rows);
+    const indexes = this.rowIndexes?.get(rows), previous = indexes?.size ? rows[index] : undefined;
     if (this.rowTransaction) this.rowTransaction.set(table, rows, index, row);
     else Object.defineProperty(rows, index, { value: row, enumerable: true, configurable: true, writable: true });
+    if (indexes?.size) for (const [name, entry] of indexes) if (!entry.moved(rows, index, previous, row)) indexes.delete(name);
   }
   mutateRow(table, rows, index, values) {
     validateRowIndex(rows, index);
-    const cached = this.rowIndexes?.get(rows);
-    if (cached && own(values, cached.column) && !equal(rows[index][cached.column], values[cached.column])) this.rowIndexes.delete(rows);
+    const indexes = this.rowIndexes?.get(rows), keys = indexes?.size ? [...indexes].map(([name, entry]) => [name, entry, entry.keyOf(rows[index])]) : null;
     if (this.rowTransaction) this.rowTransaction.mutate(table, rows, index, values);
     else assignRowValues(rows.at(index), values);
+    for (const [name, entry, previous] of keys ?? []) if (!entry.moved(rows, index, null, rows[index], previous)) indexes.delete(name);
   }
   insertRow(table, rows, row) {
     if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
     else rows.push(row);
-    const cached = this.rowIndexes?.get(rows);
-    if (cached) {
-      const id = row[cached.column];
-      if (typeof id !== 'string') this.rowIndexes.delete(rows);
-      else { const key = comparable(id); if (!cached.indexes.has(key)) cached.indexes.set(key, rows.length - 1); cached.length = rows.length; }
-    }
+    const indexes = this.rowIndexes?.get(rows);
+    if (indexes?.size) for (const [name, entry] of indexes) if (!entry.appended(rows, row)) indexes.delete(name);
   }
   removeRow(table, rows, index) {
     validateRowIndex(rows, index);
+    const indexes = this.rowIndexes?.get(rows), removed = rows[index];
     if (this.rowTransaction) this.rowTransaction.remove(table, rows, index);
     else rows.splice(index, 1);
-    this.rowIndexes?.delete(rows);
+    if (indexes?.size) for (const [name, entry] of indexes) if (!entry.removed(rows, index, removed)) indexes.delete(name);
+  }
+  /**
+   * The cached index `name` of a row array (see RowKeyIndex), built on first use and
+   * rebuilt when the array length no longer matches. A `scoped` index lives only for the
+   * current transaction frame, so direct row edits between transactions cannot leave it stale;
+   * outside a transaction it returns null and callers scan.
+   */
+  rowKeyIndex(rows, name, keyOf, { scoped = false, wild = false } = {}) {
+    let frame;
+    if (scoped) {
+      frame = transactionFrames.getStore();
+      if (!frame || frame.store !== this || frame.closed) return null;
+    }
+    this.rowIndexes ??= new WeakMap();
+    let indexes = this.rowIndexes.get(rows);
+    if (!indexes) this.rowIndexes.set(rows, (indexes = new Map()));
+    let entry = indexes.get(name);
+    if (!entry || entry.length !== rows.length || entry.frame !== frame) {
+      entry = new RowKeyIndex(rows, keyOf, { frame, wild });
+      indexes.set(name, entry);
+    }
+    return entry;
+  }
+  /** Drop one cached index after a failed validity check, so the next lookup rebuilds it. */
+  dropRowKeyIndex(rows, name) {
+    this.rowIndexes?.get(rows)?.delete(name);
   }
   rowIndex(mapping, rows, id, options = {}) {
     if (isElastic(mapping)) {
@@ -1080,40 +1354,83 @@ export class DataStore {
       const partition = key?.partitionid ?? options.partitionId ?? null;
       return rows.findIndex((row) => equal(row[mapping.idColumn], primary) && samePartition(row.partitionid, partition));
     }
+    return this.rowPositions(mapping, rows, id)?.[0] ?? -1;
+  }
+  /**
+   * Ascending positions of the rows whose primary key equals `id` (the store's coercive
+   * equality), through the primary-key index; null-safe linear scan for non-string ids.
+   */
+  rowPositions(mapping, rows, id, { scoped = false } = {}) {
+    const column = mapping.idColumn, linear = () => rows.flatMap((row, index) => (equal(row[column], id) ? [index] : []));
     // Preserve the existing coercive comparison for non-string identifiers.
-    if (typeof id !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
-    this.rowIndexes ??= new WeakMap();
-    let cached = this.rowIndexes.get(rows);
-    if (!cached || cached.column !== mapping.idColumn || cached.length !== rows.length) {
-      const indexes = new Map();
-      for (let index = 0; index < rows.length; index++) {
-        const value = rows[index][mapping.idColumn];
-        if (typeof value !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
-        const key = comparable(value); if (!indexes.has(key)) indexes.set(key, index);
-      }
-      cached = { column: mapping.idColumn, length: rows.length, indexes }; this.rowIndexes.set(rows, cached);
+    if (typeof id !== 'string') return linear();
+    // A scoped index (uniqueness checks) is rebuilt per transaction, so it never answers a stale miss across writes.
+    const name = `${scoped ? 'uid' : 'id'}\u0000${column}`, key = comparable(id);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const entry = this.rowKeyIndex(rows, name, primaryKeyOf(column), { scoped });
+      if (!entry || entry.linear) return linear();
+      const found = entry.get(key);
+      // Validity check on hit: a position whose row no longer carries the key means the
+      // array changed outside the row choke points; rebuild once.
+      if (found.every((index) => rows[index] !== undefined && entry.keyOf(rows[index]) === key)) return found;
+      this.dropRowKeyIndex(rows, name);
     }
-    return cached.indexes.get(comparable(id)) ?? -1;
+    return linear();
+  }
+  /**
+   * The stored rows of a local table whose primary key is one of `ids` (string ids), in table
+   * order; null when the caller must scan (site/expiring tables, non-string keys).
+   */
+  primaryKeySubset(mapping, ids) {
+    const rows = this.tableRows(mapping.logicalName);
+    if (rows !== this.state.tables[mapping.logicalName] || !ids.every((id) => typeof id === "string")) return null;
+    if (this.rowKeyIndex(rows, `id\u0000${mapping.idColumn}`, primaryKeyOf(mapping.idColumn)).linear) return null;
+    const positions = new Set();
+    for (const id of ids) for (const position of this.rowPositions(mapping, rows, id)) positions.add(position);
+    return [...positions].sort((a, b) => a - b).map((position) => rows[position]);
   }
   /** A synchronous SDK request has its own atomic write, unless its caller
    * already participates in the plugin transaction. Independent PreValidation
    * requests commit before a later primary-operation rejection. */
   sdkMutation(fn) {
+    const savepoint=this.sdkSavepoint();
+    try { const result=fn(); savepoint.commit(); return result; }
+    catch(error) { savepoint.rollback(); throw error; }
+    finally { savepoint.close(); }
+  }
+  /** sdkMutation for an SDK call on the asynchronous pipeline (a flow Dataverse action, data.mjs createRecordAsync): the
+   * same savepoint, held until fn's promise settles. The caller runs inside the store's transaction queue (the flow run's
+   * transaction), so no other write interleaves while the call awaits its I/O. */
+  async sdkMutationAsync(fn) {
+    const savepoint=this.sdkSavepoint();
+    try { const result=await fn(); savepoint.commit(); return result; }
+    catch(error) { savepoint.rollback(); throw error; }
+    finally { savepoint.close(); }
+  }
+  // One SDK call's savepoint (sdkMutation, sdkMutationAsync): commit, rollback, then close.
+  sdkSavepoint() {
     this.ensureReadSnapshot();
-    const joined=this.pluginInTransaction===true,previousBoundary=this.pluginRollbackBoundary;
-    const boundary={backup:clone(this.state),independentCommit:false,eventCount:this.committedEventCandidates?.length??0,parent:previousBoundary};
-    this.pluginRollbackBoundary=boundary;
-    try {
-      const result=fn();
-      if(!joined&&previousBoundary){previousBoundary.backup=clone(this.state);previousBoundary.independentCommit=true;previousBoundary.eventCount=this.committedEventCandidates?.length??0;}
-      return result;
-    } catch(error) {
-      // Keep table/row references held by an enclosing synchronous pipeline
-      // intact while removing every failed request's transactional write.
-      const restore=(current,saved)=>{if(Array.isArray(current)&&Array.isArray(saved)){for(let i=0;i<saved.length;i++)current[i]=restore(current[i],saved[i]);current.length=saved.length;return current;}if(current&&saved&&typeof current==='object'&&typeof saved==='object'&&!Array.isArray(current)&&!Array.isArray(saved)){for(const key of Object.keys(current))if(!own(saved,key))delete current[key];for(const[key,value]of Object.entries(saved))current[key]=restore(current[key],value);return current;}return clone(saved);};
-      restore(this.state,boundary.backup);if(this.committedEventCandidates)this.committedEventCandidates.length=boundary.eventCount;if(!joined&&boundary.independentCommit&&previousBoundary){previousBoundary.backup=clone(this.state);previousBoundary.independentCommit=true;previousBoundary.eventCount=boundary.eventCount;}
-      throw error;
-    } finally {this.pluginRollbackBoundary=previousBoundary;}
+    const joined=this.pluginInTransaction===true,previousBoundary=this.pluginRollbackBoundary,previousRows=this.rowTransaction;
+    // A nested RowTransaction is the call's savepoint: it journals the call's row writes instead of copying the
+    // whole state first. Handler code that may write arbitrary state promotes it (promoteRowTransaction), which
+    // fills boundary.backup with the complete pre-call copy, as every call took before.
+    const savepoint=new RowTransaction(this);
+    const boundary={backup:null,independentCommit:false,eventCount:this.committedEventCandidates?.length??0,parent:previousBoundary};
+    this.pluginRollbackBoundary=boundary;this.rowTransaction=savepoint;
+    return {
+      commit: () => {
+        this.rowTransaction=previousRows;
+        if(!joined&&previousBoundary){previousBoundary.backup=clone(this.state);previousBoundary.independentCommit=true;previousBoundary.eventCount=this.committedEventCandidates?.length??0;}
+      },
+      rollback: () => {
+        this.rowTransaction=previousRows;
+        // Keep table/row references held by an enclosing synchronous pipeline
+        // intact while removing every failed request's transactional write.
+        if(boundary.backup!==null)restoreInPlace(this.state,boundary.backup);else savepoint.rollback(this.state,restoreInPlace);
+        this.rowIndexes=null;if(this.committedEventCandidates)this.committedEventCandidates.length=boundary.eventCount;if(!joined&&boundary.independentCommit&&previousBoundary){previousBoundary.backup=clone(this.state);previousBoundary.independentCommit=true;previousBoundary.eventCount=boundary.eventCount;}
+      },
+      close: () => {this.pluginRollbackBoundary=previousBoundary;this.rowTransaction=previousRows;},
+    };
   }
   checkpointElastic(mapping, row, removed = false) {
     if (!isElastic(mapping)) return;
@@ -1128,6 +1445,17 @@ export class DataStore {
   }
   setCommittedEvents(provider){this.committedEvents=typeof provider==='function'?provider:null;}
   addCommittedEvents(provider){if(typeof provider!=='function')throw new DataError('Committed event consumer must be a function.');this.committedEventConsumers??=new Set();this.committedEventConsumers.add(provider);return()=>this.committedEventConsumers.delete(provider);}
+  /** A commit stager runs synchronously inside the committing transaction, right before its save, with that commit's
+   * events (read-only) and the sequence their dispatch will carry: rows it writes commit or roll back with the events'
+   * rows. A function it returns runs after the commit (never after a failed one). A throwing stager fails the commit. */
+  addCommitStager(fn){if(typeof fn!=='function'||fn.constructor?.name==='AsyncFunction')throw new DataError('Commit stagers must be synchronous functions.',400,'InvalidCommitStager');this.commitStagers??=new Set();this.commitStagers.add(fn);return()=>this.commitStagers.delete(fn);}
+  stageOnCommit(events){
+    if(!events?.length||!this.commitStagers?.size)return [];
+    const sequence=(this.committedEventSequence??0)+1,after=[];
+    for(const stage of [...this.commitStagers]){const done=stage(events,{sequence});if(typeof done==='function')after.push(done);}
+    return after;
+  }
+  afterStagedCommit(after){for(const done of after)try{done();}catch(error){this.committedEventErrors??=[];this.committedEventErrors.push({code:error.code??'CommitStagerError',message:error.message});if(this.committedEventErrors.length>50)this.committedEventErrors.shift();}}
   /** Synchronous storage observers stage derived local state inside the current transaction. */
   addMutationObserver(fn, { matches } = {}) {
     if (typeof fn !== 'function' || fn.constructor?.name === 'AsyncFunction' || matches !== undefined && (typeof matches !== 'function' || matches.constructor?.name === 'AsyncFunction'))
@@ -1143,8 +1471,9 @@ export class DataStore {
     return () => this.deleteGuards.delete(fn);
   }
   recordCommittedEvent(entity,operation,row,attributes,details={}) {
-    if (!this.mutationObservers?.size && (!(this.committedEvents || this.committedEventConsumers?.size) || !this.committedEventCandidates)) return;
-    const event = {entity,operation,row:clone(row),submittedAttributes:[...attributes],...clone(details),frame:clone(this.pluginFrames?.get(row)??{}),chain:this.flowChain?clone(this.flowChain):null};
+    if (!this.mutationObservers?.size && (!(this.committedEvents || this.committedEventConsumers?.size || this.commitStagers?.size) || !this.committedEventCandidates)) return;
+    // correlationId is the request's (request-context.mjs), a separate field: the per-root-event chain ids stay as they are.
+    const event = {entity,operation,row:clone(row),submittedAttributes:[...attributes],...clone(details),frame:clone(this.pluginFrames?.get(row)??{}),chain:this.flowChain?clone(this.flowChain):null,correlationId:currentRequest()?.correlationId??null};
     for (const observer of this.mutationObservers ?? []) {
       const matched = observer.matches ? observer.matches(clone(event)) : true;
       if (matched && typeof matched.then === 'function') { Promise.resolve(matched).catch(()=>{}); throw new DataError('Mutation observer matchers cannot return a promise.', 500, 'InvalidMutationObserver'); }
@@ -1153,7 +1482,7 @@ export class DataStore {
       const result = observer.fn(clone(event));
       if (result && typeof result.then === 'function') { Promise.resolve(result).catch(()=>{}); throw new DataError('Mutation observers cannot return a promise.', 500, 'InvalidMutationObserver'); }
     }
-    if ((this.committedEvents || this.committedEventConsumers?.size) && this.committedEventCandidates) this.committedEventCandidates.push(event);
+    if ((this.committedEvents || this.committedEventConsumers?.size || this.commitStagers?.size) && this.committedEventCandidates) this.committedEventCandidates.push(event);
   }
   dispatchCommittedEvents(events){
     if(!events.length)return;const captured=clone(events),providers=[this.committedEvents,...(this.committedEventConsumers??[])].filter(Boolean),sequence=this.committedEventSequence=(this.committedEventSequence??0)+1;
@@ -1186,7 +1515,7 @@ export class DataStore {
    * web role memberships): provider() -> { tables: { logical: { mapping, rows } },
    * relationships: { logical: { navigation: rel } } }. Local mappings and rows win.
    */
-  setVirtualTables(provider) {
+  setSiteTables(provider) {
     this.virtualTables = typeof provider === "function" ? provider : null;
   }
   /**
@@ -1196,6 +1525,10 @@ export class DataStore {
   setObserved(observed) {
     this.observed = observed ?? null;
   }
+  /** The site's authorization bridge (portal-authorization.mjs): rules(), get() and queryContext() call it. */
+  setPortalAuthorization(bridge) {
+    this.portalAuthorization = bridge ?? null;
+  }
   /** Exported registrations use the explicitly selected trusted execution mode. */
   setPluginPipeline(provider, active = () => true, requiresCheckpoint = () => true) {
     if (typeof provider !== 'function') throw new DataError('Plugin pipeline must be a function.');
@@ -1203,7 +1536,47 @@ export class DataStore {
     this.pluginPipelineActive = active;
     this.pluginPipelineRequiresCheckpoint = requiresCheckpoint;
   }
-  exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
+  /**
+   * The record-write drivers. createSteps/updateSteps/removeSteps/upsertSteps (and the cascade and commit steps they delegate
+   * to) yield the argument list of each exportedPluginPhase call. runRecordSteps runs a phase synchronously: a synchronous
+   * service endpoint step posts through the synchronous I/O bridge (createRecord, the SDK drive inside a plug-in).
+   * awaitRecordSteps passes awaitIo, so such a step answers a promise that is awaited before the write continues (createRecordAsync,
+   * every HTTP-driven write and the async create/update/upsert/remove). A failed phase is thrown into the generator at its yield,
+   * so both drivers fail, roll back and restore pluginInTransaction exactly as one synchronous call does.
+   */
+  runRecordSteps(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      let answer, failed = false;
+      try { answer = this.exportedPluginPhase(...next.value); } catch (error) { answer = error; failed = true; }
+      next = failed ? steps.throw(answer) : steps.next(answer);
+    }
+    return next.value;
+  }
+  async awaitRecordSteps(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      let answer, failed = false;
+      try { answer = this.exportedPluginPhase(...next.value, true); if (typeof answer?.then === 'function') answer = await answer; } catch (error) { answer = error; failed = true; }
+      next = failed ? steps.throw(answer) : steps.next(answer);
+    }
+    return next.value;
+  }
+  /** Runs fn(error) when the outermost open transaction rolls back: the note for a post that already left the process and
+   * cannot be withdrawn (dataverse-webhooks.mjs SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK). Outside a transaction it does nothing. */
+  onRollback(fn) {
+    let boundary = this.pluginRollbackBoundary;
+    while (boundary?.parent) boundary = boundary.parent;
+    if (boundary) (boundary.rollbackNotes ??= []).push(fn);
+  }
+  /** Runs fn() once the outermost open transaction has committed (dataverse-virtual-providers.mjs: an enlisted provider's
+   * commit). Outside a transaction it does nothing. */
+  onCommit(fn) {
+    let boundary = this.pluginRollbackBoundary;
+    while (boundary?.parent) boundary = boundary.parent;
+    if (boundary) (boundary.commitNotes ??= []).push(fn);
+  }
+  exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}, awaitIo = false) {
     if(stage!==10)this.pluginInTransaction=!isElastic(mapping);
     // Dataverse writes with bypassCustomPlugins (MSCRM.BypassCustomPluginExecution) skip exported plug-ins.
     if (options.bypassCustomPlugins) return;
@@ -1215,7 +1588,11 @@ export class DataStore {
       this.promoteRowTransaction();
     }
     const id = row[mapping.idColumn];
-    const frame=this.pluginPipeline?.({ entity: mapping.logicalName, operation, stage, target, record: row, previous, identity, changedAttributes, portalRequest:options.portalRequest===true });
+    const frame=this.pluginPipeline?.({ entity: mapping.logicalName, operation, stage, target, record: row, previous, identity, changedAttributes, portalRequest:options.portalRequest===true, ...(awaitIo ? { awaitIo: true } : {}) });
+    if (typeof frame?.then === 'function') return frame.then((answer) => this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer));
+    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame);
+  }
+  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame) {
     if(frame){this.pluginFrames??=new WeakMap();this.pluginFrames.set(row,frame);}
     if(stage===40)handoffPluginResponse(this,operation,mapping.logicalName,frame,options.sdkResponseToken);
     if (!equal(row[mapping.idColumn], id)) throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
@@ -1309,7 +1686,7 @@ export class DataStore {
           : ["Anonymous Users"]),
     ]);
     const anonymous = !identity.admin && !identity.id && !identity.contactId;
-    return this.state.permissions.filter(
+    const granted = this.state.permissions.filter(
       (p) =>
         p.enabled !== false &&
         (p.entity === entity || p.entity === "*") &&
@@ -1322,6 +1699,8 @@ export class DataStore {
           : !p.roles?.length || p.roles.some((r) => roles.has(r))) &&
         (!anonymous || this.grantsWithoutContact(p)),
     );
+    // Enhanced authorization: a grant also needs the Dataverse privilege of its mapped security role (portal-authorization.mjs).
+    return this.portalAuthorization ? this.portalAuthorization.filterRules(granted, entity, operation, identity) : granted;
   }
   /**
    * Whether a table permission can grant anything to a visitor without a contact. The
@@ -1506,14 +1885,14 @@ export class DataStore {
         message,
         403,
         "PermissionDenied",
-        { operation, table: entity, permissions, permissionDiagnostic:{code:'TABLE_PERMISSION_DENIED',severity:'warning',operation,table:entity,permissions,message}, ...(related ? { related } : {}) },
+        { operation, table: entity, permissions, permissionDiagnostic:{code:'TABLE_PERMISSION_DENIED',severity:'warning',operation,table:entity,permissions,message,model:this.portalAuthorization?.describe().model??'standard'}, ...(related ? { related } : {}) },
       );
     }
   }
-  rows(entity, identity = {}) {
+  rows(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const memo = this.permissionMemo();
-    return this.tableRows(m.logicalName).filter((r) =>
+    return (subset ?? this.tableRows(m.logicalName)).filter((r) =>
       this.allowed(m.logicalName, "read", r, identity, new Set(), null, memo),
     );
   }
@@ -1532,15 +1911,48 @@ export class DataStore {
         equal(field(target, rel.to), field(edge, rel.intersect.to)),
     );
   }
+  /**
+   * A copy of a stored row as a portal read receives it: computed columns (setComputedColumns) hold their computed value,
+   * and each single-valued lookup is an entity reference { id, logical_name, name } named by the target's primary name
+   * (a stored bare id resolves through the N:1 relationship; a polymorphic one through the target that holds the id).
+   */
+  portalReadRow(m, row) {
+    const out = this.computedColumns(m.logicalName) ? this.withComputed(m.logicalName, [row])[0] : { ...row };
+    const byColumn = new Map();
+    for (const rel of Object.values(m.relationships ?? {}))
+      if (rel?.many === false && rel.from && rel.from !== m.idColumn && rel.entity) byColumn.set(rel.from, [...(byColumn.get(rel.from) ?? []), rel.entity]);
+    for (const [column, entities] of byColumn) {
+      const value = out[column];
+      if (value == null || value === "" || (typeof value === "object" && (Array.isArray(value) || value.name != null))) continue;
+      const id = typeof value === "object" ? value.id : value;
+      if (id == null) continue;
+      const wanted = typeof value === "object" && value.logical_name ? [value.logical_name] : entities;
+      for (const logical of wanted) {
+        let target;
+        try { target = this.resolveMapping(logical); } catch { continue; }
+        const rows = this.tableRows(target.logicalName), hit = rows[this.rowIndex(target, rows, id)];
+        if (!hit && wanted.length > 1) continue;
+        out[column] = { ...(typeof value === "object" ? value : {}), id, logical_name: target.logicalName, name: hit ? (primaryNameValue(target, hit) ?? "") : "" };
+        break;
+      }
+    }
+    return out;
+  }
   get(entity, id, identity = {},options={}) {
     const m = this.resolveMapping(entity);
     const rows = this.tableRows(m.logicalName);
-    const row = rows[this.rowIndex(m, rows, id, options)];
+    let row = rows[this.rowIndex(m, rows, id, options)];
     if (!row) return null;
     this.assertAllowed(m.logicalName, "read", row, identity);
+    // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
+    // lookups are entity references carrying the target's primary name.
+    if (options.portalRequest) row = this.portalReadRow(m, row);
+    // Column security of the reading principal (portal-authorization.mjs maskRow): the mapped user (enhanced model) or, for a
+    // portal request, the site's application user; secured columns are null or answer their masking rule.
+    if (this.portalAuthorization) row = this.portalAuthorization.maskRow(identity, m.logicalName, row, { portalRequest: options.portalRequest === true });
     if(!options.skipPluginRead&&this.pluginPipeline&&this.pluginPipelineActive({entity:m.logicalName,operation:'retrieve'})){
       this.ensureReadSnapshot();
-      const record=clone(row),columns=options.sdkColumns??{allColumns:true},holder={entity:recordToSdkEntity(this,m.logicalName,record,columns)},previousReadOnly=this.pluginReadOnly;
+      const record=options.project?options.project(clone(row)):clone(row),columns=options.sdkColumns??{allColumns:true},holder={entity:recordToSdkEntity(this,m.logicalName,record,columns)},previousReadOnly=this.pluginReadOnly;
       this.pluginReadOnly=!this.pluginRollbackBoundary;
       try{
         this.pluginPipeline({entity:m.logicalName,operation:'retrieve',stage:10,record,identity,columns,holder,changedAttributes:[],portalRequest:options.portalRequest===true});
@@ -1551,8 +1963,10 @@ export class DataStore {
         return {...sdkValueToRecord(holder.entity),[m.idColumn]:row[m.idColumn],...(isElastic(m)?{partitionid:row.partitionid??null}:{})};
       }finally{this.pluginReadOnly=previousReadOnly;}
     }
-    if(options.sdkColumns)return {...sdkValueToRecord(recordToSdkEntity(this,m.logicalName,row,options.sdkColumns)),[m.idColumn]:row[m.idColumn],...(isElastic(m)?{partitionid:row.partitionid??null}:{})};
-    return clone(row);
+    // options.project (records readInternal): the shared read projection over a copy of the stored row.
+    const read=options.project?options.project(clone(row)):row;
+    if(options.sdkColumns)return {...sdkValueToRecord(recordToSdkEntity(this,m.logicalName,read,options.sdkColumns)),[m.idColumn]:row[m.idColumn],...(isElastic(m)?{partitionid:row.partitionid??null}:{})};
+    return options.project?read:clone(row);
   }
   /** Field metadata from explicit mappings or a caller-supplied solution metadata resolver. */
   fieldDefinition(logical, attribute, metadata) {
@@ -1631,15 +2045,95 @@ export class DataStore {
   relationshipsFor(mapping, identity) {
     return relationshipsOf(this, mapping.logicalName, mapping.relationships ?? {}, Boolean(identity?.dataverse));
   }
-  queryContext(identity = {}, options = {}) {
-    const readable = options.fetchCache && !options.backendRowsFilter ? options.fetchCache.readable(this, identity) : new Map();
-    const readRows = (logical, node) => {
-      const name = this.resolveMapping(logical).logicalName;
-      if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node)) {
-        const rows=this.tableRows(name);
-        return options.backendRowsFilter?rows.filter(row=>options.backendRowsFilter(name,clone(row))===true):rows;
+  /**
+   * Registers (or, with null, removes) a computed-column provider under a name: { columnsOf(logical) -> [column],
+   * compute(logical, column, { row, stored }) -> value, sortable?(logical, column) -> boolean }. row is the read copy
+   * (other computed columns read computed), stored the stored row. Calculated and formula columns register here.
+   */
+  setComputedColumns(name, provider) {
+    this.computedProviders ??= new Map();
+    if (provider) this.computedProviders.set(name, provider);
+    else this.computedProviders.delete(name);
+    this.computedMemo = null;
+  }
+  /** Map column -> provider of a table's computed columns, memoised per tablesRevision (metadata and mappings). */
+  computedColumns(logical) {
+    if (!this.computedProviders?.size) return null;
+    const key = this.tablesRevision([]);
+    if (this.computedMemo?.key !== key) this.computedMemo = { key, tables: new Map() };
+    if (!this.computedMemo.tables.has(logical)) {
+      const columns = new Map();
+      for (const provider of this.computedProviders.values())
+        for (const column of provider.columnsOf(logical) ?? []) if (!columns.has(column)) columns.set(column, provider);
+      this.computedMemo.tables.set(logical, columns.size ? columns : null);
+    }
+    return this.computedMemo.tables.get(logical);
+  }
+  /**
+   * Read copies of rows whose computed columns hold their computed value (lazy, once per copy); rows of a table
+   * without computed columns are returned as they are. A computed column that reads itself (a cycle) reads null.
+   */
+  // ponytail: one shallow copy per row of a table with computed columns per query; an index of computed values keyed
+  // by row version is the upgrade if such tables grow large.
+  withComputed(logical, rows) {
+    const columns = this.computedColumns(logical);
+    if (!columns) return rows;
+    return rows.map((stored) => {
+      const row = { ...stored };
+      for (const [column, provider] of columns) {
+        let busy = false;
+        const settle = (value) => { Object.defineProperty(row, column, { value, writable: true, enumerable: true, configurable: true }); return value; };
+        Object.defineProperty(row, column, {
+          enumerable: true, configurable: true,
+          get: () => {
+            if (busy) return null;
+            busy = true;
+            try { return settle(provider.compute(logical, column, { row, stored }) ?? null); } finally { busy = false; }
+          },
+          set: settle,
+        });
       }
-      if (!readable.has(name)) readable.set(name, options.backendRowsFilter?this.rows(name, identity).filter(row=>options.backendRowsFilter(name,clone(row))===true):this.rows(name, identity));
+      return row;
+    });
+  }
+  /** One column of one row as every query reads it: the computed value for a computed column, else the stored value. */
+  fieldValue(logical, row, column) {
+    const name = this.resolveMapping(logical).logicalName;
+    return this.computedColumns(name)?.has(column) ? this.withComputed(name, [row])[0][column] : columnValue(row, column);
+  }
+  /** False for a computed column whose order the platform ignores (a calculated column over a parent or another calculated column). */
+  sortableColumn(logical, column) {
+    const provider = this.computedColumns(logical)?.get(column);
+    return provider?.sortable ? provider.sortable(logical, column) !== false : true;
+  }
+  queryContext(identity = {}, options = {}) {
+    // Enhanced authorization: the visitor's field security profiles mask every read (portal-authorization.mjs rowMasker).
+    const portalMask = !options.backendRowsMask && this.portalAuthorization?.rowMasker(identity);
+    if (portalMask) options = { ...options, backendRowsMask: portalMask };
+    const readable = options.fetchCache && !options.backendRowsFilter && !options.backendRowsMask ? options.fetchCache.readable(this, identity) : new Map();
+    // Row filters are read-only (the security read filter, or a backend profile that copies the row
+    // itself), so they receive the stored row. `subset` restricts one read to known rows (id reads).
+    // Computed columns (setComputedColumns) read their computed value in every query engine: filter, order, $apply,
+    // FetchXML conditions, orders, aggregates and the projection all see withComputed rows, never the stored value.
+    // backendRowsMask(name) returns null or a function giving the row as this caller may evaluate it (column security nulls
+    // the columns it cannot read), so no predicate, order, aggregate, join or lambda at any depth sees a hidden value.
+    const masks = new Map();
+    const maskOf = (name) => {
+      if (!masks.has(name)) masks.set(name, options.backendRowsMask?.(name) ?? null);
+      return masks.get(name);
+    };
+    const backend = (name, rows) => {
+      const kept = options.backendRowsFilter ? rows.filter((row) => options.backendRowsFilter(name, row) === true) : rows;
+      const computed = this.withComputed(name, kept);
+      const mask = maskOf(name);
+      return mask ? computed.map(mask) : computed;
+    };
+    const readRows = (logical, node, subset) => {
+      const name = this.resolveMapping(logical).logicalName;
+      if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node))
+        return backend(name, subset ?? this.tableRows(name));
+      if (subset) return backend(name, this.rows(name, identity, subset));
+      if (!readable.has(name)) readable.set(name, backend(name, this.rows(name, identity)));
       return readable.get(name);
     };
     const key = (value) => {
@@ -1743,7 +2237,7 @@ export class DataStore {
       identity,
       relationships: (mapping) => this.relationshipsFor(mapping, identity),
       settings: this.querySettings(),
-      now: Date.now(),
+      now: this.clock.now(),
     };
   }
   /**
@@ -1896,6 +2390,15 @@ export class DataStore {
   query(entity, params = {}, identity = {}, paging, options = {}) {
     const p=params instanceof URLSearchParams?Object.fromEntries(params):params;
     if(p.fetchXml||p.fetchxml)return this.queryCore(entity,params,identity,paging,options);
+    // Column security of the reading principal on every returned row (portal-authorization.mjs maskRow), as get() and fetchXml().
+    // A filter, order or $apply over a column it reads masked is refused first (assertOperands, 0x80041155).
+    if(this.portalAuthorization&&!options.portalMasked){
+      const logical=this.resolveMapping(entity).logicalName;
+      this.portalAuthorization.assertOperands(identity,logical,{portalRequest:options.portalRequest===true,params});
+      const result=this.query(entity,params,identity,paging,{...options,portalMasked:true});
+      if(Array.isArray(result?.value))result.value=result.value.map(row=>this.portalAuthorization.maskRow(identity,logical,row,{portalRequest:options.portalRequest===true}));
+      return result;
+    }
     const mapping=this.resolveMapping(entity);
     if(options.portalRequest===true&&!identity.admin&&this.observed?.odataPermissionQueryPipeline==='native-classic') {
       if(paging&&(paging.offset!==0||paging.pageSize!==5000||paging.preferenceApplied)||options.id!=null||options.ids||Object.keys(p).some(key=>!['$select','$filter','$orderby','$count'].includes(key))||
@@ -2012,7 +2515,10 @@ export class DataStore {
       );
     const queryOptions = { dialect, aliases };
     const ctx = this.queryContext(identity, { ...options, dialect });
-    let rows = ctx.readRows(m.logicalName);
+    // Single-record and id-list reads find their rows through the primary-key index before
+    // the row-security filter, instead of filtering the whole table.
+    const subset = options.id != null || options.ids ? this.primaryKeySubset(m, options.id != null ? [options.id] : [...options.ids]) : null;
+    let rows = ctx.readRows(m.logicalName, undefined, subset ?? undefined);
     if(options.backendRowFilter)rows=rows.filter(row=>options.backendRowFilter(clone(row))===true);
     // Single-record and navigation routes restrict the readable rows first.
     if (options.id != null)
@@ -2031,7 +2537,9 @@ export class DataStore {
           ctx,
         ),
       );
-    const order = parseOrderBy(p.$orderby, queryOptions);
+    // Learn define-calculated-fields: ordering on a calculated column over a parent or another calculated column is
+    // ignored without an error.
+    const order = parseOrderBy(p.$orderby, queryOptions).filter((spec) => spec.path.length !== 1 || this.sortableColumn(m.logicalName, spec.path[0]));
     const sortOptions = {
       mapping: m,
       valueOf: (row, path) => this.pathValue(ctx, m, row, path),
@@ -2100,13 +2608,17 @@ export class DataStore {
     }
     const count = rows.length,
       publicCount = paging ? Math.min(count, 5000) : count;
+    // A continuation that names the previous page's last row resumes after that row (key-set
+    // paging), so a later page neither re-sorts the whole result nor shifts after a concurrent write.
+    const keyset = paging?.after != null && !isElastic(m) ? keysetPage(rows, order, sortOptions, paging.after, paging.pageSize) : null;
+    if (keyset) rows = keyset.rows;
     // Public pages always have a deterministic primary-key tie breaker.
-    if (order.length || paging)
+    else if (order.length || paging)
       rows = sortRows(rows, order, {
         ...sortOptions,
         tieBreak: Boolean(paging),
       });
-    const skip = paging ? paging.offset : boundedInt(p.$skip ?? 0, "$skip"),
+    const skip = keyset ? keyset.before : paging ? paging.offset : boundedInt(p.$skip ?? 0, "$skip"),
       totalLimit = paging
         ? Math.min(count, p.$top == null ? count : boundedInt(p.$top, "$top"))
         : rows.length,
@@ -2115,7 +2627,7 @@ export class DataStore {
         : p.$top == null
           ? rows.length
           : boundedInt(p.$top, "$top");
-    rows = rows.slice(skip, skip + top);
+    rows = keyset ? rows.slice(0, top) : rows.slice(skip, skip + top);
     const select = parseSelect(p.$select);
     const expand = this.prepareExpand(
       ctx,
@@ -2135,19 +2647,42 @@ export class DataStore {
               nextOffset: skip + values.length,
               moreRecords: skip + values.length < totalLimit,
               totalCount: count,
+              // The page's first and last order-column values (cursorText), which the paging cookie carries so the
+              // next page resumes after the last row's values (keysetPage), not after a row that may be gone.
+              ...(rows.length && order.length ? { order: order.map((spec) => ({ name: spec.path.join("/"),
+                first: cursorText(sortOptions.valueOf(rows[0], spec.path)), last: cursorText(sortOptions.valueOf(rows.at(-1), spec.path)) })) } : {}),
             },
           }
         : {}),
     };
   }
   normalizeRecord(mapping, data, identity = {}) {
+    const SYSTEM_BIND_NAVIGATIONS = new Set(["ownerid", "owninguser", "owningteam", "owningbusinessunit", "createdby", "modifiedby",
+      "createdonbehalfby", "modifiedonbehalfby", "transactioncurrencyid"]);
     const row = clone(data);
     for (const [key, value] of Object.entries(row)) {
       safeName(key.replace(/@odata\.bind$/, ""));
       if (key.endsWith("@odata.bind")) {
         const navigation = key.slice(0, -11),
-          relationship = this.relationshipsFor(mapping, identity)[navigation],
+          relationships = this.relationshipsFor(mapping, identity),
+          relationship = relationships[navigation],
           field = relationship?.from ?? navigation;
+        // Navigation names are case-sensitive: a bind on a name no relationship declares (a column name, another casing) is
+        // the OData undeclared-property error, as the Web API payload check answers it. The system lookups every table
+        // carries (owner, audit, currency) bind on their column name. ponytail: a mapping that declares no relationship for
+        // a lookup column (no navigation metadata to judge by) keeps binding on that column's exact name; a relationship
+        // over the column makes its navigation the only name.
+        // A lookup column: typed so in the mapping, or named by a partner one-to-many relationship of another table.
+        const lookupKind = !relationship && (["lookup", "customer", "owner"].includes(String(mapping.fields?.[navigation]?.dataverseType ?? mapping.fields?.[navigation]?.type ?? "").toLowerCase())
+          || Object.values(this.state.mappings ?? {}).some((other) => Object.values(other?.relationships ?? {}).some((rel) => rel?.many === true && !rel.intersect && rel.to === navigation && rel.entity === mapping.logicalName)));
+        const undeclaredLookup = lookupKind && !Object.values(relationships).some((rel) => rel?.from === navigation);
+        if (!relationship && !SYSTEM_BIND_NAVIGATIONS.has(navigation) && !undeclaredLookup)
+          throw new DataError(
+            `Error identified in Payload provided by the user for Entity :'${mapping.entitySet ?? mapping.logicalName}'  ---->  InnerException : Microsoft.OData.ODataException: An undeclared property '${navigation}' which only has property annotations in the payload but no property value was found in the payload. In OData, only declared navigation properties and declared named streams can be represented as properties without values`,
+            400,
+            "InvalidLookup",
+            { innerCode: "0x80048d19" },
+          );
         if (relationship?.many)
           throw new DataError(
             `Collection binding ${key} is not supported`,
@@ -2215,7 +2750,8 @@ export class DataStore {
     const names = Object.keys(parts).sort();
     if (isElastic(mapping) && names.length === 1 && names[0] === mapping.idColumn)
       return rows[this.rowIndex(mapping, rows, parts[mapping.idColumn])];
-    const declared = (mapping.alternateKeys ?? []).some((alternate) => {
+    // Only an Active key (its index job succeeded) resolves rows; Pending and Failed keys do not exist for lookups.
+    const declared = (mapping.alternateKeys ?? []).filter((alternate) => (alternate.indexStatus ?? "Active") === "Active").some((alternate) => {
       const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
         .map((name) => String(name).toLowerCase())
         .sort();
@@ -2231,9 +2767,27 @@ export class DataStore {
         "InvalidKey",
         { innerCode: "0x80040203" },
       );
-    return rows.find((row) =>
-      names.every((name) => isElastic(mapping) && name === "partitionid" ? samePartition(row[name], parts[name]) : valuesEqual(field(row, name), parts[name])),
-    );
+    const matches = (row) => names.every((name) => isElastic(mapping) && name === "partitionid" ? samePartition(row[name], parts[name]) : valuesEqual(field(row, name), parts[name]));
+    // Within one transaction (UpsertMultiple, key upserts) candidates come from the key-segment index.
+    const literal = names.map((name) => keySegmentBucket(parts[name]));
+    if (!isElastic(mapping) && literal.every((bucket) => typeof bucket === "string")) {
+      const name = `ks\u0000${names.join("\u0000")}`;
+      const index = this.rowKeyIndex(rows, name, keySegmentOf(names), { scoped: true, wild: true });
+      if (index && !index.linear) {
+        const bucketed = index.get(literal.join("\u0000"));
+        const candidates = index.wild.length ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b) : bucketed;
+        // Validity check: every bucketed candidate must still match; otherwise rebuild and scan.
+        let first;
+        for (const position of candidates) {
+          const row = rows[position];
+          if (row !== undefined && matches(row)) { first = row; break; }
+          if (bucketed.includes(position)) { first = null; break; }
+        }
+        if (first !== null) return first;
+        this.dropRowKeyIndex(rows, name);
+      }
+    }
+    return rows.find(matches);
   }
   evaluate(expr, context) {
     if (typeof expr === "string" && expr.startsWith("$")) {
@@ -2258,7 +2812,7 @@ export class DataStore {
       case "multiply":
         return args.some(isExactNumeric)?multiplyNumeric(args.map(a=>a??0)):args.reduce((n, a) => n * Number(a ?? 0), 1);
       case "uuid":
-        return randomUUID();
+        return this.ids.uuid();
       case "sequence": {
         const scope = safeName(String(args[0]));
         const prefix = String(args[1] ?? "");
@@ -2286,7 +2840,7 @@ export class DataStore {
         return prefix + String(next).padStart(width, "0");
       }
       case "now":
-        return new Date().toISOString();
+        return new Date(this.clock.now()).toISOString();
       case "split":
         return String(args[0] ?? "")
           .split(args[1] ?? ",")
@@ -2483,7 +3037,7 @@ export class DataStore {
       record: row,
       previous: previous ?? {},
       identity,
-      now: new Date().toISOString(),
+      now: new Date(this.clock.now()).toISOString(),
     };
     const secondary = [];
     for (const p of this.state.plugins.filter(
@@ -2583,7 +3137,7 @@ export class DataStore {
           )
             continue;
         }
-        this.insertRow(m.logicalName, targets, { [m.idColumn]: randomUUID(), ...values });
+        this.insertRow(m.logicalName, targets, { [m.idColumn]: this.ids.uuid(), ...values });
       } else if (
         action.operation === "update" ||
         action.operation === "delete"
@@ -2707,11 +3261,21 @@ export class DataStore {
    * indexes in Dataverse. Keys with an empty column are not compared here.
    */
   assertAlternateKeys(mapping, row, rows, ownIndex) {
-    for (const key of mapping.alternateKeys ?? []) {
+    for (const key of (mapping.alternateKeys ?? []).filter((k) => (k.indexStatus ?? "Active") === "Active")) {
       const attributes = key.attributes ?? key.keyAttributes ?? [];
       if (!attributes.length) continue;
       const values = attributes.map((name) => scalar(field(row, name)));
       if (values.some((value) => value == null || value === "")) continue;
+      // Within one transaction the key-tuple index makes bulk creates and key upserts O(1) per row.
+      const name = `ak\u0000${attributes.join("\u0000")}`, keyOf = alternateKeyOf(attributes), wanted = keyOf(row);
+      const index = this.rowKeyIndex(rows, name, keyOf, { scoped: true });
+      const candidates = index?.get(wanted);
+      if (candidates && candidates.every((position) => rows[position] !== undefined && keyOf(rows[position]) === wanted)) {
+        const clash = candidates.some((position) => position !== ownIndex && !equal(rows[position][mapping.idColumn], row[mapping.idColumn]));
+        if (clash) throw duplicateAlternateKey(key, attributes, values);
+        continue;
+      }
+      if (index) this.dropRowKeyIndex(rows, name);
       const clash = rows.some(
         (other, index) =>
           index !== ownIndex &&
@@ -2720,13 +3284,7 @@ export class DataStore {
             equal(field(other, name), values[position]),
           ),
       );
-      if (clash)
-        throw new DataError(
-          `A record that has the attribute values ${values.join(", ")} already exists. The entity key ${key.name ?? attributes.join("_")} requires that this set of attributes contains unique values. Select unique values and try again.`,
-          412,
-          "DuplicateRecord",
-          { innerCode: "0x80040237" },
-        );
+      if (clash) throw duplicateAlternateKey(key, attributes, values);
     }
   }
   /** If-Match / If-None-Match semantics of Dataverse PATCH, PUT and DELETE. */
@@ -2801,7 +3359,7 @@ export class DataStore {
           return Array.from(digest.subarray(0, length), (byte) => alphabet[byte % alphabet.length]).join("");
         })
         .replace(/\{DATETIMEUTC:([^}]+)\}/g, (_all, pattern) =>
-          formatDotNetDate(Date.now(), pattern, 0),
+          formatDotNetDate(this.clock.now(), pattern, 0),
         );
     }
   }
@@ -2860,9 +3418,16 @@ export class DataStore {
     return { input, nested, collectionBinds };
   }
   createRecord(entity, data, identity = {}, options = {}) {
-    const inherited=this.pluginInTransaction;try{return this.createRecordCore(entity, data, identity, options);}finally{this.pluginInTransaction=inherited;}
+    return this.runRecordSteps(this.createSteps(entity, data, identity, options));
   }
-  createRecordCore(entity, data, identity = {}, options = {}) {
+  /** createRecord on the asynchronous pipeline (awaitRecordSteps): a promise of the created row. */
+  createRecordAsync(entity, data, identity = {}, options = {}) {
+    return this.awaitRecordSteps(this.createSteps(entity, data, identity, options));
+  }
+  *createSteps(entity, data, identity = {}, options = {}) {
+    const inherited=this.pluginInTransaction;try{return yield* this.createStepsCore(entity, data, identity, options);}finally{this.pluginInTransaction=inherited;}
+  }
+  *createStepsCore(entity, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
@@ -2887,9 +3452,11 @@ export class DataStore {
     // (observed.portalApplicationUser; live notes and inserted records). Its id is not exported.
     const appUser = this.observed?.portalApplicationUser;
     if (appUser && !own(row, "createdby")) row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: "systemuser", name: appUser };
-    row[m.idColumn] ??= randomUUID();
+    row[m.idColumn] ??= this.ids.uuid();
     if (isElastic(m)) assertElasticRecord(row);
-    if (rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && (!isElastic(m) || samePartition(r.partitionid, row.partitionid))))
+    if (isElastic(m)
+      ? rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && samePartition(r.partitionid, row.partitionid))
+      : this.rowPositions(m, rows, row[m.idColumn], { scoped: true }).length > 0)
       throw new DataError(
         "A record with matching key values already exists.",
         412,
@@ -2902,7 +3469,7 @@ export class DataStore {
       !this.rules(m.logicalName, "create", identity).length
     )
       this.assertAllowed(m.logicalName, 'create', row, identity);
-    row.createdon ??= isoUtc(Date.now());
+    row.createdon ??= isoUtc(this.clock.now());
     row.modifiedon ??= row.createdon;
     this.applyAutoNumbers(m, row, options);
     // The table-level Create gate above precedes all handlers. Row scope is
@@ -2916,7 +3483,7 @@ export class DataStore {
       this.promoteRowTransaction(); this.ensureReadSnapshot();
       if(this.pluginRollbackBoundary)deniedCreateBoundary={...this.pluginRollbackBoundary};
     }
-    this.exportedPluginPhase(m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options);
+    yield [m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options];
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -2926,14 +3493,14 @@ export class DataStore {
           400,
           "InvalidLookup",
         );
-      const child = this.createRecord(target.logicalName, item.value, identity, options);
+      const child = yield* this.createSteps(target.logicalName, item.value, identity, options);
       row[item.rel.from] = {
         id: child[target.idColumn],
         logical_name: target.logicalName,
         name: primaryNameValue(target, child) ?? "",
       };
     }
-    this.exportedPluginPhase(m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options);
+    yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
     const effects = this.applyPlugins(
       m.logicalName,
       "create",
@@ -2954,10 +3521,10 @@ export class DataStore {
       const target = this.resolveMapping(item.rel.entity);
       for (const value of Array.isArray(item.value) ? item.value : [item.value]) {
         if (item.rel.intersect) {
-          const child = this.createRecord(target.logicalName, value, identity, options);
+          const child = yield* this.createSteps(target.logicalName, value, identity, options);
           this.changeAssociationRecord(m.logicalName, row[m.idColumn], item.navigation, child[target.idColumn], identity, true, options);
         } else
-          this.createRecord(
+          yield* this.createSteps(
             target.logicalName,
             {
               ...value,
@@ -2990,17 +3557,24 @@ export class DataStore {
       this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
       this.checkpointElastic(m, row);
     }
-    this.exportedPluginPhase(m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options);
+    yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
     if (!isElastic(m)) this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
     return row;
   }
   async create(entity, data, identity = {}, options = {}) {
-    return this.transact(() => this.createRecord(entity, data, identity, options), { incremental: true });
+    return this.transact(() => this.createRecordAsync(entity, data, identity, options), { incremental: true });
   }
   updateRecord(entity, id, data, identity = {}, options = {}) {
-    const inherited=this.pluginInTransaction;try{return this.updateRecordCore(entity, id, data, identity, options);}finally{this.pluginInTransaction=inherited;}
+    return this.runRecordSteps(this.updateSteps(entity, id, data, identity, options));
   }
-  updateRecordCore(entity, id, data, identity = {}, options = {}) {
+  /** updateRecord on the asynchronous pipeline: a promise of the updated row. */
+  updateRecordAsync(entity, id, data, identity = {}, options = {}) {
+    return this.awaitRecordSteps(this.updateSteps(entity, id, data, identity, options));
+  }
+  *updateSteps(entity, id, data, identity = {}, options = {}) {
+    const inherited=this.pluginInTransaction;try{return yield* this.updateStepsCore(entity, id, data, identity, options);}finally{this.pluginInTransaction=inherited;}
+  }
+  *updateStepsCore(entity, id, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
@@ -3026,7 +3600,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, "update", row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
-    return this.commitUpdate(m, rows, index, row, identity, changes, options, data);
+    return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, options, data);
   }
   /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
   systemColumnsFor(option, mapping, row) {
@@ -3038,7 +3612,7 @@ export class DataStore {
    * stored version have a content-derived ETag, which changes with the row anyway).
    */
   touchRow(previous, row, systemColumns = null) {
-    row.modifiedon = isoUtc(Date.now());
+    row.modifiedon = isoUtc(this.clock.now());
     if (systemColumns) Object.assign(row, systemColumns);
     // A caller that takes the row version itself (Dataverse's org-wide counter) keeps its value.
     if (systemColumns && "versionnumber" in systemColumns) return row;
@@ -3054,12 +3628,15 @@ export class DataStore {
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
   commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
+    return this.runRecordSteps(this.commitUpdateSteps(mapping, rows, index, row, identity, target, options, rawInput));
+  }
+  *commitUpdateSteps(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
     const previous = rows[index];
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
     const changedAttributes = Object.keys(target);
-    this.exportedPluginPhase(mapping, 'update', 10, target, row, previous, identity, changedAttributes, options);
-    this.exportedPluginPhase(mapping, 'update', 20, target, row, previous, identity, changedAttributes, options);
+    yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
       this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
@@ -3076,7 +3653,7 @@ export class DataStore {
       this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
       this.checkpointElastic(mapping, row);
     }
-    this.exportedPluginPhase(mapping, 'update', 40, target, row, previous, identity, changedAttributes, options);
+    yield [mapping, 'update', 40, target, row, previous, identity, changedAttributes, options];
     if (!isElastic(mapping)) this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
     return row;
   }
@@ -3101,33 +3678,47 @@ export class DataStore {
       );
   }
   async update(entity, id, data, identity = {}, options = {}) {
-    return this.transact(() => this.updateRecord(entity, id, data, identity, options), { incremental: true });
+    return this.transact(() => this.updateRecordAsync(entity, id, data, identity, options), { incremental: true });
   }
   /**
    * PATCH semantics: update an existing record, or create it with the
    * supplied key. If-Match prevents creation; If-None-Match: * prevents update.
    */
   async upsert(entity, id, data, identity = {}, options = {}) {
-    return this.transact(() => this.upsertRecord(entity, id, data, identity, options), { incremental: true });
+    return this.transact(() => this.upsertRecordAsync(entity, id, data, identity, options), { incremental: true });
   }
   upsertRecord(entity, id, data, identity = {}, options = {}) {
+    return this.runRecordSteps(this.upsertSteps(entity, id, data, identity, options));
+  }
+  /** upsertRecord on the asynchronous pipeline: a promise of { created, row }. */
+  upsertRecordAsync(entity, id, data, identity = {}, options = {}) {
+    return this.awaitRecordSteps(this.upsertSteps(entity, id, data, identity, options));
+  }
+  *upsertSteps(entity, id, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
-    if (isElastic(m)) return this.elasticUpsertRecord(entity, id, data, identity, options);
+    if (isElastic(m)) return yield* this.elasticUpsertSteps(entity, id, data, identity, options);
     const rows = this.state.tables[m.logicalName] ?? [];
     const existing = rows[this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid })];
     this.assertPrecondition(m, existing ?? null, options);
     if (existing || options.ifMatch != null)
       return {
         created: false,
-        row: this.updateRecord(entity, id, data, identity, options),
+        row: yield* this.updateSteps(entity, id, data, identity, options),
       };
     return {
       created: true,
-      row: this.createRecord(entity, { ...data, [m.idColumn]: id }, identity, options),
+      row: yield* this.createSteps(entity, { ...data, [m.idColumn]: id }, identity, options),
     };
   }
   /** Elastic Upsert replaces the payload and raises Upsert, without dispatching Create or Update. */
   elasticUpsertRecord(entity, id, data, identity = {}, options = {}) {
+    return this.runRecordSteps(this.elasticUpsertSteps(entity, id, data, identity, options));
+  }
+  /** elasticUpsertRecord on the asynchronous pipeline. */
+  elasticUpsertRecordAsync(entity, id, data, identity = {}, options = {}) {
+    return this.awaitRecordSteps(this.elasticUpsertSteps(entity, id, data, identity, options));
+  }
+  *elasticUpsertSteps(entity, id, data, identity = {}, options = {}) {
     const mapping = this.resolveMapping(entity);
     this.assertWritable(mapping.logicalName);
     const rows = (this.state.tables[mapping.logicalName] ??= []);
@@ -3142,30 +3733,37 @@ export class DataStore {
       throw new DataError("The partitionid value of an elastic table row cannot be changed.", 400, "InvalidRequest");
     if (options.coerce) this.coerceRecord(mapping, row, options);
     assertElasticRecord(row);
-    row.createdon = previous?.createdon ?? isoUtc(Date.now());
-    row.modifiedon = isoUtc(Date.now());
+    row.createdon = previous?.createdon ?? isoUtc(this.clock.now());
+    row.modifiedon = isoUtc(this.clock.now());
     if (previous?.createdby) row.createdby = clone(previous.createdby);
     Object.assign(row, this.systemColumnsFor(options.systemColumns, mapping, row));
     const target = clone(row), attributes = Object.keys(data);
-    this.exportedPluginPhase(mapping, "upsert", 10, target, row, previous, identity, attributes, options);
-    this.exportedPluginPhase(mapping, "upsert", 20, target, row, previous, identity, attributes, options);
+    yield [mapping, "upsert", 10, target, row, previous, identity, attributes, options];
+    yield [mapping, "upsert", 20, target, row, previous, identity, attributes, options];
     this.validateBindings(mapping, data, row, identity, previous);
     this.assertAlternateKeys(mapping, row, rows, index);
     if (index < 0) this.insertRow(mapping.logicalName, rows, row);
     else this.writeRow(mapping.logicalName, rows, index, row);
     this.recordCommittedEvent(mapping.logicalName, previous ? "update" : "create", row, attributes, { target, previous, identity });
     this.checkpointElastic(mapping, row);
-    this.exportedPluginPhase(mapping, "upsert", 40, target, row, previous, identity, attributes, options);
+    yield [mapping, "upsert", 40, target, row, previous, identity, attributes, options];
     return { created: previous === null, row };
   }
   async remove(entity, id, identity = {}, options = {}) {
-    return this.transact(() => this.removeRecord(entity, id, identity, options), { incremental: true });
+    return this.transact(() => this.removeRecordAsync(entity, id, identity, options), { incremental: true });
   }
   /** Synchronous only inside a caller-owned transaction, including backend SDK RPC. */
   removeRecord(entity, id, identity = {}, options = {}) {
-    const inherited=this.pluginInTransaction;try{return this.removeRecordCore(entity, id, identity, options);}finally{this.pluginInTransaction=inherited;}
+    return this.runRecordSteps(this.removeSteps(entity, id, identity, options));
   }
-  removeRecordCore(entity, id, identity = {}, options = {}) {
+  /** removeRecord on the asynchronous pipeline: a promise of the deleted row. */
+  removeRecordAsync(entity, id, identity = {}, options = {}) {
+    return this.awaitRecordSteps(this.removeSteps(entity, id, identity, options));
+  }
+  *removeSteps(entity, id, identity = {}, options = {}) {
+    const inherited=this.pluginInTransaction;try{return yield* this.removeStepsCore(entity, id, identity, options);}finally{this.pluginInTransaction=inherited;}
+  }
+  *removeStepsCore(entity, id, identity = {}, options = {}) {
       const m = this.resolveMapping(entity);
       this.assertWritable(m.logicalName);
       const rows = (this.state.tables[m.logicalName] ??= []);
@@ -3176,11 +3774,11 @@ export class DataStore {
       // Dataverse deletes hand the deleted rows (children first, root last) to the recycle bin; portal deletes never collect them.
       if (identity?.dataverse && this.recycleDeleted) {
         const deleted = [];
-        const result = this.deleteRow(m, rows[index], identity, new Set(), { ...options, deleted });
+        const result = yield* this.deleteRowSteps(m, rows[index], identity, new Set(), { ...options, deleted });
         this.recycleDeleted(deleted, identity);
         return result;
       }
-      return this.deleteRow(m, rows[index], identity, new Set(),options);
+      return yield* this.deleteRowSteps(m, rows[index], identity, new Set(),options);
   }
   /**
    * Delete a row with the delete behaviour of every one-to-many relationship that
@@ -3195,6 +3793,9 @@ export class DataStore {
    * own, so table permissions aren't checked for them; delete and update plugins run.
    */
   deleteRow(mapping, row, identity, deleting,options={}) {
+    return this.runRecordSteps(this.deleteRowSteps(mapping, row, identity, deleting, options));
+  }
+  *deleteRowSteps(mapping, row, identity, deleting,options={}) {
     const key = `${mapping.logicalName}\u0000${recordKey(mapping, row)}`;
     if (deleting.has(key)) return row;
     for (const guard of this.deleteGuards ?? []) {
@@ -3203,10 +3804,10 @@ export class DataStore {
     }
     deleting.add(key);
     const target = { [mapping.idColumn]: row[mapping.idColumn] }, attributes = Object.keys(target);
-    this.exportedPluginPhase(mapping, 'delete', 10, target, row, row, identity, attributes,options);
-    this.exportedPluginPhase(mapping, 'delete', 20, target, row, row, identity, attributes,options);
+    yield [mapping, 'delete', 10, target, row, row, identity, attributes, options];
+    yield [mapping, 'delete', 20, target, row, row, identity, attributes, options];
     const effects = this.applyPlugins(mapping.logicalName, "delete", clone(row), row, identity);
-    for (const reference of this.referencesTo(mapping.logicalName, identity)) {
+    for (const reference of this.referencesTo(mapping.logicalName, identity, deleting)) {
       const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
       if (target == null) continue;
       const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
@@ -3229,19 +3830,21 @@ export class DataStore {
       const childMapping = this.resolveMapping(reference.entity);
       for (const child of children) {
         const rows = this.state.tables[reference.entity];
-        const index = rows.findIndex((item) => equal(item[childMapping.idColumn], child[childMapping.idColumn]));
+        const index = this.rowPositions(childMapping, rows, child[childMapping.idColumn])[0] ?? -1;
         if (index < 0) continue;
-        if (behaviour === "Cascade") this.deleteRow(childMapping, rows[index], identity, deleting, { systemColumns: options.systemColumns, deleted: options.deleted });
+        if (behaviour === "Cascade") yield* this.deleteRowSteps(childMapping, rows[index], identity, deleting, { systemColumns: options.systemColumns, deleted: options.deleted });
         else {
           const input = { ...rows[index], [reference.column]: null };
           const next = this.touchRow(rows[index], input, this.systemColumnsFor(options.systemColumns, childMapping, input));
-          this.commitUpdate(childMapping, rows, index, next, identity);
+          yield* this.commitUpdateSteps(childMapping, rows, index, next, identity);
         }
       }
     }
-    for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
-      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
-        if (!rel?.intersect?.entity || !this.state.tables[rel.intersect.entity]?.length) continue;
+    const graph = this.relationshipGraph(deleting);
+    graph.intersects ??= Object.entries(this.state.mappings ?? {}).flatMap(([owner, ownerMapping]) =>
+      Object.values(this.relationshipsFor(ownerMapping ?? {}, identity)).filter((rel) => rel?.intersect?.entity).map((rel) => [owner, rel]));
+    for (const [owner, rel] of graph.intersects) {
+        if (!this.state.tables[rel.intersect.entity]?.length) continue;
         const sides = [];
         if (owner === mapping.logicalName) sides.push([rel.intersect.from, scalar(field(row, rel.from))]);
         if (rel.entity === mapping.logicalName) sides.push([rel.intersect.to, scalar(field(row, rel.to))]);
@@ -3263,7 +3866,7 @@ export class DataStore {
       this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
       this.checkpointElastic(mapping, row, true);
     }
-    this.exportedPluginPhase(mapping, 'delete', 40, target, row, row, identity, attributes,options);
+    yield [mapping, 'delete', 40, target, row, row, identity, attributes, options];
     if (!isElastic(mapping)) this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
     return row;
   }
@@ -3272,7 +3875,9 @@ export class DataStore {
    * mapping (the child's single-valued lookup or the parent's collection), once per
    * referencing table and lookup column: { entity, column, targetColumn, cascade, schemaName }.
    */
-  referencesTo(logical, identity = {}) {
+  referencesTo(logical, identity = {}, scope) {
+    const graph = scope ? this.relationshipGraph(scope) : null;
+    if (graph?.references.has(logical)) return graph.references.get(logical);
     const found = new Map();
     const add = (reference) => {
       const key = `${reference.entity}\u0000${reference.column}`;
@@ -3287,7 +3892,22 @@ export class DataStore {
         else if (rel.many !== false && owner === logical)
           add({ entity: rel.entity, column: rel.to, targetColumn: rel.from, cascade: rel.cascade, schemaName: rel.schemaName });
       }
-    return [...found.values()];
+    const references = [...found.values()];
+    graph?.references.set(logical, references);
+    return references;
+  }
+  /**
+   * The relationship graph one delete operation walks: referencesTo per table and the
+   * many-to-many intersect list, memoised for the operation's `scope` (its cascade's
+   * `deleting` set), so a cascade tree walks the mappings once per table, not per row.
+   * ponytail: scoped to one operation because mappings have no revision counter; a
+   * store-wide cache needs one bumped by every metadata writer.
+   */
+  relationshipGraph(scope) {
+    this.relationshipGraphs ??= new WeakMap();
+    let graph = this.relationshipGraphs.get(scope);
+    if (!graph) this.relationshipGraphs.set(scope, (graph = { references: new Map(), intersects: null }));
+    return graph;
   }
   noteCascadeDefault(logical, reference) {
     this.defaultedCascades ??= new Map();
@@ -3338,11 +3958,19 @@ export class DataStore {
     options = {},
   ) {
     return this.transact(() =>
-      this.changeAssociationRecord(entity, id, navigation, targetId, identity, associate, options),
+      this.changeAssociationRecordAsync(entity, id, navigation, targetId, identity, associate, options),
       { incremental: true },
     );
   }
   changeAssociationRecord(entity, id, navigation, targetId, identity, associate, options = {}) {
+    return this.runRecordSteps(this.changeAssociationSteps(entity, id, navigation, targetId, identity, associate, options));
+  }
+  /** changeAssociationRecord on the asynchronous pipeline (awaitRecordSteps): the referencing row's update steps await a
+   * synchronous service endpoint step's post (a flow Relate/Unrelate rows action, the Web API $ref). */
+  changeAssociationRecordAsync(entity, id, navigation, targetId, identity, associate, options = {}) {
+    return this.awaitRecordSteps(this.changeAssociationSteps(entity, id, navigation, targetId, identity, associate, options));
+  }
+  *changeAssociationSteps(entity, id, navigation, targetId, identity, associate, options = {}) {
     const mapping = this.resolveMapping(entity);
     const relationship = this.relationshipsFor(mapping, identity)[safeName(navigation)];
     if (!relationship)
@@ -3393,7 +4021,7 @@ export class DataStore {
         ),
       );
       if (associate) {
-        const edge = { [edgeMapping.idColumn]: randomUUID(), ...values };
+        const edge = { [edgeMapping.idColumn]: this.ids.uuid(), ...values };
         this.assertAllowed(edgeMapping.logicalName, "create", edge, identity);
         if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
       } else {
@@ -3440,7 +4068,7 @@ export class DataStore {
         const input = { ...target, [relationship.to]: value };
         const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
         this.assertAllowed(targetMapping.logicalName, "update", next, identity);
-        this.commitUpdate(targetMapping, rows, rows.indexOf(target), next, identity);
+        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity);
       }
     }
     return {
@@ -3479,6 +4107,18 @@ export class DataStore {
     preview.authoredXml=authoredXml;return preview;
   }
   fetchXml(xml, identity = {}, options = {}) {
+    // Column security of the reading principal on every returned row, link-entity and aliased column included
+    // (portal-authorization.mjs maskRow), as get() and query().
+    // A condition, order, aggregate or distinct over a column it reads masked is refused first (assertOperands, 0x80041155).
+    if (this.portalAuthorization && !options.portalMasked) {
+      const root = parseFetchXml(xml).children.find((node) => node.name === "entity")?.attrs.name;
+      if (root) this.portalAuthorization.assertOperands(identity, root, { portalRequest: options.portalRequest === true, fetchXml: xml });
+      const result = this.fetchXml(xml, identity, { ...options, portalMasked: true }), info = result?.columns;
+      const logical = info?.root ?? root;
+      if (Array.isArray(result?.entities) && logical)
+        result.entities = result.entities.map((row) => this.portalAuthorization.maskRow(identity, logical, row, { portalRequest: options.portalRequest === true, fetch: info ?? null }));
+      return result;
+    }
     const authoredXml = xml;
     if (options.portalRequest === true && !identity.admin)
       xml = preparePortalFetchXml(xml, {linkTypes:options.profile === 'webapi'?this.observed?.webApiFetchXmlLinkTypes:this.observed?.liquidFetchXmlLinkTypes,profile:options.profile==='webapi'?'webapi':'liquid'});
@@ -3602,6 +4242,7 @@ export class DataStore {
       datasourceRows: (source, logical) => (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [],
       definition: ctx.definition,
       column: ctx.column,
+      sortable: (logical, attribute) => this.sortableColumn(logical, attribute),
       lookupName: ctx.lookupName,
       identity,
       settings: options.noBackendAdmission ? {...ctx.settings,fetchAllWithoutFilter:undefined} : ctx.settings,
@@ -3739,7 +4380,8 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
   const kind = fieldKind(definition);
   if(isExactNumeric(value)&&!['integer','decimal','money','double'].includes(kind))
     throw new DataError('An exact numeric value cannot be stored in nonnumeric column '+entity+'.'+attribute,400,'InvalidValue',{innerCode:'0x80048d19'});
-  const literal = typeof value === "object" ? JSON.stringify(value) : String(value);
+  // An exact numeric echoes the literal the client sent (its digits), never the internal marker object.
+  const literal = isExactNumeric(value) ? value.value : typeof value === "object" ? JSON.stringify(value) : String(value);
   const originalValue = value;
   const conversion = (type) =>
     attachODataReaderDetails(new DataError(
@@ -3764,9 +4406,10 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
           { innerCode: "0x80044331" },
         );
       // Email is a schema format, independent of the column/table name. Length
-      // validation applies to the submitted value before normalization.
-      const email = String(definition.format ?? "").toLowerCase() === "email" ||
-        String(definition.dataverseType ?? definition.type ?? "").toLowerCase() === "email";
+      // validation applies to the submitted value before normalization. A memo column's
+      // Email format is an email body (Learn MemoFormatName), not an address: it stays as written.
+      const declared = String(definition.dataverseType ?? definition.type ?? "").toLowerCase();
+      const email = declared !== "memo" && String(definition.format ?? "").toLowerCase() === "email" || declared === "email";
       return email ? value.trim().toLowerCase() || null : value;
     }
     case "integer": {

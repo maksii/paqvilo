@@ -14,7 +14,7 @@ Dataset hosting uses an explicit Liquid tag binding. For a standard dataset cont
 
 Replace the component, `Records` argument and view ID with values from your exports. Use a view ID when names are ambiguous. This is Mirage's explicit local dataset binding contract; the corresponding native Liquid dataset configuration must be observed separately. The manifest alone does not identify the portal table or view.
 
-Dataset adapters expose exported columns and local Web API records, paging, supported sorting/filtering, selection and refresh. Reads and Web API CRUD retain local identity, field restrictions and table permissions.
+Dataset adapters expose exported columns and local Web API records, paging, supported sorting/filtering, selection and refresh. Reads and Web API CRUD retain local identity, field restrictions and table permissions. `paging.reset()` returns to page 1 and reloads the records through the dataset load (it returns the load promise; `hasPreviousPage` is false afterwards), as `refresh()` does.
 
 ## Native form fields
 
@@ -46,6 +46,6 @@ The [portal-supported `resources.getString` contract](https://learn.microsoft.co
 
 ## Limits
 
-The host supports standard controls. Native list/subgrid PCF hosting is not implemented; diagnostics retain the native grid fallback. React/virtual controls and declared platform libraries are unsupported. Dataset aliases, aggregates, advanced operators and navigation without an exported portal binding remain limited or unsupported. SDK file/image APIs and writable EntityRecord APIs are not supplied by this host.
+The host supports standard controls. Native list/subgrid PCF hosting is not implemented; diagnostics retain the native grid fallback. React/virtual controls and declared platform libraries are refused with `PCF_VIRTUAL_UNSUPPORTED`: the Power Pages host supplies no platform libraries. The same admission rule (`pcfAdmission`) decides model-driven hosting, where project-supplied library files can host virtual controls. Dataset aliases, aggregates, advanced operators and navigation without an exported portal binding remain limited or unsupported. SDK file/image APIs and writable EntityRecord APIs are not supplied by this host.
 
 Diagnostics identify missing manifests, resources, mappings and unsupported property bindings. Use an explicit project extension where needed, then compare important behavior with your authorized live portal. See [platform resources](platform-resources.md), [forms and lists](forms-lists-parity.md) and [coverage](../../docs/coverage.md).

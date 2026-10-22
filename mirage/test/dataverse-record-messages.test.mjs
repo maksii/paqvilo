@@ -388,7 +388,7 @@ test("IsValidStateTransition checks the status option's state, its TransitionDat
 
   const unknown = await failure(check(9, "0"));
   assert.equal(unknown.status, 400);
-  assert.equal(unknown.details.innerCode, "0x80044331");
+  assert.equal(unknown.details.innerCode, "0x8004F00E");
 });
 
 test("FormatAddress lays out the US form and rejects a missing part", async () => {

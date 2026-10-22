@@ -4,7 +4,7 @@ import { organizationRecord } from './organization-context.mjs';
 // other modules call: writeAudit (shares, role privileges and role assignments) and recordUserAccess.
 // Writes come from the store's committed events (portal and /_sim/ writes too) and from the
 // afterWrite hook for N:N association. Invented schema and GUIDs only.
-import { randomUUID } from 'node:crypto';
+import { systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
@@ -88,7 +88,7 @@ function actorFields(store, identity = {}) {
 function writeEntries(store, entries, { nested = false } = {}) {
   return store.transact(() => {
     for (const { row, detail } of entries) {
-      rowsOf(store).push(row);
+      store.insertRow('audit', rowsOf(store), row);
       if (detail) detailsOf(store)[row.auditid] = detail;
     }
   }, { nested });
@@ -105,7 +105,7 @@ async function appendLater(api, entries) {
 
 function auditRow(api, { entity, id, operation, action, mask = null, identity, transactionId }) {
   return {
-    auditid: randomUUID(),
+    auditid: (api.ids ?? systemIds).uuid(),
     operation,
     action,
     objectid: ref(entity, id),
@@ -113,7 +113,7 @@ function auditRow(api, { entity, id, operation, action, mask = null, identity, t
     attributemask: mask,
     ...actorFields(api.store, identity),
     createdon: new Date(api.clock()).toISOString(),
-    transactionid: transactionId ?? randomUUID(),
+    transactionid: transactionId ?? (api.ids ?? systemIds).uuid(),
   };
 }
 
@@ -148,7 +148,7 @@ function eventEntries(api, event, transactionId) {
 
 // One transaction id per committed change set (a fresh id each time, so restarts cannot collide).
 function onCommitted(api, events) {
-  const transactionId = randomUUID();
+  const transactionId = (api.ids ?? systemIds).uuid();
   const entries = events.flatMap((event) => eventEntries(api, event, transactionId));
   if (entries.length) appendLater(api, entries);
 }
@@ -232,11 +232,12 @@ function entityValues(mapping, values) {
   return out;
 }
 
-// Secured columns (api.fieldSecurity, from the FLS extension) read as null in audit values, as the platform masks them.
-// Every audited column stays present, so a masked value is null rather than missing.
+// Secured columns (api.fieldSecurity, from the FLS extension) read as null in audit values, as the platform masks them, and a
+// readable one with a masking rule reads masked (Learn create-manage-masking-rules: "Audit log shows masked values in the
+// before-and-after update events"). Every audited column stays present, so a hidden value is null rather than missing.
 function visibleValues(api, user, mapping, objectId, values) {
   if (!values || !api.fieldSecurity?.mask) return values;
-  const masked = api.fieldSecurity.mask(user, mapping.logicalName, { [mapping.idColumn]: objectId, ...values }) ?? {};
+  const masked = api.fieldSecurity.mask(user, mapping.logicalName, { [mapping.idColumn]: objectId, ...values }, { view: { unmask: false, single: false } }) ?? {};
   return Object.fromEntries(Object.keys(values).map((column) => [column, masked[column] ?? null]));
 }
 

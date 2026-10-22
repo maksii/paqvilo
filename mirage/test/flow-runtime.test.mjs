@@ -22,11 +22,12 @@ test('runAfter failure handling is explicit and no successful response is invent
  assert.deepEqual(executeFlowDefinition({definition:d,input:{}}),{status:422,body:'LocalFlowExpression'});
  d.actions.reply.runAfter.bad=['Succeeded'];assert.throws(()=>executeFlowDefinition({definition:d,input:{}}),/without a Response/);
 });
-test('Dataverse connector actions use separate explicit backend grants and actual local CRUD',()=>{
+// A Dataverse row write runs on the asynchronous drive (its synchronous service endpoint steps are awaited in process).
+test('Dataverse connector actions use separate explicit backend grants and actual local CRUD',async()=>{
  const data=store(),actions={create:{type:'OpenApiConnection',inputs:{host:{apiId:'/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps',operationId:'CreateRecord'},parameters:{entityName:'widgets','item/title':"@triggerBody()?['title']"}}},reply:{type:'Response',runAfter:{create:['Succeeded']},inputs:{body:"@body('create')"}}};
  assert.throws(()=>executeFlowDefinition({definition:definition(actions),input:{title:'Denied'},store:data}),/without a Response/);assert.equal(data.snapshot().tables.widget.length,0);
- const answer=executeFlowDefinition({definition:definition(actions),input:{title:'Created'},store:data,serviceProfile:profile});assert.equal(answer.body.title,'Created');assert.equal(data.snapshot().tables.widget.length,1);
- const denied=structuredClone(profile);denied.grants[0].operations=['read'];assert.throws(()=>executeFlowDefinition({definition:definition(actions),input:{title:'Denied'},store:data,serviceProfile:denied}),/without a Response/);assert.equal(data.snapshot().tables.widget.length,1);
+ const answer=await executeFlowDefinition({definition:definition(actions),input:{title:'Created'},store:data,serviceProfile:profile});assert.equal(answer.body.title,'Created');assert.equal(data.snapshot().tables.widget.length,1);
+ const denied=structuredClone(profile);denied.grants[0].operations=['read'];await assert.rejects(async()=>executeFlowDefinition({definition:definition(actions),input:{title:'Denied'},store:data,serviceProfile:denied}),/without a Response/);assert.equal(data.snapshot().tables.widget.length,1);
 });
 test('Expressions cannot access ambient JavaScript or unsafe members and retain null semantics',()=>{
  assert.throws(()=>parseFlowExpression('process.exit(0)'),/bare|syntax/);const state={input:{null:null},variables:{},parameters:{},results:{},items:[]};
@@ -55,9 +56,11 @@ test('Unchosen nested branches expose Skipped state and Response preserves safe 
 test('Valid unsupported execution settings and prohibited Response layouts fail before any write',()=>{
  for(const settings of [{runtimeConfiguration:{concurrency:{repetitions:3}}},{staticResults:{name:'static',staticResultOptions:'Enabled'}},{inputs:{retryPolicy:{type:'fixed'}}}])assert.equal(inspectFlowDefinition(definition({value:{type:'Compose',inputs:1,...settings}})).supported,false);
  const loop=definition({loop:{type:'Foreach',foreach:[1],actions:{reply:{type:'Response',inputs:{body:1}}}}});assert.match(inspectFlowDefinition(loop).errors.join(' '),/Response is not allowed/);
- const action={type:'OpenApiConnection',inputs:{host:{apiId:'/apis/shared_commondataserviceforapps',operationId:'ListRecords'},parameters:{entityName:'widgets',fetchXml:'<fetch />'}}};assert.match(inspectFlowDefinition(definition({query:action})).errors.join(' '),/Unsupported Dataverse parameter/);
+ const action={type:'OpenApiConnection',inputs:{host:{apiId:'/apis/shared_commondataserviceforapps',operationId:'ListRecords'},parameters:{entityName:'widgets',x_unknown:'x'}}};assert.match(inspectFlowDefinition(definition({query:action})).errors.join(' '),/Unsupported Dataverse parameter/);
  assert.equal(inspectFlowDefinition(definition({value:{type:'Compose',inputs:1,runtimeConfiguration:{secureData:{properties:['inputs']}}}}),{value:{mode:'mock',outputs:2}}).supported,true);
- assert.match(inspectFlowDefinition(definition({left:{type:'Compose',inputs:1},right:{type:'Compose',inputs:2},reply:{type:'Response',runAfter:{left:['Succeeded'],right:['Succeeded']},inputs:{body:1}}})).errors.join(' '),/Parallel action branches/);
+ // Independent branches run in definition order (Task 46); only an interleaving-dependent pair still needs a mock.
+ assert.equal(inspectFlowDefinition(definition({left:{type:'Compose',inputs:1},right:{type:'Compose',inputs:2},reply:{type:'Response',runAfter:{left:['Succeeded'],right:['Succeeded']},inputs:{body:1}}})).supported,true);
+ assert.match(inspectFlowDefinition(definition({left:{type:'Response',inputs:{body:1}},right:{type:'Response',inputs:{body:2}}})).errors.join(' '),/both answer a Response/);
 });
 
 test('WDL escaped inline expressions remain literal alongside evaluated expressions',()=>{

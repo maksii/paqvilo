@@ -16,7 +16,13 @@ export function associationBinding(store,entity,relationship,related,identity){
  if(rel.many===false&&related.values.length!==1)fail('A referencing lookup accepts one related SDK reference.','LocalSdkRelationshipInput',400);
  return {mapping,navigation,rel};
 }
-export function executeAssociation({store,entity,id,relationship,related,identity,authorize,associate,responseToken}){
+/** The SDK Associate/Disassociate: explicit grants, plug-in stages 10/20/40 and the store association write. executeAssociation
+ * runs them synchronously (a synchronous service endpoint step posts through the synchronous I/O bridge: the SDK inside a
+ * plug-in); executeAssociationAsync awaits each stage's post and the related row's update steps (a flow Relate/Unrelate rows
+ * action, which is not nested inside a plug-in), so Mirage keeps serving while a receiver answers. */
+export function executeAssociation(options){const steps=associationSteps(options,false);let next=steps.next();while(!next.done)next=steps.next(next.value);return next.value;}
+export async function executeAssociationAsync(options){const steps=associationSteps(options,true);let next=steps.next();while(!next.done){let answer,failed=false;try{answer=await next.value;}catch(error){answer=error;failed=true;}next=failed?steps.throw(answer):steps.next(answer);}return next.value;}
+function* associationSteps({store,entity,id,relationship,related,identity,authorize,associate,responseToken},awaitIo){
  if(!uuid.test(id))fail('SDK association requires a valid source ID.','LocalSdkRelationshipInput',400);
  const {mapping,navigation,rel}=associationBinding(store,entity,relationship,related,identity),operation=associate?'associate':'disassociate';
  const get=(table,key)=>{const row=store.get(table,key,identity,{skipPluginRead:true});if(!row)fail('SDK association row not found.','NotFound',404);return row;};
@@ -27,12 +33,13 @@ export function executeAssociation({store,entity,id,relationship,related,identit
  };
  checkPermissions();
  const parameters={Target:{$type:'EntityReference',logicalName:mapping.logicalName,id,name:null},Relationship:{$type:'Relationship',schemaName:relationship.schemaName,primaryEntityRole:relationship.primaryEntityRole??null},RelatedEntities:{$type:'EntityReferenceCollection',values:related.values.map(ref=>({$type:'EntityReference',logicalName:ref.logicalName,id:ref.id,name:ref.name??null}))}},original=JSON.stringify(parameters),holder=structuredClone(source),inherited=store.pluginInTransaction;
- const phase=stage=>{if(stage!==10)store.pluginInTransaction=true;if(store.pluginPipeline&&store.pluginPipelineActive({entity:mapping.logicalName,operation})){const frame=store.pluginPipeline({entity:mapping.logicalName,operation,stage,associationParameters:parameters,record:holder,identity,changedAttributes:[]});if(stage===40)handoffPluginResponse(store,operation,mapping.logicalName,frame,responseToken);}if(JSON.stringify(parameters)!==original)fail('Association parameter replacement requires a source-qualified validation adapter.');};
- try{phase(10);phase(20);checkPermissions();
-  if(rel.many!==false){for(const ref of related.values)store.changeAssociationRecord(entity,id,navigation,ref.id,identity,associate);}
-  else{const targetMapping=store.resolveMapping(rel.entity),reverse=Object.entries(store.relationshipsFor(targetMapping,identity)).filter(([nav,candidate])=>nav===rel.partner&&candidate.schemaName===rel.schemaName&&candidate.entity===mapping.logicalName&&candidate.many!==false&&!candidate.intersect);if(reverse.length!==1)fail('Referencing SDK relationship requires its exact source-defined collection partner.');store.changeAssociationRecord(rel.entity,related.values[0].id,reverse[0][0],id,identity,associate);}
+ const phase=function*(stage){if(stage!==10)store.pluginInTransaction=true;if(store.pluginPipeline&&store.pluginPipelineActive({entity:mapping.logicalName,operation})){const frame=yield store.pluginPipeline({entity:mapping.logicalName,operation,stage,associationParameters:parameters,record:holder,identity,changedAttributes:[],...(awaitIo?{awaitIo:true}:{})});if(stage===40)handoffPluginResponse(store,operation,mapping.logicalName,frame,responseToken);}if(JSON.stringify(parameters)!==original)fail('Association parameter replacement requires a source-qualified validation adapter.');};
+ const change=(...args)=>awaitIo?store.changeAssociationRecordAsync(...args):store.changeAssociationRecord(...args);
+ try{yield* phase(10);yield* phase(20);checkPermissions();
+  if(rel.many!==false){for(const ref of related.values)yield change(entity,id,navigation,ref.id,identity,associate);}
+  else{const targetMapping=store.resolveMapping(rel.entity),reverse=Object.entries(store.relationshipsFor(targetMapping,identity)).filter(([nav,candidate])=>nav===rel.partner&&candidate.schemaName===rel.schemaName&&candidate.entity===mapping.logicalName&&candidate.many!==false&&!candidate.intersect);if(reverse.length!==1)fail('Referencing SDK relationship requires its exact source-defined collection partner.');yield change(rel.entity,related.values[0].id,reverse[0][0],id,identity,associate);}
   if(rel.intersect&&associate){for(const row of records){const values={[rel.intersect.from]:scalar(source[rel.from]),[rel.intersect.to]:scalar(row[rel.to])};for(const edge of store.snapshot().tables[rel.intersect.entity]??[])if(Object.keys(values).every(key=>scalar(edge[key])===values[key]))authorize(rel.intersect.entity,'create',edge);}}
   if(!rel.intersect){const table=rel.many===false?entity:rel.entity,keys=rel.many===false?[id]:related.values.map(ref=>ref.id);for(const key of keys)authorize(table,'update',get(table,key));}
-  phase(40);return null;
+  yield* phase(40);return null;
  }finally{store.pluginInTransaction=inherited;}
 }

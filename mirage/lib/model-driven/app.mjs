@@ -1,7 +1,8 @@
 import { createLookupDialog } from './lookup-dialog.mjs';
 import { renderControl, hasControl } from './controls.mjs';
 import { icon, navigationIcon, columnIcon } from './icons.mjs';
-import { createFormClientRuntime, evaluateRibbonRules } from './client-runtime.mjs';
+import { createFormClientRuntime, evaluateRibbonRules, pageRequest, webResourcePage } from './client-runtime.mjs';
+import { renderPcfDataset } from './pcf-runtime.mjs';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -52,8 +53,10 @@ function loadFailed(error, retry) {
   notice(error.message, true); $('#notice').append(document.createTextNode(' '), button('Try again', retry));
 }
 async function api(path = '', options = {}) {
-  const response = await fetch('/_apps/api' + (path || '/index'), { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
+  // x-mirage-app keys the staff session's mobile offline copy: while offline, the shell's records come from it.
+  const response = await fetch('/_apps/api' + (path || '/index'), { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...(app?.id ? { 'x-mirage-app': app.id } : {}), ...options.headers } });
   const body = await response.json();
+  if (response.ok && offlineState?.mode === 'offline' && /^\/tables\//.test(path) && options.method && options.method !== 'GET') loadOffline().catch(() => {});
   if (!response.ok) { const code = body.error?.code, errorCode = typeof code === 'number' ? code : /^0x[\da-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) : undefined; throw Object.assign(new Error(body.error?.message ?? `Request failed (${response.status}).`), { status: response.status, code, ...(Number.isFinite(errorCode) ? { errorCode } : {}) }); }
   return body;
 }
@@ -98,6 +101,49 @@ async function staffProfile() {
     dirty = false; record = null; recordCapabilities = undefined; current = null; $('#commands').replaceChildren(); $('#content').replaceChildren(); $('#navigation').replaceChildren();
     catalogue = await api(); await loadRoute();
   }, true]]);
+}
+// Mobile offline (offline.mjs): an app with an offline profile shows an Online/Offline toggle; its dialog switches the
+// staff session's mode, syncs and lists the queue, conflicts and sync errors. Scripts see the mode through
+// Xrm.WebApi.offline and globalContext.client; the shell's grids, forms and subgrids read and write the same copy.
+let offlineState = null, offlineTimer;
+const offlineApi = body => api('/offline', { method: 'POST', body: JSON.stringify({ app: app.id, ...body }) });
+function offlineHost() {
+  if (!app?.offlineProfiles?.length) return undefined;
+  return { isOffline: () => offlineState?.mode === 'offline', tables: () => (offlineState?.tables ?? []).map(entry => entry.entity),
+    request: async body => { const result = await offlineApi(body); if (['create', 'update', 'delete'].includes(body.action)) loadOffline().catch(() => {}); return result; } };
+}
+function renderOffline() {
+  let toggle = $('#offline-mode');
+  clearTimeout(offlineTimer);
+  if (!app?.offlineProfiles?.length) { toggle?.remove(); return; }
+  if (!toggle) { toggle = document.createElement('button'); toggle.id = 'offline-mode'; toggle.type = 'button'; $('#staff-profile').before(toggle); toggle.addEventListener('click', () => runButton(toggle, offlineDialog)); }
+  const offline = offlineState?.mode === 'offline', pending = offlineState?.queue?.length ?? 0, problems = (offlineState?.conflicts?.length ?? 0) + (offlineState?.errors?.length ?? 0);
+  toggle.textContent = `${offline ? 'Offline' : 'Online'}${pending ? ` · ${pending} pending` : ''}${problems ? ` · ${problems} sync issues` : ''}`;
+  toggle.setAttribute('aria-pressed', String(offline)); toggle.dataset.mode = offline ? 'offline' : 'online';
+  toggle.title = offlineState?.error ?? `Mobile offline profile ${offlineState?.profile ?? ''}${offlineState?.lastSync ? ` · last sync ${offlineState.lastSync}` : ' · not synced'}`;
+  // Learn setup-mobile-offline: the sync interval is how often a connected device syncs.
+  if (!offline && offlineState?.nextSync) offlineTimer = setTimeout(() => offlineAction({ action: 'sync' }).catch(error => notice(error.message, true)), Math.max(1000, Date.parse(offlineState.nextSync) - Date.now()));
+}
+async function loadOffline() {
+  if (!app?.offlineProfiles?.length) { offlineState = null; renderOffline(); return; }
+  try { offlineState = await api('/offline?app=' + encodeURIComponent(app.id)); } catch (error) { offlineState = { error: error.message }; }
+  renderOffline();
+}
+async function offlineAction(body) { offlineState = await offlineApi(body); renderOffline(); return offlineState; }
+async function offlineDialog() {
+  await loadOffline();
+  const state = offlineState ?? {}, offline = state.mode === 'offline';
+  const list = (title, rows, line) => rows?.length ? `<h3>${esc(title)}</h3><ul>${rows.map(row => `<li>${esc(line(row))}</li>`).join('')}</ul>` : '';
+  const body = document.createElement('div');
+  body.innerHTML = `<p><strong>${esc(state.profile ?? 'Mobile offline')}</strong> · ${offline ? 'Offline' : 'Online'}</p><p>${esc(state.error ?? (state.lastSync ? `Last sync ${state.lastSync}` : 'Not synchronized yet.'))}</p>`
+    + list('Available offline', state.tables, row => `${row.entity}: ${row.rows} rows${row.syncIntervalMinutes ? `, sync every ${row.syncIntervalMinutes} minutes` : ''}`)
+    + list('Pending changes', state.queue, row => `${row.operation} ${row.entity} ${row.id}`)
+    + list('Sync conflicts', state.conflicts, row => `${row.operation} ${row.entity} ${row.id}: ${row.message}`)
+    + list('Sync errors', state.errors, row => `${row.operation} ${row.entity} ${row.id}: ${row.message}`)
+    + list('Not evaluated', state.gaps, row => `${row.entity ?? 'profile'}: ${row.reason}`);
+  dialog('Mobile offline', body, [['Close', closeDialog], ...(offline ? [] : [['Sync now', async () => { closeDialog(); await offlineAction({ action: 'sync' }); }]]),
+    // The page reloads from the other data source (the server or the offline copy).
+    [offline ? 'Go online' : 'Go offline', async () => { closeDialog(); if (!await canLeave()) return; await offlineAction({ action: 'mode', mode: offline ? 'online' : 'offline' }); await loadRoute(); }, true]]);
 }
 const capability = (operation, source = recordCapabilities ?? table?.capabilities) => source?.[operation] !== false;
 function controlDisabled(cell, field, requested) {
@@ -266,12 +312,12 @@ function renderNavigation() {
     if (!history.querySelector('button')) { const empty = document.createElement('p'); empty.textContent = 'No items yet'; empty.className = 'source-info'; history.append(empty); }
     nav.append(details);
   }
-  const routeParams = new URLSearchParams(location.search), requestedView = (routeParams.get('viewid') ?? (!routeParams.has('etn') ? firstPage(app)?.view : undefined))?.replace(/[{}]/g, '').toLowerCase(), view = appViews().find(view => view.id === requestedView)?.id ?? appViews().find(view => view.isDefault)?.id ?? appViews()[0]?.id;
+  const routeParams = new URLSearchParams(location.search), requestedView = (routeParams.get('viewid') ?? (!routeParams.has('etn') ? firstPage(app)?.view : undefined))?.replace(/[{}]/g, '').toLowerCase(), view = !table ? undefined : appViews().find(view => view.id === requestedView)?.id ?? appViews().find(view => view.isDefault)?.id ?? appViews()[0]?.id;
   const areaItems = activeArea?.groups.flatMap(group => group.items) ?? [], activeItem = areaItems.find(item => item === activeNavigationItem) ?? areaItems.find(item => item.supported && item.entity === table?.entity && item.view === view) ?? areaItems.find(item => item.supported && item.entity === table?.entity && !item.view);
   for (const group of activeArea?.groups ?? []) {
     const heading = document.createElement('h2'); heading.textContent = group.title; if (!nav.querySelector('h2')) heading.className = 'first-group'; nav.append(heading);
     for (const item of group.items) {
-      const entry = button(item.title, () => { const destinationApp = catalogue.apps.find(application => application.id === item.targetApplicationId) ?? app; return navigate(item.entity, { view: item.view, navigation: item.id, application: destinationApp, ...(destinationApp === app ? { area: activeArea.id } : {}) }); }, { iconName: navigationIcon(item), disabled: !item.supported, title: item.reason ?? item.title, className: item === activeItem ? 'active' : '' });
+      const entry = button(item.title, () => { if (item.kind === 'webresource') return openPage({ pageType: 'webresource', webresourceName: item.webresource }, { target: 1 }, item); if (item.kind === 'dashboard') return openPage({ pageType: 'dashboard', dashboardId: item.dashboard }, { target: 1 }, item); if (item.kind === 'custom') return openPage({ pageType: 'custom', name: item.page }, { target: 1 }, item); const destinationApp = catalogue.apps.find(application => application.id === item.targetApplicationId) ?? app; return navigate(item.entity, { view: item.view, navigation: item.id, application: destinationApp, ...(destinationApp === app ? { area: activeArea.id } : {}) }); }, { iconName: navigationIcon(item), disabled: !item.supported, title: item.reason ?? item.title, className: item === activeItem ? 'active' : '' });
       entry.setAttribute('aria-label', item.title);
       if (item === activeItem) entry.setAttribute('aria-current', 'page'); nav.append(entry);
     }
@@ -716,7 +762,8 @@ async function renderRecord() {
 function renderFieldControl(cell, field, disabled) {
   return renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup, lookupSuggestions, formatting: catalogue.formatting,
     readOnlyText: cell.readOnlyText, rows: cell.rowspan,
-    pcf: cell.pcf, clientExtensions: catalogue.clientExtensions, record, fields: table.fields, entity: table.entity, recordId: record[table.idColumn], webAPI: () => clientRuntime?.Xrm.WebApi,
+    pcf: cell.pcf, clientExtensions: catalogue.clientExtensions, record, fields: table.fields, entity: table.entity, recordId: record[table.idColumn], webAPI: () => clientRuntime?.Xrm.WebApi, isOffline: () => offlineState?.mode === 'offline',
+    staffContext: staffSession?.current?.context, fieldRights: recordCapabilities?.fields,
     user: staffSession?.current ? { id: staffSession.current.principalId ?? staffSession.current.id, name: staffSession.current.name } : undefined,
     formatted: record[field.name + '@OData.Community.Display.V1.FormattedValue'], logicalName: record[field.name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] });
 }
@@ -748,13 +795,18 @@ function applyControlState(name, key, value) {
 function createShellClient(selectedForm) {
   const cells = selectedForm.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(cell => cell.name && cell.supported);
   const controlName = cell => cell.sourceControl?.id ?? cell.name;
+  const regionControls = (selectedForm.regionControls ?? []).filter(control => table.fields[control.name]);
   const runtime = createFormClientRuntime({ table, tables: catalogue.tables, form: selectedForm, record: record ?? {}, extensions: catalogue.clientExtensions,
     metadata: entity => ensureMetadata(entity),
     getFormType: () => loadedFormType,
+    staffContext: staffSession?.current?.context,
     user: staffSession?.current ? { id: staffSession.current.principalId ?? staffSession.current.id, name: staffSession.current.name } : undefined,
+    webApi: request => api('/webapi', { method: 'POST', body: JSON.stringify(request) }),
+    offline: offlineHost(),
+    openPage, sidePanes, dashboards: app.dashboards,
     read: name => { const entry = controls.find(entry => entry.name === name); return entry?.control.supported ? entry.control.read() : record?.[name]; },
     write: (name, value) => {
-      const field = table.fields[name], cell = cells.find(cell => cell.name === name), mode = record?.[table.idColumn] ? 'update' : 'create';
+      const field = table.fields[name], cell = cells.find(cell => cell.name === name) ?? (selectedForm.attributes?.includes(name) ? { name } : undefined), mode = record?.[table.idColumn] ? 'update' : 'create';
       if (!record || !cell || field.isPrimaryId || field[mode === 'update' ? 'validForUpdate' : 'validForCreate'] === false || !capability(mode) || recordCapabilities?.fields?.[name]?.[mode] === false) throw new Error(`Column ${name} cannot be changed by this client extension.`);
       record[name] = value; touchedFields.add(name); dirty = true;
       for (const entry of controls.filter(entry => entry.name === name)) {
@@ -766,8 +818,11 @@ function createShellClient(selectedForm) {
     },
     isDirty: name => name ? touchedFields.has(name) : dirty,
     required: (name, value) => { const cell = cells.find(cell => cell.name === name), entry = controls.find(entry => entry.name === name), primary = entry?.control.primary ?? entry?.control.element; if (value !== undefined && cell) { const states = clientControlState.get(controlName(cell)) ?? new Map(); states.set('required', value); clientControlState.set(controlName(cell), states); applyControlState(controlName(cell), 'required', value); } const configured = cell && clientControlState.get(controlName(cell))?.get('required'); return configured !== undefined ? configured === 'required' : primary?.required ?? table.fields[name]?.required; },
-    controlNames: name => cells.filter(cell => !name || cell.name === name).map(controlName), controlField: name => cells.find(cell => controlName(cell) === name)?.name,
-    controlState: (name, key, value) => { const entry = controls.find(entry => entry.controlName === name); if (value === undefined) { const cell = cells.find(cell => controlName(cell) === name); return key === 'disabled' ? entry?.disabled ?? controlDisabled(cell, table.fields[cell?.name], clientControlState.get(name)?.get(key)) : clientControlState.get(name)?.get(key) ?? (key === 'hidden' ? entry?.wrapper.hidden ?? cell?.visible === false : key === 'label' ? cell?.label ?? table.fields[cell?.name]?.label : undefined); } const states = clientControlState.get(name) ?? new Map(); states.set(key, value); clientControlState.set(name, states); applyControlState(name, key, value); return true; },
+    controlNames: name => [...cells.filter(cell => !name || cell.name === name).map(controlName), ...regionControls.filter(control => !name || control.name === name).map(control => control.id)],
+    controlField: name => cells.find(cell => controlName(cell) === name)?.name ?? regionControls.find(control => control.id === name)?.name,
+    controlState: (name, key, value) => { const region = regionControls.find(control => control.id === name);
+      if (region) { if (value !== undefined) throw new Error(`Mirage client API does not support changing the ${region.region} control ${name}: header and footer controls are not rendered locally.`); return key === 'disabled' ? true : key === 'hidden' ? false : key === 'label' ? table.fields[region.name]?.label : undefined; }
+      const entry = controls.find(entry => entry.controlName === name); if (value === undefined) { const cell = cells.find(cell => controlName(cell) === name); return key === 'disabled' ? entry?.disabled ?? controlDisabled(cell, table.fields[cell?.name], clientControlState.get(name)?.get(key)) : clientControlState.get(name)?.get(key) ?? (key === 'hidden' ? entry?.wrapper.hidden ?? cell?.visible === false : key === 'label' ? cell?.label ?? table.fields[cell?.name]?.label : undefined); } const states = clientControlState.get(name) ?? new Map(); states.set(key, value); clientControlState.set(name, states); applyControlState(name, key, value); return true; },
     notification: (message, level, id) => {
       let host = $('#form-notifications'), element = [...host?.children ?? []].find(element => element.dataset.formNotification === id);
       if (message == null) { element?.remove(); return; }
@@ -784,23 +839,36 @@ function createShellClient(selectedForm) {
   });
   globalThis.Xrm = runtime.Xrm; return runtime;
 }
+/** A form sub-grid, or a dashboard list (`cell.dashboard`: the same grid over the view query without a parent record). */
 function renderSubgrid(cell) {
   const panel = document.createElement('section'); panel.className = 'related-grid';
-  const target = catalogue.tables[cell.subgrid.entity], parentId = record[table.idColumn];
+  const target = catalogue.tables[cell.subgrid.entity], parentId = cell.dashboard ? null : record[table.idColumn];
   const label = cell.label?.trim() || target?.label || 'Related records';
   const heading = document.createElement('h3'); heading.textContent = label;
   const headingRow = document.createElement('div'); headingRow.className = 'subgrid-heading'; headingRow.append(heading); panel.append(headingRow);
   const unavailable = message => { const text = document.createElement('p'); text.className = 'unsupported'; text.textContent = message; panel.append(text); return panel; };
-  if (!parentId) return unavailable('Save this record to view related records.');
+  if (!parentId && !cell.dashboard) return unavailable('Save this record to view related records.');
   if (!target) return unavailable('The related table metadata is unavailable.');
-  const candidates = Object.values(target.fields).filter(field => field.type === 'lookup' && field.targets?.includes(table.entity));
-  const relationshipName = cell.subgrid.relationship?.toLowerCase();
-  const relationship = relationshipName && Object.entries(table.relationships ?? {}).find(([name, relation]) => (name.toLowerCase() === relationshipName || relation.schemaName?.toLowerCase() === relationshipName) && relation.entity === target.entity && relation.many === true && relation.from === table.idColumn)?.[1];
-  const boundField = relationshipName ? candidates.find(field => field.name === relationship?.to) : candidates.length === 1 ? candidates[0] : undefined;
-  if (!boundField) return unavailable('The related table has no unambiguous exported lookup to this record.');
-  const field = boundField.name;
-  let view = target.views.find(view => view.id === cell.subgrid.view);
+  let field;
+  if (!cell.dashboard) {
+    const candidates = Object.values(target.fields).filter(field => field.type === 'lookup' && field.targets?.includes(table.entity));
+    const relationshipName = cell.subgrid.relationship?.toLowerCase();
+    const relationship = relationshipName && Object.entries(table.relationships ?? {}).find(([name, relation]) => (name.toLowerCase() === relationshipName || relation.schemaName?.toLowerCase() === relationshipName) && relation.entity === target.entity && relation.many === true && relation.from === table.idColumn)?.[1];
+    const boundField = relationshipName ? candidates.find(field => field.name === relationship?.to) : candidates.length === 1 ? candidates[0] : undefined;
+    if (!boundField) return unavailable('The related table has no unambiguous exported lookup to this record.');
+    field = boundField.name;
+  }
+  const parentFilters = field ? [{ field, operator: 'eq', value: parentId }] : [];
+  let view = target.views.find(view => view.id === cell.subgrid.view) ?? (cell.dashboard && !cell.subgrid.view ? target.views.find(view => view.isDefault) ?? target.views[0] : undefined);
   if (!view) return unavailable('The exported subgrid view is unavailable.');
+  if (cell.pcf) {
+    const component = renderPcfDataset(cell, { clientExtensions: catalogue.clientExtensions, staffContext: staffSession?.current?.context, webAPI: () => clientRuntime?.Xrm.WebApi, isOffline: () => offlineState?.mode === 'offline',
+      table: target, tables: catalogue.tables, view, baseFilters: parentFilters,
+      query: input => api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify(input))),
+      openRecord: (entity, id) => navigate(entity, { id }) });
+    formLifetime.signal.addEventListener('abort', () => component.destroy(), { once: true });
+    panel.append(component.element); return panel;
+  }
   let page = 1, sort, direction = 'asc', sequence = 0, timer;
   const lifetime = formLifetime;
   lifetime.signal.addEventListener('abort', () => { clearTimeout(timer); sequence++; }, { once: true });
@@ -816,7 +884,7 @@ function renderSubgrid(cell) {
   }
   const selectedRelated = new Set();
   const toolbar = document.createElement('div'), results = document.createElement('div'), footer = document.createElement('div'); footer.className = 'grid-footer'; results.className = 'related-results';
-  const newRelated = button(`New ${target.singular}`, () => navigate(target.entity, { id: 'new', defaults: { [field]: parentId } }), { iconName: 'add', disabled: target.capabilities?.create === false, title: target.capabilities?.create === false ? capabilityReason(target.capabilities) : undefined }); newRelated.dataset.action = 'new-related';
+  const newRelated = button(`New ${target.singular}`, () => navigate(target.entity, { id: 'new', ...(field ? { defaults: { [field]: parentId } } : {}) }), { iconName: 'add', disabled: target.capabilities?.create === false, title: target.capabilities?.create === false ? capabilityReason(target.capabilities) : undefined }); newRelated.dataset.action = 'new-related';
   const deleteRelated = button('Delete', async () => {
     if (!await confirm('Delete local records', `Delete ${selectedRelated.size} selected related records from this Mirage instance?`, 'Delete')) return;
     for (const id of selectedRelated) {
@@ -835,7 +903,7 @@ function renderSubgrid(cell) {
     results.setAttribute('aria-busy', 'true'); results.inert = true;
     footer.textContent = 'Loading related records…';
     try {
-      const result = await api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify({ view: view.id, search: search.value, filters: [{ field, operator: 'eq', value: parentId }], pageSize: cell.subgrid.pageSize, page, sort, direction })));
+      const result = await api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify({ view: view.id, search: search.value, filters: parentFilters, pageSize: cell.subgrid.pageSize, page, sort, direction })));
       if (!panel.isConnected || token !== sequence) return;
       selectedRelated.clear(); deleteRelated.hidden = true;
       results.replaceChildren(); const grid = document.createElement('table'); grid.setAttribute('aria-label', label);
@@ -905,19 +973,32 @@ async function persistRecord(close) {
   const existing = Boolean(record[table.idColumn]), values = {};
   // Client scripts may explicitly write source-disabled presentation controls.
   // Column permissions and staff capabilities still govern the resulting write.
-  const layoutFields = new Map(table.forms.find(form => form.id === formId)?.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(field => field.supported).map(field => [field.name, field]) ?? []);
+  // Header and footer columns are form attributes like body columns (Learn formContext.data.entity.attributes: every
+  // column bound on the form); a header-only column a client script set is saved on the same path.
+  const savedForm = table.forms.find(form => form.id === formId);
+  const layoutFields = new Set([...(savedForm?.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(field => field.supported).map(field => field.name) ?? []),
+    ...(savedForm?.regionControls ?? []).map(control => control.name)]);
   for (const [name, value] of Object.entries(record)) {
     const field = table.fields[name], mode = existing ? 'update' : 'create'; if ((!existing || touchedFields.has(name)) && field && hasControl(field) && !field.isPrimaryId && field[existing ? 'validForUpdate' : 'validForCreate'] !== false && recordCapabilities?.fields?.[name]?.[mode] !== false && layoutFields.has(name)) values[name] = value;
   }
-  if (existing && !Object.keys(values).length) { dirty = false; touchedFields.clear(); if (close) await returnToGrid(); else notice('No record changes to save.'); return; }
+  // Dirty state clears only for the values persisted: a changed column the save could not carry stays unsaved and named.
+  const unsaved = [...touchedFields].filter(name => !Object.hasOwn(values, name));
+  if (existing && !Object.keys(values).length) {
+    if (unsaved.length) { notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true); return; }
+    dirty = false; touchedFields.clear(); if (close) await returnToGrid(); else notice('No record changes to save.'); return;
+  }
   pending = true; $('#commands').classList.add('busy');
   try {
     const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), { method: existing ? 'PATCH' : 'POST', headers: existing ? { 'if-match': etag } : {}, body: JSON.stringify(values) });
     if (saveGeneration !== generation) return;
+    // A partial save still runs the normal path (Save & Close navigation, the post-save form refresh from the stored row);
+    // the notice then names the changed columns the save could not carry.
+    const notCarried = unsaved.length ? ` These changed columns cannot be saved locally: ${unsaved.join(', ')}.` : '';
     dirty = false; touchedFields.clear(); record = result.row; etag = result.etag;
     const refreshed = await api(); if (saveGeneration !== generation) return;
     catalogue = refreshed; table = catalogue.tables[table.entity];
-    if (close) await returnToGrid(); else await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true }); notice('Record saved locally.');
+    if (close) { await returnToGrid(); if (notCarried) notice(`Record saved locally.${notCarried}`, true); }
+    else { await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true }); notice(`Record saved locally.${notCarried}`, Boolean(notCarried)); }
   } finally { pending = false; }
 }
 async function deleteRecords(rows) {
@@ -933,13 +1014,178 @@ async function deleteRecords(rows) {
   } catch (error) { throw new Error(`${deleted} record${deleted === 1 ? '' : 's'} deleted. ${error.message}`); }
   finally { pending = false; if (deleteGeneration === generation) contentLoaded(); }
 }
+/** The local address of a navigateTo page input (the native main.aspx page types). */
+function pageUrl(input) {
+  const params = new URLSearchParams({ appname: app.uniqueName ?? app.id, pagetype: input.pageType });
+  if (input.pageType === 'webresource') { params.set('webresourceName', input.webresourceName); if (input.data !== undefined) params.set('data', input.data); }
+  else if (input.pageType === 'dashboard') params.set('id', input.dashboardId);
+  // unverified: the live main.aspx address of an inline custom page was not captured; Mirage keeps name, entityName, recordId.
+  else if (input.pageType === 'custom') { params.set('name', input.name); if (input.entityName) params.set('entityName', input.entityName); if (input.recordId) params.set('recordId', input.recordId); }
+  else {
+    params.set('etn', input.entityName);
+    if (input.entityId) params.set('id', input.entityId); if (input.formId) params.set('formid', input.formId); if (input.viewId) params.set('viewid', input.viewId);
+    if (input.data && typeof input.data === 'object') params.set('extraqs', new URLSearchParams(Object.entries(input.data).filter(([, value]) => value == null || typeof value !== 'object').map(([key, value]) => [key, value ?? ''])).toString());
+  }
+  return '/main.aspx?' + params;
+}
+/** Xrm.Navigation.navigateTo and SiteMap web resource pages: inline pages replace the workspace; dialogs (center or
+ * side) host the same local page in a frame and resolve when closed. */
+async function openPage(input, options = { target: 1 }, navigationItem) {
+  if (input.pageType === 'custom') await customPageExists(input.name);
+  if (input.pageType === 'webresource') { const page = webResourcePage(catalogue.clientExtensions, input.webresourceName); if (!page.url) throw new Error(page.reason); }
+  if (options.target !== 2) {
+    if (!await canLeave()) return undefined;
+    history.pushState(navigationItem ? { navigation: navigationItem.id } : {}, '', pageUrl(input)); await loadRoute(); return undefined;
+  }
+  return new Promise(resolve => {
+    const element = document.createElement('dialog'); element.className = `page-dialog${options.position === 2 ? ' side' : ''}`; element.setAttribute('aria-label', options.title ?? (input.pageType === 'custom' ? input.name : input.entityName) ?? input.webresourceName ?? app.dashboards?.find(dashboard => dashboard.id === input.dashboardId)?.name ?? 'Dashboard');
+    const size = value => typeof value === 'number' ? `${value}px` : value && typeof value === 'object' && Number.isFinite(value.value) && ['px', '%'].includes(value.unit) ? `${value.value}${value.unit}` : null;
+    if (size(options.width)) element.style.width = size(options.width); if (size(options.height)) element.style.height = size(options.height);
+    const heading = document.createElement('div'); heading.className = 'page-dialog-heading'; const title = document.createElement('h2'); title.textContent = options.title ?? '';
+    const frame = document.createElement('iframe'); frame.title = element.getAttribute('aria-label'); frame.src = input.pageType === 'webresource' ? webResourcePage(catalogue.clientExtensions, input.webresourceName).url + (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : '') : pageUrl(input);
+    const close = () => element.close();
+    heading.append(title, button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' })); element.append(heading, frame); document.body.append(element);
+    element.addEventListener('close', () => {
+      // Learn navigateTo: only a record opened in create mode resolves with savedEntityReference, once it was saved (the frame
+      // address gained an id); other pages resolve with no value.
+      // ponytail: the saved record is read from the frame's final address; a record saved and then left inside the dialog is not reported. Upgrade: the framed form posts its saves to the opener.
+      let saved; try { const params = new URLSearchParams(frame.contentWindow.location.search); if (input.pageType === 'entityrecord' && !input.entityId && params.get('id')) saved = { savedEntityReference: [{ entityType: params.get('etn'), id: `{${params.get('id')}}`, name: frame.contentDocument.querySelector('.record-title h1')?.textContent ?? '' }] }; } catch { saved = undefined; }
+      element.remove(); resolve(saved);
+    }, { once: true });
+    element.showModal();
+  });
+}
+/** A Solution dashboard (catalogue `app.dashboards`): its lists render as sub-grids over the view query as the staff
+ * user; every component the local host does not render (charts, web resources, IFRAMEs, other controls) is listed by name and reason. */
+async function renderDashboardPage(id) {
+  const wanted = String(id ?? '').replace(/[{}]/g, '').toLowerCase();
+  const dashboard = wanted ? app.dashboards?.find(candidate => candidate.id === wanted) : app.dashboards?.[0];
+  activeNavigationItem = app.navigation.flatMap(area => area.groups.flatMap(group => group.items)).find(item => item.kind === 'dashboard' && item.dashboard === dashboard?.id);
+  activeArea = app.navigation.find(area => area.groups.some(group => group.items.includes(activeNavigationItem))) ?? activeArea ?? app.navigation[0];
+  renderNavigation(); $('#commands').replaceChildren();
+  const content = $('#content'); content.replaceChildren(); content.className = 'dashboard-content';
+  document.title = `${dashboard?.name ?? 'Dashboard'} - ${app.name ?? app.uniqueName} · Mirage`;
+  if (!dashboard) { contentLoaded(); notice(`Dashboard ${id || '(default)'} is not in this app's Solution sources.`, true); return; }
+  const routeGeneration = ++generation, grids = dashboard.components.filter(component => component.kind === 'grid' && component.supported);
+  contentLoading('Loading dashboard…');
+  try { await Promise.all([...new Set(grids.map(component => component.entity))].map(entity => ensureMetadata(entity))); }
+  catch (error) { if (routeGeneration === generation) loadFailed(error, loadRoute); return; }
+  if (routeGeneration !== generation) return;
+  formLifetime?.abort(); formLifetime = new AbortController();
+  const heading = document.createElement('h1'); heading.className = 'dashboard-title'; heading.textContent = dashboard.name; content.append(heading);
+  const unsupported = dashboard.components.filter(component => component.supported === false);
+  if (unsupported.length) {
+    const section = document.createElement('section'); section.className = 'dashboard-unsupported'; section.setAttribute('aria-label', 'Components not rendered locally');
+    const title = document.createElement('h2'); title.textContent = 'Not rendered locally'; const list = document.createElement('ul');
+    for (const component of unsupported) { const item = document.createElement('li'); item.dataset.component = component.kind; item.textContent = `${component.name}: ${component.reason}`; list.append(item); }
+    section.append(title, list); content.append(section);
+  }
+  for (const component of grids) content.append(renderSubgrid({ dashboard: true, label: component.name,
+    subgrid: { entity: component.entity, view: component.view, pageSize: component.pageSize, searchEnabled: component.searchEnabled, viewPickerEnabled: component.viewPickerEnabled, views: component.views } }));
+  contentLoaded(); remember({ label: dashboard.name, app: app.uniqueName, url: pageUrl({ pageType: 'dashboard', dashboardId: dashboard.id }) });
+}
+/** A custom page is a canvas app (Learn "Model-driven app custom page overview"); its logical name is the canvas app's
+ * unique name. The page must be one of this app's own type-300 components that the canvas host holds (the catalogue's
+ * app.customPages, model-driven/solution.mjs customPageResolution); any other name answers the shell's missing-page
+ * error with the failed check, as a missing dashboard does. */
+const customPageMissing = (name, reason) => Object.assign(new Error(reason ?? `Custom page ${name} is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).`), { code: 'CustomPageNotFound' });
+async function customPageExists(name) {
+  const resolved = app.customPages?.[String(name).toLowerCase()];
+  if (!resolved?.supported) throw customPageMissing(name, resolved?.reason);
+  const response = await fetch('/_apps/canvas/api/' + encodeURIComponent(name), { headers: { accept: 'application/json' } });
+  if (response.status === 404) { const body = await response.json().catch(() => ({})); if (body.error?.code === 'CanvasAppsDisabled') throw Object.assign(new Error(body.error.message), { code: body.error.code }); throw customPageMissing(name, `Custom page ${name} has no canvas app in the canvas sources (MD_NAV_CUSTOM_PAGE).`); }
+  if (!response.ok) throw new Error(`The custom page ${name} could not be read (${response.status}).`);
+}
+/** The custom page route: the page's canvas app starts in the headless canvas host (canvas-runtime.mjs) with its
+ * recordId and entityName as Param values, so App.OnStart and the start screen's OnVisible run as the staff user; the
+ * page is not rendered (canvas:rendering), the shell shows the evaluated screen data instead. */
+async function renderCustomPage(name, parameters) {
+  activeNavigationItem = app.navigation.flatMap(area => area.groups.flatMap(group => group.items)).find(item => item.kind === 'custom' && item.page === name);
+  activeArea = app.navigation.find(area => area.groups.some(group => group.items.includes(activeNavigationItem))) ?? activeArea ?? app.navigation[0];
+  renderNavigation(); $('#commands').replaceChildren();
+  const content = $('#content'); content.replaceChildren(); content.className = 'custom-page-content';
+  document.title = `${activeNavigationItem?.title ?? name} - ${app.name ?? app.uniqueName} · Mirage`;
+  const routeGeneration = ++generation;
+  contentLoading('Starting custom page…');
+  let snapshot;
+  try {
+    await customPageExists(name);
+    ({ snapshot } = await api('/canvas/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ action: 'reset', parameters }) }));
+  } catch (error) { if (routeGeneration === generation) { contentLoaded(); notice(error.message, true); } return; }
+  if (routeGeneration !== generation) return;
+  const heading = document.createElement('h1'); heading.className = 'custom-page-title'; heading.textContent = snapshot.name ?? name;
+  const status = document.createElement('p'); status.setAttribute('role', 'status'); status.className = 'custom-page-status';
+  status.textContent = 'This custom page is not rendered locally. Its canvas app ran headlessly (App.OnStart and the start screen\'s OnVisible); the evaluated screen data is shown below.';
+  const host = document.createElement('a'); host.href = '/_apps/canvas/' + encodeURIComponent(name); host.textContent = 'Open the headless canvas host';
+  const section = (title, value) => { const element = document.createElement('section'); element.setAttribute('aria-label', title); const label = document.createElement('h2'); label.textContent = title; const body = document.createElement('pre'); body.textContent = JSON.stringify(value, null, 2); element.append(label, body); return element; };
+  const screen = snapshot.screens?.find(item => item.current);
+  const screenData = screen ? { screen: screen.name, properties: screen.properties, controls: Object.fromEntries(screen.controls.map(control => [control.name, control.properties])) } : null;
+  content.append(heading, status, host, section('Current screen', screenData), section('Variables', snapshot.variables), section('Context variables', snapshot.context),
+    section('Collections', snapshot.collections), section('Notifications', snapshot.notifications ?? []), section('Errors', snapshot.errors ?? []));
+  contentLoaded(); remember({ label: activeNavigationItem?.title ?? snapshot.name ?? name, app: app.uniqueName, url: pageUrl({ pageType: 'custom', name, ...parameters }) });
+}
+function renderWebResourcePage(name, data) {
+  const page = webResourcePage(catalogue.clientExtensions, name);
+  activeNavigationItem = app.navigation.flatMap(area => area.groups.flatMap(group => group.items)).find(item => item.kind === 'webresource' && item.webresource?.toLowerCase() === String(name).toLowerCase());
+  activeArea = app.navigation.find(area => area.groups.some(group => group.items.includes(activeNavigationItem))) ?? activeArea ?? app.navigation[0];
+  renderNavigation(); $('#commands').replaceChildren();
+  const content = $('#content'); content.replaceChildren(); content.className = 'webresource-content';
+  document.title = `${activeNavigationItem?.title ?? name} - ${app.name ?? app.uniqueName} · Mirage`;
+  if (!page.url) { contentLoaded(); notice(page.reason, true); return; }
+  const frame = document.createElement('iframe'); frame.className = 'webresource-page'; frame.title = activeNavigationItem?.title ?? name;
+  frame.src = page.url + (data != null ? '?data=' + encodeURIComponent(data) : ''); content.append(frame); contentLoaded();
+}
+/** Xrm.App.sidePanes (Learn: xrm-app/xrm-app-sidepanes): panes beside the workspace that host the same page types. */
+const panes = [];
+let selectedPane;
+const sidePanes = {
+  get state() { const host = $('#side-panes'); return host && !host.hidden && !host.classList.contains('collapsed') ? 1 : 0; },
+  set state(value) { const host = $('#side-panes'); if (host) host.classList.toggle('collapsed', value === 0); },
+  createPane(options = {}) {
+    const paneId = options.paneId ?? `pane-${panes.length + 1}`;
+    if (panes.some(pane => pane.paneId === paneId)) return Promise.reject(new Error(`A side pane with id ${paneId} already exists.`));
+    let host = $('#side-panes');
+    if (!host) { host = document.createElement('aside'); host.id = 'side-panes'; host.className = 'side-panes'; host.setAttribute('aria-label', 'Side panes'); $('.shell').append(host); }
+    const element = document.createElement('section'); element.className = 'side-pane'; element.dataset.paneId = paneId; element.setAttribute('aria-label', options.title ?? paneId);
+    const heading = document.createElement('div'); heading.className = 'page-dialog-heading'; const title = document.createElement('h2'); title.textContent = options.title ?? ''; heading.append(title);
+    const frame = document.createElement('iframe'); frame.title = options.title ?? paneId; element.append(heading, frame); host.append(element); host.hidden = false;
+    if (options.width) element.style.width = `${Number(options.width)}px`;
+    const pane = {
+      paneId, get title() { return title.textContent; }, set title(value) { title.textContent = String(value ?? ''); }, canClose: options.canClose !== false, badge: options.badge ?? null,
+      get width() { return element.offsetWidth; }, set width(value) { element.style.width = `${Number(value)}px`; }, get hidden() { return element.hidden; }, set hidden(value) { element.hidden = Boolean(value); },
+      navigate(pageInput) {
+        try {
+          const [input] = pageRequest(pageInput, {}, catalogue.tables, app.dashboards);
+          if (input.pageType === 'webresource') { const page = webResourcePage(catalogue.clientExtensions, input.webresourceName); if (!page.url) throw new Error(page.reason); frame.src = page.url + (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : ''); }
+          else frame.src = pageUrl(input);
+          return new Promise(resolve => frame.addEventListener('load', () => resolve(), { once: true }));
+        } catch (error) { return Promise.reject(error); }
+      },
+      select() { selectedPane = pane; for (const entry of host.children) entry.classList.toggle('selected', entry === element); },
+      close() { if (!pane.canClose) throw new Error(`Side pane ${paneId} cannot be closed.`); element.remove(); panes.splice(panes.indexOf(pane), 1); if (selectedPane === pane) selectedPane = panes.at(-1); if (!panes.length) host.hidden = true; },
+    };
+    if (pane.canClose) heading.append(button('Close', () => pane.close(), { iconName: 'close', iconOnly: true, className: 'side-panel-close' }));
+    if (options.hidden) element.hidden = true;
+    panes.push(pane); if (options.isSelected !== false) pane.select();
+    return Promise.resolve(pane);
+  },
+  getAllPanes: () => ({ get: key => key === undefined ? [...panes] : typeof key === 'number' ? panes[key] : panes.find(pane => pane.paneId === key), getLength: () => panes.length, forEach: callback => panes.forEach(callback) }),
+  getPane: paneId => panes.find(pane => pane.paneId === paneId),
+  getSelectedPane: () => selectedPane,
+};
 async function loadRoute() {
   disposeClient();
+  // The form or grid context is gone until the route renders again (a mode switch reloads from the other data source).
+  document.documentElement.dataset.mirageAppState = 'loading';
   dirty = false; touchedFields.clear(); notice('');
   const params = new URLSearchParams(location.search), application = params.get('appname') ?? params.get('appid');
   app = application ? catalogue.apps.find(app => app.id === application || app.uniqueName === application) : catalogue.apps.find(app => app.id === catalogue.defaultApp);
   if (!app) throw new Error('This application is not imported. Choose an available application above.');
   $('#apps').innerHTML = `<span>${esc(app.name ?? app.uniqueName)}</span>${icon('chevron', 'chevron')}`; $('#apps').title = 'Select an app'; $('#source-label').textContent = app.name ?? app.uniqueName;
+  await loadOffline();
+  if (params.get('pagetype') === 'webresource') return renderWebResourcePage(params.get('webresourceName'), params.get('data'));
+  if (params.get('pagetype') === 'dashboard') return renderDashboardPage(params.get('id'));
+  if (params.get('pagetype') === 'custom') return renderCustomPage(params.get('name') ?? '', Object.fromEntries(['entityName', 'recordId'].filter(key => params.get(key)).map(key => [key, params.get(key)])));
   const entity = params.get('etn') ?? firstEntity(app), routeGeneration = ++generation, routeCatalogue = catalogue;
   contentLoading('Loading table metadata…');
   let nextTable;

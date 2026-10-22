@@ -1,7 +1,11 @@
 // Change log unit tests on an invented store: committed events are delivered by hand, as DataStore does after a commit.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createChangeLog } from "../lib/dataverse-changes.mjs";
+import { clockFunction, fixedClock } from "../lib/runtime-clock.mjs";
 
 const A = "aaaaaaaa-0000-0000-0000-00000000000a";
 const B = "aaaaaaaa-0000-0000-0000-00000000000b";
@@ -119,6 +123,26 @@ describe("dataverse change log", () => {
     const fresh = log.token();
     assert.deepEqual(log.parse(fresh), { revision: 1 });
     assert.deepEqual(await log.since("widget", 1), { changed: [], deleted: [] });
+  });
+
+  it("expires a token from before a restart under a fixed clock, although the new log takes the same epoch", async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "change-log-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const file = path.join(root, "state.json");
+    const first = fakeStore();
+    const before = createChangeLog(first, { clock: clockFunction(fixedClock()) });
+    const old = before.token();
+    first.commit(written(A));
+    await fs.writeFile(file, JSON.stringify(first.state));
+    // Restart: a new store from the same state file, a new log on the same fixed clock.
+    const second = fakeStore();
+    second.state = JSON.parse(await fs.readFile(file, "utf8"));
+    const after = createChangeLog(second, { clock: clockFunction(fixedClock()) });
+    assert.equal(stampOf(after.token()), stampOf(old), "the fixed clock gives both logs one epoch");
+    second.commit(written(B));
+    assert.throws(() => after.parse(old), expired);
+    const current = after.token();
+    assert.deepEqual(after.parse(current), { revision: 2 });
   });
 
   it("releases its committed-event subscription on close", () => {

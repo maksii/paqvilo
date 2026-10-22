@@ -464,7 +464,7 @@ describe("annotation and attachment blocks: chunked upload and download", () => 
     const row = h.store.state.tables.activitymimeattachment[0];
     assert.equal(row.activitymimeattachmentid, answer.ActivityMimeAttachmentId);
     assert.equal(row.body, b64("hello world"));
-    assert.equal(row.objectid, WIDGET);
+    assert.equal(row.objectid?.id ?? row.objectid, WIDGET);
 
     const init = await h.send("POST", "/InitializeAttachmentBlocksDownload", {
       Target: target("activitymimeattachment", "activitymimeattachmentid", row.activitymimeattachmentid),

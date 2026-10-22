@@ -14,5 +14,6 @@ export function runtimeSettings(value, label = 'runtime') {
 }
 export function runtimeCapabilities(runtime) {
   const { kind } = runtimeSettings(runtime);
+  // Legacy booleans only: fidelity levels (canvas, code apps) live in the capability registry records.
   return { powerPages: kind === 'power-pages', modelDriven: kind !== 'dataverse-api', organization: true };
 }

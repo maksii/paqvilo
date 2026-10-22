@@ -125,6 +125,8 @@ class SignInProblem extends Error {
  * - readBody(req): the request body (Buffer).
  */
 export function createExternalSignIn({ portal, origin, csrf, sessions, store, personas, personaCatalog = () => null, identityProvider = {}, webRoles = () => [], identity, audit, trace, diagnostic = () => {}, renderSignIn, renderPage, readBody }) {
+  // One clock for issuing (local identity provider) and validating (this consumer): the organization clock when present.
+  const now = () => (store?.clock ? store.clock.now() : Date.now());
   let idp = null;
   // Protected data (the state's authentication properties and the external sign-in cookie) is
   // encrypted and authenticated (AES-256-GCM), as the platform's data protection does: the PKCE
@@ -221,13 +223,15 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
   };
   const addLedger = (entry) => {
     const simulator = (store.state.simulator ??= {});
-    simulator.signInRegistrations = [...ledger(), { at: new Date().toISOString(), ...entry }].slice(-LEDGER_LIMIT);
+    simulator.signInRegistrations = [...ledger(), { at: new Date(now()).toISOString(), ...entry }].slice(-LEDGER_LIMIT);
   };
+  // The sign-in writes run on the asynchronous pipeline (store.*Async): a synchronous service endpoint step on these tables
+  // posts in process, never on the synchronous I/O bridge.
   /** Inside a transaction: an adx_externalidentity row linking the subject to the contact. */
-  const createIdentityRow = (provider, subject, contactId, kind, extra = {}) => {
+  const createIdentityRow = async (provider, subject, contactId, kind, extra = {}) => {
     const mapping = ensureIdentityTable();
     const contact = contactById(contactId);
-    const row = store.createRecord(
+    const row = await store.createRecordAsync(
       IDENTITY_TABLE,
       {
         [mapping.idColumn]: randomUUID(),
@@ -243,14 +247,14 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     return row[mapping.idColumn];
   };
   /** Inside a transaction: a contact created from claims (registration). */
-  const createContactRow = (provider, claims, userinfo = null) => {
+  const createContactRow = async (provider, claims, userinfo = null) => {
     const mapping = contactMapping();
     if (!mapping) throw new SignInProblem("The local data has no contact table, so registration cannot create a contact.", "REGISTRATION_CONTACT_UNMAPPED", 409);
     const fields = contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo });
     const email = fields.emailaddress1 ?? emailClaim(claims);
     if (!fields.lastname) fields.lastname = String(claims.family_name ?? claims.name ?? email ?? claims.sub).trim();
     const contactId = randomUUID();
-    store.createRecord(
+    await store.createRecordAsync(
       mapping.logicalName,
       { [mapping.idColumn]: contactId, ...fields, fullname: [fields.firstname, fields.lastname].filter(Boolean).join(" ") },
       { admin: true },
@@ -284,15 +288,17 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     if (!user.contactId || findIdentity(provider, user.subject)) return;
     const current = providerList().find((item) => item.slug === provider.slug);
     if (!current) return;
-    await store.transact(() => {
+    await store.transact(async () => {
       if (findIdentity(current, user.subject)) return;
-      const externalIdentityId = createIdentityRow(current, user.subject, user.contactId, "preset");
+      const externalIdentityId = await createIdentityRow(current, user.subject, user.contactId, "preset");
       // Recorded by the local identity provider's preset selection, outside a portal request.
       record("external-identity", IDENTITY_TABLE, { provider: current.id, username: user.subject, contactId: key(user.contactId), externalIdentityId, origin: "preset" }, key(user.contactId), { method: "POST", path: `/${current.slug}/oauth2/authorize` });
     });
   };
   async function start({ host }) {
     idp = await startIdentityProvider({
+      // The organization clock (runtime-clock.mjs via the store) dates tokens, codes and sessions.
+      clock: now,
       host,
       providers: () =>
         providerList().map((provider) => ({
@@ -362,8 +368,8 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     if (claims.iss !== meta.config.issuer) throw new SignInProblem("The id_token issuer is not the provider.", "EXTERNAL_LOGIN_TOKEN_INVALID");
     const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!audiences.includes(provider.clientId)) throw new SignInProblem("The id_token audience is not the portal's client ID.", "EXTERNAL_LOGIN_TOKEN_INVALID");
-    const now = Date.now() / 1000;
-    if (!(Number(claims.exp) > now - 300) || (claims.nbf && Number(claims.nbf) > now + 300))
+    const nowSeconds = now() / 1000;
+    if (!(Number(claims.exp) > nowSeconds - 300) || (claims.nbf && Number(claims.nbf) > nowSeconds + 300))
       throw new SignInProblem("The id_token is expired or not yet valid.", "EXTERNAL_LOGIN_TOKEN_INVALID");
     if (typeof claims.sub !== "string" || !claims.sub) throw new SignInProblem("The id_token has no subject.", "EXTERNAL_LOGIN_TOKEN_INVALID");
     if (typeof claims.nonce !== "string" || !claims.nonce) throw new SignInProblem("The id_token has no nonce.", "EXTERNAL_LOGIN_TOKEN_INVALID");
@@ -392,7 +398,7 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
   const clearExternal = () => `${externalCookieName()}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
   const readExternal = (req) => {
     const data = unprotect(parseCookies(req.headers.cookie)[externalCookieName()]);
-    return data && Date.now() - Number(data.t) < EXTERNAL_LIFETIME_MS ? data : null;
+    return data && now() - Number(data.t) < EXTERNAL_LIFETIME_MS ? data : null;
   };
   const fail = (req, res, url, problem, { returnUrl = "/", invitationCode = null, cookies = [] } = {}) => {
     diagnostic({ code: problem.code, severity: "warning", message: problem.message, path: url.pathname });
@@ -405,11 +411,11 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
   // ---- ExternalLogin: the challenge ----
   async function challenge(res, provider, { returnUrl, invitationCode = null, loginHint = null, language = null, prompt = null, parameters = {} }) {
     const meta = await metadata(provider);
-    const nonce = `${Date.now()}.${randomBytes(32).toString("base64url")}`;
+    const nonce = `${now()}.${randomBytes(32).toString("base64url")}`;
     // PKCE for the code flow: the verifier travels in the protected state, as the OWIN
     // middleware keeps it in the authentication properties.
     const verifier = codeFlow(provider) ? randomBytes(32).toString("base64url") : null;
-    const state = STATE_PREFIX + protect({ p: provider.slug, r: returnUrl, ...(invitationCode ? { i: invitationCode } : {}), ...(verifier ? { v: verifier } : {}), t: Date.now() });
+    const state = STATE_PREFIX + protect({ p: provider.slug, r: returnUrl, ...(invitationCode ? { i: invitationCode } : {}), ...(verifier ? { v: verifier } : {}), t: now() });
     const params = new URLSearchParams({
       client_id: provider.clientId,
       redirect_uri: redirectUri(provider),
@@ -478,9 +484,9 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
   // ---- the code flow: redeeming the code, and UserInfo ----
   /** A private_key_jwt client assertion (RFC 7523) signed with the local stand-in for the site's certificate. */
   function clientAssertion(provider, audience) {
-    const now = Math.floor(Date.now() / 1000);
+    const nowSeconds = Math.floor(now() / 1000);
     const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: provider.certificateKid })).toString("base64url");
-    const body = Buffer.from(JSON.stringify({ iss: provider.clientId, sub: provider.clientId, aud: audience, jti: randomUUID(), iat: now, nbf: now, exp: now + 300 })).toString("base64url");
+    const body = Buffer.from(JSON.stringify({ iss: provider.clientId, sub: provider.clientId, aud: audience, jti: randomUUID(), iat: nowSeconds, nbf: nowSeconds, exp: nowSeconds + 300 })).toString("base64url");
     return `${header}.${body}.${sign("sha256", Buffer.from(`${header}.${body}`), clientKeyPair().privateKey).toString("base64url")}`;
   }
   /** The token response for an authorization code (client_secret_post or private_key_jwt, PKCE). */
@@ -576,13 +582,13 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
       return fail(req, res, url, new SignInProblem("The sign-in response does not belong to a sign-in started in this browser (no matching OpenIdConnect.nonce cookie).", "EXTERNAL_LOGIN_NONCE_MISSING"), { returnUrl });
     const cleared = `${nonceCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
     const issued = Number(claims.nonce.split(".")[0]);
-    if (!(issued > 0) || Date.now() - issued > provider.nonceLifetimeMs)
+    if (!(issued > 0) || now() - issued > provider.nonceLifetimeMs)
       return fail(req, res, url, new SignInProblem("The sign-in nonce has expired: sign in again.", "EXTERNAL_LOGIN_NONCE_EXPIRED"), { returnUrl, cookies: [cleared] });
     if (message.code && claims.c_hash && claims.c_hash !== createHash("sha256").update(message.code).digest().subarray(0, 16).toString("base64url"))
       return fail(req, res, url, new SignInProblem("The authorization code does not match the id_token's c_hash.", "EXTERNAL_LOGIN_TOKEN_INVALID"), { returnUrl, cookies: [cleared] });
     const kept = keptClaims(claims, ["nonce", "c_hash", "at_hash", "iat", "nbf", "exp", "aud", "iss"]);
     const userinfoClaims = provider.useUserInfo ? await userInfo(provider, accessToken, claims.sub, url) : null;
-    const external = protect({ p: provider.slug, s: claims.sub, c: kept, ...(userinfoClaims ? { u: userinfoClaims } : {}), t: Date.now() });
+    const external = protect({ p: provider.slug, s: claims.sub, c: kept, ...(userinfoClaims ? { u: userinfoClaims } : {}), t: now() });
     const target = `/Account/Login/ExternalLoginCallback?ReturnUrl=${encodeURIComponent(returnUrl)}${props.i ? `&InvitationCode=${encodeURIComponent(props.i)}` : ""}`;
     return redirect(res, target, "external-login-response", [cleared, `${externalCookieName()}=${external}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${EXTERNAL_LIFETIME_MS / 1000}`]);
   }
@@ -626,10 +632,10 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
       throw new SignInProblem(`Email already in use: ${email} belongs to another contact (Authentication/UserManager/UserValidator/RequireUniqueEmail).`, "REGISTRATION_EMAIL_IN_USE", 409);
     let contactId;
     let externalIdentityId;
-    await store.transact(() => {
-      contactId = createContactRow(provider, claims, userinfo);
-      externalIdentityId = createIdentityRow(provider, external.s, contactId, invitation ? "invitation" : "registration", invitation ? { invitationId: invitation.id } : {});
-      if (invitation) applyInvitation(invitation, contactId);
+    await store.transact(async () => {
+      contactId = await createContactRow(provider, claims, userinfo);
+      externalIdentityId = await createIdentityRow(provider, external.s, contactId, invitation ? "invitation" : "registration", invitation ? { invitationId: invitation.id } : {});
+      if (invitation) await applyInvitation(invitation, contactId);
     });
     const origin = invitation ? "invitation" : "registration";
     record("registration", "contact", { contactId, provider: provider.id, username: external.s, origin, ...(invitation ? { invitationId: invitation.id } : {}) }, contactId);
@@ -653,7 +659,7 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     if (!row || !active(row)) return { problem: "The invitation code is not valid." };
     const expiry = row.adx_expirydate ? new Date(String(scalar(row.adx_expirydate))) : null;
     // adx_expirydate is date-only: the invitation is valid through that day.
-    if (expiry && !Number.isNaN(expiry.getTime()) && Date.now() > Date.UTC(expiry.getUTCFullYear(), expiry.getUTCMonth(), expiry.getUTCDate() + 1))
+    if (expiry && !Number.isNaN(expiry.getTime()) && now() > Date.UTC(expiry.getUTCFullYear(), expiry.getUTCMonth(), expiry.getUTCDate() + 1))
       return { problem: "The invitation has expired." };
     const type = Number(scalar(row.adx_type) ?? INVITATION_SINGLE) === INVITATION_GROUP ? "group" : "single";
     const redemptions = Number(scalar(row.adx_redemptions) ?? 0) || 0;
@@ -676,10 +682,10 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     return [...new Set(intersects.flatMap((item) => tableRows(item.table).filter((row) => same(row[item.from], invitation.id)).map((row) => lookupId(row[item.to]))))].filter((roleId) => known.has(roleId));
   }
   /** Inside a transaction: the documented redemption effects (account, web roles, redemption state). */
-  function applyInvitation(invitation, contactId) {
+  async function applyInvitation(invitation, contactId) {
     const contact = contactMapping();
     const account = lookupOf(invitation.row, "adx_assigntoaccount");
-    if (account && contact) store.updateRecord(contact.logicalName, contactId, { parentcustomerid: { id: account, logical_name: "account" } }, { admin: true });
+    if (account && contact) await store.updateRecordAsync(contact.logicalName, contactId, { parentcustomerid: { id: account, logical_name: "account" } }, { admin: true });
     const roles = invitationRoles(invitation);
     if (roles.length) {
       const simulator = (store.state.simulator ??= {});
@@ -688,7 +694,7 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     }
     const redemptions = invitation.redemptions + 1;
     const done = invitation.type === "single" || (invitation.maximum && redemptions >= invitation.maximum);
-    store.updateRecord(
+    await store.updateRecordAsync(
       invitation.mapping.logicalName,
       invitation.id,
       {
@@ -709,9 +715,9 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
     if (invitation.type === "group") return register(provider, external, invitation);
     let externalIdentityId;
     let roles = [];
-    await store.transact(() => {
-      externalIdentityId = createIdentityRow(provider, external.s, invitation.invited, "invitation", { invitationId: invitation.id });
-      roles = applyInvitation(invitation, invitation.invited);
+    await store.transact(async () => {
+      externalIdentityId = await createIdentityRow(provider, external.s, invitation.invited, "invitation", { invitationId: invitation.id });
+      roles = await applyInvitation(invitation, invitation.invited);
     });
     record("registration", IDENTITY_TABLE, { externalIdentityId, contactId: invitation.invited, provider: provider.id, username: external.s, origin: "invitation", invitationId: invitation.id, webRoles: roles.join(",") }, invitation.invited);
     return { contactId: invitation.invited, route: "external-sign-in-invitation" };
@@ -732,8 +738,8 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
       const matches = contactRows().filter((item) => active(item.row) && String(item.row.emailaddress1 ?? "").trim().toLowerCase() === email.toLowerCase());
       if (matches.length === 1) {
         let externalIdentityId;
-        await store.transact(() => {
-          externalIdentityId = createIdentityRow(provider, external.s, matches[0].id, "email-mapping");
+        await store.transact(async () => {
+          externalIdentityId = await createIdentityRow(provider, external.s, matches[0].id, "email-mapping");
         });
         record("external-identity", IDENTITY_TABLE, { externalIdentityId, contactId: matches[0].id, provider: provider.id, username: external.s, origin: "email-mapping" }, matches[0].id);
         return { contactId: matches[0].id, route: "external-sign-in-email-mapping" };

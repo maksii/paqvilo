@@ -3,6 +3,7 @@
 // dispatch function, so the router stays the single place that answers requests.
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
+import { parseExactJson, stringifyExactJson } from "./exact-numeric.mjs";
 
 const MAX_REQUESTS = 1000;
 const JSON_TYPE = "application/json; odata.metadata=minimal; odata.streaming=true";
@@ -113,7 +114,7 @@ function jsonItem(item) {
   for (const [name, value] of Object.entries(item.headers ?? {})) headers[name.toLowerCase()] = String(value);
   let body = item.body ?? undefined;
   if (body !== undefined && typeof body !== "string") {
-    body = JSON.stringify(body);
+    body = stringifyExactJson(body);
     headers["content-type"] ??= "application/json";
   }
   return {
@@ -164,8 +165,9 @@ function parseJsonBatch(rawBody) {
   const text = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody ?? "");
   let payload;
   try {
-    payload = JSON.parse(text);
-  } catch {
+    payload = parseExactJson(text);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     throw invalid(JSON_BATCH);
   }
   if (!Array.isArray(payload?.requests)) throw invalid(JSON_BATCH);
@@ -296,7 +298,7 @@ function httpBlock(response, { json = false } = {}) {
     set(name, value);
   }
   const body = response.body ?? undefined;
-  const text = body === undefined || typeof body === "string" ? body : JSON.stringify(body);
+  const text = body === undefined || typeof body === "string" ? body : stringifyExactJson(body);
   if (text && !headers.has("content-type")) set("Content-Type", json ? JSON_TYPE : PART_JSON_TYPE);
   if (!headers.has("odata-version")) set("OData-Version", "4.0");
   if (response.status < 400) {

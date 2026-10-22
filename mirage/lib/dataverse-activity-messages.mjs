@@ -4,6 +4,8 @@
 // generic OrganizationRequest dispatch; the bound ones are reached through the Web API routes only.
 // No outbound mail: no SMTP, HTTP or DNS traffic. An email "send" moves the row's state only: IssueSend true leaves it
 // Pending Send (6), for the email router to pick up with BackgroundSendEmail, and IssueSend false marks it Sent (3).
+// With an outbox provider (api.providers.outbox, outbox.mjs) SendEmail also captures the message for inspection: delivered for
+// IssueSend false, queued for IssueSend true until BackgroundSendEmail returns the email and marks the entry delivered.
 // Queue membership is the queuemembership intersect table (queue to systemuser), one row per member; a team is expanded to its
 // users when it is added. Email attachments are activitymimeattachment rows of the email. Invented data only.
 import { randomUUID } from "node:crypto";
@@ -13,6 +15,7 @@ import { objectTypeCode } from "./dataverse-metadata.mjs";
 import { modelOf } from "./dataverse-misc-messages.mjs";
 import { contextUrl, parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
 import { ownerColumns, teamsOfUser, uuidV5 } from "./dataverse-security.mjs";
+import { createThroughPipeline } from "./dataverse-files.mjs";
 import { standardTableDef } from "./dataverse-standard.mjs";
 import { toFetchXml } from "./dataverse-soap-query.mjs";
 
@@ -104,6 +107,11 @@ function rowOf(api, ctx, { mapping, id }) {
 const authorize = (api, ctx, logical, operation, row = undefined) =>
   api.principals.authorize({ user: ctx.user, entity: logical, operation, row, mapping: api.store.resolveMapping(logical) });
 const write = async (api, fn) => api.change(() => api.store.transact(fn, { isolated: true }));
+// Row writes of a message go through the organization's internal entries (dataverse-records.mjs): the state defaults, record
+// hooks, audit and version columns and the key answers apply as on a Web API write. The message has authorized the caller.
+const created = (api, ctx, logical, data) => api.records.createInternal(ctx, logical, data, { authorized: true });
+const updated = (api, ctx, logical, id, data) => api.records.updateInternal(ctx, logical, id, data, { authorized: true });
+const removed = (api, ctx, logical, id) => api.records.removeInternal(ctx, logical, id, { authorized: true });
 const respond = (ctx, name, body) => ({ status: 200, body: { "@odata.context": contextUrl(ctx.origin, ctx.version, `Microsoft.Dynamics.CRM.${name}Response`), ...body } });
 const bodyOf = (name, value, ctx) => ({ "@odata.context": contextUrl(ctx.origin, ctx.version, name), ...value });
 
@@ -134,9 +142,9 @@ async function formatted(api, ctx, logical, id) {
 
 // Creates one email row owned by the caller and returns its id. Outgoing mail starts as a Draft; the caller sets the state
 // that follows. The id is left to the store: an explicit activityid trips the activitypointer lookup in validateBindings.
-function newEmail(api, ctx, fields) {
+async function newEmail(api, ctx, fields) {
   const owner = ownerColumns(api.store, { id: ctx.user.systemuserid, logical_name: "systemuser" });
-  return api.store.createRecord("email", { statecode: 0, statuscode: DRAFT, directioncode: true, ...owner, ...fields }, ctx.identity).activityid;
+  return (await created(api, ctx, "email", { statecode: 0, statuscode: DRAFT, directioncode: true, ...owner, ...fields })).activityid;
 }
 
 // The state a send writes. There is no transport: a pending send waits for the router, which marks it Sent.
@@ -211,12 +219,12 @@ async function appendRelatedParty(api, ctx) {
   if (!isActivity(activity.mapping)) throw invalid(`The Activity parameter must be an activity record, not ${activity.mapping.logicalName}.`);
   authorize(api, ctx, activity.mapping.logicalName, "append", rowOf(api, ctx, activity));
   authorize(api, ctx, party.mapping.logicalName, "appendto", rowOf(api, ctx, party));
-  await write(api, () => api.store.createRecord("activityparty", {
+  await write(api, () => created(api, ctx, "activityparty", {
     activitypartyid: randomUUID(),
     activityid: ref(activity.mapping.logicalName, activity.id),
     partyid: ref(party.mapping.logicalName, party.id),
     participationtypemask: PARTICIPATION_RELATED,
-  }, ctx.identity));
+  }));
   return { status: 204 };
 }
 
@@ -225,7 +233,7 @@ async function appendRelatedParty(api, ctx) {
 async function removeParent(api, ctx) {
   const target = refOf(api, requiredOf(argsOf(ctx), "Target"), "Target", new Set(["systemuser"]));
   authorize(api, ctx, "systemuser", "write", rowOf(api, ctx, target));
-  await write(api, () => api.store.updateRecord("systemuser", target.id, { parentsystemuserid: null }, ctx.identity));
+  await write(api, () => updated(api, ctx, "systemuser", target.id, { parentsystemuserid: null }));
   return { status: 204 };
 }
 
@@ -259,6 +267,11 @@ async function backgroundSendEmail(api, ctx) {
     .map((row) => idText(row.activityid)));
   const pending = rows.filter((row) => pendingIds.has(idText(row.activityid)));
   const attachments = api.store.tableRows("activitymimeattachment");
+  // The router picked these emails up: their queued outbox entries (from SendEmail with IssueSend true) become delivered.
+  const outbox = api.providers?.outbox ?? null;
+  const picked = new Set(pending.map((row) => idText(row.activityid)));
+  const queued = outbox ? outbox.list().filter((entry) => entry.state === "queued" && entry.source?.kind === "SendEmail" && picked.has(idText(entry.source.id))) : [];
+  if (queued.length) await write(api, async () => { for (const entry of queued) await outbox.markDelivered(entry.id); });
   return respond(ctx, "BackgroundSendEmail", {
     HasAttachments: pending.map((row) => attachments.some((a) => idText(refId(a.objectid)) === idText(row.activityid))),
     EntityCollection: pending,
@@ -277,8 +290,8 @@ async function createAndSendNewEmail(api, ctx) {
   if (regarding) rowOf(api, ctx, regarding);
   authorize(api, ctx, "email", "create");
   let id;
-  await write(api, () => {
-    id = newEmail(api, ctx, {
+  await write(api, async () => {
+    id = await newEmail(api, ctx, {
       subject: textOf(args, "Subject"), description: textOf(args, "Body"), sender: from, torecipients: textOf(args, "To"),
       cc: textOf(args, "Cc"), bcc: textOf(args, "Bcc"), prioritycode: intOf(args, "Importance"),
       regardingobjectid: regarding ? ref(regarding.mapping.logicalName, regarding.id) : null, ...sendState(true),
@@ -298,14 +311,16 @@ function attachmentsOf(api, ctx, value) {
   return value;
 }
 
-// One activitymimeattachment row per attachment, numbered in order, with the columns the file upload path stores (dataverse-files.mjs).
-function storeAttachments(api, emailId, list) {
-  const rows = (api.store.state.tables.activitymimeattachment ??= []);
-  list.forEach((a, i) => rows.push({
-    activitymimeattachmentid: randomUUID(), objectid: emailId, objecttypecode: "email", activityid: emailId, attachmentnumber: i,
-    filename: a.filename ?? null, mimetype: a.mimetype ?? null, subject: a.subject ?? null, body: a.body ?? null,
-    filesize: a.body ? Buffer.from(a.body, "base64").length : 0,
-  }));
+// One activitymimeattachment row per attachment, numbered in order, with the columns the file upload path stores, created
+// through the same record pipeline (dataverse-files.mjs createThroughPipeline): attachment policy, ownership, plug-ins, hooks.
+async function storeAttachments(api, ctx, emailId, list) {
+  for (const [i, a] of list.entries()) {
+    await createThroughPipeline(api, ctx, "activitymimeattachment", {
+      activitymimeattachmentid: randomUUID(), objectid: ref("email", emailId), objecttypecode: "email", activityid: ref("email", emailId), attachmentnumber: i,
+      filename: a.filename ?? null, mimetype: a.mimetype ?? null, subject: a.subject ?? null, body: a.body ?? null,
+      filesize: a.body ? Buffer.from(a.body, "base64").length : 0,
+    });
+  }
 }
 
 // DeliverIncomingEmail (bound to the email collection): creates a received email row from the message parts, with its Attachments.
@@ -321,13 +336,13 @@ async function deliverIncomingEmail(api, ctx) {
     throw invalid(`An email with MessageId ${messageId} is already stored.`);
   }
   let id;
-  await write(api, () => {
-    id = newEmail(api, ctx, {
+  await write(api, async () => {
+    id = await newEmail(api, ctx, {
       messageid: messageId, subject: textOf(args, "Subject"), description: textOf(args, "Body"), sender: textOf(args, "From"),
       torecipients: textOf(args, "To"), cc: textOf(args, "Cc"), bcc: textOf(args, "Bcc"), actualstart: received,
       directioncode: false, statecode: 1, statuscode: RECEIVED,
     });
-    storeAttachments(api, id, attachments);
+    await storeAttachments(api, ctx, id, attachments);
   });
   return { status: 200, body: await formatted(api, ctx, "email", id) };
 }
@@ -342,13 +357,13 @@ async function deliverPromoteEmail(api, ctx) {
   const row = ctx.target.row;
   const attachments = attachmentsOf(api, ctx, args.Attachments);
   authorize(api, ctx, "email", "write", row);
-  await write(api, () => {
-    api.store.updateRecord("email", ctx.target.id, {
+  await write(api, async () => {
+    await updated(api, ctx, "email", ctx.target.id, {
       messageid: messageId, subject: textOf(args, "Subject"), description: textOf(args, "Body"), sender: textOf(args, "From"),
       torecipients: textOf(args, "To"), cc: textOf(args, "Cc"), bcc: textOf(args, "Bcc"), actualstart: dateOf(args, "ReceivedOn"),
       directioncode: false, statecode: 1, statuscode: RECEIVED,
-    }, ctx.identity);
-    storeAttachments(api, ctx.target.id, attachments);
+    });
+    await storeAttachments(api, ctx, ctx.target.id, attachments);
   });
   return { status: 200, body: await formatted(api, ctx, "email", ctx.target.id) };
 }
@@ -371,7 +386,7 @@ async function instantiateTemplate(api, ctx) {
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
   authorize(api, ctx, "email", "create");
   let id;
-  await write(api, () => { id = newEmail(api, ctx, templatedFields(template, regarding)); });
+  await write(api, async () => { id = await newEmail(api, ctx, templatedFields(template, regarding)); });
   const email = await formatted(api, ctx, "email", id);
   return { status: 200, body: bodyOf("Collection(mscrm.crmbaseentity)", { value: [withoutContext(email)] }, ctx) };
 }
@@ -385,15 +400,38 @@ async function retrieveMailboxTrackingFolders(api, ctx) {
   return respond(ctx, "RetrieveMailboxTrackingFolders", { MailboxTrackingFolderMappings: folders.map(withoutContext) });
 }
 
+// The outbox entry of one email: addresses from its text columns and its activityparty rows (1 from, 2 to, 3 cc, 4 bcc), and
+// its attachments by name, size and type only (the bytes stay with the activitymimeattachment row's storage).
+const PARTY_MASKS = { from: 1, to: 2, cc: 3, bcc: 4 };
+function outboxEntry(api, ctx, email, state) {
+  const id = idText(email.activityid);
+  const parties = api.store.tableRows("activityparty").filter((row) => idText(refId(row.activityid)) === id);
+  const list = (column, mask) => [...new Set([
+    ...String(email[column] ?? "").split(/[;,]/),
+    ...parties.filter((row) => Number(row.participationtypemask) === mask).map((row) => row.addressused ?? ""),
+  ].map((item) => item.trim()).filter(Boolean))];
+  const attachments = api.store.tableRows("activitymimeattachment").filter((row) => idText(refId(row.objectid) ?? refId(row.activityid)) === id)
+    .sort((a, b) => (a.attachmentnumber ?? 0) - (b.attachmentnumber ?? 0))
+    .map((row) => ({ name: row.filename ?? null, contentType: row.mimetype ?? null, size: row.filesize != null && Number.isSafeInteger(Number(row.filesize)) ? Number(row.filesize) : typeof row.body === "string" ? Buffer.byteLength(row.body, "base64") : null }));
+  return {
+    channel: "email", from: list("sender", PARTY_MASKS.from)[0] ?? null, to: list("torecipients", PARTY_MASKS.to), cc: list("cc", PARTY_MASKS.cc), bcc: list("bcc", PARTY_MASKS.bcc),
+    subject: email.subject ?? null, body: email.description ?? null, bodyType: "html", attachments,
+    correlationId: ctx.correlationId ?? ctx.requestId ?? null, source: { kind: "SendEmail", id: email.activityid }, state,
+  };
+}
+
 // SendEmail (bound to one email): IssueSend moves it to Pending Send or to Sent; TrackingToken is stored when given.
 async function sendEmail(api, ctx) {
   const args = argsOf(ctx);
   const issueSend = flagOf(args, "IssueSend");
   const trackingToken = textOf(args, "TrackingToken");
   authorize(api, ctx, "email", "write", ctx.target.row);
-  await write(api, () => api.store.updateRecord("email", ctx.target.id, {
-    ...sendState(issueSend), ...(trackingToken == null ? {} : { trackingtoken: trackingToken }),
-  }, ctx.identity));
+  const outbox = api.providers?.outbox ?? null;
+  await write(api, async () => {
+    await updated(api, ctx, "email", ctx.target.id, { ...sendState(issueSend), ...(trackingToken == null ? {} : { trackingtoken: trackingToken }) });
+    // nested: the entry joins this transaction, so a send that rolls back captures nothing.
+    if (outbox) await outbox.capture(outboxEntry(api, ctx, api.store.tableRows("email").find((row) => idText(row.activityid) === idText(ctx.target.id)) ?? ctx.target.row, issueSend ? "queued" : "delivered"), { nested: true });
+  });
   return respond(ctx, "SendEmail", { Subject: ctx.target.row.subject ?? null });
 }
 
@@ -410,7 +448,7 @@ async function sendEmailFromTemplate(api, ctx) {
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
   authorize(api, ctx, "email", "create");
   let id;
-  await write(api, () => { id = newEmail(api, ctx, { ...templatedFields(template, regarding), torecipients: addressOf(target), ...sendState(true) }); });
+  await write(api, async () => { id = await newEmail(api, ctx, { ...templatedFields(template, regarding), torecipients: addressOf(target), ...sendState(true) }); });
   return { status: 200, body: await formatted(api, ctx, "email", id) };
 }
 
@@ -421,7 +459,7 @@ async function sendFax(api, ctx) {
   flagOf(args, "IssueSend");
   const fax = { mapping: api.store.resolveMapping("fax"), id: faxId };
   authorize(api, ctx, "fax", "write", rowOf(api, ctx, fax));
-  await write(api, () => api.store.updateRecord("fax", faxId, { statecode: 1, statuscode: SENT }, ctx.identity));
+  await write(api, () => updated(api, ctx, "fax", faxId, { statecode: 1, statuscode: SENT }));
   return { status: 204 };
 }
 
@@ -443,9 +481,9 @@ async function sendTemplate(api, ctx) {
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
   authorize(api, ctx, "email", "create");
   const priority = intOf(args, "DeliveryPriorityCode");
-  await write(api, () => {
+  await write(api, async () => {
     for (const { row } of targets) {
-      newEmail(api, ctx, {
+      await newEmail(api, ctx, {
         ...templatedFields(template, regarding), torecipients: addressOf(row), sender: addressOf(senderRow), prioritycode: priority, ...sendState(true),
       });
     }
@@ -502,17 +540,19 @@ async function addToQueue(api, ctx) {
   authorize(api, ctx, "queueitem", "create");
   const id = randomUUID();
   const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
-  await write(api, () => {
+  await write(api, async () => {
     if (source) {
       const moved = api.store.tableRows("queueitem")
         .filter((item) => idText(refId(item.queueid)) === idText(source.id) && idText(refId(item.objectid)) === idText(target.id));
-      for (const item of moved) api.store.removeRecord("queueitem", item.queueitemid, ctx.identity);
+      for (const item of moved) await removed(api, ctx, "queueitem", item.queueitemid);
     }
-    api.store.createRecord("queueitem", {
+    // objecttypecode is platform-set (IsValidForCreate false) from the object's table, and the exported option set lists
+    // only some queue-enabled tables: the platform-built row is stored as built, without request value coercion.
+    await api.records.createInternal(ctx, "queueitem", {
       queueitemid: id, queueid: ref("queue", ctx.target.id), objectid: ref(target.mapping.logicalName, target.id),
       objecttypecode: objectTypeCode(target.mapping.logicalName), title: targetRow[target.mapping.nameColumn] ?? target.id,
       enteredon: now, statecode: 0, ...extra,
-    }, ctx.identity);
+    }, { authorized: true, writeOptions: { coerce: false } });
   });
   return respond(ctx, "AddToQueue", { QueueItemId: id });
 }
@@ -524,24 +564,23 @@ async function pickFromQueue(api, ctx) {
   const remove = flagOf(args, "RemoveQueueItem");
   rowOf(api, ctx, user);
   authorize(api, ctx, "queueitem", "write", ctx.target.row);
-  await write(api, () => {
-    if (remove) api.store.removeRecord("queueitem", ctx.target.id, ctx.identity);
-    else api.store.updateRecord("queueitem", ctx.target.id, { workerid: ref("systemuser", user.id), workeridtype: "systemuser" }, ctx.identity);
-  });
+  await write(api, () => remove
+    ? removed(api, ctx, "queueitem", ctx.target.id)
+    : updated(api, ctx, "queueitem", ctx.target.id, { workerid: ref("systemuser", user.id), workeridtype: "systemuser" }));
   return { status: 204 };
 }
 
 // ReleaseToQueue (bound to one queue item): clears the worker, so any member can pick it.
 async function releaseToQueue(api, ctx) {
   authorize(api, ctx, "queueitem", "write", ctx.target.row);
-  await write(api, () => api.store.updateRecord("queueitem", ctx.target.id, { workerid: null, workeridtype: null }, ctx.identity));
+  await write(api, () => updated(api, ctx, "queueitem", ctx.target.id, { workerid: null, workeridtype: null }));
   return { status: 204 };
 }
 
 // RemoveFromQueue (bound to one queue item): deletes the queue item.
 async function removeFromQueue(api, ctx) {
   authorize(api, ctx, "queueitem", "delete", ctx.target.row);
-  await write(api, () => api.store.removeRecord("queueitem", ctx.target.id, ctx.identity));
+  await write(api, () => removed(api, ctx, "queueitem", ctx.target.id));
   return { status: 204 };
 }
 
@@ -577,7 +616,7 @@ async function routeTo(api, ctx) {
     const fields = target.mapping.logicalName === "queue"
       ? { queueid: ref("queue", target.id), workerid: null, workeridtype: null }
       : { workerid: ref(target.mapping.logicalName, target.id), workeridtype: target.mapping.logicalName };
-    api.store.updateRecord("queueitem", item.id, fields, ctx.identity);
+    return updated(api, ctx, "queueitem", item.id, fields);
   });
   return { status: 204 };
 }

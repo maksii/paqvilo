@@ -1,14 +1,17 @@
-import { createRuntimeAdminRouter } from './lib/runtime-admin.mjs';
+import { createRuntimeAdminRouter, ADMIN_CSP, adminAssetFile, adminAssetType, diagnosticsByCode } from './lib/runtime-admin.mjs';
+import { hostnameOf } from './lib/dataverse-webhooks.mjs';
+import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './lib/sim-dashboard-routes.mjs';
+import { createPackRoutes, routes as PACK_ROUTES } from './lib/sim-pack-routes.mjs';
+import { createEnvironmentRoutes, environmentVariableTable as sharedEnvironmentVariableTable, applyEnvironmentOverride, routes as ENVIRONMENT_ROUTES } from './lib/sim-environment-routes.mjs';
+import { docsLinks } from './lib/docs-links.mjs';
 import { simulationSettings, simulationReport } from './lib/simulation-settings.mjs';
 import { createSimulationPersistence } from './lib/simulation-persistence.mjs';
-import { createOrganizationBackend } from './lib/organization-backend.mjs';
-import { createOrganizationRuntime, dataverseOrganizationId } from './lib/dataverse-organization.mjs';
+import { dataverseOrganizationId } from './lib/dataverse-organization.mjs';
 import { preserveOrganizationPresetSections } from './lib/organization-presets.mjs';
-import { sourceOrganizationExtensions } from './lib/source-organization-extensions.mjs';
-import { createModelDrivenRecordService } from './lib/dataverse-model-driven.mjs';
+import { createModelDrivenRecordService, createModelDrivenWebApi } from './lib/dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './lib/staff-session.mjs';
 import { createDataverseAdmin } from './lib/dataverse-admin.mjs';
-import { runtimeSettings, runtimeCapabilities } from './lib/runtime-config.mjs';
+import { runtimeSettings } from './lib/runtime-config.mjs';
 import {pathToFileURL} from 'node:url';
 import http from "node:http";
 import { isDeepStrictEqual } from 'node:util';
@@ -52,8 +55,8 @@ import {contentPolicyDefaults as resolvePolicyDefaults} from './lib/content-poli
 import {withFileSourceMap,identityMapUrl} from '../lense/source-map.mjs';
 import {assetKind} from './lib/asset-type.mjs';
 import { listPresets } from "./lib/presets.mjs";
-import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
-import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
+import { applyPortalOverrides, bindPortalEnvironment, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
+import { platformSettingEntries, validatePlatformOverrides, platformValues } from './lib/platform-settings.mjs';
 import { configurationPresetDiagnostics } from './lib/preset-registry.mjs';
 import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment, configurationPresetReport, configurationPresetCollisions } from './lib/experiment-presets.mjs';
 import { inspectPage } from "./lib/page-resources.mjs";
@@ -65,11 +68,11 @@ import { LiveBridge, normalizeLiveRecord } from "./lib/live.mjs";
 import { AssetCache } from "./lib/asset-cache.mjs";
 import { capturePortalShell } from "./lib/shell-capture.mjs";
 import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs";
-import { operationHandlers, assertOperationRole, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows } from './lib/exported-operations.mjs';
-import { operationCatalogue, validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
-import { pluginHandlers, pluginCatalogue } from './lib/exported-plugins.mjs';
-import {pluginRuntimeDescriptors,prepareClrRuntime,closeClrHostPool} from './lib/plugin-clr.mjs';
-import {settleCommittedWork} from './lib/committed-work.mjs';
+import { assertOperationRole, assertServerLogicEnabled, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows, organizationCustomApi } from './lib/exported-operations.mjs';
+import { createPortalAuthorization } from './lib/portal-authorization.mjs';
+import { createPortalDocumentService } from './lib/sharepoint-documents.mjs';
+import { renderPortalSearchPage } from './lib/portal-search.mjs';
+import { validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
 import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
 import { mergeShellProfile } from "./lib/shell-profile.mjs";
 import { captureRichTextAssets } from "./lib/richtext-assets.mjs";
@@ -86,9 +89,10 @@ import { pageAccess } from "./lib/page-access.mjs";
 import { sourceFingerprint, cachedSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata } from "./lib/solution-metadata.mjs";
-import { appCatalogue, appCatalogueAsync, solutionApps } from './lib/model-driven/catalogue.mjs';
+import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
 import { createModelDrivenData } from './lib/model-driven/data.mjs';
-import { createModelDrivenHandler } from './lib/model-driven/http.mjs';
+import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './lib/model-driven/http.mjs';
+import { offlineSessionState } from './lib/model-driven/offline.mjs';
 import { modelDrivenSettings } from './lib/model-driven-settings.mjs';
 import { importModelDrivenResources, clientExtensionCatalogue } from './lib/model-driven-resources.mjs';
 import { powerPagesTables, managementOverlay } from './lib/model-driven/power-pages.mjs';
@@ -96,21 +100,27 @@ import { createModelDrivenStorage } from './lib/model-driven-storage.mjs';
 import { createSolutionMetadataOverlay } from './lib/dataverse-solution-metadata.mjs';
 import { createSourceSolutionComponentStorage } from './lib/dataverse-source-components.mjs';
 import { importSolutionData, applySolutionData } from "./lib/solution-data.mjs";
-import { scanSolutionSources, buildSolutionSchema } from "./lib/solution-schema.mjs";
+import { scanSolutionSources, buildSolutionSchema, assertReloadableScan } from "./lib/solution-schema.mjs";
 import { SolutionFileCache, sourceDirectoryDigest } from "./lib/solution-cache.mjs";
 import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute, siteSetting, servicePages, exportedPageFor, loginPath, signInPath, applyObserved, requestTargetUrl } from "./lib/redirects.mjs";
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
+import { composeOrganizationHost, providerDescriptors, inventorySummary, codeAppDataverse, codeAppConnectors, hostSurfaces, graphBindings, simApiRoutes, modelDrivenAppsOf } from './lib/organization-host.mjs';
+import { createCanvasHandler } from './lib/canvas-http.mjs';
+import { createCanvasRuntime } from './lib/canvas-runtime.mjs';
+import { createCodeAppsHandler, authorityTokenIssuer } from './lib/code-apps-http.mjs';
+import { codeAppSettings, loadCodeApps } from './lib/code-apps-config.mjs';
+import { createRequestContext, currentRequest, runWithRequest, correlationOf } from './lib/request-context.mjs';
+import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './lib/sim-messaging-routes.mjs';
+import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.mjs';
+import { buildSourceGraph } from './lib/source-graph.mjs';
+import { scenarioSettings } from './lib/capability-report.mjs';
+import { sourceRecordId } from './lib/source-record-id.mjs';
+import { parseSecretReference, environmentVariablePayload } from './lib/secret-resolver.mjs';
 import { authenticationSettings } from "./lib/external-login.mjs";
-import { startDataverseApi } from './lib/dataverse-api.mjs';
 import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
-import { uuidV5 } from './lib/dataverse-security.mjs';
+import { uuidV5, createApplicationUser } from './lib/dataverse-security.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
-import { createManagedIdentityEndpoints } from './lib/dataverse-managed-identity.mjs';
-import { overlayRegisteredSteps } from './lib/dataverse-plugin-registration.mjs';
-import { workflowHandlers, workflowsWithActivation } from './lib/dataverse-workflows.mjs';
-import { customApiHandlers } from './lib/dataverse-customapi.mjs';
-import { addonHandlers } from './lib/dataverse-addon-common.mjs';
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
 // half a second of silent 8 kHz audio. No readable challenge is simulated, so CAPTCHA saves fail closed.
 const CAPTCHA_IMAGE = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+iiigD//Z", "base64");
@@ -166,8 +176,8 @@ import { formWriteError } from "./lib/form-error-presentation.mjs";
 import { assertPortalSource, portalSourceDir } from "./lib/source-dialect.mjs";
 import { discoverPacks } from "./lib/preset-registry.mjs";
 import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
-import { injectRuntime, renderComponent, renderQuickForm, captchaRefreshDelta } from "./lib/platform.mjs";
-import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
+import { injectRuntime, renderComponent, renderQuickForm, captchaRefreshDelta, PAGES_CLIENT_API_SCRIPT, PAGES_CLIENT_API_FILE } from "./lib/platform.mjs";
+import { submitPortalForm, createWebFormSessions, webFormSessionOwner, portalRecordWrites } from "./lib/form-service.mjs";
 import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
 import { multipartControls, nativeFormTransport, decodeNativeViewState, nativeViewStateKey } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from "./lib/visitor-session.mjs";
@@ -182,11 +192,16 @@ import {
   buildPermissionModel,
   resolvePortalIdentity,
   membershipsForRoles,
+  portalDocumentAccess,
 } from "./lib/permissions.mjs";
 import { handleWebApi } from "./lib/webapi-handler.mjs";
 import { buildSiteTables } from "./lib/site-tables.mjs";
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+// Organization.BlockedAttachments default (Learn power-apps/developer/data-platform/files-images-overview, "Block files by extension").
+const DATAVERSE_BLOCKED_ATTACHMENTS = 'ade;adp;app;asa;ashx;asmx;asp;bas;bat;cdx;cer;chm;class;cmd;com;config;cpl;crt;csh;dll;exe;fxp;hlp;hta;htr;htw;ida;idc;idq;inf;ins;isp;its;jar;js;jse;ksh;lnk;mad;maf;mag;mam;maq;mar;mas;mat;mau;mav;maw;mda;mdb;mde;mdt;mdw;mdz;msc;msh;msh1;msh1xml;msh2;msh2xml;mshxml;msi;msp;mst;ops;pcd;pif;prf;prg;printer;pst;reg;rem;scf;scr;sct;shb;shs;shtm;shtml;soap;stm;tmp;url;vb;vbe;vbs;vsmacros;vss;vst;vsw;ws;wsc;wsf;wsh;svg';
+const ROOT =path.dirname(fileURLToPath(import.meta.url));
+const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
 // Bind evidence to the mirage loaded by this process as well as portal sources.
 const implementationFingerprint = await sourceFingerprint(ROOT);
 const auditResponse = Symbol("auditResponse");
@@ -376,6 +391,10 @@ async function createPowerPagesSimulator({
   dataModel,
   importedSources,
   contentPolicyDefaults: policyDefaults = {},
+  // Names of the registered settings the caller's configuration authored (config-keys.mjs configuredSettingKeys); null: not known.
+  configuredSettings = null,
+  // Registered settings this host does not read itself (mirage/lib/config-keys.mjs); persona instances inherit them.
+  ...settingOptionsRest
 } = {}) {
   const startedAt = performance.now(), bootstrapTimings = {};
   const startupPhase = phase => { try { Promise.resolve(onStartup?.({ phase, elapsedMs: Math.round(performance.now() - startedAt) })).catch(() => {}); } catch { /* progress observer only */ } };
@@ -472,6 +491,10 @@ async function createPowerPagesSimulator({
   let codeComponents = { controls: new Map(), assets: new Map(), diagnostics: [] };
   const modelDrivenSettingsValue = modelDrivenSettings(modelDrivenOption);
   let clientResources = { resources: [], assets: new Map(), pcf: { controls: [] } };
+  // Source import diagnostics arrive before recordDiagnostic exists; they are buffered and replayed into it.
+  const earlySourceDiagnostics = [];
+  let sourceDiagnostic = entry => earlySourceDiagnostics.push(entry);
+  let solutionInventory = [], solutionScan = null;
   async function loadSolutions({ reuseImported = false } = {}) {
     if (!solutionRoots.length && !modelDrivenSettingsValue.clientSources?.length) return;
     startupPhase('solution-import');
@@ -479,6 +502,9 @@ async function createPowerPagesSimulator({
     const cache = await SolutionFileCache.open(solutionCacheFile);
     const previous = reuseImported && importedSources?.solutionOrder === solutionOrder && JSON.stringify(importedSources.solutionRoots) === JSON.stringify(solutionRoots) ? importedSources.solutionScan : undefined;
     const scan = await scanSolutionSources(solutionRoots, { cache, order: solutionOrder, previous });
+    // Every re-scan (reload, deployment profile pin) is checked against the last accepted scan before anything is assigned;
+    // a rejected scan never becomes the baseline.
+    if (solutionScan) assertReloadableScan(solutionScan, scan);
     const lcid = project?.lcid ?? dataverseOption?.localeId ?? 1033;
     const schema = scan === previous && importedSources?.solutionSchema?.lcid === lcid ? importedSources.solutionSchema : buildSolutionSchema(scan, { lcid });
     bootstrapTimings.solutionReuse = { scan: scan === previous, schema: schema === importedSources?.solutionSchema };
@@ -489,8 +515,9 @@ async function createPowerPagesSimulator({
       importSolutionMetadata(solutionRoots, { portal, entities: Object.keys(schema.tables), scan, schema, observed, lcid }),
       scan === previous && schema === importedSources?.solutionSchema ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
-    solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid });
-    clientResources = await importModelDrivenResources(scan.layers, { codeComponents, clientSources: modelDrivenSettingsValue.clientSources });
+    solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid, projectRoot });
+    clientResources = await importModelDrivenResources(scan.layers, { codeComponents, clientSources: modelDrivenSettingsValue.clientSources, projectRoot, diagnostic: entry => sourceDiagnostic(entry) });
+    solutionInventory = scan.inventory ?? []; solutionScan = scan;
     solutionMetadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
     solutionMetadata.modelDrivenAppActions = clientResources.appActions;
     await cache.save();
@@ -504,25 +531,8 @@ async function createPowerPagesSimulator({
   const packConfigurations = configurationPresetReport(projectPacks ?? []);
   packConfigurations.diagnostics = configurationPresetDiagnostics(projectPacks ?? [], {portal:sourcePortal,metadata:solutionData});
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
-  const registeredOperations = operationHandlers(projectPacks ?? []);
   const registeredWebApiErrorTemplates = collectWebApiErrorTemplates(projectPacks ?? []);
-  const registeredPluginSteps = pluginHandlers(projectPacks ?? []);
-  const registeredWorkflows = workflowHandlers(projectPacks ?? []);
-  const registeredCustomApis = customApiHandlers(projectPacks ?? []);
-  const registeredPluginDescriptors=pluginRuntimeDescriptors(projectPacks??[]),registeredPluginRuntimes=new Map();
   const operationPortal = () => withSolutionOperations(portal, solutionOperations);
-  // With the Dataverse API on, its plug-in registration rows decide which steps run (P3); with zero API writes they equal the Solution.
-  const pluginSteps = () => pluginCatalogue({ plugins: organization ? overlayRegisteredSteps(solutionMetadata.plugins, store) : solutionMetadata.plugins, handlers: registeredPluginSteps,runtimes:registeredPluginRuntimes,descriptors:registeredPluginDescriptors, overrides: config().operations });
-  // Cloud flow activation follows the workflow rows when the Dataverse API is on (workflowsWithActivation); otherwise the exported map.
-  const workflowsView = () => workflowsWithActivation(operationWorkflows, organization ? store : null);
-  const operations = () => [...operationCatalogue({ portal: operationPortal(), workflows: workflowsView(), handlers: registeredOperations, overrides: config().operations }), ...pluginSteps()];
-  // The exported cloud flow an ExecuteWorkflow call runs: its definition, its local choice and its flow backend profile.
-  const cloudFlowOf = (id) => {
-    const workflow = workflowsView().get(id);
-    if (!workflow) return null;
-    const item = operations().find((entry) => entry.kind === 'cloud-flow' && String(entry.processId ?? '').replace(/[{}]/g, '').toLowerCase() === id);
-    return { definition: workflow.definition?.properties?.definition ?? workflow.definition?.definition, mode: item?.mode ?? 'placeholder', steps: item?.configuration?.steps, serviceProfile: registeredOperations.flowIdentities.get(id) };
-  };
   const bootstrapOptions = () => ({ origin, metadata: solutionData, ...(projectPacks ? { packs: projectPacks } : {}) });
   const presetLibraryStarted = performance.now();
   startupPhase('preset-library');
@@ -595,6 +605,7 @@ async function createPowerPagesSimulator({
   const solutionMetadataOverlay = createSolutionMetadataOverlay({ appsOf: solutionApps });
   const modelMetadata = () => solutionMetadataOverlay(solutionMetadata, store.state);
   const storageAdapter = await createSimulationPersistence({ settings: simulation, packs: projectPacks ?? [], stateFile });
+  const hostClock = typeof settingOptionsRest.clock === 'function' ? { now: settingOptionsRest.clock } : settingOptionsRest.clock ?? undefined;
   let bootstrapStageAt = performance.now();
   const store = new DataStore({
     file: stateFile,
@@ -603,8 +614,33 @@ async function createPowerPagesSimulator({
     presetLibrary: generatedPresets,
     platform: platformOption,
     state: restoredState !== undefined ? { version: 1 } : applySolutions(seededInitialState()),
+    // Host clock/ids (runtime-clock.mjs); the defaults are wall time and random GUIDs.
+    ...(hostClock ? { clock: hostClock } : {}), ...(settingOptionsRest.ids ? { ids: settingOptionsRest.ids } : {}),
   });
   bootstrapTimings.stateSeedMs = Math.round(performance.now() - bootstrapStageAt);
+  // The shared organization composition (lib/organization-host.mjs): handler maps, memoised catalogues, providers,
+  // backend, Dataverse API, operation-mode selection and the one close order.
+  const NO_OVERRIDES = Object.freeze({});
+  const organizationHost = await composeOrganizationHost({ store, packs: projectPacks ?? [], runtime: runtimeOption,
+    // Host surfaces under their legacy status keys (capability registry summary()).
+    surfaces: () => hostSurfaces({ host: 'power-pages', dataverseApi: dataverseConfig.enabled }),
+    inventory: () => solutionInventory, localOrigin: () => localOrigin ?? null, codeApps: () => codeAppRecords, projectRoot,
+    config: { connections: settingOptionsRest.connections, secrets: settingOptionsRest.secrets, providers: settingOptionsRest.providers, localServices: settingOptionsRest.localServices,
+      canvas: settingOptionsRest.canvas, connectorScripts: settingOptionsRest.connectorScripts },
+    // The state directory (file and note bytes under <stateDir>/blobs) follows organization-host.mjs stateDirectoryOf.
+    stateFile, simulation,
+    sources: { plugins: () => solutionMetadata.plugins, workflows: () => operationWorkflows, layers: () => solutionData?.layers ?? [] },
+    sourcesKey: () => [portal, solutionMetadata, operationWorkflows, solutionOperations],
+    overrides: () => store.state.simulator?.operations ?? NO_OVERRIDES, portalOperations: () => operationPortal(),
+    workflowOverrides: () => store.state.dataverse?.workflowOverrides ?? {},
+    // Provider composition reports before recordDiagnostic exists; sourceDiagnostic buffers those and then forwards.
+    diagnostic: entry => sourceDiagnostic(entry),
+    timeoutMs: () => environmentValue('pluginTimeoutSeconds', dataverseConfig.pluginTimeoutSeconds) * 1000,
+    clock: hostClock, ids: settingOptionsRest.ids, scheduler: settingOptionsRest.scheduler });
+  const { handlers: { operations: registeredOperations, plugins: registeredPluginSteps }, descriptors: registeredPluginDescriptors,
+    runtimes: registeredPluginRuntimes, pluginSteps, operations, cloudFlow: cloudFlowOf } = organizationHost;
+  const workflowsView = organizationHost.workflows;
+  const codeApps = codeAppSettings(settingOptionsRest.codeApps);
   const validateStartupConfiguration = () => {
     if (!startupPreset.applied || presetConfiguration !== 'apply') return;
     const state = store.snapshot({sections:['presets','mappings','simulator']});
@@ -628,7 +664,7 @@ async function createPowerPagesSimulator({
   store.state.simulator.contentPolicySource = policyOrigin(store.state.simulator.contentPolicySource);
   if (stateExisted) validateStartupConfiguration();
   if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
-  store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
+  store.setSiteTables(siteTables); // read-only site tables (see siteTables)
   store.setObserved(observed); // observed anonymousDataAccess for table permissions
   // Simulated Dataverse API (lib/dataverse-api.mjs): started before the portal listens, closed by close().
   // Managed identity mode uses the same validated configuration on every runtime surface.
@@ -645,7 +681,7 @@ async function createPowerPagesSimulator({
   });
   let appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
   let dataverse = null;
-  let organization = null, organizationRecords = null;
+  let organization = null, organizationRecords = null, portalDocuments = null;
   const staffSessions = createStaffSessions({ organization: () => organization, port: () => localOrigin ? new URL(localOrigin).port : '' });
   // Managed identity endpoints (lib/dataverse-managed-identity.mjs): created once the listener has its origin.
   let managedIdentity = null;
@@ -685,12 +721,17 @@ async function createPowerPagesSimulator({
     certificateFingerprint: dataverseCertificate?.fingerprint256 ?? null,
     managedIdentity: managedIdentitySummary(),
   });
-  portal = applyPortalOverrides(sourcePortal, store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
+  // Site settings bound to environment variables (E2) take their effective value; Secret ones resolve as the organization's
+  // SYSTEM user. portalOverrides.settings still win over both.
+  const environmentBound = (source, state) => bindPortalEnvironment(source, state, { resolver: organizationHost.providers.secrets,
+    principalId: uuidV5(dataverseOrganizationId(dataverseConfig), 'systemuser:SYSTEM'), diagnostic: entry => sourceDiagnostic(entry) });
+  portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
   bootstrapStageAt = performance.now();
   let sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
   bootstrapTimings.dependenciesMs = Math.round(performance.now() - bootstrapStageAt); bootstrapStageAt = performance.now();
   startupPhase('state-composition');
   await replaceCompiledState(store.state);
+  await organizationHost.loadCanvas();
   bootstrapTimings.stateCompositionMs = Math.round(performance.now() - bootstrapStageAt);
   bootstrapTimings.sourceBootstrapMs = Math.round(performance.now() - startedAt);
   // Resolved project configuration (CLI --project) and the bootstrap inputs in use.
@@ -761,15 +802,34 @@ async function createPowerPagesSimulator({
   // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
   // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
   // the postback takes them.
-  // Staging is process-local, bounded to 50 files and one hour; a restart discards pending uploads.
+  // Staging is process-local, bounded to 50 files and one hour; a restart discards pending uploads. The bytes are provider
+  // blocks of the annotations storage route under staged/<id>, committed by the last block and read when the form saves.
+  // ponytail: an upload abandoned before its last block leaves its uncommitted blocks in the provider's staging area until
+  // the provider is reset; add a provider-level block discard when long-running hosts accumulate them.
   const stagedUploads = new Map();
+  const stagedStorage = () => organizationHost.providers.storage.forRoute('annotations');
+  const stagedKey = id => `staged/${id}`;
+  const dropStaged = id => {
+    const entry = stagedUploads.get(id);
+    stagedUploads.delete(id);
+    if (entry?.blocks?.length) Promise.resolve(entry.writing).then(() => stagedStorage().delete(stagedKey(id))).catch(() => {});
+  };
+  // The staged bytes as base64 once every block is written and committed.
+  const stagedContent = async (id, entry) => {
+    await entry.writing;
+    if (!entry.blocks.length) return '';
+    const { body } = await stagedStorage().get(stagedKey(id));
+    const chunks = [];
+    for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks).toString('base64');
+  };
   const uploadOwner = () => {
     const visitor = trace.getStore()?.visitor;
     return visitor ? `${visitor}|${currentIdentity().contactId ?? currentIdentity().id ?? 'anonymous'}` : null;
   };
   // Read staged files only inside the serialized form save. Retain them until
   // validation and persistence succeed, so a failed form can safely retry.
-  const stagedAttachments = (controls, { includeContent = true, prefix } = {}) => {
+  const stagedAttachments = (controls, { prefix } = {}) => {
     const field = prefix ? `${prefix}AttachFile_HiddenField_AnnotationIds` : [...controls.keys()].find((key) => /AttachFile_HiddenField_AnnotationIds$/.test(key));
     if (!field || !controls.has(field)) return [];
     let ids = [];
@@ -779,22 +839,23 @@ async function createPowerPagesSimulator({
     return ids.map((id) => {
       const entry = stagedUploads.get(String(id).toLowerCase());
       if (!entry || !entry.owner || entry.owner !== uploadOwner() || entry.received !== entry.size || Date.now() - entry.created > 3600000) throw error('A staged attachment is incomplete or no longer available. Upload it again before saving.', 400, 'FormAttachmentInvalid');
-      return { id: String(id).toLowerCase(), entry, attachment: { field: field.replace(/_HiddenField_AnnotationIds$/, ""), name: entry.name, type: entry.type, ...(includeContent ? { content: Buffer.concat(entry.chunks).toString("base64") } : {}) } };
+      return { id: String(id).toLowerCase(), entry, attachment: { field: field.replace(/_HiddenField_AnnotationIds$/, ""), name: entry.name, type: entry.type } };
     });
   };
   const submitStagedNativePostback = (entries, collected, options, files) => change(async () => {
     const submission = resolveNativeFormSubmission(entries, collected, options.requestUrl);
     const prefix = collected.find(item => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId)?.descriptor.ids.names;
     const staged = submission.body.action === 'submit' ? stagedAttachments(new URLSearchParams(entries), { prefix }) : [];
+    for (const item of staged) item.attachment.content = await stagedContent(item.id, item.entry);
     const result = await submitNativePostback(entries, collected, { ...options, attachments: [...files, ...staged.map(item => item.attachment)] });
-    for (const item of staged) if (stagedUploads.get(item.id) === item.entry) stagedUploads.delete(item.id);
+    for (const item of staged) if (stagedUploads.get(item.id) === item.entry) dropStaged(item.id);
     return result;
   });
   const retainStagedAttachments = (state, entries, collected) => {
     if (!state) return;
     const prefix = collected.find(item => item.descriptor.kind === state.kind && item.descriptor.formId === state.formId)?.descriptor.ids.names;
     let staged;
-    try { staged = stagedAttachments(new URLSearchParams(entries), { includeContent: false, prefix }); } catch { staged = []; }
+    try { staged = stagedAttachments(new URLSearchParams(entries), { prefix }); } catch { staged = []; }
     state.stagedAttachments = staged.map(({ id, entry }) => ({ id, name: entry.name, size: entry.size }));
   };
   const verificationRuntimeId = randomUUID();
@@ -828,15 +889,12 @@ async function createPowerPagesSimulator({
       while(activeRequests.size)await Promise.all([...activeRequests]);
       await attempt(() => mutation);
       await attempt(() => store.queue);
-      await attempt(() => settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true}));
-      for(const runtime of registeredPluginRuntimes.values())await attempt(() => closeClrHostPool({runtime,diagnostic:recordDiagnostic}));
+      // One close order (lib/organization-host.mjs): backend (settles committed work, closes CLR hosts), organization, API, managed identity.
+      await attempt(() => organizationHost.close());
       for (const event of events) event.end();
       await attempt(() => live.close());
       // The local identity provider lives and ends with its runtime.
       await attempt(() => externalSignIn?.close());
-      await attempt(() => dataverse?.close());
-      await attempt(() => managedIdentity?.close());
-      await attempt(() => organization?.close());
       managementStorage?.close();
       sourceComponentStorage?.close();
       server.closeAllConnections();
@@ -848,6 +906,16 @@ async function createPowerPagesSimulator({
   const events = new Set(),
     diagnostics = [],
     requests = [];
+  // Portal requests since start; the ring above keeps the last 300 only. Kept out of store.counters so portal traffic never
+  // invalidates the topology memo.
+  let portalRequestTotal = 0;
+  // The ring keeps paths without their query; a credential route (reset, invitation, confirmation) keeps nothing after its
+  // first segment, so a token carried in the path never reaches /_sim/ feeds. ponytail: keyword rule, extend when a site uses other names.
+  const ringPath = (url) => {
+    const segments = String(url).split("?")[0].split("/");
+    const credential = segments.findIndex((segment) => /password|token|secret|invit|confirm|redeem/i.test(segment));
+    return credential < 0 ? segments.join("/") : `${segments.slice(0, credential + 1).join("/")}/…`;
+  };
   const audit = new AuditLog(),
     trace = new AsyncLocalStorage();
   store.onSave = ({ durationMs, mode }) => {
@@ -1011,9 +1079,8 @@ async function createPowerPagesSimulator({
     if (diagnostics.length > 300) diagnostics.shift();
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
   };
-  const backend = await createOrganizationBackend({ store, items: pluginSteps, handlers: registeredPluginSteps,
-    runtimes: registeredPluginRuntimes, descriptors: registeredPluginDescriptors, operations, workflows: workflowsView,
-    identities: () => registeredOperations.flowIdentities, diagnostic: recordDiagnostic, systemJobs: () => Boolean(organization) });
+  sourceDiagnostic = recordDiagnostic; earlySourceDiagnostics.splice(0).forEach(recordDiagnostic);
+  const backend = await organizationHost.createBackend();
   const { webhooks } = backend;
   ({ triggerRunner, asyncPluginRunner } = backend);
   const liveMapping = (entity) => {
@@ -1156,9 +1223,7 @@ async function createPowerPagesSimulator({
   };
   const writeFormRecord = async (entity, id, values, identity) => {
     if (config().mode !== "live")
-      return id
-        ? store.update(entity, id, values, identity, { portalRequest: true })
-        : store.create(entity, values, identity, { portalRequest: true });
+      return store.transact(() => id ? portalRecordWrites(store, { portalRequest: true }).update(entity, id, values, identity) : portalRecordWrites(store, { portalRequest: true }).create(entity, values, identity), { incremental: true });
     const mapping = liveMapping(entity);
     const response = await live.request(
       `/_api/${mapping.entitySet}${id ? `(${encodeURIComponent(id)})` : ""}`,
@@ -1198,10 +1263,55 @@ async function createPowerPagesSimulator({
       );
     return { [mapping.idColumn]: recordId };
   };
+  // The site's application user (Learn power-pages/admin/connectivity: "# Portals-<site name>"), which server logic's
+  // InvokeCustomApi runs as: the observed one (observed.portalApplicationUserId) when the organization has it, else a local
+  // application user for this site, created once. unverified: its roles; the native Portal Application User, Service Writer and
+  // Service Deleter roles are not seeded locally, so System Administrator stands in.
+  const portalApplicationAppId = () => uuidV5(organization.organizationId, `portal-application:${String(portal.website?.id ?? '').replace(/[{}]/g, '').toLowerCase()}`);
+  // The application user id when it exists (observed or local), else null; never writes.
+  const existingPortalApplicationUser = () => {
+    const known = id => id && store.tableRows('systemuser').some(row => String(row.systemuserid).toLowerCase() === String(id).replace(/[{}]/g, '').toLowerCase());
+    if (known(store.observed?.portalApplicationUserId)) return String(store.observed.portalApplicationUserId).replace(/[{}]/g, '').toLowerCase();
+    const id = uuidV5(organization.organizationId, `systemuser:app:${portalApplicationAppId()}`);
+    return known(id) ? id : null;
+  };
+  const portalApplicationUser = async () => {
+    const existing = existingPortalApplicationUser();
+    if (existing) return existing;
+    const appId = portalApplicationAppId();
+    await createApplicationUser(store, { organizationId: organization.organizationId, tenantId: organization.tenantId ?? 'local' }, { appId, displayName: `# Portals-${portal.website?.name ?? 'site'}`, roles: ['System Administrator'] });
+    return uuidV5(organization.organizationId, `systemuser:app:${appId}`);
+  };
+  // Server-object bridges of exported server logic (exported-operations.mjs runExportedServerLogic `services`).
+  const serverLogicServices = () => ({
+    // Enhanced authorization: the visitor's mapped Dataverse user (impersonation; portal-authorization.mjs), else the application user.
+    invokeCustomApi: organizationCustomApi(organization, { principal: async () => store.portalAuthorization?.principalId(currentIdentity()) ?? portalApplicationUser(), origin: dataverse?.origin ?? localOrigin }),
+    triggerFlow: ({ flowId, payload, identity }) => runPortalFlow({ flow: operationPortal().cloudFlows.find(record => String(record.processId ?? '').replace(/[{}]/g, '').toLowerCase() === flowId), input: payload, identity }),
+    httpRewrites: Object.assign({}, ...Object.values(settingOptionsRest.connections ?? {}).map(connection => connection?.settings?.rewrites ?? {})),
+    log: entry => recordDiagnostic({ code: 'SERVER_LOGIC_LOG', severity: entry.level === 'Error' ? 'error' : entry.level === 'Warn' ? 'warning' : 'info', ...entry }),
+    diagnostic: entry => recordDiagnostic(entry),
+  });
+  // The portal cloud-flow pipeline (/_api/cloudflow/v1.0/trigger/<guid> and Server.Connector.CloudFlow.TriggerAsync).
+  const runPortalFlow = async ({ flow, input, identity }) => {
+    if (!flow) return { status: 404, body: { error: { code: 'NotFound', message: 'The site has no such cloud flow.' } } };
+    try { assertOperationRole(flow, identity); } catch (cause) { return { status: cause.status ?? 403, body: { error: { code: cause.code ?? 'Forbidden', message: cause.message } } }; }
+    const flowHandler = registeredOperations.cloudFlows.get(flow.name.toLowerCase());
+    const item = operations().find(item => item.kind === 'cloud-flow' && item.id === flow.id);
+    if (item.mode === 'placeholder') operationPlaceholder(item);
+    if (item.mode === 'disabled') throw error('This cloud flow is explicitly disabled locally.', 503);
+    const correlationId = currentRequest()?.correlationId ?? null;
+    const context = { record: flow, workflows: workflowsView(), input, identity, store, portal, serviceProfile: registeredOperations.flowIdentities.get(String(flow.processId ?? '').replace(/[{}]/g, '').toLowerCase()), steps: item.configuration?.steps,
+      diagnostic: entry => recordDiagnostic({ ...entry, correlationId }), connectors: organizationHost.connectors, context: { correlationId, secrets: organizationHost.providers.secrets } };
+    if (item.mode === 'handler' && !flowHandler) operationPlaceholder(item);
+    return item.mode === 'mock' ? { status: item.configuration.status ?? 200, body: Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {} }
+      : item.mode === 'exported' ? await (async () => { let failure; const value = await store.transact(async () => { try { return await runExportedCloudFlow(context); } catch (error) { failure = error; return null; } }); if (failure) throw failure; return value; })()
+      : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
+  };
   const executeServerLogic = async ({ name, method = 'GET', operation, body = '', input = '', query = {} }) => {
     const record = operationPortal().serverLogics.find(record => record.name.toLowerCase() === String(name).toLowerCase());
     const handler = registeredOperations.serverLogics.get(record?.name.toLowerCase());
     if (!record || config().mode === 'live') return null;
+    assertServerLogicEnabled(portal, entry => recordDiagnostic({ ...entry, name: record.name }));
     const identity = currentIdentity();
     assertOperationRole(record, identity);
     const item = operations().find(item => item.kind === 'server-logic' && item.id === record.id);
@@ -1211,7 +1321,8 @@ async function createPowerPagesSimulator({
       if ((item.configuration.status ?? 200) >= 400) throw error('Configured local operation failure.', item.configuration.status, 'LocalOperationMockFailure');
       return JSON.stringify(Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {});
     }
-    const context = { record, portal, store, identity, method, operation, body, input, query };
+    const context = { record, portal, store, identity, method, operation, body, input, query,
+      environmentVariables: environmentVariablePayload(store.state), services: serverLogicServices() };
     if (item.mode === 'exported') return runExportedServerLogic(context);
     if (!handler) operationPlaceholder(item);
     const answer = await handler({ ...context, runExportedServerLogic: () => runExportedServerLogic(context) });
@@ -1237,6 +1348,9 @@ async function createPowerPagesSimulator({
       portal,
       store,
       identity: formIdentity,
+      // FileStorage/CloudStorageAccount: attachment bytes go to storage route portalCloudAttachments (lib/form-service.mjs).
+      cloudAttachments: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
+      diagnostic: recordDiagnostic,
       schemas: {
         ...solutionMetadata.componentSchemas,
         ...config().componentSchemas,
@@ -1258,8 +1372,7 @@ async function createPowerPagesSimulator({
           if (config().mode !== "live")
             return store.transact(() =>
               work({
-                create: (entity, values, identity) => store.createRecord(entity, values, identity),
-                update: (entity, id, values, identity) => store.updateRecord(entity, id, values, identity),
+                ...portalRecordWrites(store),
                 associate: (entity, id, navigation, targetId, identity) =>
                   store.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
               }),
@@ -1374,10 +1487,12 @@ async function createPowerPagesSimulator({
   let localOrigin;
   const runtimeState = () => ({
     runtime: runtimeOption,
-    capabilities: { ...runtimeCapabilities(runtimeOption), dataverseApi: dataverseConfig.enabled, setup: true,
-      records: true, staff: true, personas: true, liveBridge: true, portalRendering: true },
+    // capabilities: the registry's legacy summary; capabilityReport: its records, missing prerequisites and gaps.
+    ...organizationHost.capabilityStatus(),
+    inventory: inventorySummary(solutionInventory), providers: providerDescriptors(organizationHost.providers),
+    services: organizationHost.providers.serviceFixtures?.describe() ?? [],
     links: { administration: '/_sim/', setup: '/_setup/', modelDriven: '/main.aspx', powerPages: '/', dataverseApi: dataverse?.origin ?? null },
-    simulation: storageAdapter?.report(store.state) ?? simulationReport(),
+    simulation: organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
     recordCapabilities: Object.fromEntries(Object.keys(store.state.mappings).map(name => [name,
       storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true }])),
   });
@@ -1390,11 +1505,18 @@ async function createPowerPagesSimulator({
     const permissionModel = appliedPermissionModel;
     const effectiveIdentity = currentIdentity(),
       visibleCounts = {};
+    // The counts belong to the principal of the request's session (the signed-in visitor), else the configured persona; a /_sim
+    // request carries no visitor identity of its own (requestAuth), so the session's is resolved here.
+    const session = trace.getStore()?.auth?.session;
+    const countIdentity = session && config().mode !== "live"
+      ? trace.run({ ...trace.getStore(), auth: { session, identity: sessionIdentity(session) } }, currentIdentity) : effectiveIdentity;
     for (const entity of Object.keys(
       summary ? state.tableCounts : (state.tables ?? {}),
     )) {
       try {
-        visibleCounts[entity] = store.rows(entity, effectiveIdentity).length;
+        // Through the visitor's enhanced-authorization mapping, previewed when no portal request has made it yet (/_sim never
+        // provisions it: portal-authorization.mjs filterRules).
+        visibleCounts[entity] = store.rows(entity, { ...countIdentity, mappingPreview: true }).length;
       } catch (err) {
         visibleCounts[entity] = `Unavailable: ${err.code ?? err.message}`;
       }
@@ -1403,6 +1525,7 @@ async function createPowerPagesSimulator({
       csrf,
       ...runtimeState(),
       dataverse: dataverseSummary(),
+      docs: DOCS,
       config: {
         ...cfg,
         confinePortalPages: cfg.confinePortalPages === true,
@@ -1521,7 +1644,7 @@ async function createPowerPagesSimulator({
     // Keep the snapshot's original revision across source/profile I/O. SDK
     // transactions can commit outside the host mutation queue during that work.
     const expectedRevision = store.snapshotRevision(state) ?? store.revision;
-    const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, clientResources, generatedPresets };
+    const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, clientResources, generatedPresets, solutionScan, solutionInventory };
     const pinChanged = JSON.stringify(state.simulator?.deploymentProfilePin ?? null) !== JSON.stringify(config().deploymentProfilePin ?? null);
     try {
       const recordsChanged = !isDeepStrictEqual(state.simulator?.modelDriven?.records, config().modelDriven?.records);
@@ -1530,7 +1653,7 @@ async function createPowerPagesSimulator({
         sourcePortal = await importSource(state.simulator?.modelDriven?.records);
         if (requirePortalSource) assertPortalSource(sourcePortal);
       }
-      portal = applyPortalOverrides(sourcePortal, state.simulator?.portalOverrides);
+      portal = applyPortalOverrides(await environmentBound(sourcePortal, state), state.simulator?.portalOverrides);
       if (pinChanged) {
         sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
         await loadSolutions();
@@ -1540,7 +1663,7 @@ async function createPowerPagesSimulator({
       }
       await replaceCompiledState(state, { expectedRevision });
     } catch (cause) {
-      ({ portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, clientResources, generatedPresets } = previous);
+      ({ portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, clientResources, generatedPresets, solutionScan, solutionInventory } = previous);
       store.presetLibrary = generatedPresets;
       throw cause;
     }
@@ -1562,7 +1685,7 @@ async function createPowerPagesSimulator({
       const records = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
       if (isDeepStrictEqual(records, appliedManagementRecords)) return;
       const imported = await importSource(records);
-      const nextPortal = applyPortalOverrides(imported, config().portalOverrides);
+      const nextPortal = applyPortalOverrides(await environmentBound(imported, store.state), config().portalOverrides);
       const dependencies = { ...await discoverSourceDependencies(nextPortal), compat: localOverrides.compat };
       const previous = { portal, sourcePortal, sourceDependencies, appliedPermissionModel };
       let published = false;
@@ -1596,7 +1719,7 @@ async function createPowerPagesSimulator({
     // this preset replaces. Organization-owned rows are retained explicitly.
     const state = store.snapshot({ sections: Object.keys(store.state).filter(key => !replaced.includes(key)) });
     state.simulator ??= config();
-    const organizationSections = { mappings: store.state.mappings, tables: store.state.tables };
+    const organizationSections = { mappings: store.state.mappings, tables: store.state.tables, dataverse: store.state.dataverse };
     for (const key of replaced)
       // resolvePreset returned a detached graph owned by this operation.
       if (preset[key] !== undefined) state[key] = preset[key];
@@ -1742,7 +1865,10 @@ async function createPowerPagesSimulator({
         if (await fs.stat(from).then(() => true, e => {if(e.code === 'ENOENT')return false;throw e;})) await fs.cp(from, path.join(path.dirname(file), name), {recursive:true});
       }
     }),
-    start: ({file, definition}) => createSimulator({ sourceDir, stateFile:file, port:0, host, watch, project, dataPacks, packs,
+    // A persona instance inherits the parent's registered settings except its own listeners (dataverse) and kind (runtime).
+    start: async ({file, definition}) => createSimulator({ ...(await import('./lib/config-keys.mjs')).settingOptions({ ...settingOptionsRest,
+      modelDriven: modelDrivenOption, simulation: simulationOption, contentPolicyDefaults: policyDefaults }, { exclude: ['dataverse', 'runtime'] }),
+      sourceDir, stateFile:file, port:0, host, watch, project, dataPacks, packs,
       solutionRoots, solutionOrder, deploymentProfiles, deploymentProfile, projectRoot, localOverrides,
       identityProvider: identityProviderOption,
       environmentVariables, observed: observedOption, render: renderOption, platform: platformOption, dataModel,
@@ -1859,14 +1985,14 @@ async function createPowerPagesSimulator({
     ...(config().importDiagnostics ?? []),
     ...(appliedPermissionModel?.diagnostics ?? []),
     ...(solutionMetadata.diagnostics ?? []),
+    // Source loader failures (unreadable roots, invalid XML/YAML) stay visible in status; serve continues, preflight blocks.
+    ...(solutionScan?.diagnostics ?? []).filter(item => item.severity === 'error' && !item.inventory),
     ...diagnostics,
   ];
   /** Cheap runtime status for the toolkit panel and tools; no fingerprints are recomputed. */
   const statusPayload = () => {
     const state = store.snapshot({ sections: ["settings", "simulator", "presets"] });
-    const byCode = {};
     const all = allDiagnostics();
-    for (const item of all) byCode[item.code ?? "OBSERVATION"] = (byCode[item.code ?? "OBSERVATION"] ?? 0) + 1;
     return {
       csrf,
       ...runtimeState(),
@@ -1892,7 +2018,7 @@ async function createPowerPagesSimulator({
       reloading: Boolean(reloadPromise),
       pendingReload: Boolean(reloadPromise) && reloadRequested,
       pageCount: portal.pages.length,
-      diagnostics: { total: all.length, byCode },
+      diagnostics: { total: all.length, byCode: diagnosticsByCode(all) },
       audit: { retained: audit.entries.length, latestSequence: audit.sequence },
       identity: identitySummary(),
       permissionMode: state.settings?.permissionMode ?? "enforce",
@@ -1916,6 +2042,12 @@ async function createPowerPagesSimulator({
       liveWrites: live.status().liveWrites,
       localOrigin,
       adminUrl: `${localOrigin}/_sim/`,
+      docs: DOCS,
+      // Imported model-driven apps and the /_sim/api route prefixes this host mounts (the admin app reads them instead of probing).
+      modelDrivenApps: modelDrivenAppsOf(solutionMetadata),
+      routes: simApiRoutes(DASHBOARD_ROUTES, PACK_ROUTES, MESSAGING_ROUTES, FLOW_ROUTES, coreAdmin.routes, PORTAL_ADMIN_ROUTES, ENVIRONMENT_ROUTES),
+      // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
+      adminAdjacentRoutes: MODEL_DRIVEN_ROUTES,
     };
   };
   const SCENARIO_FIELDS = ["id", "name", "description", "preset", "persona", "permissionMode", "permissionSource"];
@@ -1974,37 +2106,8 @@ async function createPowerPagesSimulator({
     }
   };
   const lookupId = (value) => personaKey(value && typeof value === "object" ? value.id ?? value.value : value);
-  /** Environment variable definitions joined with their current local values, when imported. */
-  const environmentVariableTable = () => {
-    const definitionMapping = tableMapping(ENVIRONMENT_TABLES.definition);
-    const valueMapping = tableMapping(ENVIRONMENT_TABLES.value);
-    if (!definitionMapping) return { available: false, valuesMapped: Boolean(valueMapping), definitions: [] };
-    const tables = store.snapshot({ tables: [definitionMapping.logicalName, ...(valueMapping ? [valueMapping.logicalName] : [])] }).tables ?? {};
-    const values = valueMapping ? tables[valueMapping.logicalName] ?? [] : [];
-    const valueFor = (definitionId) =>
-      values.find((row) => [row.environmentvariabledefinitionid, row._environmentvariabledefinitionid_value].some((candidate) => lookupId(candidate) === definitionId));
-    return {
-      available: true,
-      valuesMapped: Boolean(valueMapping),
-      definitions: (tables[definitionMapping.logicalName] ?? []).map((row) => {
-        const definitionId = personaKey(row[definitionMapping.idColumn]);
-        const current = valueFor(definitionId);
-        return {
-          id: definitionId,
-          schemaName: row.schemaname ?? row.schemaName ?? null,
-          displayName: row.displayname ?? row.displayName ?? row.schemaname ?? null,
-          type: row.type ?? null,
-          defaultValue: row.defaultvalue ?? null,
-          description: row.description ?? null,
-          secret: Number(row.secretstore ?? 0) === 1 || Number(row.type) === 100000005,
-          valueId: current ? personaKey(current[valueMapping.idColumn]) : null,
-          value: current?.value ?? null,
-          effectiveValue: current?.value ?? row.defaultvalue ?? null,
-          overridden: Object.hasOwn(config().environmentVariables ?? {}, row.schemaname ?? row.schemaName ?? ""),
-        };
-      }),
-    };
-  };
+  /** Environment variable definitions joined with their current local values, when imported (sim-environment-routes.mjs). */
+  const environmentVariableTable = () => sharedEnvironmentVariableTable(store, { secrets: organization?.api?.secrets ?? null });
   async function largeJsonBody(req, limit = 256 * 1024 * 1024) {
     const chunks = [];
     let size = 0;
@@ -2025,11 +2128,152 @@ async function createPowerPagesSimulator({
     dataverseSummary, managedIdentitySummary, managedIdentityList, environmentValue, json, jsonObjectBody, change });
 
   const staffSession = createStaffSessionHandler({ sessions: staffSessions, csrf: () => csrf, json, readBody: jsonObjectBody });
+  // A web file's bytes from storage route portalWebFiles (WebFiles/StorageLocation AzureBlobStorage); never the export file.
+  const cloudWebFile = async (id, name, requestPath) => {
+    const unavailable = (message) => {
+      recordDiagnostic({ code: 'WEBFILE_CLOUD_STORAGE_UNAVAILABLE', severity: 'error', path: requestPath, message });
+      return error(message, 503, 'WEBFILE_CLOUD_STORAGE_UNAVAILABLE');
+    };
+    let provider;
+    try { provider = organizationHost.providers.storage.forRoute('portalWebFiles'); }
+    catch (cause) { throw unavailable(`WebFiles/StorageLocation is AzureBlobStorage, but storage route portalWebFiles is unavailable: ${cause.message}`); }
+    if (!provider) throw unavailable('WebFiles/StorageLocation is AzureBlobStorage, but storage route portalWebFiles serves the export; set providers.routes.portalWebFiles to a storage provider.');
+    try {
+      const { body } = await provider.get(`webfiles/${String(id).replace(/[{}]/g, '').toLowerCase()}/${name.toLowerCase()}`);
+      const chunks = [];
+      for await (const chunk of body) chunks.push(Buffer.from(chunk));
+      return Buffer.concat(chunks);
+    } catch (cause) {
+      throw unavailable(`Web file ${name} is not available from storage route portalWebFiles (${cause.code ?? 'Error'}).`);
+    }
+  };
+  // Note and attachment bodies for the portal readers (native services, /_api): inline or from the storage provider.
+  const noteAttachmentBody = (logical, row, options) => organizationHost.attachmentBody(logical, row, options);
+  // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs), created once the organization exists.
+  let messagingRoutes = null;
+  // /_sim/api/flow-runs and /_sim/api/flow-waits (sim-flow-routes.mjs) answer next to them.
+  let flowRoutes = null;
+  // The Power Pages part of the dashboard feed: portal listener, identity provider, persona runtimes, live bridge, PCF
+  // controls, audit, diagnostics by code, reload revision, deployment profile and the last 20 portal requests.
+  const dashboardExtras = () => {
+    const all = allDiagnostics();
+    const identityProvider = externalSignIn?.status() ?? { available: false };
+    const runtimes = personaRuntimes.list().items ?? [];
+    const bridge = live.status();
+    return {
+      runtime: { simulationLevel: simulationReport(simulation).level, revision, reloading: Boolean(reloadPromise), localOrigin,
+        stateFile: simulation?.level === 'dry-run' || !stateFile ? null : path.relative(projectRoot, stateFile).split(path.sep).join('/'), projectRoot: '.',
+        deploymentProfile: portal.deploymentProfile ?? null },
+      nodes: [
+        { id: 'client:browser', kind: 'client', label: 'Portal visitors', status: 'ready', detail: {}, link: '#access' },
+        { id: 'client:staff', kind: 'client', label: 'Staff browser', status: 'ready', detail: {}, link: '#dataverse' },
+        { id: 'host:portal', kind: 'host', label: 'Power Pages portal', status: 'listening', detail: { origin: localOrigin, pages: portal.pages.length, deploymentProfile: portal.deploymentProfile ?? null }, link: '#overview' },
+        { id: 'host:model-driven', kind: 'host', label: 'Model-driven apps', status: 'listening', detail: { path: '/main.aspx' }, link: '#dataverse' },
+        { id: 'host:identity-provider', kind: 'host', label: 'Local identity provider', status: identityProvider.available ? 'listening' : 'disabled',
+          detail: { port: identityProvider.port ?? null, providers: Array.isArray(identityProvider.providers) ? identityProvider.providers.length : 0 }, link: '#access' },
+        { id: 'host:setup', kind: 'host', label: 'Setup workspace', status: 'listening', detail: { path: '/_setup/' } },
+        { id: 'host:admin', kind: 'host', label: 'Administration', status: 'listening', detail: { path: '/_sim/' } },
+        { id: 'app:pcf', kind: 'app', label: 'Code components', status: codeComponents.controls.size ? 'ready' : 'disabled', detail: { controls: codeComponents.controls.size }, link: '#capabilities' },
+        { id: 'bridge:live', kind: 'bridge', label: 'Live connection', status: bridge.connected ? 'ready' : 'disabled',
+          detail: { connected: bridge.connected, host: hostnameOf(bridge.origin), liveWrites: bridge.liveWrites }, link: '#connection' },
+        ...runtimes.map((item) => ({ id: `persona-runtime:${item.id}`, kind: 'persona-runtime', label: item.label ?? item.id, status: item.status === 'running' ? 'listening' : 'disabled',
+          detail: { context: item.context ?? null, scenario: item.scenario ?? null, createdAt: item.createdAt ?? null }, link: '#access' })),
+      ],
+      edges: [
+        { from: 'client:browser', to: 'host:portal', kind: 'http', status: 'listening', label: 'pages' },
+        { from: 'client:staff', to: 'host:model-driven', kind: 'http', status: 'listening', label: 'browser' },
+        { from: 'host:portal', to: 'org:store', kind: 'process', status: 'ready', label: 'records' },
+        { from: 'host:model-driven', to: 'org:store', kind: 'process', status: 'ready', label: 'records' },
+        ...(identityProvider.available ? [{ from: 'host:portal', to: 'host:identity-provider', kind: 'http', status: 'listening', label: 'sign-in' }] : []),
+        ...(bridge.connected ? [{ from: 'host:portal', to: 'bridge:live', kind: 'http', status: 'ready', label: 'live reads' }] : []),
+        ...runtimes.map((item) => ({ from: 'host:portal', to: `persona-runtime:${item.id}`, kind: 'process', status: item.status === 'running' ? 'listening' : 'disabled', label: 'persona' })),
+      ],
+      configuration: { settingsKeys: configuredSettings, ports: { portal: Number(new URL(localOrigin).port) || null, identityProvider: identityProvider.available ? identityProvider.port ?? null : null } },
+      activity: {
+        requests: { total: portalRequestTotal, retained: requests.length, recent: requests.slice(-20).map(({ at = null, method, path: route, status, durationMs }) => ({ at: typeof at === 'number' ? new Date(at).toISOString() : at, method, path: route, status, ms: durationMs })) },
+        diagnostics: { total: all.length, byCode: diagnosticsByCode(all) },
+        audit: { retained: audit.entries.length, sequence: audit.sequence, dropped: audit.dropped },
+        reloads: { revision, lastReloadAt: bootstrapTimings.lastReload?.at ?? null },
+      },
+    };
+  };
+  // GET /_sim/api/dashboard (sim-dashboard-routes.mjs): the shared topology plus this host's listeners, runtimes and rings.
+  // Before the organization exists it answers 503 { status: 'starting' }.
+  const dashboardRoutes = createDashboardRoutes({ host: () => (organization ? organizationHost : null), docs: DOCS, extras: dashboardExtras });
+  // GET /_sim/api/packs (sim-pack-routes.mjs): registered packs, matched against the current portal.
+  const packRoutes = createPackRoutes({ packs: projectPacks ?? [], registration: { project, dataPacks, packs }, projectRoot, state: () => store.state,
+    library: () => generatedPresets, simulation: () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()), portal: () => sourcePortal ?? portal ?? null });
+  const messaging = async (req, res, url) => await dashboardRoutes(req, res, url) || await packRoutes(req, res, url) || (organization ? await (messagingRoutes ??= createMessagingRoutes({ api: organization.api, csrf: () => csrf }))(req, res, url)
+    || await (flowRoutes ??= createFlowRoutes({ api: organization.api, csrf: () => csrf }))(req, res, url) : false);
+  // /_sim/api/environment (sim-environment-routes.mjs): variables, local overrides and the deployment profile pin.
+  const environmentRoutes = createEnvironmentRoutes({ csrf: () => csrf, change, json, jsonObjectBody, jsonBody, environment: {
+    definitions: environmentVariableTable,
+    profiles: () => deploymentProfilesSummary(profileConfig, activeProfiles),
+    setOverride: async (schemaName, value) => {
+      const state = store.snapshot();
+      applyEnvironmentOverride(store, state, schemaName, value, { secrets: organization?.api?.secrets ?? null });
+      await saveState(state);
+      return environmentVariableTable().definitions.find((item) => item.schemaName === schemaName);
+    },
+    selectProfile: async (body) => {
+      profileSelection(profileConfig, body);
+      const state = store.snapshot();
+      if (body === null) delete state.simulator.deploymentProfilePin;
+      else state.simulator.deploymentProfilePin = body;
+      await saveState(state);
+      return deploymentProfilesSummary(profileConfig, activeProfiles);
+    },
+    extra: async () => {
+      let deploymentProfiles = [];
+      try {
+        deploymentProfiles = (await fs.readdir(path.join(portal.sourceDir, "deployment-profiles")))
+          .filter((name) => /\.deployment\.ya?ml$/i.test(name))
+          .map((name) => name.replace(/\.deployment\.ya?ml$/i, ""))
+          .sort();
+      } catch {
+        deploymentProfiles = [];
+      }
+      return { sourceDir: portal.sourceDir, solutionRoots, live: live.status(), deploymentProfile: portal.deploymentProfile ?? null, deploymentProfiles,
+        profileChanges: (portal.profileChanges ?? []).length, referenceImports: config().referenceImports ?? [] };
+    },
+  } });
+  // GET /_sim/api/preflight: the live preflight report; the source graph is rebuilt with the active profile bindings.
+  const preflight = ({ scenario = null, strict = false } = {}) => organizationHost.preflight({ simulation, scenario, strict, portal,
+    diagnostics: activeProfiles.diagnostics ?? [],
+    graph: buildSourceGraph({ scan: solutionScan, metadata: solutionMetadata, solutionData, workflows: operationWorkflows, portal, clientResources,
+      // The model-driven catalogue's tables on this host: the portal provider's site tables plus the store mappings.
+      mappings: { ...powerPagesTables(portal, modelMetadata()), ...store.snapshot({ sections: ['mappings'] }).mappings }, bindings: graphBindings({ environmentVariables, profile: activeProfiles }) }) });
   const coreAdmin = createRuntimeAdminRouter({ store, json, jsonObjectBody, change, csrf: () => csrf, status: statusPayload, dataverseAdmin, staffSession,
-    simulation: () => storageAdapter?.report(store.state) ?? simulationReport() });
+    simulation: () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()) });
+  // One table of [prefix, handler] for the /_sim/api prefixes this host answers after the shared routers: admin() dispatches
+  // through it and PORTAL_ADMIN_ROUTES (status `routes`) is read from it. /session is sessionApi, which the request handler
+  // also mounts before admin() so the sign-in page keeps its own rules; /__sim/events is not under /_sim/api and is not listed.
+  const PORTAL_ADMIN = [
+    ['/preflight', async (req, res, url, relative) => {
+      if (relative !== '/preflight' || req.method !== 'GET') throw error('Admin endpoint not found.', 404);
+      const scenario = url.searchParams.get('requires') ? scenarioSettings({ id: url.searchParams.get('scenario') ?? 'request', requires: url.searchParams.getAll('requires') }) : null;
+      return json(res, 200, await preflight({ scenario, strict: url.searchParams.get('strict') === 'true' }));
+    }],
+    ['/session', (req, res, url) => sessionApi(req, res, url)],
+    // GET /_sim/api/model-driven/offline: every staff session's mobile offline summary (model-driven/offline.mjs).
+    ['/model-driven/offline', (req, res, url, relative) => {
+      if (relative !== '/model-driven/offline' || req.method !== 'GET') throw error('Admin endpoint not found.', 404);
+      return json(res, 200, { items: modelDrivenHandler.offlineSessions() });
+    }],
+    ...['/page-resources', '/verification-witness', '/operations', '/persona-runtimes', '/personas', '/scenarios', '/state', '/diagnostics', '/audit', '/shutdown',
+      '/persona-catalog', '/reference', '/environment', '/experiments', '/portal-settings', '/portal-snippets', '/portal-roles', '/portal-access-rules', '/config', '/assets',
+      '/live', '/reset', '/reload', '/mappings', '/plugins', '/permissions', '/endpoints', '/presets'].map(prefix => [prefix, portalAdmin]),
+  ];
+  const PORTAL_ADMIN_ROUTES = PORTAL_ADMIN.map(([prefix]) => prefix);
   async function admin(req, res, url) {
+    if (await messaging(req, res, url)) return;
     if (await coreAdmin(req, res, url)) return;
     const relative = url.pathname.slice("/__sim/api".length);
+    const entry = PORTAL_ADMIN.find(([prefix]) => relative === prefix || relative.startsWith(prefix + '/'));
+    if (!entry) throw error("Admin endpoint not found.", 404);
+    return entry[1](req, res, url, relative);
+  }
+  async function portalAdmin(req, res, url, relative) {
     const method = req.method;
     if (method === "GET" && relative === "/page-resources") {
       const route = url.searchParams.get("path") ?? "/";
@@ -2088,28 +2332,7 @@ async function createPowerPagesSimulator({
     if (method === "GET" && relative === "/personas") return json(res, 200, personasPayload());
     if (method === "GET" && relative === "/scenarios")
       return json(res, 200, { scenarios: Array.isArray(config().scenarios) ? config().scenarios : [], activeScenario: config().activeScenario ?? null });
-    if (method === "GET" && relative === "/environment") {
-      let deploymentProfiles = [];
-      try {
-        deploymentProfiles = (await fs.readdir(path.join(portal.sourceDir, "deployment-profiles")))
-          .filter((name) => /\.deployment\.ya?ml$/i.test(name))
-          .map((name) => name.replace(/\.deployment\.ya?ml$/i, ""))
-          .sort();
-      } catch {
-        deploymentProfiles = [];
-      }
-      return json(res, 200, {
-        sourceDir: portal.sourceDir,
-        solutionRoots,
-        live: live.status(),
-        deploymentProfile: portal.deploymentProfile ?? null,
-        deploymentProfiles,
-        profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
-        profileChanges: (portal.profileChanges ?? []).length,
-        environmentVariables: environmentVariableTable(),
-        referenceImports: config().referenceImports ?? [],
-      });
-    }
+    if (await environmentRoutes(req, res, url)) return;
     if (method === "GET" && relative === "/state/export") {
       // Credential material never leaves the runtime: password hashes are dropped and secrets keep only hint and expiry.
       const snapshot = store.snapshot();
@@ -2174,23 +2397,23 @@ async function createPowerPagesSimulator({
       const item = operations().find(item => item.key === key);
       if (!item) throw error('This operation is not in the current source exports.', 404);
       if (!item.configurable) throw error(item.kind === 'plugin-step' ? item.unsupported || 'This plugin registration is disabled in the export.' : 'This workflow has no exported portal consumer or trigger route. Add its consumer to the portal sources first.', 409);
-      const previousRuntime = registeredPluginRuntimes.get(item.id);
-      let preparedRuntime, value;
+      let value;
       if (method !== 'DELETE') {
         value = await jsonObjectBody(req);
         validateOperationOverrides({ [key]: value },{pluginStep:item.kind==='plugin-step'?item:undefined});
         if (value.mode === 'handler' && !item.registered) throw error('No trusted project handler is registered for this operation.', 409);
-        if(value.mode==='clr'){if(!item.clrAvailable)throw error('No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',409);if(item.unsupported)throw error(item.unsupported,409);if(!previousRuntime)preparedRuntime=await prepareClrRuntime(registeredPluginDescriptors.get(item.id));}
+        if(value.mode==='clr'){if(!item.clrAvailable)throw error('No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',409);if(item.unsupported)throw error(item.unsupported,409);}
         if(value.mode==='handler'&&item.unsupported)throw error(item.unsupported,409);
         if (value.mode === 'exported' && !item.definitionAvailable) throw error('The selected sources do not include this operation definition.', 409);
       }
+      const next = { ...(store.state.simulator?.operations ?? {}) };
+      if (method === 'DELETE') delete next[key]; else next[key] = value;
+      // The host prepares a CLR runtime this choice selects before the choice is stored, and closes one it no longer selects.
       // Reading the body and preparing a trusted runtime can complete pending
       // SDK work. Apply this configuration delta to a fresh snapshot afterwards.
-      if(preparedRuntime)registeredPluginRuntimes.set(item.id,preparedRuntime);
-      let state;
-      try {
+      await organizationHost.applyOperationOverrides(next, async () => {
         for (let attempt = 0; ; attempt++) {
-          state = store.snapshot();
+          const state = store.snapshot();
           state.simulator ??= config();
           state.simulator.operations = { ...(state.simulator.operations ?? {}) };
           if (method === 'DELETE') delete state.simulator.operations[key];
@@ -2203,15 +2426,7 @@ async function createPowerPagesSimulator({
             if (cause.code !== 'StateConflict' || attempt >= 2) throw cause;
           }
         }
-      }
-      catch(cause){
-        if(preparedRuntime){registeredPluginRuntimes.delete(item.id);closeClrHostPool({runtime:preparedRuntime,diagnostic:recordDiagnostic});}
-        throw cause;
-      }
-      if(previousRuntime&&state.simulator.operations[key]?.mode!=='clr'){
-        registeredPluginRuntimes.delete(item.id);
-        closeClrHostPool({runtime:previousRuntime,diagnostic:recordDiagnostic});
-      }
+      });
       return json(res, 200, { items: operations() });
     });
     if (method === "POST" && relative === "/shutdown") {
@@ -2348,16 +2563,6 @@ async function createPowerPagesSimulator({
         return json(res, method === "POST" ? 201 : 200, { scenarios: next, activeScenario: state.simulator.activeScenario ?? null });
       });
     }
-    if (method === 'PUT' && relative === '/environment/profiles')
-      return change(async () => {
-        const body = await jsonBody(req);
-        profileSelection(profileConfig, body);
-        const state = store.snapshot();
-        if (body === null) delete state.simulator.deploymentProfilePin;
-        else state.simulator.deploymentProfilePin = body;
-        await saveState(state);
-        return json(res, 200, deploymentProfilesSummary(profileConfig, activeProfiles));
-      });
     if (method === "POST" && relative === "/environment/reference")
       return change(async () => {
         const body = await jsonObjectBody(req);
@@ -2367,40 +2572,6 @@ async function createPowerPagesSimulator({
         validateConfig(state.simulator);
         await saveState(state);
         return json(res, 200, { live: live.status() });
-      });
-    const variableRoute = /^\/environment\/variables\/([^/]+)$/.exec(relative);
-    if (variableRoute && method === "PUT")
-      return change(async () => {
-        const schemaName = decodeAdminIdentifier(variableRoute[1]);
-        const body = await jsonObjectBody(req);
-        if (body.value !== null && typeof body.value !== "string") throw error("Environment variable values are text, or null to remove the local value.");
-        const definitionMapping = tableMapping(ENVIRONMENT_TABLES.definition);
-        const valueMapping = tableMapping(ENVIRONMENT_TABLES.value);
-        if (!definitionMapping || !valueMapping)
-          throw error("Environment variable tables are not available in this runtime state.", 409, "ENVIRONMENT_VARIABLES_UNAVAILABLE");
-        const definition = environmentVariableTable().definitions.find((item) => item.schemaName === schemaName);
-        if (!definition) throw error("Environment variable definition not found.", 404);
-        // The local value is persisted as an override, so Solution re-seeding keeps it; null
-        // removes it and the Solution value (or the definition default) applies again.
-        const state = store.snapshot();
-        const overrides = { ...(state.simulator.environmentVariables ?? {}) };
-        if (body.value === null) delete overrides[schemaName];
-        else overrides[schemaName] = body.value;
-        state.simulator.environmentVariables = overrides;
-        const rows = (state.tables[valueMapping.logicalName] ??= []);
-        const index = definition.valueId ? rows.findIndex((row) => personaKey(row[valueMapping.idColumn]) === definition.valueId) : -1;
-        if (body.value === null) {
-          if (index >= 0) rows.splice(index, 1);
-        } else if (index >= 0) rows[index] = { ...rows[index], value: body.value };
-        else
-          rows.push({
-            [valueMapping.idColumn]: randomUUID(),
-            schemaname: schemaName,
-            value: body.value,
-            environmentvariabledefinitionid: definition.id,
-          });
-        await saveState(state);
-        return json(res, 200, environmentVariableTable().definitions.find((item) => item.schemaName === schemaName));
       });
     if (method === "POST" && (relative === "/reference/enrich/validate" || relative === "/reference/enrich")) {
       const body = await jsonObjectBody(req);
@@ -2897,6 +3068,8 @@ async function createPowerPagesSimulator({
   // role memberships derived from the export and local personas, rebuilt whenever
   // the portal or the store state object is replaced.
   // Registered on the store at load, so Liquid, FetchXML and Web API reads share them.
+  // The site's active website language codes ($pages.languages.getAll; the same filter as liquid.mjs siteLanguages).
+  const siteLanguageCodes = () => (portal.websiteLanguages ?? []).filter((language) => language.code && language.published !== false).map((language) => language.code);
   function siteTables() {
     const cache = siteTables.cache;
     if (cache?.portal !== portal || cache?.state !== store.state)
@@ -2915,6 +3088,7 @@ async function createPowerPagesSimulator({
     const identity = currentIdentity();
     return handleWebApi(req, res, url, {
       store,
+      attachmentBody: noteAttachmentBody,
       webApiErrorTemplates: registeredWebApiErrorTemplates,
       portal: {
         ...portal,
@@ -3107,7 +3281,7 @@ async function createPowerPagesSimulator({
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
-      html = injectRuntime(html, csrf, revision, identity, trace.getStore()?.spanId);
+      html = injectRuntime(html, csrf, revision, identity, trace.getStore()?.spanId, siteLanguageCodes());
     }
     res.writeHead(status, {
       "content-type": "text/html; charset=utf-8",
@@ -3211,7 +3385,7 @@ async function createPowerPagesSimulator({
     if (modelDrivenCache?.portal !== portal || modelDrivenCache?.metadata !== metadata || modelDrivenCache?.storeRevision !== store.revision) {
       modelDrivenCache = { portal, metadata, storeRevision: store.revision,
         value: appCatalogue({ portal, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp, settings: store.state.settings,
-          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue) }) };
+          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue), canvasApps: canvasAppNames(organizationHost) }) };
     }
     return modelDrivenCache.value;
   };
@@ -3219,7 +3393,7 @@ async function createPowerPagesSimulator({
     const metadata = modelMetadata(), source = portal, storeRevision = store.revision;
     if (modelDrivenCache?.portal !== source || modelDrivenCache?.metadata !== metadata || modelDrivenCache?.storeRevision !== storeRevision) {
       const value = await appCatalogueAsync({ portal: source, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp, settings: store.state.settings,
-        clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue) }, { cancelled });
+        clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue), canvasApps: canvasAppNames(organizationHost) }, { cancelled });
       modelDrivenCache = { portal: source, metadata, storeRevision, value };
     }
     return modelDrivenCache.value;
@@ -3239,7 +3413,37 @@ async function createPowerPagesSimulator({
   const modelDrivenHandler = createModelDrivenHandler({ catalogue: modelDrivenCatalogue, data: modelDrivenData,
     clientAssets: () => modelDrivenSettingsValue.trustedExtensions ? clientResources.assets : new Map([...clientResources.assets].filter(([, asset]) => asset.passive === true)),
     csrf: () => csrf, json, readBody: jsonObjectBody, change, read: fn => store.readOperation(() => solutionMetadataOverlay.withReadEpoch(fn)),
-    principal: req => staffSessions.resolve(req) });
+    principal: req => staffSessions.resolve(req), webApi: createModelDrivenWebApi({ organization: () => organization }), offlineState: offlineSessionState(store, change) });
+  // Reserved app surfaces (ARCH 10): canvas inventory pages and code apps answer before the model-driven handler.
+  // Canvas apps run headlessly (canvas-runtime.mjs) as the staff session's user or, for a signed-in portal visitor, the
+  // Dataverse user enhanced authorization maps the contact to (portal-authorization.mjs principal); never SYSTEM.
+  const canvasRuntime = createCanvasRuntime({ apps: organizationHost.canvasApps, evaluator: () => organizationHost.providers.powerFx, api: () => organization?.api ?? null,
+    caller: principal => { const user = organization?.principals.byId(principal?.principalId); return user ? { user } : null; },
+    transact: fn => change(() => organization.runOwned(() => organization.runAtomic(fn))),
+    connectors: codeAppConnectors(organizationHost.connectors, settingOptionsRest.connections ?? {}), diagnostic: recordDiagnostic });
+  const canvasPrincipal = req => {
+    const staff = staffSessions.resolve(req);
+    if (staff.kind === 'staff') return staff;
+    const identity = currentIdentity();
+    if (!(identity?.contactId ?? identity?.id)) return null;
+    try {
+      const user = store.portalAuthorization?.principal(identity)?.user;
+      return user ? { kind: 'portal', principalId: user.systemuserid } : null;
+    } catch { return null; } // a visitor enhanced authorization does not map runs nothing
+  };
+  const canvasHandler = createCanvasHandler({ apps: organizationHost.canvasApps, enabled: () => organizationHost.canvas.enabled, diagnostic: recordDiagnostic,
+    runtime: canvasRuntime, principal: canvasPrincipal, csrf: () => csrf });
+  const codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} });
+  const codeAppsHandler = createCodeAppsHandler({ apps: () => codeAppRecords, sessions: staffSessions,
+    user: id => { if (!organization) throw error('Code apps need the organization runtime.', 503, 'OrganizationUnavailable'); return organization.principals.byId(id); },
+    organization: { get origin() { return dataverse?.origin ?? localOrigin; }, get organizationId() { return organization?.organizationId; },
+      get environmentId() { return organization?.environmentId; }, get tenantId() { return organization?.tenantId; } },
+    issueToken: input => {
+      if (!dataverse) throw error('Code app tokens need the Dataverse API; enable dataverse in the runtime settings.', 501, 'DataverseApiDisabled');
+      return authorityTokenIssuer({ issueAccessToken: dataverse.issueAccessToken, origin: dataverse.origin })(input);
+    },
+    dataverse: input => codeAppDataverse({ organization, change, origin: () => dataverse?.origin ?? localOrigin })(input),
+    connectors: codeAppConnectors(organizationHost.connectors, settingOptionsRest.connections ?? {}), csrf: () => csrf, diagnostic: recordDiagnostic });
   async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
@@ -3254,6 +3458,15 @@ async function createPowerPagesSimulator({
       throw error("Cross-site writes are not allowed.", 403);
     const url = requestTargetUrl(req.url, localOrigin);
     if (managementStorage && !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)) await change(async () => {});
+    // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService), local route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
+    if (organization?.api?.sharepoint && await (portalDocuments ??= createPortalDocumentService({ sharepoint: organization.api.sharepoint, store, portal: () => portal, access: portalDocumentAccess,
+      // An unconfigured BlockedAttachments uses the Dataverse organization default list (Learn files-images-overview, "Block
+      // files by extension"); the organization row, a catalogue default or an instance override (even empty) replaces it.
+      blockedExtensions: () => { const entry = platformSettingEntries(store.state).find(item => item.key === 'BlockedAttachments');
+        return String(entry.origin === 'Default / not configured' ? DATAVERSE_BLOCKED_ATTACHMENTS : entry.value ?? '').split(/[;,\s]+/).map(item => item.toLowerCase().replace(/^\./, '')).filter(Boolean); } }))
+      .handle(req, res, url, { identity: currentIdentity(), csrf })) return;
+    if (canvasHandler(req, res, url)) return;
+    if (await codeAppsHandler(req, res, url)) return;
     if (await modelDrivenHandler(req, res, url)) return;
     if(req.headers['x-paqvilo-local-only']==='true'&&(config().mode==='live'||config().pageMode==='live'||(config().endpoints??[]).some(endpoint=>endpoint.enabled!==false&&endpoint.path===url.pathname&&endpoint.mode==='live')))
       throw error('This visitor requires local Mirage execution.',409,'LocalRuntimeRequired');
@@ -3380,21 +3593,17 @@ async function createPowerPagesSimulator({
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
-        "content-security-policy":
-          "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+        "content-security-policy": ADMIN_CSP,
+        "x-content-type-options": "nosniff",
       });
       return res.end(await fs.readFile(path.join(ROOT, "admin/index.html")));
     }
-    if (['/__sim/persona-search.mjs','/__sim/persona-picker-view.mjs'].includes(url.pathname)) {
-      res.writeHead(200, {'content-type':mime(url.pathname)}); return res.end(await fs.readFile(path.join(ROOT,'lib',path.basename(url.pathname))));
-    }
-    if (["/__sim/app.mjs", "/__sim/style.css", '/__sim/persona-picker.mjs', '/__sim/persona-picker.css', '/__sim/persona-manager.mjs'].includes(url.pathname)) {
-      res.writeHead(200, { "content-type": mime(url.pathname) });
-      return res.end(
-        await fs.readFile(
-          path.join(ROOT, "admin", path.basename(url.pathname)),
-        ),
-      );
+    // Admin assets by pattern (runtime-admin.mjs adminAssetFile): mirage/admin/<name>.mjs|css and the shared lib modules.
+    const adminAsset = /^\/__sim\/([^/]+\.(?:mjs|css))$/.exec(url.pathname);
+    const adminFile = adminAsset && ['GET', 'HEAD'].includes(req.method) ? await adminAssetFile(adminAsset[1]) : null;
+    if (adminFile) {
+      res.writeHead(200, { "content-type": adminAssetType(adminAsset[1]), "x-content-type-options": "nosniff" });
+      return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(adminFile));
     }
     if (
       /^\/__sim\/evidence\/(live|local|difference)\.png$/.test(url.pathname) &&
@@ -3484,26 +3693,25 @@ async function createPowerPagesSimulator({
       recordDiagnostic({ ...answer.diagnostic, path: url.pathname });
       return json(res, answer.status, answer.body, answer.headers);
     }
+    // The default search page when the export has none at /search/ (portal-search.mjs).
+    if (/^\/search\/?$/i.test(url.pathname) && req.method === 'GET' && !portal.pages.some(page => /^\/search\/?$/i.test(page.url ?? ''))) {
+      const html = await renderPortalSearchPage({ portal, store, readProvider, metadata: solutionMetadata, config: config(), identity: currentIdentity(), params: url.searchParams, diagnostic: entry => recordDiagnostic({ ...entry, path: url.pathname }) });
+      // The same page response headers as every portal page: site HTTP/* settings, the confinement CSP, nosniff.
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...PAGE_HEADERS, ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }), 'x-sim-route': 'portal-search-local' });
+      return res.end(html);
+    }
     const flow = operationPortal().cloudFlows.find(record => record.path && record.path.replace(/\/$/, '').toLowerCase() === url.pathname.replace(/\/$/, '').toLowerCase());
-    const flowHandler = flow && registeredOperations.cloudFlows.get(flow.name.toLowerCase());
     if (flow && config().mode !== 'live') {
       if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
       if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
       const identity = currentIdentity(); assertOperationRole(flow, identity);
-      const item = operations().find(item => item.kind === 'cloud-flow' && item.id === flow.id);
-      if (item.mode === 'placeholder') operationPlaceholder(item);
-      if(item.mode==='disabled')throw error('This cloud flow is explicitly disabled locally.',503);
       const bytes = (await rawBody(req)).toString('utf8');
       let input;
       try {
         const parsed = String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded') ? Object.fromEntries(new URLSearchParams(bytes)) : JSON.parse(bytes || '{}');
         input = typeof parsed.eventData === 'string' ? JSON.parse(parsed.eventData) : (parsed.eventData ?? parsed);
       } catch { throw error('Cloud-flow input must be valid JSON.', 400); }
-      const context = { record: flow, workflows: workflowsView(), input, identity, store, portal,serviceProfile:registeredOperations.flowIdentities.get(String(flow.processId??'').replace(/[{}]/g,'').toLowerCase()),steps:item.configuration?.steps,diagnostic:recordDiagnostic };
-      if (item.mode === 'handler' && !flowHandler) operationPlaceholder(item);
-      const answer = item.mode === 'mock' ? { status: item.configuration.status ?? 200, body: Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {} }
-        : item.mode === 'exported' ? await (async()=>{let failure;const value=await store.transact(()=>{try{return runExportedCloudFlow(context);}catch(error){failure=error;return null;}});if(failure)throw failure;return value;})()
-        : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
+      const answer = await runPortalFlow({ flow, input, identity });
       return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { ...answer.headers, 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
     // The platform's account stylesheet (account pages): local equivalent.
@@ -3564,7 +3772,7 @@ async function createPowerPagesSimulator({
         return res.end(`<!doctype html><title>Quick view</title><p role="alert">${escaped(cause.message)}</p>`);
       }
     }
-    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => frameReadiness.decorate(injectLocalHead(html, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity() }), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
+    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, attachmentBody: noteAttachmentBody, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => frameReadiness.decorate(injectLocalHead(html, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity() }), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     const fileApi = /^\/_api\/file\/(InitializeFileUpload|UploadFileBlock)\/note$/i.exec(url.pathname);
     if (fileApi) {
       const answer = (status, body) => {
@@ -3575,7 +3783,7 @@ async function createPowerPagesSimulator({
       };
       if (req.headers.__requestverificationtoken !== csrf) throw error("Missing portal verification token.", 403);
       const now = Date.now();
-      for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) stagedUploads.delete(id);
+      for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) dropStaged(id);
       if (/^InitializeFileUpload$/i.test(fileApi[1])) {
         if (req.method !== "POST") throw error("File upload initialisation requires POST.", 405);
         await rawBody(req);
@@ -3590,7 +3798,7 @@ async function createPowerPagesSimulator({
           trace.getStore().visitor = visitor.id;
           res.setHeader('set-cookie', visitor.cookie);
         }
-        stagedUploads.set(id, { owner: uploadOwner(), name, size, type: String(req.headers["x-ms-file-type"] ?? req.headers["content-type"] ?? "application/octet-stream"), token, chunks: [], received: 0, created: now });
+        stagedUploads.set(id, { owner: uploadOwner(), name, size, type: String(req.headers["x-ms-file-type"] ?? req.headers["content-type"] ?? "application/octet-stream"), token, blocks: [], writing: Promise.resolve(), received: 0, created: now });
         return answer(200, { AnnotationId: id, FileContinuationToken: token });
       }
       if (req.method !== "PUT") throw error("File block upload requires PUT.", 405);
@@ -3601,11 +3809,22 @@ async function createPowerPagesSimulator({
       // Reading a slow body yields to other chunks and form postbacks. Recheck
       // ownership and offset before committing, so duplicate chunks cannot append.
       if (stagedUploads.get(String(url.searchParams.get("noteId") ?? "").toLowerCase()) !== entry) throw error("Unknown file upload.", 404);
-      if (Date.now() - entry.created > 3600000) { stagedUploads.delete(String(url.searchParams.get("noteId") ?? "").toLowerCase()); throw error("Unknown file upload.", 404); }
+      const noteId = String(url.searchParams.get("noteId") ?? "").toLowerCase();
+      if (Date.now() - entry.created > 3600000) { dropStaged(noteId); throw error("Unknown file upload.", 404); }
       if (Number(url.searchParams.get("offset")) !== entry.received) throw error("The file block offset does not continue the upload.", 400);
       if (entry.received + block.length > entry.size) throw error("The file block exceeds the declared file size.", 400);
-      entry.chunks.push(block);
+      // The offset advances before the provider write, so a duplicate chunk cannot pass the check meanwhile; writes are chained
+      // in block order and the last block commits them. A failed write ends the upload.
+      const blockId = String(entry.blocks.length).padStart(6, '0');
+      entry.blocks.push(blockId);
       entry.received += block.length;
+      const last = entry.received === entry.size;
+      entry.writing = entry.writing.then(async () => {
+        const storage = stagedStorage();
+        await storage.put(stagedKey(noteId), block, { blockId });
+        if (last) await storage.commit(stagedKey(noteId), entry.blocks, { contentType: entry.type });
+      });
+      try { await entry.writing; } catch (cause) { if (stagedUploads.get(noteId) === entry) stagedUploads.delete(noteId); throw cause; }
       return answer(204);
     }
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
@@ -3886,6 +4105,7 @@ async function createPowerPagesSimulator({
           revision,
           formIdentity,
           trace.getStore()?.spanId,
+          siteLanguageCodes(),
         ),
       );
     }
@@ -3903,6 +4123,7 @@ async function createPowerPagesSimulator({
       ["/__sim-static/vendor/jqueryui-dialog-compat.js", new URL("./lib/jqueryui-dialog-compat.js", import.meta.url)],
       ["/__sim-static/vendor/date-format-compat.js", new URL("./lib/date-format-compat.js", import.meta.url)],
       ["/__sim-static/vendor/footer-spacing-compat.js", new URL("./lib/footer-spacing-compat.js", import.meta.url)],
+      [PAGES_CLIENT_API_SCRIPT, PAGES_CLIENT_API_FILE],
     ]);
     const fontName = /^\/fonts\/(glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?))$/i.exec(url.pathname)?.[1];
     const fontRuntimeAsset = fontName
@@ -3961,6 +4182,13 @@ async function createPowerPagesSimulator({
         res.writeHead(notModified(req.headers, headers) ? 304 : 200, headers);
         return res.end(notModified(req.headers, headers) ? undefined : body);
       };
+      // WebFiles/StorageLocation AzureBlobStorage: the bytes are the object webfiles/<webfileid>/<filename> of storage route
+      // portalWebFiles. An unset or export route, a missing provider or object answers WEBFILE_CLOUD_STORAGE_UNAVAILABLE (503);
+      // the export file is never served in its place. unverified: the object naming of native Azure web file storage.
+      if (String(siteSetting(portal, "WebFiles/StorageLocation") ?? "").trim().toLowerCase() === "azureblobstorage") {
+        const name = String(asset.metadata?.filename ?? asset.metadata?._attachment?.name ?? path.basename(file));
+        return sendFile(await cloudWebFile(asset.id, name, url.pathname), asset.mimeType || mime(name));
+      }
       const stylesheet = await resolveObservedStylesheet(
         portal,
         asset,
@@ -4134,6 +4362,7 @@ async function createPowerPagesSimulator({
             revision,
             pageIdentity,
             trace.getStore()?.spanId,
+            siteLanguageCodes(),
           )
         : html,
     );
@@ -4238,16 +4467,28 @@ async function createPowerPagesSimulator({
         !req.url.startsWith("/__sim/artifacts/")
       )
         return;
+      portalRequestTotal += 1;
       requests.push({
+        at: started,
         method: req.method,
-        path: req.url.split("?")[0],
+        path: ringPath(req.url),
         status: res.statusCode,
         durationMs: Date.now() - started,
       });
       if (requests.length > 300) requests.shift();
     });
-    const invocation=trace
-      .run(context, () => handle(req, res))
+    // One request context per portal request: the trace correlation (or x-ms-correlation-request-id) reaches committed
+    // events, jobs and flow runs; the visitor is the initiator.
+    const requestContext = createRequestContext({ organization, correlationId: correlationOf(req.headers['x-ms-correlation-request-id']) ?? context.correlationId ?? undefined,
+      initiator: auth?.identity ? { kind: 'contact', id: auth.identity.id ?? null } : { kind: 'anonymous', id: null } });
+    const invocation=organizationHost.run(() => runWithRequest(requestContext, () => trace
+      .run(context, async () => {
+        // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
+        // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
+        // site application user, so a refused administration request leaves no side effect.
+        if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? '')) await store.portalAuthorization?.prepare(currentIdentity());
+        return handle(req, res);
+      })))
       .catch((err) => {
         context.error = err;
         if(err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))recordDiagnostic(err.details?.configurationPresetDiagnostic??{code:err.code,severity:'error',message:err.message});
@@ -4315,29 +4556,28 @@ async function createPowerPagesSimulator({
   try {
   bootstrapStageAt = performance.now();
   startupPhase('organization');
-  const organizationExtensions = await sourceOrganizationExtensions({ layers: solutionData?.layers, plugins: solutionMetadata?.plugins,
-    customApis: registeredCustomApis, pluginHandlers: registeredPluginSteps, workflowHandlers: registeredWorkflows,
-    workflowOverrides: () => store.state.dataverse?.workflowOverrides ?? {}, cloudFlow: cloudFlowOf, diagnostic: recordDiagnostic,
-    addonHandlers: addonHandlers(projectPacks ?? []), timeoutMs: () => environmentValue('pluginTimeoutSeconds', dataverseConfig.pluginTimeoutSeconds) * 1000 });
-  organization = await createOrganizationRuntime({ store, change, settings: liveDataverseSettings,
+  organization = await organizationHost.createOrganization({ change, settings: liveDataverseSettings,
     schema: () => solutionData?.schema ?? null, metadataFields: logical => modelMetadata()?.entities?.[logical]?.fields,
-    log: (...args) => recordDiagnostic({ code: 'DATAVERSE_API', message: String(args[0]?.message ?? args[0]) }), extensions: organizationExtensions });
+    log: (...args) => recordDiagnostic({ code: 'DATAVERSE_API', message: String(args[0]?.message ?? args[0]) }) });
   organizationRecords = createModelDrivenRecordService({ organization, origin: () => localOrigin });
+  // The site's authorization model (portal-authorization.mjs), reported once per start.
+  store.setPortalAuthorization(createPortalAuthorization({ store, website: () => portal.website, portal: () => portal, principals: organization.principals,
+    fieldSecurity: () => organization.api?.fieldSecurity, organizationId: organization.organizationId, applicationUser: portalApplicationUser, existingApplicationUser: existingPortalApplicationUser, diagnostic: recordDiagnostic }));
+  { const model = store.portalAuthorization.describe();
+    recordDiagnostic({ code: 'PORTAL_AUTHORIZATION_MODEL', severity: 'info', ...model, message: model.model === 'enhanced'
+      ? `Enhanced authorization (${model.state}, ${model.label}): each visitor runs as its mapped Dataverse user; table permissions hold through the security roles mapped to its web roles and Dataverse column security profiles replace the Web API column permissions.`
+      : 'Standard authorization: table permissions and Web API column permissions are evaluated for each visitor.' });
+    if (model.unknown) recordDiagnostic({ code: 'PORTAL_AUTHORIZATION_STATE_UNKNOWN', severity: 'warning', state: model.state, label: model.label,
+      message: `The site record's enhanced authorization value ${model.state} is not documented (Learn lists 0 to 3); the site runs the standard model.` }); }
   bootstrapTimings.organizationMs = Math.round(performance.now() - bootstrapStageAt);
   if (dataverseConfig.enabled) {
     dataverseCertificate = dataverseConfig.tls ? await ensureCertificate(dataverseCertificatePath) : null;
-    dataverse = await startDataverseApi({ organization, host,
+    // The Arc challenge's secret files sit beside the project state (.paqvilo/mirage/); other shapes need no secret directory.
+    dataverse = await organizationHost.startApi({ host,
       tls: dataverseCertificate ? { key: dataverseCertificate.key, cert: dataverseCertificate.cert } : null,
       beforeListen: () => storageAdapter?.activate(store.state),
-      managedIdentity: req => managedIdentity?.handle(req) ?? null,
-    });
-    // The Arc challenge's secret files sit beside the project state (.paqvilo/mirage/); other shapes need no secret directory.
-    managedIdentity = createManagedIdentityEndpoints({
-      authority: { issueManagedIdentityToken: dataverse.issueManagedIdentityToken },
-      settings: { get managedIdentities() { return managedIdentityList(); } },
-      origin: dataverse.origin,
-      secretFile: managedIdentityMode === "arc" ? path.join(projectRoot, ".paqvilo", "mirage") : undefined,
-    });
+      managedIdentities: managedIdentityList, managedIdentityMode, secretDirectory: path.join(projectRoot, ".paqvilo", "mirage") });
+    managedIdentity = organizationHost.managedIdentity;
   }
   storageAdapter?.activate(store.state);
   startupPhase('listener');
@@ -4361,7 +4601,8 @@ async function createPowerPagesSimulator({
   const layerSignature = () => JSON.stringify([(solutionData.layers ?? []).map((layer) => layer.dir), solutionMetadata.plugins?.sourceFiles ?? []]);
   async function reload() {
     if (closing) return;
-    await settleCommittedWork(store,[triggerRunner,asyncPluginRunner]);
+    // Settled outside the host change queue (as standalone-runtime.mjs does): a job's api.change would wait on a held queue.
+    await organizationHost.settle();
     if (closing) return;
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
@@ -4381,6 +4622,9 @@ async function createPowerPagesSimulator({
           fingerprint,
           renderer,
           activeProfiles,
+          solutionScan,
+          solutionInventory,
+          clientResources,
         };
         try {
           const started = performance.now();
@@ -4389,7 +4633,7 @@ async function createPowerPagesSimulator({
           activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
           sourcePortal = await importSource(config().modelDriven?.records);
           if (requirePortalSource) assertPortalSource(sourcePortal);
-          portal = applyPortalOverrides(sourcePortal, config().portalOverrides);
+          portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), config().portalOverrides);
           sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
           await loadSolutions();
           generatedPresets = initialState(portal, bootstrapOptions()).presets;
@@ -4398,9 +4642,10 @@ async function createPowerPagesSimulator({
           // state, so no status read pairs reloaded data with the old fingerprint.
           fingerprint = await calculateFingerprint();
           renderer = buildRenderer();
-          await change(() => storageAdapter
-            ? storageAdapter.bootstrap(() => replaceCompiledState(store.snapshot()), () => store.state)
-            : replaceCompiledState(store.snapshot()));
+          // The re-registered Solution source modules (custom APIs, duplicate rules, workflows, plug-in registrations) follow in
+          // the same change slot and source publication; their own transaction leaves the previous registrations when it fails.
+          const publish = async () => { await replaceCompiledState(store.snapshot()); await organizationHost.refreshSources(); };
+          await change(() => storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish());
           diagnostics.length = 0;
           revision++;
           bootstrapTimings.lastReload = { at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), changed: changed.slice(0, 50), changedCount: changed.length };
@@ -4428,6 +4673,7 @@ async function createPowerPagesSimulator({
           fingerprint = previous.fingerprint;
           renderer = previous.renderer;
           activeProfiles = previous.activeProfiles;
+          ({ solutionScan, solutionInventory, clientResources } = previous);
           recordDiagnostic({ code: "RELOAD_FAILED", message: err.message });
           throw err;
         }
@@ -4449,7 +4695,8 @@ async function createPowerPagesSimulator({
     const pluginSources = [...solutionMetadata.plugins?.sourceFiles ?? [], ...Object.values(profileConfig.profiles).flatMap(sources => Object.values(sources).flat())];
     const pluginSourceKeys = new Set(pluginSources.map(file => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
-    const ignoreSource = solutionWatchFilter({ sourceDir, roots: [...solutionRoots, ...clientSources], layers: [...layers, ...clientSources.map(dir => ({ type: 'directory', dir }))], exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
+    // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
+    const ignoreSource = solutionWatchFilter({ sourceDir, roots: [...solutionRoots, ...clientSources], layers: [...layers, ...clientSources.filter(source => !/[.]js$/i.test(source)).map(dir => ({ type: 'directory', dir }))], exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
     watcher = watchSources([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources], {
       ignoreInitial: true,
       ignored: (file, stats) => pluginSourceKeys.has(path.resolve(file).toLowerCase()) ? false : ignoreSource(file, stats),
@@ -4500,6 +4747,11 @@ async function createPowerPagesSimulator({
       return dataverse ? { origin: dataverse.origin, tlsOrigin: dataverse.tlsOrigin, authority: dataverse.authority, tenantId: dataverse.tenantId, organizationId: dataverse.organizationId, tdsPort: dataverse.tdsPort, requests: dataverse.requests } : null;
     },
     state: exposedState,
+    // The preflight report of this running simulator (GET /_sim/api/preflight): { scenario, strict }.
+    preflight,
+    // Resolves once every committed-event job (asynchronous plug-in steps, web hooks, row-triggered flows, due scheduled
+    // jobs) has run: the durable job queue runs on the scheduler, so awaiting the store queue alone is not enough.
+    settle: () => organizationHost.settle(),
     applyPreset: (name) => change(() => applySelectedPreset(name)),
     // Sign-in for tools and tests that render portal routes as a persona :
     // { cookieHeader: "paqvilo-mirage-auth-<port>=…" for a Cookie request header, identity }.

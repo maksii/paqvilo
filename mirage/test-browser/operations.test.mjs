@@ -11,10 +11,13 @@ test('Operations admin discovers exports, saves a local response and restores it
   const page=await browser.newPage({viewport:{width:1280,height:900}});
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(app.url+'/__sim/#operations');
+  // The operations table lists one row per operation; Edit opens that operation's local behaviour form.
+  await page.locator('[data-operation-select="server-logic:sample"]').click();
   const form=page.locator('[data-operation-key="server-logic:sample"]');
   await form.waitFor();
   assert.equal(await form.locator('[name=mode]').inputValue(),'placeholder');
-  assert.equal(await page.locator('h2').filter({hasText:'Connector workflow'}).count(),1);
+  assert.equal(await page.locator('[data-operation-select]').filter({hasText:'Edit'}).count(),3);
+  assert.equal(await page.locator('td').filter({hasText:/^Connector workflow$/}).count(),1);
   await form.locator('[name=mode]').selectOption('mock');
   await form.locator('[name=body]').fill('{"reviewed":"browser"}');
   await form.getByRole('button',{name:'Save local behavior'}).click();
