@@ -26,6 +26,37 @@ async function fixture(t,html){
   return {fx,page,inspector,inspect};
 }
 
+test('first trusted selection renders its card and clipped outline without reading geometry after the card rebuild',async t=>{
+  const {page,inspect}=await fixture(t,'<div id="clip" style="width:180px;height:50px;overflow:hidden"><button id="target" style="width:300px;height:40px">Invented</button></div>');
+  await inspect();
+  const point=await page.locator('#target').boundingBox();
+  await page.evaluate(()=>{
+    const host=document.getElementById('paqvilo-xray'),target=document.getElementById('target'),clip=document.getElementById('clip');
+    const targetRect=target.getBoundingClientRect(),clipRect=clip.getBoundingClientRect();
+    const expected={left:Math.max(targetRect.left,clipRect.left),top:Math.max(targetRect.top,clipRect.top),width:Math.min(targetRect.right,clipRect.right)-Math.max(targetRect.left,clipRect.left),height:Math.min(targetRect.bottom,clipRect.bottom)-Math.max(targetRect.top,clipRect.top)};
+    const measure=Element.prototype.getBoundingClientRect,lateReads=[];
+    window.selectionActivations=0;target.addEventListener('click',()=>window.selectionActivations++);
+    Element.prototype.getBoundingClientRect=function(...args){
+      if(host.shadowRoot.querySelector('.card .title'))lateReads.push(this.localName);
+      return measure.apply(this,args);
+    };
+    host.addEventListener('paqvilo-xray',event=>{
+      if(event.detail.action!=='selected')return;
+      Element.prototype.getBoundingClientRect=measure;
+      const outline=host.shadowRoot.querySelector('.selected');
+      window.selectionGeometry={lateReads,expected,title:event.detail.identity.title,cardTitle:host.shadowRoot.querySelector('.card .title')?.textContent,
+        outline:outline?Object.fromEntries(['left','top','width','height'].map(key=>[key,parseFloat(outline.style[key])])):null};
+    },{once:true});
+  });
+  await page.mouse.click(point.x+20,point.y+20);
+  await page.waitForFunction(()=>window.selectionGeometry);
+  const result=await page.evaluate(()=>({...window.selectionGeometry,activations:window.selectionActivations}));
+  assert.deepEqual(result.lateReads,[],'the new source-card layout is left to the browser paint');
+  assert.equal(result.cardTitle,result.title);
+  assert.deepEqual(result.outline,result.expected,'the clipped selection outline is present before notification');
+  assert.equal(result.activations,0);
+});
+
 test('script-rendered unreferenced snippets remain attributable with bounded page evidence and fast identification',async t=>{
   const markup='<aside id="dynamic-banner" class="notice dynamic"><span class="notice-message">Invented message</span></aside>';
   const {fx,page,inspector,inspect}=await fixture(t,`<main></main><script>document.querySelector('main').innerHTML=${JSON.stringify(markup)};</script>`);

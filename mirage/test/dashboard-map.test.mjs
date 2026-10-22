@@ -142,7 +142,7 @@ test('live dashboard: hero, KPIs, layered map with accessible summary, drawer sl
   assert.match(html, /<strong>2<\/strong> preflight blocking/);
   assert.match(html, /<svg class="dm-wires" role="img" aria-labelledby="dashboard-topology-title dashboard-topology-desc"/);
   assert.match(html, /<desc id="dashboard-topology-desc">6 layers, 60 components, \d+ ready; \d+ connections/);
-  for (const band of BANDS) assert.match(html, new RegExp(`<h3 id="dashboard-topology-band-${band.id}">${band.title.replace('&', '&amp;')}</h3>`));
+  for (const band of BANDS) assert.match(html, new RegExp(`<h3 id="dashboard-topology-band-${band.id}">${kit.escapeHtml(band.title)}</h3>`));
   assert.match(html, /aria-label="Power Pages site: [a-z]+"/);
   assert.match(html, /data-ui-section="dashboard-group:logic"/, 'group open state survives re-renders through data-ui-section');
   assert.match(html, /<summary class="dm-group-face" id="dashboard-topology-group-logic-summary"/, 'a stable id lets the page restore focus on a group after a poll');

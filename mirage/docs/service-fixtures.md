@@ -29,6 +29,8 @@ Module: `mirage/lib/service-fixtures.mjs`, created with `createServiceFixtureReg
 
 **Diagnostics.** `SERVICE_FIXTURE_DISABLED` (warning, with `service` and `operation`), emitted once per service and operation, the first time the default fallback answers.
 
+**Power BI Liquid host.** `{% powerbi %}` resolves `powerBi.embed` and passes `{ args, context, portal }`. `args` contains the evaluated tag inputs. A synchronous `{ html: string }` answer supplies trusted local fixture markup, including an intentionally empty string; the host performs no remote request. Register packs through the normal trusted `dataPacks` or embedded `packs` boundary. Fixture HTML is executable authored content under that trust contract. A missing HTML answer reports `LIQUID_POWERBI_FIXTURE_UNAVAILABLE` and uses the fallback; invalid HTML types and promises fail explicitly. Without a fixture, the fallback is a labelled placeholder and `LIQUID_POWERBI_PLACEHOLDER`. A site with captured empty native output can configure `observed: { powerBiOutput: "empty", evidence: "path to capture" }`; it returns empty output and `LIQUID_POWERBI_OBSERVED_EMPTY`. This records output, not the native integration's administrative enablement. A trusted fixture takes precedence over that observation.
+
 **Capability report.** Each service record is read into the capability registry (`fromServices`), so every service and its level appear in the preflight report. See [capabilities and preflight](capabilities-and-preflight.md).
 
 **Unverified.** None. The error code `ServiceDisabled` and the diagnostic code are local names, not native Power Platform codes.

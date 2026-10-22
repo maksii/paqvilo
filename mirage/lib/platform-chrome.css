@@ -7,6 +7,8 @@
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 /* Toolkit-authored structural fallback. Captured styles replace this resource. */
 .crmEntityFormView{width:100%;box-sizing:border-box}
+.entity-grid{min-width:0;max-width:100%}
+.entity-grid .view-grid{position:relative;max-width:100%;overflow-x:auto}
 .crmEntityFormView .tab,.crmEntityFormView table.section{width:100%;border-collapse:collapse}
 .crmEntityFormView table.section>tbody>tr>td.cell{vertical-align:top;padding:8px 12px;box-sizing:border-box}
 .crmEntityFormView .cell .info,.crmEntityFormView .cell .control{display:block;width:100%;box-sizing:border-box}
@@ -27,7 +29,7 @@
 .crmEntityFormView .input-group-btn,.crmEntityFormView .input-group-addon{flex:0 0 auto;display:flex;align-items:center}
 .crmEntityFormView .validation-summary{width:100%;box-sizing:border-box;padding:12px;margin:12px 0;border:1px solid #a94442;color:#a94442}
 /* Narrow forms (frames) stack the cells; the empty zero cell stays hidden (live quick view frame). */
-@media(max-width:600px){.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
+@media(max-width:600px){.crmEntityFormView table.section{table-layout:fixed}.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
 /* The lookup dialog's error block stays hidden until the grid reports an error (live: not rendered visible). */
 .modal-error.message{display:none}
 

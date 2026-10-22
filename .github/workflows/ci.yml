@@ -141,7 +141,7 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
-      - name: Baseline fixture offline regressions
+      - name: Demo and baseline fixture offline regressions
         run: npm run test:example
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
@@ -151,6 +151,10 @@ jobs:
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Lense loopback browser acceptance
         run: npm run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
+      - name: Demo loopback browser acceptance
+        run: npm run test:example:browser
         env:
           PAQVILO_BROWSER: chromium
       - name: Mirage loopback browser acceptance
@@ -209,7 +213,7 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
-      - name: Baseline fixture offline regressions
+      - name: Demo and baseline fixture offline regressions
         run: npm run test:example
       - name: Install pinned Microsoft SDK reference for original CLR regressions
         shell: pwsh

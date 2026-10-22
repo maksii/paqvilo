@@ -16,6 +16,8 @@ import { TDS, createMessageReader, encodePrelogin, writeMessage } from "../lib/d
 import { queryLimitMs } from "../lib/dataverse-tds.mjs";
 import { parsePrefer } from "../lib/dataverse-odata.mjs";
 import { EXTENSIONS } from "../lib/dataverse-extensions.mjs";
+import { QUEUE_MESSAGE_TABLE } from "../lib/message-bus.mjs";
+import { OUTBOX_TABLE } from "../lib/outbox.mjs";
 
 const ANNOTATIONS = 'odata.include-annotations="*"';
 const ORG_ID = "0c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5";
@@ -222,6 +224,21 @@ describe("TDS endpoint wired into the Dataverse API", () => {
       const payload = await query(client, "SELECT name FROM no_such_table");
       assert.equal(payload[0], ERROR);
       assert.equal(payload.readUInt32LE(3), 208, "invalid object name");
+    } finally {
+      client.close();
+    }
+  });
+
+  it('private runtime storage is an unknown SQL object even for an administrator', async () => {
+    const { client } = await login(api.tdsPort, appToken);
+    try {
+      for (const logical of [QUEUE_MESSAGE_TABLE, OUTBOX_TABLE]) {
+        const payload = await query(client, `SELECT * FROM ${logical}`);
+        assert.equal(payload[0], ERROR);
+        assert.equal(payload.readUInt32LE(3), 208, `${logical} is absent from the SQL catalogue`);
+      }
+      const normal = await query(client, 'SELECT name FROM widget');
+      assert.ok(normal.indexOf(utf16("Admin's")) > 0, 'the authenticated SQL session continues to read business records');
     } finally {
       client.close();
     }

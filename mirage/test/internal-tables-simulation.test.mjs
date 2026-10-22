@@ -42,4 +42,47 @@ test('a standalone runtime at level simulation sends one message and captures on
   assert.equal(messaging.bus.peek('x-invented-queue').length, 1);
   assert.equal(outbox.list().length, 1);
   assert.equal(diagnostics.filter((entry) => /Schema/i.test(String(entry.message ?? '')) || entry.code === 'SimulationSchemaDisabled').length, 0);
+
+  const appId = '99999999-9999-4999-8999-999999999992';
+  const registered = await fetch(`${sim.url}/_sim/api/dataverse/applications`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    body: JSON.stringify({ appId, displayName: 'Invented internal table test', roles: ['System Administrator'] }),
+    signal: AbortSignal.timeout(10000),
+  });
+  assert.equal(registered.status, 201);
+  const { secret } = await registered.json();
+  const issued = await fetch(`${sim.dataverse.authority}/oauth2/v2.0/token`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: appId, client_secret: secret, scope: `${sim.dataverse.origin}/.default` }),
+    signal: AbortSignal.timeout(10000),
+  });
+  assert.equal(issued.status, 200);
+  const { access_token: accessToken } = await issued.json();
+  const get = suffix => fetch(`${sim.dataverse.origin}/api/data/v9.2/${suffix}`, {
+    headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10000),
+  });
+  const service = await get('');
+  assert.equal(service.status, 200);
+  const catalogue = (await service.json()).value.map(entry => entry.name);
+  assert.ok(catalogue.includes('x_items'), 'the exported business table remains discoverable');
+  assert.ok(catalogue.includes('flowruns'), 'the standard flow-run table remains discoverable');
+  const definitions = await get('EntityDefinitions?$select=LogicalName');
+  assert.equal(definitions.status, 200);
+  const names = (await definitions.json()).value.map(entry => entry.LogicalName);
+  const csdl = await get('$metadata');
+  assert.equal(csdl.status, 200);
+  const xml = await csdl.text();
+  for (const [logical, set] of [[QUEUE_MESSAGE_TABLE, 'paqvilo_queuemessages'], [OUTBOX_TABLE, 'paqvilo_outboxentries']]) {
+    assert.ok(!catalogue.includes(set), `${logical} is absent from the service catalogue`);
+    assert.ok(!names.includes(logical), `${logical} is absent from EntityDefinitions`);
+    assert.ok(!xml.includes(logical), `${logical} is absent from CSDL`);
+    for (const path of [logical, set]) {
+      const response = await get(path);
+      await response.text();
+      assert.equal(response.status, 404, `${path} cannot route to private runtime rows`);
+    }
+    assert.equal(sim.store.state.tables[logical].length, 1, 'private persisted rows remain available to the provider');
+  }
+  assert.equal(messaging.bus.peek('x-invented-queue').length, 1);
+  assert.equal(outbox.list().length, 1);
 });

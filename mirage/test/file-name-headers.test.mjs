@@ -20,6 +20,38 @@ async function upload(f, name, { viaHeader = false } = {}) {
   assert.equal(response.status, 204, await response.text());
 }
 
+test('organization file downloads retain token filenames through full, range and committed-block reads', async t => {
+  const f = await readFixture(t, { mappings, tables });
+  await upload(f, 'invented.txt');
+  const full = await f.request('GET', `/x_docs(${DOC})/x_file/$value`);
+  assert.equal(full.status, 200);
+  assert.equal(full.headers.get('content-disposition'), 'inline; filename=invented.txt');
+  assert.equal(await full.text(), 'hello');
+  const range = await f.request('GET', `/x_docs(${DOC})/x_file/$value`, undefined, { range: 'bytes=0-1' });
+  assert.equal(range.status, 206);
+  assert.equal(range.headers.get('content-disposition'), 'inline; filename=invented.txt');
+  assert.equal(await range.text(), 'he');
+  const session = await f.json(await f.request('POST', '/InitializeFileBlocksUpload', {
+    Target: { '@odata.type': 'Microsoft.Dynamics.CRM.x_doc', x_docid: DOC }, FileAttributeName: 'x_file', FileName: 'block.txt',
+  }), 200);
+  const BlockId = Buffer.from('invented-block').toString('base64');
+  assert.equal((await f.request('POST', '/UploadBlock', { FileContinuationToken: session.FileContinuationToken, BlockId, BlockData: Buffer.from('committed bytes').toString('base64') })).status, 204);
+  await f.json(await f.request('POST', '/CommitFileBlocksUpload', { FileContinuationToken: session.FileContinuationToken, BlockList: [BlockId], FileName: 'block.txt', MimeType: 'text/plain' }), 200);
+  const committed = await f.request('GET', `/x_docs(${DOC})/x_file/$value`);
+  assert.equal(committed.status, 200);
+  assert.equal(committed.headers.get('content-disposition'), 'inline; filename=block.txt');
+  assert.equal(await committed.text(), 'committed bytes');
+});
+
+test('token filename preference never bypasses quoting and UTF-8 encoding for separators, Unicode or controls', () => {
+  for (const name of ['spaced name.txt', 'a;b.txt', 'a"b.txt', 'a\\b.txt', 'safe.txt\r\nInjected: value', 'safe.txt\n', '報告書.txt']) {
+    const value = contentDisposition('inline', name, { tokenFilename: true });
+    assert.match(value, /^inline; filename="/);
+    assert.doesNotMatch(value, /[\r\n]/);
+    assert.equal(starName(value), name);
+  }
+});
+
 test("CJK file name uploads and downloads with a valid filename*", async (t) => {
   const f = await readFixture(t, { mappings, tables });
   await upload(f, "報告書.txt");

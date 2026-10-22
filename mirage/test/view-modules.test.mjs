@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNoElements } from './assert-markup.mjs';
 import { HELP } from '../admin/help-content.mjs';
 import { escapeHtml } from '../admin/ui-kit.mjs';
 import { docsLinks } from '../lib/docs-links.mjs';
@@ -182,7 +183,7 @@ test('packs view escapes names, shows matched status, provenance columns and exp
   let html = packs.render(ctx);
   safeMarkup(html);
   assert.equal(openCount(html), 1);
-  assert.doesNotMatch(html, /<script>/);
+  assertNoElements(html, ['script']);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assertTables(html, ['packs-registered', 'packs-library']);
   assert.match(html, /<th scope="col">Pack<\/th><th scope="col">Source<\/th>/);

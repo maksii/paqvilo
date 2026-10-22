@@ -184,7 +184,14 @@ test("$pages full name, rich text and code component controls read and write the
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // setIsDirty is the native form script the rendered inputs call on change.
-  await page.setContent(`<!doctype html><html lang="en-US"><body><script>window.setIsDirty = () => {};</script><form>${html}</form></body></html>`);
+  await page.setContent(html);
+  await page.evaluate(() => {
+    document.documentElement.lang = 'en-US';
+    window.setIsDirty = () => {};
+    const form = document.createElement('form');
+    form.append(...document.body.childNodes);
+    document.body.append(form);
+  });
   await page.addScriptTag({ content: await fs.readFile(new URL("../lib/code-components-client.js", import.meta.url), "utf8") });
   // A real code component: it shows its bound value and records every updateView the host makes.
   await page.evaluate(async (spec) => {

@@ -112,9 +112,13 @@ export const rfc5987 = (value) => encodeURIComponent(String(value)).replace(/['(
  * Content-Disposition carrying a file name safely (RFC 6266): a quoted ASCII fallback where
  * quote, backslash, controls and non-ASCII characters become "_", plus filename*=UTF-8'' with
  * the exact name, so quotes, semicolons and Unicode names round-trip and never break the header.
+ * Organization file-column responses retain the legacy token form for names that
+ * contain only HTTP token characters; every other name keeps the safe fallback.
  */
-export function contentDisposition(disposition, name) {
+export function contentDisposition(disposition, name, { tokenFilename = false } = {}) {
   const value = String(name ?? "download");
+  if (tokenFilename && value.length && !/[^!#$%&'*+.^_`|~0-9A-Za-z-]/.test(value))
+    return `${disposition === "attachment" ? "attachment" : "inline"}; filename=${value}`;
   const fallback = value.replace(/[^\x20-\x7e]|["\\]/g, "_");
   return `${disposition === "attachment" ? "attachment" : "inline"}; filename="${fallback}"; filename*=UTF-8''${rfc5987(value)}`;
 }

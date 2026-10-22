@@ -71,6 +71,49 @@ test("create without a currency stamps the base currency: rate 1 and each money 
   assert.equal(row.transactioncurrencyid, store.state.tables.transactioncurrency[0].transactioncurrencyid);
 });
 
+test("money-free creates retain an unset currency until a zero money value is written", async (t) => {
+  const { request, json, ledger, store } = await setup(t);
+  for (const [name, values] of [['Omitted', {}], ['Explicit null', { x_price: null, x_cost: null }]]) {
+    const created = await json(await request('POST', '/x_ledgers', { x_name: name, ...values }), 201);
+    const row = ledger(name);
+    assert.equal(row.transactioncurrencyid, undefined);
+    assert.equal(row.exchangerate, undefined);
+    assert.equal(created._transactioncurrencyid_value, null);
+    const retrieved = await json(await request('GET', `/x_ledgers(${row.x_ledgerid})`), 200);
+    assert.equal(retrieved._transactioncurrencyid_value, null);
+    await json(await request('PATCH', `/x_ledgers(${row.x_ledgerid})`, { x_price: 0 }), 200);
+    assert.equal(ledger(name).transactioncurrencyid, store.state.tables.transactioncurrency[0].transactioncurrencyid);
+    assert.equal(ledger(name).exchangerate, 1);
+    assert.equal(ledger(name).x_price_base, 0);
+    await json(await request('PATCH', `/x_ledgers(${row.x_ledgerid})`, { x_price: null }), 200);
+    assert.equal(ledger(name).transactioncurrencyid, store.state.tables.transactioncurrency[0].transactioncurrencyid);
+    assert.equal(ledger(name).x_price_base, null);
+    const cleared = await json(await request('GET', `/x_ledgers(${row.x_ledgerid})`), 200);
+    assert.equal(cleared.x_price_base, null);
+  }
+});
+
+test("an explicit currency alone still supplies its rate without inventing money amounts", async (t) => {
+  const { request, json, ledger } = await setup(t);
+  await json(await request('POST', '/x_ledgers', { x_name: 'Currency only', ...currencyBind(EURO) }), 201);
+  assert.equal(ledger('Currency only').transactioncurrencyid, EURO);
+  assert.equal(ledger('Currency only').exchangerate, 1.3);
+  assert.equal(ledger('Currency only').x_price_base, undefined);
+});
+
+test('invalid money payloads retain the shared OData validation code and roll back derived stamps', async t => {
+  const { request, json, store } = await setup(t);
+  const before = structuredClone(store.state.tables.x_ledger);
+  for (const value of ['NaN', {}]) {
+    const error = await json(await request('POST', '/x_ledgers', { x_name: 'Invalid money', x_price: value }), 400);
+    assert.equal(error.error.code, '0x80048d19');
+    assert.deepEqual(store.state.tables.x_ledger, before);
+    const updated = await json(await request('PATCH', `/x_ledgers(${HELD})`, { x_price: value }), 400);
+    assert.equal(updated.error.code, '0x80048d19');
+    assert.deepEqual(store.state.tables.x_ledger, before);
+  }
+});
+
 test("create with an explicit currency divides by its rate, rounded to the currency precision (not the column's)", async (t) => {
   const { request, json, ledger } = await setup(t);
   await json(await request("POST", "/x_ledgers", { x_name: "Euro", x_price: 100, x_cost: 10, ...currencyBind(EURO) }), 201);

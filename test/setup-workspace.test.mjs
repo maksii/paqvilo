@@ -11,8 +11,8 @@ import { createSimulator } from '../mirage/server.mjs';
 import { createFixture } from './fixture.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 
-async function work(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-unit-'));
+async function work(t, prefix = 'paqvilo-setup-unit-') {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
@@ -272,13 +272,13 @@ test('setup creates configuration from a template and serves own and shared asse
 });
 
 test('restart drift follows the runtime identity and names the restart command', async t => {
-  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml');
+  const directory = await work(t, 'paqvilo-setup-unit-quoted-~'), filename = path.join(directory, 'paqvilo.config.yml');
   await fs.writeFile(filename, YAML.stringify(minimal));
   const server = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Lense', site: 'portal' } }); t.after(() => server.close());
   const base = new URL(server.url).origin;
   let status = await fetch(base + '/_setup/api/status').then(response => response.json());
   assert.equal(status.runtime.restartRequired, false);
-  assert.equal(status.runtime.restartCommand, `npx paqvilo lense dev --config ${/\s/.test(filename) ? `"${filename}"` : filename} --site portal`);
+  assert.equal(status.runtime.restartCommand, `npx paqvilo lense dev --config "${filename}" --site portal`);
   await fs.appendFile(path.join(directory, '.gitignore'), '/invented-output/\n');
   await fs.appendFile(filename, '# comment only\n');
   status = await fetch(base + '/_setup/api/status').then(response => response.json());
@@ -365,14 +365,14 @@ test('setup status exposes every key the guided forms read and writes a new pers
 });
 
 test('restart drift names the running site and command, is unknown when the identity fails and covers Lense settings', async t => {
-  const directory = await work(t), filename = path.join(directory, 'paqvilo.config.yml');
+  const directory = await work(t, 'paqvilo-setup-unit-quoted-~'), filename = path.join(directory, 'paqvilo.config.yml');
   const two = { ...minimal, sites: { portal: minimal.sites.portal, beta: { source: '.', environments: { dev: 'http://127.0.0.1:8788' }, mirage: { port: 0 } } } };
   await fs.writeFile(filename, YAML.stringify(two));
   const store = new SetupStore({ directory, config: filename, processEnv: {} });
   const mirage = await createSetupHandler({ store, site: 'beta', command: 'mirage serve', runtime: { product: 'Mirage' } });
   const first = await serve(t, mirage); t.after(() => first.server.close());
   const status = await fetch(first.base + '/_setup/api/status').then(response => response.json());
-  assert.equal(status.runtime.site, 'beta'); assert.equal(status.runtime.restartCommand, `npx paqvilo mirage serve --config ${/\s/.test(filename) ? `"${filename}"` : filename} --site beta`);
+  assert.equal(status.runtime.site, 'beta'); assert.equal(status.runtime.restartCommand, `npx paqvilo mirage serve --config "${filename}" --site beta`);
   assert.equal(status.commandArgs.site, '--site beta'); assert.match(status.runtime.restartScope, /Mirage runtime/);
   const previous = process.env.MIRAGE_SETUP_RUNTIME;
   process.env.MIRAGE_SETUP_RUNTIME = JSON.stringify({ site: 'beta', command: 'mirage dev' });

@@ -603,10 +603,11 @@ export function install(api) {
     // unverified: canStoreFullImage defaults to false, as the metadata does, so size=full answers 204 unless the column stores full images.
     if (kind === "image" && c.url.searchParams.get("size") === "full" && def?.canStoreFullImage !== true) return { status: 204 };
     const size = entry.data != null ? Buffer.from(String(entry.data), "base64").length : entry.size;
-    // unverified: the disposition is inline; the RFC 6266 quoted fallback plus filename* keeps any name a valid header.
+    // Simple token names retain the organization file-column wire format. Other
+    // names use the RFC 6266 fallback so Unicode and punctuation stay safe.
     const base = {
       "x-ms-file-size": String(size), "x-ms-file-name": fileNameHeader(entry.name), mimetype: entry.mimeType,
-      "Content-Disposition": contentDisposition("inline", entry.name), "Access-Control-Expose-Headers": EXPOSE,
+      "Content-Disposition": contentDisposition("inline", entry.name, { tokenFilename: true }), "Access-Control-Expose-Headers": EXPOSE,
     };
     const range = header(c, "range");
     // observed: parity case image.thumbnail; an image without size=full answers the thumbnail with no file headers at all.

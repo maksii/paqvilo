@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore } from '../lib/data.mjs';
@@ -8,6 +9,24 @@ import { runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows,
 import { validatePack } from '../lib/preset-registry.mjs';
 import { createSimulator } from '../server.mjs';
 import {isExactNumeric,stringifyExactJson} from '../lib/exact-numeric.mjs';
+
+test('modern flow imports bound the opened file and reject growth during its read', async t => {
+ const {dir}=await source(t,'');
+ const relative='modernflows/invented/flow.json',file=path.join(dir,relative);
+ await fs.mkdir(path.dirname(file),{recursive:true});
+ const content=JSON.stringify({workflowid:role,properties:{definition:{triggers:{manual:{type:'Request'}},actions:{}}}});
+ await fs.writeFile(file,content);
+ const layer={dir,format:'yaml',files:[{path:file,relative}]};
+ assert.equal((await importOperationWorkflows([layer])).size,1);
+ const read=fsSync.readSync;
+ let grew=false;
+ t.mock.method(fsSync,'readSync',(...args)=>{
+  if(!grew){grew=true;fsSync.appendFileSync(file,' '.repeat(1024*1024));}
+  return read(...args);
+ });
+ assert.equal((await importOperationWorkflows([layer])).size,0,'a changed/oversized flow is never imported');
+ assert.equal(grew,true);
+});
 
 test('imported flow JSON retains authored unsafe numeric literals before local expression execution',async t=>{
  const {dir}=await source(t,'');await fs.mkdir(path.join(dir,'Workflows'));

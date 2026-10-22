@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNoElements } from './assert-markup.mjs';
 import http from 'node:http';
 import { createCanvasHandler } from '../lib/canvas-http.mjs';
 
@@ -100,8 +101,8 @@ test('canvas handler escapes app values in HTML', async t => {
   const name = '<script>alert("fx")</script>';
   const { url } = await server(t, [{ uniqueName: 'fx_<b>app', source: source(name, { screens: [{ name: '<img src=x onerror=1>', controls: [] }] }) }]);
   const page = await (await fetch(url + '/_apps/canvas/' + encodeURIComponent('fx_<b>app'))).text();
-  assert.doesNotMatch(page, /<script|<img|<b>/);
+  assertNoElements(page, ['script', 'img', 'b']);
   assert.ok(page.includes('&lt;script&gt;alert(&quot;fx&quot;)&lt;/script&gt;'));
   const list = await (await fetch(url + '/_apps/canvas/')).text();
-  assert.doesNotMatch(list, /<script|<b>/);
+  assertNoElements(list, ['script', 'b']);
 });

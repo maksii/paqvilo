@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createSimulator } from '../api.mjs';
 import { preflight } from '../lib/capability-report.mjs';
 import { assertProvider, preflightProvider } from '../lib/storage-provider.mjs';
@@ -64,6 +66,12 @@ test('preflight({ packs }) loads module paths like createSimulator', async t => 
   const options = await fixture(t, PACK('', ''));
   const report = await preflight({ ...options, env: {} });
   assert.equal(row(report, 'provider:storage/remote').status, 'satisfied', 'the pack named by path supplied the provider');
+});
+
+test('provider deadlines deliver an answer when a CLI has no other active handles', () => {
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/hung-provider-preflight.mjs', import.meta.url))], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  assert.deepEqual(JSON.parse(child.stdout), { ready: false, reason: 'No preflight answer within 20 ms.' });
 });
 
 test('preflightProvider is bounded and the contract checks its shape', async t => {

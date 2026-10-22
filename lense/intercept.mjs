@@ -65,7 +65,8 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
         await route.disposeResponses();
       })));
       record.routes.clear();
-      const restore = [['Fetch.disable', {}], ['Network.setCacheDisabled', { cacheDisabled: false }]];
+      const restore = [['Fetch.disable', {}], ['Network.setCacheDisabled', { cacheDisabled: false }],
+        ['Network.setBypassServiceWorker', { bypass: false }]];
       if (bypassCSP) restore.push(['Page.setBypassCSP', { enabled: false }]);
       for (const [method, params] of restore) await step(method, () => record.cdp.send(method, params));
       await step('detach', () => record.cdp.detach?.());
@@ -125,6 +126,9 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
       // local version comes into play (scope 'changed': the moment you first edit it).
       await configure('Network.enable');
       await configure('Network.setCacheDisabled', { cacheDisabled: true });
+      // Attached profiles can already have a worker serving cached resources before
+      // Fetch sees them. Bypass it only in this admitted target; never unregister it.
+      await configure('Network.setBypassServiceWorker', { bypass: true });
       await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
     } catch (error) {
       const pageClosed = stopped || record.closed || page.isClosed();

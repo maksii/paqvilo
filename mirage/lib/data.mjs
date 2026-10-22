@@ -3515,7 +3515,12 @@ export class DataStore {
     try { this.assertAllowed(m.logicalName, "create", row, identity); }
     catch (cause) { if(deniedCreateBoundary)Object.assign(this.pluginRollbackBoundary,deniedCreateBoundary); throw cause; }
     // Normalization drops raw navigation names; retain them for relationship validation.
-    this.validateBindings(m, { ...input, ...pluginTarget }, row, identity);
+    const bindingInput = { ...input, ...pluginTarget };
+    // Runtime audit/ownership stamps are not visitor-authored associations.
+    // Keep explicit input and any plugin change subject to the normal checks.
+    for (const [name, value] of Object.entries(systemColumns ?? {}))
+      if (!own(input, name) && isDeepStrictEqual(bindingInput[name], value) && isDeepStrictEqual(row[name], value)) delete bindingInput[name];
+    this.validateBindings(m, bindingInput, row, identity);
     // Deep insert/bind into collection-valued navigation properties.
     for (const item of nested.filter((entry) => entry.rel.many !== false)) {
       const target = this.resolveMapping(item.rel.entity);

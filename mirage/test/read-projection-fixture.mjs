@@ -6,6 +6,7 @@ import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
 import { createOrganizationRuntime } from "../lib/dataverse-organization.mjs";
 import { EXTENSIONS } from "../lib/dataverse-extensions.mjs";
+import { randomUUID } from 'node:crypto';
 
 export const ADMIN = "77777777-7777-4777-8777-777777777777";
 export const CUST = "77777777-7777-4777-8777-777777777778";
@@ -15,7 +16,7 @@ export const CUST = "77777777-7777-4777-8777-777777777778";
  * body may be a raw string (sent as is) or a value (JSON.stringify); as is ADMIN (default) or CUST.
  */
 export async function readFixture(t, { mappings = {}, tables = {}, settings: extra = {} } = {}) {
-  const secretVar = `PAQ_READ_FIXTURE_${process.pid}_${Math.random().toString(36).slice(2).toUpperCase()}`;
+  const secretVar = `PAQ_READ_FIXTURE_${process.pid}_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[secretVar] = "read-fixture-secret";
   t.after(() => { delete process.env[secretVar]; });
   const state = emptyState();

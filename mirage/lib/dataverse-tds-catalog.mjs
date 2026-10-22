@@ -58,13 +58,13 @@ function columnsOf(name, def) {
 
 /**
  * Catalog of the store's tables the SQL endpoint exposes. Tables are keyed by lowercase logical name.
- * Virtual tables (isVirtual or dataSourceId) are outside the endpoint and skipped.
+ * Virtual tables (isVirtual or dataSourceId) and private mappings without a routable entity set are skipped.
  * metadataFields(logical) and metadata(logical) are optional field-definition sources, merged over the mapping's fields.
  */
 export function buildCatalog({ store, metadataFields, metadata }) {
   const tables = new Map();
   for (const [logical, mapping] of Object.entries(store.state.mappings ?? {})) {
-    if (mapping.isVirtual || mapping.dataSourceId) continue;
+    if (!mapping.entitySet || mapping.isVirtual || mapping.dataSourceId) continue;
     const fields = { ...store.fieldDefinitions(logical, metadataFields), ...(metadata?.(logical) ?? {}) };
     const idColumn = mapping.idColumn;
     const columns = [column(idColumn, "uniqueidentifier", { kind: "attribute", attribute: idColumn }, { nullable: false })];

@@ -42,7 +42,7 @@ test('a Secret variable answers null with a SECRET_NOT_EXPOSED_TO_SERVER_LOGIC d
   const messages = await run("function get() { return Server.EnvironmentVariable.get('fx_Key'); }", environmentVariablePayload(state));
   assert.equal(messages.at(-1).raw, 'null');
   assert.deepEqual(messages.filter((m) => m.kind === 'diagnostic').map((m) => m.code), ['SECRET_NOT_EXPOSED_TO_SERVER_LOGIC']);
-  assert.doesNotMatch(JSON.stringify(messages), /vault\.azure\.net/);
+  assert.equal(JSON.stringify(messages).includes('vault.azure.net'), false);
 });
 
 test('without a payload every variable is null', async () => {

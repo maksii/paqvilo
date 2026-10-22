@@ -33,6 +33,18 @@
   // Undocumented member names (the agents area) are unsupported by name; `then` stays undefined so awaiting the area works.
   const unsupportedAny = area => new Proxy({}, { get: (_target, key) => (typeof key === 'symbol' || key === 'then' || key === 'toJSON' ? undefined : unsupported(`${area}.${String(key)}`)) });
 
+  // DOM attributes are data, including when they describe a local navigation target.
+  // Keep the parsed scheme and origin: a non-HTTP URL's pathname can itself begin with javascript:.
+  function portalNavigationUrl(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+      const url = new URL(value, location.href);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+      if (url.origin !== location.origin) return null;
+      return url.href;
+    } catch { return null; }
+  }
+
   // ---- Ajax: CSRF token, credentials and x-requested-with on every request (Learn, client-api/ajax).
   let tokenRequest = null;
   const token = () => (tokenRequest ??= fetch('/_layout/tokenhtml', { credentials: 'same-origin', headers: { 'x-requested-with': 'XMLHttpRequest' } })
@@ -153,7 +165,7 @@
     const layouts = base64Json(element.getAttribute('data-view-layouts'));
     let layout = layouts.find(item => item.Id === element.getAttribute('data-selected-view')) ?? layouts[0] ?? { Columns: [] };
     const pageSize = Number(element.getAttribute('data-page-size')) || layout.Configuration?.PageSize || 10;
-    const website = element.getAttribute('data-website-id');
+    const website = encodeURIComponent(element.getAttribute('data-website-id') ?? '');
     const table = element.querySelector('table');
     const head = table.querySelector('thead tr');
     const body = table.querySelector('tbody');
@@ -173,12 +185,12 @@
       return links.filter(link => link.Enabled !== false && [1, 2, 4].includes(link.Type));
     };
     const formUrl = (link, id) => {
-      if (link.URL?.PathWithQueryString) { const url = new URL(link.URL.PathWithQueryString, location.href); if (id) url.searchParams.set(link.QueryStringIdParameterName || 'id', id); return url.pathname + url.search; }
+      if (link.URL?.PathWithQueryString) { const target = portalNavigationUrl(link.URL.PathWithQueryString); if (!target) return null; const url = new URL(target); if (id) url.searchParams.set(link.QueryStringIdParameterName || 'id', id); return url.href; }
       if (!link.EntityForm?.Id) return null;
       const url = new URL(`/_portal/modal-form-template-path/${website}`, location.href);
       url.searchParams.set('entityformid', link.EntityForm.Id);
       if (id) url.searchParams.set('id', id);
-      return url.pathname + url.search;
+      return portalNavigationUrl(url.href);
     };
     // A form action opens its page (URL target) or the basic form in the list's dialog (modal form route); closing it reloads.
     const openForm = (link, id) => {
@@ -722,9 +734,10 @@
 
   // ---- The local SharePoint document grid (platform.mjs, sharepoint-documents.mjs createPortalDocumentService).
   function documentGrid(element) {
-    const url = element.getAttribute('data-documents-url');
     const body = element.querySelector('tbody'), status = element.querySelector('.message');
     const say = text => { status.hidden = !text; status.textContent = text || ''; };
+    const url = portalNavigationUrl(element.getAttribute('data-documents-url'));
+    if (!url) { element.removeAttribute('aria-busy'); say('The document service URL must stay within this portal.'); return; }
     const failureText = async response => { try { return (await response.json())?.error?.message ?? `HTTP ${response.status}`; } catch { return `HTTP ${response.status}`; } };
     const write = async (method, target, init = {}) => fetch(target, { method, credentials: 'same-origin', ...init, headers: { 'x-requested-with': 'XMLHttpRequest', __RequestVerificationToken: await token(), ...(init.headers ?? {}) } });
     // The open subfolder (names from the record folder down) and the route for it: ?folder=a/b.

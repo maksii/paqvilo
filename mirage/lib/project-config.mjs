@@ -49,6 +49,8 @@ function validateOrigin(value, label) {
 const OBSERVED_CHOICES = {
   formSubmissionErrorMarkup: ['inline', 'paragraph'],
   webApiInnerError: ["all-errors", "dataverse-errors"],
+  webApiUpdatePermissionQuery: ['native-classic'],
+  webApiMutationPermissionText: ['table'],
   webApiCdsErrorMessage: ["CDS error occurred.", "Common Data Service error occurred."],
   webApiCdsErrorCode: ["innererror", "cdscode"],
   webApiAntiForgery: ["cookie-mismatch-403", "decryption-401"],
@@ -100,6 +102,8 @@ const OBSERVED_CHOICES = {
   liquidTimesDispatch: ["dotliquid", "observed"],
   liquidFilterErrors: ["dotliquid", "observed"],
   liquidServiceTags: ["dotliquid", "observed"],
+  // Records output only; an empty response does not establish the native integration's admin state.
+  powerBiOutput: ["empty", "placeholder"],
   liquidObjectCompatibility: ["dotliquid", "observed"],
   liquidHtmlVoidSerialization: ["dotliquid", "html"],
   liquidHtmlSafeInput: ["excluded", "observed"],

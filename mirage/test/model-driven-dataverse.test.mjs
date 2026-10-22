@@ -88,6 +88,34 @@ test('organization and shell ordinary CRUD share rows, audit values and optimist
   await json(await ui('GET', 'x_item', fromUi.row.x_itemid), 404);
 });
 
+test('enhanced source tables retain transactional management reads and writes with virtual metadata', async t => {
+  const { sim } = await modelDrivenFixture(t, { dataModel: 'enhanced', dataverse: { enabled: true } });
+  const { org, ui, entityPath, portal } = await connect(sim);
+  const website = sim.store.resolveMapping('mspp_website');
+  assert.equal(website.tableType, 'Virtual');
+  assert.equal(website.modelDrivenSource, true);
+  const grid = await json(await ui('GET', 'mspp_website'));
+  assert.equal(grid.rows.length, 1);
+  assert.equal(grid.rows[0].mspp_websiteid, WEBSITE);
+  await json(await org('GET', entityPath('mspp_website', WEBSITE)));
+  const snippet = await json(await ui('GET', 'mspp_contentsnippet', SNIPPET));
+  await json(await ui('PATCH', 'mspp_contentsnippet', SNIPPET, { mspp_value: 'Enhanced source edit' }, snippet.etag));
+  assert.match(await portal(), /Enhanced source edit/);
+  const edited = await json(await org('GET', entityPath('mspp_contentsnippet', SNIPPET)));
+  assert.equal(edited.mspp_value, 'Enhanced source edit');
+  const created = await json(await org('POST', entityPath('mspp_sitesetting'), { mspp_name: 'Invented/New', mspp_value: 'Value' }, { prefer: 'return=representation' }), 201);
+  const id = created.mspp_sitesettingid;
+  const setting = await json(await ui('GET', 'mspp_sitesetting', id));
+  assert.equal(setting.row.mspp_value, 'Value');
+  await json(await ui('DELETE', 'mspp_sitesetting', id, undefined, setting.etag));
+  await json(await org('GET', entityPath('mspp_sitesetting', id)), 404);
+  await json(await org('DELETE', entityPath('mspp_website', WEBSITE)), 501);
+  // An ordinary virtual table still needs its declared provider.
+  sim.store.state.mappings.x_item.tableType = 'Virtual';
+  const missing = await json(await org('GET', '/x_items'), 501);
+  assert.match(missing.error.message, /Virtual table 'x_item' has no data provider/);
+});
+
 test('source customization writes cross API, shell and rendered portal, persist on restart and never modify exports', async t => {
   const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } });
   const before = await sourceSnapshot(fixture.sourceDir);

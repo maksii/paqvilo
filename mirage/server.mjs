@@ -88,7 +88,7 @@ import {
 import { pageAccess } from "./lib/page-access.mjs";
 import { sourceFingerprint, cachedSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
-import { importSolutionMetadata } from "./lib/solution-metadata.mjs";
+import { importSolutionMetadata, portalMetadataEntities } from "./lib/solution-metadata.mjs";
 import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
 import { createModelDrivenData } from './lib/model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './lib/model-driven/http.mjs';
@@ -512,7 +512,7 @@ async function createPowerPagesSimulator({
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
     codeComponents = await importCodeComponents(scan.layers);
     [solutionMetadata, solutionData] = await Promise.all([
-      importSolutionMetadata(solutionRoots, { portal, entities: Object.keys(schema.tables), scan, schema, observed, lcid }),
+      importSolutionMetadata(solutionRoots, { portal, entities: [...new Set([...Object.keys(schema.tables), ...portalMetadataEntities(portal)])], scan, schema, observed, lcid }),
       scan === previous && schema === importedSources?.solutionSchema ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
     solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid, projectRoot });
@@ -1457,6 +1457,7 @@ async function createPowerPagesSimulator({
             store,
             readProvider,
             args: typeof args === "string" ? { name: args } : (args ?? {}),
+            serviceFixtures: organizationHost.providers.serviceFixtures,
             metadata: solutionMetadata,
             codeComponent: spec => renderCodeComponent({ ...spec, portal, catalog: codeComponents, metadata: solutionMetadata, language: context?.__language ?? portal.language, identity: currentIdentity(), mappings: store.snapshot({ sections: ['mappings'] }).mappings, diagnostic: entry => recordDiagnostic({ ...entry, path: context?.request?.path }) }),
             config: config(),

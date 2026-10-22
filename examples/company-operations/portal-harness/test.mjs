@@ -3,12 +3,42 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {compilePlans,caseTemplate,dispatcher} from './compile.mjs';
 import {authoredQuery,canonicalRows,compareResults,pageComplete,splitPayload,assessScenario,diffObservation,encodeArtifact,decodeArtifact} from './core.mjs';
-import {createRunner} from './runtime.mjs';
+import {createRunner,reconcileBackendArtifact} from './runtime.mjs';
 import {shellSource,componentId} from './deploy.mjs';
 const catalogue=JSON.parse(await fs.readFile(new URL('../data/catalogue.json',import.meta.url)));
 const schema=JSON.parse(await fs.readFile(new URL('../dataverse/manifest.json',import.meta.url)));
 const manifest=compilePlans(catalogue,schema);
 const operation={pqvd_testoperationid:'11111111-1111-4111-8111-111111111111',pqvd_markerutc:'CO-UTC:2026-10-13T08:00:00.000Z',pqvd_markeroperation:'CO-OP:11111111-1111-4111-8111-111111111111'};
+
+test('async reconciliation retains late multipart packets and waits for a stable complete operation',async()=>{
+  const {sha256}=await import('./core.mjs');let time=0,reads=0;
+  const part=async(n,text)=>({pqvd_plugineventid:'part-'+n,pqvd_spanid:'async-span',pqvd_artifacttype:'AsyncContext',pqvd_partnumber:n,pqvd_partcount:2,pqvd_payloadtext:text,pqvd_payloadhash:await sha256(text)}),a=await part(1,'first'),b=await part(2,'second');
+  const result=await reconcileBackendArtifact({read:async()=>({ok:true,data:{value:[[],[a],[a,b],[b,a]][Math.min(reads++,3)]}}),artifactType:'AsyncContext',timeoutMs:10,intervalMs:1,now:()=>time,sleep:async ms=>{time+=ms;}});
+  assert.equal(result.state,'observed');assert.equal(reads,4);assert.equal(result.events.length,2);assert.equal(result.elapsedMs,3);
+});
+
+test('async reconciliation aborts an unresponsive transport within its deadline',async()=>{let signal;const result=await reconcileBackendArtifact({read:args=>{signal=args.signal;return new Promise(()=>{});},artifactType:'AsyncContext',timeoutMs:5,intervalMs:1});assert.equal(result.state,'timeout');assert.equal(signal.aborted,true);assert.deepEqual(result.events,[]);});
+
+test('async reconciliation retains partial failures and never qualifies missing, corrupt, paged or cancelled evidence',async()=>{
+  const {sha256}=await import('./core.mjs'),event={pqvd_plugineventid:'event',pqvd_spanid:'span',pqvd_artifacttype:'ChainA',pqvd_partnumber:1,pqvd_partcount:1,pqvd_payloadtext:'payload',pqvd_payloadhash:await sha256('payload')};
+  for(const mode of ['timeout','transport','checksum','paging','cancel']){let time=0,reads=0;const result=await reconcileBackendArtifact({read:async()=>{reads++;return mode==='transport'&&reads>1?{ok:false,status:403,text:'denied'}:{ok:true,data:{value:[mode==='checksum'?{...event,pqvd_payloadhash:'bad'}:event],...(mode==='paging'?{'@odata.nextLink':'more'}:{})}};},artifactType:'AsyncContext',timeoutMs:3,intervalMs:1,now:()=>time,sleep:async ms=>{time+=ms;},stopped:()=>mode==='cancel'&&reads>0});
+    assert.equal(result.state,{timeout:'timeout',transport:'read-failed',checksum:'checksum-failed',paging:'paging-incomplete',cancel:'stopped'}[mode]);assert.equal(result.events.length,1);if(mode==='transport')assert.equal(result.httpStatus,403);
+  }
+});
+
+test('P10 saves reconciled packets before cleanup and marks failed reconciliation incomplete even with a durable backend',async()=>{
+  const {sha256}=await import('./core.mjs');
+  for(const fail of [false,true]){const calls=[],operations=new Map();let eventReads=0;
+    const packet={pqvd_plugineventid:'event',pqvd_spanid:'span',pqvd_artifacttype:'AsyncContext',pqvd_partnumber:1,pqvd_partcount:1,pqvd_payloadtext:'async',pqvd_payloadhash:await sha256('async')};
+    const request=async args=>{calls.push(args);if(args.method==='POST'){const id=crypto.randomUUID();if(args.url==='/_api/pqvd_testoperations')operations.set(id,{pqvd_testoperationid:id,pqvd_markeroperation:'CO-OP:'+id,pqvd_markerutc:'CO-UTC:2026-10-13T08:00:00.000Z'});return{ok:true,status:204,entityId:id,text:''};}
+      if(args.url.startsWith('/_api/pqvd_testoperations(')&&!args.method)return{ok:true,status:200,data:operations.get(args.url.match(/\(([a-f0-9-]+)\)/)[1]),text:''};
+      if(args.url.startsWith('/_api/pqvd_pluginevents?')){eventReads++;return fail?{ok:false,status:403,text:'denied'}:{ok:true,status:200,data:{value:[packet]},text:''};}return{ok:true,status:204,text:''};};
+    const runner=createRunner({manifest:{...manifest,cases:[],crudFixtures:[],scenarios:[],pluginProfiles:[{id:'P10'}],readiness:{operationGuard:true,durableCollector:true,pipelineProfiles:['P10']}},context:{contactId:'11111111-1111-4111-8111-111111111111',roles:['CO Test Runner']},request});
+    const result=await runner.run({selectedCases:[],pluginProfile:'P10'}),profile=result.evidence.find(e=>e.profile==='P10'&&!e.kind),cleanup=calls.findIndex(c=>c.method==='DELETE'),saved=calls.filter(c=>c.url==='/_api/pqvd_testresults'&&c.body.pqvd_caseid==='P10'&&c.body.pqvd_artifactkind===manifest.choices.pqvd_artifactkind.Summary);
+    assert.equal(profile.backendReconciliation.state,fail?'read-failed':'observed');assert.equal(eventReads,fail?1:2);assert.deepEqual(result.residuals,[]);assert.ok(cleanup>calls.findLastIndex(c=>c.url.startsWith('/_api/pqvd_pluginevents?')));assert.equal(calls.at(-1).body.pqvd_runstate,manifest.choices.pqvd_runstate[fail?'Incomplete':'Completed']);
+    const artifact=JSON.parse(await decodeArtifact(saved.map(c=>c.body.pqvd_payloadtext).join('')));assert.equal(artifact.backendEvents.length,fail?0:1);assert.equal(artifact.backendReconciliation.state,profile.backendReconciliation.state);
+  }
+});
 
 test('all36 cases plus inner/outer variant share typed plans without administrator oracle leakage',()=>{
   assert.equal(manifest.cases.length,37);assert.equal(new Set(manifest.cases.map(c=>c.id.slice(0,3))).size,36);

@@ -1420,7 +1420,7 @@ async function renderEntityView(name, context, options) {
   };
 }
 
-// Power BI reports are never rendered or requested locally: the tag emits a labelled placeholder.
+// The host never requests a Power BI report. Trusted fixtures may supply local markup.
 const POWERBI_INPUTS = [["path", "data-powerbi-path"], ["authentication_type", "data-powerbi-authentication-type"], ["roles", "data-powerbi-roles"], ["tileid", "data-powerbi-tileid"], ["filter", "data-powerbi-filter"]];
 // ponytail: redaction is a pattern over `?key=value`, `&key=value` and `#key=value` pairs of any value with a query or
 // fragment (absolute or relative), not a URL parser.
@@ -1429,6 +1429,31 @@ function powerBiPlaceholderMarkup(args, options) {
   const attributes = POWERBI_INPUTS.flatMap(([input, attribute]) => (args?.[input] == null || args[input] === "" ? [] : [` ${attribute}="${escape(redactUrlQuery(String(args[input])))}"`])).join("");
   options.diagnostic?.({ code: "LIQUID_POWERBI_PLACEHOLDER", severity: "warning", component: "powerbi", message: "The powerbi tag emits a placeholder; the Power BI report is not rendered locally and no request is made." });
   return `<div class="paqvilo-powerbi-placeholder" data-mirage-component="powerbi"${attributes}>Power BI report is not rendered locally.</div>`;
+}
+
+function powerBiMarkup(args, context, options) {
+  const operation = options.serviceFixtures?.resolve('powerBi', 'embed');
+  if (operation && operation.level !== 'disabled') {
+    // Packs are explicitly trusted executable modules. Their HTML is authored fixture content,
+    // not a remote service response; preserve it just like a trusted component renderer.
+    const result = operation.run({ args: { ...args }, context, portal: options.portal });
+    if (typeof result?.then === 'function') {
+      // Refuse async fixtures while observing their rejection: a trusted ordinary function
+      // can still return a rejected promise, which must not escape as an unhandled rejection.
+      Promise.resolve(result).catch(() => {});
+      throw new TypeError('powerBi.embed must synchronously return { html: string } or { error }.');
+    }
+    if (result?.html != null && typeof result.html !== 'string') {
+      throw new TypeError('powerBi.embed must synchronously return { html: string } or { error }.');
+    }
+    if (typeof result?.html === 'string') return result.html;
+    options.diagnostic?.({ code: 'LIQUID_POWERBI_FIXTURE_UNAVAILABLE', severity: 'warning', component: 'powerbi', message: 'The Power BI fixture supplied no HTML.' });
+  }
+  if ((options.observed ?? options.portal?.observed)?.powerBiOutput === 'empty') {
+    options.diagnostic?.({ code: 'LIQUID_POWERBI_OBSERVED_EMPTY', severity: 'info', component: 'powerbi', message: 'The powerbi tag emits empty output according to this site’s recorded observation.' });
+    return '';
+  }
+  return powerBiPlaceholderMarkup(args, options);
 }
 
 /** The searchindex tag (lib/portal-search.mjs): results filtered by the visitor's table permissions. */
@@ -1452,7 +1477,7 @@ export async function renderComponent(kind, name, context, options) {
     if (markup !== null) return markup;
   }
   // Native `{% powerbi path: '...' %}` has no name, so this runs before the name check.
-  if (kind === "powerbi") return powerBiPlaceholderMarkup(options.args, options);
+  if (kind === "powerbi") return powerBiMarkup(options.args, context, options);
   // Native `{% searchindex query: ... %}` has no name either.
   if (kind === "searchindex") return renderSearchIndex(context, options);
   if (name == null || name === "") return "";

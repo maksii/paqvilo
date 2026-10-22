@@ -9,8 +9,51 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
+import { refreshModelDrivenPage } from '../lense/commands/model-driven.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+
+test('model-driven overlay refresh bypasses an existing worker only in its owned tab and restores it on release', { timeout: 30000 }, async t => {
+  const worker = `self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+    self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+    self.addEventListener('fetch', event => { if (new URL(event.request.url).pathname === '/WebResources/x_cached.js')
+      event.respondWith(new Response('window.cachedAsset = "native-worker"', { headers: { 'content-type': 'text/javascript' } })); });`;
+  const server = http.createServer((request, response) => {
+    if (request.url === '/worker.js') { response.setHeader('content-type', 'text/javascript'); response.end(worker); return; }
+    response.setHeader('content-type', 'text/html');
+    response.end(request.url.startsWith('/main.aspx') ? '<!doctype html><script src="/WebResources/x_cached.js"></script>' : '<!doctype html>Worker registration fixture');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  let browser, release;
+  t.after(async () => { await release?.(); await browser?.close(); await new Promise(resolve => server.close(resolve)); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
+  const context = await browser.newContext(), page = await context.newPage();
+  await page.goto(origin + '/register');
+  await page.evaluate(async () => { await navigator.serviceWorker.register('/worker.js'); await navigator.serviceWorker.ready; });
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+  await page.goto(origin + '/main.aspx');
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'native-worker');
+  const sibling = await context.newPage();
+  await sibling.goto(origin + '/main.aspx');
+  const imported = value => ({ resources: [{ name: 'x_cached.js' }], diagnostics: [],
+    assets: new Map([['x_cached.js', { name: 'x_cached.js', mime: 'text/javascript', data: Buffer.from(`window.cachedAsset = ${JSON.stringify(value)}`) }]]) });
+  const overlay = createModelDrivenOverlay({ origin, imported: imported('local first') });
+  release = await interceptOrigin(context, origin, route => overlay.handle(route), { ownsPage: candidate => candidate === page });
+  await refreshModelDrivenPage(page, origin);
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'local first');
+  overlay.replace(imported('local changed'));
+  await refreshModelDrivenPage(page, origin);
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'local changed');
+  assert.equal(overlay.report().currentRevisionApplied, 1);
+  await sibling.goto(origin + '/main.aspx?unowned');
+  assert.equal(await sibling.evaluate(() => window.cachedAsset), 'native-worker');
+  assert.equal(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length), 1, 'the worker remains registered');
+  await release(); release = null;
+  await page.goto(origin + '/main.aspx?released');
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'native-worker');
+});
 
 test('model-driven local scripts publish file debugger maps and hit an executable source breakpoint', { timeout: 30000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-debug-'));

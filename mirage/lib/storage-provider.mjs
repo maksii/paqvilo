@@ -73,7 +73,9 @@ export function assertProvider(provider) {
 export async function preflightProvider(instance, { timeoutMs = 2000 } = {}) {
   if (typeof instance?.preflight !== 'function') return null;
   let timer;
-  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve({ ready: false, reason: `No preflight answer within ${timeoutMs} ms.` }), timeoutMs); timer.unref?.(); });
+  // A CLI may have no other active handles while awaiting a provider. Keep its
+  // deadline alive until an answer is delivered, then release it in finally.
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve({ ready: false, reason: `No preflight answer within ${timeoutMs} ms.` }), timeoutMs); });
   try {
     const result = await Promise.race([Promise.resolve().then(() => instance.preflight()), timeout]);
     return result?.ready === true ? { ready: true, reason: null } : { ready: false, reason: String(result?.reason ?? 'The provider reported it is not ready.') };

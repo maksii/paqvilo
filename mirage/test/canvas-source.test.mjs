@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
-import { canvasInventoryRecord, readCanvasSource } from '../lib/canvas-source.mjs';
+import { canvasInventoryRecord, readCanvasSource, readCanvasSources } from '../lib/canvas-source.mjs';
 
 const APP = [
   'App:',
@@ -53,6 +53,39 @@ const DETAIL = [
 const COMPONENT = 'ComponentDefinitions:\n  FxHeader:\n    DefinitionType: CanvasComponent\n    Properties:\n      Fill: =Color.Blue\n';
 const files = { 'Src/App.pa.yaml': APP, 'Src/HomeScreen.pa.yaml': HOME, 'Src/DetailScreen.pa.yaml': DETAIL, 'Src/Component/FxHeader.pa.yaml': COMPONENT, 'Header.json': '{}' };
 const msappOf = entries => writeSolutionAssetEntries(Object.entries(entries).map(([name, body]) => ({ name, data: Buffer.from(body) })));
+
+test('configured canvas imports reject an archive changed during the opened read with a source diagnostic', async t => {
+  const root = await dirOf(t, { 'Invented.msapp': msappOf(files) });
+  const file = path.join(root, 'Invented.msapp');
+  const open = fs.open;
+  let grew = false;
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await open(...args);
+    if (args[0] === file) {
+      const read = handle.read.bind(handle);
+      t.mock.method(handle, 'read', async (...readArgs) => {
+        if (!grew) { grew = true; await fs.appendFile(file, Buffer.from('changed during read')); }
+        return read(...readArgs);
+      });
+    }
+    return handle;
+  });
+  const report = await readCanvasSources(['Invented.msapp'], { projectRoot: root });
+  assert.equal(grew, true);
+  assert.deepEqual(report.records, []);
+  assert.equal(report.diagnostics.length, 1);
+  assert.equal(report.diagnostics[0].code, 'CANVAS_SOURCE_MISSING');
+  assert.equal(report.diagnostics[0].source, 'Invented.msapp');
+});
+
+test('configured canvas imports retain directory and archive inventories and diagnose missing paths', async t => {
+  const root = await dirOf(t, { ...Object.fromEntries(Object.entries(files).map(([name, body]) => ['unpacked/' + name, body])), 'Invented.msapp': msappOf(files) });
+  const report = await readCanvasSources(['unpacked', 'Invented.msapp', 'missing.msapp'], { projectRoot: root });
+  assert.deepEqual(report.records.map(record => [record.format, record.canvas.screens]), [
+    ['directory', ['DetailScreen', 'HomeScreen']], ['msapp', ['DetailScreen', 'HomeScreen']],
+  ]);
+  assert.deepEqual(report.diagnostics.map(item => [item.code, item.source]), [['CANVAS_SOURCE_MISSING', 'missing.msapp']]);
+});
 
 async function dirOf(t, entries) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-source-'));

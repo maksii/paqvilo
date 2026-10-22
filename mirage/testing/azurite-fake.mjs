@@ -33,9 +33,13 @@ export async function startAzuriteFake({ accountName = 'devstoreaccount1', accou
     for (const name of Object.keys(request.headers).filter((n) => n.startsWith('x-ms-')).sort())
       text += `${name}:${String(request.headers[name]).replace(/[ \t\r\n]+/g, ' ').trim()}\n`;
     text += `/${accountName}${rawPath}`;
-    const grouped = {};
-    for (const [name, value] of query) (grouped[name.toLowerCase()] ??= []).push(value);
-    for (const name of Object.keys(grouped).sort()) text += `\n${name}:${grouped[name].sort().join(',')}`;
+    const grouped = new Map();
+    for (const [name, value] of query) {
+      const key = name.toLowerCase();
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(value);
+    }
+    for (const name of [...grouped.keys()].sort()) text += `\n${name}:${grouped.get(name).sort().join(',')}`;
     return text;
   }
   const sign = (text) => createHmac('sha256', Buffer.from(accountKey, 'base64')).update(text, 'utf8').digest('base64');

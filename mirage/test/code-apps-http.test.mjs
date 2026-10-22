@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNoElements } from './assert-markup.mjs';
 import http from 'node:http';
 import { createCodeAppsHandler, authorityTokenIssuer } from '../lib/code-apps-http.mjs';
 import { createAuthority } from '../lib/dataverse-auth.mjs';
@@ -175,14 +176,14 @@ test('loader frames localAppUrl with locked-down headers and escapes untrusted t
   assert.match(framed.headers.get('content-security-policy'), /default-src 'self'; script-src 'self'.*frame-src http:\/\/localhost:3000$/);
   assert.match(html, /<iframe src="http:\/\/localhost:3000\/start\?q=/);
   assert.match(html, /mode=edit/);
-  assert.doesNotMatch(html, /<script|"><b>/);
+  assertNoElements(html, ['script', 'b']);
 
   const unset = await request('/_apps/code/' + encodeURIComponent('x<script>alert(1)</script>') + '/', { staff: null });
   const text = await unset.text();
   assert.equal(unset.status, 200);
   assert.match(text, /No localAppUrl is configured/);
   assert.match(text, /x&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  assert.doesNotMatch(text, /<script>/);
+  assertNoElements(text, ['script']);
   assert.doesNotMatch(unset.headers.get('content-security-policy'), /frame-src/);
 });
 

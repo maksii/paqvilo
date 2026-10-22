@@ -22,9 +22,11 @@ test('page ownership is admitted before attaching CDP or changing cache and CSP'
   assert.equal(attachments, 1);
   assert.equal(user.cdp.listenerCount('Fetch.requestPaused'), 0);
   assert.equal(b.sent.filter(command => command.method === 'Network.setCacheDisabled' && command.cacheDisabled).length, 1);
+  assert.equal(b.sent.filter(command => command.method === 'Network.setBypassServiceWorker' && command.bypass).length, 1);
   await dispose();
   assert.equal(owned.cdp.listenerCount('Fetch.requestPaused'), 0);
   assert.equal(b.context.listenerCount('page'), 0);
+  assert.equal(b.sent.filter(command => command.method === 'Network.setBypassServiceWorker' && command.bypass === false).length, 1);
 });
 
 test('all configured origins share one interceptor and foreign origins pass through', async () => {
@@ -177,6 +179,7 @@ test('disposing an overlay restores browser cache and CSP and stops new attachme
   await dispose();
   assert.ok(b.sent.some((s) => s.method === 'Page.setBypassCSP' && s.enabled === false));
   assert.ok(b.sent.some((s) => s.method === 'Network.setCacheDisabled' && s.cacheDisabled === false));
+  assert.ok(b.sent.some((s) => s.method === 'Network.setBypassServiceWorker' && s.bypass === false));
   assert.ok(b.sent.some((s) => s.method === 'Fetch.disable'));
   b.context.emit('page', b.openTab().page);
   await setImmediate();

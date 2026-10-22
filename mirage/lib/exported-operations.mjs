@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import { modernFlowWorkflows } from './flow-yaml.mjs';
-import { readLocalFile } from '../../lense/local-file.mjs';
+import { readLocalFile, readLocalFileSync } from '../../lense/local-file.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
@@ -274,7 +273,7 @@ export async function importOperationWorkflows(layers = []) {
     // A YAML repository layer: its modernflows/ cloud flows normalise into the same entries (flow-yaml.mjs); a file that does
     // not parse is reported by its inventory record (MODERNFLOW_YAML_INVALID).
     if (layer.format === 'yaml') for (const [id, entry] of modernFlowWorkflows(layer.files ?? [], file => {
-      try { return fsSync.statSync(file.path).size <= limit ? fsSync.readFileSync(file.path, 'utf8') : null; } catch { return null; }
+      try { return readLocalFileSync(file.path, { root: layer.dir, maxBytes: limit, encoding: 'utf8' }); } catch { return null; }
     })) result.set(id, entry);
     let entries;
     try { entries = solutionLayerFiles(layer, /^workflows$/i).filter(file => /^[^/]+\/[^/]+$/.test(file.name)); } catch { continue; }

@@ -89,6 +89,11 @@ const routes = {
 
 test("admin service views peek and purge, answer approvals, run preflight and expand pack details", { timeout: 60000 }, async (t) => {
   const calls = [];
+  // A notification can precede the asynchronous reload. Hold that reload so the check
+  // exercises the pending UI state rather than depending on a fast loopback response.
+  let releasePurgeRefresh;
+  const purgeRefresh = new Promise(resolve => { releasePurgeRefresh = resolve; });
+  t.after(() => releasePurgeRefresh());
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     try {
@@ -102,6 +107,7 @@ test("admin service views peek and purge, answer approvals, run preflight and ex
         if (req.method === "POST" && route === "/flow-waits/fx-approval") { res.statusCode = 202; return res.end(JSON.stringify({ runId: "run-1", waitId: "fx-approval", kind: "approval", scheduled: true, outcome: "Approve" })); }
         if (route === "/messages" && url.searchParams.get("entity")) return res.end(JSON.stringify({ entity: "fx-orders", messages: [{ messageId: "fx-message-1", sequenceNumber: 1, state: "active", deliveryCount: 0, body: { invented: true } }] }));
         if (!Object.hasOwn(routes, route)) { res.statusCode = 404; return res.end(JSON.stringify({ error: { message: "Not found" } })); }
+        if (route === "/messages" && calls.some(call => call.method === "DELETE")) await purgeRefresh;
         return res.end(JSON.stringify(routes[route]));
       }
       if (url.pathname === "/") { res.writeHead(200, { "content-type": "text/html", "content-security-policy": ADMIN_CSP }); return res.end(PAGE); }
@@ -140,7 +146,9 @@ test("admin service views peek and purge, answer approvals, run preflight and ex
   await page.locator("#notification").getByText("Purged 2 messages from fx-orders.").waitFor();
   const purge = calls.find((call) => call.method === "DELETE");
   assert.deepEqual([purge.path, purge.csrf], ["/messages/fx-orders", "fixture-csrf"]);
-  assert.equal(await page.locator('table[data-table="svc-peek"]').count(), 0, "the purged entity's peek closes");
+  assert.equal(await page.locator('table[data-table="svc-peek"]').count(), 1, "the pending refresh retains its old view");
+  releasePurgeRefresh();
+  await page.locator('table[data-table="svc-peek"]').waitFor({ state: "detached" });
   await page.locator('[data-ui-section="services:local-services"] > summary').click();
   await page.getByRole("button", { name: "Probe fx-functions now" }).click();
   await page.locator('table[data-table="svc-local-services"]').getByText("satisfied").waitFor();

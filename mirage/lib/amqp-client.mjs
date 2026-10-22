@@ -130,8 +130,9 @@ function decodeAs(code, b, at) {
       }
       for (let index = 0; index < count; index += 1) { const [item, next] = decode(b.subarray(0, end), cursor); items.push(item); cursor = next; }
       if (code === 0xc0 || code === 0xd0) return [items, end];
-      const map = {};
-      for (let index = 0; index + 1 < items.length; index += 2) map[String(items[index])] = items[index + 1];
+      const entries = [];
+      for (let index = 0; index + 1 < items.length; index += 2) entries.push([String(items[index]), items[index + 1]]);
+      const map = Object.fromEntries(entries);
       return [map, end];
     }
     default: throw new TypeError(`Unsupported AMQP type code 0x${code.toString(16)}`);

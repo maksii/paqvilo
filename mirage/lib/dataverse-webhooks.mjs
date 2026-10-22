@@ -16,6 +16,10 @@ import { organizationRecord } from './organization-context.mjs';
 // post runs on the synchronous I/O bridge (sync-io-bridge.mjs, a worker thread; sync). Asynchronous steps run after commit
 // (plugin-async.mjs afterCommit).
 import dns from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
+import { Readable } from 'node:stream';
+import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 import { syncIo } from './sync-io-bridge.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
@@ -48,22 +52,62 @@ const unavailable = () => new DataError('Endpoint unavailable', 400, 'InvalidReq
 
 // Whether every address a URL's host resolves to is loopback (127.0.0.0/8 or ::1). localhost and IP literals answer without a
 // lookup; any other name (*.localhost) is resolved, because a resolver may answer it with a routable address.
-async function resolvesToLoopback(text, lookup) {
+async function loopbackAddresses(text, lookup) {
   const host = new URL(text).hostname.toLowerCase();
-  if (host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host)) return true;
+  if (host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host)) return null;
   const addresses = await lookup(host, { all: true }).catch(() => []);
-  return addresses.length > 0 && addresses.every(({ address }) => /^127\./.test(address) || address === '::1');
+  if (!addresses.length || addresses.some(({ address }) => !/^127\./.test(address) && address !== '::1')) throw unavailable();
+  return addresses;
 }
 
 /** The one outbound helper: throws (synchronously) for a non-loopback URL before any network call, rejects a host name that
- * resolves to any non-loopback address, and refuses redirects. `lookup` (default dns.promises.lookup) is injectable for tests.
- * ponytail: the name is checked, then fetch resolves it again; pin the checked address (a custom dispatcher) if a rebinding
- * resolver for *.localhost ever matters. */
+ * resolves to any non-loopback address, pins the checked addresses for that connection, and refuses redirects.
+ * `lookup` (default dns.promises.lookup) is injectable for tests. */
 export function loopbackFetch(url, { lookup = dns.promises.lookup, ...init } = {}) {
   if (!isLoopbackUrl(url)) throw unavailable();
-  return resolvesToLoopback(String(url), lookup).then((loopback) => {
-    if (!loopback) throw unavailable();
-    return fetch(url, { ...init, redirect: 'error' });
+  return loopbackAddresses(String(url), lookup).then(addresses => addresses
+    ? fetchAtAddresses(url, init, addresses) : fetch(url, { ...init, redirect: 'error' }));
+}
+
+// Native fetch cannot accept a pinned DNS lookup without an external dispatcher. Only DNS-checked *.localhost names use
+// this transport; literal addresses keep fetch. Keep the original URL for HTTP Host and HTTPS certificate/SNI checks.
+function fetchAtAddresses(url, init, addresses) {
+  const request = new Request(url, init);
+  return new Promise((resolve, reject) => {
+    const send = request.url.startsWith('https:') ? https.request : http.request;
+    const outgoing = send(request.url, {
+      method: request.method, headers: Object.fromEntries(request.headers), signal: request.signal,
+      lookup: (_host, options, done) => options.all ? done(null, addresses) : done(null, addresses[0].address, addresses[0].family),
+    }, incoming => {
+      if ([301, 302, 303, 307, 308].includes(incoming.statusCode)) {
+        incoming.resume();
+        reject(new TypeError('fetch failed', { cause: new Error('Unexpected redirect') }));
+        return;
+      }
+      const headers = new Headers();
+      for (let index = 0; index < incoming.rawHeaders.length; index += 2) headers.append(incoming.rawHeaders[index], incoming.rawHeaders[index + 1]);
+      const empty = request.method === 'HEAD' || [204, 205, 304].includes(incoming.statusCode);
+      let body = incoming;
+      const decoders = new Map([['gzip', createGunzip], ['deflate', createInflate], ['br', createBrotliDecompress]]);
+      const decode = decoders.get(headers.get('content-encoding'));
+      if (decode && !empty) {
+        body = decode();
+        incoming.on('error', error => body.destroy(error));
+        body.on('close', () => incoming.destroy());
+        incoming.pipe(body);
+      }
+      if (empty) incoming.resume();
+      const response = new Response(empty ? null : Readable.toWeb(body), { status: incoming.statusCode, statusText: incoming.statusMessage, headers });
+      Object.defineProperty(response, 'url', { value: request.url });
+      resolve(response);
+    });
+    outgoing.on('error', error => reject(request.signal.aborted ? request.signal.reason : error));
+    if (request.body) {
+      const body = Readable.fromWeb(request.body);
+      body.on('error', error => outgoing.destroy(error));
+      outgoing.on('close', () => body.destroy());
+      body.pipe(outgoing);
+    } else outgoing.end();
   });
 }
 

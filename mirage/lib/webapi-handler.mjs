@@ -11,7 +11,8 @@ import {preparePortalFetchXml} from './portal-fetchxml.mjs';
 import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference, parseKeySegment } from "./data.mjs";
-import { parseXmlDocument, planFetch, structuralIntersects, webApiPagingCookie } from "./fetchxml-engine.mjs";
+import { parseXmlDocument, planFetch, structuralIntersects, webApiPagingCookie, xmlEscapeAttribute } from "./fetchxml-engine.mjs";
+import {compilePermissionFetchXml} from './permission-query.mjs';
 import { prepareODataPage } from "./odata-paging.mjs";
 import { parseExpand, parseSelect } from "./odata-query.mjs";
 import { createWebApiFormatter } from "./webapi-format.mjs";
@@ -233,7 +234,7 @@ const ERROR_TYPES = Object.freeze({
  * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
-export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod } = {}) {
+export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod, mutationPermissionText } = {}) {
   const status = Number(error?.status ?? error?.statusCode) || 500;
   const internal = error?.code == null ? null : String(error.code);
   const details = error?.details ?? {};
@@ -293,9 +294,9 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
     if (operation === "create")
       return respond(403, "90040103", `You don't have permission to create ${table} entity.`, plain);
     if (operation === "update" || operation === "write")
-      return respond(403, "90040102", `You don't have permission to update ${table} entity.`, plain);
+      return respond(403, "90040102", mutationPermissionText==='table'?`You don’t have permission to update ${table} table.`:`You don't have permission to update ${table} entity.`, plain);
     if (operation === "delete")
-      return respond(403, "90040104", `You don't have permission to delete ${table} entity.`, plain);
+      return respond(403, "90040104", mutationPermissionText==='table'?`You don’t have permission to delete ${table} table.`:`You don't have permission to delete ${table} entity.`, plain);
     if (operation === "append")
       return respond(
         403,
@@ -364,6 +365,7 @@ export async function handleWebApi(req, res, url, deps) {
       errorStacks: deps.portal?.observed?.webApiErrorStacks,
       errorTemplates: deps.webApiErrorTemplates,
       errorMethod: req.method,
+      mutationPermissionText: deps.portal?.observed?.webApiMutationPermissionText,
     });
     deps.onError?.(cause, response);
     deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
@@ -1019,9 +1021,26 @@ function portalCreate(t, mapping, data, extra) {
   return records.createInternal(portalContext(t), mapping.logicalName, data, internalOptions(t, extra));
 }
 function portalUpdate(t, mapping, id, data, extra) {
+  assertUpdatePermissionQueryAdmission(t, mapping);
   const records = t.store.recordPipeline;
   if (!records) return t.store.updateRecordAsync(mapping.logicalName, id, data, t.deps.identity, writeOptions(t, extra));
   return records.updateInternal(portalContext(t), mapping.logicalName, id, data, internalOptions(t, extra));
+}
+// Some classic portals build the complete Update permission query before
+// checking the addressed row. Qualify this independently: an oversized source
+// graph can fail even for a row that would otherwise be denied. Do not execute
+// the modeled query or apply this portal admission rule to SDK writes.
+function assertUpdatePermissionQueryAdmission(t, mapping) {
+  const store=t.store, identity=t.deps.identity;
+  if(store.observed?.webApiUpdatePermissionQuery!=='native-classic'||identity?.admin||store.state.settings?.permissionMode==='permissive')return;
+  const xml=`<fetch><entity name="${xmlEscapeAttribute(mapping.logicalName)}"><attribute name="${xmlEscapeAttribute(mapping.idColumn)}"/></entity></fetch>`;
+  const query=compilePermissionFetchXml(xml,{permissions:store.state.permissions,identity,mappings:store.state.mappings,operation:'update',rules:store.rules.bind(store)});
+  if(!query.permissionGranted)return;
+  try{planFetch(parseXmlDocument(query.xml),{profile:'webapi',limits:store.querySettings().fetchLimits,linkBudgetError:store.observed?.fetchLinkBudgetError});}
+  catch(error){
+    if(String(error.details?.innerCode).toLowerCase()==='0x8004430d')throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+    throw error;
+  }
 }
 function portalRemove(t, mapping, id) {
   const records = t.store.recordPipeline;
@@ -1109,6 +1128,7 @@ async function patchEntity(t) {
   let write;
   if (exists) {
     const prepared = policy.prepareWrite(body, "update");
+    if(!store.recordPipeline)assertUpdatePermissionQueryAdmission(t, mapping);
     write = store.recordPipeline
       ? async () => ({ created: false, row: await portalUpdate(t, mapping, located.id, prepared) })
       : () => store.upsertRecordAsync(mapping.logicalName, located.id, prepared, deps.identity, options);

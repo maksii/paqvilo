@@ -48,7 +48,7 @@ Paqvilo never starts these processes. Every outbound call goes through `loopback
 
 | Area | Module (`mirage/lib/`) | Level | Boundary |
 | --- | --- | --- | --- |
-| Power BI rendering | `service-fixtures.mjs`, `platform.mjs` (`powerbi` Liquid placeholder) | inventory when disabled, contract with a pack fixture | The embed is a placeholder or a project fixture, never a report. |
+| Power BI rendering | `service-fixtures.mjs`, `platform.mjs` (`powerbi` Liquid host) | inventory when disabled, contract with a pack fixture | The embed uses trusted `powerBi.embed` fixture HTML, evidence-backed per-site empty output, or a diagnostic placeholder. No remote report request is made. |
 | AI Builder and model inference | `service-fixtures.mjs`, `dataverse-addon-ai.mjs` | inventory when disabled, contract with a pack fixture | No model runs. The Dataverse AI messages answer a documented error unless a pack `dataverseMessages` handler replaces them. |
 | Copilot and agent orchestration | `service-fixtures.mjs`, `dataverse-addon-pva.mjs` | inventory when disabled, contract with a pack fixture | No orchestration runs. The Copilot Studio Dataverse messages answer a documented error or the not-simulated default unless a pack handler replaces them. |
 | Tenant administration, MFA, Conditional Access, PAC deployment, Fabric and DAX, desktop flow runtime | none | — | Use the platform and its own tools. |

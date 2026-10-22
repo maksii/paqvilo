@@ -6,6 +6,7 @@ import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
 import { createOrganizationRuntime } from "../lib/dataverse-organization.mjs";
 import { EXTENSIONS } from "../lib/dataverse-extensions.mjs";
+import { randomUUID } from 'node:crypto';
 
 const APP_ID = "77777777-7777-4777-8777-777777777777";
 
@@ -17,7 +18,7 @@ const APP_ID = "77777777-7777-4777-8777-777777777777";
  *   api is the organization's internal api object the module installed into; server is the HTTP handle (origin, close).
  */
 export async function contractModuleFixture(t, { mappings = {}, tables = {}, extension, options = {}, providers = null }) {
-  const secretVar = `PAQVILO_CONTRACT_MODULE_SECRET_${process.pid}_${Math.random().toString(36).slice(2).toUpperCase()}`;
+  const secretVar = `PAQVILO_CONTRACT_MODULE_SECRET_${process.pid}_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[secretVar] = "contract-module-secret";
   t.after(() => { delete process.env[secretVar]; });
   const state = emptyState();

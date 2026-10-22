@@ -84,7 +84,8 @@ export function portalClientObject(identity = {}, { websiteId = "", language = "
 
 /** Browser script that completes window.Microsoft.Dynamic365.Portal in the compatibility key order. */
 export function clientPortalObjectRuntime(identity, site) {
-  const values = JSON.stringify(portalClientObject(identity, site)).replace(/</g, "\\u003c");
-  const keys = JSON.stringify(PORTAL_OBJECT_KEYS);
+  const scriptJson = value => JSON.stringify(value).replace(/[<>\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  const values = scriptJson(portalClientObject(identity, site));
+  const keys = scriptJson(PORTAL_OBJECT_KEYS);
   return `(()=>{const values=${values};const ready=function(){if(!ready.warned){ready.warned=true;console.error('PagesClientApiUnsupported: the local pages client API (lib/pages-client-api.js) did not run.');}const failed=Promise.reject(Object.assign(new Error('PagesClientApiUnsupported: onPagesClientApiReady (the local pages client API did not run)'),{name:'PagesClientApiUnsupported',member:'onPagesClientApiReady'}));failed.catch(()=>{});return failed;};ready.__paqviloLocal=true;window.Microsoft||={};Microsoft.Dynamic365||={};const portal=Microsoft.Dynamic365.Portal||={};for(const key of ${keys}){if(key==="User"){portal.User||={};for(const [name,field] of Object.entries(values.User))if(!(name in portal.User))portal.User[name]=field;}else if(key==="onPagesClientApiReady"){if(typeof portal[key]!=="function")portal[key]=ready;}else if(!(key in portal))portal[key]=values[key];}Microsoft.PowerPages||={};if(typeof Microsoft.PowerPages.onPagesClientApiReady!=="function")Microsoft.PowerPages.onPagesClientApiReady=portal.onPagesClientApiReady;})();`;
 }

@@ -5,6 +5,34 @@ import os from 'node:os';
 import path from 'node:path';
 import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
 import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata, checkDocumentation } from '../scripts/release-check.mjs';
+import { packageDependencyEvidence } from '../scripts/package-dependency-evidence.mjs';
+
+test('distribution evidence preserves transitive version, integrity and layout differences', () => {
+  const source = { packages: { '': { version: '1.0.0' },
+    'node_modules/a': { version: '1.0.0', integrity: 'sha512-original' },
+    'node_modules/b': { version: '2.0.0', integrity: 'sha512-same-version-original' },
+    'node_modules/optional': { version: '1.0.0', optional: true } } };
+  const consumer = { packages: { 'node_modules/paqvilo': { version: '1.0.0', integrity: 'sha512-archive' },
+    'node_modules/a': { version: '1.0.1', integrity: 'sha512-new-version' },
+    'node_modules/b': { version: '2.0.0', integrity: 'sha512-same-version-new' },
+    'node_modules/paqvilo/node_modules/c': { version: '3.0.0', integrity: 'sha512-nested' } } };
+  const report = packageDependencyEvidence(source, consumer, 'paqvilo');
+  assert.deepEqual(report.differences.map(entry => entry.path), [
+    'node_modules/a', 'node_modules/b', 'node_modules/optional', 'node_modules/paqvilo/node_modules/c']);
+  assert.equal(report.differences[0].consumer.integrity, 'sha512-new-version');
+  assert.equal(report.differences[1].source.version, report.differences[1].consumer.version);
+  assert.equal(report.differences[2].consumer, null);
+  assert.equal(report.differences[3].source, null);
+  assert.equal(report.toolkit.integrity, 'sha512-archive');
+  assert.deepEqual(report.sourcePackages.map(entry => entry.path), Object.keys(source.packages).slice(1));
+  assert.equal(report.consumerPackages.length, 4);
+});
+
+test('release counts distinct archive entries whose GUID paths npm masks identically', () => {
+  const required = REQUIRED_RELEASE_FILES.map(path => ({ path }));
+  const masked = { path: 'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/PaqviloDemoPlugins.dll' };
+  assert.equal(validateReleaseFiles([...required, masked, masked]), required.length + 2);
+});
 
 test('release checks nested user guides and example documentation links', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));

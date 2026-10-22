@@ -14,7 +14,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { LineCounter, isMap, isScalar, isSeq, parseDocument } from 'yaml';
-import { readSolutionAssetEntries } from './dataverse-solution-assets.mjs';
+import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-solution-assets.mjs';
+import { readLocalFile } from '../../lense/local-file.mjs';
 import { unsupportedControls } from './canvas-controls.mjs';
 
 export const CANVAS_SCHEMA_VERSIONS = Object.freeze(['3.0']);
@@ -38,7 +39,7 @@ async function directoryFiles(dir) {
     if (!entry.isFile()) continue;
     const full = path.join(entry.parentPath ?? entry.path, entry.name);
     const name = path.relative(dir, full).replaceAll('\\', '/');
-    if (wanted(name)) files.push({ name, read: () => fs.readFile(full, 'utf8') });
+    if (wanted(name)) files.push({ name, read: () => readLocalFile(full, { root: dir, maxBytes: SOLUTION_ASSET_LIMITS.entryBytes, encoding: 'utf8' }) });
   }
   return files;
 }
@@ -219,14 +220,17 @@ export async function readCanvasSources(sources = [], { projectRoot = process.cw
   const records = [], diagnostics = [];
   for (const source of sources ?? []) {
     const file = path.resolve(projectRoot, source);
-    let stat;
-    try { stat = await fs.stat(file); } catch (error) {
+    let stat, parsed;
+    const name = path.basename(file).replace(/\.msapp$/i, '');
+    try {
+      stat = await fs.stat(file);
+      parsed = stat.isDirectory() ? await readCanvasSource({ dir: file, name })
+        : await readCanvasSource({ msapp: await readLocalFile(file, { maxBytes: SOLUTION_ASSET_LIMITS.archiveBytes }), name });
+    } catch (error) {
       diagnostics.push({ code: 'CANVAS_SOURCE_MISSING', severity: 'error', source,
         message: `Canvas source ${source} cannot be read (${error.code ?? 'unreadable'}); set canvas.sources to an .msapp file or an extracted app folder.` });
       continue;
     }
-    const name = path.basename(file).replace(/\.msapp$/i, '');
-    const parsed = stat.isDirectory() ? await readCanvasSource({ dir: file, name }) : await readCanvasSource({ msapp: await fs.readFile(file), name });
     records.push({ ...canvasInventoryRecord(parsed, { file: source, format: stat.isDirectory() ? 'directory' : 'msapp' }),
       canvas: { schemaVersion: parsed.app.schemaVersion, screens: parsed.screens.map(screen => screen.name), components: parsed.components.map(component => component.name),
         dataSources: parsed.dataSources, formulas: parsed.formulas, diagnostics: parsed.diagnostics } });

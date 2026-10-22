@@ -16,3 +16,20 @@ test('role labels require the exact frozen source domain, actual memberships and
  const continued=fixture();continued.inputs.capture.liquidPages[0].more=true;assert.equal(validateRoleReplayCell(continued).complete,false);
  const replayed=fixture();replayed.inputs.nativePages=[replayed.inputs,replayed.inputs];assert.throws(()=>validateRoleReplayCell(replayed),/distinct native Runs/);
 });
+
+test('native FetchXML more-records annotations require their terminal continuation without an OData nextLink',()=>{
+ const args=fixture(),first=structuredClone(args.inputs),second=structuredClone(args.inputs);
+ const request=first.capture.requests.find(row=>row.variant==='part1'&&row.lane==='webapi');
+ first.capture.results.find(row=>row.operationId===request.operationId).body=JSON.stringify({value:[{id:guid(700)},{id:guid(701)}],'@Microsoft.Dynamics.CRM.morerecords':true,'@Microsoft.Dynamics.CRM.fetchxmlpagingcookie':'invented-cookie'});
+ const continuation={...request,operationId:guid(800),page:2},runId=guid(801);
+ second.capture={runId,actorRoles:first.capture.actorRoles,requests:[continuation],recordingInputs:{run:{pqvd_testrunid:runId,_pqvd_runnercontactid_value:args.contract.actorId},operations:[{pqvd_testoperationid:continuation.operationId}]},liquidPages:[],results:[{operationId:continuation.operationId,status:200,body:JSON.stringify({value:[]})}]};
+ const entry=structuredClone(first.history.entries.find(row=>row.id===request.operationId));
+ entry.id=continuation.operationId;entry.summary.runId=runId;entry.summary.page=2;entry.summary.campaign.page=2;
+ second.history={runId,runSummary:{status:'verified'},entries:[entry]};
+ args.inputs.nativePages=[first,second];
+ const proof=validateRoleReplayCell(args);assert.equal(proof.complete,true);assert.equal(proof.physicalReads,5);
+ args.inputs.nativePages=[first];assert.deepEqual(validateRoleReplayCell(args).missing.map(row=>row.page),[2]);
+ args.inputs.nativePages=[first,second];
+ const response=first.capture.results.find(row=>row.operationId===request.operationId);
+ for(const value of [false,'true']){response.body=JSON.stringify({value:[],'@Microsoft.Dynamics.CRM.morerecords':value});assert.throws(()=>validateRoleReplayCell(args),/continuation after a terminal/);}
+});

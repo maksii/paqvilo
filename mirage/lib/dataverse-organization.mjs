@@ -190,7 +190,10 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     organizationId,
     lcid: settings.localeId,
     schema,
-    mappings: () => store.state.mappings,
+    // Private provider rows are composed before metadata capture, but are not organization entities.
+    // Keep standard internal tables (the null registrations) visible through their normal metadata.
+    mappings: () => Object.fromEntries(Object.entries(store.state.mappings).filter(([name]) =>
+      !(Object.hasOwn(INTERNAL_TABLE_MAPPINGS, name) && INTERNAL_TABLE_MAPPINGS[name]))),
     virtualTables: () => store.virtualTables?.() ?? {},
     globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
     changeLog: () => store.state.dataverse?.metadataLog ?? [],

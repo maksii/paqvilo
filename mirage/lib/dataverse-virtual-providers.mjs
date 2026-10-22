@@ -136,7 +136,10 @@ function resolveTable(state, mapping) {
   // The Solution reader stores the id under dataverseMetadata.DataSourceId (solution-data.mjs); metadata captures set mapping.dataSourceId.
   const sourceId = mapping.dataSourceId ?? mapping.dataverseMetadata?.DataSourceId;
   const dataSourceId = declared?.dataSourceId ?? (sourceId ? normalKey(sourceId) : null);
-  const virtual = Boolean(declared || mapping.isVirtual || mapping.tableType === "Virtual" || dataSourceId);
+  // The source-backed management adapter already supplies these records and
+  // commits their sparse overlays transactionally. Enhanced portal metadata
+  // still describes them as virtual, but they do not need an external provider.
+  const virtual = mapping.modelDrivenSource !== true && Boolean(declared || mapping.isVirtual || mapping.tableType === "Virtual" || dataSourceId);
   const provider = virtual ? (state.providers.get(dataSourceId) ?? state.providers.get(table) ?? null) : null;
   return { table, dataSourceId, virtual, provider, fallback: declared?.fallback === true };
 }

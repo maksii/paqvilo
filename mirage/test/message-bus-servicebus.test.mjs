@@ -39,6 +39,17 @@ test('send, peek-lock receive and complete round-trip body, properties and messa
   await assert.rejects(bus.complete('77777777-7777-4777-8777-777777777777'), { code: 'MessageLockLost' });
 });
 
+test('AMQP map keys preserve constructor and prototype-shaped application properties as data', async (t) => {
+  const { bus } = await fixture(t);
+  const properties = Object.fromEntries([['__proto__', 'owned value'], ['constructor', 'constructor value'], ['toString', 'text value']]);
+  await bus.send('fx-orders', { x_name: 'Prototype-shaped keys' }, { properties });
+  const [message] = await bus.receive('fx-orders');
+  assert.deepEqual(message.properties, properties);
+  assert.equal(Object.getPrototypeOf(message.properties), Object.prototype);
+  assert.equal(Object.hasOwn(message.properties, '__proto__'), true);
+  await bus.complete(message.lockToken);
+});
+
 test('abandon redelivers with a higher delivery count and the broker dead-letters at its MaxDeliveryCount', async (t) => {
   const { bus } = await fixture(t);
   await bus.send('fx-orders', { n: 1 });

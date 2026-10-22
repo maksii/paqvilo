@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
+import { readLocalFileSync } from '../../lense/local-file.mjs';
 
 const sdkCache = new Map();
 /** The .NET SDK version of a dotnet command (`dotnet --version`), or null when it is not on PATH. Cached per command. */
@@ -159,6 +160,7 @@ const project = sdk => `<Project Sdk="Microsoft.NET.Sdk">
 `;
 
 const builds = new Map();
+let temporaryRoot;
 // ponytail: one host process per call (about 100 ms start); a resident host per script is the upgrade if calls get frequent.
 /**
  * createScriptHost({ stateDirectory, command }): { available(), prepare(script), run({ script, operationId, correlationId,
@@ -167,7 +169,9 @@ const builds = new Map();
  * run answers { statusCode, headers, body } with a parsed JSON body when the response is JSON.
  */
 export function createScriptHost({ stateDirectory = null, command = 'dotnet', trusted = [] } = {}) {
-  const root = path.join(stateDirectory ?? path.join(os.tmpdir(), 'mirage'), 'connector-scripts');
+  // Memory-only runtimes never share a predictable, pre-creatable OS temp path.
+  // Allocate only after trust and SDK checks, as for state-backed runtimes.
+  let root = stateDirectory ? path.join(stateDirectory, 'connector-scripts') : null;
   const available = () => dotnetSdk(command) !== null;
   /** Whether connectorScripts registers this connector's script text. */
   const trusts = (connector, script) => Boolean(script) && trusted.some(entry => entry.connector === connector && entry.sha256 === scriptHash(script.text));
@@ -175,15 +179,27 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
     if (!trusts(connector, script)) return Promise.reject(untrusted(connector, script));
     const sdk = dotnetSdk(command);
     if (!sdk) return Promise.reject(missing(command));
+    try { root ??= temporaryRoot ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mirage-connector-scripts-')); }
+    catch (error) { return Promise.reject(error); }
     const hash = createHash('sha256').update(sdk + '\n' + script.text).digest('hex').slice(0, 32), dir = path.join(root, hash), dll = path.join(dir, 'out', 'ConnectorScriptHost.dll');
     if (builds.has(dll)) return builds.get(dll);
     const built = (async () => {
       if (fs.existsSync(dll)) return dll;
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'ConnectorScriptHost.csproj'), project(sdk));
-      fs.writeFileSync(path.join(dir, 'GlobalUsings.cs'), USINGS.map(n => `global using ${n};`).join('\n') + '\n');
-      fs.writeFileSync(path.join(dir, 'Host.cs'), HOST);
-      fs.writeFileSync(path.join(dir, 'Script.cs'), script.text);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      for (const [name, content] of Object.entries({
+        'ConnectorScriptHost.csproj': project(sdk),
+        'GlobalUsings.cs': USINGS.map(n => `global using ${n};`).join('\n') + '\n',
+        'Host.cs': HOST,
+        'Script.cs': script.text,
+      })) {
+        const file = path.join(dir, name);
+        try { fs.writeFileSync(file, content, { flag: 'wx', mode: 0o600 }); }
+        catch (error) {
+          // A failed build may leave the exact sources for a retry. Never
+          // truncate a pre-existing file or follow a link outside this cache.
+          if (error.code !== 'EEXIST' || readLocalFileSync(file, { root: dir, encoding: 'utf8' }) !== content) throw error;
+        }
+      }
       const output = await execute(command, ['build', '-c', 'Release', '-o', 'out', '--nologo', '-v', 'q'], dir, 5 * 60000);
       if (output.code !== 0 || !fs.existsSync(dll)) {
         const errors = [...new Set(output.text.split(/\r?\n/).filter(line => /error/i.test(line)).map(line => line.split(dir).join('').replace(/\s*\[[^\]]*\.csproj\]$/, '').replace(/^[\\/]*Script\.cs/, 'script.csx').trim()))].slice(0, 5);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { preserveOrganizationPresetSections } from '../lib/organization-presets.mjs';
+import { uuidV5 } from '../lib/dataverse-security.mjs';
 
 test('preset preservation follows ownership flags while explicit entries keep replacement semantics', () => {
   const previous = { mappings: {
@@ -23,6 +24,24 @@ test('preset preservation follows ownership flags while explicit entries keep re
   assert.deepEqual(replaced.tables.systemuser, []);
   assert.deepEqual(replaced.mappings.systemuser, { idColumn: 'alternate' });
   assert.notEqual(next.tables.systemuser, previous.tables.systemuser, 'Preset state owns independent copies.');
+});
+
+test('replacing security tables retains only the reserved existing SYSTEM identity and administrator membership', () => {
+  const org = '77777777-7777-4777-8777-777777777794', system = uuidV5(org, 'systemuser:SYSTEM'), admin = uuidV5(org, 'role:System Administrator');
+  const previous = { mappings: {}, tables: {
+    organization: [{ organizationid: org }],
+    systemuser: [{ systemuserid: system, fullname: 'SYSTEM' }, { systemuserid: 'old-staff', fullname: 'Removed staff' }],
+    role: [{ roleid: admin, name: 'System Administrator' }, { roleid: 'staff-role', name: 'Staff' }],
+    systemuserroles: [{ systemuserroleid: 'internal-link', systemuserid: { id: system }, roleid: { id: admin } }, { systemuserroleid: 'revoked-link', systemuserid: { id: 'old-staff' }, roleid: { id: admin } }],
+    roleprivileges: [{ roleprivilegeid: 'revoked-grant' }],
+  } };
+  const preset = { tables: { systemuser: [{ systemuserid: 'new-staff' }], systemuserroles: [], role: [], roleprivileges: [] } };
+  const next = preserveOrganizationPresetSections(previous, preset, structuredClone(preset));
+  assert.deepEqual(next.tables.systemuser.map(row => row.systemuserid), ['new-staff', system]);
+  assert.deepEqual(next.tables.systemuserroles.map(row => row.systemuserroleid), ['internal-link']);
+  assert.deepEqual(next.tables.role.map(row => row.roleid), [admin]);
+  assert.deepEqual(next.tables.roleprivileges, [], 'revoked non-SYSTEM grants are not re-seeded');
+  assert.notEqual(next.tables.systemuser[1], previous.tables.systemuser[0]);
 });
 
 test('a preset replacing a plug-in table keeps the steps the Solution seeded under plugin:<table>', () => {

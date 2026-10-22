@@ -164,7 +164,8 @@ export function validateReleaseFiles(files) {
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
   for (const name of paths) if (!allowed.test(name) && !MODEL_DRIVEN_FILES.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && name !== LENSE_ACTION_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
-  return paths.size;
+  // npm redacts GUIDs in JSON, so distinct archive entries can share a path here.
+  return files.length;
 }
 
 function checkEditorTasks(root) {

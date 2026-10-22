@@ -87,3 +87,12 @@ test("INFORMATION_SCHEMA is refused with a DataError", () => {
   const catalog = buildCatalog({ store: store() });
   assert.throws(() => informationSchema(catalog), { name: "DataError", code: "NotSupported" });
 });
+
+test('catalog excludes private storage mappings that have no routable entity set', () => {
+  const data = store();
+  data.state.mappings.x_private = { logicalName: 'x_private', idColumn: 'x_privateid', fields: { payload: { dataverseType: 'nvarchar' } } };
+  data.state.mappings.x_empty = { logicalName: 'x_empty', entitySet: '', idColumn: 'x_emptyid', fields: {} };
+  const catalog = buildCatalog({ store: data });
+  assert.deepEqual([...catalog.tables.keys()], ['widget']);
+  assert.ok(data.state.mappings.x_private, 'private storage remains registered in the store');
+});

@@ -8,9 +8,10 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
 import { customConnectorsOf } from '../lib/custom-connector.mjs';
-import { dotnetSdk, scriptHash } from '../lib/custom-connector-script.mjs';
+import { createScriptHost, dotnetSdk, scriptHash } from '../lib/custom-connector-script.mjs';
 import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
 
@@ -38,6 +39,42 @@ const records = () => mergeInventory([
   inventoryEntry(AT + `${NAME}_openapidefinition.json`, { size: 100, text: JSON.stringify(OPENAPI), component: 'connector', componentName: NAME })[0],
   inventoryEntry(AT + `${NAME}_apiproperties.json`, { size: 100, text: JSON.stringify({ properties: { scriptOperations: ['GetItem'] } }), component: 'connector', componentName: NAME })[0],
   inventoryEntry(AT + 'script.csx', { size: SCRIPT.length, text: SCRIPT, component: 'connector', componentName: NAME })[0]]);
+
+test('memory-only connector hosts use private temporary storage and reuse identical builds within their process', { timeout: 300000, skip: dotnetSdk() ? false : 'dotnet is not on PATH' }, async t => {
+  const options = { trusted: [{ connector: NAME, sha256: scriptHash(SCRIPT) }] };
+  const first = createScriptHost(options), second = createScriptHost(options), script = { text: SCRIPT };
+  const roots = [];
+  t.after(async () => { for (const root of roots) await fs.rm(root, { recursive: true, force: true }); });
+  const prepare = async host => {
+    const dll = await host.prepare(script, NAME);
+    const directory = path.dirname(path.dirname(dll)), root = path.dirname(directory);
+    const relative = path.relative(await fs.realpath(os.tmpdir()), await fs.realpath(root));
+    assert.match(relative, /^mirage-connector-scripts-[^/\\]+$/);
+    roots.push(root);
+    assert.equal(await host.prepare(script, NAME), dll, 'each host reuses its prepared build');
+    if (process.platform !== 'win32') {
+      assert.equal((await fs.stat(root)).mode & 0o777, 0o700);
+      for (const name of ['ConnectorScriptHost.csproj', 'GlobalUsings.cs', 'Host.cs', 'Script.cs'])
+        assert.equal((await fs.stat(path.join(directory, name))).mode & 0o777, 0o600, name);
+    }
+    return root;
+  };
+  assert.equal(await prepare(first), await prepare(second), 'identical trusted scripts share the process-private build cache');
+});
+
+test('connector preparation refuses a pre-existing different source without truncating it', { skip: dotnetSdk() ? false : 'dotnet is not on PATH' }, async t => {
+  const stateDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'connector-script-collision-'));
+  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const hash = createHash('sha256').update(dotnetSdk() + '\n' + SCRIPT).digest('hex').slice(0, 32);
+  const directory = path.join(stateDirectory, 'connector-scripts', hash), file = path.join(directory, 'Script.cs');
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(file, 'Preserve this pre-existing file');
+  const host = createScriptHost({ stateDirectory, trusted: [{ connector: NAME, sha256: scriptHash(SCRIPT) }] });
+  await assert.rejects(host.prepare({ text: SCRIPT }, NAME), { code: 'EEXIST' });
+  assert.equal(await fs.readFile(file, 'utf8'), 'Preserve this pre-existing file');
+  await fs.writeFile(file, SCRIPT);
+  await fs.access(await host.prepare({ text: SCRIPT }, NAME));
+});
 
 test('a C# script runs its operation through the .NET SDK and Context.SendAsync reaches the loopback backend', { timeout: 300000, skip: dotnetSdk() ? false : 'dotnet is not on PATH: the script host cannot be built here' }, async t => {
   const seen = [];

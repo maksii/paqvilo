@@ -1,6 +1,7 @@
 // Currency in the Dataverse API: a table with money columns carries a transaction currency, its exchange rate and base amounts.
 //
-// On create, and on an update that gives a money value or a currency, the beforeWrite hook stamps the row before it is stored:
+// A create or update that gives a money value or a currency stamps the row before it is stored. Merely creating a row in a
+// table with money columns leaves its currency and exchange rate unset until a value or currency is supplied:
 //   1. transactioncurrencyid: the payload's currency (plain key or transactioncurrencyid@odata.bind), else the currency the stored
 //      row already holds (update), else the organization base currency (organization.basecurrencyid, else the first
 //      transactioncurrency row). No base currency: CURRENCY_BASE_MISSING once per table, and the stamp is skipped.
@@ -17,7 +18,7 @@
 // unverified: the rate direction (base = value / exchangerate) comes from the module brief, not Microsoft Learn.
 // unverified: the rounding mode (half away from zero assumed).
 // unverified: the 400 status for an unknown transactioncurrency on write (other lookup misses answer 404).
-// unverified: the messages for a non-numeric money value, a non-positive exchange rate and a currency binding that names no id.
+// unverified: the messages for a non-positive exchange rate and a currency binding that names no id.
 import { DataError } from "./data-error.mjs";
 import { fieldKind } from "./dataverse-values.mjs";
 import { isExactNumeric } from "./exact-numeric.mjs";
@@ -26,6 +27,7 @@ const CURRENCY_TABLE = "transactioncurrency";
 const ORGANIZATION_TABLE = "organization";
 const NOT_FOUND_CODE = "0x80040217";
 const BIND = "transactioncurrencyid@odata.bind";
+const currencyBindings = data => Object.keys(data).filter(name => name.toLowerCase() === BIND);
 const OPERATIONS = ["CurrencyStamp", "BaseAmount", "RetrieveExchangeRate"];
 
 const bare = (value) => String(value ?? "").replace(/[{}]/g, "").toLowerCase();
@@ -65,9 +67,11 @@ function report(state, entry) {
 // The payload's currency id (plain key or bind), removing the bind so the store does not read it again; null when none is given.
 function currencyOfPayload(data) {
   const plain = refId(data.transactioncurrencyid);
-  const bound = data[BIND];
+  const bindings = currencyBindings(data);
+  if (bindings.length > 1) throw new DataError('The currency lookup has ambiguous navigation bindings.', 400, 'InvalidLookup');
+  const bound = data[bindings[0]];
   if (empty(plain) && empty(bound)) return null;
-  delete data[BIND];
+  if (bindings.length) delete data[bindings[0]];
   return empty(plain) ? bindId(bound) : bare(plain);
 }
 
@@ -99,10 +103,12 @@ function moneyColumnsOf(api, logical) {
 function stamp(api, state, mapping, { operation, data, existing }) {
   const money = moneyColumnsOf(api, mapping.logicalName);
   if (!money.length) return;
-  const creating = operation === "create" || (operation === "upsert" && !existing);
+  // Clearing a money value clears its stored base companion as well, while the
+  // row retains any currency it acquired on an earlier write.
+  for (const [name] of money) if (Object.hasOwn(data, name) && data[name] === null) data[`${name}_base`] = null;
   const explicit = currencyOfPayload(data);
   const moneyGiven = money.some(([name]) => !empty(data[name]));
-  if (!creating && explicit === null && !moneyGiven) return;
+  if (explicit === null && !moneyGiven) return;
 
   const held = existing ? bare(refId(existing.transactioncurrencyid)) : "";
   const base = baseCurrencyOf(api);
@@ -119,6 +125,10 @@ function stamp(api, state, mapping, { operation, data, existing }) {
     row = base;
   }
   const rate = rateOf(row, base);
+  // Source navigation names may use PascalCase (TransactionCurrencyId), and
+  // native forms may post an empty lookup. Once stamping selects a currency,
+  // consume its binding before emitting the plain lookup value.
+  for (const binding of currencyBindings(data)) delete data[binding];
   data.transactioncurrencyid = row.transactioncurrencyid;
   data.exchangerate = rate;
 
@@ -126,7 +136,9 @@ function stamp(api, state, mapping, { operation, data, existing }) {
   for (const [name, definition] of money) {
     if (empty(merged[name])) continue;
     const amount = Number(isExactNumeric(merged[name]) ? merged[name].value : merged[name]);
-    if (!Number.isFinite(amount)) throw new DataError(`The money value of '${name}' is not a number.`, 400, "InvalidRequest"); // unverified: message text
+    // The shared payload validator owns invalid decimal values and their OData
+    // error envelope. A derived amount must not replace that validation error.
+    if (!Number.isFinite(amount)) continue;
     const digits = isCount(row.currencyprecision) ? Number(row.currencyprecision) : isCount(definition.precision) ? Number(definition.precision) : 2;
     data[`${name}_base`] = roundTo(amount / rate, digits);
   }

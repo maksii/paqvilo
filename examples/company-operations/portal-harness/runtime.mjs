@@ -1,5 +1,34 @@
 import {guid,stable,sha256,encodeArtifact,decodeArtifact,authoredQuery,odataRequest,canonicalRows,compareResults,diffRows,diffObservation,assessScenario,pageComplete,parseLiquid,splitPayload} from './core.mjs';
 
+// Async plugin commits arrive after the initiating HTTP response. Keep the owned
+// probe until the operation's checksummed packets settle, without claiming durability.
+export async function reconcileBackendArtifact({read,artifactType,stopped=()=>false,timeoutMs=60000,intervalMs=1000,now=()=>Date.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}) {
+  if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>120000||!Number.isSafeInteger(intervalMs)||intervalMs<1||intervalMs>timeoutMs)throw new Error('Invalid backend reconciliation bound.');
+  const started=now();let events=[],attempts=0,previous=null;
+  const finish=(state,extra={})=>({state,attempts,elapsedMs:now()-started,events,...extra});
+  while(now()-started<timeoutMs){
+    if(stopped())return finish('stopped');
+    const controller=new AbortController();let timer,response;
+    try{response=await Promise.race([read({signal:controller.signal}),new Promise((resolve,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error('Backend reconciliation deadline exceeded.'));},Math.max(1,timeoutMs-(now()-started)));})]);}
+    catch(error){return finish(controller.signal.aborted?'timeout':'read-failed',{error:error.message});}finally{clearTimeout(timer);}attempts++;
+    if(!response.ok)return finish('read-failed',{httpStatus:response.status,error:response.text});
+    if(!Array.isArray(response.data?.value))return finish('read-failed',{error:'Backend event envelope missing.'});
+    events=response.data.value;
+    if(response.data['@odata.nextLink']||response.data['@Microsoft.Dynamics.CRM.morerecords']===true||events.length>=200)return finish('paging-incomplete');
+    const groups=new Map();let valid=true;
+    for(const event of events){
+      if(typeof event.pqvd_payloadtext!=='string'||await sha256(event.pqvd_payloadtext)!==event.pqvd_payloadhash)return finish('checksum-failed');
+      if(!event.pqvd_spanid||!event.pqvd_artifacttype||!Number.isSafeInteger(event.pqvd_partcount)||event.pqvd_partcount<1||event.pqvd_partcount>100||!Number.isSafeInteger(event.pqvd_partnumber)||event.pqvd_partnumber<1||event.pqvd_partnumber>event.pqvd_partcount)return finish('invalid-parts');
+      const key=event.pqvd_spanid+':'+event.pqvd_artifacttype;groups.set(key,[...(groups.get(key)||[]),event]);
+    }
+    for(const group of groups.values())if(group.length!==group[0].pqvd_partcount||new Set(group.map(e=>e.pqvd_partnumber)).size!==group.length||group.some(e=>e.pqvd_partcount!==group[0].pqvd_partcount))valid=false;
+    const fingerprint=stable(events.map(e=>[e.pqvd_plugineventid,e.pqvd_payloadhash,e.pqvd_partnumber,e.pqvd_partcount]).sort((a,b)=>stable(a).localeCompare(stable(b))));
+    if(valid&&events.some(e=>e.pqvd_artifacttype===artifactType)&&fingerprint===previous)return finish('observed');
+    previous=valid?fingerprint:null;await sleep(Math.min(intervalMs,Math.max(0,timeoutMs-(now()-started))));
+  }
+  return finish('timeout');
+}
+
 export function createRunner({manifest,context,request,notify=()=>{},stopped=()=>false}) {
   const originalRequest=request;request=args=>{if(!args.body)return originalRequest(args);const entitySet=args.url.match(/^\/_api\/(\w+)/)?.[1],body={};for(const [key,value] of Object.entries(args.body)){if(!key.endsWith('@odata.bind')){body[key]=value;continue;}const field=key.slice(0,-11),nav=manifest.navigation?.[entitySet]?.[field];if(manifest.navigation && !nav) throw new Error(`Verified binding metadata unavailable: ${entitySet}.${field}`);body[(nav||field)+'@odata.bind']=value;}return originalRequest({...args,body});};
   const choice=(name,label)=>{const value=manifest.choices[name]?.[label];if(value===undefined) throw new Error(`Unknown choice ${name}/${label}`);return value;};
@@ -8,10 +37,10 @@ export function createRunner({manifest,context,request,notify=()=>{},stopped=()=
   const artifactTransportBudgetBytes=manifest.artifactTransportBudgetBytes??20*1024*1024;
   if(!Number.isSafeInteger(artifactTransportBudgetBytes)||artifactTransportBudgetBytes<=0)throw new Error('Invalid artifact transport budget.');
   let artifactTransportBytes=0;
-  async function backendEvents(operationId) {
+  async function backendEvents(operationId,signal) {
     const fields=['pqvd_plugineventid','pqvd_stage','pqvd_executionorder','pqvd_depth','pqvd_querytype','pqvd_artifacttype','pqvd_payloadtext','pqvd_payloadhash','pqvd_spanid','pqvd_parentspanid','pqvd_partnumber','pqvd_partcount','pqvd_message'];
     const xml=`<fetch count="200"><entity name="pqvd_pluginevent">${fields.map(f=>`<attribute name="${f}"></attribute>`).join('')}<filter><condition attribute="pqvd_operationid" operator="eq" value="${guid(operationId)}"></condition></filter><order attribute="pqvd_plugineventid"></order></entity></fetch>`;
-    return request({url:`/_api/pqvd_pluginevents?fetchXml=${encodeURIComponent(xml)}`});
+    return request({url:`/_api/pqvd_pluginevents?fetchXml=${encodeURIComponent(xml)}`,signal});
   }
   const actor=()=>sha256({contactId:context.contactId,roles:[...context.roles].sort()});
   async function create(table,body) {const response=await request({url:`/_api/${table}`,method:'POST',body});if(!response.ok) throw Object.assign(new Error(`Recorder ${table}: HTTP ${response.status}`),{response});const id=response.entityId || response.data?.[table.slice(0,-1)+'id'];if(!id) throw new Error(`Create ${table} succeeded without returned entityid; commit cannot be inferred.`);return guid(id);}
@@ -112,7 +141,7 @@ export function createRunner({manifest,context,request,notify=()=>{},stopped=()=
       const summaryPlan={id:'RUN-SUMMARY',table:'pqvd_testrun',variant:'run-summary'};
       const summaryOperation=await operation(summaryPlan,'webapi',crypto.randomUUID(),1,{phase:'Comparison',message:'Update'});
       await record(summaryPlan,summaryOperation.pqvd_testoperationid,'webapi',{Summary:summary},{phase:'Comparison',operation:'Compare'});
-      const state=stopped()?'Interrupted':!manifest.readiness.durableCollector || evidence.some(e=>(e.kind||'').includes('error')||e.kind==='blocked') || pairs.some(p=>p.verdict==='incomplete')?'Incomplete':'Completed';
+      const state=stopped()?'Interrupted':!manifest.readiness.durableCollector || evidence.some(e=>/(error|incomplete)/.test(e.kind||'')||e.kind==='blocked') || pairs.some(p=>p.verdict==='incomplete')?'Incomplete':'Completed';
       const compact={runId,datasetVersion:manifest.datasetVersion,contactId:context.contactId,roles:context.roles,summaryOperationId:summaryOperation.pqvd_testoperationid,pairs:pairs.map(p=>({caseId:p.caseId,verdict:p.verdict,liquidCount:p.liquid.returnedCount,webApiCount:p.webapi.returnedCount})),variants:variants.map(v=>({caseId:v.caseId,outcome:v.outcome,complete:v.complete,error:v.error})),oracle,visibilityAssertions:visibilityAssertions.map(a=>({caseId:a.caseId,kind:a.kind,lanes:a.lanes.map(l=>({engine:l.engine,verdict:l.verdict}))})),baseline,evidenceCounts:{total:evidence.length,persistenceErrors:evidence.filter(e=>e.kind==='persistence-error').length,blocked:evidence.filter(e=>e.kind==='blocked').length},residuals};
       const compactText=stable(compact);if(compactText.length>60000) throw new Error('Run index exceeds safe summary bound; full summary parts have been saved separately.');
       const response=await request({method:'PATCH',url:`/_api/pqvd_testruns(${runId})`,body:{pqvd_finishedat:new Date().toISOString(),pqvd_runstate:choice('pqvd_runstate',state),pqvd_summaryjson:compactText}});
@@ -135,8 +164,12 @@ export function createRunner({manifest,context,request,notify=()=>{},stopped=()=
       probeId=await create('pqvd_crudprobes',{pqvd_name:`CO ${profile} Probe`,pqvd_token:crypto.randomUUID(),'pqvd_ownercontactid@odata.bind':bind('contacts',context.contactId),'pqvd_runid@odata.bind':bind('pqvd_testruns',runId),pqvd_value:'pipeline',pqvd_counter:0});residuals.push(probeId);
       const body={'pqvd_activeoperationid@odata.bind':bind('pqvd_testoperations',op.pqvd_testoperationid),pqvd_triggernonce:crypto.randomUUID(),pqvd_pluginscenario:profile,pqvd_hopbudget:profile==='P09'?9:3};
       const response=await request({method:'PATCH',url:`/_api/pqvd_crudprobes(${probeId})`,body});const result={profile,operationId:op.pqvd_testoperationid,probeId,status:response.status,response:response.text,rollbackEvidenceMode:'transaction-bound; failure may remove backend logs'};evidence.push(result);
+      if(profile==='P10'&&response.ok){
+        const reconciled=await reconcileBackendArtifact({read:({signal})=>backendEvents(op.pqvd_testoperationid,signal),artifactType:'AsyncContext',stopped});
+        const {events,...state}=reconciled;result.backendEvents=events;result.backendReconciliation=state;
+        if(state.state!=='observed')evidence.push({kind:'profile-backend-incomplete',profile,operationId:op.pqvd_testoperationid,...state});
+      }else{const events=await backendEvents(op.pqvd_testoperationid);result.backendEvents=events.ok?events.data.value:[];}
       await record(plan,op.pqvd_testoperationid,'webapi',{Summary:result,Request:body,RawResponse:response.text},{phase:'CRUD',operation:'Update',httpStatus:response.status});
-      const events=await backendEvents(op.pqvd_testoperationid);result.backendEvents=events.ok?events.data.value:[];
       // Chain rows retain Restrict links to their root operation. The disposable probe alone is safe to clean.
       notify(result);
     }catch(error){evidence.push({kind:'profile-error',profile,probeId,error:error.message,httpStatus:error.response?.status,rawResponse:error.response?.text});}
@@ -228,10 +261,10 @@ export function createRunner({manifest,context,request,notify=()=>{},stopped=()=
   return {run,lane,record,loadRecordedRun};
 }
 
-export async function portalRequest({url,method='GET',body}) {
+export async function portalRequest({url,method='GET',body,signal}) {
   const target=new URL(url,location.origin);if(target.origin!==location.origin || !target.pathname.startsWith('/_api/') && target.pathname!=='/permission-lab/liquid/') throw new Error('Request escaped portal test endpoints.');
   const token=await new Promise((resolve,reject)=>shell.getTokenDeferred().done(resolve).fail(reject));
-  const response=await fetch(target,{method,headers:{Accept:target.pathname.startsWith('/_api/')?'application/json':'application/xml','Content-Type':'application/json','__RequestVerificationToken':token,Prefer:'odata.include-annotations="*"'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',redirect:'error'});
+  const response=await fetch(target,{method,headers:{Accept:target.pathname.startsWith('/_api/')?'application/json':'application/xml','Content-Type':'application/json','__RequestVerificationToken':token,Prefer:'odata.include-annotations="*"'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',redirect:'error',signal});
   const text=await response.text();let data=null;if(text && response.headers.get('content-type')?.includes('json')) {try{data=JSON.parse(text);}catch{throw new Error('API returned malformed JSON.');}}
   if(response.ok && target.pathname.startsWith('/_api/') && method==='GET' && !data) throw new Error('API read returned no JSON; session loss or unexpected response.');
   return {ok:response.ok,status:response.status,text,data,entityId:response.headers.get('entityid'),url:target.href,mime:response.headers.get('content-type')};

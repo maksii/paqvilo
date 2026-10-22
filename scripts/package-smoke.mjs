@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
+import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -25,6 +26,14 @@ const bootstrap = path.join(work, 'bootstrap');
 fs.mkdirSync(bootstrap);
 fs.writeFileSync(path.join(bootstrap, 'package.json'), JSON.stringify({ name: 'paqvilo-smoke-bootstrap', private: true, dependencies: { paqvilo: archive } }));
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
+const dependencyEvidence = packageDependencyEvidence(
+  JSON.parse(fs.readFileSync(path.join(bootstrap, 'node_modules/paqvilo/npm-shrinkwrap.json'), 'utf8')),
+  JSON.parse(fs.readFileSync(path.join(bootstrap, 'package-lock.json'), 'utf8')), 'paqvilo');
+const dependencyEvidenceFile = path.join(work, 'dependency-evidence.json');
+fs.writeFileSync(dependencyEvidenceFile, JSON.stringify({ npmVersion: run(['--version'], bootstrap).trim(),
+  archive: packed.filename, ...dependencyEvidence }, null, 2) + '\n');
+console.log(`Consumer dependency evidence: ${dependencyEvidenceFile}`);
+console.log(`Consumer dependency differences: ${JSON.stringify(dependencyEvidence.differences)}`);
 // Load the shipped inspector graph: a file-list check alone misses broken runtime imports.
 const modelInspector = await import(pathToFileURL(path.join(bootstrap, 'node_modules/paqvilo/lense/model-driven-inspector.mjs')));
 if (typeof modelInspector.startModelDrivenInspector !== 'function') throw new Error('Installed model-driven inspector is unavailable.');

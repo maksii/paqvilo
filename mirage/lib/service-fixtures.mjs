@@ -14,7 +14,7 @@
 // The built-in catalogue is powerBi.embed, aiBuilder.predict and copilot.ask, each with the default fallback only.
 // dynamics.* is not pre-registered: packs add its operations.
 //
-// Host seams this module does not implement: platform.mjs powerBiPlaceholderMarkup calls resolve('powerBi', 'embed')
+// Host seams: platform.mjs powerBiMarkup calls resolve('powerBi', 'embed')
 // and uses { html } from a fixture before the placeholder; server.mjs runtimeState capabilities (about :1379) adds
 // services: describe().
 // ponytail: a fixture runs in-process with no timeout; packs are trusted code, as dataverseMessages handlers are.

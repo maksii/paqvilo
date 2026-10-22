@@ -19,6 +19,16 @@ const code = (expected, diagnostic) => (error) => {
   return true;
 };
 
+test('prototype-shaped query names are signed as data and an invalid signature cannot crash the loopback fake', async () => {
+  const response = await fetch(fake.blobEndpoint + '/invented?__proto__=x&constructor=y&toString=z', {
+    headers: { authorization: `SharedKey ${fake.accountName}:invalid`, 'x-ms-date': new Date().toUTCString(), 'x-ms-version': BLOB_API_VERSION },
+    signal: AbortSignal.timeout(2000),
+  });
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get('x-ms-error-code'), 'AuthenticationFailed');
+  assert.equal((await azurite().preflight()).ready, true);
+});
+
 test('the Shared Key string-to-sign matches the Get Container Metadata example on Learn', () => {
   const text = sharedKeyStringToSign({ method: 'GET', accountName: 'myaccount',
     url: 'http://myaccount.blob.core.windows.net/mycontainer?restype=container&comp=metadata&timeout=20',

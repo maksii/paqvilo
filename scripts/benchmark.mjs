@@ -21,7 +21,7 @@ try {
   } else {
     if (!/^\d+$/.test(values.samples) || Number(values.samples) < 1 || Number(values.samples) > 20) throw new Error('--samples must be an integer from 1 to 20');
     const cfg = await loadConfig({ site: values.site, config: values.config });
-    const root = values.implementation ? path.resolve(values.implementation) : path.resolve(import.meta.dirname, '../src');
+    const root = values.implementation ? path.resolve(values.implementation) : path.resolve(import.meta.dirname, '../lense');
     const { OverlaySession } = await import(pathToFileURL(path.join(root, 'session.mjs')).href);
     const sampleCount = Number(values.samples);
     let session;

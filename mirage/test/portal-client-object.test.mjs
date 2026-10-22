@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+import { parseFragment } from "parse5";
 import {
   PORTAL_OBJECT_KEYS,
   PORTAL_USER_KEYS,
@@ -77,4 +78,18 @@ test("an existing page definition wins and the injected runtime takes the site f
   assert.equal(parsed.id, SITE);
   assert.deepEqual(parsed.activeLanguages, ["fr-FR"]);
   assert.equal(parsed.User.contactId, persona.contactId);
+});
+
+test("portal runtime keeps HTML terminators, Unicode separators and quotes inside JSON values", () => {
+  const hostile = '</script><img src=x onerror="globalThis.injected=true">\\\'\n\u2028\u2029';
+  const source = clientPortalObjectRuntime({ username: hostile, firstname: hostile, email: hostile }, { websiteId: SITE, languages: [hostile] });
+  const document = parseFragment(`<script>${source}</script>`);
+  assert.deepEqual(document.childNodes.map(node => node.tagName), ['script']);
+  assert.doesNotMatch(/const values=([\s\S]*?);const ready=/.exec(source)[1], /[<>\u2028\u2029]/);
+  const window = {}, microsoft = evaluate(source, window);
+  assert.equal(window.injected, undefined);
+  assert.equal(microsoft.Dynamic365.Portal.User.userName, hostile);
+  assert.equal(microsoft.Dynamic365.Portal.User.firstName, hostile);
+  assert.equal(microsoft.Dynamic365.Portal.User.email, hostile);
+  assert.deepEqual([...microsoft.Dynamic365.Portal.activeLanguages], [hostile]);
 });

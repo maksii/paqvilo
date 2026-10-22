@@ -76,10 +76,19 @@ function dec(b, at) {
   if (code === 0x41 || code === 0x42) return [code === 0x41, at];
   if (code === 0x43 || code === 0x44) return [0, at];
   if (code === 0x45) return [[], at];
-  if (fixed[code]) {
-    const v = { 0x50: () => b[at], 0x52: () => b[at], 0x53: () => b[at], 0x55: () => b.readInt8(at), 0x54: () => b.readInt8(at), 0x60: () => b.readUInt16BE(at),
-      0x70: () => b.readUInt32BE(at), 0x71: () => b.readInt32BE(at), 0x80: () => Number(b.readBigUInt64BE(at)), 0x81: () => Number(b.readBigInt64BE(at)),
-      0x82: () => b.readDoubleBE(at), 0x83: () => new Date(Number(b.readBigInt64BE(at))) }[code]();
+  if (Object.hasOwn(fixed, code)) {
+    let v;
+    switch (code) {
+      case 0x50: case 0x52: case 0x53: v = b[at]; break;
+      case 0x55: case 0x54: v = b.readInt8(at); break;
+      case 0x60: v = b.readUInt16BE(at); break;
+      case 0x70: v = b.readUInt32BE(at); break;
+      case 0x71: v = b.readInt32BE(at); break;
+      case 0x80: v = Number(b.readBigUInt64BE(at)); break;
+      case 0x81: v = Number(b.readBigInt64BE(at)); break;
+      case 0x82: v = b.readDoubleBE(at); break;
+      case 0x83: v = new Date(Number(b.readBigInt64BE(at))); break;
+    }
     return [v, at + fixed[code]];
   }
   if ([0xa0, 0xa1, 0xa3, 0xb0, 0xb1, 0xb3].includes(code)) {
@@ -92,8 +101,9 @@ function dec(b, at) {
     let cursor = at + 2 * w;
     for (let i = 0; i < count; i += 1) { const [v, next] = dec(b, cursor); items.push(v); cursor = next; }
     if (code % 16 === 0) return [items, at + w + size];
-    const map = {};
-    for (let i = 0; i < items.length; i += 2) map[String(items[i])] = items[i + 1];
+    const entries = [];
+    for (let i = 0; i < items.length; i += 2) entries.push([String(items[i]), items[i + 1]]);
+    const map = Object.fromEntries(entries);
     return [map, at + w + size];
   }
   throw new TypeError(`fake broker cannot decode 0x${code.toString(16)}`);
