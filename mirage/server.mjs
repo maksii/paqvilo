@@ -69,7 +69,7 @@ import { AssetCache } from "./lib/asset-cache.mjs";
 import { capturePortalShell } from "./lib/shell-capture.mjs";
 import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs";
 import { assertOperationRole, assertServerLogicEnabled, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows, organizationCustomApi } from './lib/exported-operations.mjs';
-import { createPortalAuthorization } from './lib/portal-authorization.mjs';
+import { createPortalAuthorization, portalAuthorizationModel } from './lib/portal-authorization.mjs';
 import { createPortalDocumentService } from './lib/sharepoint-documents.mjs';
 import { renderPortalSearchPage } from './lib/portal-search.mjs';
 import { validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
@@ -2160,7 +2160,11 @@ async function createPowerPagesSimulator({
     const all = allDiagnostics();
     const identityProvider = externalSignIn?.status() ?? { available: false };
     const runtimes = personaRuntimes.list().items ?? [];
-    const bridge = live.status();
+    const bridge = live.status(), settings = config(), liveMode = [settings.mode, settings.pageMode].includes('live');
+    // Enhanced authorization maps web roles to security roles and contacts to staff users (portal-authorization.mjs).
+    const enhanced = portalAuthorizationModel(portal.website).model === 'enhanced';
+    const cloudWebFiles = String(siteSetting(portal, 'WebFiles/StorageLocation') ?? '').trim().toLowerCase() === 'azureblobstorage';
+    const trusted = modelDrivenSettingsValue.enabled !== false && modelDrivenSettingsValue.trustedExtensions === true;
     return {
       runtime: { simulationLevel: simulationReport(simulation).level, revision, reloading: Boolean(reloadPromise), localOrigin,
         stateFile: simulation?.level === 'dry-run' || !stateFile ? null : path.relative(projectRoot, stateFile).split(path.sep).join('/'), projectRoot: '.',
@@ -2170,12 +2174,12 @@ async function createPowerPagesSimulator({
         { id: 'client:staff', kind: 'client', label: 'Staff browser', status: 'ready', detail: {}, link: '#dataverse' },
         { id: 'host:portal', kind: 'host', label: 'Power Pages portal', status: 'listening', detail: { origin: localOrigin, pages: portal.pages.length, deploymentProfile: portal.deploymentProfile ?? null }, link: '#overview' },
         { id: 'host:model-driven', kind: 'host', label: 'Model-driven apps', status: modelDrivenSettingsValue.enabled === false ? 'disabled' : 'listening', detail: { path: modelDrivenSettingsValue.enabled === false ? null : '/main.aspx' }, link: '#dataverse' },
-        { id: 'host:identity-provider', kind: 'host', label: 'Local identity provider', status: identityProvider.available ? 'listening' : 'disabled',
+        { id: 'host:identity-provider', kind: 'host', label: 'Visitor sign-in provider', status: identityProvider.available ? 'listening' : 'disabled',
           detail: { port: identityProvider.port ?? null, providers: Array.isArray(identityProvider.providers) ? identityProvider.providers.length : 0 }, link: '#access' },
         { id: 'host:setup', kind: 'host', label: 'Setup workspace', status: 'listening', detail: { path: '/_setup/' } },
         { id: 'host:admin', kind: 'host', label: 'Administration', status: 'listening', detail: { path: '/_sim/' } },
         { id: 'app:pcf', kind: 'app', label: 'Code components', status: codeComponents.controls.size ? 'ready' : 'disabled', detail: { controls: codeComponents.controls.size }, link: '#capabilities' },
-        { id: 'bridge:live', kind: 'bridge', label: 'Live connection', status: bridge.connected ? 'ready' : 'disabled',
+        { id: 'bridge:live', kind: 'bridge', label: 'Live portal connection', status: bridge.connected ? 'ready' : 'disabled',
           detail: { connected: bridge.connected, host: hostnameOf(bridge.origin), liveWrites: bridge.liveWrites }, link: '#connection' },
         ...runtimes.map((item) => ({ id: `persona-runtime:${item.id}`, kind: 'persona-runtime', label: item.label ?? item.id, status: item.status === 'running' ? 'listening' : 'disabled',
           detail: { context: item.context ?? null, scenario: item.scenario ?? null, createdAt: item.createdAt ?? null }, link: '#access' })),
@@ -2183,11 +2187,41 @@ async function createPowerPagesSimulator({
       edges: [
         { from: 'client:browser', to: 'host:portal', kind: 'http', status: 'listening', label: 'pages' },
         { from: 'client:staff', to: 'host:model-driven', kind: 'http', status: 'listening', label: 'browser' },
-        { from: 'host:portal', to: 'org:store', kind: 'process', status: 'ready', label: 'records' },
-        { from: 'host:model-driven', to: 'org:store', kind: 'process', status: 'ready', label: 'records' },
-        ...(identityProvider.available ? [{ from: 'host:portal', to: 'host:identity-provider', kind: 'http', status: 'listening', label: 'sign-in' }] : []),
-        ...(bridge.connected ? [{ from: 'host:portal', to: 'bridge:live', kind: 'http', status: 'ready', label: 'live reads' }] : []),
-        ...runtimes.map((item) => ({ from: 'host:portal', to: `persona-runtime:${item.id}`, kind: 'process', status: item.status === 'running' ? 'listening' : 'disabled', label: 'persona' })),
+        { from: 'client:staff', to: 'host:admin', kind: 'http', status: 'listening', label: 'administer' },
+        { from: 'client:staff', to: 'host:setup', kind: 'http', status: 'listening', label: 'configure' },
+        // Liquid, forms and /_api read and write records under table permissions; with enhanced authorization as the mapped staff user.
+        { from: 'host:portal', to: 'org:store', kind: 'process', status: 'ready', label: 'records (table permissions)' },
+        { from: 'host:portal', to: 'org:security', kind: 'process', status: enhanced ? 'ready' : 'disabled', label: enhanced ? 'web roles as security roles' : 'enhanced authorization only' },
+        { from: 'host:portal', to: 'org:flows', kind: 'process', status: 'ready', label: 'cloud flows (/_api/cloudflow)' },
+        { from: 'host:portal', to: 'provider:storage-route:portalWebFiles', kind: 'storage', status: cloudWebFiles ? 'ready' : 'disabled', label: cloudWebFiles ? 'web files' : 'web files (only with cloud storage)' },
+        { from: 'host:portal', to: 'provider:storage-route:annotations', kind: 'storage', status: 'ready', label: 'upload staging' },
+        { from: 'host:portal', to: 'provider:storage-route:portalCloudAttachments', kind: 'storage', status: 'ready', label: 'form attachments' },
+        { from: 'host:portal', to: 'org:sharepoint-documents', kind: 'process', status: 'ready', label: 'document grid' },
+        { from: 'host:portal', to: 'provider:service-fixture:powerBi', kind: 'process', status: 'ready', label: 'powerbi tag' },
+        // Site settings bound to secret environment variables, and server logic calling custom APIs (bindPortalEnvironment, invokeCustomApi).
+        { from: 'host:portal', to: 'provider:secrets', kind: 'reads', status: 'ready', label: 'secret site settings' },
+        { from: 'host:portal', to: 'org:dataverse-customapi', kind: 'process', status: 'ready', label: 'server logic actions' },
+        // A signed-in visitor mapped to a staff user can drive canvas apps (canvasPrincipal, enhanced authorization).
+        { from: 'client:browser', to: 'app:canvas', kind: 'http', status: enhanced ? 'ready' : 'disabled', label: enhanced ? 'visitor apps' : 'visitor apps (enhanced authorization only)' },
+        // The model-driven shell calls /_apps/api on this origin: records and Web API messages in process as the staff user. It
+        // does not use the Web API listener and works with it switched off (dataverse-model-driven.mjs).
+        { from: 'host:model-driven', to: 'org:store', kind: 'process', status: 'ready', label: 'records and Web API messages, in the app' },
+        { from: 'host:model-driven', to: 'app:canvas', kind: 'process', status: 'ready', label: 'embedded canvas apps' },
+        // Visitor sign-in: the browser is sent to the provider, the portal reads its discovery, token and userinfo, and its
+        // chooser lists the contacts of the store (sign-in-flow.mjs).
+        { from: 'client:browser', to: 'host:identity-provider', kind: 'http', status: 'listening', label: 'sign-in page' },
+        { from: 'host:portal', to: 'host:identity-provider', kind: 'http', status: 'listening', label: 'tokens and user info' },
+        { from: 'host:identity-provider', to: 'org:store', kind: 'process', status: 'ready', label: 'test people' },
+        // The live portal connection reads and writes the real portal while the mode or page mode is live (live.mjs).
+        { from: 'host:portal', to: 'bridge:live', kind: 'http', status: bridge.connected && liveMode ? 'ready' : 'disabled', label: 'live pages and data (live mode)' },
+        { from: 'host:admin', to: 'bridge:live', kind: 'http', status: 'ready', label: 'connect' },
+        // Persona runtimes are copies of this runtime on ports of their own: the browser opens them, sign-in and administration start them.
+        ...runtimes.flatMap((item) => [{ from: 'client:browser', to: `persona-runtime:${item.id}`, kind: 'http', status: item.status === 'running' ? 'listening' : 'disabled', label: 'isolated pages' },
+          { from: 'host:portal', to: `persona-runtime:${item.id}`, kind: 'process', status: 'ready', label: 'persona sign-in' },
+          { from: 'host:admin', to: `persona-runtime:${item.id}`, kind: 'process', status: 'ready', label: 'start and stop' }]),
+        // Code components call /_api of the portal page that hosts them, or Xrm.WebApi of a model-driven form (trusted extensions).
+        { from: 'app:pcf', to: 'host:portal', kind: 'http', status: 'ready', label: '/_api (table permissions)' },
+        { from: 'app:pcf', to: 'host:model-driven', kind: 'http', status: trusted ? 'ready' : 'disabled', label: trusted ? 'Xrm.WebApi' : 'Xrm.WebApi (trusted extensions only)' },
       ],
       configuration: { settingsKeys: configuredSettings, ports: { portal: Number(new URL(localOrigin).port) || null, identityProvider: identityProvider.available ? identityProvider.port ?? null : null } },
       activity: {
@@ -3603,7 +3637,7 @@ async function createPowerPagesSimulator({
     const adminAsset = /^\/__sim\/([^/]+\.(?:mjs|css))$/.exec(url.pathname);
     const adminFile = adminAsset && ['GET', 'HEAD'].includes(req.method) ? await adminAssetFile(adminAsset[1]) : null;
     if (adminFile) {
-      res.writeHead(200, { "content-type": adminAssetType(adminAsset[1]), "x-content-type-options": "nosniff" });
+      res.writeHead(200, { "content-type": adminAssetType(adminAsset[1]), "cache-control": "no-store", "x-content-type-options": "nosniff" });
       return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(adminFile));
     }
     if (

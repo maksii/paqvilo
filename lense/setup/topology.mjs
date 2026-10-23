@@ -14,7 +14,7 @@ function targets(snapshot) {
       roots: (snapshot.solutions ?? []).map(item => item.path), keys: Object.keys(settings.mirage ?? {}) }];
   }
   return (snapshot.sites ?? []).map(site => ({ id: site.id, kind: site.runtime?.kind ?? 'power-pages', mirage: site.effectiveMirage ?? site.mirage ?? {},
-    solutions: (site.solutions ?? []).length, packs: site.packs ?? [], portals: 1,
+    solutions: (site.solutions ?? []).length, packs: site.packs ?? [], portals: 1, environments: Object.values(site.environments ?? {}).map(item => item?.url ?? item),
     roots: (site.solutions ?? []).map(item => item.path), keys: [...Object.keys(site.mirage ?? {}).filter(key => site.mirage[key] != null),
       ...['source', 'defaultEnv', 'startPath', 'scope', 'routes', 'environments'].filter(key => site[key] != null && site[key] !== '' && !(plain(site[key]) && !Object.keys(site[key]).length))] }));
 }
@@ -36,9 +36,9 @@ function configuration(snapshot, list, dataverseOn) {
     packs: [...packs.values()],
     solutionLayers: [...new Set(list.flatMap(item => item.roots).filter(Boolean).map(relative))],
     settingsKeys: [...new Set(list.flatMap(item => item.keys))].sort(),
-    // The identity provider is served on the portal origin; a project portal port is chosen at start (null).
+    // The visitor sign-in provider listens on a loopback port of its own, chosen at start (null until then).
     ports: { portal, dataverseApi: api ? port(dataverse.port) : null, dataverseTls: api && dataverse.tls === true ? port(dataverse.tlsPort) : null,
-      tds: api && dataverse.tds?.enabled === true ? port(dataverse.tds.port) : null, identityProvider: target?.kind === 'power-pages' ? portal : null },
+      tds: api && dataverse.tds?.enabled === true ? port(dataverse.tds.port) : null, identityProvider: null },
   };
 }
 
@@ -58,43 +58,58 @@ export function plannedTopology(snapshot = {}) {
   const api = list.filter(dataverseOn);
 
   node('host:setup', 'Setup', 'planned'); node('host:admin', 'Administration', 'planned');
-  node('client:browser', 'Browser', 'planned'); edge('client:browser', 'host:setup', 'http', 'configure'); edge('client:browser', 'host:admin', 'http', 'administer');
-  if (snapshot.kind !== 'project') { node('client:lense', 'Lense', list.length ? 'planned' : 'disabled', { sites: list.map(item => item.id) }); }
+  // Staff use setup and the simulator administration; visitors open the website.
+  node('client:browser', 'Browser', 'planned'); node('client:staff', 'Staff browser', 'planned'); edge('client:staff', 'host:setup', 'http', 'configure'); edge('client:staff', 'host:admin', 'http', 'administer');
+  // Lense shows local files on a live website: it appears once a target names a live address (not an example or this computer).
+  const live = list.filter(item => (item.environments ?? []).some(url => /^https?:/i.test(String(url)) && !/\.example\.test(?::|\/|$)|\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::|\/|$)/i.test(String(url))));
+  if (snapshot.kind !== 'project' && live.length) node('client:lense', 'Lense', 'planned', { sites: live.map(item => item.id) });
   node('host:portal', 'Power Pages portal', portals.length ? 'planned' : 'disabled', { sites: portals.map(item => item.id) });
   edge('client:browser', 'host:portal', 'http', 'pages');
   node('host:identity-provider', 'Local identity provider', portals.length ? 'planned' : 'disabled', { sites: list.filter(item => item.mirage.identityProvider).map(item => item.id) });
-  edge('host:portal', 'host:identity-provider', 'http', 'sign-in');
-  node('client:staff', 'Staff browser', modelDriven.length ? 'planned' : 'disabled');
+  edge('client:browser', 'host:identity-provider', 'http', 'sign-in page'); edge('host:portal', 'host:identity-provider', 'http', 'tokens and user info');
+
   node('host:model-driven', 'Model-driven apps', modelDriven.length ? 'planned' : 'disabled', { sites: modelDriven.map(item => item.id) });
-  edge('client:staff', 'host:model-driven', 'http', 'apps');
+  edge('client:staff', 'host:model-driven', 'http', 'browser'); edge('host:setup', 'host:admin', 'http', 'reads status'); edge('host:admin', 'org:store', 'process', 'records and state');
   node('client:api', 'API client', api.length ? 'planned' : 'disabled');
   node('host:dataverse-api', 'Dataverse API', api.length ? 'planned' : 'disabled', { sites: api.map(item => item.id), applications: api.reduce((sum, item) => sum + (item.mirage.dataverse?.applications?.length ?? 0), 0) });
   edge('client:api', 'host:dataverse-api', 'http', 'Web API');
   const tds = list.filter(item => item.mirage.dataverse?.tds?.enabled === true);
-  if (tds.length) { node('host:tds', 'TDS endpoint', 'planned'); edge('client:api', 'host:tds', 'http', 'SQL'); }
+  if (tds.length) { node('host:tds', 'TDS endpoint', 'planned'); edge('client:api', 'host:tds', 'http', 'TDS'); edge('host:tds', 'org:store', 'process', 'records as the caller'); }
 
   for (const [id, label] of [['org:store', 'Organization store'], ['org:security', 'Security'], ['org:plugins', 'Plug-ins'], ['org:workflows', 'Workflows'], ['org:flows', 'Cloud flows'], ['org:jobs', 'Background jobs']]) node(id, label, list.length ? 'planned' : 'disabled');
-  for (const host of ['host:portal', 'host:model-driven', 'host:dataverse-api']) edge(host, 'org:store', 'process', 'records');
-  edge('org:store', 'org:security', 'process', 'access'); edge('org:store', 'org:plugins', 'process', 'pipeline');
-  edge('org:store', 'org:workflows', 'process', 'pipeline'); edge('org:store', 'org:flows', 'process', 'triggers'); edge('org:flows', 'org:jobs', 'process', 'async');
+  // As the running map draws them (organization-host.mjs): the model-driven shell calls its own in-app Web API, not the listener.
+  edge('host:portal', 'org:store', 'process', 'records (table permissions)'); edge('host:model-driven', 'org:store', 'process', 'records and Web API messages, in the app');
+  edge('host:dataverse-api', 'org:store', 'process', 'records');
+  edge('org:store', 'org:security', 'process', 'access checks'); edge('org:store', 'org:plugins', 'process', 'pipeline'); edge('org:plugins', 'org:store', 'process', 'SDK calls');
+  edge('org:plugins', 'org:jobs', 'process', 'async steps'); edge('org:store', 'org:workflows', 'process', 'runs on save'); edge('org:workflows', 'org:jobs', 'process', 'background');
+  edge('org:jobs', 'org:flows', 'process', 'row triggers'); edge('host:portal', 'org:flows', 'process', 'cloud flows (/_api/cloudflow)');
 
   for (const item of list) {
     const settings = item.mirage;
     for (const pack of item.packs) {
-      const name = pack.id ?? String(pack.module ?? pack.path ?? 'pack').split(/[\\/]/).pop().replace(/\.[cm]?js$/i, '');
+      // A module registered by its path is named by its folder: pack/pack.mjs reads "pack", fx/pack.mjs reads "fx".
+      const parts = String(pack.module ?? pack.path ?? 'pack').split(/[\\/]/).filter(Boolean), name = pack.id ?? (parts.length > 1 ? parts.at(-2) : parts[0].replace(/\.[cm]?js$/i, ''));
       const id = `org:pack:${name}`;
-      node(id, `Pack ${name}`, pack.exists === false ? 'missing' : 'planned', { module: pack.module ?? pack.path });
+      node(id, `Sample data ${name}`, pack.exists === false ? 'missing' : 'planned', { module: pack.module ?? pack.path });
       edge(id, 'org:store', 'reads', 'data and handlers');
     }
     const providers = settings.providers ?? {};
     if (plain(providers.storage) || plain(providers.routes)) {
       node('provider:storage', 'Storage', 'planned', { providers: Object.keys(providers.storage ?? {}) });
-      edge('org:store', 'provider:storage', 'storage', 'files');
+      // File columns and note bodies go through the organization's storage routing; the portal stages uploads there.
+      // File columns and notes go through the organization's storage routing; the portal reads web files and stages uploads.
+      edge('org:store', 'provider:storage', 'storage', 'file columns and notes (storage routing)'); if (item.kind === 'power-pages') edge('host:portal', 'provider:storage', 'storage', 'web files and uploads');
       for (const [route, target] of Object.entries(providers.routes ?? {})) {
         node(`provider:storage-route:${route}`, route, 'planned', { target });
         edge('provider:storage', `provider:storage-route:${route}`, 'storage', target);
       }
-      if (Object.values(providers.storage ?? {}).some(entry => entry?.kind === 'azurite')) { node('external:azurite', 'Azurite (declared)', 'planned'); edge('provider:storage', 'external:azurite', 'storage', 'blob'); }
+      const azurite = Object.entries(providers.storage ?? {}).filter(([, entry]) => entry?.kind === 'azurite').map(([id]) => id);
+      if (azurite.length) {
+        node('external:azurite', 'Azurite (declared)', 'planned');
+        const routes = Object.entries(providers.routes ?? {}).filter(([, target]) => azurite.includes(target));
+        for (const [route] of routes) edge(`provider:storage-route:${route}`, 'external:azurite', 'storage', 'Blob REST');
+        if (!routes.length) edge('provider:storage', 'external:azurite', 'storage', 'configured, no route uses it');
+      }
     }
     if (plain(providers.messaging)) {
       node('provider:messaging', 'Messaging', 'planned', { providers: Object.keys(providers.messaging).filter(key => key !== 'endpoints') });
@@ -102,25 +117,32 @@ export function plannedTopology(snapshot = {}) {
       for (const target of Object.values(providers.messaging.endpoints ?? {})) {
         const entity = String(target).split('/').slice(1).join('/');
         node(`provider:messaging-endpoint:${entity}`, entity, 'planned', { target });
-        edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', 'messages');
+        edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', entity);
       }
       if (Object.values(providers.messaging).some(entry => entry?.kind === 'servicebus-emulator')) { node('external:servicebus-emulator', 'Service Bus emulator (AMQP, started outside Paqvilo)', 'planned'); edge('provider:messaging', 'external:servicebus-emulator', 'bus', 'AMQP'); }
     }
-    if (plain(providers.outbox)) { node('provider:outbox', 'Outbox', 'planned', { kind: providers.outbox.kind ?? 'local' }); edge('org:store', 'provider:outbox', 'process', 'external effects'); }
+    if (plain(providers.outbox)) { node('provider:outbox', 'Outbox', 'planned', { kind: providers.outbox.kind ?? 'local' }); edge('org:store', 'provider:outbox', 'process', 'SendEmail (activity messages)'); edge('host:admin', 'provider:outbox', 'process', 'outbox'); }
     const connections = Object.entries(settings.connections ?? {});
     if (connections.length) {
       node('provider:connectors', 'Connectors', 'planned', { connections: connections.length });
-      edge('org:flows', 'provider:connectors', 'process', 'actions');
+      edge('org:flows', 'provider:connectors', 'process', 'actions'); edge('provider:connectors', 'org:store', 'process', 'Dataverse connector');
+      if (plain(providers.messaging)) edge('provider:connectors', 'provider:messaging', 'bus', 'Service Bus connector');
       for (const [id, entry] of connections) { node(`connection:${id}`, id, 'planned', { provider: entry?.provider ?? null }); edge('provider:connectors', `connection:${id}`, 'process', entry?.provider ?? 'connection'); }
     }
     const secrets = Object.keys(settings.secrets ?? {});
     // Names are counted only; references and values never leave the store.
-    if (secrets.length) { node('provider:secrets', 'Secrets', 'planned', { references: secrets.length }); edge('org:store', 'provider:secrets', 'reads', 'references'); }
+    if (secrets.length) { node('provider:secrets', 'Secrets', 'planned', { references: secrets.length }); edge('org:store', 'provider:secrets', 'reads', 'secret environment variables (org messages)'); edge('org:flows', 'provider:secrets', 'reads', 'secret parameters');
+      if (item.kind === 'power-pages') edge('host:portal', 'provider:secrets', 'reads', 'secret site settings'); }
     for (const [id, entry] of Object.entries(settings.localServices ?? {})) {
       node(`provider:local-service:${id}`, id, 'planned', { kind: entry?.kind ?? null, required: entry?.required === true });
-      edge('org:flows', `provider:local-service:${id}`, 'http', 'probe');
+      // Local services are only probed, by the preflight check of the administration; each points at its outside process.
+      edge('host:admin', `provider:local-service:${id}`, 'http', 'preflight probe');
+      if (entry?.kind === 'azure-storage') { node('external:azurite', 'Azurite (declared)', 'planned'); edge(`provider:local-service:${id}`, 'external:azurite', 'http', 'health probe'); }
+      if (entry?.kind === 'service-bus') { node('external:servicebus-emulator', 'Service Bus emulator (AMQP, started outside Paqvilo)', 'planned'); edge(`provider:local-service:${id}`, 'external:servicebus-emulator', 'bus', 'health probe'); }
     }
-    if (settings.canvas) node('app:canvas', 'Canvas apps', settings.canvas.enabled === false ? 'disabled' : 'planned', { sources: settings.canvas.sources?.length ?? 0 });
+    // Canvas apps come from project canvas sources or from the Solutions; the switch turns them off.
+    // Apps inside Solutions are counted only once the preview reads them, so the plan names a count of canvas folders only.
+    if (settings.canvas || (item.solutions && item.kind !== 'dataverse-api')) node('app:canvas', 'Canvas apps', settings.canvas?.enabled === false ? 'disabled' : 'planned', { ...(settings.canvas?.sources?.length ? { sources: settings.canvas.sources.length } : {}), solutions: item.solutions });
     if (Array.isArray(settings.codeApps) && settings.codeApps.length) node('app:code', 'Code apps', 'planned', { apps: settings.codeApps.length });
     if (item.kind === 'power-pages') {
       const max = settings.personaContexts?.maxInstances ?? 4;
@@ -128,7 +150,9 @@ export function plannedTopology(snapshot = {}) {
       edge('host:portal', `persona-runtime:${item.id}`, 'process', 'isolated sessions');
     }
   }
-  for (const id of ['app:canvas', 'app:code']) if (nodes.has(id)) edge(id, 'host:dataverse-api', 'http', 'data');
+  // Staff open the apps; their data runs through the records layer as that person, and code apps take their tokens from the Web API.
+  for (const id of ['app:canvas', 'app:code']) if (nodes.has(id)) { node('client:staff', 'Staff browser', 'planned'); edge('client:staff', id, 'http', 'staff session'); edge(id, 'org:store', 'process', 'records as the user'); }
+  if (nodes.has('app:code') && api.length) edge('app:code', 'host:dataverse-api', 'http', 'tokens');
   const status = id => nodes.get(id)?.status;
   return { nodes: [...nodes.values()], configuration: configuration(snapshot, list, dataverseOn),
     edges: edges.filter(item => nodes.has(item.from) && nodes.has(item.to))

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { escapeHtml, badge, statusBadge, levelBadge, pageItems, tableTools, table, section, help, fieldHelp, guide, kv, tiles, notice, docLink } from '../admin/ui-kit.mjs';
+import { escapeHtml, badge, statusBadge, levelBadge, pageItems, tableTools, table, section, help, fieldHelp, guide, kv, tiles, notice, docLink, leadHelp, splitLead } from '../admin/ui-kit.mjs';
 
 const items = Array.from({ length: 23 }, (_, index) => ({ id: index + 1, name: `Invented ${index + 1}`, tag: index % 2 ? 'Odd' : 'Even' }));
 
@@ -79,4 +79,18 @@ test('docLink resolves against the D9 map and falls back to a path-only link', (
   assert.deepEqual(docLink('mirage/docs/data-packs.md#recognised-exports', docs), { href: 'https://example.test/blob/v1.2.3/mirage/docs/data-packs.md#recognised-exports', label: 'Data Packs', path: 'mirage/docs/data-packs.md#recognised-exports' });
   assert.deepEqual(docLink('mirage/docs/service-fixtures.md', docs), { href: null, label: 'Service Fixtures', path: 'mirage/docs/service-fixtures.md' });
   assert.equal(docLink('docs/setup.md', undefined).href, null);
+});
+
+test('leadHelp keeps the first sentence visible and the rest, steps and doc behind an (i) tooltip', () => {
+  assert.deepEqual(splitLead('Plain words first. Details (with codes) after. More.'), ['Plain words first.', 'Details (with codes) after. More.']);
+  assert.deepEqual(splitLead('One sentence only, for example cloud-flow:*.'), ['One sentence only, for example cloud-flow:*.', '']);
+  const doc = { href: 'https://example.test/x.md', label: 'X', path: 'x.md' };
+  const html = leadHelp({ id: 'help-x', label: 'Storage', text: 'Where bytes go. Details <b>here</b>.', steps: ['one'], doc });
+  assert.match(html, /^<p class="ui-help" id="help-x">Where bytes go\.<span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Storage" aria-describedby="help-x-more">i<\/button><span class="ui-info-pop" role="tooltip" id="help-x-more"><span class="ui-info-text">Details &lt;b&gt;here&lt;\/b&gt;\.<\/span><span class="ui-info-step">1\. one<\/span><span class="ui-info-docs"><a class="ui-doc" href="https:\/\/example.test\/x.md"/);
+  assert.equal(leadHelp({ text: 'Only this.' }), '<p class="ui-help">Only this.</p>');
+  assert.equal(leadHelp({ text: '' }), '');
+  // A view guide shows its lead; the details paragraph opens with How this works.
+  assert.match(guide({ key: 'g', intro: 'Lead.', details: 'More text.' }), /<p class="ui-guide-intro">Lead\.<\/p><details class="ui-guide-more" data-ui-section="guide:g"><summary>How this works<\/summary><p class="ui-guide-details">More text\.<\/p><\/details>/);
+  // A column may explain its values behind an (i) in its header.
+  assert.match(table({ key: 't', items: [{ a: 1 }], columns: [{ label: 'Level', info: 'What <levels> mean', render: item => item.a }] }), /<th scope="col">Level<span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Level">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">What &lt;levels&gt; mean<\/span><\/span><\/span><\/th>/);
 });

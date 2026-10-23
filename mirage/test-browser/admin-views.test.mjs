@@ -181,3 +181,38 @@ test("a failed module load shows its error with the status; standalone hosts get
   assert.ok(!calls.some((call) => /\/__sim\/(?:api\/(?:audit|flow-runs|diagnostics|environment)|events)$/.test(call)), "no probe requests");
   assert.deepEqual(errors, []);
 });
+
+test("every sidebar link lands at the top of a view headed by its label; step and panel links land on their panel", { timeout: 120_000 }, async (t) => {
+  const { origin } = await host(t, {
+    state: { csrf: "fixture-csrf", config: { mappings: [], plugins: [], endpoints: [], permissions: [], presets: [], scenarios: [], identity: {}, platformSettings: [] }, data: {}, status: { pages: [], scenarios: [] }, diagnostics: [] },
+    status: { docs, routes: POWER_PAGES_ROUTES },
+  });
+  const { page, errors } = await open(t, origin, "#overview");
+  await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
+  // The label is the link's text node after its aria-hidden icon; the group is the summary of its sidebar group.
+  const links = await page.locator("#navigation a").evaluateAll((nodes) => nodes.map((node) => ({ label: node.lastChild.textContent.trim(), group: node.closest("details").querySelector("summary").textContent.trim() })));
+  assert.ok(links.length >= 15, `${links.length} sidebar links`);
+  for (const { label, group } of links) {
+    // Start from the bottom of the previous view, so a landing that keeps the old scroll position fails.
+    await page.evaluate(() => { document.querySelector("#content").style.minHeight = "4000px"; window.scrollTo(0, 3000); });
+    await nav(page, label);
+    await page.waitForFunction((name) => document.querySelector("#content h1")?.textContent === name && document.activeElement?.id === "view-title", label);
+    assert.equal(await page.evaluate(() => window.scrollY), 0, `${label} opens at its top`);
+    assert.equal(await page.locator("#breadcrumb").innerText(), label);
+    assert.equal(await page.locator("#breadcrumb-group").innerText(), group);
+    assert.equal(await page.locator("#content .eyebrow").first().innerText(), group.toUpperCase());
+    assert.equal(await page.title(), `${label} · Paqvilo simulator workspace`);
+  }
+
+  // A step link names the panel that does the step: it opens, scrolls to, focuses and outlines that panel.
+  await nav(page, "Scenarios");
+  await page.getByRole("heading", { name: "Scenarios", exact: true }).waitFor();
+  await page.locator('[data-steps="scenarios"]').getByRole("link", { name: "Reset when you are done" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-panel="reset"]')?.classList.contains("is-landed"));
+  assert.ok(await page.evaluate(() => { const panel = document.querySelector('[data-panel="reset"]'), box = panel.getBoundingClientRect(); return panel.contains(document.activeElement) && box.top >= 0 && box.top < innerHeight; }));
+  // A deep link to a collapsed module panel opens and lands on it, and the outline goes away again.
+  await page.evaluate(() => { location.hash = "services?panel=outbox"; });
+  await page.waitForFunction(() => { const panel = document.querySelector('[data-ui-section="services:outbox"]'); return panel?.open && panel.classList.contains("is-landed") && panel.contains(document.activeElement); });
+  await page.waitForFunction(() => !document.querySelector(".is-landed"), null, { timeout: 5000 });
+  assert.deepEqual(errors, []);
+});

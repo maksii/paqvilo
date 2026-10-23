@@ -188,7 +188,8 @@ test("admin service views peek and purge, answer approvals, run preflight and ex
   await page.getByRole("button", { name: "Details of pack fx-pack" }).click();
   await page.locator('table[data-table="packs-fx-pack-exports"]').getByText("serverLogics").waitFor();
   await page.locator('table[data-table="packs-fx-pack-data"]').getByText("writable", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("link", { name: "Open project setup" }).getAttribute("href"), "/_setup/#packs");
+  // The setup link sits in the collapsed "Add or change a pack" panel.
+  assert.equal(await page.locator('[data-ui-section="packs:lifecycle"] a').getAttribute("href"), "/_setup/#packs");
   await noOverflow();
 
   assert.deepEqual(errors, []);

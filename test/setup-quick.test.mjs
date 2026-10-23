@@ -28,6 +28,32 @@ const EXPORTS = {
   '.hidden/core/Other/Solution.xml': '<UniqueName>Hidden</UniqueName>',
 };
 
+test('setup finds every folder type: a second website with its deployment profiles, canvas app folders, code apps and settings files', async t => {
+  const root = await folder(t, {
+    ...EXPORTS,
+    'exports/second/website.yml': 'adx_websiteid: second\nadx_name: Second Site\n',
+    'exports/second/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'exports/second/deployment-profiles/dev.deployment.yml': 'adx_sitesetting: []\n',
+    'exports/core/CanvasApps/x_fieldapp_1a2b3.meta.xml': '<CanvasApp />',
+    'apps/x_fieldapp/Src/App.pa.yaml': 'App:\n  Properties: {}\n',
+    'apps/x_other/Src/App.pa.yaml': 'App:\n  Properties: {}\n',
+    'code/x_code/power.config.json': '{}',
+    'environments/dev.json': '{ "EnvironmentVariables": [] }',
+    'environments/package.json': '{ "name": "not a deployment settings file" }',
+  });
+  const found = await exportCandidates({ directory: root, sourceRoot: root });
+  assert.deepEqual(found.portals.map(item => [item.name, item.profiles?.map(profile => [profile.name, profile.file])]),
+    [['Second Site', [['dev', 'deployment-profiles/dev.deployment.yml']]], ['Invented Site', []]], 'each website export with the profiles inside it');
+  assert.deepEqual(found.canvas.map(item => [item.value, item.inSolution]), [['./apps/x_fieldapp', 'InventedCore'], ['./apps/x_other', null]], 'a canvas folder a Solution already packs names that Solution');
+  assert.deepEqual(found.codeApps.map(item => item.value), ['./code/x_code']);
+  // The picker lists files of one kind: only .json files that are deployment settings, and .deployment.yml files.
+  const settings = await listFolders({ directory: root, folder: 'environments', files: 'settings' });
+  assert.deepEqual(settings.files.map(item => [item.name, item.value]), [['dev.json', './environments/dev.json']]);
+  const profiles = await listFolders({ directory: root, folder: 'exports/second/deployment-profiles', files: 'profile' });
+  assert.deepEqual(profiles.files.map(item => item.name), ['dev.deployment.yml']);
+  assert.equal((await listFolders({ directory: root, folder: 'apps' })).folders[0].kind.type, 'canvas');
+});
+
 test('quick setup finds portal exports, Solutions and pack modules, written as the configuration resolves them', async t => {
   const root = await folder(t, EXPORTS);
   const found = await exportCandidates({ directory: root, sourceRoot: path.join(root, 'exports') });
@@ -57,6 +83,17 @@ test('a created project and quick edits use the found exports, a local address a
   assert.deepEqual(createDocument({ parts: { website: true, api: true }, name: 'invented', candidates, port: 8801 }).sites.invented.mirage,
     { port: 8801, runtime: { kind: 'power-pages' }, simulation: { level: 'dry-run' }, solutionRoots: ['exports/core'], dataPacks: ['./data/pack.mjs'], dataverse: { enabled: true }, modelDriven: { enabled: false }, canvas: { enabled: false } });
   assert.equal(createDocument({ parts: { canvas: true, api: true }, name: 'invented', candidates }).sites.invented.mirage.runtime.kind, 'model-driven', 'apps without a website run on the app host');
+
+  // Two website exports in separate folders become two projects, each with its own address and its own deployment profiles
+  // (registered with no default); only the first keeps the fixed Web API port.
+  const two = { ...candidates, portals: [{ value: 'exports/site', name: 'Invented Site' }, { value: 'other/portal', name: 'Second Site', profiles: [{ name: 'dev', file: 'deployment-profiles/dev.deployment.yml' }] }] };
+  const both = createDocument({ parts: { website: true, api: true }, name: 'invented', candidates: two, ports: [8801, 8802], apiPort: 8790 });
+  assert.deepEqual(Object.keys(both.sites), ['invented-site', 'second-site'], 'several websites: each project is named after its website');
+  assert.deepEqual([both.sites['second-site'].source, both.sites['second-site'].mirage.port, both.sites['second-site'].environments.local], ['other/portal', 8802, 'http://127.0.0.1:8802']);
+  assert.deepEqual(both.sites['second-site'].mirage.deploymentProfiles, { profiles: { dev: { pages: { source: 'deployment-profiles/dev.deployment.yml' } } } });
+  assert.deepEqual([both.sites['invented-site'].mirage.dataverse.port, both.sites['second-site'].mirage.dataverse.port], [8790, 0]);
+  assert.deepEqual(Object.keys(createDocument({ parts: { website: true }, name: 'invented', candidates: two, websites: ['other/portal'] }).sites), ['invented'], 'only the chosen websites');
+  assert.deepEqual(createDocument({ parts: { website: true }, name: 'invented', project: true, candidates: two }).portals.map(item => [item.id, item.path]), [['invented-site', 'exports/site'], ['second-site', 'other/portal']]);
 
   const state = { kind: 'catalogue', layers: { shared: { exists: true } }, findings: [], settings: { defaultSite: 'invented' },
     sites: [{ id: 'invented', source: 'exports/site', sourceStatus: { format: 'yaml' }, runtime: { kind: 'power-pages' }, environments: { local: {} }, solutions: [{ exists: true }], packs: [],

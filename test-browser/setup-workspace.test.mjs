@@ -64,12 +64,13 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   const demoServer = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => demoServer.close());
   // Journey sections are collapsed except the next stage; a hash opens its section.
   await page.goto(demoServer.url + '#portals');
-  await page.getByRole('heading', { name: 'Targets & sources', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Exported files', exact: true }).waitFor();
   assert.equal(await page.locator('#portals').evaluate(node => node.open), true);
   assert.equal(await page.locator('#identity').evaluate(node => node.open), false);
   assert.match(await page.locator('#portal-example').innerText(), /export/);
-  const demoForm = page.locator('form[data-form=site][data-site=example]');
-  await page.locator('#portal-example summary').first().click();
+  // The local port is part of What to run.
+  await page.evaluate(() => { location.hash = '#runtime-configuration'; });
+  const demoForm = page.locator('form[data-form=runtime][data-site=example]');
   const configurationBefore = await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8');
   await demoForm.locator('[name=port]').fill('0');
   await saveForm(page, demoForm);
@@ -97,10 +98,16 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   assert.match(await page.locator('#overview').innerText(), /Select an existing local export folder/);
   let form = page.locator('form[data-form=settings]');
   await form.locator('[name=sourceRoot]').fill(sources); await saveForm(page, form);
+  // Each website: its folders (Exported files), its live address (Live environments) and its local port (What to run).
+  const open = async (hash, key) => { await page.evaluate(value => { location.hash = value; }, hash); const node = page.locator(`details[data-section-key="${key}"]`); if ((await node.getAttribute('open')) === null) await node.locator('summary').first().click(); };
   for (const [id, sourceName] of [['alpha', 'classic'], ['beta', 'code']]) {
-    await page.locator(`#portal-${id} summary`).first().click(); form = page.locator(`form[data-form=site][data-site=${id}]`);
+    await open('#portals', `files-${id}`); form = page.locator(`form[data-form=files][data-site=${id}]`);
     await form.locator('[name=source]').fill(sourceName); await form.locator('[name=solutions]').fill('');
+    await saveForm(page, form);
+    await open('#environments', `environments-${id}`); form = page.locator(`form[data-form=environments][data-site=${id}]`);
     await form.locator('[name=env-url]').fill(`http://127.0.0.1:${id === 'alpha' ? 8787 : 8788}`);
+    await saveForm(page, form);
+    await open('#runtime-configuration', `runtime-${id}`); form = page.locator(`form[data-form=runtime][data-site=${id}]`);
     await form.locator('[name=port]').fill('0');
     await saveForm(page, form);
     assert.match(await page.locator(`#portal-${id}`).innerText(), /export/);
@@ -115,7 +122,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
     selector.dispatchEvent(new Event('change', { bubbles: true }));
   });
   assert.equal(await page.evaluate(() => window.invalidLayerExecuted), undefined);
-  assert.equal(await page.locator('form[data-form=site] .muted').filter({ hasText: 'Writes the shared configuration.' }).count(), 2);
+  assert.equal(await page.locator('form[data-form=files] .muted').filter({ hasText: 'Writes the shared settings file.' }).count(), 2);
   await page.locator('#layer').selectOption('personal');
   form = page.locator('form[data-form=settings]'); await form.locator('[name=browser]').selectOption('chrome'); await saveForm(page, form);
   assert.equal(await fs.readFile(path.join(consumer, 'paqvilo.config.yml'), 'utf8'), sharedBefore);
@@ -217,7 +224,7 @@ test('setup shows real loading and save feedback, prevents duplicate writes and 
   assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
   assert.equal(await page.locator('#refresh').isDisabled(), true);
   assert.equal(await page.locator('#notice').evaluate(node => getComputedStyle(node, '::before').animationName), 'none');
-  releaseRead(); await page.getByRole('heading', { name: 'Targets & sources', exact: true }).waitFor();
+  releaseRead(); await page.getByRole('heading', { name: 'Exported files', exact: true }).waitFor();
   const form = page.locator('form[data-form=yaml]'), textarea = form.locator('textarea');
   const original = await textarea.inputValue(), draft = original + '\n# retained unsaved draft\n';
   await textarea.fill(draft);
@@ -243,11 +250,10 @@ test('setup shows real loading and save feedback, prevents duplicate writes and 
   // Successful saving returns focus to the same action and keeps the edited section open.
   await page.unroute('**/_setup/api/config');
   // The stage rail opens a collapsed section.
-  await page.getByRole('navigation', { name: 'Setup stages' }).getByRole('link', { name: /^Sources/ }).click();
-  await page.locator('#portal-example summary').first().click();
-  const site = page.locator('form[data-form=site][data-site=example]'); await site.locator('[name=port]').fill('0');
+  await page.getByRole('navigation', { name: 'Setup stages' }).getByRole('link', { name: /^What to run/ }).click();
+  const site = page.locator('form[data-form=runtime][data-site=example]'); await site.locator('[name=port]').fill('0');
   await saveForm(page, site);
-  assert.equal(await page.locator('#portal-example details').first().evaluate(node => node.open), true);
+  assert.equal(await page.locator('details[data-section-key="runtime-example"]').evaluate(node => node.open), true);
   assert.equal(await site.locator('button[type=submit]').evaluate(node => node === document.activeElement), true);
   // A hung local write must release the editor without silently retrying an unknown outcome.
   await page.clock.install();

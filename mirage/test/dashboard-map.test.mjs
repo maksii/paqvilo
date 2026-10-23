@@ -124,6 +124,19 @@ test('connectors never cross a card and never share a line with another connecto
 });
 const cardTitle = card => (card.type === 'group' ? card.group : card.node.id);
 
+test('switched-off connections are listed on their card, not drawn; one card fans out on a single bus lane', () => {
+  const { nodes, edges } = large();
+  const extra = [{ from: 'client:staff', to: 'app:code', kind: 'http', status: 'disabled', label: 'staff session' },
+    ...['org:plugins', 'org:flows', 'org:jobs', 'org:dataverse-fls'].map(to => ({ from: 'host:dataverse-api', to, kind: 'process', status: 'ready', label: 'Web API message' }))];
+  const layout = layoutTopology(nodes, [...edges, ...extra]);
+  assert.ok(!layout.edges.some(edge => edge.members.every(member => member.status === 'disabled')), 'no switched-off connection is drawn');
+  assert.match(renderTopology(layout), /<b>Switched off<\/b> would connect to Code apps\./);
+  const api = layout.cards.find(card => card.node?.id === 'host:dataverse-api');
+  const bus = layout.edges.filter(edge => edge.from === api.index && edge.plan.type === 'next');
+  assert.ok(bus.length >= 3, 'the Web API reaches several organization cards');
+  assert.equal(new Set(bus.map(edge => edge.plan.lane)).size, 1, 'they leave the Web API on one bus lane');
+});
+
 test('connector labels never overlap, even when many edges share a lane', () => {
   const { nodes, edges } = large();
   // Several edges from the organization band onto the same exit lane.
@@ -189,14 +202,17 @@ test('live dashboard: hero, KPIs, layered map with accessible summary, drawer sl
   assert.match(html, /Top <code>FX_CODE<\/code> ×2/);
 });
 
-test('highlight classes: each card knows its key and every card and edge on its path', () => {
+test('highlight classes: each card knows its key and its direct connections only', () => {
   const { nodes, edges } = large();
   const layout = layoutTopology(nodes, edges);
   const html = renderTopology(layout);
   const api = layout.cards.find(card => card.node?.id === 'host:dataverse-api');
   const store = layout.cards.find(card => card.nodes.some(item => item.id === 'org:store'));
   const client = layout.cards.find(card => card.node?.id === 'client:api');
-  assert.ok(api.related.includes(store.index) && api.related.includes(client.index), 'upstream and downstream reach');
+  assert.ok(api.related.includes(store.index) && api.related.includes(client.index), 'direct upstream and downstream cards');
+  // Only direct connections light up: a card two hops away (behind the store) does not.
+  const twoHops = layout.edges.filter(edge => edge.from === store.index).map(edge => edge.to).filter(index => !layout.edges.some(edge => (edge.from === api.index && edge.to === index) || (edge.to === api.index && edge.from === index)));
+  for (const index of twoHops) assert.ok(!api.related.includes(index), `card ${index} behind the store is not highlighted for the Web API`);
   assert.match(html, new RegExp(`class="dm-card dm-node is-[a-z]+ dm-k${api.index}[^"]*"[^>]*data-node="host:dataverse-api"`));
   assert.match(html, new RegExp(`class="dm-wire is-http[^"]* dm-p${api.index}[^"]*" data-edge="client:api→host:dataverse-api"`));
   assert.match(html, new RegExp(`class="dm-card dm-node[^"]* dm-p${api.index}[ "][^>]*data-node="client:api"`));

@@ -151,7 +151,7 @@ test("the dashboard lands first, renders every node, opens a node drawer, runs p
 test("a host answering 404 for the dashboard hides Infrastructure and lands on the overview", { timeout: 60_000 }, async (t) => {
   const { origin } = await host(t, { dashboard: (res) => res.writeHead(404).end("{}") });
   const { page, errors } = await open(t, origin);
-  await page.getByRole("heading", { name: "Your local portal workspace" }).waitFor();
+  await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Infrastructure", exact: false }).count(), 0);
   await page.getByRole("link", { name: "Data records", exact: true }).waitFor();
   assert.deepEqual(errors, []);

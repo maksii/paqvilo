@@ -56,7 +56,7 @@ export function modelDrivenInspectionCatalogue(imported) {
     catch { /* Preserve the other declared sources if a ribbon cannot be inspected. */ }
   }
   for (const entry of imported.appActions ?? []) command(entry);
-  return { forms: [...forms.values()], commands: [...commands.values()], limits: { maxItems: MAX_ITEMS, maxBytes: MAX_BYTES, maxDetails: 1000, truncated } };
+  return { forms: [...forms.values()], commands: [...commands.values()], solutionCount: imported.layers?.length ?? 0, limits: { maxItems: MAX_ITEMS, maxBytes: MAX_BYTES, maxDetails: 1000, truncated } };
 }
 
 /** Fixed, read-only metadata inspection. Never reads attributes' values or record IDs. */

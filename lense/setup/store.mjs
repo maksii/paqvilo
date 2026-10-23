@@ -47,24 +47,26 @@ const redactDefaults = defaults => (plain(defaults) ? { ...defaults, ...(plain(d
 
 /** The section of /_setup/ that fixes a finding (RB-04). */
 function sectionOf(finding, kind) {
-  // Linked-project documents are edited in the YAML editor (Configuration & rules), as is the catalogue's mirage.project.
-  if (['missing-config', 'configuration', 'project-outside', 'project-invalid'].includes(finding.code)) return '#advanced';
+  // A missing file is created in the project status strip; linked-project documents and the catalogue's mirage.project are
+  // edited in the Settings file.
+  if (finding.code === 'missing-config') return '#overview';
+  if (finding.layer || ['configuration', 'project-outside', 'project-invalid', 'missing-project'].includes(finding.code)) return '#advanced';
   if (finding.code === 'missing-pack') return '#packs';
-  if (finding.layer || finding.code === 'missing-project' || (finding.code === 'missing-solution' && (kind === 'project' || !finding.site))) return '#runtime-configuration';
+  if (['no-environments', 'default-env', 'placeholder-origin', 'duplicate-origin'].includes(finding.code)) return '#environments';
   return '#portals';
 }
 
 const STAGES = [
   { id: 1, title: 'Project', anchor: '#overview', codes: ['missing-config', 'configuration'], required: true },
-  { id: 2, title: 'Runtime surface', anchor: '#runtime-configuration', codes: [], required: true },
-  { id: 3, title: 'Sources', anchor: '#portals', codes: ['no-sites', 'default-site', 'missing-source', 'source-layout', 'missing-solution', 'missing-project', 'project-outside', 'project-invalid'], required: true },
-  { id: 4, title: 'Environments', anchor: '#portals', codes: ['no-environments', 'default-env', 'placeholder-origin', 'duplicate-origin'] },
-  { id: 5, title: 'Data packs', anchor: '#packs', codes: ['missing-pack'], configured: (mirages, snapshot) => packsOf(snapshot).length > 0 },
-  { id: 6, title: 'Personas & scenarios', anchor: '#personas', codes: [], configured: mirages => mirages.some(item => item.personaContexts || item.identityProvider || item.preset) },
-  { id: 7, title: 'Simulation & state', anchor: '#simulation', codes: [], configured: mirages => mirages.some(item => item.simulation?.level) },
-  { id: 8, title: 'Providers & services', anchor: '#providers', codes: [], configured: mirages => mirages.some(item => ['providers', 'connections', 'secrets', 'localServices', 'deploymentProfiles', 'environmentVariables'].some(key => item[key] && Object.keys(item[key]).length)) },
-  { id: 9, title: 'Identity & API', anchor: '#identity', codes: [], configured: mirages => mirages.some(item => item.dataverse?.enabled === true) },
-  { id: 10, title: 'Start & verify', anchor: '#guidance', codes: ['duplicate-port'], required: true },
+  { id: 2, title: 'What to run', anchor: '#runtime-configuration', codes: [], required: true },
+  { id: 3, title: 'Exported files', anchor: '#portals', codes: ['no-sites', 'default-site', 'missing-source', 'source-layout', 'missing-solution', 'missing-project', 'project-outside', 'project-invalid'], required: true },
+  // Shown in this order (the rail numbers them by position); ids are stable keys of settings-catalogue.mjs stages.
+  { id: 5, title: 'Sample data', anchor: '#packs', codes: ['missing-pack'], configured: (mirages, snapshot) => packsOf(snapshot).length > 0 },
+  { id: 4, title: 'Live environments', anchor: '#environments', codes: ['no-environments', 'default-env', 'placeholder-origin', 'duplicate-origin'] },
+  { id: 6, title: 'Test people & sign-in', anchor: '#personas', codes: [], configured: mirages => mirages.some(item => item.personaContexts || item.identityProvider) },
+  { id: 8, title: 'Outside services', anchor: '#providers', codes: [], configured: mirages => mirages.some(item => ['providers', 'connections', 'secrets', 'localServices', 'environmentVariables', 'connectorScripts'].some(key => item[key] && Object.keys(item[key]).length)) },
+  { id: 9, title: 'Web API access', anchor: '#identity', codes: [], configured: mirages => mirages.some(item => item.dataverse?.enabled === true) },
+  { id: 10, title: 'Start & check', anchor: '#guidance', codes: ['duplicate-port'], required: true },
 ];
 const packsOf = snapshot => snapshot.packs ?? (snapshot.sites ?? []).flatMap(site => site.packs ?? []);
 
@@ -80,7 +82,9 @@ export function setupStages(snapshot, runtime = null) {
   return STAGES.map(stage => {
     const findings = [...new Set((snapshot.findings ?? []).filter(item => stage.codes.includes(item.code)).map(item => item.code))];
     let status;
-    if (findings.length) status = pending();
+    // An example live address matters to Lense only; the local preview runs without it.
+    if (findings.length && stage.id === 4 && findings.every(code => code === 'placeholder-origin')) status = 'optional';
+    else if (findings.length) status = pending();
     else if (stage.id === 10) status = !snapshot.ready ? 'blocked' : runtime?.restartRequired === false ? 'done' : pending();
     else if (stage.required || (stage.id === 4 && portal)) status = created ? 'done' : pending();
     else status = created && stage.configured?.(mirages, snapshot) ? 'done' : 'optional';
@@ -237,9 +241,9 @@ export class SetupStore {
         ...Object.fromEntries(Object.entries(files.projects).map(([site, item]) => [`project:${site}`, { file: item.file, exists: item.text !== null, text: item.text ?? '', site, values: redactSettings(item.raw ?? {}) }])) },
       sites: [], findings: [], settings: {},
     };
-    if (files.shared === null) result.findings.push({ code: 'missing-config', section: '#advanced', message: this.kind === 'project'
-      ? 'Create a Mirage project file to select your exports, Solutions and runtime surface.'
-      : 'Create a catalogue to connect your exports and environments.' });
+    if (files.shared === null) result.findings.push({ code: 'missing-config', section: '#overview', message: this.kind === 'project'
+      ? 'Create the project file above: choose what to run, then Create project file.'
+      : 'Create the settings file above: choose what to run, then Create settings file.' });
     try {
       if (files.shared === null) return result;
       const valid = await this.validate(files.shared, files.personal);
@@ -304,7 +308,7 @@ export class SetupStore {
         else if (portal && !site.sourceStatus.format) add('source-layout', 'This folder is not a recognized portal export. Select the export inside the checkout.');
         if (portal && this.kind === 'catalogue' && !Object.keys(site.environments).length) add('no-environments', 'Add an environment for catalogue workflows. Local Mirage targets can use a loopback origin.');
         if (portal && site.defaultEnv && !site.environments[site.defaultEnv]) add('default-env', 'Choose a default environment that exists.');
-        if (portal) for (const [env, setting] of Object.entries(site.environments)) if (placeholder(setting.url)) add('placeholder-origin', `${env}: replace the placeholder before connecting Lense.`);
+        if (portal) for (const [env, setting] of Object.entries(site.environments)) if (placeholder(setting.url)) add('placeholder-origin', `Live environment ${env} still has an example address. Only Lense uses it; the local preview runs without it.`);
         for (const solution of site.solutions) if (!solution.exists) add('missing-solution', `Solution folder does not exist: ${solution.path}`);
         for (const pack of site.packs ?? []) if (!pack.exists) add('missing-pack', `Pack module does not exist: ${pack.path}`);
       }

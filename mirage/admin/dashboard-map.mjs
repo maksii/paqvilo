@@ -23,9 +23,9 @@ const BAD = new Set(['missing', 'error']);
 const statusOf = status => (STATUSES.includes(status) ? status : 'unknown');
 
 export const BANDS = Object.freeze([
-  { id: 'people', title: 'People & clients', description: 'Who calls this runtime: portal visitors, makers and staff, integration apps and the Lense live connection.' },
+  { id: 'people', title: 'People & clients', description: 'Who calls this runtime: portal visitors, makers and staff, integration apps and the live portal connection.' },
   { id: 'experiences', title: 'Experiences', description: 'The apps people open: the Power Pages site, model-driven, canvas and code apps, and code components.' },
-  { id: 'endpoints', title: 'Platform endpoints', description: 'Local listeners: the Dataverse Web API, TDS, sign-in and tokens, administration and project setup.' },
+  { id: 'endpoints', title: 'Platform endpoints', description: 'Local listeners: the Dataverse Web API (with its token endpoint), TDS, visitor sign-in, administration and project setup.' },
   { id: 'organization', title: 'Dataverse organization', description: 'The simulated environment, grouped by capability. Open a group to list its modules.' },
   { id: 'providers', title: 'Integration providers', description: 'Where side effects land: storage, queues, outbox, connectors, secrets, local services and fixtures.' },
   { id: 'externals', title: 'Declared externals', description: 'Services named in configuration that run outside Mirage; declared or probed, never contacted for data.' },
@@ -60,7 +60,7 @@ const EXACT = Object.freeze({
   'client:staff': P('people', null, 'Makers & staff', 'staff', 'apps'),
   'client:api': P('people', null, 'Integration clients', 'client', 'dataverse'),
   'client:lense': P('people', null, 'Lense workspace', 'lense', 'neutral'),
-  'bridge:live': P('people', null, 'Lense live connection', 'link', 'neutral'),
+  'bridge:live': P('people', null, 'Live portal connection', 'link', 'neutral'),
   'host:portal': P('experiences', null, 'Power Pages site', 'globe', 'pages'),
   'host:model-driven': P('experiences', null, 'Model-driven apps', 'apps', 'apps'),
   'app:canvas': P('experiences', null, 'Canvas apps', 'canvas', 'apps'),
@@ -68,7 +68,7 @@ const EXACT = Object.freeze({
   'app:pcf': P('experiences', null, 'Code components (PCF)', 'component', 'apps'),
   'host:dataverse-api': P('endpoints', null, 'Dataverse Web API', 'api', 'dataverse'),
   'host:tds': P('endpoints', null, 'TDS endpoint (SQL)', 'sql', 'dataverse'),
-  'host:identity-provider': P('endpoints', null, 'Identity & tokens', 'key', 'neutral'),
+  'host:identity-provider': P('endpoints', null, 'Visitor sign-in provider', 'key', 'neutral'),
   'host:admin': P('endpoints', null, 'Administration', 'admin', 'neutral'),
   'host:setup': P('endpoints', null, 'Project setup', 'setup', 'neutral'),
   'provider:storage': P('providers', 'storage', 'Storage providers', 'storage', 'azure'),
@@ -76,7 +76,7 @@ const EXACT = Object.freeze({
   'provider:outbox': P('providers', 'outbox', 'Outbox', 'mail', 'azure'),
   'provider:connectors': P('providers', 'connectors', 'Connector runtime', 'plug', 'automate'),
   'provider:secrets': P('providers', 'secrets', 'Secret references', 'vault', 'azure'),
-  'provider:powerfx': P('providers', 'fixtures', 'Power Fx engine', 'fx', 'apps'),
+  'provider:powerfx': P('providers', null, 'Power Fx engine', 'fx', 'apps'),
   'external:azurite': P('externals', null, 'Azurite storage emulator', 'cloud', 'azure'),
   'external:servicebus-emulator': P('externals', null, 'Service Bus emulator', 'bus', 'azure'),
   'external:functions': P('externals', null, 'Azure Functions Core Tools', 'functions', 'azure'),
@@ -91,15 +91,16 @@ const ORG = Object.freeze({
   'dataverse-data-messages': ['tables', 'Import, export and bulk data'], 'dataverse-misc-messages': ['tables', 'Other data messages'], 'dataverse-currency': ['tables', 'Currencies and exchange rates'],
   security: ['security', 'Security roles'], 'dataverse-fls': ['security', 'Field security and masking'], 'dataverse-audit': ['security', 'Auditing'],
   'dataverse-security-messages': ['security', 'Sharing and access messages'], 'dataverse-security-messages2': ['security', 'Teams and principal messages'],
-  plugins: ['logic', 'Plug-in steps (JS/CLR)'], workflows: ['logic', 'Classic workflows'], customapi: ['logic', 'Custom APIs'], 'dataverse-business-rules': ['logic', 'Business rules'],
+  plugins: ['logic', 'Plug-in steps (JS/CLR)'], workflows: ['logic', 'Classic workflows'], customapi: ['logic', 'Custom APIs'], 'dataverse-customapi': ['logic', 'Custom APIs'], 'dataverse-business-rules': ['logic', 'Business rules'],
   'dataverse-calculated': ['logic', 'Calculated columns'], 'dataverse-formula': ['logic', 'Formula columns'], 'dataverse-rollup': ['logic', 'Rollup columns'],
   'dataverse-cascade': ['logic', 'Relationship cascades'], 'dataverse-hierarchy': ['logic', 'Hierarchies'], 'dataverse-state-transitions': ['logic', 'Status transitions'],
   'dataverse-duplicates': ['logic', 'Duplicate detection'], 'dataverse-bpf': ['logic', 'Business process flows'], 'dataverse-plugin-registration': ['logic', 'Plug-in registration'],
   'dataverse-workflows': ['logic', 'Workflow messages'], 'dataverse-addon-handlers': ['logic', 'Add-on message handlers'], 'dataverse-addon-ai': ['logic', 'AI Builder messages'],
   'dataverse-addon-pva': ['logic', 'Copilot Studio messages'], 'dataverse-addon-d365': ['logic', 'Dynamics 365 app messages'],
   flows: ['automate', 'Cloud flows'], 'dataverse-addon-flows': ['automate', 'Flow run messages'], 'flow-triggers': ['automate', 'Flow triggers (recurrence, HTTP, connectors)'], 'flow-runs': ['automate', 'Flow runs and waits'],
-  jobs: ['background', 'Background jobs and scheduler'], 'dataverse-async': ['background', 'System jobs'], 'dataverse-addon-workqueues': ['background', 'Work queues'],
-  'dataverse-calendar-messages': ['background', 'Calendars and scheduling'],
+  jobs: ['background', 'Background jobs and scheduler'], 'dataverse-async': ['background', 'System jobs'],
+  // Work queues and calendars are messages on records, not background work.
+  'dataverse-addon-workqueues': ['tables', 'Work queues'], 'dataverse-calendar-messages': ['tables', 'Calendars and scheduling'], usersettings: ['org-other', 'Staff user settings'],
   'dataverse-webhooks': ['messaging', 'Webhooks'], 'dataverse-service-endpoints': ['messaging', 'Service endpoints'],
   'dataverse-solutions': ['solutions', 'Solutions and layers'], 'dataverse-plugin-registration-solution': ['solutions', 'Plug-in assemblies in solutions'],
   'dataverse-metadata-tables': ['solutions', 'Table metadata'], 'dataverse-metadata-relationships': ['solutions', 'Relationship metadata'],
@@ -127,7 +128,7 @@ export function PRODUCT_OF(id, kind, label) {
     ?? family('provider:service-fixture:', service => P('providers', 'fixtures', `${FIXTURES[service] ?? name ?? 'Service'} fixture`, FIXTURE_ICONS[service] ?? 'service', 'neutral'))
     ?? family('connection:', () => P('providers', 'connectors', `Connection ${name ?? ''}`.trim(), 'plug', 'automate'))
     ?? family('external:webhook:', host => P('externals', null, `Webhook ${name ?? host}`, 'webhook', 'azure'))
-    ?? family('org:pack:', pack => P('organization', 'solutions', `Data pack ${pack}`, 'layers', 'dataverse'))
+    ?? family('org:pack:', pack => P('organization', 'solutions', `Sample data ${pack}`, 'layers', 'dataverse'))
     ?? (prefix === 'org' && ORG[rest] ? P('organization', ORG[rest][0], ORG[rest][1], GROUPS[ORG[rest][0]].icon, GROUPS[ORG[rest][0]].family) : null)
     ?? (() => {
       const band = KIND_BANDS[prefix] ?? KIND_BANDS[kind] ?? 'providers';
@@ -152,7 +153,7 @@ export const nodeKey = id => String(id).replace(/[^A-Za-z0-9-]/g, char => `_${ch
 // SVG covers the card area only, so no connector ever crosses a band title. Vertical values are CSS pixels and must match
 // dashboard.css; horizontal values are fractions of the card area width. Between two bands is a gutter of connector lanes,
 // one lane per connector, so connectors never share a line: `gutterOf(lanes)` px high, lanes `lane` px apart.
-export const GEOMETRY = Object.freeze({ columns: 5, top: 12, label: 184, padTop: 14, cardH: 96, rowGap: 24, padBottom: 14, lane: 14, gutterMin: 30, maxLanes: 10, left: 0, right: 0.95, offset: 0.003 });
+export const GEOMETRY = Object.freeze({ columns: 5, top: 12, label: 184, padTop: 14, cardH: 96, rowGap: 24, padBottom: 14, lane: 14, gutterMin: 30, maxLanes: 24, left: 0, right: 0.95, offset: 0.003 });
 export const gutterOf = lanes => Math.max(GEOMETRY.gutterMin, 16 + GEOMETRY.lane * Math.min(lanes, GEOMETRY.maxLanes));
 // ponytail: CSS highlight rules exist for card indexes 0..119 (dashboard.css); cards past that render without path highlighting.
 export const HIGHLIGHT_LIMIT = 120;
@@ -274,14 +275,18 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     const reversed = from.bandIndex > to.bandIndex;
     const [upper, lower] = reversed ? [to, from] : [from, to];
     const key = `${from.index}>${to.index}`;
-    const item = merged.get(key) ?? { from: from.index, to: to.index, upper: upper.index, lower: lower.index, reversed, kind: edge.kind, status: statusOf(edge.status), labels: [], members: [], active: false };
+    const item = merged.get(key) ?? { from: from.index, to: to.index, upper: upper.index, lower: lower.index, reversed, kind: edge.kind, status: statusOf(edge.status), labels: [], members: [], active: false, off: true };
     if (edge.label && !item.labels.includes(String(edge.label))) item.labels.push(String(edge.label));
+    // A card pair is switched off only when every connection between them is; one live connection draws it.
+    if (statusOf(edge.status) !== 'disabled') { if (item.off) item.status = statusOf(edge.status); item.off = false; }
     if (BAD.has(statusOf(edge.status))) item.status = statusOf(edge.status);
     item.members.push({ from: String(edge.from), to: String(edge.to), kind: edge.kind, status: statusOf(edge.status), label: edge.label ?? '' });
     item.active ||= Boolean(edge.active);
     merged.set(key, item);
   }
-  const display = [...merged.values()].map((edge, index) => ({ ...edge, index }));
+  // Switched-off connections are not drawn: the card lists them ("Switched off: would connect to …") and the drawer names each.
+  const display = [...merged.values()].filter(edge => !edge.off).map((edge, index) => ({ ...edge, index }));
+  const off = [...merged.values()].filter(edge => edge.off);
   const gutters = planRoutes(display, cards, G);
   let y = G.top;
   for (const [index, band] of bands.entries()) {
@@ -294,19 +299,15 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
   const tail = gutters[bands.length - 1].lanes;
   const height = y + G.top;
   const routed = placeLabels(display.map(edge => ({ ...edge, ...drawRoute(edge, cards, gutters, G) })));
-  // Upstream and downstream reach per card, for the CSS path highlight.
+  // Direct connections per card, for the CSS highlight: only the cards a card itself talks to or is called by. A chain is
+  // not highlighted, because the organization store is a hub: following it would light up nearly every card.
   const forward = new Map(cards.map(card => [card.index, []])), backward = new Map(cards.map(card => [card.index, []]));
   for (const edge of routed) { forward.get(edge.from).push(edge); backward.get(edge.to).push(edge); }
-  const reach = (start, next, end) => {
-    const found = new Set([start]), path = new Set(), queue = [start];
-    while (queue.length) for (const edge of next.get(queue.shift())) { path.add(edge.index); if (!found.has(edge[end])) { found.add(edge[end]); queue.push(edge[end]); } }
-    return { cards: found, edges: path };
-  };
   for (const card of cards) {
-    const down = reach(card.index, forward, 'to'), up = reach(card.index, backward, 'from');
-    card.related = [...new Set([...down.cards, ...up.cards])].filter(index => index !== card.index);
-    card.pathEdges = [...new Set([...down.edges, ...up.edges])];
     card.upstream = backward.get(card.index); card.downstream = forward.get(card.index);
+    card.offUpstream = off.filter(edge => edge.to === card.index); card.offDownstream = off.filter(edge => edge.from === card.index);
+    card.related = [...new Set([...card.downstream.map(edge => edge.to), ...card.upstream.map(edge => edge.from)])].filter(index => index !== card.index);
+    card.pathEdges = [...card.downstream, ...card.upstream].map(edge => edge.index);
   }
   return { columns: G.columns, geometry: G, height, tail, bands, cards, edges: routed, nodes: placed };
 }
@@ -325,7 +326,9 @@ function planX(card, side, source, straight, G) {
   if (straight) return card.cx;
   const k = source ? 1 : 2.2;
   if (side === 'exit' ? card.below : card.row > 0) return side === 'exit' ? card.x + k * G.offset : card.x + card.w - k * G.offset;
-  return card.cx + (source ? -G.offset : G.offset);
+  // A card's top attachments sit farther from its centre than its bottom ones, so a line rising into a card and a line
+  // dropping into the card below it never run down the same vertical.
+  return card.cx + (side === 'exit' ? 1 : 2.6) * (source ? -G.offset : G.offset);
 }
 function planRoutes(edges, cards, G) {
   const gutters = BANDS.map(() => ({ spans: [], lanes: 0, y: 0 }));
@@ -337,7 +340,9 @@ function planRoutes(edges, cards, G) {
       if (a.row === b.row && Math.abs(a.col - b.col) === 1) { edge.plan = { type: 'side' }; continue; }
       if (a.col === b.col && Math.abs(a.row - b.row) === 1) { edge.plan = { type: 'stack' }; continue; }
       // Inside one band, otherwise: down from the source into the gutter below the band, along a lane, up into the target.
-      const exitX = planX(a, 'exit', true, false, G), enterX = b.below ? b.x + b.w - 2.2 * G.offset : b.cx + G.offset;
+      // A loop climbs into its target from the gutter below; beside a card with another under it, it keeps clear of the
+      // entry the card below uses from above (x + w - 2.2 offsets).
+      const exitX = planX(a, 'exit', true, false, G), enterX = b.below ? b.x + b.w - 3.4 * G.offset : b.cx + G.offset;
       edge.plan = { type: 'loop', exitX, enterX, gutter: a.bandIndex };
       gutters[a.bandIndex].spans.push({ edge, key: 'lane', from: Math.min(exitX, enterX), to: Math.max(exitX, enterX) });
       continue;
@@ -357,14 +362,18 @@ function planRoutes(edges, cards, G) {
   // is free it runs down the right edge, the longest outermost.
   const cellW = (G.right - G.left) / G.columns, used = new Map(), right = [];
   const sides = new Set(edges.filter(edge => edge.plan?.type === 'side').map(edge => `${cards[edge.from].bandIndex}:${Math.max(cards[edge.from].col, cards[edge.to].col)}`));
-  const fits = (k, [top, bottom]) => !(used.get(k) ?? []).some(([a, b]) => top <= b && a <= bottom)
+  // A gap holds up to three trunks side by side: its centre, then just left and right of it (well inside the card margins).
+  const SLOTS = [0, -1, 1], slotWidth = 0.0028;
+  const fits = (k, slot, [top, bottom]) => !(used.get(`${k}:${slot}`) ?? []).some(([a, b]) => top <= b && a <= bottom)
     && !Array.from({ length: bottom - top }, (_, index) => top + 1 + index).some(band => sides.has(`${band}:${k}`));
   for (const edge of trunks.sort((a, b) => (a.plan.enterGutter - a.plan.exitGutter) - (b.plan.enterGutter - b.plan.exitGutter) || a.index - b.index)) {
     const range = [edge.plan.exitGutter, edge.plan.enterGutter], mid = (edge.plan.exitX + edge.plan.enterX) / 2;
-    const k = Array.from({ length: G.columns }, (_, index) => index).sort((a, b) => Math.abs(a * cellW - mid) - Math.abs(b * cellW - mid)).find(index => fits(index, range));
-    if (k === undefined) { right.push(edge); continue; }
-    used.set(k, [...(used.get(k) ?? []), range]);
-    edge.plan.trunkX = G.left + k * cellW;
+    const gaps = Array.from({ length: G.columns }, (_, index) => index).sort((a, b) => Math.abs(a * cellW - mid) - Math.abs(b * cellW - mid));
+    const place = SLOTS.flatMap(slot => gaps.map(k => [k, slot])).find(([k, slot]) => fits(k, slot, range));
+    if (!place) { right.push(edge); continue; }
+    const [k, slot] = place;
+    used.set(`${k}:${slot}`, [...(used.get(`${k}:${slot}`) ?? []), range]);
+    edge.plan.trunkX = G.left + k * cellW + slot * slotWidth;
   }
   const step = Math.min(0.007, (1 - G.right - 0.012) / Math.max(1, right.length));
   right.sort((a, b) => b.plan.exitGutter - a.plan.exitGutter || a.plan.enterGutter - b.plan.enterGutter || a.plan.exitX - b.plan.exitX)
@@ -373,13 +382,27 @@ function planRoutes(edges, cards, G) {
     gutters[edge.plan.exitGutter].spans.push({ edge, key: 'exitLane', from: Math.min(edge.plan.exitX, edge.plan.trunkX), to: Math.max(edge.plan.exitX, edge.plan.trunkX) });
     gutters[edge.plan.enterGutter].spans.push({ edge, key: 'enterLane', from: Math.min(edge.plan.enterX, edge.plan.trunkX), to: Math.max(edge.plan.enterX, edge.plan.trunkX) });
   }
+  // Connections that meet the same card at the same gutter, in the same direction, share one lane: a bus that leaves the
+  // card once and drops into each target (the Web API into every organization group). They share a card, so sharing the
+  // line never makes two unrelated connectors look like one.
+  const anchor = span => {
+    const { edge } = span, plan = edge.plan;
+    const card = span.key === 'enterLane' ? edge.lower : plan.type === 'loop' ? edge.from : edge.upper;
+    return `${span.key === 'enterLane' ? 'enter' : 'exit'}:${card}:${plan.type === 'loop' ? 'loop' : edge.reversed}`;
+  };
   for (const gutter of gutters) {
+    const buses = new Map();
+    for (const span of gutter.spans) {
+      const bus = buses.get(anchor(span)) ?? { from: span.from, to: span.to, spans: [] };
+      bus.from = Math.min(bus.from, span.from); bus.to = Math.max(bus.to, span.to); bus.spans.push(span);
+      buses.set(anchor(span), bus);
+    }
     const ends = [];
-    for (const span of gutter.spans.sort((a, b) => a.from - b.from || a.to - b.to)) {
-      let lane = ends.findIndex(end => end < span.from - 0.012);
+    for (const bus of [...buses.values()].sort((a, b) => a.from - b.from || a.to - b.to)) {
+      let lane = ends.findIndex(end => end < bus.from - 0.012);
       if (lane < 0) { lane = ends.length; ends.push(0); }
-      ends[lane] = span.to;
-      span.edge.plan[span.key] = lane;
+      ends[lane] = bus.to;
+      for (const span of bus.spans) span.edge.plan[span.key] = lane;
     }
     gutter.lanes = ends.length;
   }
@@ -390,12 +413,19 @@ const laneY = (gutter, lane, G) => gutter.y + 15 + lane * (gutter.lanes > G.maxL
 // Points from a card's bottom down to a lane below its band, and (reversed) from that lane up into a card's bottom; and from
 // a lane above a band down into a card's top. Through a row gap, a source leaves left of the card centre, a target right of it.
 const stub = (card, source, G) => card.cx + (source ? -G.offset : G.offset);
-const down = (card, x, y, G, source = true) => (card.below
-  ? [[stub(card, source, G), card.y + card.h], [stub(card, source, G), card.y + card.h + G.rowGap / 2], [x, card.y + card.h + G.rowGap / 2], [x, y]]
-  : [[x, card.y + card.h], [x, y]]);
-const into = (card, x, y, G, source = false) => (card.row > 0
-  ? [[x, y], [x, card.y - G.rowGap / 2], [stub(card, source, G), card.y - G.rowGap / 2], [stub(card, source, G), card.y]]
-  : [[x, y], [x, card.y]]);
+// A row gap carries four directions on lines of their own: leaving and arriving at the bottom of the card above, arriving
+// and leaving at the top of the card below.
+const rowLine = (y, place) => y + { bottomSource: -4.5, bottomTarget: -1.5, topTarget: 1.5, topSource: 4.5 }[place];
+const down = (card, x, y, G, source = true) => {
+  if (!card.below) return [[x, card.y + card.h], [x, y]];
+  const row = rowLine(card.y + card.h + G.rowGap / 2, source ? 'bottomSource' : 'bottomTarget');
+  return [[stub(card, source, G), card.y + card.h], [stub(card, source, G), row], [x, row], [x, y]];
+};
+const into = (card, x, y, G, source = false) => {
+  if (card.row === 0) return [[x, y], [x, card.y]];
+  const row = rowLine(card.y - G.rowGap / 2, source ? 'topSource' : 'topTarget');
+  return [[x, y], [x, row], [stub(card, source, G), row], [stub(card, source, G), card.y]];
+};
 function drawRoute(edge, cards, gutters, G) {
   const plan = edge.plan, upper = cards[edge.upper], lower = cards[edge.lower], from = cards[edge.from], to = cards[edge.to];
   let points, lane = null, arrow = null;
@@ -427,7 +457,7 @@ function drawRoute(edge, cards, gutters, G) {
   const segments = clean.slice(1).map((point, index) => [clean[index], point]);
   // The label sits just above the connector's longest run along a lane; a connector inside one row or column has none.
   const runs = segments.filter(([a, b]) => a[1] === b[1] && lane != null && Math.abs(a[1] - lane) < 1e-6).sort((a, b) => Math.abs(b[1][0] - b[0][0]) - Math.abs(a[1][0] - a[0][0]));
-  const text = edge.labels.join(', ') || EDGE_KINDS[kindOf(edge.kind)];
+  const text = mapLabel(edge);
   const labelAt = lane == null ? null : runs[0] && Math.abs(runs[0][1][0] - runs[0][0][0]) > 0.02 ? [(runs[0][0][0] + runs[0][1][0]) / 2, lane - 4]
     : [clean[0][0] + labelWidth(text) / 2 + 0.006, lane - 4];
   return { points: clean, segments, labelAt, arrowSegment: arrow };
@@ -436,7 +466,8 @@ function drawRoute(edge, cards, gutters, G) {
 // Label boxes never overlap: each label tries its lane point, then slides along the lane. Lanes are farther apart than a
 // label is high, so labels on different lanes never meet. Widths are estimated for the narrowest wired card area (696 px:
 // an 880 px map less the label column), so on wider maps the real gaps only grow.
-export const LABEL = Object.freeze({ canvas: 696, charWidth: 6.6, pad: 10, height: 13 });
+// The height covers the glyphs and their white halo, so labels on neighbouring lanes (14 px apart) slide apart instead of touching.
+export const LABEL = Object.freeze({ canvas: 696, charWidth: 6.6, pad: 10, height: 17 });
 const labelWidth = text => (text.length * LABEL.charWidth + LABEL.pad) / LABEL.canvas;
 function placeLabels(edges) {
   const boxes = [];
@@ -444,11 +475,12 @@ function placeLabels(edges) {
   const free = candidate => boxes.every(other => candidate.x2 <= other.x1 || other.x2 <= candidate.x1 || candidate.y2 <= other.y1 || other.y2 <= candidate.y1);
   const slides = [0, 0.06, -0.06, 0.12, -0.12, 0.18, -0.18, 0.24, -0.24];
   for (const edge of [...edges].filter(item => item.labelAt).sort((a, b) => a.labelAt[1] - b.labelAt[1] || a.labelAt[0] - b.labelAt[0])) {
-    const text = edge.labels.join(', ') || EDGE_KINDS[kindOf(edge.kind)];
+    const text = mapLabel(edge);
     const [x, y] = edge.labelAt;
     let chosen = null;
     for (const slide of slides) { const candidate = box(x + slide, y, text); if (free(candidate)) { chosen = [x + slide, y, candidate]; break; } }
-    chosen ??= [x, y, box(x, y, text)];
+    // No free place on a crowded lane (a bus): the connection keeps its name in its title, the card and the drawer instead.
+    if (!chosen) { edge.labelAt = null; edge.labelBox = null; continue; }
     boxes.push(chosen[2]);
     edge.labelAt = [chosen[0], chosen[1]];
     edge.labelBox = chosen[2];
@@ -492,8 +524,17 @@ const tip = (label, text) => `<span class="ui-info"><button type="button" class=
 const levelText = level => (textOf(level) ? String(level) : null);
 
 const edgeLabel = edge => edge.labels.join(', ') || EDGE_KINDS[kindOf(edge.kind)];
+// On the map a connector names its first messages only (+N for the rest); the full list is in its title and the drawer.
+function mapLabel(edge) {
+  const labels = edge.labels;
+  if (!labels.length) return EDGE_KINDS[kindOf(edge.kind)];
+  let text = labels[0], shown = 1;
+  while (shown < labels.length && `${text}, ${labels[shown]}`.length <= 28) text += `, ${labels[shown++]}`;
+  if (text.length > 30) text = `${text.slice(0, 29)}…`;
+  return shown < labels.length ? `${text} +${labels.length - shown}` : text;
+}
 const ownersOf = (edge, cards) => cards.filter(card => card.index < HIGHLIGHT_LIMIT && card.pathEdges.includes(edge.index)).map(card => ` dm-p${card.index}`).join('');
-const wireLabel = (edge, cards) => !edge.labelAt ? '' : `<text class="dm-wire-label${ownersOf(edge, cards)}" x="${pct(edge.labelAt[0])}" y="${edge.labelAt[1]}" text-anchor="middle">${e(edgeLabel(edge))}</text>`;
+const wireLabel = (edge, cards) => !edge.labelAt ? '' : `<text class="dm-wire-label${ownersOf(edge, cards)}" x="${pct(edge.labelAt[0])}" y="${edge.labelAt[1]}" text-anchor="middle">${e(mapLabel(edge))}</text>`;
 function wire(edge, cards, planned) {
   const kind = kindOf(edge.kind), from = cards[edge.from], to = cards[edge.to];
   const lines = edge.segments.map(([a, b], index) => {
@@ -511,11 +552,15 @@ function wire(edge, cards, planned) {
 }
 
 const cardName = card => (card.type === 'group' ? GROUPS[card.group].title : card.node.product.name);
-function connectionsText(card, layout) {
-  const names = (list, end) => [...new Set(list.map(edge => `${cardName(layout.cards[edge[end]])}${edge.labels.length ? ` (${edge.labels.join(', ')})` : ''}`))];
+// The hover card lists the cards it connects to, one line per direction; what each connection carries is on the wire
+// labels and in the drawer, so the card stays short. Read in full by screen readers.
+function connectionsHtml(card, layout) {
+  const names = (list, end) => [...new Set(list.map(edge => cardName(layout.cards[edge[end]])))].map(e).join(', ');
   const from = names(card.upstream, 'from'), to = names(card.downstream, 'to');
-  const parts = [from.length && `From ${from.join(', ')}`, to.length && `To ${to.join(', ')}`].filter(Boolean);
-  return parts.length ? `${parts.join('. ')}.` : 'No connections.';
+  const off = [names(card.offUpstream ?? [], 'from') && `from ${names(card.offUpstream, 'from')}`, names(card.offDownstream ?? [], 'to') && `to ${names(card.offDownstream, 'to')}`].filter(Boolean).join(' and ');
+  const lines = [from && `<span class="dm-links-line"><b>From</b> ${from}.</span>`, to && `<span class="dm-links-line"><b>To</b> ${to}.</span>`,
+    off && `<span class="dm-links-line"><b>Switched off</b> would connect ${off}.</span>`].filter(Boolean);
+  return lines.length ? lines.join(' ') : 'No connections.';
 }
 const highlightClasses = card => `${card.index < HIGHLIGHT_LIMIT ? ` dm-k${card.index}` : ''}${(card.related ?? []).filter(index => index < HIGHLIGHT_LIMIT).map(index => ` dm-p${index}`).join('')}`;
 
@@ -524,11 +569,11 @@ function nodeCard(card, layout, { id, icons, planned }) {
   const level = levelText(node.level), facts = factsOf(node);
   const factLine = [level, ...facts.slice(0, level ? 1 : 2)].filter(Boolean).join(' · ') || (planned ? 'from configuration' : ' ');
   return `<div class="dm-card dm-node is-${status}${highlightClasses(card)}${card.col >= layout.columns - 2 ? ' dm-end' : ''}" role="button" tabindex="0" data-node="${e(node.id)}" id="${e(id)}-node-${e(nodeKey(node.id))}"`
-    + ` aria-label="${e(`${product.name}: ${statusText(status).toLowerCase()}`)}" title="${e(node.id)}">`
+    + ` aria-label="${e(`${product.name}: ${statusText(status).toLowerCase()}`)}">`
     + `<span class="dm-card-head">${glyph(icons, product.icon, status === 'disabled' ? 'off' : product.family, product.name)}`
     + `<span class="dm-status is-${status}"><span class="dm-dot" aria-hidden="true"></span>${e(statusText(status))}</span></span>`
     + `<span class="dm-name">${e(product.name)}</span><span class="dm-facts">${e(factLine)}</span>`
-    + `<span class="dm-links">${e(connectionsText(card, layout))}</span></div>`;
+    + `<span class="dm-links">${connectionsHtml(card, layout)}</span></div>`;
 }
 
 const LEVEL_ORDER = ['behaviour', 'native-qualified', 'contract', 'inventory'];
@@ -573,7 +618,7 @@ function groupCard(card, layout, { id, icons, planned }) {
     + `<span class="dm-card-head"><span class="dm-ringed dm-fam-${e(group.family)}">${ring(groupSegments(nodes), { size: 30, stroke: 3 })}${iconFor(icons, group.icon)}</span>`
     + `<span class="dm-status is-${health.tone}"><span class="dm-dot" aria-hidden="true"></span>${e(health.short)}</span></span>`
     + `<span class="dm-name">${e(group.title)}</span>`
-    + `<span class="dm-facts">${e(fact)}</span><span class="dm-links">${e(connectionsText(card, layout))}</span><span class="dm-chevron" aria-hidden="true"></span></summary>`
+    + `<span class="dm-facts">${e(fact)}</span><span class="dm-links">${connectionsHtml(card, layout)}</span><span class="dm-chevron" aria-hidden="true"></span></summary>`
     + `<div class="dm-pop" role="group" aria-label="${e(`${group.title} modules`)}"><p class="dm-pop-head">${e(group.title)} · ${e(plural(nodes.length, 'module'))}</p><ul class="dm-members">${members}</ul></div></details>`;
 }
 
@@ -797,7 +842,7 @@ export function renderDashboard(payload = {}, { mode = 'live', docs, previousAct
   const guide = intro && show.guide ? kit.guide({ key: 'dashboard', intro: intro.intro, steps: intro.steps ?? [], example: intro.example, docs: intro.doc ? [docOf(intro.doc)] : [] }) : '';
   const head = hero(payload, { planned, starting, preflight, now, icons, compact });
   const kpis = planned || starting || !show.kpis ? '' : kpiTiles(activity, series, previous, icons);
-  const mapInfo = kit.info?.({ label: 'About the system map', text: 'Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to trace what it depends on and what depends on it; select it (click, Enter or Space) for its facts and the view that manages it.' }) ?? '';
+  const mapInfo = kit.info?.({ label: 'About the system map', text: 'Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to light up the cards it connects to directly; select it (click, Enter or Space) for its facts, every connection in words and the view that manages it.' }) ?? '';
   const layout = layoutTopology(nodes, edges);
   const map = `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${mapInfo}</div>`
     + `${renderTopology(layout, { mode: planned ? 'planned' : 'live', icons })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section>`;

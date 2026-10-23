@@ -183,6 +183,73 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
   assert.equal((await json(await fetch(`${sim.url}/_sim/api/status`))).docs.simAdministration.path, 'mirage/docs/sim-administration.md');
 });
 
+test('Power Pages dashboard connects code components to the pages that host them and the records they read', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-pcf-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
+  const control = 'solution/Controls/x_Invented.Editor';
+  const files = { ...Object.fromEntries(Object.entries(portalFiles).map(([name, body]) => [`portal/${name}`, body])),
+    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedPcf</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    [`${control}/ControlManifest.xml`]: '<manifest><control namespace="Invented" constructor="Editor" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+    [`${control}/ControlManifest.xml.data.xml`]: '<CustomControl><Name>x_Invented.Editor</Name></CustomControl>',
+    [`${control}/bundle.js`]: 'window.ComponentFramework.registerControl("Invented.Editor",class{});' };
+  for (const [name, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+    await fs.writeFile(path.join(dir, name), body);
+  }
+  const sim = await createSimulator({ sourceDir: path.join(dir, 'portal'), solutionRoots: [path.join(dir, 'solution')], stateFile: path.join(dir, 'state.json'), port: 0, watch: false });
+  ownedFixture(t).add(() => sim.close());
+  const body = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
+  const pairs = body.edges.map(edge => `${edge.from}>${edge.to}`);
+  assert.equal(body.nodes.find(node => node.id === 'app:pcf').status, 'ready');
+  for (const pair of ['app:pcf>host:portal', 'org:store>org:security']) assert.ok(pairs.includes(pair), pair);
+  // Code components call /_api of their page, or Xrm.WebApi of a model-driven form only with trusted extensions.
+  const edges = new Map(body.edges.map(edge => [`${edge.from}>${edge.to}`, edge]));
+  assert.equal(edges.get('app:pcf>host:portal').status, 'ready');
+  assert.equal(edges.get('app:pcf>host:model-driven').status, 'disabled');
+  assert.ok(!pairs.includes('host:portal>app:pcf') && !pairs.includes('app:pcf>org:store'), 'code components do not reach records past the portal');
+  // Visitor sign-in: the browser and the portal talk to the provider; without an external provider it is switched off.
+  for (const pair of ['client:browser>host:identity-provider', 'host:portal>host:identity-provider', 'host:identity-provider>org:store']) assert.equal(edges.get(pair)?.status, 'disabled', pair);
+  for (const pair of ['host:portal>org:flows', 'host:portal>provider:storage-route:annotations', 'client:staff>host:admin']) assert.ok(edges.has(pair), pair);
+  assert.equal(edges.get('host:portal>org:security').status, 'disabled', 'web roles map to security roles only with enhanced authorization');
+  // The map script is never cached, so a restarted runtime draws with its own version.
+  assert.equal((await fetch(`${sim.url}/__sim/dashboard-map.mjs`)).headers.get('cache-control'), 'no-store');
+});
+
+test('standalone dashboard connects each part to what really calls it, and draws the connections of a switched-off part switched off', async t => {
+  const sim = await standalone(t);
+  const body = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
+  const byPair = new Map(body.edges.map(edge => [`${edge.from}>${edge.to}`, edge])), nodes = new Map(body.nodes.map(node => [node.id, node]));
+  // Web API messages are dispatched by the Web API host; save hooks run inside the store; background work goes through jobs.
+  for (const pair of ['host:dataverse-api>org:dataverse-solutions', 'host:dataverse-api>org:dataverse-customapi', 'org:store>org:dataverse-formula',
+    'org:dataverse-formula>provider:powerfx', 'org:store>org:workflows', 'org:workflows>org:jobs', 'org:jobs>org:flows', 'org:dataverse-async>org:jobs',
+    'provider:connectors>org:store', 'host:admin>org:store', 'host:setup>host:admin', 'host:model-driven>org:store', 'org:plugins>org:store'])
+    assert.ok(byPair.has(pair), pair);
+  assert.equal(byPair.get('host:model-driven>org:store').label, 'records and Web API messages, in the app', 'the model-driven shell does not use the Web API listener');
+  // Power Fx and storage are reached from the modules that use them, never from the store as a hub.
+  for (const pair of ['org:store>provider:powerfx', 'org:store>provider:storage']) assert.ok(!byPair.has(pair), pair);
+  // A part that is switched off keeps its connections, drawn switched off.
+  assert.equal(nodes.get('app:code').status, 'disabled');
+  assert.equal(byPair.get('app:code>org:store')?.status, 'disabled');
+  for (const edge of body.edges) if (nodes.get(edge.from)?.status === 'disabled' || nodes.get(edge.to)?.status === 'disabled') assert.equal(edge.status, 'disabled', `${edge.from}>${edge.to}`);
+  for (const edge of body.edges) assert.ok(edge.label, `${edge.from}>${edge.to} is named`);
+  // A part with no runtime connection says why.
+  assert.match(nodes.get('org:dataverse-addon-handlers')?.detail.note ?? '', /startup/);
+});
+
+test('with the Web API listener off, Web API messages still run from the model-driven in-app Web API', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-md-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
+  await fs.writeFile(path.join(root, 'solution', 'Other', 'Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>InventedMd</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>');
+  const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false, simulation: { level: 'dry-run' } });
+  ownedFixture(t).add(() => sim.close());
+  const body = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
+  const edges = new Map(body.edges.map(edge => [`${edge.from}>${edge.to}`, edge]));
+  assert.equal(body.nodes.find(node => node.id === 'host:dataverse-api').status, 'disabled');
+  assert.equal(edges.get('host:model-driven>org:dataverse-solutions')?.status, 'ready');
+  assert.ok(!edges.has('host:dataverse-api>org:dataverse-solutions'), 'messages are not drawn from the switched-off listener');
+});
+
 test('the dashboard route answers 503 starting before its host exists', async t => {
   const route = createDashboardRoutes({ host: () => null });
   const server = http.createServer(async (req, res) => { if (!await route(req, res, new URL(req.url, 'http://127.0.0.1'))) { res.writeHead(404); res.end(); } });

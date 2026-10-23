@@ -237,9 +237,9 @@ test(
     });
     await page.goto(`${origin}/__sim/`);
     await page
-      .getByRole("heading", { name: "Your local portal workspace" })
+      .getByRole("heading", { name: "Overview", exact: true })
       .waitFor();
-    await page.getByText("Discovered pages", { exact: true }).waitFor();
+    await page.getByText("Portal pages", { exact: true }).waitFor();
     const evidenceDir = process.env.PAQVILO_MIRAGE_ADMIN_EVIDENCE;
     if (evidenceDir) {
       fs.mkdirSync(evidenceDir, { recursive: true });
@@ -818,7 +818,7 @@ test(
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(simulator.adminUrl + "#overview");
     await page
-      .getByRole("heading", { name: "Your local portal workspace" })
+      .getByRole("heading", { name: "Overview", exact: true })
       .waitFor();
     await page
       .getByRole("link", { name: "Plugins & presets", exact: true })

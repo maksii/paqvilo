@@ -201,12 +201,19 @@ nav {
   padding: 0 36px;
   gap: 15px;
 }
+/* The breadcrumb gives way to the top bar buttons: it shrinks and clips rather than pushing them off the page. */
 .breadcrumb {
   font-size: 12px;
   color: #8591a3;
   display: flex;
   gap: 14px;
   align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.top-actions {
+  flex: none;
 }
 .breadcrumb strong {
   color: #40516a;

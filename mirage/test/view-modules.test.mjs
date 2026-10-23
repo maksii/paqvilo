@@ -78,7 +78,9 @@ test('services view loads its routes and renders every panel collapsed except st
   assert.match(html, /fx_ApiSecret/);
   assert.doesNotMatch(html, /fx_Plain/);
   assert.match(html, /PCF controls \(Solution inventory\)<\/dt><dd>2/);
-  assert.match(html, /<h1>Providers &amp; services<\/h1>/);
+  // The heading is the sidebar label and takes focus on landing; the eyebrow names the sidebar group the host passes.
+  assert.match(html, /<h1 id="view-title" tabindex="-1">Providers &amp; services<\/h1>/);
+  assert.match(services.render({ ...ctx, group: () => 'Platform' }), /<span class="eyebrow">PLATFORM<\/span>/);
 });
 
 test('services view states honest empty and unconfigured states', async () => {
@@ -89,7 +91,8 @@ test('services view states honest empty and unconfigured states', async () => {
   safeMarkup(html);
   assert.equal(openCount(html), 1);
   assert.match(html, /No message bus is configured\. Declare one under providers\.messaging in \/_setup\/\./);
-  assert.match(html, /id="help-services-messaging"[^>]*>[^<]*<a class="ui-doc" href="https:\/\/git\.example\.test\/invented\/paqvilo\/blob\/v0\.9\.4\/mirage\/docs\/messaging-and-outbox\.md#local-message-bus"/);
+  // Panel help: one plain lead sentence; the rest and the doc link sit behind an (i) tooltip named after the panel.
+  assert.match(html, /id="help-services-messaging">The local message bus: [^<]*?\.<span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Messaging" aria-describedby="help-services-messaging-more">i<\/button><span class="ui-info-pop" role="tooltip" id="help-services-messaging-more"><span class="ui-info-text">Service endpoints[^<]*<\/span><span class="ui-info-docs"><a class="ui-doc" href="https:\/\/git\.example\.test\/invented\/paqvilo\/blob\/v0\.9\.4\/mirage\/docs\/messaging-and-outbox\.md#local-message-bus"/);
   assert.match(html, /No storage provider is described by this runtime/);
   assert.match(html, /No outbox is configured/);
   assert.match(html, /Flow waits could not be read: This runtime has no flow run store\./);
@@ -150,7 +153,10 @@ test('capabilities view renders report, missing, unsupported, inventory and scen
   safeMarkup(html);
   assertTables(html, ['cap-modules', 'cap-missing', 'cap-unsupported', 'cap-inventory', 'cap-result-missing', 'cap-result-satisfied', 'cap-scenarios']);
   assert.match(html, /<select id="cap-level" data-cap-level aria-describedby="cap-level-help">/);
-  assert.match(html, /<small class="ui-field-help" id="cap-level-help">Only capability records at this level/);
+  assert.match(html, /<small class="ui-field-help" id="cap-level-help">Only records at this level/);
+  // Columns whose values are jargon explain them behind an (i) in the header; Source inventory has its own help.
+  assert.match(html, /<th scope="col">Level<span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Level">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">inventory: listed from source only\./);
+  assert.match(html, /id="help-capabilities-inventory">Solution components Paqvilo reads but does not host/);
   for (const id of ['report', 'missing', 'unsupported', 'preflight']) assert.match(html, new RegExp(`id="help-capabilities-${id}"`));
   assert.match(html, /data-cap-scenario="fx-scenario"/);
   assert.match(html, /Scope: table:\* · strict\./);
@@ -186,13 +192,16 @@ test('packs view escapes names, shows matched status, provenance columns and exp
   assertNoElements(html, ['script']);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assertTables(html, ['packs-registered', 'packs-library']);
-  assert.match(html, /<th scope="col">Pack<\/th><th scope="col">Source<\/th>/);
+  assert.match(html, /<th scope="col">Pack<\/th><th scope="col">Source<span class="ui-info">/);
   assert.match(html, /not matched/);
-  assert.match(html, /Add or change a pack/);
-  assert.match(html, /href="\/_setup\/#packs">Open project setup/);
+  assert.match(html, /<span class="ui-section-title">Add or change a pack<\/span>/);
+  assert.match(html, /href="\/_setup\/#packs">Project setup: Data packs →/);
   for (const id of ['registered', 'presets', 'lifecycle']) assert.match(html, new RegExp(`id="help-packs-${id}"`));
   const button = { dataset: { packDetails: 'fx-pack' } };
-  assert.equal(packs.handle(ctx, { type: 'click', target: { closest: selector => (selector === '[data-pack-details]' ? button : null) } }), true);
+  const revealed = [];
+  assert.equal(packs.handle({ ...ctx, reveal: selector => revealed.push(selector) }, { type: 'click', target: { closest: selector => (selector === '[data-pack-details]' ? button : null) } }), true);
+  // The details open below the table, so the app scrolls to them.
+  assert.deepEqual(revealed, ['[data-ui-section="packs:detail:fx-pack"]']);
   html = packs.render(ctx);
   assertTables(html, ['packs-fx-pack-exports', 'packs-fx-pack-presets', 'packs-fx-pack-data', 'packs-fx-pack-diagnostics']);
   assert.match(html, /PACK_EXPORT_UNKNOWN/);

@@ -54,7 +54,7 @@ export function table({ key, columns = [], items, result, emptyText = 'Nothing t
   if (empty) return `${tools}<p class="ui-empty" data-table-empty="${e(key)}">${e(result?.search ? `No results match “${result.search}”.` : emptyText)}</p>`;
   const cls = column => (column.className ? ` class="${e(column.className)}"` : '');
   return `${tools}<div class="ui-table-wrap"><table class="ui-table" data-table="${e(key)}">${caption ? `<caption class="ui-sr-only">${e(caption)}</caption>` : ''}`
-    + `<thead><tr>${columns.map(column => `<th scope="col"${cls(column)}>${e(column.label)}</th>`).join('')}</tr></thead>`
+    + `<thead><tr>${columns.map(column => `<th scope="col"${cls(column)}>${e(column.label)}${column.info ? info({ label: `About ${column.label}`, text: column.info }) : ''}</th>`).join('')}</tr></thead>`
     + `<tbody>${rows.map(item => `<tr${attributes(rowAttrs?.(item))}>${columns.map(column => `<td${cls(column)}>${column.render(item) ?? ''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
@@ -85,14 +85,28 @@ export function info({ id, label = 'More information', text, steps = [], example
     + `${example ? `<code class="ui-info-example">${e(example)}</code>` : ''}${links.length ? `<span class="ui-info-docs">${links.join(' · ')}</span>` : ''}</span></span>`;
 }
 
+/** `[first sentence, the rest]` of a help text: plain words first, details after. */
+export const splitLead = text => { const [lead = '', ...rest] = String(text ?? '').split(/(?<=[.!?])\s+(?=[A-Z0-9“"(/])/); return [lead, rest.join(' ')]; };
+
+/**
+ * Compact help: the first sentence stays visible; the rest of the text, steps, example and doc link sit behind an (i)
+ * tooltip labelled `About <label>`. The tooltip carries `<id>-more` so a control can point at it.
+ */
+export function leadHelp({ id, label = 'this section', text, steps = [], example, doc } = {}) {
+  const [lead, rest] = splitLead(text);
+  const more = info({ id: id ? `${id}-more` : undefined, label: `About ${label}`, text: rest, steps, example, docs: doc?.path ? [doc] : [] });
+  return lead || more ? `<p class="ui-help"${id ? ` id="${e(id)}"` : ''}>${e(lead)}${more}</p>` : '';
+}
+
 /** Visible field help; give the control `aria-describedby="<id>-help"`. */
 export const fieldHelp = (id, text) => `<small class="ui-field-help" id="${e(id)}-help">${e(text)}</small>`;
 
-export function guide({ key, title, intro, steps = [], example, docs = [] }) {
+/** A view guide: `intro` stays visible; `details` (more text), steps, example and doc links sit under How this works. */
+export function guide({ key, title, intro, details, steps = [], example, docs = [] }) {
   const links = docs.map(docMarkup).filter(Boolean);
-  const more = steps.length || example || links.length
+  const more = details || steps.length || example || links.length
     ? `<details class="ui-guide-more" data-ui-section="guide:${e(key)}"><summary>How this works</summary>`
-      + `${steps.length ? `<ol>${steps.map(step => `<li>${e(step)}</li>`).join('')}</ol>` : ''}`
+      + `${details ? `<p class="ui-guide-details">${e(details)}</p>` : ''}${steps.length ? `<ol>${steps.map(step => `<li>${e(step)}</li>`).join('')}</ol>` : ''}`
       + `${example ? `<pre class="ui-example">${e(example)}</pre>` : ''}${links.length ? `<p class="ui-guide-docs">${links.join(' · ')}</p>` : ''}</details>`
     : '';
   return `<section class="ui-guide" data-ui-guide="${e(key)}">${title ? `<p class="ui-guide-title">${e(title)}</p>` : ''}<p class="ui-guide-intro">${e(intro)}</p>${more}</section>`;

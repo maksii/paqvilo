@@ -47,11 +47,16 @@ export function createDashboardRoutes({ host, extras = () => ({}), docs = {} }) 
     const shared = organizationHost.topology();
     const extra = (await extras()) ?? {};
     const clock = organizationHost.organization?.store?.clock ?? systemClock;
+    // An edge is kept only when both of its ends are on this runtime (the shared part names hosts' clients such as client:staff).
+    // A connection of a part that is switched off is drawn switched off too, so the map still shows what it would connect to.
+    const nodes = [...shared.nodes, ...(extra.nodes ?? [])], ids = new Set(nodes.map(node => String(node.id)));
+    const off = new Set(nodes.filter(node => node.status === 'disabled').map(node => String(node.id)));
     return send(res, 200, {
       generatedAt: new Date(clock.now()).toISOString(),
       runtime: { product: 'Mirage', ...shared.runtime, ...extra.runtime },
-      nodes: [...shared.nodes, ...(extra.nodes ?? [])],
-      edges: [...shared.edges, ...(extra.edges ?? [])],
+      nodes,
+      edges: [...shared.edges, ...(extra.edges ?? [])].filter(edge => ids.has(String(edge.from)) && ids.has(String(edge.to)))
+        .map(edge => (off.has(String(edge.from)) || off.has(String(edge.to)) ? { ...edge, status: 'disabled' } : edge)),
       activity: { ...shared.activity, ...extra.activity },
       configuration: { ...shared.configuration, ...extra.configuration, ports: { ...shared.configuration?.ports, ...extra.configuration?.ports } },
       docs,

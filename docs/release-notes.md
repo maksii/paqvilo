@@ -83,13 +83,36 @@ and loopback fixtures; they do not certify complete Power Pages parity.
   can.
 - **Compact setup page:** a one-line status strip with the save target, the system map
   first, guidance behind (i) tooltips, up to four fields per row and preflight under
-  Start & verify. A setup page that `mirage dev` serves on its own port reads the
+  Start & check. A setup page that `mirage dev` serves on its own port reads the
   running preview through a read-only relay, so its map goes live too.
+- **All settings configures, the simulator manages:** stages and sections share plain names
+  (What to run, Exported files, Sample data, Live environments, Test people & sign-in, Outside
+  services, Web API access, Start & check). Runtime data is no longer repeated in setup: each
+  section links its simulator view once the preview runs. Exported files covers every folder type
+  (website exports, Solutions, canvas app folders, model-driven script folders, deployment
+  profiles with their files, code apps in project files) with folder and file pickers; several
+  website exports become several projects, each with its own local address, and Start & check
+  chooses the project to start. A sample data module registered by its path stays a path when a
+  form is saved (it was rewritten with the id `pack`, so the preview refused to start). A repaint
+  keeps the section you are reading in place, and the save notice no longer covers the page.
 - **System map layout:** band titles sit in a label column beside their cards, every
   connector has a lane of its own in the gap between layers (gaps grow with their lanes),
   connectors across several layers run down a free column gap, and neighbours in one layer
   join with a short arrow, so no connector crosses a title or a card or shares a line with
   another. The header names its facts in plain words with an (i) each.
+- **System map connections:** every connection on the map is a call the runtime makes,
+  traced to code. Save hooks hang off the organization store, Web API messages off the Web
+  API host, background work off background jobs; Power Fx, storage routes, the outbox and
+  secrets are reached from the modules that use them (no longer from the store as a hub, which
+  made Power Fx look connected to the website). The model-driven apps use their in-app Web
+  API, not the Web API listener. TDS, visitor sign-in, code components, the live portal
+  connection, persona runtimes, administration, setup, local services and Azurite and Service
+  Bus emulators are connected. A switched-off part lists the connections it would have on its
+  card instead of drawing them; hovering a card lights its direct connections only;
+  connections from one card share a bus lane, a column gap holds up to three trunks and no
+  connector crosses a card or shares a line with another. Custom APIs, work queues,
+  calendars and staff user settings sit in the right groups; "Identity & tokens" is now the
+  visitor sign-in provider and the live bridge is the live portal connection.
 - **Offline preflight presets:** `mirage preflight` applies the startup preset (`--preset`
   or the site's `mirage.preset`) as a fresh host does, so service endpoints a preset seeds
   resolve plug-in steps as on the running host.

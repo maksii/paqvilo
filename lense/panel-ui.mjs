@@ -181,7 +181,7 @@ export function panelUi(data) {
       .time { color: var(--muted); font-size: 11.5px; flex: none; font-variant-numeric: tabular-nums; }
 
       .empty { text-align: center; color: var(--muted); padding: 26px 20px; }
-      .empty b { display: block; color: var(--fg); margin-bottom: 4px; font-size: 14px; }
+      .empty > b:first-child { display: block; color: var(--fg); margin-bottom: 4px; font-size: 14px; }
 
       .dhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
       .dhead .t { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -682,7 +682,7 @@ export function panelUi(data) {
       lists += group('insync', `Recognised, same as ${d.env}`, insync.map(itemRow));
       if (!lists) {
         if (S.q || filter !== 'all') out += emptyState('Nothing matches', 'Clear the filter to see every override of this page.');
-        else if (d.online) out += emptyState('Online mode', 'Switch back to <b style="display:inline">Local</b> to lay your sources over the site.');
+        else if (d.online) out += emptyState('Online mode', 'Switch back to <b>Local</b> to lay your sources over the site.');
         else out += d.mirageMode
           ? emptyState('Mirage owns source rendering', 'Open Inspect to see this page’s templates, tables, permissions and sources, or Tweaks to change the persona.')
           : emptyState('Nothing on this page comes from local sources', d.scope === 'changed' ? 'Scope is <i>changed</i>: only files that differ from the git baseline override the site. Edit a file and save.' : 'No web file, script, template or snippet of the local sources was found in this page.');
@@ -762,7 +762,7 @@ export function panelUi(data) {
         out += `<div class="card"><div class="path">${esc(page.pageName ?? page.name ?? location.pathname)} <span class="dim">${esc(page.url ?? '')}</span></div>
           <div class="srcs"><span class="lbl2">Template</span><span class="dim">${esc(page.pageTemplateName ?? 'none')}</span><span class="lbl2">Publishing</span><span class="dim">${esc(page.publishingState?.name ?? 'not set')}${page.publishingState?.visible === false ? ' (not visible)' : ''}</span>${page.parent ? `<span class="lbl2">Parent</span><span class="dim">${esc(page.parent.name ?? page.parent.url)}</span>` : ''}</div>
           <div class="srcs"><span class="lbl2">${live ? 'Live access' : 'Current persona'}</span>${verdict || (live ? '<span class="dim">unknown</span>' : '')}<span class="dim">${esc(access.reason ?? access.code ?? '')}</span>${page.ref ? `<button class="src" data-act="open" data-rel="${esc(page.ref)}">Page source</button>` : ''}</div></div>`;
-      } else out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no exported page matches this address</span></div></div>`;
+      } else if (!report.modelDriven) out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no exported page matches this address</span></div></div>`;
       const keep = (...texts) => matches(...texts.map((text) => String(text ?? '')));
       const groups = [];
       const sourceRows = (report.pageSources ?? []).filter((item) => keep(item.name, item.ref));

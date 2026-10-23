@@ -137,7 +137,7 @@ reported as `CONFIG_KEY_PARSER_PENDING`. Version 1 project files report unknown 
 | `externalAssets` | catalogue, project, portal | Allow external assets in confined pages. |
 | `externalFrameOrigins` | catalogue, project, portal | Origins confined pages may frame. |
 | `observed` | catalogue, portal | Observed platform behaviour with its evidence (validated by observedConfig). |
-| `dataModel` | catalogue, portal | standard or enhanced when the source does not record it. |
+| `dataModel` | catalogue, portal | The Power Pages data model of the website export (standard or enhanced), only when the export does not record it. Unrelated to deployment profiles that share these names. |
 | `compat` | catalogue | Local compatibility adapters. |
 | `head` | catalogue | Local head stylesheets and scripts. |
 | `render` | catalogue | Liquid render limits. |

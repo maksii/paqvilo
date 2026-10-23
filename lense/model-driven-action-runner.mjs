@@ -5,20 +5,22 @@
 export function modelDrivenActionAvailability({ origin, actions = [] }) {
   const safe = callback => { try { return callback(); } catch { return undefined; } };
   const xrm = window.Xrm, form = safe(() => xrm?.Page), context = safe(() => xrm?.Utility?.getGlobalContext()), type = safe(() => form?.ui?.getFormType());
+  // A bounded client API (or a native getter) may throw for an unsupported member;
+  // that member is unavailable, never a failure of every other check.
   const checks = {
-    context: Boolean(context), form: Boolean(form?.data?.entity && form?.ui),
-    'saved-record': Boolean(form?.data?.entity?.getId && type !== 1),
-    metadata: Boolean(context?.getClientUrl && context?.getVersion && window.fetch),
-    'open-form': typeof xrm?.Navigation?.openForm === 'function', navigate: Boolean(context?.getClientUrl && xrm?.Navigation?.openUrl),
-    refresh: typeof form?.data?.refresh === 'function',
-    'save-events': Boolean(form?.data?.entity?.addOnSave && form?.data?.entity?.removeOnSave),
-    'side-panes': Boolean(xrm?.App?.sidePanes?.createPane && xrm?.Utility?.getPageContext),
-    'form-selector': Boolean(form?.ui?.formSelector?.getCurrentItem),
-    environment: Boolean(context?.organizationSettings?.bapEnvironmentId),
-    privileges: typeof context?.userSettings?.getSecurityRolePrivilegesInfo === 'function',
+    context: () => context, form: () => form?.data?.entity && form?.ui,
+    'saved-record': () => form?.data?.entity?.getId && type !== 1,
+    metadata: () => context?.getClientUrl && context?.getVersion && window.fetch,
+    'open-form': () => typeof xrm?.Navigation?.openForm === 'function', navigate: () => context?.getClientUrl && xrm?.Navigation?.openUrl,
+    refresh: () => typeof form?.data?.refresh === 'function',
+    'save-events': () => form?.data?.entity?.addOnSave && form?.data?.entity?.removeOnSave,
+    'side-panes': () => xrm?.App?.sidePanes?.createPane && xrm?.Utility?.getPageContext,
+    'form-selector': () => form?.ui?.formSelector?.getCurrentItem,
+    environment: () => context?.organizationSettings?.bapEnvironmentId,
+    privileges: () => typeof context?.userSettings?.getSecurityRolePrivilegesInfo === 'function',
   };
   return actions.map(action => {
-    const missing = action.requirements?.find(requirement => !checks[requirement]);
+    const missing = action.requirements?.find(requirement => !checks[requirement] || !safe(checks[requirement]));
     return { id: action.id, available: location.origin === origin && !missing, reason: location.origin !== origin ? 'The app left this Lense environment.' : missing ? `The current native page does not provide ${missing.replaceAll('-', ' ')} support.` : undefined };
   });
 }

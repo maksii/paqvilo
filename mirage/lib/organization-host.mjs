@@ -36,6 +36,7 @@ import { buildPreflightReport } from './capability-report.mjs';
 import { attachmentBody as storedAttachmentBody } from './dataverse-storage-routing.mjs';
 import { ATTACHMENT_COLUMNS } from './dataverse-files.mjs';
 import { guidKey } from './dataverse-values.mjs';
+import { organizationRecord } from './organization-context.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { packDirectory } from './preset-registry.mjs';
 import { DataError } from './data-error.mjs';
@@ -50,6 +51,7 @@ import { DataStore, emptyState } from './data.mjs';
 import { buildSourceGraph, canvasRequirementRows } from './source-graph.mjs';
 import { describeCanvasRuntime } from './canvas-runtime.mjs';
 import { hostnameOf, isLoopbackUrl } from './dataverse-webhooks.mjs';
+const originOf = text => { try { return text ? new URL(String(text)).origin : null; } catch { return null; } };
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { currentRequest } from './request-context.mjs';
@@ -880,6 +882,7 @@ function organizationTopology(input) {
   hostNodes(context);
   const org = orgNodes(context), providers = providerNodes(context);
   externalNodes(context);
+  moduleEdges(context);
   return {
     runtime: { kind: runtime?.kind ?? null, clock: context.clock === systemClock ? 'system' : 'fixed', storeRevision: store.revision },
     nodes, edges, configuration: topologyConfiguration(context), activity: topologyActivity(context, { ...org, ...providers }),
@@ -901,11 +904,19 @@ function hostNodes({ node, edge, organization, dataverse, managedIdentity }) {
     { port: dataverse.tdsPort ?? null, loginsAccepted: dataverse.tdsPort != null && tdsLogins }, { link: '#dataverse' });
   edge('client:api', 'host:dataverse-api', 'http', 'listening', 'Web API');
   if (dataverse.tdsPort != null) edge('client:api', 'host:tds', 'http', tdsLogins ? 'listening' : 'disabled', 'TDS');
+  if (dataverse.tdsPort != null) edge('host:tds', 'org:store', 'process', tdsLogins ? 'ready' : 'disabled', 'records as the caller');
   edge('host:dataverse-api', 'org:store', 'process', 'ready', 'records');
 }
 
+// Parts with no connection at runtime, and why (the map shows them unconnected on purpose).
+const STARTUP_ONLY = Object.freeze({ 'dataverse-bpf': 'Models business process flows; nothing calls it while the runtime runs yet.', 'dataverse-addon-handlers': 'Wires pack message handlers in at startup; nothing calls it while the runtime runs.',
+  'dataverse-plugin-registration-solution': 'Seeds plug-in registrations from the Solutions at startup and refresh; nothing calls it while the runtime runs.' });
+const UNCALLED_FIXTURES = Object.freeze({ aiBuilder: 'Registered, but nothing calls it: AI Builder messages are answered by pack handlers.',
+  copilot: 'Registered, but nothing calls it: Copilot Studio messages are answered by pack handlers.',
+  powerBi: 'Called only by the powerbi Liquid tag of a Power Pages site.' });
+
 /** Organization core: the store, the fixed pipeline nodes and every installed organization module. */
-function orgNodes({ node, edge, rows, count, store, clock, organization, registry, pluginSteps, operations }) {
+function orgNodes({ node, edge, nodes, rows, count, store, clock, organization, registry, pluginSteps, operations, dataverse }) {
   node('org:store', 'org', 'Organization store', organization ? 'ready' : 'declared', { revision: store.revision, tables: Object.keys(store.state?.tables ?? {}).length,
     clock: clock === systemClock ? 'system' : 'fixed' }, { link: '#capabilities' });
   const steps = pluginSteps.filter(item => item.kind === 'plugin-step');
@@ -929,16 +940,29 @@ function orgNodes({ node, edge, rows, count, store, clock, organization, registr
     { ...jobs, scheduler: scheduler && { manual: scheduler.manual, closed: scheduler.closed, executed: scheduler.executed, faults: scheduler.faults, failures: scheduler.failures },
       recentErrors: (store.committedJobErrors ?? []).slice(-5).map(({ kind, code }) => ({ kind, code })) }, { link: '#flows' });
   edge('org:store', 'org:plugins', 'process', 'ready', 'pipeline');
-  edge('org:plugins', 'org:jobs', 'process', 'ready', 'post-commit');
-  edge('org:jobs', 'org:flows', 'process', flows.length ? 'ready' : 'disabled', 'triggers');
+  edge('org:plugins', 'org:store', 'process', 'ready', 'SDK calls');
+  edge('org:plugins', 'org:jobs', 'process', 'ready', 'async steps');
+  edge('org:jobs', 'org:flows', 'process', flows.length ? 'ready' : 'disabled', 'row triggers');
+  // Classic workflows (dataverse-workflows.mjs): real-time ones run in the save hook, background ones as committed jobs.
+  edge('org:store', 'org:workflows', 'process', 'ready', 'runs on save');
+  edge('org:workflows', 'org:jobs', 'process', 'ready', 'background');
   for (const record of registry.list({ kind: 'organization-module' }))
     node(`org:${record.name}`, 'org-module', record.name, record.level === 'inventory' ? 'placeholder' : 'ready',
-      { stateOwner: record.stateOwner ?? null, operations: record.operations?.length ?? 0 }, { level: record.level, link: '#capabilities' });
+      { stateOwner: record.stateOwner ?? null, operations: record.operations?.length ?? 0, ...(STARTUP_ONLY[record.name] ? { note: STARTUP_ONLY[record.name] } : {}) }, { level: record.level, link: '#capabilities' });
+  // Security: every record read and write checks the caller's roles and row access (dataverse-security.mjs principals) and
+  // column security (dataverse-fls.mjs); audited tables write audit rows while the organization has auditing turned on.
+  const has = id => nodes.some(item => item.id === id), audited = organizationRecord(store)?.isauditenabled;
+  const auditing = (audited && typeof audited === 'object' ? audited.Value : audited) === true;
+  node('org:security', 'org', 'Security roles', organization ? 'ready' : 'declared', { roles: rows('role').length, users: rows('systemuser').length, teams: rows('team').length },
+    { link: '#dataverse' });
+  edge('org:store', 'org:security', 'process', 'ready', 'access checks');
+  if (has('org:dataverse-fls')) edge('org:store', 'org:dataverse-fls', 'process', 'ready', 'column security');
+  if (has('org:dataverse-audit')) edge('org:store', 'org:dataverse-audit', 'process', auditing ? 'ready' : 'disabled', auditing ? 'audit rows' : 'auditing off');
   return { runs, overdueWaits, jobs, asyncRows };
 }
 
 /** Storage routes, the message bus (one pass over its table, RC-48) and the outbox. Storage counts are writes since start. */
-function providerNodes({ node, edge, rows, count, clock, providers, store }) {
+function providerNodes({ node, edge, rows, count, clock, providers, store, config = {} }) {
   const storage = attempt(() => providers.storage?.describe?.() ?? null, null);
   const storageActivity = (storage?.providers ?? []).map(entry => ({ id: entry.id, writes: count(`storage.${entry.id}.writes`), deletes: count(`storage.${entry.id}.deletes`),
     bytesWritten: count(`storage.${entry.id}.bytesWritten`) }));
@@ -946,10 +970,10 @@ function providerNodes({ node, edge, rows, count, clock, providers, store }) {
     node('provider:storage', 'provider', 'Storage', storage.providers.some(entry => entry.ready) ? 'ready' : 'declared',
       { providers: storage.providers.map(({ id, kind, level, ready, routes }) => ({ id, kind, level: level ?? null, ready, routes, ...storageActivity.find(item => item.id === id) })) },
       { link: '#services' });
-    edge('org:store', 'provider:storage', 'storage', 'ready', 'files');
     for (const [route, target] of Object.entries(storage.routes ?? {})) {
-      const entry = storage.providers.find(item => item.id === target), ready = target === 'export' || entry?.ready;
-      node(`provider:storage-route:${route}`, 'provider', route, ready ? 'ready' : entry ? 'declared' : 'missing', { provider: target }, { link: '#services' });
+      const entry = storage.providers.find(item => item.id === target);
+      const ready = target === 'export' || (entry?.ready && (entry.kind !== 'azurite' || (entry.level === 'behaviour' && entry.health?.ready !== false)));
+      node(`provider:storage-route:${route}`, 'provider', route, ready ? 'ready' : entry ? 'declared' : 'missing', { provider: target, kind: target === 'export' ? 'export' : entry?.kind ?? null }, { link: '#services' });
       edge('provider:storage', `provider:storage-route:${route}`, 'storage', ready ? 'ready' : 'declared', target);
     }
     // Core Blob REST transport (storage-azurite.mjs): level behaviour with a usable connection string, contract (declared only) without.
@@ -961,8 +985,14 @@ function providerNodes({ node, edge, rows, count, clock, providers, store }) {
       const status = states.some(state => state.ready === false) ? (azurite.some(entry => entry.level !== 'behaviour') ? 'missing' : 'error')
         : states.every(state => state.ready === true) ? 'ready' : 'declared';
       node('external:azurite', 'external', 'Azurite', status, { providers: states.map(state => state.id), health: states }, { link: '#services' });
-      edge('provider:storage', 'external:azurite', 'storage', status,
-        azurite.some(entry => entry.level === 'behaviour') ? 'Blob REST (Shared Key)' : 'no connection string');
+      // Each route that targets an Azurite provider writes there.
+      const used = Object.entries(storage.routes ?? {}).filter(([, target]) => azurite.some(item => item.id === target));
+      for (const [route, target] of used) {
+        const entry = azurite.find(item => item.id === target);
+        edge(`provider:storage-route:${route}`, 'external:azurite', 'storage', entry.level === 'behaviour' ? status : 'missing', entry.level === 'behaviour' ? 'Blob REST' : 'no connection string');
+      }
+      // Configured but no route writes there: the provider exists and stays unused.
+      if (!used.length) edge('provider:storage', 'external:azurite', 'storage', 'declared', 'configured, no route uses it');
     }
   }
   const at = clock.now(), messageStats = {}, messages = { active: 0, locked: 0, scheduled: 0, deadLettered: 0, entities: 0 };
@@ -984,6 +1014,11 @@ function providerNodes({ node, edge, rows, count, clock, providers, store }) {
       edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', 'ready', entity);
     }
     if (Object.keys(endpoints).length) edge('org:plugins', 'provider:messaging', 'bus', 'ready', 'service endpoints');
+    // A Service Bus emulator bus sends over AMQP to the emulator, which runs outside Paqvilo.
+    if (descriptor.kind === 'servicebus-emulator' || Object.values(providers.messaging.settings?.providers ?? config.providers?.messaging ?? {}).some(entry => entry?.kind === 'servicebus-emulator')) {
+      node('external:servicebus-emulator', 'external', 'Service Bus emulator', 'declared', {}, { link: '#services' });
+      edge('provider:messaging', 'external:servicebus-emulator', 'bus', 'declared', 'AMQP');
+    }
   }
   messages.entities = Object.keys(messageStats).length;
   const outboxStates = tally(rows(OUTBOX_TABLE), row => row.state ?? 'unknown');
@@ -991,7 +1026,6 @@ function providerNodes({ node, edge, rows, count, clock, providers, store }) {
     pendingDeletes: store.state?.simulator?.outboxPendingDeletes?.length ?? 0 };
   if (providers.outbox) {
     node('provider:outbox', 'provider', 'Outbox', 'ready', outbox, { level: providers.outbox.descriptor?.level, link: '#services' });
-    edge('org:store', 'provider:outbox', 'process', 'ready', 'email and messages');
   }
   return { storageActivity, messages, outbox };
 }
@@ -1000,7 +1034,7 @@ function providerNodes({ node, edge, rows, count, clock, providers, store }) {
  * Web hook targets (one node per hostname; listening only when the delivery rule isLoopbackUrl contacts it), connectors and
  * connections (id, provider, principal kind; never settings), secrets (count only), local services, fixtures, Power Fx and apps.
  */
-function externalNodes({ node, edge, nodes, rows, config, providers, inventory, codeApps, operations, canvasEnabled = true }) {
+function externalNodes({ node, edge, nodes, rows, config, providers, inventory, codeApps, operations, dataverse, canvasEnabled = true }) {
   const webhooks = rows('serviceendpoint').filter(row => Number(row.contract) === 8)
     .map(row => ({ name: row.name ?? null, host: hostnameOf(row.url), loopback: isLoopbackUrl(row.url) }));
   if (webhooks.length) Object.assign(nodes.find(item => item.id === 'org:plugins').detail, { webhooks });
@@ -1014,13 +1048,21 @@ function externalNodes({ node, edge, nodes, rows, config, providers, inventory, 
     { providers: connectorProviders.map(item => ({ id: item.id, level: item.level ?? null, operations: Array.isArray(item.operations) ? item.operations.length : item.operations ?? 0 })) },
     { link: '#services' });
   edge('org:flows', 'provider:connectors', 'process', operations.some(item => item.kind === 'cloud-flow') ? 'ready' : 'disabled', 'actions');
+  // connector-runtime.mjs: the Dataverse connector writes through the record pipeline; shared_servicebus sends to the local bus.
+  edge('provider:connectors', 'org:store', 'process', 'ready', 'Dataverse connector');
+  if (providers.messaging) edge('provider:connectors', 'provider:messaging', 'bus', 'ready', 'Service Bus connector');
   for (const [id, connection] of Object.entries(config.connections ?? {})) {
     const principal = connection?.principal == null ? 'none' : typeof connection.principal === 'string' ? 'named' : 'inline';
     node(`connection:${id}`, 'connection', id, 'declared', { provider: connection?.provider ?? null, connector: connection?.connector ?? null, principal }, { link: '#services' });
     edge('provider:connectors', `connection:${id}`, 'reads', 'declared', connection?.provider ?? '');
+    // A URL rewrite that points at a declared local service sends this connection's calls there.
+    const targets = Object.values(connection?.settings?.rewrites ?? {}).map(originOf).filter(Boolean);
+    for (const [service, settings] of Object.entries(config.localServices ?? {}))
+      if (targets.includes(originOf(settings?.baseUrl ?? settings?.blob))) edge(`connection:${id}`, `provider:local-service:${service}`, 'http', 'declared', 'rewritten URL');
   }
   node('provider:secrets', 'provider', 'Secret references', providers.secrets ? 'ready' : 'disabled', { keys: providers.secrets ? attempt(() => providers.secrets.keys().length, 0) : 0 },
     { link: '#environment' });
+  edge('org:flows', 'provider:secrets', 'reads', 'ready', 'secret parameters');
   if (providers.secrets) {
     node('external:keyvault', 'external', 'Key Vault', 'placeholder', { note: 'References resolve locally; no vault is contacted.' }, { link: '#environment' });
     edge('provider:secrets', 'external:keyvault', 'reads', 'placeholder', 'not contacted');
@@ -1028,13 +1070,17 @@ function externalNodes({ node, edge, nodes, rows, config, providers, inventory, 
   for (const record of attempt(() => providers.localServices?.describe?.() ?? [], [])) {
     const id = record.name.slice('local-service:'.length);
     node(`provider:local-service:${id}`, 'provider', id, 'declared', { service: record.service ?? null, required: record.required ?? false }, { level: record.level, link: '#services' });
-    if (record.service !== 'service-bus') continue;
-    node('external:servicebus-emulator', 'external', 'Service Bus emulator', 'declared', {}, { link: '#services' });
-    edge(`provider:local-service:${id}`, 'external:servicebus-emulator', 'bus', 'declared', 'probe only');
+    edge('host:admin', `provider:local-service:${id}`, 'http', 'declared', 'preflight probe');
+    const external = record.service === 'service-bus' ? ['external:servicebus-emulator', 'Service Bus emulator']
+      : record.service === 'azure-storage' ? ['external:azurite', 'Azurite']
+        : nodes.some(item => item.id === `external:webhook:${hostnameOf(config.localServices?.[id]?.baseUrl)}`) ? [`external:webhook:${hostnameOf(config.localServices[id].baseUrl)}`] : null;
+    if (!external) continue;
+    if (external[1]) node(external[0], 'external', external[1], 'declared', {}, { link: '#services' });
+    edge(`provider:local-service:${id}`, external[0], record.service === 'service-bus' ? 'bus' : 'http', 'declared', 'health probe');
   }
   for (const record of attempt(() => providers.serviceFixtures?.describe?.() ?? [], [])) {
     const service = record.name.replace(/^service:/, ''), levels = tally(record.operations ?? [], item => item.level);
-    node(`provider:service-fixture:${service}`, 'provider', service, levels.behaviour || levels.fixture ? 'ready' : 'disabled', { operations: levels }, { link: '#services' });
+    node(`provider:service-fixture:${service}`, 'provider', service, levels.behaviour || levels.fixture ? 'ready' : 'disabled', { operations: levels, ...(UNCALLED_FIXTURES[service] ? { note: UNCALLED_FIXTURES[service] } : {}) }, { link: '#services' });
   }
   const powerFx = attempt(() => providers.powerFx?.describe?.() ?? null, null);
   if (powerFx) node('provider:powerfx', 'provider', 'Power Fx', 'ready', { name: powerFx.name ?? null }, { level: powerFx.level, link: '#services' });
@@ -1042,6 +1088,83 @@ function externalNodes({ node, edge, nodes, rows, config, providers, inventory, 
   const canvas = inventory.filter(record => record.component === 'canvasapp');
   node('app:canvas', 'app', 'Canvas apps', canvas.length && canvasEnabled ? 'ready' : 'disabled', { apps: canvas.length, enabled: canvasEnabled }, { level: 'inventory', link: '#capabilities' });
   node('app:code', 'app', 'Code apps', codeApps.length ? 'ready' : 'disabled', { apps: codeApps.length }, { level: 'contract', link: '#capabilities' });
+  // What the apps use: staff open them; their table sources read and write records as that person (roles, column security,
+  // plug-ins), canvas formulas run on Power Fx and connector sources call the project's connections (canvas-runtime.mjs,
+  // code-apps-http.mjs). A connection binds when its id equals the data source name or connection reference key.
+  const bound = names => [...new Set(names)].filter(name => Object.hasOwn(config.connections ?? {}, name));
+  // Without apps the connections are still drawn, switched off (the dashboard route marks edges of disabled nodes).
+  const on = canvas.length && canvasEnabled ? 'ready' : 'disabled', needs = component => !canvas.length || canvas.some(record => (record.dependencies ?? []).some(item => item.component === component));
+  edge('client:staff', 'app:canvas', 'http', on, 'staff session');
+  if (needs('table')) edge('app:canvas', 'org:store', 'process', on, 'records as the user');
+  if (powerFx) edge('app:canvas', 'provider:powerfx', 'process', on, 'formulas');
+  if (needs('connector')) edge('app:canvas', 'provider:connectors', 'process', on, 'connector calls');
+  for (const id of bound(canvas.flatMap(record => (record.canvas?.dataSources ?? []).map(item => item.name)))) edge('app:canvas', `connection:${id}`, 'reads', on, 'data source');
+  const references = codeApps.flatMap(app => app.connectionReferences ?? []), code = codeApps.length ? 'ready' : 'disabled';
+  edge('client:staff', 'app:code', 'http', code, 'staff session');
+  edge('app:code', 'org:store', 'process', code, 'records as the user');
+  edge('app:code', 'host:dataverse-api', 'http', codeApps.length && dataverse ? 'ready' : 'disabled', dataverse ? 'tokens' : 'tokens need the Web API');
+  if (references.length || !codeApps.length) edge('app:code', 'provider:connectors', 'process', code, 'connector calls');
+  for (const key of bound(references.map(item => item.key))) edge('app:code', `connection:${key}`, 'reads', code, 'connection reference');
+}
+
+// What each organization module is reached from and what it calls, traced to its module: `store` hooks run inside the
+// records layer on save or query (recordHooks), `api` messages and routes are dispatched by the Web API host itself
+// (dataverse-api.mjs operationCall and addRoute, not records.handle), and `jobs` is api.systemJob or the store scheduler.
+// [from, to, label]; short names: store, api, jobs, admin, powerfx, secrets, outbox, flows, plugins, messaging, route:<name>;
+// anything else is a module name (org:<name>). An edge is drawn only when both ends exist.
+const MODULE_EDGES = Object.freeze([
+  ['store', 'dataverse-standard', 'defaults on create'], ['store', 'dataverse-predefined', 'saved and user views'], ['api', 'dataverse-predefined', 'Web API message'],
+  ['api', 'dataverse-activitypointer', 'activity view'], ['api', 'activity-messages', 'Web API message'], ['activity-messages', 'outbox', 'SendEmail'],
+  ['api', 'record-messages', 'Web API message'], ['record-messages', 'dataverse-rollup', 'CalculateRollupField'],
+  ['record-messages', 'dataverse-state-transitions', 'IsValidStateTransition'], ['api', 'dataverse-files', 'file upload'], ['store', 'dataverse-files', 'runs on save'],
+  ['store', 'dataverse-storage-routing', 'files and notes'], ['dataverse-storage-routing', 'route:dataverseFiles', 'file columns'],
+  ['dataverse-storage-routing', 'route:annotations', 'note bodies'], ['sharepoint-documents', 'route:sharepointDocuments', 'documents'],
+  ['store', 'dataverse-elastic', 'table rules'], ['api', 'dataverse-elastic', 'Web API message'], ['api', 'dataverse-search', 'search'],
+  ['store', 'dataverse-virtual-providers', 'virtual rows'], ['store', 'dataverse-data-messages', 'recycle bin'], ['api', 'dataverse-data-messages', 'Web API message'],
+  ['dataverse-data-messages', 'jobs', 'imports'], ['api', 'dataverse-misc-messages', 'Web API message'], ['store', 'dataverse-misc-messages', 'virtual entity events'], ['store', 'dataverse-currency', 'runs on save'],
+  ['store', 'dataverse-hierarchy', 'hierarchy queries'],
+  ['api', 'dataverse-fls', 'Web API message'], ['api', 'dataverse-audit', 'change history'], ['store', 'dataverse-security-messages', 'runs on save'],
+  ['api', 'dataverse-security-messages', 'sharing messages'], ['api', 'dataverse-security-messages2', 'team messages'], ['dataverse-security-messages2', 'jobs', 'background'],
+  ['api', 'dataverse-customapi', 'custom API'], ['store', 'dataverse-customapi', 'low-code plug-ins'], ['dataverse-customapi', 'powerfx', 'Power Fx functions'],
+  ['dataverse-customapi', 'plugins', 'plug-in type'], ['store', 'dataverse-business-rules', 'runs on save'], ['store', 'dataverse-calculated', 'runs on save'],
+  ['store', 'dataverse-formula', 'runs on save'], ['dataverse-formula', 'powerfx', 'formula columns'], ['store', 'dataverse-rollup', 'runs on save'],
+  ['dataverse-rollup', 'jobs', 'hourly recalculation'], ['store', 'dataverse-cascade', 'cascades'], ['store', 'dataverse-state-transitions', 'runs on save'],
+  ['store', 'dataverse-duplicates', 'runs on save'], ['api', 'dataverse-duplicates', 'Web API message'], ['dataverse-duplicates', 'jobs', 'bulk detection'],
+  ['store', 'dataverse-plugin-registration', 'checks registrations'], ['api', 'dataverse-plugin-registration', 'Web API message'],
+  ['dataverse-plugin-registration', 'messaging', 'endpoint check'], ['api', 'dataverse-workflows', 'ExecuteWorkflow'], ['dataverse-workflows', 'flows', 'run flow'], ['api', 'dataverse-addon-ai', 'Web API message'],
+  ['api', 'dataverse-addon-pva', 'Web API message'], ['api', 'dataverse-addon-d365', 'Web API message'], ['dataverse-addon-d365', 'jobs', 'bulk mail'], ['dataverse-addon-d365', 'activity-messages', 'SendEmail per recipient'],
+  ['api', 'dataverse-addon-flows', 'Web API message'], ['dataverse-addon-flows', 'flow-runs', 'cancel runs'], ['store', 'flow-triggers', 'row changes'],
+  ['flow-triggers', 'jobs', 'queued triggers'], ['flow-triggers', 'connectors', 'connector triggers'], ['flow-triggers', 'flows', 'starts'], ['admin', 'flow-triggers', 'HTTP trigger'], ['flows', 'flow-runs', 'run history'],
+  ['flow-runs', 'jobs', 'wait timers'], ['admin', 'flow-runs', 'runs and waits'],
+  ['api', 'dataverse-async', 'Web API message'], ['store', 'dataverse-async', 'job rules'], ['dataverse-async', 'jobs', 'system jobs'],
+  ['api', 'dataverse-addon-workqueues', 'Web API message'], ['api', 'dataverse-calendar-messages', 'Web API message'],
+  ['api', 'dataverse-solutions', 'Web API message'], ['dataverse-solutions', 'jobs', 'import'], ['api', 'dataverse-metadata-tables', 'metadata changes'],
+  ['dataverse-metadata-tables', 'jobs', 'key index'], ['api', 'dataverse-metadata-relationships', 'metadata changes'], ['api', 'dataverse-metadata-messages', 'Web API message'],
+  ['dataverse-metadata-messages', 'jobs', 'background'], ['api', 'dataverse-customization-messages', 'Web API message'], ['api', 'dataverse-org-messages', 'Web API message'],
+  ['dataverse-org-messages', 'secrets', 'secret environment variables'], ['dataverse-org-messages', 'powerfx', 'ExecuteFxExpression'], ['api', 'dataverse-app-messages', 'Web API message'],
+  ['api', 'dataverse-addon-git', 'Web API message'], ['dataverse-addon-git', 'jobs', 'background'], ['api', 'dataverse-addon-featurecontrol', 'Web API message'],
+  ['api', 'usersettings', 'user settings'],
+  // Administration (runtime-admin.mjs, sim-messaging-routes.mjs) and setup (lense/setup/server.mjs relays its status views).
+  ['admin', 'store', 'records and state'], ['admin', 'outbox', 'outbox'], ['admin', 'messaging', 'queue messages'], ['setup', 'admin', 'reads status'],
+  ['admin', 'connectors', 'connection sign-in and approvals'], ['admin', 'webapi-listener', 'request log'],
+  ['outbox', 'route:annotations', 'email attachments'],
+]);
+const SHORT = Object.freeze({ store: 'org:store', api: 'host:dataverse-api', 'webapi-listener': 'host:dataverse-api', connectors: 'provider:connectors', jobs: 'org:jobs', admin: 'host:admin', setup: 'host:setup', powerfx: 'provider:powerfx',
+  secrets: 'provider:secrets', outbox: 'provider:outbox', flows: 'org:flows', plugins: 'org:plugins', messaging: 'provider:messaging' });
+const moduleId = name => SHORT[name] ?? (name.startsWith('route:') ? `provider:storage-route:${name.slice(6)}` : `org:${name}`);
+function moduleEdges({ edge, nodes, dataverse }) {
+  const ids = new Set(nodes.map(item => item.id));
+  // Web API messages run in every Web API handler (dataverse-model-driven.mjs builds one over the same registry): from the
+  // listener when it runs, else from the model-driven apps' in-app Web API.
+  const messages = dataverse ? 'host:dataverse-api' : 'host:model-driven';
+  for (const [from, to, label] of MODULE_EDGES) {
+    const a = from === 'api' ? messages : moduleId(from), b = moduleId(to);
+    // Host nodes (administration, setup) are added by the host; the dashboard route drops edges whose ends are absent.
+    if ((ids.has(a) || a.startsWith('host:')) && (ids.has(b) || b.startsWith('host:'))) edge(a, b, 'process', 'ready', label);
+  }
+  // TriggerServiceEndpointCheck posts to loopback web hooks (dataverse-plugin-registration.mjs).
+  for (const hook of nodes) if (hook.id.startsWith('external:webhook:') && hook.status === 'listening' && ids.has('org:dataverse-plugin-registration'))
+    edge('org:dataverse-plugin-registration', hook.id, 'webhook', 'listening', 'endpoint check');
 }
 
 /**

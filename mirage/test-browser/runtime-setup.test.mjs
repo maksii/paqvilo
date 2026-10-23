@@ -57,7 +57,7 @@ test('standalone API administration hides portal surfaces and shows persistence 
   const { page, sim, errors } = await organization(t, { runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   const requests = []; page.on('request', request => requests.push(new URL(request.url()).pathname));
   await page.goto(sim.url + '/_sim/#overview');
-  await page.getByRole('heading', { name: 'Your local organization workspace' }).waitFor().catch(async error => { throw new Error(`${error.message}\n${await page.locator('body').innerText()}\n${errors.join('\n')}`); });
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor().catch(async error => { throw new Error(`${error.message}\n${await page.locator('body').innerText()}\n${errors.join('\n')}`); });
   assert.equal(await page.getByRole('link', { name: /^Open (portal|website)/ }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Model-driven apps', exact: true }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Portal identity & permissions', exact: true }).count(), 0);
@@ -168,8 +168,9 @@ test('guided setup creates an API-only project with dry-run defaults and preserv
   const setup = await startSetupServer({ directory: root, project, processEnv: {} }); resources.push(() => setup.close());
   await page.goto(setup.url);
   const create = page.locator('form[data-form="create"]');
-  await create.locator('[name="runtime-kind"]').selectOption('dataverse-api');
-  await create.getByRole('button', { name: 'Create Mirage project' }).click();
+  // What to run: only the Dataverse Web API.
+  await create.locator('input[name=part][value=website]').uncheck(); await create.locator('input[name=part][value=api]').check();
+  await create.getByRole('button', { name: 'Create project file' }).click();
   await page.locator('#notice').filter({ hasText: /^Saved\./ }).waitFor();
   const raw = JSON.parse(await fs.readFile(project, 'utf8'));
   assert.equal(raw.runtime.kind, 'dataverse-api'); assert.equal(raw.simulation.level, 'dry-run');
@@ -184,10 +185,10 @@ test('guided setup creates an API-only project with dry-run defaults and preserv
   await page.locator('#runtime-configuration').scrollIntoViewIfNeeded(); await capture(page, 'standalone-setup');
   await fs.mkdir(path.join(root, 'portal')); await fs.writeFile(path.join(root, 'portal/website.yml'), 'adx_websiteid: invented\nadx_name: Invented portal\n');
   const next = page.locator('form[data-form="runtime"]');
-  await next.locator('[name="runtime-kind"]').selectOption('power-pages');
+  await next.locator('input[name=part][value=website]').check();
   await next.locator('[name="portal-path"]').fill('./portal');
   await next.getByRole('button', { name: 'Save runtime configuration' }).click();
-  await page.getByText('Existing portal selections are retained', { exact: false }).waitFor();
+  await page.locator('#portal-portal').waitFor();
   const withPortal = JSON.parse(await fs.readFile(project, 'utf8'));
   assert.deepEqual(withPortal.portals, [{ id: 'portal', path: './portal' }]);
   assert.equal(withPortal.defaultPortal, 'portal');
@@ -203,7 +204,8 @@ test('guided profile roundtrip preserves portal selections and unrelated authore
   await page.goto(setup.url);
   for (const kind of ['model-driven', 'power-pages']) {
     const form = page.locator('form[data-form="runtime"]');
-    await form.locator('[name="runtime-kind"]').selectOption(kind);
+    // Without the website the project runs its apps on the app host; with it, on the Power Pages host.
+    await form.locator('input[name=part][value=website]').setChecked(kind === 'power-pages');
     await form.getByRole('button', { name: 'Save runtime configuration' }).click();
     await page.locator('#notice').filter({ hasText: /^Saved\./ }).waitFor();
     const saved = JSON.parse(await fs.readFile(project, 'utf8'));
@@ -223,8 +225,10 @@ test('guided Solution path replacement and reordering keep referenced IDs and au
   const setup = await startSetupServer({ directory: root, project, processEnv: {} }); resources.push(() => setup.close());
   await page.goto(setup.url);
   const saveSolutions = async paths => {
-    const form = page.locator('form[data-form="runtime"]'); await form.locator('[name="runtime-solutions"]').fill(paths.join('\n'));
-    const [response] = await Promise.all([page.waitForResponse(response => response.url().endsWith('/_setup/api/config') && response.request().method() === 'POST'), form.getByRole('button', { name: 'Save runtime configuration' }).click()]);
+    // Solution folders of a project file are part of Exported files.
+    await page.evaluate(() => { location.hash = '#portals'; });
+    const form = page.locator('form[data-form="files"]'); await form.locator('[name="runtime-solutions"]').fill(paths.join('\n'));
+    const [response] = await Promise.all([page.waitForResponse(response => response.url().endsWith('/_setup/api/config') && response.request().method() === 'POST'), form.getByRole('button', { name: 'Save', exact: true }).click()]);
     assert.equal(response.status(), 200, await response.text());
     await page.locator('#notice').filter({ hasText: /^Saved\./ }).waitFor();
     return JSON.parse(await fs.readFile(project, 'utf8'));
@@ -237,7 +241,7 @@ test('guided Solution path replacement and reordering keep referenced IDs and au
   assert.deepEqual(saved.solutions[1].authoredNote, { keep: 'original sibling' });
   const shorthand = { version: 2, runtime: { kind: 'model-driven' }, portals: [{ ...portal, solutions: ['solution-1', 'solution-2'] }], solutions: ['./new-core', './addon'] };
   await fs.writeFile(project, JSON.stringify(shorthand)); await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
-  await page.locator('[name="runtime-kind"]').filter({ has: page.locator('option:checked[value="model-driven"]') }).waitFor();
+  await page.locator('form[data-form="runtime"] input[name=part][value=website]:not(:checked)').waitFor();
   saved = await saveSolutions(['./addon', './new-core']);
   assert.deepEqual(saved.solutions, [{ id: 'solution-2', path: './addon' }, { id: 'solution-1', path: './new-core' }]);
   assert.deepEqual(saved.portals, shorthand.portals);
@@ -273,7 +277,7 @@ test('administration shows outstanding work and keeps failed save input availabl
   await page.locator('#activity-feedback').filter({ hasText: 'Loading workspace data' }).waitFor();
   assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
   assert.equal(await page.locator('#activity-feedback').evaluate(node => getComputedStyle(node, '::before').animationName), 'none');
-  releaseRead(); await page.getByRole('heading', { name: 'Your local organization workspace' }).waitFor();
+  releaseRead(); await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
   await page.getByRole('link', { name: 'Organization identity & API', exact: true }).click();
   await page.locator('[data-disclosure="dv-register"] > summary').click();
   await page.locator('#dv-app-form').waitFor();

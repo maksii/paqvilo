@@ -18,7 +18,18 @@ const firstMatch = async (file, pattern) => {
   try { return (await fs.readFile(file, 'utf8')).slice(0, 8192).match(pattern)?.[1]?.trim().replace(/^["']|["']$/g, '') || null; } catch { return null; }
 };
 
-/** What a folder holds: a portal export ({ type: 'website', label, name }), an unpacked Solution ({ type: 'solution', name }) or null. */
+// Deployment profile files of a website export: deployment-profiles/<name>.deployment.yml (pac pages download).
+const PROFILE_FILE = /^(.+)\.deployment\.ya?ml$/i;
+async function profilesOf(folder) {
+  try { return (await fs.readdir(path.join(folder, 'deployment-profiles'))).map(name => [name, PROFILE_FILE.exec(name)?.[1]]).filter(([, name]) => name).map(([file, name]) => ({ name, file: `deployment-profiles/${file}` })); } catch { return []; }
+}
+
+/**
+ * What a folder holds, or null: a website export ({ type: 'website', label, name, profiles }), an unpacked Solution
+ * ({ type: 'solution', name, apps }), a canvas app source ({ type: 'canvas', name }: Src/*.pa.yaml or Src/*.fx.yaml), a code
+ * app ({ type: 'codeApp', name }: power.config.json), deployment profiles ({ type: 'profiles', files }) or a sample data
+ * module folder ({ type: 'pack' }: pack.mjs).
+ */
 export async function folderKind(folder, entries = null) {
   try { entries ??= await fs.readdir(folder, { withFileTypes: true }); } catch { return null; }
   const names = new Set(entries.map(entry => entry.name));
@@ -26,12 +37,22 @@ export async function folderKind(folder, entries = null) {
     const layout = detectSourceDialect(folder);
     if (layout.imported) {
       const website = names.has('website.yml') ? 'website.yml' : names.has('website.yaml') ? 'website.yaml' : null;
-      return { type: 'website', label: layout.label, name: website ? await firstMatch(path.join(folder, website), /^(?:adx_name|mspp_name|name):\s*(.+)$/m) : null };
+      return { type: 'website', label: layout.label, name: website ? await firstMatch(path.join(folder, website), /^(?:adx_name|mspp_name|name):\s*(.+)$/m) : null, profiles: await profilesOf(folder) };
     }
   }
   // A Solution names the apps it carries by folder: AppModules (model-driven) and CanvasApps.
   if (names.has('Other') && fsSync.existsSync(path.join(folder, 'Other', 'Solution.xml'))) return { type: 'solution', name: await firstMatch(path.join(folder, 'Other', 'Solution.xml'), /<UniqueName>([^<]+)<\/UniqueName>/),
-    apps: { modelDriven: names.has('AppModules'), canvas: names.has('CanvasApps') } };
+    apps: { modelDriven: names.has('AppModules'), canvas: names.has('CanvasApps') },
+    // Canvas apps packed in the Solution, by name (CanvasApps/<name>.meta.xml), so a folder copy of one is recognised.
+    canvasApps: names.has('CanvasApps') ? (await fs.readdir(path.join(folder, 'CanvasApps')).catch(() => [])).filter(name => name.endsWith('.meta.xml')).map(name => name.slice(0, -9)) : [] };
+  if (names.has('Src')) {
+    const source = await fs.readdir(path.join(folder, 'Src')).catch(() => []);
+    if (source.some(name => /\.(?:pa|fx)\.yaml$/i.test(name))) return { type: 'canvas', name: path.basename(folder) };
+  }
+  if (names.has('power.config.json')) return { type: 'codeApp', name: path.basename(folder) };
+  const profiles = entries.filter(entry => entry.isFile() && PROFILE_FILE.test(entry.name)).map(entry => ({ name: PROFILE_FILE.exec(entry.name)[1], file: entry.name }));
+  if (profiles.length) return { type: 'profiles', files: profiles };
+  if (names.has('pack.mjs')) return { type: 'pack' };
   return null;
 }
 
@@ -41,7 +62,7 @@ export async function folderKind(folder, entries = null) {
  * ponytail: bounded breadth-first walk (depth 4, 4000 folders); a project with exports deeper than that types the path.
  */
 export async function scanExports(root, { maxDepth = 4, maxFolders = 4000 } = {}) {
-  const found = { portals: [], solutions: [], packs: [] };
+  const found = { portals: [], solutions: [], packs: [], canvas: [], codeApps: [] };
   let queue = [[path.resolve(root), 0]], visited = 0;
   while (queue.length && visited < maxFolders) {
     const next = [];
@@ -50,8 +71,10 @@ export async function scanExports(root, { maxDepth = 4, maxFolders = 4000 } = {}
       let entries;
       try { entries = await fs.readdir(folder, { withFileTypes: true }); } catch { continue; }
       const kind = await folderKind(folder, entries);
-      if (kind?.type === 'website') { found.portals.push({ dir: folder, kind: kind.label, name: kind.name }); continue; }
-      if (kind?.type === 'solution') { found.solutions.push({ dir: folder, name: kind.name, apps: kind.apps }); continue; }
+      if (kind?.type === 'website') { found.portals.push({ dir: folder, kind: kind.label, name: kind.name, profiles: kind.profiles }); continue; }
+      if (kind?.type === 'solution') { found.solutions.push({ dir: folder, name: kind.name, apps: kind.apps, canvasApps: kind.canvasApps }); continue; }
+      if (kind?.type === 'canvas') { found.canvas.push({ dir: folder, name: kind.name }); continue; }
+      if (kind?.type === 'codeApp') { found.codeApps.push({ dir: folder, name: kind.name }); continue; }
       const names = new Set(entries.map(entry => entry.name));
       if (names.has('pack.mjs')) found.packs.push({ file: path.join(folder, 'pack.mjs') });
       if (depth < maxDepth) for (const entry of entries) if (entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name)) next.push([path.join(folder, entry.name), depth + 1]);
@@ -69,6 +92,11 @@ export async function exportCandidates({ directory, sourceRoot = directory }) {
     portals: found.portals.map(item => ({ ...item, path: shown(item.dir), value: relative(sourceRoot, item.dir) })),
     solutions: found.solutions.map(item => ({ ...item, path: shown(item.dir), value: relative(sourceRoot, item.dir) })),
     packs: found.packs.map(item => ({ ...item, path: shown(item.file), value: relative(directory, item.file, './') })),
+    // Canvas app folders and code apps resolve from the configuration folder, as the runtime reads them.
+    // A canvas folder whose app a found Solution already packs (fxw_fieldapp beside fxw_fieldapp_1a2b3) names that Solution.
+    canvas: found.canvas.map(item => ({ ...item, path: shown(item.dir), value: relative(directory, item.dir, './'),
+      inSolution: found.solutions.find(solution => (solution.canvasApps ?? []).some(app => app === item.name || app.startsWith(`${item.name}_`)))?.name ?? null })),
+    codeApps: found.codeApps.map(item => ({ ...item, path: shown(item.dir), value: relative(directory, item.dir, './') })),
   };
 }
 
@@ -76,14 +104,23 @@ export async function exportCandidates({ directory, sourceRoot = directory }) {
  * One folder of the setup folder picker: its subfolders (dot folders and build output hidden, at most 500), each with what
  * it holds, and the folder written as the configuration writes it (`value`, from the source root). Read-only.
  */
-export async function listFolders({ directory, sourceRoot = directory, folder }) {
+// Files the picker offers: website changes files (.deployment.yml), and deployment settings files (pac solution
+// create-settings): .json files that name EnvironmentVariables or ConnectionReferences in their first 64 KiB.
+const FILE_TYPES = { profile: { name: /\.deployment\.ya?ml$/i }, settings: { name: /\.json$/i, content: /"(?:EnvironmentVariables|ConnectionReferences)"\s*:/ } };
+const holds = async (file, pattern) => { const handle = await fs.open(file).catch(() => null); if (!handle) return false;
+  try { const { buffer, bytesRead } = await handle.read(Buffer.alloc(65536), 0, 65536, 0); return pattern.test(buffer.subarray(0, bytesRead).toString('utf8')); } finally { await handle.close(); } };
+export async function listFolders({ directory, sourceRoot = directory, folder, files = null }) {
   const current = path.resolve(directory, folder || '.');
   let entries;
   try { entries = await fs.readdir(current, { withFileTypes: true }); } catch (error) { throw Object.assign(new Error(`This folder cannot be opened (${error.code ?? error.message}).`), { status: 400 }); }
   const names = entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name)).map(entry => entry.name).sort((a, b) => a.localeCompare(b)).slice(0, 500);
   const folders = await Promise.all(names.map(async name => ({ name, path: path.join(current, name), kind: await folderKind(path.join(current, name)) })));
   const parent = path.dirname(current);
-  return { path: current, shown: relative(directory, current, './'), value: relative(sourceRoot, current), parent: parent === current ? null : parent, kind: await folderKind(current, entries), folders };
+  // Files of one type (deployment profile and deployment settings files), each written as the configuration writes it.
+  const type = FILE_TYPES[files], named = type ? entries.filter(entry => entry.isFile() && type.name.test(entry.name)).map(entry => entry.name).sort((a, b) => a.localeCompare(b)).slice(0, 500) : [];
+  const listed = (await Promise.all(named.map(async name => (!type.content || await holds(path.join(current, name), type.content) ? name : null)))).filter(Boolean)
+    .map(name => ({ name, path: path.join(current, name), value: relative(directory, path.join(current, name), './') }));
+  return { path: current, shown: relative(directory, current, './'), value: relative(sourceRoot, current), config: relative(directory, current, './'), parent: parent === current ? null : parent, kind: await folderKind(current, entries), folders, files: listed };
 }
 
 /** `preferred` when it is free on loopback, else a free port the system chooses. */
@@ -117,8 +154,10 @@ export async function previewOperation(file) {
     const value = JSON.parse(await fs.readFile(operationFile(file), 'utf8'));
     // A runner that died without a final record failed; a failure older than the configuration file no longer describes it.
     if (value.state === 'running' && !alive(value.pid)) return { ...value, state: 'failed', message: value.message ?? 'The preview operation stopped unexpectedly.' };
-    if (value.state === 'failed' && Date.parse(value.at) < (await fs.stat(file).then(stat => stat.mtimeMs, () => 0))) return null;
-    return value;
+    const saved = await fs.stat(file).then(stat => stat.mtimeMs, () => 0);
+    if (value.state === 'failed' && Date.parse(value.at) < saved) return null;
+    // Settings saved after a preview started here apply only once it restarts.
+    return { ...value, settingsChanged: value.state === 'done' && value.action !== 'stop' && Date.parse(value.at) < saved };
   } catch { return null; }
 }
 /**

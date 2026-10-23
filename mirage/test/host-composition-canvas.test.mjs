@@ -10,18 +10,19 @@ import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
 
-async function start(t, canvas) {
+async function start(t, canvas, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'apps/fx_invented/Src/HomeScreen.pa.yaml': HOME,
+    ...options.files,
   })) {
     await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
     await fs.writeFile(path.join(root, relative), content);
   }
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
-    simulation: { level: 'dry-run' }, canvas, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
+    simulation: { level: 'dry-run' }, canvas, dataverse: { enabled: true, tls: false, tds: { enabled: false } }, connections: options.connections });
   ownedFixture(t).add(() => sim.close());
   return sim;
 }
@@ -48,6 +49,18 @@ test('canvas.sources adds a project canvas app to the inventory', async t => {
   // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
   const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
   assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);
+});
+
+test('the system map connects a canvas app to staff, records, Power Fx, connectors and its connection, and security to the store', async t => {
+  const sim = await start(t, { sources: ['apps/fx_invented'] }, { connections: { Svc: { provider: 'fixture' } }, files: {
+    'apps/fx_invented/Src/App.pa.yaml': ['App:', '  Properties: {}', 'DataSources:', '  Widgets:', '    Type: Table', '    Parameters:', '      TableLogicalName: x_widget',
+      '  Svc:', '    Type: Actions', '    ConnectorId: shared_fxinvented', ''].join('\n') } });
+  const dashboard = await (await fetch(sim.url + '/_sim/api/dashboard')).json();
+  const ids = new Set(dashboard.nodes.map(node => node.id)), pairs = dashboard.edges.map(edge => `${edge.from}>${edge.to}`);
+  for (const pair of ['client:staff>app:canvas', 'app:canvas>org:store', 'app:canvas>provider:powerfx', 'app:canvas>provider:connectors', 'app:canvas>connection:Svc', 'org:store>org:security'])
+    assert.ok(pairs.includes(pair), pair);
+  assert.equal(dashboard.nodes.find(node => node.id === 'org:security')?.status, 'ready');
+  for (const edge of dashboard.edges) assert.ok(ids.has(edge.from) && ids.has(edge.to), `${edge.from}>${edge.to} has both ends`);
 });
 
 test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing preflight requirement', async t => {

@@ -175,9 +175,24 @@
 .dm-gap-8 { margin-top: 128px; }
 .dm-gap-9 { margin-top: 142px; }
 .dm-gap-10 { margin-top: 156px; }
+.dm-gap-11 { margin-top: 170px; }
+.dm-gap-12 { margin-top: 184px; }
+.dm-gap-13 { margin-top: 198px; }
+.dm-gap-14 { margin-top: 212px; }
+.dm-gap-15 { margin-top: 226px; }
+.dm-gap-16 { margin-top: 240px; }
+.dm-gap-17 { margin-top: 254px; }
+.dm-gap-18 { margin-top: 268px; }
+.dm-gap-19 { margin-top: 282px; }
+.dm-gap-20 { margin-top: 296px; }
+.dm-gap-21 { margin-top: 310px; }
+.dm-gap-22 { margin-top: 324px; }
+.dm-gap-23 { margin-top: 338px; }
+.dm-gap-24 { margin-top: 352px; }
 .dm-tail { flex: none; height: 0; }
 .dm-wire-labels { z-index: 25; }
-.dm-node:is(:hover, :focus-visible) { z-index: 35; }
+/* A hovered or focused card, node or group, rises above the other cards and the wire labels, with its connection card. */
+.dm-card:is(:hover, :focus-visible, :focus-within) { z-index: 35; }
 .dm-band { position: relative; display: grid; grid-template-columns: var(--dm-label) minmax(0, 1fr); align-items: start; margin-right: 0; margin-left: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.55); box-shadow: inset 0 0 0 1px #e3e7ee, inset 4px 0 0 var(--dm-band, var(--dm-neutral)); }
 .dm-band { --dm-band-bg: #fafbfd; }
 .dm-band-people { --dm-band: #6b7891; }
@@ -251,6 +266,9 @@
   border-radius: 8px; background: #172036; color: #eef2fb; font-size: 12.5px; font-weight: 500; line-height: 1.4; white-space: normal; box-shadow: var(--dm-shadow-raised); pointer-events: none;
 }
 .dm-end:is(:hover, :focus-visible, :focus-within) .dm-links { left: auto; right: 0; }
+.dm-links-line { display: block; }
+.dm-links-line + .dm-links-line { margin-top: 4px; }
+.dm-links b { color: #a9c6ff; font-weight: 700; }
 .dm-band-externals .dm-node:is(:hover, :focus-visible) .dm-links { top: auto; bottom: calc(100% + 8px); }
 
 /* Capability group cards (details/summary) and their member list */

@@ -236,7 +236,7 @@ test(
     await page
       .getByRole("link", { name: "Request audit", exact: false })
       .click();
-    await page.getByText("43 retained", { exact: false }).waitFor();
+    await page.getByText("43 kept", { exact: false }).waitFor();
     assert.equal(await page.locator('table[data-table="audit"] tbody tr').count(), 10);
     if (process.env.PAQVILO_MIRAGE_EVIDENCE_DIR) {
       await fs.mkdir(process.env.PAQVILO_MIRAGE_EVIDENCE_DIR, { recursive: true });

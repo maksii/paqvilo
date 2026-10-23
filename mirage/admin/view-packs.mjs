@@ -55,15 +55,15 @@ export const view = {
 
   render(ctx) {
     const d = ctx.data[ID] ?? {}, payload = d.payload ?? {}, packs = payload.packs ?? [];
-    const head = heading(ctx, 'Add or change a pack') + `<p><a class="ui-button ui-small" href="${e(SETUP)}">Open project setup</a></p>`;
+    const head = heading(ctx);
     const registered = list(ctx, 'packs-registered', packs, [
       { label: 'Pack', render: item => `<code>${e(item.id)}</code>` },
       { label: 'Name', render: item => e(item.name ?? '') },
-      { label: 'Matched', render: item => `${matchedBadge(item)}<div class="ui-help">${e(item.matchReason ?? '')}</div>` },
-      { label: 'Exports', render: item => e(count(item.exports)) },
-      { label: 'Presets', render: item => e(item.presets?.length ?? 0) },
-      { label: 'DATA files', render: item => e(item.dataFiles?.length ?? 0) },
-      { label: 'Diagnostics', render: item => e(item.diagnostics?.length ?? 0) },
+      { label: 'Matched', info: "matched: the pack's matches() said it applies to this portal, so it is in use. not matched: it is registered but contributes nothing here.", render: item => `${matchedBadge(item)}<div class="ui-help">${e(item.matchReason ?? '')}</div>` },
+      { label: 'Exports', info: 'How many handlers and providers the pack supplies (server logic, flows, plug-in models, storage and others). Details lists them.', render: item => e(count(item.exports)) },
+      { label: 'Presets', info: 'Data presets the pack adds; apply them under Plugins & presets.', render: item => e(item.presets?.length ?? 0) },
+      { label: 'DATA files', info: 'JSON files of business records the pack owns; record changes go to them when the simulation level writes DATA files.', render: item => e(item.dataFiles?.length ?? 0) },
+      { label: 'Diagnostics', info: "Problems found in the pack's exports, such as an unknown export name.", render: item => e(item.diagnostics?.length ?? 0) },
       { label: 'Details', render: item => `<button type="button" class="ui-button ui-small" data-pack-details="${e(item.id)}" aria-label="Details of pack ${e(item.id)}">Details</button>` },
     ], `No data pack is registered. Write pack/<id>.mjs, register it under dataPacks in ${SETUP}, then restart.`, 'Registered packs');
     const failed = (payload.failed ?? []).length ? `<h3>Modules that failed to load</h3>${list(ctx, 'packs-failed', payload.failed, [
@@ -74,19 +74,19 @@ export const view = {
       { label: 'Preset', render: item => `<code>${e(item.id)}</code>` },
       { label: 'Name', render: item => e(item.name ?? '') },
       { label: 'Pack', render: item => (item.pack ? `<code>${e(item.pack)}</code>` : '—') },
-      { label: 'Source', render: item => kit.badge(item.source ?? 'unknown', item.source === 'stored' ? 'info' : 'neutral') },
+      { label: 'Source', info: 'builtin: shipped with Paqvilo or a pack. stored: saved in this runtime.', render: item => kit.badge(item.source ?? 'unknown', item.source === 'stored' ? 'info' : 'neutral') },
     ], 'No data preset is available.', 'Data presets');
     return head
       + panel(ctx, 'registered', 'Registered packs', `${packs.length} packs · ${packs.filter(item => item.matched === true).length} matched`, registered + failed + (selected ? detail(ctx, selected) : ''), true)
       + panel(ctx, 'presets', 'Data presets', `${payload.library?.length ?? 0} presets`, library)
-      + panel(ctx, 'lifecycle', 'Pack lifecycle', '', `<p class="ui-help">Registration is availability; matching is activation. A pack that does not match the portal contributes nothing. Change registrations in <a href="${e(SETUP)}">project setup</a>, then restart the preview.</p>`);
+      + panel(ctx, 'lifecycle', 'Add or change a pack', 'write · register · restart · verify', `<p><a class="ui-button ui-small" href="${e(SETUP)}">Project setup: Data packs →</a></p>`);
   },
 
   handle(ctx, event) {
     if (event.type !== 'click') return false;
     const d = (ctx.data[ID] ??= {});
     const details = event.target?.closest?.('[data-pack-details]');
-    if (details) { d.selected = details.dataset.packDetails; ctx.refresh(); return true; }
+    if (details) { d.selected = details.dataset.packDetails; ctx.reveal?.(`[data-ui-section="${ID}:detail:${d.selected.replace(/["\\]/g, '\\$&')}"]`); ctx.refresh(); return true; }
     if (event.target?.closest?.('[data-pack-details-close]')) { d.selected = null; ctx.refresh(); return true; }
     return false;
   },

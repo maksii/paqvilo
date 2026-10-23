@@ -7,10 +7,10 @@
 export const PARTS = Object.freeze({
   website: { title: 'Power Pages website', text: 'The website your visitors use, built from your website export.' },
   modelDriven: { title: 'Model-driven apps', text: 'The apps staff use to work with records, built from your exported Solutions.' },
-  canvas: { title: 'Canvas apps', text: 'Apps made in Power Apps Studio, built from your exported Solutions.' },
+  canvas: { title: 'Canvas apps', text: 'Apps made in Power Apps Studio, from your exported Solutions. Their formulas and data run so you can check them; their screens are not drawn.' },
   api: { title: 'Dataverse Web API', text: 'A local Dataverse API at its own address, for scripts, integrations and automated tests.' },
 });
-const LEVELS = Object.freeze({
+export const LEVELS = Object.freeze({
   'dry-run': ['Keep changes only while it runs', 'Records you add or edit reset when the preview restarts. Your project files never change.'],
   simulation: ['Save changes into the project data files', 'Records you add or edit are written to the sample data files of your project.'],
   deep: ['Save data and table changes', 'Also writes table and column changes into the declared data files. For advanced use.'],
@@ -129,14 +129,21 @@ function summaryOf({ state, esc, target, session, operation, checking, presets =
 }
 
 const choiceBox = (esc, name, value, checked, title, text, type = 'checkbox') => `<label class="quick-choice"><input type="${type}" name="${esc(name)}" value="${esc(value)}" ${checked ? 'checked' : ''}><span><strong>${esc(title)}</strong><span class="muted">${esc(text)}</span></span></label>`;
-function partsFieldset(esc, parts, found = {}) {
+export function partsFieldset(esc, parts, found = {}) {
   return `<fieldset class="quick-choices"><legend>What do you want to run? <span class="muted">Choose one or more.</span></legend>${Object.entries(PARTS).map(([key, item]) => choiceBox(esc, 'part', key, parts[key], item.title, `${item.text}${found[key] ? ` ${found[key]}` : ''}`)).join('')}</fieldset>`;
 }
+/** With several website exports found, each is a project of its own: the person ticks which ones to set up. */
+export function websitesFieldset(esc, portals = []) {
+  if (portals.length < 2) return '';
+  return `<fieldset class="quick-group"><legend>Websites to set up <span class="muted">Each one becomes a project of its own, with its own local address.</span></legend>${portals.map(item => `<label class="quick-choice compact"><input type="checkbox" name="website-pick" value="${esc(item.value)}" checked><span><strong>${esc(item.name ?? item.path)}</strong><span class="muted"><code>${esc(item.path)}</code>${item.profiles?.length ? ` · ${item.profiles.length} deployment profile(s)` : ''}</span></span></label>`).join('')}</fieldset>`;
+}
+/** The websites ticked in a create form, or null (all found) when the form offered no choice. */
+export const chosenWebsites = (data, candidates) => ((candidates?.portals ?? []).length > 1 ? data.getAll('website-pick').map(String) : null);
 // Why a part is ticked: what was found for it.
 const foundText = found => ({ website: found.portals.length ? `Found: ${found.portals.map(item => item.name ?? item.path).join(', ')}.` : '',
   modelDriven: found.solutions.some(item => item.apps?.modelDriven) ? 'Found in your Solutions.' : '', canvas: found.solutions.some(item => item.apps?.canvas) ? 'Found in your Solutions.' : '' });
 // Default choice for a new project: what the found exports can run (a Solution's AppModules and CanvasApps folders).
-const foundParts = found => {
+export const foundParts = found => {
   const parts = { website: found.portals.length > 0, modelDriven: found.solutions.some(item => item.apps?.modelDriven), canvas: found.solutions.some(item => item.apps?.canvas), api: false };
   if (!parts.website && !parts.modelDriven && !parts.canvas) parts[found.solutions.length ? 'modelDriven' : 'website'] = true;
   return parts;
@@ -149,8 +156,8 @@ function kindStep({ state, esc, target, quick }, created) {
   const parts = foundParts(found);
   const folder = String(state.directory ?? '').split(/[\\/]/).filter(Boolean).pop();
   return `<form data-form="quick-create" class="quick-form"><p>${seen.length ? `In this project folder we found ${esc(seen.join(', '))}. We ticked what they contain and will use those folders; you can check or change them in step 2.` : 'No exported files were found in this project folder yet. Choose what you want to run; in the next step you point to your exported files.'}</p>`
-    + partsFieldset(esc, parts, foundText(found))
-    + `<label class="quick-field">Project name <span class="muted small">The name of this setup in its settings file and in the simulator. Keep the suggestion if unsure: letters, numbers, - and _.</span><input name="name" value="${esc(slugName(folder))}" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*"></label>`
+    + partsFieldset(esc, parts, foundText(found)) + websitesFieldset(esc, found.portals)
+    + `<label class="quick-field">Project name <span class="muted small">The name of this setup in its settings file and in the simulator. Keep the suggestion if unsure: letters, numbers, - and _.</span><input name="name" value="${esc(slugName(folder))}" required pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*"></label>`
     + `<div class="toolbar"><button type="submit" class="button primary">Create project</button></div><p class="muted small">Creates the settings file <code>${esc(String(state.layers?.shared?.file ?? '').split(/[\\/]/).pop() || 'paqvilo.config.yml')}</code> in <code>${esc(state.directory ?? '')}</code>.</p></form>`;
 }
 
@@ -179,8 +186,8 @@ function filesStep({ esc, target, quick }) {
 }
 
 // Data sets of the project's own modules first, then the built-in examples; with none chosen, the project's first is selected.
-function presetGroups(esc, presets, chosen) {
-  chosen ||= presets.find(item => item[2])?.[0];
+export function presetGroups(esc, presets, chosen, suggest = true) {
+  if (suggest) chosen ||= presets.find(item => item[2])?.[0];
   const option = ([id, name]) => `<option value="${esc(id)}" ${id === chosen ? 'selected' : ''}>${esc(name === id ? id : `${name} (${id})`)}</option>`;
   const own = [...new Set(presets.filter(item => item[2]).map(item => item[2]))];
   return own.map(pack => `<optgroup label="${esc(`From your project: ${pack}`)}">${presets.filter(item => item[2] === pack).map(option).join('')}</optgroup>`).join('')
@@ -208,7 +215,7 @@ const OPENS = Object.freeze({
   canvas: ['Open canvas apps', 'Your canvas apps.'],
   simulator: ['Open simulator', 'Sign in as test users, see and reset records, and check what is running.'],
 });
-function runStep({ state, esc, target, session, operation, restartHint, previewError, checking, presets, apps = [] }) {
+export function runStep({ state, esc, target, session, operation, restartHint, previewError, checking, presets, apps = [] }) {
   if (!target) return '<p class="muted">Create your project first.</p>';
   // A Lense preview overlays your sources on a live portal in its own browser; setup does not start or stop it.
   if (state.runtime?.product === 'Lense') return `<p>Lense preview running${state.runtime.site ? ` · ${esc(state.runtime.site)}` : ''}: your local sources are shown on the live portal in the Lense browser window.</p>`
@@ -239,7 +246,7 @@ function runStep({ state, esc, target, session, operation, restartHint, previewE
 }
 const kitNotice = (esc, text) => `<p class="quick-error" role="alert">${esc(text)}</p>`;
 
-function checkStep({ state, esc, session, dashboard, productName, mapHtml, mapOpen }) {
+export function checkStep({ state, esc, session, dashboard, productName, mapHtml, mapOpen }) {
   const findings = (state.findings ?? []).map(item => {
     const [text, step] = PLAIN[item.code] ?? [item.message, null];
     return `<li><span>${esc(text)}</span>${step ? `<button type="button" class="button quiet small" data-quick-edit="${step}">Fix</button>` : `<a href="${esc(item.section ?? '#overview')}" data-quick-all>Fix in All settings</a>`}</li>`;
@@ -257,22 +264,46 @@ function checkStep({ state, esc, session, dashboard, productName, mapHtml, mapOp
 }
 
 // The runtime switches of a choice of parts; a switch the runtime has on by default is only written to turn it off.
-const switchesFor = parts => {
+export const switchesFor = parts => {
   const kind = kindFor(parts);
   return { ...(parts.api ? { dataverse: { enabled: true } } : {}), ...(!parts.modelDriven && kind !== 'dataverse-api' ? { modelDriven: { enabled: false } } : {}),
     ...(!parts.canvas && kind !== 'dataverse-api' ? { canvas: { enabled: false } } : {}) };
 };
-/** The configuration document Quick setup creates: one target with the exports it found, a local address and dry run. */
-export function createDocument({ parts, name, project, candidates, port = 8787, apiPort = null }) {
-  const kind = kindFor(parts), portal = candidates?.portals?.[0], solutions = (candidates?.solutions ?? []).map(item => item.value), packs = (candidates?.packs ?? []).slice(0, 1);
+// Deployment profiles found in a website export, registered by name with no default, so none applies until one is chosen.
+const profilesFor = portal => (portal?.profiles?.length ? { deploymentProfiles: { profiles: Object.fromEntries(portal.profiles.map(item => [item.name, { pages: { source: item.file } }])) } } : {});
+/** Project names for the chosen websites: one website takes `name`; several are each named after their website or folder. */
+export function websiteNames(name, portals) {
+  const used = new Set(), own = portal => slugName(portal?.name ?? String(portal?.value ?? '').split('/').pop());
+  return portals.map(portal => {
+    const base = portals.length > 1 ? own(portal) : name;
+    let id = base;
+    for (let counter = 2; used.has(id); counter++) id = `${base}-${counter}`;
+    used.add(id); return id;
+  });
+}
+/**
+ * The configuration document Quick setup and All settings create: one project per chosen website export (each with its own
+ * local address and the deployment profiles found in it), or one app or API project without a website; the found Solutions
+ * and sample data module, and dry run. `websites` lists the chosen website exports (default: all found).
+ */
+export function createDocument({ parts, name, project, candidates, port = 8787, ports = [], apiPort = null, websites = null }) {
+  const kind = kindFor(parts), found = candidates?.portals ?? [], solutions = (candidates?.solutions ?? []).map(item => item.value), packs = (candidates?.packs ?? []).slice(0, 1);
+  const chosen = kind === 'power-pages' ? (websites ? found.filter(item => websites.includes(item.value)) : found) : [];
   // A data module is registered by its path, so the runtime uses the id the module declares.
   const dataPacks = packs.map(item => item.value), switches = switchesFor(parts);
   // The API keeps one address across restarts, so scripts and tests can be pointed at it once.
   if (switches.dataverse && apiPort) switches.dataverse.port = apiPort;
-  if (project) return { version: 2, runtime: { kind }, simulation: { level: 'dry-run' }, ...(kind === 'power-pages' && portal ? { defaultPortal: name, portals: [{ id: name, path: portal.value }] } : {}),
+  const names = websiteNames(name, chosen.length ? chosen : [null]);
+  if (project) return { version: 2, runtime: { kind }, simulation: { level: 'dry-run' }, ...(chosen.length ? { defaultPortal: names[0], portals: chosen.map((portal, index) => ({ id: names[index], path: portal.value, ...profilesFor(portal) })) } : {}),
     solutions: solutions.map((path, index) => ({ id: `solution-${index + 1}`, path })), ...(dataPacks.length ? { dataPacks } : {}), ...switches };
-  return { sourceRoot: '.', defaultSite: name, sites: { [name]: { ...(kind === 'power-pages' ? { source: portal?.value ?? '.', defaultEnv: 'local', environments: { local: `${LOCAL}${port}` } } : {}),
-    mirage: { port, runtime: { kind }, simulation: { level: 'dry-run' }, ...(solutions.length ? { solutionRoots: solutions } : {}), ...(dataPacks.length ? { dataPacks } : {}), ...switches } } } };
+  const site = (portal, index) => {
+    const local = ports[index] ?? port + index;
+    // Only the first project keeps the fixed Web API port; the others pick a free one at every start.
+    const own = index && switches.dataverse ? { dataverse: { ...switches.dataverse, port: 0 } } : {};
+    return { ...(kind === 'power-pages' ? { source: portal?.value ?? '.', defaultEnv: 'local', environments: { local: `${LOCAL}${local}` } } : {}),
+      mirage: { port: local, runtime: { kind }, simulation: { level: 'dry-run' }, ...(solutions.length ? { solutionRoots: solutions } : {}), ...(dataPacks.length ? { dataPacks } : {}), ...switches, ...own, ...profilesFor(portal) } };
+  };
+  return { sourceRoot: '.', defaultSite: names[0], sites: Object.fromEntries((chosen.length ? chosen : [null]).map((portal, index) => [names[index], site(portal, index)])) };
 }
 
 const set = (path, value) => ({ op: 'set', path, value });

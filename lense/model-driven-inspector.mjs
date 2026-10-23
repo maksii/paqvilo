@@ -121,7 +121,8 @@ export async function startModelDrivenInspector({ context, page, overlay, cfg, i
     try {
       // Install the panel before reading native context so a slow/paused app
       // exposes progress immediately instead of appearing ready with empty data.
-      if (cfg.panel !== false) { await drawPanel(); await installTools(); }
+      // A failed tools install must not hide the app context from Inspect and X-ray.
+      if (cfg.panel !== false) { await drawPanel(); await installTools().catch(() => {}); }
       const observed = await page.evaluate(inspectModelDrivenContext, cfg.origin);
       if (!active() || revision !== documentRevision) return;
       latestContext = observed; observedAt = new Date().toISOString();inspectionVersion++;

@@ -8,6 +8,7 @@ import { viewCommon } from './view-common.mjs';
 const ID = 'capabilities';
 const { e, value, list, fieldHelp, heading, panel, pending, failure, failed } = viewCommon({ id: ID, label: 'Capabilities & preflight', kit, help: HELP });
 const LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];
+const LEVEL_TIP = 'inventory: listed from source only. contract: answers with the right shape from a fixture or mock. behaviour: this runtime runs the real logic. native-qualified: behaviour also compared with a real environment.';
 // Same order as PREFLIGHT_STATUSES in mirage/lib/capability-report.mjs.
 const STATUSES = ['missing', 'unsupported', 'placeholder', 'disabled', 'secret', 'satisfied'];
 const STATUS_TONE = { satisfied: 'ok', missing: 'bad', unsupported: 'warn', placeholder: 'warn', disabled: 'neutral', secret: 'info' };
@@ -91,15 +92,15 @@ export const view = {
     const reportBody = report ? levelFilter + list(ctx, 'cap-modules', modules, [
       { label: 'Capability', render: item => `<code>${e(item.name)}</code>` },
       { label: 'Kind', render: item => e(item.kind ?? '') },
-      { label: 'Level', render: item => kit.levelBadge(item.level) },
-      { label: 'Source', render: item => e(item.source ?? item.stateOwner ?? item.lifecycle ?? '—') },
-      { label: 'Operations', render: item => e(item.operations?.length ?? 0) },
+      { label: 'Level', info: LEVEL_TIP, render: item => kit.levelBadge(item.level) },
+      { label: 'Source', info: 'Where the record keeps its state or comes from, when it reports one (for example memory, a pack or a provider).', render: item => e(item.source ?? item.stateOwner ?? item.lifecycle ?? '—') },
+      { label: 'Operations', info: 'How many individual operations the record lists, each with its own level.', render: item => e(item.operations?.length ?? 0) },
     ], 'No capability record matches.', 'Capability records') : kit.notice('This host sent no capability report in its state.', 'warn');
     const missing = list(ctx, 'cap-missing', report?.missing ?? [], [
-      { label: 'Capability', render: item => `<code>${e(item.module)}</code>` }, { label: 'Requires', render: item => `<code>${e(item.requires)}</code>` },
+      { label: 'Capability', render: item => `<code>${e(item.module)}</code>` }, { label: 'Requires', info: 'The prerequisite no registered record provides, so this capability cannot reach behaviour level.', render: item => `<code>${e(item.requires)}</code>` },
     ], 'Every plain prerequisite is provided by a registered record.', 'Missing prerequisites');
     const unsupported = list(ctx, 'cap-unsupported', report?.unsupported ?? [], [
-      { label: 'Capability', render: item => `<code>${e(item.id)}</code>` }, { label: 'Level', render: item => kit.levelBadge(item.level) }, { label: 'Reason', render: item => e(item.reason ?? '') },
+      { label: 'Capability', render: item => `<code>${e(item.id)}</code>` }, { label: 'Level', info: LEVEL_TIP, render: item => kit.levelBadge(item.level) }, { label: 'Reason', render: item => e(item.reason || 'No reason recorded') },
     ], 'No capability is below behaviour.', 'Unsupported capabilities');
     const components = Object.entries(inventory?.components ?? {}).map(([component, entry]) => ({ component, ...entry }));
     const inventoryBody = inventory ? `<p class="ui-help">${e(inventory.total ?? 0)} Solution components in the source inventory.</p>` + list(ctx, 'cap-inventory', components, [
@@ -118,9 +119,9 @@ export const view = {
     return heading(ctx)
       + panel(ctx, 'report', 'Capability report', `${report?.modules?.length ?? 0} records`, reportBody, true)
       + panel(ctx, 'missing', 'Missing prerequisites', `${report?.missing?.length ?? 0}`, missing)
-      + panel(ctx, 'unsupported', 'Unsupported', `${report?.unsupported?.length ?? 0}`, unsupported)
+      + panel(ctx, 'unsupported', 'Below behaviour level', `${report?.unsupported?.length ?? 0}`, unsupported)
       + panel(ctx, 'offline', 'Mobile offline sessions', Array.isArray(d.offline) ? `${d.offline.filter(item => item.mode === 'offline').length} offline` : d.offline ? 'unavailable' : 'not loaded', offlineBody, Boolean(d.offline))
-      + panel(ctx, 'inventory', 'Source inventory', `${inventory?.total ?? 0} components`, inventoryBody, false, `${ID}.report`)
+      + panel(ctx, 'inventory', 'Source inventory', `${inventory?.total ?? 0} components`, inventoryBody)
       + panel(ctx, 'preflight', 'Preflight', d.result ? `${d.result.summary?.blocking ?? 0} blocking` : 'not run', preflightPanel(ctx, d, state), Boolean(d.result));
   },
 

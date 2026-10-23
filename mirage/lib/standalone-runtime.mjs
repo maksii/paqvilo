@@ -305,10 +305,15 @@ export async function createStandaloneRuntime(options = {}) {
         { id: 'host:model-driven', kind: 'host', label: 'Model-driven apps', status: caps.modelDriven ? 'listening' : 'disabled', detail: { path: caps.modelDriven ? '/main.aspx' : null }, link: '#dataverse' },
         { id: 'host:setup', kind: 'host', label: 'Setup workspace', status: 'listening', detail: { path: '/_setup/' } },
         { id: 'host:admin', kind: 'host', label: 'Administration', status: 'listening', detail: { path: '/_sim/' } },
-        ...(caps.modelDriven ? [{ id: 'client:staff', kind: 'client', label: 'Staff browser', status: 'ready', detail: {}, link: '#dataverse' }] : []),
+        // Staff administer the runtime and open its model-driven, canvas and code apps.
+        { id: 'client:staff', kind: 'client', label: 'Staff browser', status: 'ready', detail: {}, link: '#dataverse' },
       ],
-      edges: caps.modelDriven ? [{ from: 'client:staff', to: 'host:model-driven', kind: 'http', status: 'listening', label: 'browser' },
-        { from: 'host:model-driven', to: 'org:store', kind: 'process', status: 'ready', label: 'records' }] : [],
+      // The model-driven shell calls /_apps/api on this origin, in process; it does not use the Web API listener.
+      edges: [{ from: 'client:staff', to: 'host:model-driven', kind: 'http', status: 'listening', label: 'browser' },
+        { from: 'host:model-driven', to: 'org:store', kind: 'process', status: 'ready', label: 'records and Web API messages, in the app' },
+        { from: 'host:model-driven', to: 'app:canvas', kind: 'process', status: 'ready', label: 'embedded canvas apps' },
+        { from: 'client:staff', to: 'host:admin', kind: 'http', status: 'listening', label: 'administer' },
+        { from: 'client:staff', to: 'host:setup', kind: 'http', status: 'listening', label: 'configure' }],
       configuration: { settingsKeys: options.configuredSettings ?? null, ports: { portal: null, identityProvider: null } },
       // No source reload revision here (reloads: null); inFlight leaves out this dashboard request itself.
       activity: { inFlight: Math.max(0, requests.size - 1), diagnostics: { total: diagnostics.length, byCode: byCode(diagnostics) }, reloads: null },

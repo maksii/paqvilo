@@ -159,7 +159,7 @@ export const MIRAGE_SETTINGS = Object.freeze({
     },
     resolve: (value, { sourceRoot }) => (isPlainObject(value) ? { ...structuredClone(value), ...(isPlainObject(value.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null),
     fallback: null },
-  dataModel: { scopes: ['catalogue', 'portal'], option: 'dataModel', doc: 'standard or enhanced when the source does not record it.', parse: choice(['standard', 'enhanced'], 'must be standard or enhanced'), resolve: value => value || undefined },
+  dataModel: { scopes: ['catalogue', 'portal'], option: 'dataModel', doc: 'The Power Pages data model of the website export (standard or enhanced), only when the export does not record it. Unrelated to deployment profiles that share these names.', parse: choice(['standard', 'enhanced'], 'must be standard or enhanced'), resolve: value => value || undefined },
   compat: { scopes: ['catalogue'], option: 'localOverrides', resolved: 'localOverrides', doc: 'Local compatibility adapters.', parse: overrideKey('compat'), resolve: null },
   head: { scopes: ['catalogue'], option: 'localOverrides', resolved: 'localOverrides', doc: 'Local head stylesheets and scripts.', parse: overrideKey('head'), resolve: null },
   render: { scopes: ['catalogue'], option: 'render', identity: true, doc: 'Liquid render limits.', parse: value => renderSettings(value) },

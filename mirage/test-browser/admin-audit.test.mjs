@@ -85,14 +85,14 @@ test(
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(app.adminUrl + "#overview");
     await page
-      .getByRole("heading", { name: "Your local portal workspace" })
+      .getByRole("heading", { name: "Overview", exact: true })
       .waitFor();
     assert.ok(calls.includes("/__sim/api/state?summary=1"));
     assert.ok(
       !calls.some((url) => url.includes("/records/") || url.includes("/audit")),
     );
     await page
-      .getByRole("link", { name: "Data records", exact: false })
+      .locator("#navigation").getByRole("link", { name: "Data records", exact: true })
       .click();
     assert.equal(await page.getByLabel("Entity", { exact: true }).inputValue(), "contact");
     await page.getByLabel("Entity", { exact: true }).selectOption("contact");
@@ -212,7 +212,7 @@ test(
       .getByRole("button", { name: "Clear audit", exact: true })
       .last()
       .click();
-    await page.getByText("0 retained", { exact: false }).waitFor();
+    await page.getByText("0 kept", { exact: false }).waitFor();
     const hostile = '"><img src=x onerror="window.auditInjected=true">';
     await page.goto(app.adminUrl + '#audit?kind=' + encodeURIComponent(hostile));
     await page.locator('[data-audit-filter="kind"]').waitFor();
@@ -223,7 +223,7 @@ test(
     // Invalid hash names cannot dispatch inherited Object methods or become HTML.
     await page.goto(app.adminUrl + '#__proto__');
     await page.reload();
-    await page.getByRole('heading', { name: 'Your local portal workspace' }).waitFor();
+    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
     assert.deepEqual(errors, []);
   },
 );

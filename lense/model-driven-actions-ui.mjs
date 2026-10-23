@@ -14,7 +14,8 @@ export function modelDrivenActionsUi(data) {
   let shared;
   if(canonical){shared=new CSSStyleSheet();shared.replaceSync(`
     .actions-panel{position:static;inset:auto;width:100%;max-width:none;max-height:none;overflow:visible;padding:0;border:0;border-radius:0;box-shadow:none;background:var(--bg);color:var(--fg)}
-    .actions-group h3{background:var(--bg)}.actions-detail{background:var(--tint)}.actions-tabs button[aria-pressed=true]{background:var(--tint);border-color:var(--primary);color:var(--primary)}
+    .actions-group h3{background:var(--bg)}.actions-detail{background:var(--tint)}.actions-panel .f[aria-pressed=true]{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+    .actions-item>.actions-select{color:var(--fg)}.actions-item>.actions-select:hover{color:var(--link);background:var(--tint)}.actions-star{color:var(--fg)}
     .actions-panel input,.actions-panel textarea,.actions-panel select{background:var(--bg);color:var(--fg);border-color:var(--input-line);border-radius:var(--radius)}.actions-panel :focus-visible{outline-color:var(--primary)}
     .actions-item,.actions-list,.actions-result,.actions-result th,.actions-result td{border-color:var(--line)}.actions-item small,.actions-muted{color:var(--muted)}.actions-status{color:var(--link)}.actions-reason{color:var(--warn)}
     .actions-identity,.actions-bar-identity{background:var(--warn-bg);color:var(--fg);border-radius:var(--radius)}.actions-bar-identity{position:static;inset:auto;max-width:none;margin:6px 10px;padding:8px;border:1px solid var(--warn)}
@@ -22,6 +23,8 @@ export function modelDrivenActionsUi(data) {
   `);root.adoptedStyleSheets=[...root.adoptedStyleSheets,shared];}
   const make = (tag, text, cls) => { const node = document.createElement(tag); if (text != null) node.textContent = text; if (cls) node.className = cls; return node; };
   const button = (label, callback, cls) => { const node = make('button', label, cls??(canonical?'btn':undefined)); node.type = 'button'; node.addEventListener('click', callback, { signal }); return node; };
+  // Shared-panel chips for toggles; filled .btn only for commands. List rows keep the panel text color.
+  const chip = canonical ? 'f' : undefined;
   const bar = root.querySelector('.bar'), launch = button('Actions', () => { panel.hidden ? open() : close(true); });
   launch.setAttribute('aria-expanded', 'false'); launch.setAttribute('aria-controls', 'paqvilo-actions-panel'); if(!canonical)bar.insertBefore(launch, bar.querySelector('.bar-status'));
   const panel = make('section', null, 'actions-panel'); panel.id = 'paqvilo-actions-panel'; panel.hidden = true; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Model-driven actions');
@@ -123,13 +126,13 @@ export function modelDrivenActionsUi(data) {
     const search = make('input', null, 'actions-search'); search.type = 'search'; search.placeholder = 'Find actions'; search.setAttribute('aria-label', 'Find actions'); search.value = actionSearch;
     const list = make('div', null, 'actions-list'), detail = make('div'); content.append(search);
     const controls = make('div', null, 'actions-toolbar');
-    for (const [label, value] of [['All','all'], ['Favorites','favorites'], ['Recent','recent']]) { const control = button(label, () => { actionFilter = value; for (const item of controls.children) item.setAttribute('aria-pressed', String(item === control)); draw(); }); control.setAttribute('aria-pressed', String(value === actionFilter)); controls.append(control); } content.append(controls, list, detail);
+    for (const [label, value] of [['All','all'], ['Favorites','favorites'], ['Recent','recent']]) { const control = button(label, () => { actionFilter = value; for (const item of controls.children) item.setAttribute('aria-pressed', String(item === control)); draw(); }, chip); control.setAttribute('aria-pressed', String(value === actionFilter)); controls.append(control); } content.append(controls, list, detail);
     function draw() {
       list.replaceChildren(); const term = search.value.toLocaleLowerCase(), entries = (current.actions ?? []).filter(action => `${action.label} ${action.description} ${action.group}`.toLocaleLowerCase().includes(term) && (actionFilter === 'all' || actionFilter === 'favorites' && favorites.has(action.label) || actionFilter === 'recent' && recent.includes(action.label)));
       for (const group of [...new Set(entries.map(action => action.group))]) {
         const section = make('section', null, 'actions-group'); section.append(make('h3', group));
         for (const action of entries.filter(entry => entry.group === group)) {
-          const row = make('div', null, 'actions-item'), select = button(action.label, () => { selectedAction = action.id; detail.replaceChildren(); actionForm(action, detail); });
+          const row = make('div', null, 'actions-item'), select = button(action.label, () => { selectedAction = action.id; detail.replaceChildren(); actionForm(action, detail); }, 'actions-select');
           const support = availability(action); select.append(make('small', support.available ? action.description : support.reason || 'Unavailable on this page.'));
           const favorite = button(favorites.has(action.label) ? '★' : '☆', () => { favorites.has(action.label) ? favorites.delete(action.label) : favorites.add(action.label); persistLabels(); draw(); }, 'actions-star'); favorite.setAttribute('aria-label', `Favorite ${action.label}`); favorite.setAttribute('aria-pressed', String(favorites.has(action.label))); row.append(select, favorite); section.append(row);
         } list.append(section);
@@ -168,7 +171,7 @@ export function modelDrivenActionsUi(data) {
       for (const [id, request] of requests) if (request.kind !== 'identity') requests.delete(id);
       host.__paqModelActionState?.cancelPending?.(); host.__paqModelCommands?.cancelPending?.(); renderResult(null); status.textContent = 'Stopped waiting. Native operations or JavaScript that ignore cancellation may still be running.'; renderView();
     }));
-    tabs.replaceChildren(); for (const label of ['Actions','Identity','Custom']) { const tab = button(label, () => { view = label; renderView(); [...tabs.children].find(node => node.textContent === label)?.focus(); }); tab.setAttribute('aria-pressed', String(view === label)); tabs.append(tab); }
+    tabs.replaceChildren(); for (const label of ['Actions','Identity','Custom']) { const tab = button(label, () => { view = label; renderView(); [...tabs.children].find(node => node.textContent === label)?.focus(); }, chip); tab.setAttribute('aria-pressed', String(view === label)); tabs.append(tab); }
     content.replaceChildren(); if (view === 'Actions') renderActions(); else if (view === 'Identity') renderIdentityView(); else renderCommands();
   }
   function open() { if(canonical)host.__pp.openTab('actions');else host.__paqModelInspector?.closePanel?.(); panel.hidden = false; launch.setAttribute('aria-expanded', 'true'); renderView(); content.querySelector('input,button,select')?.focus(); }

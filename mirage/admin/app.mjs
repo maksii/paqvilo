@@ -112,8 +112,8 @@ const runtimeLinks = () => state?.links ?? state?.status?.links ?? {};
 const docs = () => state?.docs ?? state?.status?.docs ?? statusExtra?.docs ?? {};
 const docOf = path => (path ? kit.docLink(path, docs()) : undefined);
 const helpKey = key => `help-${String(key).replace(/[^a-z0-9-]+/gi, "-")}`;
-/** One help paragraph from help-content (`<view>.<panel>`), with its doc link. */
-const panelHelp = key => (HELP[key] ? kit.help({ id: helpKey(key), text: HELP[key].intro, doc: docOf(HELP[key].doc) }) : "");
+/** Help from help-content (`<view>.<panel>`): its first sentence, with the details and doc link behind an (i) tooltip. */
+const panelHelp = (key, title) => (HELP[key] ? kit.leadHelp({ id: helpKey(key), label: title, text: HELP[key].intro, steps: HELP[key].steps, example: HELP[key].example, doc: docOf(HELP[key].doc) }) : "");
 /** Visible help for one control from `HELP[key].fields[name]` (RU2-09); the control carries `aria-describedby="<id>-help"`. */
 const controlHelp = (id, key, name) => kit.fieldHelp(id, HELP[key]?.fields?.[name] ?? "");
 /** The `fields` legend of a help entry (audit kinds, log types, operation modes…) as a collapsed list. */
@@ -122,7 +122,7 @@ const legend = (key, title = "What the values mean") => (HELP[key]?.fields
   : "");
 /** The guide that starts every view (D12): intro, steps, example and doc links from help-content. */
 const viewGuide = key => (HELP[key]
-  ? kit.guide({ key, intro: HELP[key].intro, steps: HELP[key].steps ?? [], example: HELP[key].example, docs: HELP[key].doc ? [docOf(HELP[key].doc)] : [] })
+  ? kit.guide({ key, intro: kit.splitLead(HELP[key].intro)[0], details: kit.splitLead(HELP[key].intro)[1], steps: HELP[key].steps ?? [], example: HELP[key].example, docs: HELP[key].doc ? [docOf(HELP[key].doc)] : [] })
   : "");
 /**
  * Tie visible field help to its control (aria-describedby): help that sits in the same field wrapper as a
@@ -146,8 +146,20 @@ const ctx = {
   state: () => state, session: () => browserSession, data: {}, pager: key => browserFor(key),
   open: key => openDisclosures.has(key) || sectionState.get(key) === true,
   toggle(key) { if (openDisclosures.has(key)) openDisclosures.delete(key); else openDisclosures.add(key); render(); },
-  help: HELP, docs, links: runtimeLinks, capabilities, escape, kit, view: () => activeView,
+  help: HELP, docs, links: runtimeLinks, capabilities, escape, kit, view: () => activeView, group: () => groupOf(activeView),
+  /** Scroll to and highlight `selector` after the next render (a details or a row the action just opened). */
+  reveal: selector => { landing = { view: activeView, selector }; },
 };
+// An (i) tooltip inside a scrolling table would be clipped by the table frame: while it shows, it is placed in the
+// viewport under its button instead.
+for (const type of ["mouseover", "focusin"])
+  document.addEventListener(type, event => {
+    const info = event.target.closest?.(".ui-info");
+    const pop = info?.closest(".table-wrap, .ui-table-wrap") && info.querySelector(".ui-info-pop");
+    if (!pop) return;
+    const box = info.getBoundingClientRect();
+    Object.assign(pop.style, { position: "fixed", top: `${box.bottom + 8}px`, left: `${Math.max(8, Math.min(box.left - 12, innerWidth - 400))}px` });
+  });
 // Delegated events reach the active view module first; `handle` returns true when it consumed the event.
 for (const type of ["click", "submit", "change", "input", "keydown"])
   document.addEventListener(type, event => {
@@ -179,17 +191,35 @@ document.addEventListener('click', async event => {
 function staffSessionPanel() {
   if (capabilities().modelDriven === false) return '';
   const current = staffSession?.current;
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Model-driven staff session</h2>${badge(current?.kind === 'staff' ? 'Staff user' : current ? 'Local administrator' : 'Session unavailable', current?.kind === 'staff' ? '' : 'amber')}</div><p class="muted">This browser's model-driven reads, lookups and writes use the selected organization's staff roles and field security. Portal visitor personas and API application tokens have separate identities. The local administrator is an explicit development bypass.</p>${staffSessionError ? `<div class="notice warning">${escape(staffSessionError)}</div>` : ''}${current ? `<p><strong>${escape(current.name)}</strong> · ${escape((current.roles ?? []).join(', ') || 'No roles')}</p>` : ''}<form id="staff-session-form" class="form-grid"><div><label for="staff-user">Staff user</label><select id="staff-user" aria-describedby="staff-user-help" ${staffSession?.users?.length ? '' : 'disabled'}>${(staffSession?.users ?? []).map(user => `<option value="${escape(user.id)}" ${current?.id === user.id ? 'selected' : ''}>${escape(user.name)} · ${escape((user.roles ?? []).join(', ') || 'No roles')}</option>`).join('') || '<option>No eligible staff users; create an interactive user below.</option>'}</select>${controlHelp("staff-user", "dataverse.staff-session", "user")}</div><div class="toolbar"><button type="submit" class="button primary" ${staffSession?.users?.length ? '' : 'disabled'}>Use staff user</button><button type="button" class="button" data-action="staff-reset">Use local administrator</button></div></form></section>`;
+  return `<section class="panel section-gap" data-panel="staff-session"><div class="panel-heading"><h2>Model-driven staff session</h2>${badge(current?.kind === 'staff' ? 'Staff user' : current ? 'Local administrator' : 'Session unavailable', current?.kind === 'staff' ? '' : 'amber')}</div>${panelHelp("dataverse.staff-session", "the staff session")}${staffSessionError ? `<div class="notice warning">${escape(staffSessionError)}</div>` : ''}${current ? `<p><strong>${escape(current.name)}</strong> · ${escape((current.roles ?? []).join(', ') || 'No roles')}</p>` : ''}<form id="staff-session-form" class="form-grid"><div><label for="staff-user">Staff user</label><select id="staff-user" aria-describedby="staff-user-help" ${staffSession?.users?.length ? '' : 'disabled'}>${(staffSession?.users ?? []).map(user => `<option value="${escape(user.id)}" ${current?.id === user.id ? 'selected' : ''}>${escape(user.name)} · ${escape((user.roles ?? []).join(', ') || 'No roles')}</option>`).join('') || '<option>No eligible staff users; create an interactive user below.</option>'}</select>${controlHelp("staff-user", "dataverse.staff-session", "user")}</div><div class="toolbar"><button type="submit" class="button primary" ${staffSession?.users?.length ? '' : 'disabled'}>Use staff user</button><button type="button" class="button" data-action="staff-reset">Use local administrator</button></div></form></section>`;
 }
+// Plain words for the persistence values a runtime reports (lib/simulation-settings.mjs, simulation-persistence.mjs).
+const PERSISTENCE = {
+  memory: 'In memory only: gone when this runtime stops',
+  'pack-data-files': 'The pack DATA files listed below',
+  'local-state': "This runtime's private state file",
+  'private-local-state': "This runtime's private state file",
+};
+/** One fact row: label with an (i) explanation, then the value. */
+const fact = (label, valueHtml, tip) => `<div class="row"><span class="row-title">${escape(label)}${tip ? kit.info({ label: `About ${label}`, text: tip }) : ''}</span><span>${valueHtml}</span></div>`;
 function simulationPanel() {
   const policy = state?.simulation ?? state?.status?.simulation;
   if (!policy) return '';
   const labels = { 'dry-run': 'Dry run', simulation: 'Simulation', deep: 'Deep simulation', 'local-state': 'Legacy local state' };
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Runtime & persistence</h2>${badge(labels[policy.level] ?? policy.level, policy.level === 'dry-run' ? 'green' : 'amber')}</div>${panelHelp(activeView === 'runtime' ? 'runtime.persistence' : 'overview.runtime')}<div class="detail-list"><div class="row"><span class="row-title">Surface</span><span>${escape(state?.runtime?.kind ?? state?.status?.runtime?.kind ?? 'power-pages')}</span></div><div class="row"><span class="row-title">Business records</span><span>${escape(policy.recordPersistence)}</span></div><div class="row"><span class="row-title">Identity and credentials</span><span>${escape(policy.controlPlanePersistence ?? (policy.level === 'dry-run' ? 'memory' : 'private-local-state'))}</span></div><div class="row"><span class="row-title">Schema changes</span><span>${policy.schemaChanges ? 'Allowed' : 'Disabled'}</span></div></div>${policy.level === 'dry-run' ? '<p class="muted">Record edits stay in memory and disappear when this runtime stops. Schema changes are disabled.</p>' : policy.legacy ? '<p class="muted">This configuration retains ignored local-state persistence. Choose an explicit level in Project setup for pack DATA ownership.</p>' : '<p class="muted">Business writes update the declared existing pack DATA files below. Tables without a DATA owner are read-only. Credentials stay in private local state.</p>'}${pagedTable('data-targets', policy.targets ?? [], { caption: 'Pack DATA destinations', emptyText: 'No pack DATA destinations declared.', columns: [
-    { label: 'Pack', render: target => `<strong>${escape(target.packId)}</strong>` },
-    { label: 'File', render: target => `<span class="source-path">${escape(target.file)}</span>` },
-    { label: 'Tables', render: target => `${escape(Array.isArray(target.tables) ? target.tables.join(', ') : JSON.stringify(target.tables ?? []))}${target.schema ? ' · schema destination' : ''}` },
-  ] })}${policy.ready === false ? '<div class="notice warning">Persistence is not ready. Review declared DATA files before writing.</div>' : ''}<p class="muted">${Number(policy.dirtyRecords ?? 0)} changed records${policy.dirtyTables?.length ? ` · ${escape(policy.dirtyTables.join(', '))}` : ''}. Level and surface changes apply after restart; changing configuration never flushes in-memory edits.</p><a class="button" href="/_setup/#runtime-configuration">Configure runtime & persistence</a></section>`;
+  const kind = state?.runtime?.kind ?? state?.status?.runtime?.kind ?? 'power-pages';
+  const targets = policy.targets ?? [];
+  return `<section class="panel section-gap" data-panel="persistence"><div class="panel-heading"><h2>Runtime & persistence</h2>${badge(labels[policy.level] ?? policy.level, policy.level === 'dry-run' ? 'green' : 'amber')}</div>${panelHelp(activeView === 'runtime' ? 'runtime.persistence' : 'overview.runtime', 'runtime and persistence')}<div class="detail-list">`
+    + fact('Runtime kind', escape({ 'power-pages': 'Power Pages portal with its organization', 'model-driven': 'Model-driven apps with their organization', 'dataverse-api': 'Dataverse Web API only' }[kind] ?? kind), 'What this runtime serves. It comes from the project configuration and changes only after a restart.')
+    + fact('Record changes are kept in', escape(PERSISTENCE[policy.recordPersistence] ?? policy.recordPersistence), 'Where creates, updates and deletes of business records (accounts, contacts and other tables) go. Set by the simulation level in Project setup.')
+    + fact('Sign-ins, users and secrets are kept in', escape(PERSISTENCE[policy.controlPlanePersistence ?? (policy.level === 'dry-run' ? 'memory' : 'private-local-state')]), 'Where local registrations, staff users, password and secret hashes are stored. Never in your source files.')
+    + fact('Table and column changes', policy.schemaChanges ? 'Allowed' : 'Not allowed', 'Whether this runtime may add tables or columns. Only deep simulation (or the legacy local state) allows it.')
+    + `</div>${policy.level === 'dry-run' ? '' : policy.legacy ? '<p class="muted">This configuration names no simulation level, so it keeps the older private state file. Choose a level in Project setup to write pack DATA files instead.</p>' : '<p class="muted">Tables without a pack DATA file are read-only here.</p>'}`
+    + (targets.length ? pagedTable('data-targets', targets, { caption: 'Pack DATA files that receive record changes', columns: [
+      { label: 'Pack', render: target => `<strong>${escape(target.packId)}</strong>` },
+      { label: 'File', render: target => `<span class="source-path">${escape(target.file)}</span>` },
+      { label: 'Tables', info: 'The tables whose record changes this file receives. "schema destination" means it also receives table and column changes.', render: target => `${escape(Array.isArray(target.tables) ? target.tables.join(', ') : JSON.stringify(target.tables ?? []))}${target.schema ? ' · schema destination' : ''}` },
+    ] }) : '')
+    + `${policy.ready === false ? '<div class="notice warning">Persistence is not ready. Review declared DATA files before writing.</div>' : ''}<p class="muted">${Number(policy.dirtyRecords ?? 0)} records changed since start${policy.dirtyTables?.length ? ` · ${escape(policy.dirtyTables.join(', '))}` : ''}.</p><a class="button" href="/_setup/#runtime-configuration">Change the level in Project setup</a></section>`;
 }
 // Deep links are #view or #view?name=value: records (entity, id), audit filters,
 // portal items (kind, name), access (contact) and logs (type).
@@ -203,6 +233,39 @@ let activeView = views.some(({ id }) => id === parseHash().view)
   : "overview";
 let pendingRoute = null,
   routeNotice = "";
+// Where a navigation lands: entering a view scrolls to its top and focuses its heading; `#view?panel=<key>` opens,
+// scrolls to and highlights that panel once the view's data has loaded (so later content cannot push it away);
+// ctx.reveal does the same for an element an action just rendered.
+let landing = { view: activeView, top: true, panel: parseHash().params.get("panel") };
+// The landed panel stays outlined for a moment, also across the re-renders of polling views.
+let landed = null;
+const panelTarget = (view, key) => {
+  const content = $("#content"), quoted = CSS.escape(key);
+  return content.querySelector([`[data-ui-section="${view}:${quoted}"]`, `[data-ui-section="${view}-${quoted}"]`, `[data-ui-section="${quoted}"]`,
+    `[data-disclosure="${quoted}"]`, `[data-panel="${quoted}"]`].join(", ")) ?? content.querySelector(`#${quoted}`);
+};
+function land() {
+  if (landed?.view === activeView) landed.find()?.classList.add("is-landed");
+  if (!landing || landing.view !== activeView) return;
+  if (landing.top) {
+    landing.top = false;
+    window.scrollTo(0, 0);
+    $("#view-title")?.focus({ preventScroll: true });
+  }
+  if (!landing.selector && !landing.panel) { landing = null; return; }
+  if (!landing.selector && !landing.ready) return;
+  const { selector, panel } = landing, find = () => (selector ? $("#content").querySelector(selector) : panelTarget(activeView, panel));
+  const target = find();
+  if (!target) return;
+  landing = null;
+  if (target.localName === "details") target.open = true;
+  target.scrollIntoView({ block: "start" });
+  if (!target.matches("a, button, input, select, textarea, summary, [tabindex]")) target.setAttribute("tabindex", "-1");
+  (target.localName === "details" ? target.querySelector("summary") : target).focus({ preventScroll: true });
+  target.classList.add("is-landed");
+  const mark = landed = { view: activeView, find };
+  setTimeout(() => { if (landed !== mark) return; landed = null; mark.find()?.classList.remove("is-landed"); }, 2500);
+}
 let selectedEntity = "";
 let filter = "";
 let editContext;
@@ -279,10 +342,14 @@ function sliceRows(key, items, options) {
 }
 function tableTools(key, total, pages, { search = true } = {}) {
   const settings = browserFor(key);
+  if (total <= kit.PAGE_SIZES[0] && !settings.search && settings.page <= 1) return "";
   return kit.tableTools(key, { total, pages, page: settings.page, size: settings.size, search: settings.search }, { searchable: search });
 }
 /** A paged kit table keyed by `key` (rows carry `data-table="key"`, D14). */
-const pagedTable = (key, items, spec) => kit.table({ key, result: sliceRows(key, items, spec.text ? { text: spec.text } : undefined), ...spec });
+// Ten rows or fewer need no search box or pager (the kit pages longer lists).
+const pagedTable = (key, items, spec) => (items.length <= kit.PAGE_SIZES[0] && !browserFor(key).search
+  ? kit.table({ key, items, ...spec })
+  : kit.table({ key, result: sliceRows(key, items, spec.text ? { text: spec.text } : undefined), ...spec }));
 /**
  * A text box that filters a long `<select>` (options) or checkbox list (`.checkbox-line`, `.checkbox-label`)
  * client-side; shown only for more than ten choices. `target` is the select id or the list container id.
@@ -476,6 +543,10 @@ async function loadView() {
   if (activeView === "dataverse") { if (capabilities().modelDriven !== false) await loadStaffSession(); await loadDataverse(); }
   if (activeView === "logs") connectLogs();
   await followRoute();
+  // The view's data is in: a panel the link named either lands now or does not exist here.
+  if (landing?.view === activeView) landing.ready = true;
+  land();
+  if (landing?.view === activeView) landing = null;
 }
 /** Filters and selections a deep link sets before its view loads. */
 function applyRoute(view, params) {
@@ -502,6 +573,7 @@ function applyRoute(view, params) {
   if (view === "operations" && params.get("key")) {
     selectedOperation = params.get("key");
     openDisclosures.add("operation-edit");
+    landing = { ...(landing?.view === view ? landing : { view }), panel: "operation-edit" };
   }
   moduleFor(view)?.route?.(ctx, params);
   routeNotice = "";
@@ -650,9 +722,20 @@ const preferredEntity = (names) => {
   }
   return names[0] || "";
 };
-// The page heading of a built-in view, followed by its guide (RA-25..RA-35).
-const heading = (title, description, action = "") =>
-  `<div class="page-heading"><div><span class="eyebrow">SIMULATOR WORKSPACE</span><h1>${escape(title)}</h1><p>${escape(description)}</p></div>${action}</div>${viewGuide(activeView)}`;
+// The page heading of a built-in view, followed by its guide (RA-25..RA-35). The heading is the sidebar label and the
+// eyebrow its sidebar group, so the page names where a link landed; the guide intro is the one description, and
+// `description` shows only for a view without a help entry.
+const viewLabel = id => views.find(view => view.id === id)?.label ?? id;
+const heading = (description, action = "") =>
+  `<div class="page-heading"><div><span class="eyebrow">${escape(groupOf(activeView).toUpperCase())}</span><h1 id="view-title" tabindex="-1">${escape(viewLabel(activeView))}</h1>${HELP[activeView] ? "" : `<p>${escape(description)}</p>`}</div>${action}</div>${viewGuide(activeView)}`;
+const EFFECTS = { data: ["Changes local data", "amber"], saves: ["Saves a definition only", ""], sources: ["Re-reads source files", ""], browser: ["This browser only", ""], read: ["Read only", "neutral"] };
+/**
+ * The ordered steps of a view: each links to the panel that does it (`#view?panel=key`), says what happens and
+ * whether it changes local data (`effect`: data, browser or read).
+ */
+const steps = (key, items) => `<ol class="sim-steps" data-steps="${escape(key)}" aria-label="Steps">${items.map(({ label, href, detail, effect }) => `<li>${href ? `<a href="${escape(href)}">${escape(label)}</a>` : `<strong>${escape(label)}</strong>`}${badge(...EFFECTS[effect])}<span class="step-detail">${escape(detail)}</span></li>`).join("")}</ol>`;
+/** Actions side by side with what each does and whether it changes local data (`[[buttonHtml, detail, effect]]`). */
+const actionList = rows => `<div class="detail-list action-list">${rows.map(([button, detail, effect]) => `<div class="row"><div class="action-cell">${button}</div><div class="row-detail">${badge(...EFFECTS[effect])} ${escape(detail)}</div></div>`).join("")}</div>`;
 const addButton = (name, label) =>
   `<button class="button primary" type="button" data-add="${name}" aria-label="${escape(label)}"${name === 'records' ? disabledRecordAction('create') : ''}>+ ${escape(label)}</button>`;
 const empty = (title, description, action = "") =>
@@ -946,7 +1029,7 @@ function sessionOverrideForm() {
   const session = browserSession || {};
   const override = session.roleSource === "override";
   const disabled = session.signedIn ? "" : " disabled";
-  return `<section class="advanced-content"><div class="panel-heading"><h2>Simulation override</h2>${badge(override ? "Override active" : "No override", override ? "amber" : "")}</div>${panelHelp("access.session-override")}<p class="muted">Replaces the web roles of this browser's signed-in session with explicit role names, for quick role tests. It applies on top of a real sign-in through the portal and never signs in by itself; signing out or signing in again ends it.</p>${session.signedIn ? "" : '<div class="notice section-gap">Sign this browser in through the portal first.</div>'}<form id="session-override-form" class="form-grid"><div><label for="override-roles">Web roles for ${escape(session.signedIn ? session.name || session.contactId : "this browser's session")}</label><input id="override-roles" value="${escape(override ? (session.roles || []).join(", ") : "")}" placeholder="Authenticated Users, Administrators"${disabled}><p class="field-help">Separate role names with commas.</p></div><div class="toolbar"><button class="button primary" type="submit"${disabled}>Apply override</button>${override ? '<button class="button" type="button" data-action="session-override-clear">Clear override</button>' : ""}</div></form></section>`;
+  return `<section class="advanced-content"><div class="panel-heading"><h2>Simulation override</h2>${badge(override ? "Override active" : "No override", override ? "amber" : "")}</div>${panelHelp("access.session-override", "the simulation override")}${session.signedIn ? "" : '<div class="notice section-gap">Sign this browser in through the portal first.</div>'}<form id="session-override-form" class="form-grid"><div><label for="override-roles">Web roles for ${escape(session.signedIn ? session.name || session.contactId : "this browser's session")}</label><input id="override-roles" value="${escape(override ? (session.roles || []).join(", ") : "")}" placeholder="Authenticated Users, Administrators"${disabled}><p class="field-help">Separate role names with commas.</p></div><div class="toolbar"><button class="button primary" type="submit"${disabled}>Apply override</button>${override ? '<button class="button" type="button" data-action="session-override-clear">Clear override</button>' : ""}</div></form></section>`;
 }
 const sessionSummary = () =>
   !browserSession
@@ -975,7 +1058,7 @@ function sessionPanel() {
     ? '<button class="button" type="button" data-action="session-sign-out">Sign out</button>'
     : "";
   const provider = signInProvider();
-  return `<section class="panel"><div class="panel-heading"><h2>This browser's session</h2>${session.roleSource === "override" ? badge("Simulation override", "amber") : ""}${badge(session.signedIn ? "Signed in" : "Anonymous", session.signedIn ? "green" : "")}</div>${panelHelp("access.session")}<p class="muted">Portal pages opened in this browser use this session. Signing in runs the portal's own sign-in (${provider ? "the identity provider's external login, answered by the local identity provider" : "the local sign-in page"}) and comes back here; signing out ends the session${provider ? " through the provider's end-session" : ""}. Other browsers, including the toolkit browser, keep their own sessions, and the sign-in page default below does not change it.</p><div class="notice"><strong>${escape(sessionSummary())}</strong><br>${escape((session.roles || []).join(", ") || "No roles")}${session.roleSource === "override" ? " (simulation override)" : ""}${session.accountId ? `<br>Account: ${escape(session.accountId)}` : ""}</div><div class="detail-list section-gap" id="sign-in-route">${signInRoute().map(([title, value]) => `<div class="row"><span class="row-title">${escape(title)}</span><span class="row-detail source-path">${escape(value)}</span></div>`).join("")}</div>${session.error ? `<div class="notice warning section-gap">${escape(session.error)}</div>` : ""}${
+  return `<section class="panel"><div class="panel-heading"><h2>This browser's session</h2>${session.roleSource === "override" ? badge("Simulation override", "amber") : ""}${badge(session.signedIn ? "Signed in" : "Anonymous", session.signedIn ? "green" : "")}</div>${panelHelp("access.session", "this browser's session")}<p class="muted">Sign in runs ${provider ? "the exported identity provider's login, answered by the local identity provider," : "the local sign-in page"} and comes back here.</p><div class="notice"><strong>${escape(sessionSummary())}</strong><br>${escape((session.roles || []).join(", ") || "No roles")}${session.roleSource === "override" ? " (simulation override)" : ""}${session.accountId ? `<br>Account: ${escape(session.accountId)}` : ""}</div><div class="detail-list section-gap" id="sign-in-route">${signInRoute().map(([title, value]) => `<div class="row"><span class="row-title">${escape(title)}</span><span class="row-detail source-path">${escape(value)}</span></div>`).join("")}</div>${session.error ? `<div class="notice warning section-gap">${escape(session.error)}</div>` : ""}${
     contacts.length
       ? `<div class="form-grid section-gap"><div>${contactChoice("session-contact", "Persona for this browser", chosen?.contactid)}</div></div><div class="toolbar"><button class="button primary" type="button" data-action="session-sign-in">Sign in as ${escape(contactLabel(chosen))}</button>${signOut}</div>`
       : `<div class="notice section-gap">No local contacts to sign in as yet: create a persona below.</div>${signOut ? `<div class="toolbar">${signOut}</div>` : ""}`
@@ -1024,7 +1107,7 @@ function refresh({ announce = false } = {}) {
 }
 
 function overview() {
-  if (!powerPages()) return heading('Your local organization workspace', 'Run solution-based apps and integrations against one local organization. Configure staff identities, application credentials and declared DATA persistence.') + simulationPanel() + `<section class="panel section-gap"><h2>Start working</h2>${panelHelp('overview.customize')}<div class="toolbar">${runtimeLinks().modelDriven ? `<a class="button primary" href="${escape(runtimeLinks().modelDriven)}">Open model-driven apps</a>` : ''}<button class="button" data-view="dataverse">Organization identity & API</button><button class="button" data-view="records">Manage data records</button><a class="button" href="/_setup/">Project setup</a></div><p class="muted">This runtime has no Power Pages rendering or portal visitor personas.</p></section>`;
+  if (!powerPages()) return heading('Run solution-based apps and integrations against one local organization. Configure staff identities, application credentials and declared DATA persistence.') + simulationPanel() + `<section class="panel section-gap"><h2>Start working</h2>${panelHelp('overview.customize')}<div class="toolbar">${runtimeLinks().modelDriven ? `<a class="button primary" href="${escape(runtimeLinks().modelDriven)}">Open model-driven apps</a>` : ''}<button class="button" data-view="dataverse">Organization identity & API</button><button class="button" data-view="records">Manage data records</button><a class="button" href="/_setup/">Project setup</a></div><p class="muted">This runtime has no Power Pages rendering or portal visitor personas.</p></section>`;
   const rows = Object.values(
     state.status?.tableCounts ||
       Object.fromEntries(
@@ -1038,66 +1121,40 @@ function overview() {
   const diagnostics = state.diagnostics || status.diagnostics || [];
   const pages = status.pages || state.pages || [];
   const pageCount = Array.isArray(pages) ? pages.length : pages;
+  // Each card opens the view that manages what it counts.
   const metrics = [
-    ["Data records", rows, `${entities().length} configured entities`, "▤"],
-    [
-      "Discovered pages",
-      pageCount || status.pageCount || 0,
-      status.exportFormat || status.format || "From your PAC export",
-      "◇",
-    ],
-    [
-      "Active plugins",
-      collection("plugins").filter((item) => item.enabled !== false).length,
-      `${collection("presets").length} simulation presets`,
-      "⌘",
-    ],
-    [
-      "Diagnostics",
-      diagnostics.length,
-      "Inspect rendering and runtime evidence",
-      "◎",
-    ],
+    ["records", "Data records", rows, `in ${entities().length} tables`, "▤"],
+    ["evidence", "Portal pages", pageCount || status.pageCount || 0, "found in the portal export", "◇"],
+    ["plugins", "Plugin rules", collection("plugins").filter((item) => item.enabled !== false).length, "switched on", "⌘"],
+    ["evidence", "Diagnostics", diagnostics.length, "findings to review", "◎"],
   ];
+  const row = (title, detail, tip, extra = "") => `<div class="row"><div><div class="row-title">${escape(title)}${tip ? kit.info({ label: `About ${title}`, text: tip }) : ""}</div><div class="row-detail">${detail}</div></div>${extra}</div>`;
+  const go = (view, panel) => `<a class="button small" href="#${view}${panel ? `?panel=${panel}` : ""}">${escape(viewLabel(view))} →</a>`;
+  const styles = status.platformStyles?.mode === 'captured'
+    ? `Captured ${escape(status.platformStyles.capturedAt)} from ${escape(status.platformStyles.origin)}`
+    : 'Not captured: Mirage uses its own basic form styles';
   return (
-    heading(
-      "Your local portal workspace",
-      "Render portal sources and test configured data and backend rules.",
-    ) +
-    simulationPanel() + `<div class="cards">${metrics.map(([label, value, detail, icon]) => `<div class="metric"><span class="metric-icon" aria-hidden="true">${icon}</span><div class="metric-label">${label}</div><div class="metric-value">${escape(value)}</div><div class="metric-detail">${escape(detail)}</div></div>`).join("")}</div>${panelHelp("overview.metrics")}` +
-    `<div class="grid-two"><section class="panel tall-panel"><div class="panel-heading"><h2>Workspace configuration</h2>${badge(config().mode === "live" ? "Live data" : "Local data", config().mode === "live" ? "amber" : "green")}</div>${panelHelp("overview.workspace")}
-      <div class="row"><div><div class="row-title">Page rendering</div><div class="row-detail">${config().pageMode === "live" ? "Pages from the connected environment" : "Liquid and portal metadata from local sources"}</div></div>${badge(config().pageMode === "live" ? "Live" : "Local")}</div>
-      <div class="row"><div><div class="row-title">Data provider</div><div class="row-detail">${config().mode === "live" ? escape(config().live?.origin || "Live environment selected") : "Persistent mock data and configurable plugin rules"}</div></div><button class="button small" data-view="connection">Configure</button></div>
-      <div class="row"><div><div class="row-title">This browser</div><div class="row-detail">${escape(sessionSummary())} · ${escape((browserSession?.roles || []).join(", ") || "No roles")}</div></div>${badge(browserSession?.signedIn ? "Signed in" : "Anonymous", browserSession?.signedIn ? "green" : "")}<button class="button small" data-view="access">Manage</button></div>
-      <div class="row"><div><div class="row-title">Sign-in route</div><div class="row-detail">${escape(signInRoute().map(([title, value]) => `${title}: ${value}`).join(" · "))}</div></div></div>
-      <div class="row"><div><div class="row-title">Platform stylesheets</div><div class="row-detail">${escape(status.platformStyles?.mode === 'captured' ? `Captured ${status.platformStyles.capturedAt} from ${status.platformStyles.origin}` : 'Placeholder · local structural form rules')}${status.platformStyles?.missingHeadStylesheets?.length ? ` · Missing: ${escape(status.platformStyles.missingHeadStylesheets.join(', '))}` : ''}</div></div></div>
-      <div class="row"><div><div class="row-title">Sign-in page default</div><div class="row-detail">${escape(config().identity?.name || config().identity?.contactId || config().identity?.id || "No default persona")}</div></div></div>
-      <div class="row"><div><div class="row-title">Source checkout</div><div class="row-detail source-path">${escape(status.repo || status.source || status.sourceDir || state.repo || "See simulator launch configuration")}</div></div></div>
-      <div class="row"><div><div class="row-title">Runtime</div><div class="row-detail">Revision ${escape(status.revision ?? "not reported")} · source ${escape(String(status.sourceFingerprint ?? "").slice(0, 12) || "not reported")}${config().activeScenario ? ` · scenario ${escape(config().activeScenario.name || config().activeScenario.id)}` : ""}</div></div><button class="button small" data-view="runtime">Details</button></div>
-    </section><section class="panel"><div class="panel-heading"><h2>Make the simulation yours</h2></div>${panelHelp("overview.customize")}
+    heading("Render portal sources and test configured data and backend rules.") +
+    simulationPanel() + `<div class="cards">${metrics.map(([view, label, value, detail, icon]) => `<a class="metric" href="#${view}"><span class="metric-icon" aria-hidden="true">${icon}</span><div class="metric-label">${label}</div><div class="metric-value">${escape(value)}</div><div class="metric-detail">${escape(detail)}</div></a>`).join("")}</div>${panelHelp("overview.metrics", "these counts")}` +
+    `<div class="grid-two"><section class="panel tall-panel" data-panel="workspace"><div class="panel-heading"><h2>Workspace configuration</h2>${badge(config().mode === "live" ? "Live data" : "Local data", config().mode === "live" ? "amber" : "green")}</div>${panelHelp("overview.workspace", "the workspace configuration")}
+      ${row("Page rendering", config().pageMode === "live" ? "Pages from the connected environment" : "Liquid and portal metadata from local sources", "Who renders portal pages: this runtime from your local sources, or the connected online environment.", badge(config().pageMode === "live" ? "Live" : "Local"))}
+      ${row("Data source", escape(config().mode === "live" ? config().live?.origin || "Live environment selected" : "Local records and plugin rules of this runtime"), "Where Web API and Liquid data reads go. Change it under Live connection.", go("connection", "routing"))}
+      ${row("This browser", `${escape(sessionSummary())} · ${escape((browserSession?.roles || []).join(", ") || "No roles")}`, "The portal sign-in of this browser only. Other browsers keep their own.", go("access", "session"))}
+      ${row("Sign-in route", escape(signInRoute().map(([title, value]) => `${title}: ${value}`).join(" · ")), "How the portal's Sign in button works locally: the exported identity provider answered by a local stand-in, or the local sign-in page.")}
+      ${row("Platform stylesheets", `${styles}${status.platformStyles?.missingHeadStylesheets?.length ? ` · Missing: ${escape(status.platformStyles.missingHeadStylesheets.join(', '))}` : ''}`, "The Power Pages platform CSS. Capture it from a reference portal with Capture page shell under Live connection; until then pages use local basic form styles.")}
+      ${row("Sign-in page default", escape(config().identity?.name || config().identity?.contactId || config().identity?.id || "No default person"), "The test person the local sign-in page offers first, and the identity of scripts that send no browser cookie.")}
+      ${row("Portal source folder", `<span class="source-path">${escape(status.repo || status.source || status.sourceDir || state.repo || "See simulator launch configuration")}</span>`)}
+      ${row("Runtime", `Revision ${escape(status.revision ?? "not reported")} · source ${escape(String(status.sourceFingerprint ?? "").slice(0, 12) || "not reported")}${config().activeScenario ? ` · scenario ${escape(config().activeScenario.name || config().activeScenario.id)}` : ""}`, "The revision goes up each time saved sources reload. The source fingerprint identifies the loaded sources, not a deployed commit.", go("runtime"))}
+    </section><section class="panel" data-panel="next"><div class="panel-heading"><h2>Where to go next</h2></div>${panelHelp("overview.customize", "where to go next")}
       ${[
-        [
-          "records",
-          "Populate your data",
-          "Create records for FetchXML and Web API queries.",
-        ],
-        [
-          "plugins",
-          "Simulate backend rules",
-          "Validate mutations and populate fields automatically.",
-        ],
-        [
-          "evidence",
-          "Inspect render evidence",
-          "Review diagnostics and compare captured portal output.",
-        ],
-      ]
-        .map(
-          ([view, title, desc]) =>
-            `<div class="row"><div><div class="row-title">${title}</div><div class="row-detail">${desc}</div></div><button class="button small quiet" data-view="${view}" aria-label="${title}">→</button></div>`,
-        )
+        ["records", "Add or change records", "Create the records your pages, lists and Web API calls read."],
+        ["access", "Sign in as a test person", "See the portal as a contact with its web roles."],
+        ["plugins", "Simulate backend rules", "Validate saves and fill fields automatically, or apply a data preset."],
+        ["scenarios", "Switch whole setups", "Save data, person and permission choices as a scenario and apply it in one step."],
+        ["evidence", "Check what went wrong", "Review diagnostics and rendering evidence."],
+      ].filter(([view]) => availableViews().some(({ id }) => id === view))
+        .map(([view, title, desc]) => `<div class="row"><div><div class="row-title">${title}</div><div class="row-detail">${desc}</div></div>${go(view)}</div>`)
         .join("")}
-      <p class="muted">Source coverage and rendered fidelity are separate checks. The evidence view reports only observed results.</p>
     </section></div>`
   );
 }
@@ -1126,15 +1183,14 @@ function records() {
     ...new Set([idColumn, ...all.flatMap((item) => Object.keys(item))]),
   ].slice(0, 6);
   return (
-    heading(
-      "Data records",
-      "Manage mock records used by local data requests and form/list schemas.",
+    heading("Manage mock records used by local data requests and form/list schemas.",
       selectedEntity ? addButton("records", "Create record") : "",
     ) +
     (config().mode === "live"
       ? '<div class="notice section-gap">This editor changes local records. Selecting live data does not turn record administration into live environment administration.</div>'
       : "") +
-    panelHelp("records.table") + `<div class="toolbar"><label class="nowrap" for="entity-select">Entity</label>${filterBox("entity-select", names.length, "Filter tables")}<select id="entity-select" aria-describedby="entity-select-help">${names.map((name) => `<option ${name === selectedEntity ? "selected" : ""}>${escape(name)}</option>`).join("")}</select><input id="record-search" type="search" placeholder="Search record values…" aria-label="Search record values" aria-describedby="record-search-help" value="${escape(filter)}"><span class="record-count">${page.total} matching records</span></div><p class="field-hints">${controlHelp("entity-select", "records.table", "entity")} ${controlHelp("record-search", "records.table", "search")}</p>${recordLoading ? '<p role="status" class="muted">Loading records…</p>' : ""}${recordError ? `<div class="notice warning">${escape(recordError)}</div>` : ""}${routeNotice ? `<div class="notice warning">${escape(routeNotice)}</div>` : ""}` +
+    (selectedEntity && recordAccess().create === false && recordAccess().update === false ? `<div class="notice section-gap">${escape(selectedEntity)} is read-only here: ${escape(recordAccess().reason ?? "no pack DATA file is declared for this table.")} Create, Edit and Delete are switched off.</div>` : "") +
+    panelHelp("records.table", "the record list") + `<div class="toolbar"><label class="nowrap" for="entity-select">Entity</label>${filterBox("entity-select", names.length, "Filter tables")}<select id="entity-select" aria-describedby="entity-select-help">${names.map((name) => `<option ${name === selectedEntity ? "selected" : ""}>${escape(name)}</option>`).join("")}</select><input id="record-search" type="search" placeholder="Search record values…" aria-label="Search record values" aria-describedby="record-search-help" value="${escape(filter)}"><span class="record-count">${page.total} matching records</span></div><details class="field-hints"><summary>What these fields do</summary><p>${controlHelp("entity-select", "records.table", "entity")} ${controlHelp("record-search", "records.table", "search")}</p></details>${recordLoading ? '<p role="status" class="muted">Loading records…</p>' : ""}${recordError ? `<div class="notice warning">${escape(recordError)}</div>` : ""}${routeNotice ? `<div class="notice warning">${escape(routeNotice)}</div>` : ""}` +
     (!selectedEntity
       ? empty(
           "Map your first entity",
@@ -1208,17 +1264,16 @@ function operations() {
   const items = operationItems();
   const position = new Map(items.map((item, index) => [item.key, index]));
   const selected = items.find((item) => item.key === selectedOperation);
-  return heading('Backend operations', 'Server logic, flows and plugin registrations discovered from the selected portal and solution exports. Local choices stay in simulator state.') +
-    '<div class="notice section-gap">Supported imported flow actions execute locally. Unknown external actions require an explicit per-action mock or disabled choice. Plugin steps can use an opt-in trusted original CLR assembly, a JavaScript model, a mock, or a disabled choice. Portal roles and backend execution identities are independent.</div>' +
+  return heading('Server logic, flows and plugin registrations discovered from the selected portal and solution exports. Local choices stay in simulator state.') +
     legend('operations', 'Local behaviour modes') +
-    `<section class="panel section-gap"><div class="panel-heading"><h2>Operations</h2>${badge(`${items.length} discovered`)}</div>${panelHelp('operations.list')}${pagedTable('operations', items, {
+    `<section class="panel section-gap" data-panel="list"><div class="panel-heading"><h2>Operations</h2>${badge(`${items.length} discovered`)}</div>${panelHelp('operations.list', 'the operations list')}${pagedTable('operations', items, {
       caption: 'Backend operations', emptyText: 'No exported operations. Include server logic, cloud-flow consumers, solution Workflows or plugin registrations in the selected sources.',
       text: (item) => [item.name, item.kind, item.mode, item.configuration?.mode, item.path, item.entity, item.message].filter(Boolean).join(' '),
       rowAttrs: (item) => ({ 'data-operation-row': item.key, class: item.key === selectedOperation ? 'is-selected' : undefined }),
       columns: [
         { label: 'Operation', render: (item) => `<strong>${escape(item.name)}</strong><div class="row-detail">${escape(item.path ?? [item.entity, item.message].filter(Boolean).join(' ') ?? '')}</div>` },
-        { label: 'Kind', render: (item) => badge(item.kind) },
-        { label: 'Local behaviour', render: (item) => `${badge(item.configuration?.mode ?? item.mode)}${item.configuration ? ` ${badge('Local override', 'amber')}` : ''}` },
+        { label: 'Kind', info: 'server-logic: exported server logic under /_api/serverlogics. cloud-flow: a Power Automate flow. workflow: a classic Solution workflow. plugin-step: a registered Dataverse plug-in step.', render: (item) => badge(item.kind) },
+        { label: 'Local behaviour', info: 'How this runtime answers the operation; Local behaviour modes above explains each value. Local override means you changed it here; Edit, then Use source default removes it.', render: (item) => `${badge(item.configuration?.mode ?? item.mode)}${item.configuration ? ` ${badge('Local override', 'amber')}` : ''}` },
         { label: 'Actions', render: (item) => `<button class="button small" type="button" data-operation-select="${escape(item.key)}" aria-label="Edit ${escape(item.name)}">Edit</button>` },
       ],
     })}</section>` +
@@ -1238,10 +1293,11 @@ const definitions = {
       idColumn: "accountid",
       relationships: {},
     }),
+    empty: "Add a mapping for each table your pages, lists or Web API calls use that the imported metadata does not already map.",
     columns: [
-      ["Entity", "logicalName"],
-      ["Entity set", "entitySet"],
-      ["Primary ID", "idColumn"],
+      ["Table", "logicalName", null, "The table logical name from your export, for example account."],
+      ["Web API name", "entitySet", null, "The entity set name the Web API uses in /_api/<name>, usually the plural, for example accounts."],
+      ["Primary ID column", "idColumn", null, "The column that holds each record's unique ID, for example accountid."],
     ],
   },
   endpoints: {
@@ -1258,10 +1314,11 @@ const definitions = {
       status: 200,
       body: { value: [] },
     }),
+    empty: "Add an endpoint to answer one request path and method with your own status and body (local), or to send it to the connected environment (live).",
     columns: [
       ["Path", "path"],
       ["Method", "method"],
-      ["Provider", "mode"],
+      ["Answered by", "mode", null, "local: this runtime answers with the configured status and body. live: the request goes to the connected environment."],
       ["Status", "status"],
     ],
   },
@@ -1284,11 +1341,12 @@ const definitions = {
       set: {},
       secondary: [],
     }),
+    empty: "Add a rule to require fields or fill values when a table's records are created or updated through this runtime.",
     columns: [
-      ["Plugin", "name"],
-      ["Entity", "entity"],
-      ["Operations", "operations"],
-      ["Enabled", "enabled"],
+      ["Rule", "name"],
+      ["Table", "entity"],
+      ["Runs on", "operations", null, "The record operations that trigger the rule: create, update or delete."],
+      ["Switched on", "enabled", (item) => (item.enabled === false ? "No" : "Yes")],
     ],
   },
   permissions: {
@@ -1304,10 +1362,10 @@ const definitions = {
       scope: "global",
     }),
     columns: [
-      ["Entity", "entity"],
-      ["Operations", "operations"],
-      ["Roles", "roles"],
-      ["Scope", "scope"],
+      ["Table", "entity"],
+      ["Operations", "operations", null, "What the roles may do with the table's records: read, create, update, delete, append or appendTo."],
+      ["Web roles", "roles"],
+      ["Scope", "scope", null, "Which records the permission covers: global (all), contact or account (the person's own or their account's), parent or self."],
     ],
   },
   presets: {
@@ -1326,7 +1384,7 @@ const definitions = {
     }),
     columns: [
       ["Preset", "name"],
-      ["Description", "description"],
+      ["What it does", "description"],
     ],
   },
   scenarios: {
@@ -1345,7 +1403,7 @@ const definitions = {
     }),
     columns: [
       ["Scenario", "name"],
-      ["Preset", "preset", (item) => item.preset || "Keep current data"],
+      ["Data preset", "preset", (item) => item.preset || "Keep current data"],
       [
         "Persona",
         "persona",
@@ -1356,7 +1414,7 @@ const definitions = {
               ? "Anonymous visitor"
               : item.persona.contactId,
       ],
-      ["Permissions", "permissionMode", (item) => item.permissionMode || "Keep current"],
+      ["Permissions", "permissionMode", (item) => item.permissionMode || "Keep current", "enforce applies table permissions as the portal does; permissive lets every local request through."],
     ],
   },
 };
@@ -1367,13 +1425,13 @@ function collectionTable(name) {
   const page = sliceRows(name, items);
   if (!items.length)
     return empty(
-      `No ${name} configured`,
-      def.description,
+      `No ${def.title.toLowerCase()} yet`,
+      def.empty ?? def.description,
       addButton(name, def.label),
     );
   return (
     tableTools(name, page.total, page.pages) +
-    `<div class="table-wrap"><table data-table="${escape(name)}"><thead><tr>${def.columns.map(([label]) => `<th>${label}</th>`).join("")}<th>Actions</th></tr></thead><tbody>${page.items
+    `<div class="table-wrap"><table data-table="${escape(name)}"><thead><tr>${def.columns.map(([label, , , tip]) => `<th>${escape(label)}${tip ? kit.info({ label: `About ${label}`, text: tip }) : ""}</th>`).join("")}<th>Actions</th></tr></thead><tbody>${page.items
       .map(
         (item) =>
           `<tr>${def.columns
@@ -1395,11 +1453,10 @@ function collectionTable(name) {
 function configurationView(name) {
   const def = definitions[name];
   return (
-    heading(def.title, def.description, addButton(name, def.label)) +
-    panelHelp(`${name}.${name === "plugins" ? "plugins" : "table"}`) +
-    collectionTable(name) +
+    heading(def.description, addButton(name, def.label)) +
+    `<section class="section-gap" data-panel="${name === "plugins" ? "rules" : "table"}">${name === "plugins" ? `<div class="panel-heading"><h2>Plugin rules</h2></div>` : ""}${panelHelp(`${name}.${name === "plugins" ? "plugins" : "table"}`, def.title)}${collectionTable(name)}</section>` +
     (name === "plugins"
-      ? `<section class="section-gap"><div class="panel-heading"><div><h2>Simulation presets</h2><p class="muted">Restore a repeatable data scenario in one action.</p></div>${addButton("presets", "Add preset")}</div>${panelHelp("plugins.presets")}${collectionTable("presets")}</section>${presetPicker()}`
+      ? `<section class="section-gap" data-panel="presets"><div class="panel-heading"><div><h2>Simulation presets</h2></div>${addButton("presets", "Add preset")}</div>${panelHelp("plugins.presets", "simulation presets")}${collectionTable("presets")}</section>${presetPicker()}`
       : "") +
     (name === "mappings"
       ? solutionMetadataPanel() +
@@ -1427,7 +1484,7 @@ function solutionMetadataPanel() {
   const sources = metadata?.sources || metadata?.roots || [];
   const unresolved = metadata?.unresolved || metadata?.diagnostics || [];
   const hasSources = Array.isArray(sources) && sources.length > 0;
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Imported solution metadata</h2>${badge(metadata ? (hasSources ? "Sources reported" : "No solution sources") : "No import status", "amber")}</div><p class="muted">Configured unpacked solutions supply form layouts, saved views, fields, and relationships. Imported counts describe available metadata; they do not prove native layout equivalence. Restart with repeatable <code>--solution-root PATH</code> arguments to change source roots.</p>${panelHelp("mappings.solution-metadata")}${
+  return `<section class="panel section-gap"><div class="panel-heading"><h2>Imported solution metadata</h2>${badge(metadata ? (hasSources ? "Sources reported" : "No solution sources") : "No import status", "amber")}</div>${panelHelp("mappings.solution-metadata", "imported solution metadata")}${
     metadata
       ? `${kit.section({ key: "solution-metadata-counts", title: "Imported counts", summary: `${Object.keys(counts).length} kinds`, body: `<div class="detail-list">${Object.entries(counts)
           .map(
@@ -1444,8 +1501,8 @@ function solutionMetadataPanel() {
 function presetPicker() {
   const presets = state.status?.availablePresets || collection("presets");
   if (!presets.length) return "";
-  return kit.section({ key: "preset-picker", title: "Apply a simulation scenario", summary: `${presets.length} presets · local state change`, help: { id: helpKey("plugins.apply"), text: HELP["plugins.apply"].intro, doc: docOf(HELP["plugins.apply"].doc) },
-    body: `<p class="muted">Presets can replace records, identity, roles, and backend rules. Review the selected scenario before applying it.</p><div class="toolbar"><label for="available-preset">Available preset</label>${filterBox("available-preset", presets.length, "Filter presets")}<select id="available-preset" aria-describedby="available-preset-help">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}${(state.diagnostics??[]).some(d=>d.preset===preset.id&&d.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK'))?' · ⚠ invalid configuration link':''}${preset.configurationPreset?` · configuration: ${escape(preset.configurationPreset)}`:""}</option>`).join("")}</select><label><input type="checkbox" id="preset-apply-configuration" aria-describedby="preset-apply-configuration-help"> Also apply the data preset’s configuration preset (if provided)</label><button class="button" data-apply-selected>Apply selected preset</button></div><p class="field-hints">${controlHelp("available-preset", "plugins.apply", "preset")} ${controlHelp("preset-apply-configuration", "plugins.apply", "configuration")}</p>` });
+  return kit.section({ key: "preset-picker", title: "Apply a preset", summary: `${presets.length} presets · changes local data`, help: panelHelp("plugins.apply", "applying a preset"),
+    body: `<div class="toolbar"><label for="available-preset">Available preset</label>${filterBox("available-preset", presets.length, "Filter presets")}<select id="available-preset" aria-describedby="available-preset-help">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}${(state.diagnostics??[]).some(d=>d.preset===preset.id&&d.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK'))?' · ⚠ invalid configuration link':''}${preset.configurationPreset?` · configuration: ${escape(preset.configurationPreset)}`:""}</option>`).join("")}</select><label><input type="checkbox" id="preset-apply-configuration" aria-describedby="preset-apply-configuration-help"> Also apply the data preset’s configuration preset (if provided)</label><button class="button" data-apply-selected>Apply selected preset</button></div><details class="field-hints"><summary>What these fields do</summary><p>${controlHelp("available-preset", "plugins.apply", "preset")} ${controlHelp("preset-apply-configuration", "plugins.apply", "configuration")}</p></details>` });
 }
 
 let selectedPersona = null;
@@ -1471,7 +1528,7 @@ function personaPanel() {
       .map((row) => row.roleId),
   );
   const roles = model.webRoles || state.status?.webRoles || [];
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Contact personas</h2>${badge(identity.roleSource === "memberships" ? "Contact memberships" : "Role override", identity.roleSource === "memberships" ? "green" : "amber")}</div>${panelHelp("access.personas")}<p class="muted">Select a local contact and its exported web-role memberships. The account comes from that contact's parent customer. The default persona is the one the local sign-in page offers first; browsers sign in through that page or with "Sign in as" above. The live browser identity remains independent.</p>${
+  return `<section class="panel section-gap" data-panel="personas"><div class="panel-heading"><h2>Contact personas</h2>${badge(identity.roleSource === "memberships" ? "Contact memberships" : "Role override", identity.roleSource === "memberships" ? "green" : "amber")}</div>${panelHelp("access.personas", "contact personas")}${
     contacts.length
       ? `<form id="persona-form" class="form-grid"><div>${personaCatalogue?.enabled ? `<label>Local contact</label><input type="hidden" id="persona-contact" value="${escape(chosen)}"><strong>${escape(contactLabel(contact))}</strong> <button type="button" class="button" data-persona-contact-chooser data-contact-id="${escape(chosen)}">Choose persona</button>` : contactChoice("persona-contact", "Local contact", contact?.contactid ?? chosen)}<p class="field-help">Selected contact account: ${escape(contact?.parentcustomerid?.name || contact?.parentcustomerid?.id || contact?.parentcustomerid || "None")}</p></div><fieldset class="role-picker" id="persona-roles"><legend>Contact web-role memberships</legend><p class="field-help" id="persona-roles-help">Assignments use the imported role IDs. Authenticated and anonymous roles marked in the export apply automatically.</p>${filterBox("persona-roles", roles.length, "Filter web roles")}${roles
           .filter((role) => role.id)
@@ -1538,7 +1595,7 @@ function permissionTree() {
     }
     return level;
   };
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Effective permission hierarchy</h2>${badge(model.source || "Configured")}</div>${panelHelp("access.permissions")}<p class="muted">Each child grant requires a matching accessible parent record. Unresolved source relationships, parent cycles, and missing roles remain disabled. Counts reported by the server describe the current persona's accessible local records.</p><form id="permission-source-form" class="toolbar"><label for="permission-source">Grant source</label><select id="permission-source" aria-describedby="permission-source-help"><option value="configured" ${config().permissionSource === "configured" || !config().permissionSource ? "selected" : ""}>Configured local rules</option><option value="exported" ${config().permissionSource === "exported" ? "selected" : ""}>Imported portal grants</option><option value="combined" ${config().permissionSource === "combined" ? "selected" : ""}>Imported grants + local additions</option></select><button class="button" type="submit">Apply grant source</button>${controlHelp("permission-source", "access.permissions", "source")}</form>${tableTools("grant tree", page.total, page.pages)}<div class="table-wrap section-gap"><table data-table="grant tree"><thead><tr><th>Permission / parent</th><th>Scope</th><th>Operations / roles</th><th>Accessible records</th><th>Status</th></tr></thead><tbody>${page.items.map((row) => `<tr><td class="depth-${depth(row)}"><strong>${escape(row.name || row.entity)}</strong><div class="row-detail">${escape(row.entity)}${row.parentId ? ` · parent ${escape(byId.get(row.parentId)?.name || row.parentId)}` : ""}</div><div class="row-detail">${escape(row.relationshipName || "")} · ${escape(row.provenance?.type || "Configured")}</div></td><td>${escape(row.scope)}</td><td>${escape((row.operations || []).join(", "))}<div class="row-detail">${escape((row.roles || []).join(", "))}${row.inheritedRoles ? " · inherited" : ""}</div></td><td>${escape(model.visibleCounts?.[row.entity] ?? "Not reported")}</td><td>${badge(row.enabled ? "Enabled" : "Disabled", row.enabled ? "green" : "amber")}${row.disabledReason ? `<div class="row-detail">${escape(row.disabledReason)}</div>` : ""}</td></tr>`).join("") || '<tr><td colspan="5">No grants were reported.</td></tr>'}</tbody></table></div>${model.diagnostics?.length ? lazyJson(`${model.diagnostics.length} permission observations`, model.diagnostics) : ""}</section>`;
+  return `<section class="panel section-gap" data-panel="permissions"><div class="panel-heading"><h2>Effective permission hierarchy</h2>${badge(model.source || "Configured")}</div>${panelHelp("access.permissions", "the effective permission hierarchy")}<form id="permission-source-form" class="toolbar"><label for="permission-source">Grant source</label><select id="permission-source" aria-describedby="permission-source-help"><option value="configured" ${config().permissionSource === "configured" || !config().permissionSource ? "selected" : ""}>Configured local rules</option><option value="exported" ${config().permissionSource === "exported" ? "selected" : ""}>Imported portal grants</option><option value="combined" ${config().permissionSource === "combined" ? "selected" : ""}>Imported grants + local additions</option></select><button class="button" type="submit">Apply grant source</button>${controlHelp("permission-source", "access.permissions", "source")}</form>${tableTools("grant tree", page.total, page.pages)}<div class="table-wrap section-gap"><table data-table="grant tree"><thead><tr><th>Permission / parent</th><th>Scope${kit.info({ label: "About Scope", text: "Which records the grant covers: global (all), contact or account (the person's own or their account's), parent (through the parent grant's records) or self." })}</th><th>Operations / roles</th><th>Accessible records${kit.info({ label: "About Accessible records", text: "How many local records of the table the current person can reach through this grant, as the runtime reports it." })}</th><th>Status</th></tr></thead><tbody>${page.items.map((row) => `<tr><td class="depth-${depth(row)}"><strong>${escape(row.name || row.entity)}</strong><div class="row-detail">${escape(row.entity)}${row.parentId ? ` · parent ${escape(byId.get(row.parentId)?.name || row.parentId)}` : ""}</div><div class="row-detail">${escape(row.relationshipName || "")} · ${escape(row.provenance?.type || "Configured")}</div></td><td>${escape(row.scope)}</td><td>${escape((row.operations || []).join(", "))}<div class="row-detail">${escape((row.roles || []).join(", "))}${row.inheritedRoles ? " · inherited" : ""}</div></td><td>${escape(model.visibleCounts?.[row.entity] ?? "Not reported")}</td><td>${badge(row.enabled ? "Enabled" : "Disabled", row.enabled ? "green" : "amber")}${row.disabledReason ? `<div class="row-detail">${escape(row.disabledReason)}</div>` : ""}</td></tr>`).join("") || '<tr><td colspan="5">No grants were reported.</td></tr>'}</tbody></table></div>${model.diagnostics?.length ? lazyJson(`${model.diagnostics.length} permission observations`, model.diagnostics) : ""}</section>`;
 }
 function access() {
   const identity = config().identity || {};
@@ -1559,11 +1616,15 @@ function access() {
     ? `<fieldset class="role-picker" id="identity-role-choices"><legend>Available web roles</legend><p class="field-help">Select imported role names, then save the identity. These roles affect local simulation; the connected browser retains its own live permissions.</p>${filterBox("identity-role-choices", roleNames.length, "Filter web roles")}${roleNames.map((role, index) => `<div class="checkbox-line"><input type="checkbox" id="role-choice-${index}" data-role-choice="${escape(role)}" ${(identity.roles || []).includes(role) ? "checked" : ""}><label for="role-choice-${index}">${escape(role)}</label></div>`).join("")}</fieldset>`
     : "";
   return (
-    heading(
-      "Identity & permissions",
-      "Test portal behavior for the current contact, account, and web roles.",
+    heading("Test portal behavior for the current contact, account, and web roles.",
     ) +
-    sessionPanel() +
+    steps("access", [
+      { label: "Sign in as a test person", href: "#access?panel=session", detail: "Pick a contact; this browser signs in through the portal's own sign-in and comes back here.", effect: "browser" },
+      { label: "Adjust that person's web roles", href: "#access?panel=personas", detail: "Save the contact's web-role memberships, or override roles for this browser only.", effect: "data" },
+      { label: "Check what they can reach", href: "#access?panel=permissions", detail: "Read the effective permission hierarchy; Apply grant source switches which grants count.", effect: "read" },
+      { label: "Open the portal", href: runtimeLinks().powerPages || "/", detail: "Pages in this browser now render for that person.", effect: "read" },
+    ]) +
+    `<div data-panel="session">${sessionPanel()}</div>` +
     personaPanel() +
     (personaCatalogue ? personaManagementPanel(personaCatalogue) : "") +
     externalIdentitiesPanel() +
@@ -1577,7 +1638,7 @@ function access() {
       "manual-identity",
       "Advanced: configured identity (sign-in default and scripts)",
       () =>
-        `<section class="advanced-content"><div class="panel-heading"><h2>Configured identity</h2>${badge(identity.id || identity.contactId ? "Authenticated" : "Anonymous", identity.id || identity.contactId ? "green" : "")}</div>${panelHelp("access.manual-identity")}<p class="muted">This identity is the default persona the sign-in page offers and the identity of requests without a browser session (scripts and tests); browsers use their own sessions. Saving this form overrides contact memberships with these role names for that configured identity.</p><form id="identity-form" class="form-grid"><div class="inline-fields"><div><label for="identity-id">Contact ID</label><input id="identity-id" value="${escape(identity.contactId || identity.id || "")}" placeholder="Leave empty for anonymous">${kit.fieldHelp("identity-id", "The contact id requests without a browser session use; empty means anonymous.")}</div><div><label for="identity-name">Display name</label><input id="identity-name" value="${escape(identity.name || "")}" placeholder="Local tester">${kit.fieldHelp("identity-name", "The name Liquid sees as user.name for this configured identity.")}</div></div><div class="inline-fields"><div><label for="identity-account">Account ID</label><input id="identity-account" value="${escape(identity.accountId || "")}">${kit.fieldHelp("identity-account", "The parent account id used for account-scoped table permissions.")}</div><div><label for="identity-roles">Web roles</label><input id="identity-roles" value="${escape((identity.roles || []).join(", "))}" placeholder="Authenticated Users, Administrators"><p class="field-help">Separate role names with commas.</p></div></div>${rolePicker}<div><label for="permission-mode">Permission enforcement</label><select id="permission-mode"><option value="permissive" ${config().permissionMode !== "enforce" ? "selected" : ""}>Permissive sandbox</option><option value="enforce" ${config().permissionMode === "enforce" ? "selected" : ""}>Enforce configured permissions</option></select>${kit.fieldHelp("permission-mode", "Permissive lets every local request through for experiments; enforce applies table permissions as the portal does.")}</div><div><button class="button primary" type="submit">Save identity</button></div></form></section>`,
+        `<section class="advanced-content"><div class="panel-heading"><h2>Configured identity</h2>${badge(identity.id || identity.contactId ? "Authenticated" : "Anonymous", identity.id || identity.contactId ? "green" : "")}</div>${panelHelp("access.manual-identity", "the configured identity")}<form id="identity-form" class="form-grid"><div class="inline-fields"><div><label for="identity-id">Contact ID</label><input id="identity-id" value="${escape(identity.contactId || identity.id || "")}" placeholder="Leave empty for anonymous">${kit.fieldHelp("identity-id", "The contact id requests without a browser session use; empty means anonymous.")}</div><div><label for="identity-name">Display name</label><input id="identity-name" value="${escape(identity.name || "")}" placeholder="Local tester">${kit.fieldHelp("identity-name", "The name Liquid sees as user.name for this configured identity.")}</div></div><div class="inline-fields"><div><label for="identity-account">Account ID</label><input id="identity-account" value="${escape(identity.accountId || "")}">${kit.fieldHelp("identity-account", "The parent account id used for account-scoped table permissions.")}</div><div><label for="identity-roles">Web roles</label><input id="identity-roles" value="${escape((identity.roles || []).join(", "))}" placeholder="Authenticated Users, Administrators"><p class="field-help">Separate role names with commas.</p></div></div>${rolePicker}<div><label for="permission-mode">Permission enforcement</label><select id="permission-mode"><option value="permissive" ${config().permissionMode !== "enforce" ? "selected" : ""}>Permissive sandbox</option><option value="enforce" ${config().permissionMode === "enforce" ? "selected" : ""}>Enforce configured permissions</option></select>${kit.fieldHelp("permission-mode", "Permissive lets every local request through for experiments; enforce applies table permissions as the portal does.")}</div><div><button class="button primary" type="submit">Save identity</button></div></form></section>`,
     ) +
     permissionTree() +
     presetPicker() +
@@ -1598,12 +1659,10 @@ function connection() {
     live.connected ||
     state.live?.connected;
   return (
-    heading(
-      "Live connection",
-      "Choose local simulation or data and pages from an authenticated online environment.",
+    heading("Choose local simulation or data and pages from an authenticated online environment.",
     ) +
-    `<div class="grid-two"><section class="panel"><div class="panel-heading"><h2>Request routing</h2>${badge(config().mode === "live" ? "Live data selected" : "Local data selected", config().mode === "live" ? "amber" : "green")}</div>${panelHelp("connection.routing")}<form id="connection-form" class="form-grid"><div class="inline-fields"><div><label for="data-mode">Data provider</label><select id="data-mode"><option value="local" ${config().mode !== "live" ? "selected" : ""}>Local mock</option><option value="live" ${config().mode === "live" ? "selected" : ""}>Live environment</option></select>${kit.fieldHelp("data-mode", "Where Web API and Liquid data reads go. Live reads use the connected browser; writes still need the switch below.")}</div><div><label for="page-mode">Page provider</label><select id="page-mode"><option value="local" ${config().pageMode !== "live" ? "selected" : ""}>Local Liquid rendering</option><option value="live" ${config().pageMode === "live" ? "selected" : ""}>Live rendered pages</option></select>${kit.fieldHelp("page-mode", "Local renders Liquid from your sources; live passes rendered pages through from the reference.")}</div></div><div><label for="live-origin">Environment origin</label><input id="live-origin" type="url" value="${escape(live.origin || "")}" placeholder="https://your-portal.powerappsportals.com"><p class="field-help">Use the portal origin. Individual endpoint routes can override the data provider.</p></div><div><label for="fetchxml-path">Live FetchXML endpoint override</label><input id="fetchxml-path" value="${escape(live.fetchXmlPath || "")}" placeholder="/fetch-data/?query={fetchXml}"><p class="field-help">Leave blank for native /_api/&lt;mappedSet&gt;?fetchXml= reads. An optional existing same-origin JSON endpoint must include {fetchXml}.</p></div><div class="checkbox-line"><input id="live-writes" type="checkbox" ${live.allowWrites && state.status?.liveWrites !== "disabled" ? "checked" : ""}${state.status?.liveWrites === "disabled" ? ' disabled aria-describedby="live-writes-disabled"' : ""}><label for="live-writes">Allow create, update, and delete requests to the live environment.<br><span class="field-help">These requests affect actual environment data.</span>${state.status?.liveWrites === "disabled" ? '<br><span class="field-help" id="live-writes-disabled">Disabled for this runtime: start the Mirage with --allow-live-writes (mirage dev and start pass it through) to allow it.</span>' : ""}</label></div><div class="checkbox-line"><input id="confine-portal-pages" type="checkbox" ${config().confinePortalPages ? "checked" : ""}><label for="confine-portal-pages">Confine local pages to loopback.<br><span class="field-help">Adds a Content-Security-Policy that keeps local portal pages on this loopback origin. When off, pages carry only the headers the portal's site settings define, as they do online.</span></label></div><fieldset id="confinement-options" class="confinement-options${config().confinePortalPages ? "" : " is-off"}" ${config().confinePortalPages ? "" : "disabled"}><legend>Exceptions while confined</legend><div class="checkbox-line"><input id="external-assets" type="checkbox" ${config().externalAssets ? "checked" : ""}><label for="external-assets">Allow external assets in local portal pages.<br><span class="field-help">Enable when your exported styles, fonts, or images use online URLs.</span></label></div><div><label for="external-frame-origins">Online embedded content</label><textarea id="external-frame-origins" class="full-width" rows="2" placeholder="https://app.powerbi.com">${escape((config().externalFrameOrigins || []).join("\n"))}</textarea><p class="field-help">One exact HTTPS origin per line. These frames use the selected online service even when portal API and data stay local. Leave blank to block online embedded content.</p></div><p class="field-help confinement-note">These apply only while local pages are confined to loopback.</p></fieldset><div><button class="button primary" type="submit">Save routing</button></div></form></section>
-    <section class="panel"><div class="panel-heading"><h2>Authenticated browser</h2>${badge(connected ? "Connected" : "Not connected", connected ? "green" : "")}</div>${panelHelp("connection.browser")}<p class="muted">Connect to an existing browser through its local debugging address. Sign-in stays in that browser; simulator configuration contains no credentials.</p><form id="live-connect-form" class="form-grid"><div><label for="cdp-url">Browser debugging address</label><input id="cdp-url" type="url" value="http://127.0.0.1:9222" required><p class="field-help">Use the free debugging port reported by your development session.</p></div><div class="toolbar"><button class="button" type="submit">Connect browser</button>${connected ? '<button class="button quiet" type="button" data-action="live-disconnect">Disconnect browser</button>' : ""}</div></form><div class="notice section-gap">Provider settings apply to requests reaching this mirage. Live page passthrough is online output, not proof of local rendering parity. Hardcoded online URLs in portal scripts remain browser requests.</div></section></div>` + disclosure("shell-capture", "Capture page shell (reads the live page)", () => `<section><div class="panel-heading"><h2>Capture page shell</h2>${badge("Read-only live page")}</div>${panelHelp("connection.shell")}<p class="muted">Read an observed live page and capture its supported static dependencies. A complete capture replaces your current shell stylesheet and script order; failed captures leave the existing profile unchanged. This does not copy business data or establish rendering parity.</p><form id="shell-capture-form" class="form-grid"><div><label for="shell-page-path">Portal page path</label><input id="shell-page-path" value="${escape(shellCapturePath)}" placeholder="/" required></div><div><label for="managed-control-path">Managed editor page (optional)</label><input id="managed-control-path" value="${escape(managedControlPath)}" placeholder="/_portal/modal-form-template-path/…"><p class="field-help">Read an explicitly known native rich-text page to capture static PCF manifests. This GET saves no record values; existing connected pages supply observed font resource URLs.</p></div><div><button class="button" type="submit">Capture and replace shell</button></div></form>${shellCaptureResult ? `<details class="section-gap" open><summary class="muted">Page shell capture report</summary><pre class="json-view" id="shell-capture-report">${escape(json(shellCaptureResult))}</pre></details>` : ""}</section>`) + disclosure("asset-capture", "Capture static portal assets", () => `<section><div class="panel-heading"><h2>Capture static portal assets</h2>${badge("Explicit files only")}</div>${panelHelp("connection.assets")}<p class="muted">Capture selected portal styles, scripts, images, or fonts into the ignored asset cache. Portal files use the connected browser; approved public platform CDN files are fetched anonymously. Enter one portal-relative file path per line.</p><form id="asset-capture-form" class="form-grid"><div><label for="asset-paths">Static file paths</label><textarea id="asset-paths" class="full-width" rows="4" placeholder="/xrm-adx/js/jquery-ui-1.11.4.min.js" required></textarea></div><div><label class="checkbox-label"><input id="observe-stylesheets" type="checkbox"> Observe selected stylesheet versions</label><p class="field-help">CSS files only. Explicit native versions apply while their exported source hashes are unchanged; local edits win.</p><button class="button" type="submit">Capture assets</button></div></form></section>`) + `<section class="panel section-gap"><div class="panel-heading"><div><h2>Portal shell resources</h2><p class="muted">Match the observed stylesheet and script order around local page templates.</p></div><button class="button" data-add="shellProfile">Edit shell profile</button></div>${panelHelp("connection.shell-resources")}${lazyJson("Inspect shell profile", config().shellProfile || {})}</section>`
+    `<div class="grid-two"><section class="panel" data-panel="routing"><div class="panel-heading"><h2>Request routing</h2>${badge(config().mode === "live" ? "Live data selected" : "Local data selected", config().mode === "live" ? "amber" : "green")}</div>${panelHelp("connection.routing")}<form id="connection-form" class="form-grid"><div class="inline-fields"><div><label for="data-mode">Data provider</label><select id="data-mode"><option value="local" ${config().mode !== "live" ? "selected" : ""}>Local mock</option><option value="live" ${config().mode === "live" ? "selected" : ""}>Live environment</option></select>${kit.fieldHelp("data-mode", "Where Web API and Liquid data reads go. Live reads use the connected browser; writes still need the switch below.")}</div><div><label for="page-mode">Page provider</label><select id="page-mode"><option value="local" ${config().pageMode !== "live" ? "selected" : ""}>Local Liquid rendering</option><option value="live" ${config().pageMode === "live" ? "selected" : ""}>Live rendered pages</option></select>${kit.fieldHelp("page-mode", "Local renders Liquid from your sources; live passes rendered pages through from the reference.")}</div></div><div><label for="live-origin">Environment origin</label><input id="live-origin" type="url" value="${escape(live.origin || "")}" placeholder="https://your-portal.powerappsportals.com"><p class="field-help">Use the portal origin. Individual endpoint routes can override the data provider.</p></div><div><label for="fetchxml-path">Live FetchXML endpoint override</label><input id="fetchxml-path" value="${escape(live.fetchXmlPath || "")}" placeholder="/fetch-data/?query={fetchXml}"><p class="field-help">Leave blank for native /_api/&lt;mappedSet&gt;?fetchXml= reads. An optional existing same-origin JSON endpoint must include {fetchXml}.</p></div><div class="checkbox-line"><input id="live-writes" type="checkbox" ${live.allowWrites && state.status?.liveWrites !== "disabled" ? "checked" : ""}${state.status?.liveWrites === "disabled" ? ' disabled aria-describedby="live-writes-disabled"' : ""}><label for="live-writes">Allow create, update, and delete requests to the live environment.<br><span class="field-help">These requests affect actual environment data.</span>${state.status?.liveWrites === "disabled" ? '<br><span class="field-help" id="live-writes-disabled">Disabled for this runtime: start the Mirage with --allow-live-writes (mirage dev and start pass it through) to allow it.</span>' : ""}</label></div><div class="checkbox-line"><input id="confine-portal-pages" type="checkbox" ${config().confinePortalPages ? "checked" : ""}><label for="confine-portal-pages">Confine local pages to loopback.<br><span class="field-help">Adds a Content-Security-Policy that keeps local portal pages on this loopback origin. When off, pages carry only the headers the portal's site settings define, as they do online.</span></label></div><fieldset id="confinement-options" class="confinement-options${config().confinePortalPages ? "" : " is-off"}" ${config().confinePortalPages ? "" : "disabled"}><legend>Exceptions while confined</legend><div class="checkbox-line"><input id="external-assets" type="checkbox" ${config().externalAssets ? "checked" : ""}><label for="external-assets">Allow external assets in local portal pages.<br><span class="field-help">Enable when your exported styles, fonts, or images use online URLs.</span></label></div><div><label for="external-frame-origins">Online embedded content</label><textarea id="external-frame-origins" class="full-width" rows="2" placeholder="https://app.powerbi.com">${escape((config().externalFrameOrigins || []).join("\n"))}</textarea><p class="field-help">One exact HTTPS origin per line. These frames use the selected online service even when portal API and data stay local. Leave blank to block online embedded content.</p></div><p class="field-help confinement-note">These apply only while local pages are confined to loopback.</p></fieldset><div><button class="button primary" type="submit">Save routing</button></div></form></section>
+    <section class="panel" data-panel="browser"><div class="panel-heading"><h2>Authenticated browser</h2>${badge(connected ? "Connected" : "Not connected", connected ? "green" : "")}</div>${panelHelp("connection.browser")}<p class="muted">Connect to an existing browser through its local debugging address. Sign-in stays in that browser; simulator configuration contains no credentials.</p><form id="live-connect-form" class="form-grid"><div><label for="cdp-url">Browser debugging address</label><input id="cdp-url" type="url" value="http://127.0.0.1:9222" required><p class="field-help">Use the free debugging port reported by your development session.</p></div><div class="toolbar"><button class="button" type="submit">Connect browser</button>${connected ? '<button class="button quiet" type="button" data-action="live-disconnect">Disconnect browser</button>' : ""}</div></form><div class="notice section-gap">Provider settings apply to requests reaching this mirage. Live page passthrough is online output, not proof of local rendering parity. Hardcoded online URLs in portal scripts remain browser requests.</div></section></div>` + disclosure("shell-capture", "Capture page shell (reads the live page)", () => `<section><div class="panel-heading"><h2>Capture page shell</h2>${badge("Read-only live page")}</div>${panelHelp("connection.shell", "capturing the page shell")}<form id="shell-capture-form" class="form-grid"><div><label for="shell-page-path">Portal page path</label><input id="shell-page-path" value="${escape(shellCapturePath)}" placeholder="/" required></div><div><label for="managed-control-path">Managed editor page (optional)</label><input id="managed-control-path" value="${escape(managedControlPath)}" placeholder="/_portal/modal-form-template-path/…"><p class="field-help">Read an explicitly known native rich-text page to capture static PCF manifests. This GET saves no record values; existing connected pages supply observed font resource URLs.</p></div><div><button class="button" type="submit">Capture and replace shell</button></div></form>${shellCaptureResult ? `<details class="section-gap" open><summary class="muted">Page shell capture report</summary><pre class="json-view" id="shell-capture-report">${escape(json(shellCaptureResult))}</pre></details>` : ""}</section>`) + disclosure("asset-capture", "Capture static portal assets", () => `<section><div class="panel-heading"><h2>Capture static portal assets</h2>${badge("Explicit files only")}</div>${panelHelp("connection.assets", "capturing static assets")}<form id="asset-capture-form" class="form-grid"><div><label for="asset-paths">Static file paths</label><textarea id="asset-paths" class="full-width" rows="4" placeholder="/xrm-adx/js/jquery-ui-1.11.4.min.js" required></textarea></div><div><label class="checkbox-label"><input id="observe-stylesheets" type="checkbox"> Observe selected stylesheet versions</label><p class="field-help">CSS files only. Explicit native versions apply while their exported source hashes are unchanged; local edits win.</p><button class="button" type="submit">Capture assets</button></div></form></section>`) + `<section class="panel section-gap"><div class="panel-heading"><div><h2>Portal shell resources</h2><p class="muted">Match the observed stylesheet and script order around local page templates.</p></div><button class="button" data-add="shellProfile">Edit shell profile</button></div>${panelHelp("connection.shell-resources")}${lazyJson("Inspect shell profile", config().shellProfile || {})}</section>`
   );
 }
 
@@ -1656,7 +1715,7 @@ function observedStylesheetBaselines() {
 }
 function snippetCompositionControls() {
   const rows = config().shellProfile?.snippetCompositions ?? [];
-  return disclosure("snippet-compositions", `Observed snippet compositions (${rows.length})`, () => `<section>${panelHelp("mappings.snippet-compositions")}<p class="muted">Verify an observed native empty state consists of an existing local snippet plus an existing exported action. Both source hashes and the portal origin bind this observation. Local edits win; the source action and handlers retain their visibility and permission rules.</p><form id="snippet-composition-form" class="form-grid"><div><label for="composition-page">Observed page path</label><input id="composition-page" placeholder="/owned-products/" required></div><div><label for="composition-parent">Parent snippet name</label><input id="composition-parent" required></div><div><label for="composition-child">Existing action snippet name</label><input id="composition-child" required></div><div><button class="button" type="submit">Observe static composition</button></div></form>${lazyJson("Inspect source-bound compositions", rows)}</section>`);
+  return disclosure("snippet-compositions", `Observed snippet compositions (${rows.length})`, () => `<section>${panelHelp("mappings.snippet-compositions", "observed snippet compositions")}<form id="snippet-composition-form" class="form-grid"><div><label for="composition-page">Observed page path</label><input id="composition-page" placeholder="/owned-products/" required></div><div><label for="composition-parent">Parent snippet name</label><input id="composition-parent" required></div><div><label for="composition-child">Existing action snippet name</label><input id="composition-child" required></div><div><button class="button" type="submit">Observe static composition</button></div></form>${lazyJson("Inspect source-bound compositions", rows)}</section>`);
 }
 
 // Diagnostics grouped by code (RA-13): the groups and the items inside each group page through the kit.
@@ -1721,13 +1780,11 @@ function evidence() {
   const observed =
     !stale && (evidence.verified === true || evidence.passed === true);
   return (
-    heading(
-      "Render & diagnostics",
-      "Inspect observed render results, unsupported behavior, and runtime failures.",
+    heading("Inspect observed render results, unsupported behavior, and runtime failures.",
     ) +
     `<div class="notice ${observed ? "" : "warning"}">${stale ? "Saved evidence is stale because its source or simulator state differs from this workspace. Run verification again to establish current results." : observed ? "Passing evidence applies only to the compared route, state, identity, and viewport. It does not establish exact parity for the entire portal." : "Exact portal parity has not been established by this workspace state. Configured pages and successful rendering alone do not prove equivalence to the live portal."}</div>` +
-    `<div class="grid-two"><section class="panel"><div class="panel-heading"><h2>Runtime diagnostics</h2>${badge(`${diagnostics.length} observations`, diagnostics.length ? "amber" : "green")}</div>${panelHelp("evidence.diagnostics")}${diagnostics.length ? diagnosticGroups(diagnostics) : '<p class="muted">No diagnostics reported. Visit a portal page and refresh to inspect rendering observations.</p>'}</section><section class="panel"><div class="panel-heading"><h2>Rendering evidence</h2>${badge(stale ? "Stale evidence" : observed ? "Evidence reported" : "Unverified", observed ? "green" : "amber")}</div>${panelHelp("evidence.rendering")}${evidenceSummary(evidence)}${lazyJson("Full evidence report", evidence)}${lazyJson("Runtime status", status)}</section></div>` +
-    `<section class="panel section-gap"><div class="panel-heading"><h2>Discovered pages</h2><span class="record-count">${Array.isArray(pages) ? pages.length : 0} routes</span></div>${panelHelp("evidence.pages")}${
+    `<div class="grid-two"><section class="panel" data-panel="diagnostics"><div class="panel-heading"><h2>Runtime diagnostics</h2>${badge(`${diagnostics.length} observations`, diagnostics.length ? "amber" : "green")}</div>${panelHelp("evidence.diagnostics")}${diagnostics.length ? diagnosticGroups(diagnostics) : '<p class="muted">No diagnostics reported. Visit a portal page and refresh to inspect rendering observations.</p>'}</section><section class="panel" data-panel="rendering"><div class="panel-heading"><h2>Rendering evidence</h2>${badge(stale ? "Stale evidence" : observed ? "Evidence reported" : "Unverified", observed ? "green" : "amber")}</div>${panelHelp("evidence.rendering")}${evidenceSummary(evidence)}${lazyJson("Full evidence report", evidence)}${lazyJson("Runtime status", status)}</section></div>` +
+    `<section class="panel section-gap" data-panel="pages"><div class="panel-heading"><h2>Discovered pages</h2><span class="record-count">${Array.isArray(pages) ? pages.length : 0} routes</span></div>${panelHelp("evidence.pages")}${
       Array.isArray(pages) && pages.length
         ? tableTools("pages", page.total, page.pages) +
           `<div class="table-wrap"><table data-table="pages"><thead><tr><th>Page</th><th>Route</th><th>Action</th></tr></thead><tbody>${page.items
@@ -1751,18 +1808,16 @@ function audit() {
   const select = (name, label, values) =>
     `<label>${label}<select id="audit-filter-${name}" data-audit-filter="${name}" aria-describedby="audit-filter-${name}-help"><option value="">All</option>${values.map((value) => `<option value="${escape(value)}" ${auditFilters[name] === value ? "selected" : ""}>${escape(value)}</option>`).join("")}</select></label>`;
   return (
-    heading(
-      "Request audit",
-      "Inspect bounded, sanitized API, Liquid FetchXML, form, and page activity.",
+    heading("Inspect bounded, sanitized API, Liquid FetchXML, form, and page activity.",
       '<button class="button" data-audit-action="refresh">Refresh audit</button>',
     ) +
-    `${legend("audit", "Kinds and outcomes")}<section class="panel">${panelHelp("audit.filters")}<div class="toolbar audit-filters">${select("kind", "Kind", [...new Set(["api", "liquid-fetchxml", "form", "page", "entity-read", "entity-query", ...(Array.isArray(result.kinds) ? result.kinds : []), ...(auditFilters.kind ? [auditFilters.kind] : [])])])}${select("provider", "Provider", ["local", "live"])}${select("outcome", "Outcome", ["success", "error", "denied", "pending"])}${select("status", "Status", ["2xx", "3xx", "4xx", "5xx", "pending"])}<input type="search" id="audit-filter-path" data-audit-filter="path" aria-label="Filter audit by path" aria-describedby="audit-filter-path-help" placeholder="Path contains…" value="${escape(auditFilters.path)}"><input type="search" id="audit-filter-entity" data-audit-filter="entity" aria-label="Filter audit by table" aria-describedby="audit-filter-entity-help" placeholder="Table logical name" value="${escape(auditFilters.entity)}"><input type="search" id="audit-filter-search" data-audit-filter="search" aria-label="Search audit" aria-describedby="audit-filter-search-help" placeholder="Contact, table, path or error…" value="${escape(auditFilters.search)}">${auditFilters.correlationId ? `<button class="button small" data-audit-action="uncorrelate">Correlation ${escape(auditFilters.correlationId.slice(0, 8))} ×</button>` : ""}<button class="button small" data-audit-action="export">Export filtered JSON</button><button class="button small" data-audit-action="copy">Copy filtered JSON</button><button class="button small quiet" data-audit-action="clear">Clear audit</button></div><p class="field-hints">${["kind", "provider", "outcome", "status", "path", "entity", "search"].map((name) => controlHelp(`audit-filter-${name}`, "audit.filters", name)).join(" ")}</p><p class="muted">${escape(result.retained ?? 0)} retained · ${escape(result.dropped ?? 0)} dropped. Request bodies, credentials, cookies, and tokens are excluded.</p>${auditError ? `<div class="notice warning">${escape(auditError)}</div>` : ""}${auditLoading ? '<p role="status" class="muted">Loading request audit…</p>' : ""}${tableTools("audit", result.total, result.pageCount || 1, { search: false })}${panelHelp("audit.table")}<div class="table-wrap"><table data-table="audit"><thead><tr><th>Sequence / time</th><th>Request</th><th>Provider / contact</th><th>Status / duration</th><th>Rows / outcome</th><th>Details</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${escape(item.sequence)}<div class="row-detail">${escape(item.startedAt)}</div></td><td><strong>${escape(item.kind)}</strong><div class="row-detail">${escape(item.method)} ${escape(item.path)}</div><code>${escape(item.entity || "")}</code></td><td>${badge(item.provider)}<div class="row-detail">${escape(item.identity?.contactId || "Anonymous")}</div></td><td>${badge(item.status, item.status >= 400 ? "red" : "green")}<div class="row-detail">${escape(Number(item.durationMs || 0).toFixed(1))} ms</div></td><td>${escape(item.rowCount ?? "—")} · ${escape(item.outcome)}${item.error ? `<div class="row-detail">${escape(item.error.code)}${item.error.portalCode ? ` · portal ${escape(item.error.portalCode)}` : ""}</div>` : ""}</td><td>${inspectButton(item)}</td></tr>`).join("") || '<tr><td colspan="6">No matching requests have been recorded.</td></tr>'}</tbody></table></div></section>`
+    `${legend("audit", "Kinds and outcomes")}<section class="panel">${panelHelp("audit.filters")}<div class="toolbar audit-filters">${select("kind", "Kind", [...new Set(["api", "liquid-fetchxml", "form", "page", "entity-read", "entity-query", ...(Array.isArray(result.kinds) ? result.kinds : []), ...(auditFilters.kind ? [auditFilters.kind] : [])])])}${select("provider", "Provider", ["local", "live"])}${select("outcome", "Outcome", ["success", "error", "denied", "pending"])}${select("status", "Status", ["2xx", "3xx", "4xx", "5xx", "pending"])}<input type="search" id="audit-filter-path" data-audit-filter="path" aria-label="Filter audit by path" aria-describedby="audit-filter-path-help" placeholder="Path contains…" value="${escape(auditFilters.path)}"><input type="search" id="audit-filter-entity" data-audit-filter="entity" aria-label="Filter audit by table" aria-describedby="audit-filter-entity-help" placeholder="Table logical name" value="${escape(auditFilters.entity)}"><input type="search" id="audit-filter-search" data-audit-filter="search" aria-label="Search audit" aria-describedby="audit-filter-search-help" placeholder="Contact, table, path or error…" value="${escape(auditFilters.search)}">${auditFilters.correlationId ? `<button class="button small" data-audit-action="uncorrelate">Correlation ${escape(auditFilters.correlationId.slice(0, 8))} ×</button>` : ""}<button class="button small" data-audit-action="export">Export filtered JSON</button><button class="button small" data-audit-action="copy">Copy filtered JSON</button><button class="button small quiet" data-audit-action="clear">Clear audit</button></div><details class="field-hints"><summary>What these fields do</summary><p>${["kind", "provider", "outcome", "status", "path", "entity", "search"].map((name) => controlHelp(`audit-filter-${name}`, "audit.filters", name)).join(" ")}</p></details><p class="muted">${escape(result.retained ?? 0)} kept · ${escape(result.dropped ?? 0)} dropped as the oldest beyond the limit.</p>${auditError ? `<div class="notice warning">${escape(auditError)}</div>` : ""}${auditLoading ? '<p role="status" class="muted">Loading request audit…</p>' : ""}${tableTools("audit", result.total, result.pageCount || 1, { search: false })}${panelHelp("audit.table")}<div class="table-wrap"><table data-table="audit"><thead><tr><th>Sequence / time${kit.info({ label: "About Sequence / time", text: "The order number given when the request started, and its start time." })}</th><th>Request${kit.info({ label: "About Request", text: "The kind (Kinds and outcomes above explains each), method, path and table." })}</th><th>Provider / contact${kit.info({ label: "About Provider / contact", text: "local: answered by this runtime; live: passed to the connected environment. Below it, the contact the request ran as, or Anonymous." })}</th><th>Status / duration</th><th>Rows / outcome${kit.info({ label: "About Rows / outcome", text: "How many rows the request returned, then success, error, denied (a permission decision) or pending." })}</th><th>Details</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${escape(item.sequence)}<div class="row-detail">${escape(item.startedAt)}</div></td><td><strong>${escape(item.kind)}</strong><div class="row-detail">${escape(item.method)} ${escape(item.path)}</div><code>${escape(item.entity || "")}</code></td><td>${badge(item.provider)}<div class="row-detail">${escape(item.identity?.contactId || "Anonymous")}</div></td><td>${badge(item.status, item.status >= 400 ? "red" : "green")}<div class="row-detail">${escape(Number(item.durationMs || 0).toFixed(1))} ms</div></td><td>${escape(item.rowCount ?? "—")} · ${escape(item.outcome)}${item.error ? `<div class="row-detail">${escape(item.error.code)}${item.error.portalCode ? ` · portal ${escape(item.error.portalCode)}` : ""}</div>` : ""}</td><td>${inspectButton(item)}</td></tr>`).join("") || '<tr><td colspan="6">No matching requests have been recorded.</td></tr>'}</tbody></table></div></section>`
   );
 }
 
 function portal(overridesOnly=false) {
-  if(overridesOnly)return heading('Settings & snippet overrides','Per-instance values replace exported settings/snippets without editing source files. Reset restores the current source. False and True remain portal strings.')+experimentPanel()+portalValuePanels(true);
-  return heading("Portal configuration", "Experiment with local settings, snippets and web roles. Changes persist in this simulator workspace and refresh the portal.") +
+  if(overridesOnly)return heading('Per-instance values replace exported settings/snippets without editing source files. Reset restores the current source. False and True remain portal strings.')+experimentPanel()+portalValuePanels(true);
+  return heading("Experiment with local settings, snippets and web roles. Changes persist in this simulator workspace and refresh the portal.") +
     portalValuePanels(false) + accessRulesPanel();
 }
 function portalValuePanels(overridesOnly) {
@@ -1774,7 +1829,8 @@ function portalValuePanels(overridesOnly) {
         if (kind !== "portal-roles") return String(row.value ?? "").slice(0, 160);
         return [row.value?.authenticatedUsersRole && "Signed-in contacts", row.value?.anonymousUsersRole && "Anonymous visitors"].filter(Boolean).join(", ") || "Assigned through contact memberships";
       };
-      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${panelHelp(`${overridesOnly ? "overrides" : "portal"}.${kind.slice(7)}`)}${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table data-table="${kind}"><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Effective value"}</th><th>Source value</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr id="portal-value-${escape(kind)}-${escape(row.id)}" data-operation-scope><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${escape(typeof row.sourceValue==='object'?JSON.stringify(row.sourceValue):String(row.sourceValue??'Not in source')).slice(0,300)}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td>${kind!=="portal-roles"&&!row.deleted&&/^(true|false)$/i.test(String(row.value))?`<button class="button small" data-portal-toggle="${escape(row.id)}" data-portal-kind="${kind}" data-portal-value="${String(row.value).toLowerCase()==="true"?"False":"True"}">Set ${String(row.value).toLowerCase()==="true"?"False":"True"}</button>`:""}<button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+      const tip = (label, text) => `${escape(label)}${kit.info({ label: `About ${label}`, text })}`;
+      return `<section class="panel section-gap" data-panel="${kind.slice(7)}"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${panelHelp(`${overridesOnly ? "overrides" : "portal"}.${kind.slice(7)}`, title.toLowerCase())}${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table data-table="${kind}"><thead><tr><th>Name</th><th>${kind === "portal-roles" ? tip("Membership", "Who gets the role without an explicit membership: every signed-in contact, every anonymous visitor, or only contacts assigned to it.") : tip("Effective value", "The value portal pages and Liquid read now: your local override when there is one, otherwise the exported value.")}</th><th>${tip("Source value", "The value in your exported portal source files. Local changes never edit these files.")}</th><th>${tip("Origin", "Exported source: the value comes from your files. Local override: changed here; Reset restores the exported value.")}</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr id="portal-value-${escape(kind)}-${escape(row.id)}" data-operation-scope><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${escape(typeof row.sourceValue==='object'?JSON.stringify(row.sourceValue):String(row.sourceValue??'Not in source')).slice(0,300)}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td>${kind!=="portal-roles"&&!row.deleted&&/^(true|false)$/i.test(String(row.value))?`<button class="button small" data-portal-toggle="${escape(row.id)}" data-portal-kind="${kind}" data-portal-value="${String(row.value).toLowerCase()==="true"?"False":"True"}">Set ${String(row.value).toLowerCase()==="true"?"False":"True"}</button>`:""}<button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
     }).join("");
 }
 
@@ -1782,17 +1838,17 @@ const experimentOwnership=p=>p.readOnly?'pack':p.builtin?'builtin':'saved';
 function selectedExperiment(){const select=document.querySelector('#experiment-select'),option=select?.selectedOptions[0];return config().experimentPresets?.find(p=>p.id===select?.value&&String(p.source??'')===option?.dataset.source&&experimentOwnership(p)===option?.dataset.ownership);}
 document.addEventListener('change',event=>{if(event.target.id!=='experiment-select')return;const selected=selectedExperiment(),button=document.querySelector('[data-experiment="delete"]'),apply=document.querySelector('[data-experiment="apply"]');if(button)button.disabled=!selected||selected.builtin||selected.readOnly;if(apply)apply.disabled=!selected||selected.shadowed===true;});
 function experimentPanel(){
- return `<section id="configuration-presets-panel" data-operation-scope class="panel"><h2>Configuration presets</h2>${panelHelp(activeView === "overrides" ? "overrides.presets" : "platform.presets")}<p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar">${filterBox("experiment-select", (config().experimentPresets ?? []).length, "Filter configuration presets")}<select id="experiment-select" aria-label="Configuration preset" aria-describedby="experiment-select-help">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}" data-source="${escape(p.source??'')}" data-ownership="${experimentOwnership(p)}">${escape(p.name)}${p.shadowed ? " · saved collision (pack takes precedence)" : p.readOnly ? ` · pack: ${escape(p.source)}` : p.builtin ? " · built-in" : " · local"}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete" disabled>Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name" aria-describedby="experiment-name-help"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id" aria-describedby="experiment-id-help"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><p class="field-hints">${controlHelp("experiment-select", "platform.presets", "select")} ${controlHelp("experiment-name", "platform.presets", "name")} ${controlHelp("experiment-id", "platform.presets", "id")}</p><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6" aria-describedby="experiment-import-help"></textarea>${controlHelp("experiment-import", "platform.presets", "import")}<button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
+ return `<section id="configuration-presets-panel" data-operation-scope class="panel"><h2>Configuration presets</h2>${panelHelp(activeView === "overrides" ? "overrides.presets" : "platform.presets", "these presets")}<div class="toolbar">${filterBox("experiment-select", (config().experimentPresets ?? []).length, "Filter configuration presets")}<select id="experiment-select" aria-label="Configuration preset" aria-describedby="experiment-select-help">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}" data-source="${escape(p.source??'')}" data-ownership="${experimentOwnership(p)}">${escape(p.name)}${p.shadowed ? " · saved collision (pack takes precedence)" : p.readOnly ? ` · pack: ${escape(p.source)}` : p.builtin ? " · built-in" : " · local"}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete" disabled>Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Preset name" aria-describedby="experiment-name-help"><input id="experiment-id" aria-label="Preset ID" placeholder="preset-id" aria-describedby="experiment-id-help"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details class="field-hints"><summary>What these fields do</summary><p>${controlHelp("experiment-select", "platform.presets", "select")} ${controlHelp("experiment-name", "platform.presets", "name")} ${controlHelp("experiment-id", "platform.presets", "id")}</p></details><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6" aria-describedby="experiment-import-help"></textarea>${controlHelp("experiment-import", "platform.presets", "import")}<button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
 }
 function platformRules(){
  const rows=config().platformSettings??[], page=sliceRows("platform-settings", rows);
- return heading('Platform rules','Local Dataverse/platform experiments. The access column describes real administration; coverage states exactly what Mirage enforces. No control updates a connected organization.')+(powerPages()||hasRoute("/_sim/api/experiments")?experimentPanel():'')+`<section class="panel section-gap"><h2>Platform settings</h2>${panelHelp("platform.settings")}${tableTools("platform-settings", page.total, page.pages)}<div class="table-wrap"><table data-table="platform-settings"><thead><tr><th>Setting / documentation</th><th>Real administration</th><th>Simulation coverage</th><th>Source / effective value</th><th>Instance override</th></tr></thead><tbody>${page.items.map(d=>`<tr id="platform-rule-${escape(d.key)}" data-operation-scope><td><strong>${escape(d.key)}</strong><p class="row-detail" id="platform-${escape(d.key)}-help">${escape(d.description)}</p>${d.source?`<a href="${escape(d.source)}" target="_blank" rel="noreferrer">Microsoft documentation</a>`:''}</td><td>${escape(d.access)}</td><td>${escape(d.coverage)}</td><td>${escape(d.origin)}<br>Source: ${escape(d.sourceValue??'Not configured')}<br>Effective: ${escape(d.value??'Not configured')}</td><td><label for="platform-${escape(d.key)}">${escape(d.key)}</label>${d.type==='boolean'?`<select id="platform-${escape(d.key)}" aria-describedby="platform-${escape(d.key)}-help"><option value="false" ${d.value!==true?'selected':''}>False</option><option value="true" ${d.value===true?'selected':''}>True</option></select>`:`<input id="platform-${escape(d.key)}" aria-describedby="platform-${escape(d.key)}-help" type="${d.type==='integer'?'number':'text'}" value="${escape(d.value??'')}" ${d.type==='integer'?`min="${d.min}" max="${d.max}"`:''}>`}<button class="button small" data-platform-save="${escape(d.key)}">Save override</button>${d.overridden?`<button class="button small" data-platform-reset="${escape(d.key)}">Use source/default</button>`:''}</td></tr>`).join('')}</tbody></table></div></section>`;
+ return heading('Local Dataverse/platform experiments. The access column describes real administration; coverage states exactly what Mirage enforces. No control updates a connected organization.')+(powerPages()||hasRoute("/_sim/api/experiments")?experimentPanel():'')+`<section class="panel section-gap" data-panel="settings"><h2>Platform settings</h2>${panelHelp("platform.settings", "platform settings")}${tableTools("platform-settings", page.total, page.pages)}<div class="table-wrap"><table data-table="platform-settings"><thead><tr><th>Setting / documentation</th><th>Real administration${kit.info({ label: "About Real administration", text: "Who changes this setting in a real environment: a Microsoft support request, an organization setting, the catalogue only, or a simulator-only safety bound." })}</th><th>Simulation coverage${kit.info({ label: "About Simulation coverage", text: "Exactly which local requests this runtime limits or checks with the setting." })}</th><th>Source / effective value${kit.info({ label: "About Source / effective value", text: "Source: the value from the exported organization row or the catalogue default. Effective: the value requests use now, including your override." })}</th><th>Instance override${kit.info({ label: "About Instance override", text: "A value for this runtime only. Save override stores it in this runtime's state; Use source/default removes it." })}</th></tr></thead><tbody>${page.items.map(d=>`<tr id="platform-rule-${escape(d.key)}" data-operation-scope><td><strong>${escape(d.key)}</strong><p class="row-detail" id="platform-${escape(d.key)}-help">${escape(d.description)}</p>${d.source?`<a href="${escape(d.source)}" target="_blank" rel="noreferrer">Microsoft documentation</a>`:''}</td><td>${escape(d.access)}</td><td>${escape(d.coverage)}</td><td>${escape(d.origin)}<br>Source: ${escape(d.sourceValue??'Not configured')}<br>Effective: ${escape(d.value??'Not configured')}</td><td><label for="platform-${escape(d.key)}">${escape(d.key)}</label>${d.type==='boolean'?`<select id="platform-${escape(d.key)}" aria-describedby="platform-${escape(d.key)}-help"><option value="false" ${d.value!==true?'selected':''}>False</option><option value="true" ${d.value===true?'selected':''}>True</option></select>`:`<input id="platform-${escape(d.key)}" aria-describedby="platform-${escape(d.key)}-help" type="${d.type==='integer'?'number':'text'}" value="${escape(d.value??'')}" ${d.type==='integer'?`min="${d.min}" max="${d.max}"`:''}>`}<button class="button small" data-platform-save="${escape(d.key)}">Save override</button>${d.overridden?`<button class="button small" data-platform-reset="${escape(d.key)}">Use source/default</button>`:''}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function accessRulesPanel() {
   const pages = new Map((state.status?.pages || []).map((page) => [String(page.id).toLowerCase(), page]));
   const roles = new Map((state.status?.webRoles || []).map((role) => [String(role.id).toLowerCase(), role.name]));
-  const head = `<div class="panel-heading"><div><h2>Page access rules</h2><p class="muted">Grant change (1) and restrict read (2) rules decide which web roles may open a page branch. Local overrides apply immediately to page access, navigation and files; reset restores the export.</p></div><button class="button" data-add="portal-access-rules">Add rule</button></div>${panelHelp("portal.access-rules")}`;
+  const head = `<div class="panel-heading" data-panel="access-rules"><div><h2>Page access rules</h2><p class="muted">Grant change (1) and restrict read (2) rules decide which web roles may open a page branch. Local overrides apply immediately to page access, navigation and files; reset restores the export.</p></div><button class="button" data-add="portal-access-rules">Add rule</button></div>${panelHelp("portal.access-rules")}`;
   if (accessRulesError)
     return `<section class="panel section-gap">${head}<div class="notice warning">${escape(accessRulesError)}</div></section>`;
   if (!accessRules)
@@ -1828,21 +1884,25 @@ function scenarios() {
   const active = config().activeScenario;
   const dashboard = availableViews().some(({ id }) => id === "dashboard");
   return (
-    heading(
-      "Scenarios",
-      "Name a combination of preset, persona and permission enforcement, then switch between them in one step.",
+    heading("Name a combination of preset, persona and permission enforcement, then switch between them in one step.",
       addButton("scenarios", "Add scenario"),
     ) +
+    steps("scenarios", [
+      { label: "Save a scenario", href: "#scenarios?panel=scenario-save", detail: "Name a data preset, a test person and permission enforcement to apply together. Saving changes nothing else.", effect: "saves" },
+      { label: "Apply it", href: "#scenarios?panel=saved", detail: "Apply loads the preset's tables, signs this browser in as the person and sets enforcement; parts left on keep stay as they are.", effect: "data" },
+      { label: "Or launch a catalogue scenario", href: "#scenarios?panel=persona-scenarios-panel", detail: "Signs a persona in and opens its start page; one with its own preset or setup runs in an isolated copy.", effect: "browser" },
+      { label: "Reset when you are done", href: "#scenarios?panel=reset", detail: "Restores the imported records, configuration, identity and permissions. Saved scenarios are kept.", effect: "data" },
+    ]) +
     (active
       ? `<div class="notice">Active scenario: <strong>${escape(active.name || active.id)}</strong> · applied ${escape(active.appliedAt || "")}</div>`
       : "") +
-    `<section class="panel section-gap"><div class="panel-heading"><h2>State scenarios</h2>${badge(`${collection("scenarios").length} saved`)}</div>${panelHelp("scenarios.saved")}${collectionTable("scenarios")}</section>` +
+    `<section class="panel section-gap" data-panel="saved"><div class="panel-heading"><h2>Saved scenarios</h2>${badge(`${collection("scenarios").length} saved`)}</div>${panelHelp("scenarios.saved", "saved scenarios")}${collectionTable("scenarios")}</section>` +
     disclosure("scenario-save", "Save a scenario", scenarioForm) +
     (personaCatalogue
       ? personaManagementPanel(personaCatalogue)
-      : `<section class="panel section-gap"><h2>Catalogue scenarios</h2>${panelHelp("scenarios.catalogue")}<p class="muted">No persona catalogue is loaded in this runtime, so there are no catalogue scenarios. A data pack or local state supplies the catalogue.</p></section>`) +
-    `<section class="panel section-gap"><h2>Preflight scenario files</h2>${panelHelp("scenarios.preflight")}<p class="muted">Preflight scenario files stay in your project; this runtime does not load or list them. Run <code>paqvilo mirage preflight --scenario FILE</code>${dashboard ? ", or check the same requirements under Blocking in Infrastructure." : "."}</p>${dashboard ? '<a class="button" href="#dashboard">Open Infrastructure</a>' : ""}</section>` +
-    `<section class="panel section-gap"><div class="panel-heading"><h2>Reset the workspace</h2>${badge("Local state change", "amber")}</div>${panelHelp("scenarios.reset")}<p class="muted">Restore the imported records, configuration, identity and permissions of this workspace. Saved scenario definitions are kept.</p><button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>`
+      : `<section class="panel section-gap" id="persona-scenarios-panel"><h2>Catalogue scenarios</h2>${panelHelp("scenarios.catalogue", "catalogue scenarios")}<p class="muted">No persona catalogue is loaded in this runtime, so there are no catalogue scenarios. A data pack or local state supplies the catalogue.</p></section>`) +
+    `<section class="panel section-gap" data-panel="preflight"><h2>Preflight scenario files</h2>${panelHelp("scenarios.preflight", "preflight scenario files")}<p class="muted">They stay in your project; this runtime does not load or list them.${dashboard ? " The same check runs on demand under Blocking in Infrastructure." : ""}</p>${dashboard ? `<a class="button" href="#dashboard?panel=blocking">Infrastructure: Blocking →</a>` : ""}</section>` +
+    `<section class="panel section-gap" data-panel="reset"><div class="panel-heading"><h2>Reset the workspace</h2>${badge("Changes local data", "amber")}</div>${panelHelp("scenarios.reset", "reset")}<button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>`
   );
 }
 
@@ -1867,13 +1927,11 @@ function environment() {
     { label: "Actions", className: "actions", render: (reference) => `<button class="button small" data-reference-origin="${escape(reference.origin)}">Use for live routing</button>` },
   ] });
   return (
-    heading(
-      "Environment",
-      "Reference environments, environment variables, deployment profile and reference enrichment for this workspace.",
+    heading("Reference environments, environment variables, deployment profile and reference enrichment for this workspace.",
       '<button class="button" data-action="reload-environment">Refresh environment</button>',
     ) +
     (environmentError ? `<div class="notice warning">${escape(environmentError)}</div>` : "") +
-    `<div class="grid-two"><section class="panel"><div class="panel-heading"><h2>Reference environments</h2>${badge(live.connected ? "Browser connected" : "Not connected", live.connected ? "green" : "")}</div>${panelHelp("environment.references")}<p class="muted">Selecting a reference sets the origin used for live routing and enrichment. It never connects by itself: connect the intended signed-in browser under Live connection.</p>${
+    `<div class="grid-two"><section class="panel" data-panel="references"><div class="panel-heading"><h2>Reference environments</h2>${badge(live.connected ? "Browser connected" : "Not connected", live.connected ? "green" : "")}</div>${panelHelp("environment.references")}<p class="muted">Selecting a reference sets the origin used for live routing and enrichment. It never connects by itself: connect the intended signed-in browser under Live connection.</p>${
       references.length
         ? referenceTable()
         : '<div class="notice">No reference environments are configured for this runtime. A Mirage project file lists them under <code>references</code>; the toolkit can write one with <code>mirage init</code>.</div>'
@@ -1881,9 +1939,9 @@ function environment() {
       (live.liveWrites ?? state.status?.liveWrites) === "disabled"
         ? "Disabled for this runtime (start the Mirage with --allow-live-writes)"
         : live.allowWrites ? "Allowed" : "Blocked",
-    )}</span></div></div><button class="button small section-gap" data-view="connection">Open live connection</button></section>` +
-    `<section class="panel"><div class="panel-heading"><h2>Deployment profile</h2>${badge(env?.profileSelection?.profile || env?.deploymentProfile || "None applied")}</div>${panelHelp("environment.profile")}<div class="detail-list"><div class="row"><span class="row-title">Profile field changes</span><span class="row-detail">${escape(env?.profileChanges ?? 0)}</span></div><div class="row"><span class="row-title">Exported profiles</span><span class="row-detail">${escape((env?.deploymentProfiles || []).join(", ") || "None")}</span></div></div>${deploymentProfileControls(env?.profileSelection)}<p class="muted">Profiles apply locally and do not identify the deployed commit.</p></section></div>` +
-    `<section class="panel section-gap"><div class="panel-heading"><h2>Environment variables</h2>${badge(variables?.available ? `${variables.definitions.length} definitions` : "Not imported", variables?.available ? "green" : "")}</div>${panelHelp("environment.variables")}${legend("environment.variables", "Secret variables")}<p class="muted">Definitions and values are local Dataverse tables seeded from the Solution sources. A local value is kept as an override until it is reset; then the Solution value or the definition default applies.</p>${
+    )}</span></div></div><a class="button small section-gap" href="#connection?panel=browser">Live connection: connect a browser →</a></section>` +
+    `<section class="panel" data-panel="profile"><div class="panel-heading"><h2>Deployment profile</h2>${badge(env?.profileSelection?.profile || env?.deploymentProfile || "None applied")}</div>${panelHelp("environment.profile")}<div class="detail-list"><div class="row"><span class="row-title">Profile field changes</span><span class="row-detail">${escape(env?.profileChanges ?? 0)}</span></div><div class="row"><span class="row-title">Exported profiles</span><span class="row-detail">${escape((env?.deploymentProfiles || []).join(", ") || "None")}</span></div></div>${deploymentProfileControls(env?.profileSelection)}<p class="muted">Profiles apply locally and do not identify the deployed commit.</p></section></div>` +
+    `<section class="panel section-gap" data-panel="variables"><div class="panel-heading"><h2>Environment variables</h2>${badge(variables?.available ? `${variables.definitions.length} definitions` : "Not imported", variables?.available ? "green" : "")}</div>${panelHelp("environment.variables")}${legend("environment.variables", "Secret variables")}<p class="muted">Definitions and values are local Dataverse tables seeded from the Solution sources. A local value is kept as an override until it is reset; then the Solution value or the definition default applies.</p>${
       variables?.available
         ? pagedTable("environment-variables", variables.definitions, { caption: "Environment variables", emptyText: "No environment variable definitions are stored.", columns: [
             { label: "Schema name", className: "item-title", render: (item) => `<code>${escape(item.schemaName)}</code>` },
@@ -1896,14 +1954,14 @@ function environment() {
         : '<div class="notice">This workspace has no environmentvariabledefinition table. Import Solution environment variables during bootstrap to edit them here.</div>'
     }</section>` +
     // Reference reads and enrichment exist on the Power Pages host only.
-    (!powerPages() ? "" : disclosure("reference-enrichment", "Reference enrichment (reads the selected reference)", () => `<section><div class="panel-heading"><h2>Reference enrichment</h2>${badge("Reads the selected reference", "amber")}</div>${panelHelp("environment.enrichment")}<p class="muted">An enrichment plan lists explicit FetchXML reads (entity, fetchXml, optional pageSize, maxPages and mode merge/replace). Validation never reads the reference. Running copies the selected records from the connected browser identity into local state in one change; complete pages only.</p><form id="enrichment-form" class="form-grid"><div><label for="enrichment-plan">Enrichment plan (JSON array)</label><textarea id="enrichment-plan" class="code-editor" rows="8" spellcheck="false" placeholder='[{"entity":"account","fetchXml":"<fetch><entity name=\\"account\\"><attribute name=\\"name\\"/></entity></fetch>","pageSize":100,"maxPages":1}]'></textarea>${kit.fieldHelp("enrichment-plan", "A JSON array of { entity, fetchXml, pageSize?, maxPages?, mode? } reads; Validate checks it without reading the reference.")}</div><div><label for="enrichment-file">Load plan file</label><input id="enrichment-file" type="file" accept="application/json,.json"></div><div class="toolbar"><button class="button" type="submit" value="validate">Validate plan</button><button class="button primary" type="submit" value="run" ${live.connected ? "" : "disabled"}>Run plan</button></div></form>${enrichmentReport ? `<details class="section-gap" open><summary class="muted">Enrichment report</summary><pre class="json-view" id="enrichment-report">${escape(json(enrichmentReport))}</pre></details>` : ""}${(env?.referenceImports || []).length ? lazyJson(`${env.referenceImports.length} recorded reference imports`, env.referenceImports) : ""}</section>`)) +
-    (project ? `<section class="panel section-gap"><div class="panel-heading"><h2>Project</h2>${badge(project.configFile ? "Project file" : "No project file")}</div>${panelHelp("environment.project")}<div class="detail-list"><div class="row"><span class="row-title">Configuration</span><span class="row-detail source-path">${escape(project.configFile || "Started from a portal source without --project")}</span></div><div class="row"><span class="row-title">Portals</span><span class="row-detail source-path">${escape((project.portals || []).map((item) => (typeof item === "string" ? item : item.id || item.sourceDir || "")).join(", "))}</span></div><div class="row"><span class="row-title">Solutions</span><span class="row-detail source-path">${escape((project.solutions || []).map((item) => (typeof item === "string" ? item : item.id || item.root || "")).join(", ") || "None")}</span></div><div class="row"><span class="row-title">Data packs</span><span class="row-detail">${escape((project.dataPacks || []).map((item) => (typeof item === "string" ? item : item.id || item.module || "")).join(", ") || "None")}</span></div></div>${lazyJson("Full project configuration", project)}</section>` : "")
+    (!powerPages() ? "" : disclosure("reference-enrichment", "Reference enrichment (reads the selected reference)", () => `<section><div class="panel-heading"><h2>Reference enrichment</h2>${badge("Reads the selected reference", "amber")}</div>${panelHelp("environment.enrichment", "reference enrichment")}<form id="enrichment-form" class="form-grid"><div><label for="enrichment-plan">Enrichment plan (JSON array)</label><textarea id="enrichment-plan" class="code-editor" rows="8" spellcheck="false" placeholder='[{"entity":"account","fetchXml":"<fetch><entity name=\\"account\\"><attribute name=\\"name\\"/></entity></fetch>","pageSize":100,"maxPages":1}]'></textarea>${kit.fieldHelp("enrichment-plan", "A JSON array of { entity, fetchXml, pageSize?, maxPages?, mode? } reads; Validate checks it without reading the reference.")}</div><div><label for="enrichment-file">Load plan file</label><input id="enrichment-file" type="file" accept="application/json,.json"></div><div class="toolbar"><button class="button" type="submit" value="validate">Validate plan</button><button class="button primary" type="submit" value="run" ${live.connected ? "" : "disabled"}>Run plan</button></div></form>${enrichmentReport ? `<details class="section-gap" open><summary class="muted">Enrichment report</summary><pre class="json-view" id="enrichment-report">${escape(json(enrichmentReport))}</pre></details>` : ""}${(env?.referenceImports || []).length ? lazyJson(`${env.referenceImports.length} recorded reference imports`, env.referenceImports) : ""}</section>`)) +
+    (project ? `<section class="panel section-gap" data-panel="project"><div class="panel-heading"><h2>Project</h2>${badge(project.configFile ? "Project file" : "No project file")}</div>${panelHelp("environment.project")}<div class="detail-list"><div class="row"><span class="row-title">Configuration</span><span class="row-detail source-path">${escape(project.configFile || "Started from a portal source without --project")}</span></div><div class="row"><span class="row-title">Portals</span><span class="row-detail source-path">${escape((project.portals || []).map((item) => (typeof item === "string" ? item : item.id || item.sourceDir || "")).join(", "))}</span></div><div class="row"><span class="row-title">Solutions</span><span class="row-detail source-path">${escape((project.solutions || []).map((item) => (typeof item === "string" ? item : item.id || item.root || "")).join(", ") || "None")}</span></div><div class="row"><span class="row-title">Data packs in the project file${kit.info({ label: "About data packs in the project file", text: "Packs listed in the Mirage project file. Packs registered in the catalogue site show under Data packs." })}</span><span class="row-detail">${escape((project.dataPacks || []).map((item) => (typeof item === "string" ? item : item.id || item.module || "")).join(", ") || "None")}</span></div></div>${lazyJson("Full project configuration", project)}</section>` : "")
   );
 }
 
 function runtimeState() {
   const status = state.status || {};
-  if (!powerPages()) return heading('Runtime state', 'The active organization, imported Solutions and administration capabilities.') + simulationPanel() + `<section class="panel section-gap"><div class="detail-list"><div class="row"><span class="row-title">Runtime revision</span><span>${escape(status.revision ?? 'Not reported')}</span></div><div class="row"><span class="row-title">Solution roots</span><span class="source-path">${escape((status.solutionRoots ?? []).join(', ') || 'None')}</span></div></div>${lazyJson('Inspect runtime status', status)}<p class="muted">Change the runtime surface, imports and persistence level in Project setup, then restart. State import/reset and portal rendering controls are unavailable in this profile.</p><a class="button" href="/_setup/">Project setup</a></section>`;
+  if (!powerPages()) return heading('The active organization, imported Solutions and administration capabilities.') + simulationPanel() + `<section class="panel section-gap"><div class="detail-list"><div class="row"><span class="row-title">Runtime revision</span><span>${escape(status.revision ?? 'Not reported')}</span></div><div class="row"><span class="row-title">Solution roots</span><span class="source-path">${escape((status.solutionRoots ?? []).join(', ') || 'None')}</span></div></div>${lazyJson('Inspect runtime status', status)}<p class="muted">Change the runtime surface, imports and persistence level in Project setup, then restart. State import/reset and portal rendering controls are unavailable in this profile.</p><a class="button" href="/_setup/">Project setup</a></section>`;
   // status.bootstrap reports what the runtime loaded: Solution roots, layers in load order, timings.
   const bootstrap = status.bootstrap || {};
   const roots = Array.isArray(bootstrap.solutionRoots) && bootstrap.solutionRoots.length
@@ -1932,9 +1990,7 @@ function runtimeState() {
   const row = (title, value) =>
     `<div class="row"><span class="row-title">${escape(title)}</span><span class="row-detail source-path">${escape(value ?? "Not reported")}</span></div>`;
   return (
-    heading(
-      "Runtime state",
-      "Fingerprints, reloads and portable copies of this local workspace state.",
+    heading("Fingerprints, reloads and portable copies of this local workspace state.",
     ) +
     simulationPanel() +
     disclosure("runtime-fingerprints", `Fingerprints and bootstrap facts${status.implementationChanged ? " · restart to load edited runtime code" : ""}`, () => `<section><div class="panel-heading"><h2>Fingerprints</h2>${badge(status.implementationChanged ? "Restart to load edited runtime code" : "Runtime code current", status.implementationChanged ? "amber" : "green")}</div>${panelHelp("runtime.fingerprints")}<div class="detail-list">${row("Runtime revision", status.revision)}${row("Source fingerprint", status.sourceFingerprint)}${row("Loaded implementation", status.loadedImplementationFingerprint)}${row("Current implementation", status.implementationFingerprint)}${row("Source directory", status.sourceDir)}${row("Solution roots", roots.join(", ") || "None")}${row("Solution layers", layers.map((layer) => `${layer.solution || layer.dir || "Solution"}${layer.version ? ` ${layer.version}` : ""}${layer.type ? ` (${layer.type})` : ""}`).join(" → ") || "None")}${row("Environment variable definitions", String(bootstrap.environmentVariables ?? 0))}${row("Sign-in page", signInText)}${row("Observed platform behaviour", observedText)}${row("Startup", Number.isFinite(timings.startupMs) ? `${timings.startupMs} ms${Number.isFinite(timings.solutionsMs) ? ` (Solutions ${timings.solutionsMs} ms)` : ""}` : null)}${row("Last source reload", lastReload ? `${lastReload.at} · ${lastReload.durationMs} ms · ${lastReload.changedCount ?? 0} changed files` : "None since start")}</div>${layers.length ? pagedTable("solution-layers", layers, { caption: "Solution layers in load order", columns: [
@@ -1942,7 +1998,12 @@ function runtimeState() {
       { label: "Version", render: (layer) => escape(layer.version ?? "") },
       { label: "Type", render: (layer) => escape(layer.type ?? "") },
     ] }) : ""}<p class="muted">Evidence binds these fingerprints. A source save reloads the runtime and changes the source fingerprint; editing Mirage code requires a restart.</p></section>`) +
-    `<section class="panel section-gap"><div class="panel-heading"><h2>Workspace state</h2>${badge("Local only")}</div>${panelHelp("runtime.state")}<p class="muted">Export saves records, mappings, presets, rules and configuration as JSON. Import replaces the whole local state (saved scenarios are kept) and reloads open portal pages. Reset restores the imported defaults.</p><div class="toolbar"><button class="button" data-action="reload-sources">Reload sources</button><button class="button" data-action="export-state">Export state JSON</button><label class="button" for="state-import-file">Import state JSON</label><input id="state-import-file" type="file" accept="application/json,.json" hidden></div><button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>`
+    `<section class="panel section-gap" data-panel="state"><div class="panel-heading"><h2>Workspace state</h2>${badge("Local only")}</div>${panelHelp("runtime.state", "workspace state")}${actionList([
+      ['<button class="button" data-action="reload-sources">Reload sources</button>', "Reads your portal and Solution source files again, as saving a source file does.", "sources"],
+      ['<button class="button" data-action="export-state">Export state JSON</button>', "Downloads records, mappings, presets, rules and configuration as one JSON file. Nothing changes here.", "read"],
+      ['<label class="button" for="state-import-file">Import state JSON</label><input id="state-import-file" type="file" accept="application/json,.json" hidden>', "Replaces the whole local state with the file (saved scenarios are kept) and reloads open portal pages.", "data"],
+      ['<button class="button danger" data-action="reset-workspace">Reset to imported defaults</button>', "Restores the records, configuration, identity and permissions imported at start.", "data"],
+    ])}</section>`
   );
 }
 
@@ -1994,12 +2055,10 @@ function scheduleLogs() {
 }
 function logs() {
   return (
-    heading(
-      "Live logs",
-      "Requests, Liquid and data reads, plugin evaluations, diagnostics and reloads as they happen in this runtime.",
+    heading("Requests, Liquid and data reads, plugin evaluations, diagnostics and reloads as they happen in this runtime.",
     ) +
     legend("logs", "Log types") +
-    `<section class="panel">${panelHelp("logs.list")}<div class="toolbar"><label class="nowrap">Type <select id="log-filter-type" data-log-filter="type" aria-label="Log type" aria-describedby="log-filter-type-help"><option value="">All</option>${LOG_TYPES.map((type) => `<option ${logFilters.type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><input type="search" id="log-filter-search" data-log-filter="search" aria-label="Filter live logs" aria-describedby="log-filter-search-help" placeholder="Path, table, code or message…" value="${escape(logFilters.search)}"><button class="button small" data-log-action="pause">${logPaused ? "Resume" : "Pause"}</button><button class="button small" data-log-action="copy">Copy filtered JSON</button><button class="button small quiet" data-log-action="clear">Clear</button></div><p class="field-hints">${controlHelp("log-filter-type", "logs.list", "type")} ${controlHelp("log-filter-search", "logs.list", "search")}</p><p class="muted" id="log-status" role="status">${escape(logStatusText())}</p><div id="log-list" class="log-list">${logRows()}</div></section>`
+    `<section class="panel">${panelHelp("logs.list")}<div class="toolbar"><label class="nowrap">Type <select id="log-filter-type" data-log-filter="type" aria-label="Log type" aria-describedby="log-filter-type-help"><option value="">All</option>${LOG_TYPES.map((type) => `<option ${logFilters.type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><input type="search" id="log-filter-search" data-log-filter="search" aria-label="Filter live logs" aria-describedby="log-filter-search-help" placeholder="Path, table, code or message…" value="${escape(logFilters.search)}"><button class="button small" data-log-action="pause">${logPaused ? "Resume" : "Pause"}</button><button class="button small" data-log-action="copy">Copy filtered JSON</button><button class="button small quiet" data-log-action="clear">Clear</button></div><details class="field-hints"><summary>What these fields do</summary><p>${controlHelp("log-filter-type", "logs.list", "type")} ${controlHelp("log-filter-search", "logs.list", "search")}</p></details><p class="muted" id="log-status" role="status">${escape(logStatusText())}</p><div id="log-list" class="log-list">${logRows()}</div></section>`
   );
 }
 
@@ -2029,9 +2088,7 @@ async function loadDataverse() {
 let dataverseRequests = [], dataverseUserEditing = null, dataverseWorkflowEditing = null;
 const ACCESS_MODES = { 0: "Read-Write", 1: "Administrative", 2: "Read", 3: "Support user", 4: "Non-interactive", 5: "Delegated admin" };
 function dataverse() {
-  const title = heading(
-    "Organization identity & API",
-    "Local organization staff, simulated Entra application registrations, credentials and token authority. Staff sessions, application tokens and portal personas remain separate. Nothing here reaches a real environment.",
+  const title = heading("Local organization staff, simulated Entra application registrations, credentials and token authority. Staff sessions, application tokens and portal personas remain separate. Nothing here reaches a real environment.",
     '<button class="button" data-action="reload-dataverse">Refresh</button>',
   );
   if (dataverseDisabled)
@@ -2064,11 +2121,11 @@ function dataverse() {
   const tdsEnabled = result.tdsPort !== null && result.tdsPort !== undefined;
   const customServiceClientPort = (() => { try { const url = new URL(result.origin); return url.protocol === 'http:' && Boolean(url.port) && url.port !== '80'; } catch { return false; } })();
   const serviceClientPortNote = customServiceClientPort ? '<p class="notice" data-serviceclient-port>Microsoft.PowerPlatform.Dataverse.Client drops custom HTTP ports. <a href="/_setup/#runtime-configuration">Configure the organization API port as 80</a>, then restart Mirage before using these ServiceClient connection strings.</p>' : '';
-  const connect = disclosure("dv-connect", `Connect${tdsEnabled ? " · TDS enabled" : ""}`, () => `<section><div class="panel-heading"><h2>Connect</h2>${badge(tdsEnabled ? "TDS enabled" : "TDS disabled", tdsEnabled ? "green" : "")}</div>${panelHelp("dataverse.connect")}<p class="muted">Addresses for clients and tools. Each application signs in with its own client secret, which is shown only once when it is created, so the connection strings keep a placeholder.</p><div class="detail-list">${[
+  const connect = disclosure("dv-connect", `Connect${tdsEnabled ? " · TDS (SQL) endpoint on" : ""}`, () => `<section><div class="panel-heading"><h2>Connect</h2>${badge(tdsEnabled ? "TDS (SQL) endpoint on" : "TDS (SQL) endpoint off", tdsEnabled ? "green" : "")}</div>${panelHelp("dataverse.connect")}<p class="muted">Addresses for clients and tools. Each application signs in with its own client secret, which is shown only once when it is created, so the connection strings keep a placeholder.</p><div class="detail-list">${[
     ["Org URL", result.origin],
     ["Token endpoint", result.authority ? `${result.authority}/oauth2/v2.0/token` : null],
     ["Scope", result.origin ? `${result.origin}/.default` : null],
-    ["TDS endpoint", tdsEnabled ? `127.0.0.1,${result.tdsPort}` : null],
+    ["TDS endpoint (SQL queries)", tdsEnabled ? `127.0.0.1,${result.tdsPort}` : null],
   ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div><h3>ServiceClient connection strings</h3>${serviceClientPortNote}${(result.applications ?? []).map((app) => `<div class="row-detail"><code>${escape(`AuthType=ClientSecret;Url=${result.origin};ClientId=${app.appId};ClientSecret=<client secret>`)}</code></div>`).join("") || '<p class="muted">Register an application to get a connection string.</p>'}</section>`);
   const appPage = sliceRows("dv-applications", result.applications ?? []);
   const applications = `<section class="panel section-gap"><div class="panel-heading"><h2>Applications</h2>${badge(`${(result.applications ?? []).length} registered`)}</div>${panelHelp("dataverse.applications")}${legend("dataverse.applications", "Grant types")}${tableTools("dv-applications", appPage.total, appPage.pages)}<div class="table-wrap"><table data-table="dv-applications"><thead><tr><th>Application</th><th>Secrets</th><th>Certificates</th><th>Grants</th><th>Actions</th></tr></thead><tbody>${appPage.items.map((app) => `<tr id="dv-app-row-${escape(app.appId)}" data-operation-scope><td class="item-title">${escape(app.displayName)}<div class="row-detail"><code>${escape(app.appId)}</code></div>${app.systemuserid ? `<div class="row-detail">User ${escape(app.systemuserid)}</div>` : ""}${(app.redirectUris ?? []).map((uri) => `<div class="row-detail">Redirect <code>${escape(uri)}</code></div>`).join("")}</td><td>${(app.secrets ?? []).map((secret) => `<div class="row-detail"><code>${escape(secret.hint)}…</code> expires ${escape(String(secret.expiresOn ?? "").slice(0, 10))} <button class="button small quiet" type="button" data-dv-delete-secret="${escape(secret.id)}" data-dv-app="${escape(app.appId)}">Remove</button></div>`).join("") || "None"}</td><td>${(app.certificates ?? []).map((certificate) => `<div class="row-detail"><code>SHA-1 ${escape(certificate.thumbprint)}</code> <button class="button small quiet" type="button" data-dv-remove-cert="${escape(certificate.thumbprint)}" data-dv-app="${escape(app.appId)}" aria-label="Remove certificate ${escape(certificate.thumbprint)}">Remove</button></div><div class="row-detail"><code>SHA-256 ${escape(certificate.thumbprint256)}</code></div>`).join("") || "None"}</td><td>${escape((app.allowedGrants ?? []).join(", "))}${app.publicClient ? ` ${badge("Public client")}` : ""}</td><td class="actions"><button class="button small quiet" type="button" data-dv-edit-app="${escape(app.appId)}">Edit</button><button class="button small" type="button" data-dv-add-secret="${escape(app.appId)}">Add secret</button><button class="button small quiet" type="button" data-dv-remove-app="${escape(app.appId)}" data-dv-name="${escape(app.displayName)}">Remove</button></td></tr>${dataverseEditing === app.appId ? editRow(app) : ""}`).join("") || '<tr><td colspan="5">No application registered yet.</td></tr>'}</tbody></table></div></section>`;
@@ -2109,7 +2166,7 @@ function dataverse() {
   const env = result.environment ?? null;
   const restart = env?.restartRequired ?? {};
   const environment = env
-    ? disclosure("dv-environment", "Environment settings", () => `<section><div class="panel-heading"><h2>Environment settings</h2>${badge("Applies now", "green")}</div>${panelHelp("dataverse.environment")}<p class="muted">Changes take effect on the next request, with no restart. Auditing and duplicate detection are organization settings; the others act on the Dataverse API.</p><form id="dv-environment-form" class="form-grid"><div><label class="checkbox-label"><input id="dv-env-auditing" type="checkbox" ${env.auditing ? "checked" : ""}> Audit record changes</label><p class="field-help">Records create, update and delete changes in the audit table.</p></div><div><label class="checkbox-label"><input id="dv-env-duplicates" type="checkbox" ${env.duplicateDetection ? "checked" : ""}> Duplicate detection</label><p class="field-help">Runs published duplicate detection rules on create and update.</p></div><div><label class="checkbox-label"><input id="dv-env-tds" type="checkbox" ${env.tdsEnabled ? "checked" : ""}> Enable TDS endpoint</label><p class="field-help">Off keeps the listener, but every TDS login is refused.</p></div><div><label for="dv-env-plugin-timeout">Plug-in timeout (seconds)</label><input id="dv-env-plugin-timeout" type="number" min="1" max="3600" step="1" required value="${escape(String(env.pluginTimeoutSeconds))}">${kit.fieldHelp("dv-env-plugin-timeout", "A plug-in step that runs longer fails with a timeout error.")}</div><div><label for="dv-env-requests">Requests per 300 seconds, per user</label><input id="dv-env-requests" type="number" min="1" step="1" value="${escape(env.requestsPer300s === null ? "" : String(env.requestsPer300s))}" placeholder="Off"><p class="field-help">Empty turns the limit off. Over the limit, Web API requests answer 429.</p></div><div class="toolbar"><button class="button primary" type="submit">Save environment settings</button></div></form><h3>Restart required</h3><p class="muted">Read when the Dataverse API starts. Change them in the mirage settings and restart.</p><div class="detail-list">${[
+    ? disclosure("dv-environment", "Environment settings", () => `<section><div class="panel-heading"><h2>Environment settings</h2>${badge("Applies now", "green")}</div>${panelHelp("dataverse.environment")}<p class="muted">Changes take effect on the next request, with no restart. Auditing and duplicate detection are organization settings; the others act on the Dataverse API.</p><form id="dv-environment-form" class="form-grid"><div><label class="checkbox-label"><input id="dv-env-auditing" type="checkbox" ${env.auditing ? "checked" : ""}> Audit record changes</label><p class="field-help">Records create, update and delete changes in the audit table.</p></div><div><label class="checkbox-label"><input id="dv-env-duplicates" type="checkbox" ${env.duplicateDetection ? "checked" : ""}> Duplicate detection</label><p class="field-help">Runs published duplicate detection rules on create and update.</p></div><div><label class="checkbox-label"><input id="dv-env-tds" type="checkbox" ${env.tdsEnabled ? "checked" : ""}> Enable TDS endpoint</label><p class="field-help">TDS is the SQL Server protocol that SQL tools use to query Dataverse tables. Off keeps the listener, but every TDS login is refused.</p></div><div><label for="dv-env-plugin-timeout">Plug-in timeout (seconds)</label><input id="dv-env-plugin-timeout" type="number" min="1" max="3600" step="1" required value="${escape(String(env.pluginTimeoutSeconds))}">${kit.fieldHelp("dv-env-plugin-timeout", "A plug-in step that runs longer fails with a timeout error.")}</div><div><label for="dv-env-requests">Requests per 300 seconds, per user</label><input id="dv-env-requests" type="number" min="1" step="1" value="${escape(env.requestsPer300s === null ? "" : String(env.requestsPer300s))}" placeholder="Off"><p class="field-help">Empty turns the limit off. Over the limit, Web API requests answer 429.</p></div><div class="toolbar"><button class="button primary" type="submit">Save environment settings</button></div></form><h3>Restart required</h3><p class="muted">Read when the Dataverse API starts. Change them in the mirage settings and restart.</p><div class="detail-list">${[
         ["Port (0 is ephemeral)", String(restart.port)],
         ["TLS", restart.tls ? "On" : "Off"],
         ["Tenant id", restart.tenantId],
@@ -2291,7 +2348,7 @@ function renderView(view) {
     const failure = load?.error ? kit.notice(`${label} could not be loaded: ${load.error.message}${load.error.status ? ` (HTTP ${load.error.status})` : ""}. Use Refresh to try again.`, "bad") : "";
     // The dashboard renders its own loading and error states from its poll.
     if (module.load && view !== "dashboard" && !load?.loaded)
-      return heading(label, "") + (failure || `<p role="status" class="muted">Loading ${escape(label)}…</p>`);
+      return heading("") + (failure || `<p role="status" class="muted">Loading ${escape(label)}…</p>`);
     return failure + module.render(ctx);
   }
   switch (view) {
@@ -2334,7 +2391,6 @@ function render() {
   }
   // One product, two areas (D22): the wordmark stays Paqvilo; the small line names the area and the host flavour.
   const kind = $('#workspace-kind'); if (kind) kind.textContent = `SIMULATOR WORKSPACE · ${powerPages() ? 'PORTAL' : 'MIRAGE'} STUDIO`;
-  document.title = 'Paqvilo · Simulator workspace';
   // Sidebar groups (D12): collapsible, the active view's group always open; link texts are unchanged.
   const available = availableViews();
   $("#navigation").innerHTML = [...NAV_GROUPS.map(([group]) => group)]
@@ -2345,8 +2401,9 @@ function render() {
       return `<details class="nav-group" data-nav-group="${escape(group)}"${open ? " open" : ""}><summary>${escape(group)}</summary>${items.map(({ id, label, icon }) => `<a class="nav-item ${activeView === id ? "active" : ""}" href="#${escape(id)}" ${activeView === id ? 'aria-current="page"' : ""}><span class="nav-icon" aria-hidden="true">${escape(icon)}</span>${escape(label)}</a>`).join("")}</details>`;
     })
     .join("");
-  $("#breadcrumb").textContent =
-    views.find(({ id }) => id === activeView)?.label || "Overview";
+  $("#breadcrumb").textContent = viewLabel(activeView);
+  const crumbGroup = $("#breadcrumb-group"); if (crumbGroup) crumbGroup.textContent = groupOf(activeView);
+  document.title = `${viewLabel(activeView)} · Paqvilo simulator workspace`;
   $("#content").innerHTML = renderView(activeView);
   if (activeView === "connection" || activeView === "mappings")
     $("#content").insertAdjacentHTML(
@@ -2378,6 +2435,7 @@ function render() {
       replacement.scrollLeft = scroll.left;
     }
   }
+  land();
 }
 
 async function openEditor(name, id) {
@@ -3117,6 +3175,7 @@ window.addEventListener("hashchange", () => {
   }
   activeView = view;
   filter = "";
+  if (entered || params.has("panel")) landing = { view, top: entered, panel: params.get("panel") };
   applyRoute(view, params);
   if (entered && FRESH_VIEWS.includes(view)) {
     refresh();
@@ -3526,7 +3585,7 @@ function dashboardModule() {
     },
     leave: stop,
     render(context) {
-      const head = `<div class="page-heading"><div><span class="eyebrow">SIMULATOR WORKSPACE</span><h1>Infrastructure</h1><p>Clients, hosts, organization modules, providers and declared external services of this runtime, refreshed every 5 seconds while this page is visible.</p></div><button class="button" type="button" data-dashboard-refresh>Refresh now</button></div>`;
+      const head = `<div class="page-heading"><div><span class="eyebrow">${escape(groupOf("dashboard").toUpperCase())}</span><h1 id="view-title" tabindex="-1">Infrastructure</h1><p>What this runtime runs and how busy each part is, refreshed every 5 seconds while this page is visible. Select a part for its facts and the view that manages it.</p></div><button class="button" type="button" data-dashboard-refresh>Refresh now</button></div>`;
       const notices = problem?.starting
         ? kit.notice("The runtime is still starting. This view keeps polling and fills in once the organization is ready.", "info")
         : problem?.error ? kit.notice(problem.error, "bad") : "";
@@ -3539,7 +3598,12 @@ function dashboardModule() {
       const key = node ? JSON.stringify(node) : null;
       if (slot && node) {
         if (drawer?.key === key) slot.replaceChildren(...drawer.nodes);
-        else { slot.innerHTML = renderNodeDetail(node, context.docs(), { kit, icons, payload }) + panelHelp("dashboard.drawer"); drawer = { key, nodes: [...slot.childNodes] }; }
+        else {
+          slot.innerHTML = renderNodeDetail(node, context.docs(), { kit, icons, payload }) + panelHelp("dashboard.drawer", "these facts");
+          // The drawer names the owning view by its sidebar label, so the link reads as the place it opens.
+          for (const link of slot.querySelectorAll('.ui-drawer-actions a[href^="#"]')) link.textContent = `Open ${viewLabel(link.getAttribute("href").slice(1).split("?")[0])} →`;
+          drawer = { key, nodes: [...slot.childNodes] };
+        }
       }
       if (!node) { selected = null; drawer = null; }
       const result = document.getElementById("dashboard-preflight-result");

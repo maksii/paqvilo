@@ -8,6 +8,13 @@ import { plannedTopology } from './topology.mjs';
 import { exportCandidates, freePort, listFolders, previewOperation, previewSessions, runPreviewOperation } from './preview.mjs';
 import path from 'node:path';
 
+/** `count` local ports from 8787 upward that are free on this computer and not in `taken`, so addresses stay readable. */
+async function localPorts(count, taken = []) {
+  const ports = [], used = new Set(taken.filter(Number.isInteger));
+  for (let port = 8787; ports.length < count && port < 8887; port++) if (!used.has(port) && (await freePort(port)) === port) ports.push(port);
+  while (ports.length < count) ports.push(await freePort(0));
+  return ports;
+}
 // Browser files of this folder by allowlist (a new server-side module is never served), plus the shared, import-free admin modules.
 const BROWSER_FILES = { '/_setup/': 'index.html', '/_setup/index.html': 'index.html', '/_setup/app.mjs': 'app.mjs', '/_setup/quick.mjs': 'quick.mjs', '/_setup/style.css': 'style.css',
   '/_setup/ui-kit.mjs': '../../mirage/admin/ui-kit.mjs', '/_setup/ui-kit.css': '../../mirage/admin/ui-kit.css', '/_setup/shell.css': '../../mirage/admin/shell.css',
@@ -147,11 +154,18 @@ export async function createSetupHandler(options = {}) {
       } else if (pathname === '/_setup/api/quick' && req.method === 'GET') {
         // Quick setup: the exports found in the project folder, written as the configuration would write them.
         const value = remember(await store.snapshot());
-        respond(res, 200, { candidates: await exportCandidates({ directory: path.dirname(store.file), sourceRoot: value.settings?.resolvedSourceRoot ?? path.dirname(store.file) }), ...(value.layers?.shared?.exists ? { port: null } : { port: await freePort(), apiPort: await freePort(8790) }) });
+        const candidates = await exportCandidates({ directory: path.dirname(store.file), sourceRoot: value.settings?.resolvedSourceRoot ?? path.dirname(store.file) });
+        // A new configuration gets one free local address per website found (8787, 8788, … when free), and the Web API its own.
+        const ports = value.layers?.shared?.exists ? [] : await localPorts(Math.max(1, candidates.portals.length));
+        respond(res, 200, { candidates, ...(value.layers?.shared?.exists ? { port: null } : { port: ports[0], ports, apiPort: await freePort(8790) }) });
+      } else if (pathname === '/_setup/api/port' && req.method === 'GET') {
+        // A local port for another project: free on this computer and not already given to a project of this configuration.
+        const value = await store.snapshot();
+        respond(res, 200, { port: (await localPorts(1, (value.sites ?? []).map(site => site.mirage?.port)))[0] });
       } else if (pathname === '/_setup/api/folders' && req.method === 'GET') {
         // Quick setup folder picker: folder names and what they hold, read-only; the page chooses, the configuration API saves.
         if (!sourceRoot) remember(await store.snapshot().catch(() => ({})));
-        respond(res, 200, await listFolders({ directory: path.dirname(store.file), sourceRoot: sourceRoot ?? path.dirname(store.file), folder: new URLSearchParams(req.url.slice(pathname.length)).get('path') }));
+        respond(res, 200, await listFolders({ directory: path.dirname(store.file), sourceRoot: sourceRoot ?? path.dirname(store.file), folder: new URLSearchParams(req.url.slice(pathname.length)).get('path'), files: new URLSearchParams(req.url.slice(pathname.length)).get('files') }));
       } else if (pathname === '/_setup/api/preview' && req.method === 'GET') respond(res, 200, { sessions: await sessions(), operation: await previewOperation(store.file) });
       else if (pathname === '/_setup/api/preview' && req.method === 'POST') {
         verified(req, origin);

@@ -214,7 +214,7 @@ test('catalogue sessions edit linked project files as project:<site> layers with
   assert.equal(snapshot.layers['project:portal'].file, projectFile);
   assert.equal(snapshot.layers['project:portal'].site, 'portal');
   const linked = snapshot.findings.find(item => item.layer === 'project:portal');
-  assert.deepEqual([linked.code, linked.site, linked.section], ['missing-solution', 'portal', '#runtime-configuration']);
+  assert.deepEqual([linked.code, linked.site, linked.section], ['missing-solution', 'portal', '#advanced'], 'a linked project file is edited in the Settings file');
   snapshot = await store.save({ revision: snapshot.revision, layer: 'project:portal', operations: [set(['solutions', 0, 'path'], './solution'), set(['environmentVariables'], { x_InventedFlag: 'on' })] });
   assert.equal(YAML.parse(await fs.readFile(projectFile, 'utf8')).environmentVariables.x_InventedFlag, 'on');
   assert.ok(snapshot.findings.some(item => item.layer === 'project:portal'), 'solution folder still missing');
@@ -233,11 +233,13 @@ test('setup status carries stages, planned topology, templates, the settings cat
     sites: { portal: { ...minimal.sites.portal, source: './missing-export', mirage: { port: 0, dataPacks: [{ id: 'x-pack', module: './missing-pack.mjs' }] } } } }));
   const server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
   const status = await fetch(new URL('api/status', server.url)).then(response => response.json());
-  assert.deepEqual(status.stages.map(item => item.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // Shown in this order: Project, What to run, Exported files, Sample data, Live environments, Test people, Outside services, Web API access, Start & check.
+  assert.deepEqual(status.stages.map(item => item.id), [1, 2, 3, 5, 4, 6, 8, 9, 10]);
+  const stageOf = id => status.stages.find(item => item.id === id);
   for (const stage of status.stages) assert.ok(['done', 'next', 'optional', 'blocked'].includes(stage.status) && stage.anchor.startsWith('#') && Array.isArray(stage.findings), JSON.stringify(stage));
   assert.deepEqual(status.stages.filter(item => item.status === 'next').map(item => item.id), [3]);
-  assert.equal(status.stages[4].status, 'blocked'); assert.deepEqual(status.stages[4].findings, ['missing-pack']);
-  assert.equal(status.stages[6].status, 'done');
+  assert.equal(stageOf(5).status, 'blocked'); assert.deepEqual(stageOf(5).findings, ['missing-pack']);
+  assert.equal(stageOf(2).status, 'done', 'what to run (with the inherited dry run) is set');
   assert.deepEqual(Object.fromEntries(status.findings.map(item => [item.code, item.section])), { 'missing-source': '#portals', 'missing-pack': '#packs' });
   assert.deepEqual(status.sites[0].packs, [{ id: 'x-pack', module: path.join(directory, 'missing-pack.mjs'), path: path.join(directory, 'missing-pack.mjs'), exists: false }]);
   assert.deepEqual(status.sites[0].inherited, { simulation: true });
@@ -248,7 +250,7 @@ test('setup status carries stages, planned topology, templates, the settings cat
   assert.equal(status.docs.configuration.path, 'docs/configuration.md');
   assert.equal(status.runtime, null);
   const project = await new SetupStore({ directory, project: path.join(directory, 'absent.project.yml'), processEnv: {} }).snapshot();
-  assert.match(project.findings[0].message, /Mirage project/); assert.equal(project.findings[0].section, '#advanced');
+  assert.match(project.findings[0].message, /Create the project file above/); assert.equal(project.findings[0].section, '#overview', 'the finding points at the create form');
 });
 
 test('setup creates configuration from a template and serves own and shared assets by pattern', async t => {
@@ -401,7 +403,7 @@ test('restart drift names the running site and command, is unknown when the iden
   await fs.writeFile(filename, YAML.stringify({ ...two, sites: { ...two.sites, portal: { ...two.sites.portal, environments: { dev: 'http://127.0.0.1:9797' } } } }));
   value = await fetch(lenseServer.base + '/_setup/api/status').then(response => response.json());
   assert.equal(value.runtime.restartRequired, true);
-  assert.deepEqual(value.stages.map(item => item.anchor), ['#overview', '#runtime-configuration', '#portals', '#portals', '#packs', '#personas', '#simulation', '#providers', '#identity', '#guidance']);
+  assert.deepEqual(value.stages.map(item => item.anchor), ['#overview', '#runtime-configuration', '#portals', '#packs', '#environments', '#personas', '#providers', '#identity', '#guidance']);
 });
 
 async function serve(t, handler) {
