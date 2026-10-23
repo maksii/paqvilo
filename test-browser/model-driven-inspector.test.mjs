@@ -66,7 +66,7 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   await host.getByRole('button', { name: 'Toggle Lense X-ray', exact: true }).click();
   const fieldBox = await page.locator('input[data-id]').boundingBox(); await page.mouse.click(fieldBox.x + fieldBox.width / 2, fieldBox.y + fieldBox.height / 2);
   const xray = page.locator('#paqvilo-xray');
-  await xray.getByText('inv_item.inv_title', { exact: true }).waitFor();
+  await xray.getByRole('complementary', { name: 'Lense source details' }).locator('strong').filter({ hasText: /^inv_item\.inv_title$/ }).waitFor();
   const panelText = await xray.evaluate(element => element.shadowRoot.textContent);
   for (const expected of ['inv.Controls.Input', 'Invented.change', 'Invented.load', '/invented/solution/Entities/inv_item/FormXml/main.xml']) assert.ok(panelText.includes(expected), expected);
   assert.equal(panelText.includes('FORM_VALUE_MUST_NOT_LEAK'), false);

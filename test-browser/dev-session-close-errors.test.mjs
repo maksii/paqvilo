@@ -4,9 +4,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import net from "node:net";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import chokidar from "chokidar";
 import { createFixture } from "../test/fixture.mjs";
@@ -31,6 +32,14 @@ async function fixture(t) {
         "<!doctype html><title>Owned close fixture</title><p>Synthetic portal</p>",
       );
   });
+  // The rejecting fixture proxy can receive a peer reset when its owned browser
+  // shuts down. Keep that allowance at the socket boundary; other errors fail.
+  server.on("connection", (socket) =>
+    socket.on("error", (error) => {
+      if (!["ECONNRESET", "EPIPE"].includes(error.code))
+        server.emit("error", error);
+    }),
+  );
   server.on("connect", (_request, socket) =>
     socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"),
   );
@@ -230,12 +239,11 @@ test(
   "actual development CLI exits nonzero after agent filesystem cleanup failure",
   { timeout: 30000 },
   async (t) => {
-    const { owner, directory, config, browserOptions } = await fixture(t);
-    const preload = path.join(directory, "loopback-browser.mjs");
-    await fs.writeFile(
-      preload,
-      `import {chromium} from ${JSON.stringify(import.meta.resolve("playwright-core"))};\nconst launch=chromium.launchPersistentContext;chromium.launchPersistentContext=function(profile,options){return launch.call(this,profile,{...options,proxy:${JSON.stringify(browserOptions.proxy)},args:[...options.args,...${JSON.stringify(browserOptions.args)}]});};\n`,
-    );
+    const { owner, directory, config, origin } = await fixture(t);
+    const preload = new URL(
+      "./helpers/browser-loopback-preload.mjs",
+      import.meta.url,
+    ).href;
     const env = Object.fromEntries(
       Object.entries(process.env).filter(
         ([key]) =>
@@ -249,18 +257,24 @@ test(
           ].includes(key),
       ),
     );
+    env.PAQVILO_TEST_LOOPBACK_PROXY = origin;
+    const listener = net.createServer();
+    listener.listen(0, "127.0.0.1");
+    await once(listener, "listening");
+    const debugPort = listener.address().port;
+    await new Promise((resolve) => listener.close(resolve));
     const child = spawn(
       process.execPath,
       [
         "--import",
-        pathToFileURL(preload).href,
+        preload,
         "lense/cli.mjs",
         "dev",
         "--config",
         config,
         "--headless",
         "--debug-port",
-        "0",
+        String(debugPort),
       ],
       {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
@@ -279,13 +293,14 @@ test(
       child.once("close", (code) => resolve(code)),
     );
     child.on("error", () => {}); // Abort is owned by the test deadline; close is still awaited.
-    let discovery, blocker;
+    let discovery, blocker, remoteBrowser;
     owner.add(async () => {
       if (child.exitCode === null && child.signalCode === null && !child.killed)
         child.kill();
       await closed;
       if (blocker) await fs.rmdir(blocker);
     });
+    owner.add(() => remoteBrowser?.close());
     const agentDir = path.join(directory, ".paqvilo", "agents");
     const deadline = Date.now() + 15000;
     while (!discovery && Date.now() < deadline) {
@@ -307,20 +322,30 @@ test(
       }
       if (!discovery) await new Promise((resolve) => setTimeout(resolve, 30));
     }
-    assert.ok(discovery, "actual CLI published its owned agent");
+    assert.ok(
+      discovery,
+      "actual CLI published its owned agent: " +
+        output.replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]").slice(-4000),
+    );
+    assert.equal(
+      discovery.pid,
+      child.pid,
+      "the blocker belongs to this exact CLI child",
+    );
     await fs.unlink(blocker);
     await fs.mkdir(blocker);
-    const response = await fetch(discovery.endpoint + "/v1/stop", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${discovery.token}`,
-        "content-type": "application/json",
-      },
-      body: "{}",
-      signal: AbortSignal.timeout(2000),
-    });
-    assert.equal(response.status, 200);
-    await response.arrayBuffer();
+    // Browser closure is the documented stop path for the exact dedicated
+    // browser launched above. Discovery credentials never enter a network call.
+    remoteBrowser = await chromium.connectOverCDP(
+      `http://127.0.0.1:${debugPort}`,
+    );
+    const ownedPage = remoteBrowser.contexts()[0].pages()[0];
+    await ownedPage.waitForFunction(
+      (expected) => location.origin === expected,
+      origin,
+    );
+    const protocol = await remoteBrowser.newBrowserCDPSession();
+    await protocol.send("Browser.close");
     assert.equal(
       await closed,
       1,
@@ -332,10 +357,10 @@ test(
       "discovery credentials must not enter diagnostics",
     );
     assert.match(output, /EISDIR|EPERM|directory/);
-    await assert.rejects(
-      fetch(discovery.endpoint + "/v1/session", {
-        signal: AbortSignal.timeout(1000),
-      }),
+    assert.equal(
+      remoteBrowser.isConnected(),
+      false,
+      "the exact owned browser disconnected",
     );
   },
 );

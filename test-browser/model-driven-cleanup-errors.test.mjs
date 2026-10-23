@@ -4,9 +4,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import http from "node:http";
+import net from "node:net";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import run from "../lense/commands/model-driven.mjs";
 import { ownedFixture } from "../mirage/testing/owned-fixture.mjs";
@@ -52,7 +53,8 @@ async function fixture(t, { resetDocument = false } = {}) {
   // Closing those owned streams can report a peer reset on Windows. Keep the
   // allowance at this transport boundary; every other stream error still fails.
   const streamError = (cause) => {
-    if (!["ECONNRESET", "EPIPE"].includes(cause.code)) server.emit("error", cause);
+    if (!["ECONNRESET", "EPIPE"].includes(cause.code))
+      server.emit("error", cause);
   };
   const server = http.createServer((request, response) => {
     request.on("error", streamError);
@@ -135,12 +137,7 @@ test(
   { timeout: 30000 },
   async (t) => {
     const setup = await fixture(t);
-    const { owner, directory, project, origin, channel, network } = setup;
-    const preload = path.join(directory, "loopback.mjs");
-    await fs.writeFile(
-      preload,
-      `import {chromium} from ${JSON.stringify(import.meta.resolve("playwright-core"))};const launch=chromium.launchPersistentContext;chromium.launchPersistentContext=function(profile,options){return launch.call(this,profile,{...options,proxy:${JSON.stringify(network.proxy)},args:[...options.args,...${JSON.stringify(network.args)}]});};`,
-    );
+    const { owner, directory, project, origin, channel } = setup;
     const env = Object.fromEntries(
       Object.entries(process.env).filter(
         ([key]) =>
@@ -159,9 +156,8 @@ test(
       process.execPath,
       [
         "--import",
-        pathToFileURL(preload).href,
-        fileURLToPath(new URL("../bin/paqvilo.mjs", import.meta.url)),
-        "lense",
+        new URL("./helpers/browser-loopback-preload.mjs", import.meta.url).href,
+        fileURLToPath(new URL("../lense/cli.mjs", import.meta.url)),
         "model-driven",
         "dev",
         "--project",
@@ -174,14 +170,14 @@ test(
         "--debug-port",
         "0",
         "--timeout",
-        "20000",
+        "5000",
         "--output",
         outputFile,
       ],
       {
         windowsHide: true,
         signal: t.signal,
-        env,
+        env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: origin },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -203,17 +199,9 @@ test(
     });
     await setup.applied;
     blocker = await setup.blockDiscovery();
-    const response = await fetch(blocker.discovery.endpoint + "/v1/stop", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${blocker.discovery.token}`,
-        "content-type": "application/json",
-      },
-      body: "{}",
-      signal: AbortSignal.timeout(2000),
-    });
-    assert.equal(response.status, 200);
-    await response.arrayBuffer();
+    assert.equal(blocker.discovery.pid, child.pid);
+    // The production timeout stops this exact CLI after the fault is installed.
+    // No fixture credential is sent over HTTP and browser signal defaults stay intact.
     assert.equal(
       await closed,
       1,
@@ -223,10 +211,24 @@ test(
     assert.ok(report.applied >= 1);
     assert.equal(output.includes(blocker.discovery.token), false);
     assert.match(output, /stopped with cleanup failures/);
+    const endpoint = new URL(blocker.discovery.endpoint);
+    assert.equal(endpoint.protocol, "http:");
+    assert.equal(endpoint.hostname, "127.0.0.1");
+    const port = Number(endpoint.port);
+    assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
     await assert.rejects(
-      fetch(blocker.discovery.endpoint + "/v1/session", {
-        signal: AbortSignal.timeout(1000),
-      }),
+      async () => {
+        const socket = net.createConnection({ host: "127.0.0.1", port });
+        socket.setTimeout(1000, () => {
+          socket.destroy(new Error("Owned listener did not close"));
+        });
+        try {
+          await once(socket, "connect");
+        } finally {
+          socket.destroy();
+        }
+      },
+      { code: "ECONNREFUSED" },
     );
     assert.ok(setup.methods.every((method) => method === "GET"));
   },

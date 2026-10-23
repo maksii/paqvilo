@@ -7,11 +7,11 @@ import http from "node:http";
 import net from "node:net";
 import { once } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { ownedFixture } from "../mirage/testing/owned-fixture.mjs";
 
-const cli = fileURLToPath(new URL("../bin/paqvilo.mjs", import.meta.url));
+const cli = fileURLToPath(new URL("../lense/cli.mjs", import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function modelTargetsFixture(t) {
@@ -172,11 +172,6 @@ export async function modelTargetsFixture(t) {
   await once(listener, "listening");
   const debugPort = listener.address().port;
   await new Promise((resolve) => listener.close(resolve));
-  const preload = path.join(directory, "loopback.mjs");
-  await fs.writeFile(
-    preload,
-    `import {chromium} from ${JSON.stringify(import.meta.resolve("playwright-core"))};const launch=chromium.launchPersistentContext;chromium.launchPersistentContext=function(profile,options){return launch.call(this,profile,{...options,proxy:{server:${JSON.stringify(origins[0])},bypass:'127.0.0.1,localhost'},args:[...options.args,'--disable-background-networking','--disable-component-update','--disable-sync','--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost']});};`,
-  );
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
@@ -208,9 +203,8 @@ export async function modelTargetsFixture(t) {
     process.execPath,
     [
       "--import",
-      pathToFileURL(preload).href,
+      new URL("./helpers/browser-loopback-preload.mjs", import.meta.url).href,
       cli,
-      "lense",
       "model-driven",
       "dev",
       "--project",
@@ -227,7 +221,7 @@ export async function modelTargetsFixture(t) {
     ],
     {
       cwd: directory,
-      env,
+      env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: origins[0] },
       windowsHide: true,
       signal: t.signal,
       stdio: ["ignore", "pipe", "pipe"],
@@ -284,6 +278,9 @@ export async function modelTargetsFixture(t) {
   await page.waitForFunction(() => window.targetRevision === "initial");
   await page.locator("#paqvilo-panel").waitFor();
   await wait(async () => (await discoveries()).length > 0, "owned agent");
+  const initialAgents = await discoveries();
+  assert.equal(initialAgents.length, 1);
+  assert.equal(initialAgents[0].pid, child.pid);
   return {
     owner,
     directory,
@@ -446,6 +443,7 @@ test(
       assert.equal(await selector.inputValue(), "0");
       const agents = await f.discoveries();
       assert.equal(agents.length, 1, "only the current target agent remains");
+      assert.equal(agents[0].pid, f.child.pid);
       const stopped = await fetch(agents[0].endpoint + "/v1/stop", {
         method: "POST",
         headers: {
