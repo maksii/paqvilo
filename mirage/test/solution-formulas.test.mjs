@@ -20,7 +20,7 @@ async function fixture(t, ref = reference, expression = formula) {
   for (const [relative, body] of Object.entries(files)) {
     const file = path.join(root, relative); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, body);
   }
-  return { root, file: path.join(root, 'Entities/x_item/Formulas/Fields.yaml') };
+  return { root, file: await fs.realpath(path.join(root, 'Entities/x_item/Formulas/Fields.yaml')) };
 }
 
 test('referenced formula YAML contributes computed metadata, provenance and cached source edits', async t => {

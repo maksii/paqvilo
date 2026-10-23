@@ -39,7 +39,7 @@ test('a source save then reload refreshes the standalone Solution with the cache
     if (!result.cached) misses.push(file);
     return result;
   });
-  const changed = path.join(solution, 'Entities', 'x_beta', 'Entity.xml');
+  const changed = await fs.realpath(path.join(solution, 'Entities', 'x_beta', 'Entity.xml'));
   await fs.writeFile(changed, entity('x_beta', 'Beta after save'));
   // Windows paths may differ in casing between the watcher and the scan, so compare normalised keys.
   const key = file => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);

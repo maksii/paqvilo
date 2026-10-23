@@ -169,6 +169,9 @@ const INLINE_KINDS = [
 // Rendered literal fields; localized JSON values are extracted individually, preserving LCIDs
 // and other configuration. Structural, localization and association edits still need deployment.
 const YAML_MARKUP_KINDS = [
+  { file: 'shortcut.yml', fields: ['adx_description'] },
+  { dir: 'shortcuts', suffix: '.shortcut.yml', fields: ['adx_description'] },
+  { dir: 'web-files', suffix: '.webfile.yml', fields: ['adx_summary'] },
   { dir: 'weblink-sets', suffix: '.weblinkset.yml', fields: ['adx_copy'] },
   { dir: 'weblink-sets', suffix: '.weblinkset.weblink.yml', fields: ['adx_description', 'adx_name'] },
   { dir: 'polls', suffix: '.poll.yml', fields: ['adx_question'] },
@@ -179,6 +182,9 @@ const YAML_MARKUP_KINDS = [
 ];
 // The same fields in a .powerpages-site (short-key) export: unprefixed keys, one web link per file.
 const SHORT_KEY_MARKUP_KINDS = [
+  { file: 'shortcut.yml', fields: ['description'] },
+  { dir: 'shortcuts', suffix: '.shortcut.yml', fields: ['description'] },
+  { dir: 'web-files', suffix: '.webfile.yml', fields: ['summary'] },
   { dir: 'weblink-sets', suffix: '.weblinkset.yml', fields: ['copy'] },
   { dir: 'weblink-sets', suffix: '.weblink.yml', fields: ['description', 'name'] },
   { dir: 'polls', suffix: '.poll.yml', fields: ['question'] },
@@ -363,6 +369,7 @@ export function sourceText(src, raw) {
   }
   if (text == null) return null;
   text = text.replace(/^﻿/, '');
+  if (src.componentId != null && componentIdentity(text) !== String(src.componentId).toLowerCase()) return null;
   return src.parsedYaml && src.fieldPath ? yamlField(src)(text) : src.extract ? src.extract(text) : text;
 }
 
@@ -444,6 +451,62 @@ function xmlText(raw) {
   return result + xmlUnescape(raw.slice(from));
 }
 
+/** Exact real element identity; comments, CDATA and processing instructions are not records. */
+export function componentIdentity(xml) {
+  const text = String(xml);
+  let attributes = null;
+  for (let cursor = 0; cursor < text.length;) {
+    const opening = text.indexOf('<', cursor);
+    if (opening < 0) break;
+    const marker = text.startsWith('<!--', opening) ? '-->'
+      : text.startsWith('<![CDATA[', opening) ? ']]>' : text.startsWith('<?', opening) ? '?>' : null;
+    if (marker) {
+      const end = text.indexOf(marker, opening + 2);
+      if (end < 0) return null;
+      cursor = end + marker.length;
+      continue;
+    }
+    let quote = null;
+    let closing = opening + 1;
+    for (; closing < text.length; closing++) {
+      const character = text[closing];
+      if (quote) { if (character === quote) quote = null; }
+      else if (character === '"' || character === "'") quote = character;
+      else if (character === '<') return null;
+      else if (character === '>') break;
+    }
+    if (closing === text.length) return null;
+    const tag = text.slice(opening + 1, closing);
+    const name = /^([A-Za-z_][\w:.-]*)(?=[\s/>]|$)/.exec(tag);
+    if (name?.[1] === 'powerpagecomponent') {
+      if (attributes !== null) return null;
+      attributes = tag.slice(name[0].length);
+    }
+    cursor = closing + 1;
+  }
+  if (attributes === null) return null;
+  const attribute = /([A-Za-z_:][\w:.-]*)\s*=\s*(["'])([\s\S]*?)\2/y;
+  const ids = [];
+  for (let offset = 0; offset < attributes.length;) {
+    while (offset < attributes.length && /\s/.test(attributes[offset])) offset++;
+    if (offset === attributes.length) break;
+    if (attributes[offset] === '/') {
+      offset++;
+      while (offset < attributes.length && /\s/.test(attributes[offset])) offset++;
+      if (offset !== attributes.length) return null;
+      break;
+    }
+    attribute.lastIndex = offset;
+    const parsed = attribute.exec(attributes);
+    if (!parsed) return null;
+    if (parsed[1] === 'powerpagecomponentid') ids.push(parsed[3]);
+    offset = attribute.lastIndex;
+  }
+  if (ids.length !== 1) return null;
+  try { return xmlUnescape(ids[0]).trim().toLowerCase(); }
+  catch { return null; }
+}
+
 /** The JSON held in <content> of a powerpagecomponent.xml, or null. */
 export function componentContent(xml) {
   const span = componentContentSpan(xml);
@@ -465,7 +528,7 @@ const componentField = (field) => (xml) => {
 };
 
 // powerpagecomponenttype values of the enhanced data model that matter here
-const COMPONENT = { WEB_PAGE: 2, WEB_FILE: 3, WEB_LINK_SET: 4, WEB_LINK: 5, CONTENT_SNIPPET: 7, WEB_TEMPLATE: 8, BASIC_FORM: 15, BASIC_FORM_METADATA: 16, LIST: 17, ADVANCED_FORM: 19, ADVANCED_FORM_STEP: 20, ADVANCED_FORM_METADATA: 21 };
+const COMPONENT = { WEB_PAGE: 2, WEB_FILE: 3, SHORTCUT: 32, WEB_LINK_SET: 4, WEB_LINK: 5, CONTENT_SNIPPET: 7, WEB_TEMPLATE: 8, BASIC_FORM: 15, BASIC_FORM_METADATA: 16, LIST: 17, ADVANCED_FORM: 19, ADVANCED_FORM_STEP: 20, ADVANCED_FORM_METADATA: 21 };
 const PREVIEW_FIELDS = new Map([
   [COMPONENT.WEB_PAGE, ['customjavascript', 'customcss', 'copy', 'summary']],
   [COMPONENT.CONTENT_SNIPPET, ['value']],
@@ -475,6 +538,8 @@ const PREVIEW_FIELDS = new Map([
   [COMPONENT.ADVANCED_FORM_STEP, ['customjavascript']],
 ]);
 const COMPONENT_MARKUP_FIELDS = new Map([
+  [COMPONENT.WEB_FILE, ['summary']],
+  [COMPONENT.SHORTCUT, ['description']],
   [COMPONENT.WEB_LINK_SET, ['copy']],
   [COMPONENT.WEB_LINK, ['description']],
   [COMPONENT.BASIC_FORM, ['instructions']],
@@ -505,11 +570,11 @@ export class PortalModel {
   static async create(sourceDir) {
     sourceDir = path.resolve(sourceDir);
     const enhanced = detectFormat(sourceDir) === 'enhanced';
-    const roots = enhanced ? ['powerpagecomponents'] : [...new Set(['web-files', ...INLINE_KINDS.map((kind) => kind.dir), ...YAML_MARKUP_KINDS.map((kind) => kind.dir)])];
+    const roots = enhanced ? ['powerpagecomponents'] : [...new Set(['web-files', ...INLINE_KINDS.map((kind) => kind.dir), ...YAML_MARKUP_KINDS.map((kind) => kind.dir).filter(Boolean)])];
     const candidates = await walkAsync(roots.map((dir) => path.join(sourceDir, dir)));
     const files = enhanced
       ? candidates.filter((file) => path.basename(file) === 'powerpagecomponent.xml')
-      : [path.join(sourceDir, 'website.yml'), ...candidates.filter((file) => /\.(?:webpage|webfile|basicform|basicformmetadata|list|advancedform|advancedformstep|advancedformmetadata|webtemplate|contentsnippet|weblinkset|weblink|poll)\.yml$/.test(file))];
+      : [path.join(sourceDir, 'website.yml'), ...YAML_MARKUP_KINDS.filter((kind) => kind.file).map((kind) => path.join(sourceDir, kind.file)), ...candidates.filter((file) => /\.(?:webpage|webfile|basicform|basicformmetadata|list|advancedform|advancedformstep|advancedformmetadata|webtemplate|contentsnippet|weblinkset|weblink|poll|shortcut)\.yml$/.test(file))];
     const cache = new Map();
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(16, files.length) }, async () => {
@@ -521,7 +586,7 @@ export class PortalModel {
         try { text = await fs.promises.readFile(file, 'utf8'); } catch { continue; }
         const after = await sourceFileStatAsync(sourceDir, file);
         if (!after || fileStamp(before) !== fileStamp(after)) continue;
-        cache.set(file, enhanced ? { stamp: fileStamp(after), text } : { stamp: fileStamp(after), value: parseYaml(text, /\.(?:basicformmetadata|advancedformmetadata|weblink)\.yml$/.test(file)) });
+        cache.set(file, enhanced ? { stamp: fileStamp(after), text } : { stamp: fileStamp(after), value: parseYaml(text, path.basename(file) === 'shortcut.yml' || /\.(?:basicformmetadata|advancedformmetadata|weblink|shortcut)\.yml$/.test(file)) });
       }
     }));
     // The regular load re-enumerates directories and revalidates every cached file, covering
@@ -680,9 +745,9 @@ export class PortalModel {
       const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
       if (!Object.values(COMPONENT).includes(type)) continue;
       if (/<statecode>\s*1\s*<\/statecode>/.test(xml)) {
-        if (type === COMPONENT.WEB_PAGE) this.inactivePages.add((/powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? entry.name).toLowerCase());
-        if ([COMPONENT.BASIC_FORM, COMPONENT.ADVANCED_FORM].includes(type)) this.inactiveForms.add((/powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? entry.name).toLowerCase());
-        if (type === COMPONENT.ADVANCED_FORM_STEP) this.inactiveSteps.add((/powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? entry.name).toLowerCase());
+        if (type === COMPONENT.WEB_PAGE) this.inactivePages.add((componentIdentity(xml) ?? entry.name).toLowerCase());
+        if ([COMPONENT.BASIC_FORM, COMPONENT.ADVANCED_FORM].includes(type)) this.inactiveForms.add((componentIdentity(xml) ?? entry.name).toLowerCase());
+        if (type === COMPONENT.ADVANCED_FORM_STEP) this.inactiveSteps.add((componentIdentity(xml) ?? entry.name).toLowerCase());
         continue;
       }
       const attachment = /<filecontent\b([^>]*)>([\s\S]*?)<\/filecontent>/.exec(xml);
@@ -696,7 +761,7 @@ export class PortalModel {
         }
       };
       components.push({
-        id: (/powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? entry.name).toLowerCase(),
+        id: (componentIdentity(xml) ?? entry.name).toLowerCase(),
         type,
         name: decode(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
         content: content ?? {},
@@ -737,6 +802,37 @@ export class PortalModel {
     }
 
     for (const c of components) {
+      const stepId = String(c.content.webformstep ?? '').toLowerCase();
+      const formId = c.content.entityform ?? c.content.webform ?? this.stepForms.get(stepId);
+      if ([COMPONENT.BASIC_FORM_METADATA, COMPONENT.ADVANCED_FORM_METADATA, COMPONENT.ADVANCED_FORM_STEP].includes(c.type) && (this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase()))) {
+        this.inactiveSources.push({ file: c.file, rel: c.rel });
+        continue;
+      }
+      for (const field of COMPONENT_MARKUP_FIELDS.get(c.type) ?? []) {
+        for (const value of markupValues(c.content[field])) {
+          const source = {
+            kind: 'metadata-markup', mode: 'markup', tag: null,
+            file: c.file, sourceDir: this.sourceDir,
+            rel: `${c.rel}#${field}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
+            label: `${c.name} (${field})`, field, fieldPath: [field], componentId: c.id, ...value,
+            pageUrl: null, usedOn: this.pagesShowing(c.type === COMPONENT.BASIC_FORM ? c.id : formId),
+          };
+          source.extract = (xml) => {
+            const content = componentContent(xml);
+            if (!content) return null;
+            let text = content[field];
+            if (source.jsonPath) {
+              try {
+                const localized = JSON.parse(text);
+                if (source.lcid != null && atPath(localized, [...source.jsonPath.slice(0, -1), 'LCID']) !== source.lcid) return null;
+                text = atPath(localized, source.jsonPath);
+              } catch { return null; }
+            }
+            return text == null ? '' : typeof text === 'string' ? text : null;
+          };
+          this.inlineSources.push(source);
+        }
+      }
       if (c.type === COMPONENT.WEB_FILE) {
         const parentPath = this.pagePath(c.content.parentpageid);
         const attachmentRoot = path.join(c.dir, 'filecontent');
@@ -762,38 +858,7 @@ export class PortalModel {
         else if (entry.url == null) entry.problem = 'no parent page, cannot build the URL';
         this.#addWebFile(entry, `${c.rel} (${c.name})`);
       } else {
-        const stepId = String(c.content.webformstep ?? '').toLowerCase();
-        const formId = c.content.entityform ?? c.content.webform ?? this.stepForms.get(stepId);
-        if ([COMPONENT.BASIC_FORM_METADATA, COMPONENT.ADVANCED_FORM_METADATA, COMPONENT.ADVANCED_FORM_STEP].includes(c.type) && (this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase()))) {
-          this.inactiveSources.push({ file: c.file, rel: c.rel });
-          continue;
-        }
-        for (const field of COMPONENT_MARKUP_FIELDS.get(c.type) ?? []) {
-          for (const value of markupValues(c.content[field])) {
-            const source = {
-              kind: 'metadata-markup', mode: 'markup', tag: null,
-              file: c.file, sourceDir: this.sourceDir,
-              rel: `${c.rel}#${field}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
-              label: `${c.name} (${field})`, field, fieldPath: [field], ...value,
-              pageUrl: null, usedOn: this.pagesShowing(c.type === COMPONENT.BASIC_FORM ? c.id : formId),
-            };
-            source.extract = (xml) => {
-              const content = componentContent(xml);
-              if (!content) return null;
-              let text = content[field];
-              if (source.jsonPath) {
-                try {
-                  const localized = JSON.parse(text);
-                  if (source.lcid != null && atPath(localized, [...source.jsonPath.slice(0, -1), 'LCID']) !== source.lcid) return null;
-                  text = atPath(localized, source.jsonPath);
-                } catch { return null; }
-              }
-              return text == null ? '' : typeof text === 'string' ? text : null;
-            };
-            this.inlineSources.push(source);
-          }
-        }
-        if ([COMPONENT.WEB_LINK_SET, COMPONENT.WEB_LINK, COMPONENT.BASIC_FORM_METADATA, COMPONENT.ADVANCED_FORM_METADATA].includes(c.type)) continue;
+        if ([COMPONENT.SHORTCUT, COMPONENT.WEB_LINK_SET, COMPONENT.WEB_LINK, COMPONENT.BASIC_FORM_METADATA, COMPONENT.ADVANCED_FORM_METADATA].includes(c.type)) continue;
         // The form record supplies configuration and associations; its steps hold the JS.
         if (c.type === COMPONENT.ADVANCED_FORM) continue;
         // The language copy of an inactive root page is never rendered: its fields are no sources.
@@ -1048,8 +1113,12 @@ export class PortalModel {
       }
     }
     for (const def of this.shortKey ? SHORT_KEY_MARKUP_KINDS : YAML_MARKUP_KINDS) {
-      for (const file of this.#files(path.join(this.sourceDir, def.dir))) {
-        if (!file.endsWith(def.suffix)) continue;
+      for (const file of def.file ? [path.join(this.sourceDir, def.file)] : this.#files(path.join(this.sourceDir, def.dir))) {
+        if (def.file) {
+          try { fs.lstatSync(file); }
+          catch (error) { if (error.code === 'ENOENT') continue; }
+        }
+        if (!def.file && !file.endsWith(def.suffix)) continue;
         const metadata = this.#readYaml(file, true);
         if (metadata.__error) continue;
         const rel = path.relative(this.sourceDir, file).replace(/\\/g, '/');
@@ -1061,7 +1130,7 @@ export class PortalModel {
             this.inactiveSources.push({ file, rel });
             continue;
           }
-          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_webformstepid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'id'].find((key) => record[key] != null);
+          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_webformstepid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'adx_shortcutid', 'adx_webfileid', 'id'].find((key) => record[key] != null);
           for (const field of def.fields) {
             for (const value of markupValues(record[field])) {
               const fieldPath = index === null ? [field] : [index, field];
@@ -1071,8 +1140,8 @@ export class PortalModel {
                 rel: `${rel}#${fieldPath.join('.')}${value.jsonPath ? '.' + value.jsonPath.join('.') : ''}`,
                 label: `${yamlValue(record, 'name') ?? yamlValue(record, 'attributelogicalname') ?? path.basename(file)} (${field})`,
                 format: 'yaml', field, fieldPath, ...value,
-                recordId: index !== null && recordIdField ? record[recordIdField] : undefined,
-                recordIdField: index !== null ? recordIdField : undefined,
+                recordId: recordIdField ? record[recordIdField] : undefined,
+                recordIdField,
                 pageUrl: null, usedOn: this.pagesShowing(formId),
               };
               source.extract = yamlField(source);

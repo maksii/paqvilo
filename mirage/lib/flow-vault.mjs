@@ -1,7 +1,7 @@
 // Sealed values at rest for flows and connections: secure action outputs in a run journal (flow-runs.mjs), connection OAuth
 // tokens (connector-runtime.mjs) and per-flow HTTP callback keys (flow-triggers.mjs). A value is sealed with AES-256-GCM under
 // one key file created once under the runtime's private state directory, readable by the current user only (mode 0600; on
-// Windows an ACL without inheritance that grants the current user full control, set with icacls and verified, else the key
+// Windows an ACL without inheritance that grants the current user full control, set with Windows ACL APIs and verified, else the key
 // is not created); the key is never written to
 // state, configuration, diagnostics or /_sim. Without a state directory (a memory-only runtime) the key lives in this process
 // only, so a value sealed before a restart cannot be opened after it.
@@ -14,18 +14,31 @@ export const VAULT_KEY_FILE = 'mirage-vault.key';
 const vaults = new Map();
 
 const aclError = message => Object.assign(new Error('The vault key file cannot be made readable by the current user only: ' + message), { code: 'VaultKeyAclFailed' });
-// The System32 tools by full path, so a whoami or icacls earlier on PATH (Git for Windows ships a whoami) is never used.
-const run = (command, args) => spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', command + '.exe'), args, { encoding: 'utf8', windowsHide: true, timeout: 20000 });
-/** Windows: removes inherited entries and grants the current user (by SID) full control, then verifies that one entry is left. */
+// Use an exact private DACL rather than preserving explicit grants inherited from a
+// runner's process defaults. One native ACL update publishes the new DACL atomically.
+const restrictScript = String.raw`$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object System.Security.AccessControl.FileSecurity
+$acl.SetAccessRuleProtection($true, $false)
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+[System.IO.File]::SetAccessControl($env:PAQVILO_VAULT_FILE, $acl)
+$actual = [System.IO.File]::GetAccessControl($env:PAQVILO_VAULT_FILE)
+$rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if (-not $actual.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IsInherited -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'The resulting ACL is not private to the current user.' }
+Write-Output ('private-acl-verified:' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+`;
+/** Windows: replace all inherited and explicit entries with one verified current-user grant. */
 export function restrictToCurrentUser(file) {
-  const sid = /"(S-1-[\d-]+)"\s*$/m.exec(run('whoami', ['/user', '/fo', 'csv', '/nh']).stdout ?? '')?.[1];
-  if (!sid) throw aclError('whoami did not answer the current user SID.');
-  const set = run('icacls', [file, '/inheritance:r', '/grant:r', `*${sid}:F`]);
-  if (set.status !== 0) throw aclError((set.stdout || set.stderr || 'icacls failed').trim());
-  const shown = run('icacls', [file]);
-  const entries = (shown.stdout ?? '').split(/\r?\n/).map(line => line.replace(file, '').trim()).filter(line => /:\(.*\)$/.test(line));
-  if (shown.status !== 0 || entries.length !== 1 || !entries[0].endsWith(':(F)')) throw aclError('icacls shows ' + (entries.join('; ') || 'no entries') + '.');
-  return entries[0];
+  const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const result = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(restrictScript, 'utf16le').toString('base64')], {
+    encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, PAQVILO_VAULT_FILE: path.resolve(file) },
+  });
+  const output = result.stdout?.trim() ?? '', marker = 'private-acl-verified:';
+  if (result.status !== 0 || !output.startsWith(marker) || /[\r\n]/.test(output))
+    throw aclError((result.stderr || result.error?.message || 'Private ACL verification failed.').trim());
+  return output.slice(marker.length) + ':(F)';
 }
 
 function loadKey(stateDirectory) {
@@ -37,8 +50,12 @@ function loadKey(stateDirectory) {
     // so a concurrent first reader never sees an empty or partial key and the first key is never replaced.
     const key = randomBytes(32), temporary = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
     try {
-      fs.writeFileSync(temporary, key.toString('base64'), { flag: 'wx', mode: 0o600 });
-      if (process.platform === 'win32') restrictToCurrentUser(temporary);
+      const descriptor = fs.openSync(temporary, 'wx', 0o600);
+      try {
+        if (process.platform === 'win32') restrictToCurrentUser(temporary);
+        // No key bytes exist until the temporary file's final ACL is verified.
+        fs.writeFileSync(descriptor, key.toString('base64'));
+      } finally { fs.closeSync(descriptor); }
       fs.linkSync(temporary, file);
       return key;
     } catch (error) {

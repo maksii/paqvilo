@@ -4,7 +4,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { inspectComponentJson, inspectJsonText } from './audit-json.mjs';
-import { componentContent, componentContentSpan, isSourceFile, sourceText } from './portal-model.mjs';
+import { componentIdentity, componentContent, componentContentSpan, isSourceFile, sourceText } from './portal-model.mjs';
 
 const xmlEscape = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -20,6 +20,7 @@ export function editSource(source, transform) {
   const component = !yaml && Boolean(source.field || source.extract || path.basename(file).toLowerCase() === 'powerpagecomponent.xml');
   if ((yaml || component) && (typeof source.field !== 'string' || !source.field)) throw new Error(`Cannot edit ${yaml ? 'YAML' : 'component XML'} without an explicit field: ${label}`);
   const raw = fs.readFileSync(file, 'utf8');
+  if (component && source.componentId != null && componentIdentity(raw) !== String(source.componentId).toLowerCase()) throw new Error(`Cannot edit component field with a stale record identity: ${label}`);
   const fieldPath = yaml ? source.fieldPath ?? [source.field] : null;
   if (yaml && (!Array.isArray(fieldPath) || !fieldPath.length || fieldPath.some((key) => !(typeof key === 'string' && key.length) && !(Number.isSafeInteger(key) && key >= 0)))) throw new Error(`Cannot edit YAML without a valid explicit field path: ${label}`);
   const document = yaml ? YAML.parseDocument(raw) : null;

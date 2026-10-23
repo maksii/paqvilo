@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { redactUrl, normalizeText } from "./parity-suite.mjs";
+import { redactCaptureControlEvidence, redactCaptureControlText } from "./lib/capture-control-redaction.mjs";
 
 export const SIGN_IN_MARKERS = Object.freeze(["form#loginForm", "form[action*='/SignIn']", "[action*='login.microsoftonline']", ".login-heading-section", "#SubmitButton[value='Sign in']"]);
 
@@ -61,7 +62,7 @@ const sha = (value) => createHash("sha256").update(value).digest("hex");
 
 /** Replace per-session tokens in text bodies and markup with a stable placeholder. */
 export function redactTokens(text) {
-  return redactEmbeddedQueryValues(text)
+  return redactEmbeddedQueryValues(redactCaptureControlText(text))
     .replace(TOKEN_FIELDS, "$1={token}")
     .replace(TOKEN_ATTRIBUTES, "$1{token}$2")
     // The same fields in a multipart postback (forms with a file control): name="…" header line, blank line, value.
@@ -417,7 +418,7 @@ export const pageRunnerSource = () => pageRunner.toString();
 
 /** Redact raw evidence and write the scenario folder. Returns the capture meta. */
 export async function writeCapture({ summary, raw }, { outDir, origin, side, meta = {}, scenarioId = null }) {
-  ({ summary, raw } = redactCaptureQueryValues({ summary, raw }));
+  ({ summary, raw } = redactCaptureQueryValues(redactCaptureControlEvidence({ summary, raw })));
   // Evidence of another scenario never lands in this folder (a late post of an abandoned bridge run once did).
   if (scenarioId && summary?.id !== scenarioId) throw new Error(`Capture of ${summary?.id ?? "(unknown)"} refused for scenario ${scenarioId}`);
   await fs.mkdir(outDir, { recursive: true });

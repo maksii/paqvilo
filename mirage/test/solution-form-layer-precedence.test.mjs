@@ -22,7 +22,7 @@ async function layers(t, { fileIn, embeddedIn }) {
   await write(`${fileIn}/Entities/x_item/FormXml/main/{${FORM}}.xml`, `<forms type="main">${systemForm(`FROM_${fileIn}_FILE`)}</forms>`);
   await write(`${fileIn}/Entities/x_item/Entity.xml`, entity());
   await write(`${embeddedIn}/Entities/x_item/Entity.xml`, entity(`<FormXml><forms type="main">${systemForm(`FROM_${embeddedIn}_EMBEDDED`)}</forms></FormXml>`));
-  return { root, metadata: await importSolutionMetadata([path.join(root, 'A'), path.join(root, 'B')], { order: 'explicit' }) };
+  return { root: await fs.realpath(root), metadata: await importSolutionMetadata([path.join(root, 'A'), path.join(root, 'B')], { order: 'explicit' }) };
 }
 
 const variants = metadata => metadata.diagnostics.filter(entry => entry.code === 'SOLUTION_LAYER_VARIANTS');

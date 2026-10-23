@@ -150,6 +150,8 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 
 ### Validation
 
+For Decimal and Money request properties, `Content-Type: application/json; IEEE754Compatible=true` selects JSON strings; an absent parameter or `false` selects JSON numbers. The decoder uses each batch part's own `Content-Type`, independently of `Accept`. String conversion follows invariant Decimal parsing with a 96-bit coefficient and at most 28 fractional digits, including reader rounding before column precision and range validation. This request contract does not change response serialization: the native reference controls returned JSON numbers for Decimal, Money and Int64 under both tested `Accept` parameter values; broader response negotiation is not claimed.
+
 - An unknown payload property answers HTTP 400 with error code `0x80048d19` and an "Invalid property" message. Undeclared navigation bindings are payload validation errors too; relationship-specific validation may return a more specific code.
 - An unknown property in `$select`, `$filter`, `$orderby` or `$expand` answers HTTP 400 with `0x80060888` and a "Could not find a property named ..." message. These are the supported local organization Web API contracts; portal Web API wrappers and native platform parity are separate contracts.
 - Entity sets are matched case-sensitively by set name. A logical name answers 404 `0x8006088a`.

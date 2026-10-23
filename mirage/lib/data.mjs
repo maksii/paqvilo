@@ -1,3 +1,4 @@
+import {parseDataverseDecimalString} from './dataverse-decimal-input.mjs';
 import {
   readFile,
   mkdir,
@@ -4419,7 +4420,14 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       400,
       "InvalidValue",
       { innerCode: "0x80048d19" },
-    ), options.odataErrorDetails ? odataConversionDetails(originalValue, type, attribute, options) : null), originalValue, attribute, options.dataverseHttpReader);
+    ), options.odataErrorDetails ? odataConversionDetails(originalValue, type, attribute, options) : null), originalValue, attribute, options.dataverseHttpReader, type);
+  if (options.dataverseHttpReader && ['decimal','money'].includes(kind)) {
+    const compatible = options.dataverseHttpReader.ieee754Compatible === true;
+    if (typeof value === 'string') {
+      if (!compatible) throw conversion('Edm.Decimal');
+      const parsed = parseDataverseDecimalString(value); if (parsed === null) throw conversion('Edm.Decimal'); value = parsed;
+    } else if (compatible && (typeof value === 'number' || isExactNumeric(value))) throw conversion('Edm.Decimal');
+  }
   switch (kind) {
     case "string": {
       if (typeof value !== "string") throw conversion("Edm.String");

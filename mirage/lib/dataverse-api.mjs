@@ -607,7 +607,7 @@ async function recordCall(d, route, common) {
     identity: common.identity,
     requestId: common.requestId,
     bypassCustomPlugins: common.bypassCustomPlugins === true,
-    dataverseHttpReader: { method: common.method, entitySet: route.set, recordPayload: ["collection", "entity"].includes(route.kind), hasJsonBody: Boolean(common.bodyBuffer?.length) && /json/i.test(common.req.headers["content-type"] ?? "") },
+    dataverseHttpReader: { method: common.method, entitySet: route.set, recordPayload: ["collection", "entity"].includes(route.kind), ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(String(common.req.headers["content-type"] ?? "")), hasJsonBody: Boolean(common.bodyBuffer?.length) && /json/i.test(common.req.headers["content-type"] ?? "") },
   });
   return result ?? { status: 204 };
 }

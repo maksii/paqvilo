@@ -56,7 +56,7 @@ const msappOf = entries => writeSolutionAssetEntries(Object.entries(entries).map
 
 test('configured canvas imports reject an archive changed during the opened read with a source diagnostic', async t => {
   const root = await dirOf(t, { 'Invented.msapp': msappOf(files) });
-  const file = path.join(root, 'Invented.msapp');
+  const file = await fs.realpath(path.join(root, 'Invented.msapp'));
   const open = fs.open;
   let grew = false;
   t.mock.method(fs, 'open', async (...args) => {

@@ -123,6 +123,7 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
       exists, empty: content===null?null:!content.trim(), renders,
       path: source.file, sourceDir: cfg.sourceDir, relativePath: relative(source.file), metadataPaths, field: source.field ?? null, format: source.format ?? (source.extract ? 'xml' : 'text'),
       ...(source.fieldPath ? { fieldPath: source.fieldPath, ...(source.jsonPath ? { jsonPath: source.jsonPath } : {}) } : {}),
+      ...(source.componentId != null ? { componentId: source.componentId } : {}),
       ...(source.recordId ? { recordId: source.recordId, recordIdField: source.recordIdField } : {}), ...(source.lcid != null ? { lcid: source.lcid } : {}), url: null,
       relatedPageUrls: [...new Set(knownPages)].sort(compare), changed: changedAt(source.file),
       preview: {
