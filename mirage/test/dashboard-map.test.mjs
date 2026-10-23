@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import * as kit from '../admin/ui-kit.mjs';
 import * as icons from '../admin/dashboard-icons.mjs';
-import { layoutTopology, renderTopology, renderDashboard, renderNodeDetail, isActive, PRODUCT_OF, BANDS, GEOMETRY, HIGHLIGHT_LIMIT, KPIS, activitySeries, sparkValues, sparkline, factsOf, healthOf } from '../admin/dashboard-map.mjs';
+import { layoutTopology, renderTopology, renderDashboard, renderNodeDetail, isActive, PRODUCT_OF, BANDS, GEOMETRY, HIGHLIGHT_LIMIT, KPIS, activitySeries, sparkValues, sparkline, factsOf, healthOf, gutterOf } from '../admin/dashboard-map.mjs';
 
 const statuses = ['listening', 'ready', 'declared', 'disabled', 'placeholder', 'missing', 'error'];
 const node = (id, index = 0, extra = {}) => ({ id, kind: id.split(':')[0], label: `Invented ${index}`, status: statuses[index % statuses.length], detail: { count: index }, link: '#services', ...extra });
@@ -59,10 +59,10 @@ test('layout puts every node in exactly one band and cards never overlap (60 nod
     const [p, q] = [rect(a), rect(b)];
     assert.ok(!(p.x < q.x + q.w - 1e-9 && q.x < p.x + p.w - 1e-9 && p.y < q.y + q.h && q.y < p.y + p.h), `cards ${a.index} and ${b.index} overlap`);
   }
-  // Bands stack top to bottom with the CSS geometry.
+  // Bands stack top to bottom with the CSS geometry: each gutter is as high as the lanes its connectors need.
   for (const [index, band] of layout.bands.entries()) {
-    assert.equal(band.h, GEOMETRY.head + GEOMETRY.padTop + band.rows * GEOMETRY.cardH + (band.rows - 1) * GEOMETRY.rowGap + GEOMETRY.padBottom);
-    if (index) assert.equal(band.y, layout.bands[index - 1].y + layout.bands[index - 1].h + GEOMETRY.gutter);
+    assert.equal(band.h, GEOMETRY.padTop + band.rows * GEOMETRY.cardH + (band.rows - 1) * GEOMETRY.rowGap + GEOMETRY.padBottom);
+    if (index) assert.equal(band.y, layout.bands[index - 1].y + layout.bands[index - 1].h + gutterOf(band.gap));
   }
   // Grouped layers: organization modules and storage routes join capability cards.
   const org = layout.bands.find(band => band.id === 'organization');
@@ -86,13 +86,51 @@ test('every drawn edge references existing cards; internal and dangling edges ar
   assert.equal(persona.reversed, true, 'portal → persona session points up');
 });
 
+// Connectors as drawn: every segment of an edge, with the part hidden under its own end cards cut off.
+const visibleSegments = (layout, edge) => {
+  const ends = [layout.cards[edge.from], layout.cards[edge.to]];
+  const inside = ([x, y], card) => x > card.x + 1e-9 && x < card.x + card.w - 1e-9 && y > card.y + 1e-9 && y < card.y + card.h - 1e-9;
+  return edge.segments.filter(([a, b]) => !ends.some(card => inside([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], card)));
+};
+test('connectors never cross a card and never share a line with another connector', () => {
+  const { nodes, edges } = large();
+  const crowded = [...edges, ...['provider:outbox', 'provider:connectors', 'provider:secrets', 'provider:powerfx'].map(to => ({ from: 'org:store', to, kind: 'process', status: 'ready', label: 'records' })),
+    { from: 'org:flows', to: 'org:jobs', kind: 'process', status: 'ready', label: 'triggers' }, { from: 'org:plugins', to: 'org:flows', kind: 'process', status: 'ready', label: 'post-commit' },
+    { from: 'org:store', to: 'org:dataverse-solutions', kind: 'process', status: 'ready', label: 'pipeline' }, { from: 'client:browser', to: 'org:store', kind: 'http', status: 'ready', label: 'far' },
+    { from: 'org:flows', to: 'provider:connectors', kind: 'process', status: 'ready', label: 'actions' }, { from: 'org:jobs', to: 'provider:outbox', kind: 'bus', status: 'ready', label: 'service endpoints' }];
+  const layout = layoutTopology(nodes, crowded);
+  // A card is a box with its 12 px CSS margin inside its cell; at the narrowest wired card area (696 px) that is 0.0172 of the width.
+  const margin = 12 / 696;
+  for (const edge of layout.edges) for (const [a, b] of visibleSegments(layout, edge)) for (const card of layout.cards) {
+    if (card.index === edge.from || card.index === edge.to) continue;
+    const [x1, x2] = [Math.min(a[0], b[0]), Math.max(a[0], b[0])], [y1, y2] = [Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+    const crosses = x1 < card.x + card.w - margin && x2 > card.x + margin && y1 < card.y + card.h && y2 > card.y;
+    assert.ok(!crosses, `edge ${edge.members[0].from}→${edge.members[0].to} crosses card ${cardTitle(card)}`);
+  }
+  // Two connectors never run along the same line, except where they leave or enter the same card.
+  const all = layout.edges.flatMap(edge => visibleSegments(layout, edge).map(segment => ({ edge, segment })));
+  for (const [i, p] of all.entries()) for (const q of all.slice(i + 1)) {
+    if (p.edge === q.edge || p.edge.from === q.edge.from || p.edge.to === q.edge.to) continue;
+    const [[a, b], [c, d]] = [p.segment, q.segment];
+    const vertical = a[0] === b[0] && c[0] === d[0] && Math.abs(a[0] - c[0]) < 1e-9 && Math.min(Math.max(a[1], b[1]), Math.max(c[1], d[1])) - Math.max(Math.min(a[1], b[1]), Math.min(c[1], d[1])) > 1;
+    const horizontal = a[1] === b[1] && c[1] === d[1] && Math.abs(a[1] - c[1]) < 1e-9 && Math.min(Math.max(a[0], b[0]), Math.max(c[0], d[0])) - Math.max(Math.min(a[0], b[0]), Math.min(c[0], d[0])) > 1e-6;
+    assert.ok(!vertical && !horizontal, `edges ${p.edge.members[0].from}→${p.edge.members[0].to} and ${q.edge.members[0].from}→${q.edge.members[0].to} share a line`);
+  }
+  // Neighbours in one band join directly; an arrowhead always ends on a card edge or in a column gap.
+  const pair = (from, to) => layout.edges.find(edge => edge.members.some(member => member.from === from && member.to === to));
+  assert.equal(pair('org:plugins', 'org:flows').segments.length, 2, 'logic → automate: one short arrow across the gap');
+  assert.equal(pair('org:plugins', 'org:flows').arrowSegment, 0);
+  assert.equal(pair('org:plugins', 'org:flows').labelAt, null, 'a connector inside a row carries no label on the map');
+});
+const cardTitle = card => (card.type === 'group' ? card.group : card.node.id);
+
 test('connector labels never overlap, even when many edges share a lane', () => {
   const { nodes, edges } = large();
   // Several edges from the organization band onto the same exit lane.
   const crowded = [...edges, ...['provider:outbox', 'provider:connectors', 'provider:secrets', 'provider:powerfx'].map(to => ({ from: 'org:store', to, kind: 'process', status: 'ready', label: 'email and messages' })),
     { from: 'org:flows', to: 'provider:connectors', kind: 'process', status: 'ready', label: 'actions' }, { from: 'org:jobs', to: 'provider:outbox', kind: 'bus', status: 'ready', label: 'service endpoints' }];
   const layout = layoutTopology(nodes, crowded);
-  const boxes = layout.edges.map(edge => edge.labelBox);
+  const boxes = layout.edges.map(edge => edge.labelBox).filter(Boolean);
   for (const [i, p] of boxes.entries()) for (const q of boxes.slice(i + 1))
     assert.ok(!(p.x1 < q.x2 && q.x1 < p.x2 && p.y1 < q.y2 && q.y1 < p.y2), 'two label boxes overlap');
 });
@@ -224,4 +262,29 @@ test('card facts and health pills read like an admin console', () => {
   assert.deepEqual(healthOf([{ status: 'ready' }, { status: 'listening' }, { status: 'placeholder' }]), { text: '2 of 3 ready · 1 placeholder', short: '2/3 ready', tone: 'warn',
     counts: { total: 3, ready: 2, bad: 0, placeholder: 1, disabled: 0, declared: 0, planned: 0 } });
   assert.equal(healthOf([{ status: 'missing' }]).short, '1 issue');
+});
+
+test('the wide map stylesheet matches GEOMETRY, so connectors meet the cards', () => {
+  // The SVG connectors are computed from GEOMETRY; the cards are laid out by dashboard.css. Any drift leaves arrows short of their cards.
+  const css = fs.readFileSync(new URL('../admin/dashboard.css', import.meta.url), 'utf8').split('/* ---------- Narrow containers')[0];
+  const rule = selector => {
+    const start = css.indexOf(`\n${selector} {`);
+    if (start < 0) assert.fail(`no rule ${selector}`);
+    return css.slice(css.indexOf('{', start) + 1, css.indexOf('}', start));
+  };
+  const value = (selector, property) => rule(selector).split(';').map(part => part.trim()).find(part => part.startsWith(`${property}:`))?.slice(property.length + 1).trim();
+  const px = (selector, property) => Number.parseFloat(value(selector, property));
+  const box = (selector, property) => value(selector, property).split(/\s+/);
+  assert.equal(px('.dm-canvas', 'gap'), 0);
+  assert.equal(px('.dm-canvas', '--dm-label'), GEOMETRY.label);
+  assert.deepEqual(box('.dm-canvas', 'padding'), [`${GEOMETRY.top}px`, '0']);
+  for (let lanes = 2; lanes <= GEOMETRY.maxLanes; lanes++) assert.equal(px(`.dm-gap-${lanes}`, 'margin-top'), gutterOf(lanes), `gutter of ${lanes} lanes`);
+  assert.equal(px('.dm-gap-0, .dm-gap-1', 'margin-top'), gutterOf(1));
+  assert.match(rule('.dm-wires, .dm-wire-labels'), /left: var\(--dm-label\);[\s\S]*width: calc\(100% - var\(--dm-label\)\)/, 'connectors cover the card area only');
+  assert.match(rule('.dm-band'), /grid-template-columns: var\(--dm-label\) minmax\(0, 1fr\)/);
+  assert.doesNotMatch(rule('.dm-band'), /margin: /, 'a band keeps the margin-top of its gutter class');
+  assert.equal(px('.dm-cards', 'grid-auto-rows'), GEOMETRY.cardH);
+  assert.equal(px('.dm-cards', 'row-gap'), GEOMETRY.rowGap);
+  assert.deepEqual(box('.dm-cards', 'padding'), [`${GEOMETRY.padTop}px`, `${Math.round((1 - GEOMETRY.right) * 100)}%`, `${GEOMETRY.padBottom}px`, `${Math.round(GEOMETRY.left * 100)}%`]);
+  assert.match(rule('.dm-card'), new RegExp(`height: ${GEOMETRY.cardH}px`));
 });

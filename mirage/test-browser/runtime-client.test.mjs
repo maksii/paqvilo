@@ -53,7 +53,7 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
     await fs.mkdir(path.join(root, 'portal/web-pages'), { recursive: true });
     await fs.writeFile(path.join(root, 'portal/website.yml'), 'adx_name: Invented\nadx_websiteid: invented\n');
     await fs.writeFile(path.join(root, 'portal/web-pages/home.webpage.yml'), 'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\n');
-    await fs.writeFile(path.join(root, 'paqvilo.config.yml'), 'sourceRoot: .\nsites:\n  invented:\n    source: portal\n    environments: { dev: https://invented.example.test }\n');
+    await fs.writeFile(path.join(root, 'paqvilo.config.yml'), 'sourceRoot: .\nsites:\n  invented:\n    source: portal\n    environments: { dev: https://invented.example.test }\n    mirage: { port: 0 }\n');
     const report = await captureShell({ config: path.join(root, 'paqvilo.config.yml'), site: 'invented', createLocalSimulator: options => createSimulator({ ...options, liveBridge: bridge }) });
     assert.equal(report.complete, true);
     assert.equal(bridge.context, null);

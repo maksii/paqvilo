@@ -300,9 +300,17 @@ try {
   startup?.fail(err.message);
   if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, writesFiles:err.writesFiles??[], error: { code: err.code??(phase==='arguments'?'invalid_argument':phase==='configuration'?'configuration_error':'command_failed'), message: err.message,...(err.status?{status:err.status}:{}) } }));
   else console.error(`paqvilo: ${err.message}`);
-  if (!values.json && (command === 'dev' || command === 'mirage' && positionals[1] === 'dev')) console.error(`Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`);
-  if (process.env.PAQVILO_DEBUG) console.error(err.stack);
-  process.exitCode = 1;
+  const starting = command === 'dev' || command === 'mirage' && ['dev', 'start'].includes(positionals[1]);
+  // Starting a project that has no configuration yet opens setup in the browser, when a person runs it in a terminal.
+  if (starting && err.code === 'CONFIG_NOT_FOUND' && !values.json && process.stdout.isTTY && process.stdin.isTTY && !values.project) {
+    console.error('There is no project configuration yet. Opening setup in your browser to create it; press Ctrl+C here when you are done.');
+    startup?.close(); startup = null;
+    process.exitCode = await (await import('./commands/setup.mjs')).runSetup(['--config', values.config ?? './paqvilo.config.yml', '--open']);
+  } else {
+    if (!values.json && starting) console.error(`Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`);
+    if (process.env.PAQVILO_DEBUG) console.error(err.stack);
+    process.exitCode = 1;
+  }
 } finally {
   startup?.close();
 }

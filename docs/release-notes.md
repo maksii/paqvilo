@@ -71,6 +71,30 @@ and loopback fixtures; they do not certify complete Power Pages parity.
   catalogue covering every key, linked project files as `project:<site>` layers, a
   System map (planned or live) and a restart banner with the exact command, driven by
   the runtime identity rather than the file contents. See [setup](setup.md#journey).
+- **Quick setup:** `/_setup/` opens on five plain-language steps that find the exports in
+  the project folder, create the configuration, and start, open, restart and stop the local
+  preview without a terminal; All settings keeps every key. You choose any combination of
+  website, model-driven apps, canvas apps and the Dataverse Web API, pick export folders in a
+  folder picker that marks exports and Solutions, and choose the starting data from the
+  running preview. Starting a project without configuration from a terminal opens setup.
+  See [setup](setup.md#quick-setup).
+- **Surface switches:** `modelDriven.enabled: false` turns the model-driven surface
+  (`/main.aspx`) off on both hosts, and a catalogue site can set `mirage.canvas` as a project
+  can.
+- **Compact setup page:** a one-line status strip with the save target, the system map
+  first, guidance behind (i) tooltips, up to four fields per row and preflight under
+  Start & verify. A setup page that `mirage dev` serves on its own port reads the
+  running preview through a read-only relay, so its map goes live too.
+- **System map layout:** band titles sit in a label column beside their cards, every
+  connector has a lane of its own in the gap between layers (gaps grow with their lanes),
+  connectors across several layers run down a free column gap, and neighbours in one layer
+  join with a short arrow, so no connector crosses a title or a card or shares a line with
+  another. The header names its facts in plain words with an (i) each.
+- **Offline preflight presets:** `mirage preflight` applies the startup preset (`--preset`
+  or the site's `mirage.preset`) as a fresh host does, so service endpoints a preset seeds
+  resolve plug-in steps as on the running host.
+- **Portal grid lookups:** lists, subgrids and lookup dialogs name lookups stored as bare
+  ids through their N:1 relationship, as forms already did.
 - **Shared host composition:** the offline `mirage preflight` composes the same host
   description a running host reports; pack `storageProviders`, `messageProviders` and
   `outboxHandlers` are instantiated by both hosts; provider `preflight()` probes report

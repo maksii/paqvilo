@@ -28,6 +28,24 @@ test('native grids preserve zone-less DateOnly and independent dates across host
   } finally { if(previous===undefined)delete process.env.TZ;else process.env.TZ=previous; }
 });
 
+test('native grids name a lookup stored as a bare id through its N:1 relationship', async () => {
+  const { DataStore, emptyState } = await import('../lib/data.mjs');
+  const state = emptyState();
+  state.mappings.x_region = { logicalName: 'x_region', entitySet: 'x_regions', idColumn: 'x_regionid', nameColumn: 'x_name', userConfigured: true, fields: { x_name: { dataverseType: 'nvarchar' } }, relationships: {} };
+  state.mappings.x_item = { logicalName: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name', userConfigured: true,
+    fields: { x_name: { dataverseType: 'nvarchar' }, x_regionid: { dataverseType: 'lookup', lookupTargets: ['x_region'] } },
+    relationships: { x_regionid: { entity: 'x_region', from: 'x_regionid', to: 'x_regionid', many: false } } };
+  state.tables.x_region = [{ x_regionid: '10000000-0000-4000-8000-0000000000a1', x_name: 'North' }];
+  state.tables.x_item = [];
+  const store = await new DataStore({ state }).init();
+  const context = { store, metadata: { entities: { x_item: { fields: state.mappings.x_item.fields } } }, portal: { settings: {} } };
+  const model = { entity: 'x_item', idColumn: 'x_itemid', kind: 'list', view: { fetchXml: '<fetch><entity name="x_item"><attribute name="x_regionid"/></entity></fetch>' } };
+  const layout = { Columns: [{ Type: 0, LogicalName: 'x_regionid' }] };
+  const result = gridRecord({ x_itemid: '10000000-0000-4000-8000-0000000000b1', x_regionid: '10000000-0000-4000-8000-0000000000a1' }, model, layout, context);
+  const region = result.Attributes.find(row => row.Name === 'x_regionid');
+  assert.deepEqual([region.Value.LogicalName, region.Value.Name, region.DisplayValue], ['x_region', 'North', 'North']);
+});
+
 test('a captured locale with an incomplete captured global provider is diagnosed once',async()=>{
   const diagnostics=[],provider='/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js';
   const context={recordDiagnostic:row=>diagnostics.push(row),config:{shellProfile:{afterFooterScripts:[provider]}},cache:{get:async()=>({body:Buffer.from('Date.today=function(){};')})}};

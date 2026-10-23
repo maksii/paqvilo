@@ -90,7 +90,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/transactional-files.mjs', 'mirage/lib/pack-data-files.mjs',
   'mirage/docs/standalone-organization.md', 'mirage/docs/simulation-levels.md',
   'lense/commands/setup.mjs', 'lense/setup/store.mjs', 'lense/setup/server.mjs', 'lense/setup/app.mjs',
-  'lense/setup/index.html', 'lense/setup/style.css', 'docs/setup.md',
+  'lense/setup/index.html', 'lense/setup/style.css', 'lense/setup/quick.mjs', 'lense/setup/preview.mjs', 'lense/setup/preview-runner.mjs', 'docs/setup.md',
   'lense/commands/init.mjs', 'lense/project-scaffold.mjs', 'lense/project-check.mjs',
   'lense/project-workflows.mjs',
   'lense/project-editor.mjs', 'lense/scaffold.mjs', 'lense/dev-messages.mjs', 'docs/project-scaffold.md',

@@ -121,12 +121,13 @@ export function preflightExitCode(report) {
  * pack factories, outbox, service fixtures, inventory and storage readiness) and return its preflight report. Options use
  * the createSimulator names (spread `runtimeOptions()` output): runtime, simulation, solutionRoots, solutionOrder, sourceDir,
  * dataModel, lcid, project, dataPacks, packs (module paths, loaded as createSimulator loads them), environmentVariables, deploymentProfiles, modelDriven, localServices,
- * providers, connections, secrets, canvas, dataverse, projectRoot, initial (its `mappings` join the boot mappings, as on the running host); plus scenario, strict and env (where env:NAME references
+ * providers, connections, secrets, canvas, dataverse, projectRoot, initial (its `mappings` join the boot mappings, as on the running host), preset (the startup
+ * preset a fresh host applies); plus scenario, strict and env (where env:NAME references
  * resolve, default process.env); loadedPacks takes already discovered packs instead. The one difference from GET /_sim/api/preflight: operation modes are the source defaults.
  */
 export async function preflight({ runtime, simulation, solutionRoots = [], solutionOrder = 'derived', sourceDir = null, dataModel, lcid = 1033, project = null,
   dataPacks = [], packs: packModules, loadedPacks, environmentVariables = {}, deploymentProfiles, modelDriven, localServices, providers, connections, secrets, canvas, dataverse, connectorScripts,
-  projectRoot = process.cwd(), scenario = null, strict = false, env = process.env, initial = null } = {}) {
+  projectRoot = process.cwd(), scenario = null, strict = false, env = process.env, initial = null, preset = null } = {}) {
   const [{ loadOrganizationSources }, catalogue, { discoverPacks }, { composeHostDescription, activeDeploymentProfile }] = await Promise.all([
     import('./solution-runtime-source.mjs'), import('./operation-catalogue.mjs'), import('./preset-registry.mjs'), import('./organization-host.mjs')]);
   const sources = await loadOrganizationSources({ solutionRoots, solutionOrder, modelDriven, lcid, projectRoot });
@@ -139,7 +140,7 @@ export async function preflight({ runtime, simulation, solutionRoots = [], solut
   // packs: module paths, as createSimulator reads them (one loader); loadedPacks: already discovered packs (internal callers).
   const packs = loadedPacks ?? await discoverPacks({ project, portal, explicit: dataPacks, packs: packModules });
   const operationPortal = portal ? catalogue.withSolutionOperations(portal, await catalogue.importSolutionOperationSources(sources.scan.layers, portal.website)) : null;
-  const description = await composeHostDescription({ sources, portal, operationPortal, packs, deploymentProfile, runtime, simulation: simulationSettings(simulation), projectRoot, env,
+  const description = await composeHostDescription({ sources, portal, operationPortal, packs, deploymentProfile, runtime, simulation: simulationSettings(simulation), projectRoot, env, preset,
     config: { connections, secrets, providers, localServices, canvas, environmentVariables, dataverse, initial, connectorScripts } });
   try {
     return await description.preflight({ scenario, strict, env });

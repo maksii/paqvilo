@@ -409,3 +409,20 @@ async function serve(t, handler) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { server: { close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }) }, base: `http://127.0.0.1:${server.address().port}` };
 }
+
+test('a setup server of its own relays the running Mirage preview views read-only and never contacts a Lense portal', async t => {
+  const directory = await work(t), requests = [];
+  const preview = http.createServer((req, res) => { requests.push(req.url); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ invented: req.url })); });
+  await new Promise(resolve => preview.listen(0, '127.0.0.1', resolve)); ownedFixture(t).add(() => new Promise(resolve => preview.close(resolve)));
+  const portalUrl = `http://127.0.0.1:${preview.address().port}`;
+  const mirage = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Mirage', site: 'portal', portalUrl } }); ownedFixture(t).add(() => mirage.close());
+  assert.equal((await (await fetch(new URL('api/status', mirage.url))).json()).runtime.liveProxy, true);
+  assert.deepEqual(await (await fetch(new URL('api/runtime/dashboard', mirage.url))).json(), { invented: '/_sim/api/dashboard' });
+  assert.deepEqual(await (await fetch(new URL('api/runtime/preflight?requires=table%3Ax_item', mirage.url))).json(), { invented: '/_sim/api/preflight?requires=table%3Ax_item' });
+  assert.equal((await fetch(new URL('api/runtime/state', mirage.url))).status, 404, 'only the listed views are relayed');
+  assert.equal((await fetch(new URL('api/runtime/dashboard', mirage.url), { method: 'POST' })).status, 404, 'GET only');
+  const lense = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Lense', site: 'portal', portalUrl } }); ownedFixture(t).add(() => lense.close());
+  assert.equal((await (await fetch(new URL('api/status', lense.url))).json()).runtime.liveProxy, false);
+  assert.equal((await fetch(new URL('api/runtime/dashboard', lense.url))).status, 404);
+  assert.deepEqual(requests, ['/_sim/api/dashboard', '/_sim/api/preflight?requires=table%3Ax_item'], 'a Lense portal is never contacted');
+});

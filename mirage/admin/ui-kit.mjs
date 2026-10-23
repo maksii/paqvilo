@@ -72,6 +72,19 @@ export function help({ id, text, doc } = {}) {
   return `<p class="ui-help"${id ? ` id="${e(id)}"` : ''}>${e(text)}${link ? ` ${link}` : ''}</p>`;
 }
 
+/**
+ * Guidance behind an (i) button: the tooltip shows on hover or focus and holds the text, optional numbered steps, an
+ * example and doc links. Pass `id` and point a control's `aria-describedby` at it to keep the text as its description.
+ */
+export function info({ id, label = 'More information', text, steps = [], example, docs = [] } = {}) {
+  const links = docs.map(docMarkup).filter(Boolean);
+  if (!text && !steps.length && !example && !links.length) return '';
+  return `<span class="ui-info"><button type="button" class="ui-info-button" aria-label="${e(label)}"${id ? ` aria-describedby="${e(id)}"` : ''}>i</button>`
+    + `<span class="ui-info-pop" role="tooltip"${id ? ` id="${e(id)}"` : ''}>${text ? `<span class="ui-info-text">${e(text)}</span>` : ''}`
+    + `${steps.map((step, index) => `<span class="ui-info-step">${index + 1}. ${e(step)}</span>`).join('')}`
+    + `${example ? `<code class="ui-info-example">${e(example)}</code>` : ''}${links.length ? `<span class="ui-info-docs">${links.join(' · ')}</span>` : ''}</span></span>`;
+}
+
 /** Visible field help; give the control `aria-describedby="<id>-help"`. */
 export const fieldHelp = (id, text) => `<small class="ui-field-help" id="${e(id)}-help">${e(text)}</small>`;
 

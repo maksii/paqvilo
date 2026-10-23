@@ -253,6 +253,8 @@ test('offline shell capture writes state and matching runtime capture uses its A
     },
   };
   const config = path.join(root, 'paqvilo.config.yml');
+  // Port 0: the capture must not probe a developer's runtime on the default port 8787.
+  await fs.appendFile(config, '    mirage:\n      port: 0\n');
   const report = await captureShell({ config, site: 'invented', cdp: 'http://127.0.0.1:9222', createLocalSimulator: options => createSimulator({ ...options, liveBridge: bridge }) });
   assert.equal(report.complete, true);
   const stateFile = path.join(root, '.paqvilo/simulator/invented/state.json');
@@ -262,7 +264,7 @@ test('offline shell capture writes state and matching runtime capture uses its A
   assert.ok(calls.includes('connect') && calls.includes('/theme.css'));
   const simulator = await createSimulator({ sourceDir: path.join(root, 'portal'), stateFile, origin: bridge.origin, liveBridge: bridge, watch: false });
   try {
-    await fs.appendFile(config, `    mirage:\n      port: ${new URL(simulator.url).port}\n`);
+    await fs.writeFile(config, (await fs.readFile(config, 'utf8')).replace('port: 0', `port: ${new URL(simulator.url).port}`));
     const result = await captureShell({ config, site: 'invented', cdp: 'http://127.0.0.1:9222', createLocalSimulator: () => { throw new Error('Must use running runtime'); } });
     assert.equal(result.complete, true);
     assert.equal(bridge.connected, false);

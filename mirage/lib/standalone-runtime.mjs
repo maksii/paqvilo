@@ -127,7 +127,7 @@ export async function createStandaloneRuntime(options = {}) {
   if (runtime.kind === 'dataverse-api' && !settings.enabled) throw new Error('A dataverse-api runtime requires its HTTP API to be enabled.');
   // The shared organization composition (organization-host.mjs): handler maps, memoised catalogues, providers, backend and API.
   const EMPTY = Object.freeze({});
-  const caps = { ...runtimeCapabilities(runtime), dataverseApi: settings.enabled, setup: true, records: true, staff: true,
+  const caps = { ...runtimeCapabilities(runtime), ...(modelDriven.enabled === false ? { modelDriven: false } : {}), dataverseApi: settings.enabled, setup: true, records: true, staff: true,
     personas: false, liveBridge: false, portalRendering: false };
   // Host surfaces registered in the capability registry under their legacy status keys (summary() reads them back).
   const surfaces = () => hostSurfaces({ host: 'standalone', dataverseApi: caps.dataverseApi });

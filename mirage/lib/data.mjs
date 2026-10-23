@@ -1920,7 +1920,11 @@ export class DataStore {
    * (a stored bare id resolves through the N:1 relationship; a polymorphic one through the target that holds the id).
    */
   portalReadRow(m, row) {
-    const out = this.computedColumns(m.logicalName) ? this.withComputed(m.logicalName, [row])[0] : { ...row };
+    return this.namedReferences(m, this.computedColumns(m.logicalName) ? this.withComputed(m.logicalName, [row])[0] : row);
+  }
+  /** A copy of the row whose single-valued lookups are named entity references, as portalReadRow names them. */
+  namedReferences(m, row) {
+    const out = { ...row };
     const byColumn = new Map();
     for (const rel of Object.values(m.relationships ?? {}))
       if (rel?.many === false && rel.from && rel.from !== m.idColumn && rel.entity) byColumn.set(rel.from, [...(byColumn.get(rel.from) ?? []), rel.entity]);

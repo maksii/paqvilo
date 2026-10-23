@@ -5,9 +5,11 @@ import { SetupStore, setupError, setupDocs, setupStages, setupVersion } from './
 import { setupTemplates } from './templates.mjs';
 import { settingsCatalogue } from './settings-catalogue.mjs';
 import { plannedTopology } from './topology.mjs';
+import { exportCandidates, freePort, listFolders, previewOperation, previewSessions, runPreviewOperation } from './preview.mjs';
+import path from 'node:path';
 
 // Browser files of this folder by allowlist (a new server-side module is never served), plus the shared, import-free admin modules.
-const BROWSER_FILES = { '/_setup/': 'index.html', '/_setup/index.html': 'index.html', '/_setup/app.mjs': 'app.mjs', '/_setup/style.css': 'style.css',
+const BROWSER_FILES = { '/_setup/': 'index.html', '/_setup/index.html': 'index.html', '/_setup/app.mjs': 'app.mjs', '/_setup/quick.mjs': 'quick.mjs', '/_setup/style.css': 'style.css',
   '/_setup/ui-kit.mjs': '../../mirage/admin/ui-kit.mjs', '/_setup/ui-kit.css': '../../mirage/admin/ui-kit.css', '/_setup/shell.css': '../../mirage/admin/shell.css',
   '/_setup/dashboard-view.mjs': '../../mirage/admin/dashboard-view.mjs', '/_setup/help-content.mjs': '../../mirage/admin/help-content.mjs',
   '/_setup/dashboard-map.mjs': '../../mirage/admin/dashboard-map.mjs', '/_setup/dashboard-icons.mjs': '../../mirage/admin/dashboard-icons.mjs', '/_setup/dashboard.css': '../../mirage/admin/dashboard.css' };
@@ -45,6 +47,21 @@ function restartCommand(runtime, store, value) {
 const RESTART_SCOPE = { Mirage: 'Mirage runtime settings, sources, Solutions, packs, port and startup preset of the running target',
   Lense: 'the site environments, start page, scope, routes and browser settings Lense loaded, plus the Mirage runtime settings' };
 const loopback = name => ['127.0.0.1', 'localhost', '[::1]'].includes(name);
+// `mirage dev` serves setup on its own port: the page reads the preview's live views through these read-only GET routes.
+// Only a Mirage preview on a loopback origin qualifies; a Lense portalUrl is a live portal and is never contacted.
+const LIVE_VIEWS = new Set(['dashboard', 'status', 'packs', 'preflight']);
+function liveOrigin(runtime) {
+  if (runtime?.product !== 'Mirage' || typeof runtime.portalUrl !== 'string') return null;
+  try { const url = new URL(runtime.portalUrl); return ['http:', 'https:'].includes(url.protocol) && loopback(url.hostname) && !url.username && !url.password ? url.origin : null; } catch { return null; }
+}
+async function liveView(res, origin, name, query) {
+  if (!origin || !LIVE_VIEWS.has(name)) return respond(res, 404, { error: { message: 'No running Mirage preview serves this view.' } });
+  try {
+    query.delete('site');
+    const upstream = await fetch(`${origin}/_sim/api/${name}${name === 'preflight' && query.size ? `?${query}` : ''}`, { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(name === 'preflight' ? 120_000 : 10_000) });
+    respond(res, upstream.status, await upstream.json());
+  } catch (error) { respond(res, 502, { error: { message: `The running preview did not answer (${error.name === 'TimeoutError' ? 'timeout' : error.message}).` } }); }
+}
 const respond = (res, status, data) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(data));
@@ -82,11 +99,22 @@ export async function createSetupHandler(options = {}) {
     const now = await identity(), failure = initialIdentity.error ?? now.error;
     return failure ? { restartRequired: null, restartReason: `identity unavailable: ${failure}` } : { restartRequired: now.value !== initialIdentity.value, restartReason: null };
   };
-  const running = (value, state) => (runtime ? { ...runtime, ...state, restartScope: RESTART_SCOPE[runtime.product] ?? RESTART_SCOPE.Mirage, restartCommand: restartCommand(runtime, store, value) } : null);
+  const live = liveOrigin(runtime);
+  const running = (value, state) => (runtime ? { ...runtime, ...state, liveProxy: Boolean(live), restartScope: RESTART_SCOPE[runtime.product] ?? RESTART_SCOPE.Mirage, restartCommand: restartCommand(runtime, store, value) } : null);
   const templates = setupTemplates(store.kind), catalogue = settingsCatalogue(store.kind);
+  // Sites of the last snapshot (id and resolved source folder): the preview list matches running sessions to them.
+  let sites = [], sourceRoot = null;
+  const remember = value => { sites = (value.sites ?? []).map(site => ({ id: site.id, sourceDir: site.sourceStatus?.path ?? null })); sourceRoot = value.settings?.resolvedSourceRoot ?? null; return value; };
+  const sessions = async () => { if (!sites.length) remember(await store.snapshot().catch(() => ({}))); return previewSessions({ kind: store.kind, file: store.file, sites }); };
+  // The relay follows the preview this server was started for, else the discovered preview of the requested site.
+  const liveFor = async site => live ?? liveOrigin({ product: 'Mirage', portalUrl: site ? (await sessions()).find(item => item.site === site)?.url : undefined });
+  const verified = (req, origin) => {
+    const token = req.headers['x-paqvilo-setup-csrf'];
+    if (req.headers.origin !== origin || typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token) || !timingSafeEqual(Buffer.from(token), Buffer.from(csrf))) throw setupError('Reload setup before saving (invalid CSRF token/origin).', 403);
+  };
   const snapshot = async () => {
     try {
-      const value = await store.snapshot();
+      const value = remember(await store.snapshot());
       const current = running(value, runtime ? await drift() : {});
       return { ...value, canEdit: true, csrf, runtime: current, commandArgs: commandArgs(runtime, store, value), stages: setupStages(value, current), topology: plannedTopology(value), templates, settingsCatalogue: catalogue };
     } catch (error) {
@@ -113,9 +141,26 @@ export async function createSetupHandler(options = {}) {
         res.end(req.method === 'HEAD' ? undefined : content); return true;
       }
       if (pathname === '/_setup/api/status' && req.method === 'GET') respond(res, 200, await snapshot());
-      else if (pathname === '/_setup/api/config' && req.method === 'POST') {
-        const token = req.headers['x-paqvilo-setup-csrf'];
-        if (req.headers.origin !== origin || typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token) || !timingSafeEqual(Buffer.from(token), Buffer.from(csrf))) throw setupError('Reload setup before saving (invalid CSRF token/origin).', 403);
+      else if (pathname.startsWith('/_setup/api/runtime/') && req.method === 'GET') {
+        const query = new URLSearchParams(req.url.slice(pathname.length));
+        await liveView(res, await liveFor(query.get('site')), pathname.slice('/_setup/api/runtime/'.length), query);
+      } else if (pathname === '/_setup/api/quick' && req.method === 'GET') {
+        // Quick setup: the exports found in the project folder, written as the configuration would write them.
+        const value = remember(await store.snapshot());
+        respond(res, 200, { candidates: await exportCandidates({ directory: path.dirname(store.file), sourceRoot: value.settings?.resolvedSourceRoot ?? path.dirname(store.file) }), ...(value.layers?.shared?.exists ? { port: null } : { port: await freePort(), apiPort: await freePort(8790) }) });
+      } else if (pathname === '/_setup/api/folders' && req.method === 'GET') {
+        // Quick setup folder picker: folder names and what they hold, read-only; the page chooses, the configuration API saves.
+        if (!sourceRoot) remember(await store.snapshot().catch(() => ({})));
+        respond(res, 200, await listFolders({ directory: path.dirname(store.file), sourceRoot: sourceRoot ?? path.dirname(store.file), folder: new URLSearchParams(req.url.slice(pathname.length)).get('path') }));
+      } else if (pathname === '/_setup/api/preview' && req.method === 'GET') respond(res, 200, { sessions: await sessions(), operation: await previewOperation(store.file) });
+      else if (pathname === '/_setup/api/preview' && req.method === 'POST') {
+        verified(req, origin);
+        const { action, site = null } = await body(req);
+        if (!sites.length) remember(await store.snapshot());
+        if (store.kind !== 'project' && !sites.some(item => item.id === site)) throw setupError('Choose a configured target to run.');
+        respond(res, 202, { operation: await runPreviewOperation({ kind: store.kind, file: store.file, site: store.kind === 'project' ? null : site, action }) });
+      } else if (pathname === '/_setup/api/config' && req.method === 'POST') {
+        verified(req, origin);
         await store.save(await body(req));
         respond(res, 200, await snapshot());
       } else respond(res, 404, { error: { message: 'Unknown setup endpoint.' } });

@@ -148,8 +148,12 @@ const rank = id => {
 /** A stable DOM id part for a node id: every character outside [A-Za-z0-9-] becomes `_<hex>`, so distinct ids stay distinct. */
 export const nodeKey = id => String(id).replace(/[^A-Za-z0-9-]/g, char => `_${char.codePointAt(0).toString(16)}`);
 
-// Wide-layout geometry. Vertical values are CSS pixels and must match dashboard.css; horizontal values are fractions of the canvas width.
-export const GEOMETRY = Object.freeze({ columns: 5, top: 16, head: 60, padTop: 4, cardH: 104, rowGap: 14, padBottom: 24, gutter: 48, left: 0.02, right: 0.95 });
+// Wide-layout geometry. Each band is a label column (`label` px, the band title and health) beside its cards; the connector
+// SVG covers the card area only, so no connector ever crosses a band title. Vertical values are CSS pixels and must match
+// dashboard.css; horizontal values are fractions of the card area width. Between two bands is a gutter of connector lanes,
+// one lane per connector, so connectors never share a line: `gutterOf(lanes)` px high, lanes `lane` px apart.
+export const GEOMETRY = Object.freeze({ columns: 5, top: 12, label: 184, padTop: 14, cardH: 96, rowGap: 24, padBottom: 14, lane: 14, gutterMin: 30, maxLanes: 10, left: 0, right: 0.95, offset: 0.003 });
+export const gutterOf = lanes => Math.max(GEOMETRY.gutterMin, 16 + GEOMETRY.lane * Math.min(lanes, GEOMETRY.maxLanes));
 // ponytail: CSS highlight rules exist for card indexes 0..119 (dashboard.css); cards past that render without path highlighting.
 export const HIGHLIGHT_LIMIT = 120;
 
@@ -215,8 +219,8 @@ export function healthOf(list, planned = false) {
 /**
  * Six layer bands of cards plus routed connectors. A node is a card of its own, except in the organization and provider
  * layers, where nodes join a capability group card (a group of one is shown as the node itself). Edges between nodes on the
- * same card are internal and not drawn; parallel edges between two cards merge. Every edge is drawn top to bottom
- * (`reversed` marks an edge whose source sits below its target).
+ * same card are internal and not drawn; parallel edges between two cards merge. Every edge between bands is drawn top to
+ * bottom (`reversed` marks an edge whose source sits below its target).
  */
 export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.columns } = {}) {
   const G = { ...GEOMETRY, columns };
@@ -244,24 +248,21 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
       byBand.get(band.id).push(items.length === 1 ? { type: 'node', node: items[0], nodes: items, group } : { type: 'group', group, nodes: items });
     }
   }
+  // Columns and rows first: the bands' vertical positions wait for the lanes their gutters need.
   const cellW = (G.right - G.left) / G.columns;
   const bands = [], cards = [];
-  let y = G.top;
   for (const [bandIndex, band] of BANDS.entries()) {
     const bandCards = byBand.get(band.id), rows = Math.max(1, Math.ceil(bandCards.length / G.columns));
-    const h = G.head + G.padTop + rows * G.cardH + (rows - 1) * G.rowGap + G.padBottom;
-    const entry = { ...band, index: bandIndex, y, h, rows, cards: [] };
+    const entry = { ...band, index: bandIndex, h: G.padTop + rows * G.cardH + (rows - 1) * G.rowGap + G.padBottom, rows, cards: [] };
     bandCards.forEach((card, position) => {
       const col = position % G.columns, row = Math.floor(position / G.columns);
-      const top = y + G.head + G.padTop + row * (G.cardH + G.rowGap);
-      const placedCard = { ...card, index: cards.length, band: band.id, bandIndex, col, row, lastRow: rows - 1,
-        x: G.left + col * cellW, w: cellW, cx: G.left + (col + 0.5) * cellW, y: top, h: G.cardH };
+      // `below`: another card of this band sits under this one, so connectors leave through the column gap beside it.
+      const placedCard = { ...card, index: cards.length, band: band.id, bandIndex, col, row, lastRow: rows - 1, below: position + G.columns < bandCards.length,
+        x: G.left + col * cellW, w: cellW, cx: G.left + (col + 0.5) * cellW, offsetY: G.padTop + row * (G.cardH + G.rowGap), h: G.cardH };
       cards.push(placedCard); entry.cards.push(placedCard);
     });
     bands.push(entry);
-    y += h + G.gutter;
   }
-  const height = y - G.gutter + G.top;
   const cardOf = new Map(cards.flatMap(card => card.nodes.map(node => [node.id, card])));
   for (const card of cards) for (const node of card.nodes) node.card = card.index;
 
@@ -280,7 +281,19 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     item.active ||= Boolean(edge.active);
     merged.set(key, item);
   }
-  const routed = placeLabels([...merged.values()].map((edge, index) => ({ ...edge, index, ...route(cards[edge.upper], cards[edge.lower], bands, G) })));
+  const display = [...merged.values()].map((edge, index) => ({ ...edge, index }));
+  const gutters = planRoutes(display, cards, G);
+  let y = G.top;
+  for (const [index, band] of bands.entries()) {
+    band.y = y; band.gap = index ? gutters[index - 1].lanes : 0;
+    for (const card of band.cards) card.y = y + card.offsetY;
+    y += band.h;
+    gutters[index].y = y;
+    if (index < bands.length - 1 || gutters[index].lanes) y += gutterOf(gutters[index].lanes);
+  }
+  const tail = gutters[bands.length - 1].lanes;
+  const height = y + G.top;
+  const routed = placeLabels(display.map(edge => ({ ...edge, ...drawRoute(edge, cards, gutters, G) })));
   // Upstream and downstream reach per card, for the CSS path highlight.
   const forward = new Map(cards.map(card => [card.index, []])), backward = new Map(cards.map(card => [card.index, []]));
   for (const edge of routed) { forward.get(edge.from).push(edge); backward.get(edge.to).push(edge); }
@@ -295,61 +308,146 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     card.pathEdges = [...new Set([...down.edges, ...up.edges])];
     card.upstream = backward.get(card.index); card.downstream = forward.get(card.index);
   }
-  return { columns: G.columns, geometry: G, height, bands, cards, edges: routed, nodes: placed };
+  return { columns: G.columns, geometry: G, height, tail, bands, cards, edges: routed, nodes: placed };
 }
 
-/** Orthogonal connector points from the upper card to the lower card, through column gaps, gutter lanes and the right-hand trunk lanes. */
-function route(upper, lower, bands, G) {
-  const cellW = (G.right - G.left) / G.columns;
-  const gapX = card => G.left + card.col * cellW;
-  const bottom = card => card.y + card.h, half = G.rowGap / 2;
-  const exit = (card, lane) => (card.row < card.lastRow
-    ? [[card.cx, bottom(card)], [card.cx, bottom(card) + half], [gapX(card), bottom(card) + half], [gapX(card), lane]]
-    : [[card.cx, bottom(card)], [card.cx, lane]]);
-  const enter = (card, lane) => (card.row === 0
-    ? [[card.cx, lane], [card.cx, card.y]]
-    : [[gapX(card), lane], [gapX(card), card.y - half], [card.cx, card.y - half], [card.cx, card.y]]);
-  const band = bands[upper.bandIndex];
-  let points; const lanes = [];
-  if (upper.bandIndex === lower.bandIndex) {
-    const lane = band.y + band.h - 11; lanes.push(lane);
-    points = [...exit(upper, lane), ...exit(lower, lane).reverse()];
-  } else {
-    const exitLane = band.y + band.h + 15; lanes.push(exitLane);
-    if (lower.bandIndex === upper.bandIndex + 1) points = [...exit(upper, exitLane), ...enter(lower, exitLane)];
-    else {
-      const entryLane = bands[lower.bandIndex].y - 16, trunk = G.right + 0.012 + upper.bandIndex * 0.006; lanes.push(entryLane);
-      points = [...exit(upper, exitLane), [trunk, exitLane], [trunk, entryLane], ...enter(lower, entryLane)];
+/*
+ * Connector routing. A card is left from its bottom and entered from its top (or, within one band, from its bottom):
+ * a card in the last row of its band at its centre, a card above another row through the column gap beside it (exits use
+ * the left gap, entries the right one). Edges between neighbouring bands cross the gutter between them on a lane of their
+ * own; edges across several bands run down a trunk of their own at the right edge; edges inside one band join neighbouring
+ * cards directly, and otherwise loop through the gutter below the band. Lanes are assigned per gutter so that two
+ * connectors whose spans overlap never share one (interval colouring, left to right).
+ */
+// Where a connector meets a card: `side` exit (leaving its band downwards) or entry (entering from above), `source` its role.
+// Sources and targets keep apart, so a connector into a card never runs on top of one out of it.
+function planX(card, side, source, straight, G) {
+  if (straight) return card.cx;
+  const k = source ? 1 : 2.2;
+  if (side === 'exit' ? card.below : card.row > 0) return side === 'exit' ? card.x + k * G.offset : card.x + card.w - k * G.offset;
+  return card.cx + (source ? -G.offset : G.offset);
+}
+function planRoutes(edges, cards, G) {
+  const gutters = BANDS.map(() => ({ spans: [], lanes: 0, y: 0 }));
+  const trunks = [];
+  for (const edge of edges) {
+    const upper = cards[edge.upper], lower = cards[edge.lower], from = cards[edge.from], to = cards[edge.to];
+    if (upper.bandIndex === lower.bandIndex) {
+      const [a, b] = [from, to];
+      if (a.row === b.row && Math.abs(a.col - b.col) === 1) { edge.plan = { type: 'side' }; continue; }
+      if (a.col === b.col && Math.abs(a.row - b.row) === 1) { edge.plan = { type: 'stack' }; continue; }
+      // Inside one band, otherwise: down from the source into the gutter below the band, along a lane, up into the target.
+      const exitX = planX(a, 'exit', true, false, G), enterX = b.below ? b.x + b.w - 2.2 * G.offset : b.cx + G.offset;
+      edge.plan = { type: 'loop', exitX, enterX, gutter: a.bandIndex };
+      gutters[a.bandIndex].spans.push({ edge, key: 'lane', from: Math.min(exitX, enterX), to: Math.max(exitX, enterX) });
+      continue;
     }
+    const straight = lower.bandIndex === upper.bandIndex + 1 && upper.col === lower.col && !upper.below && lower.row === 0;
+    const exitX = planX(upper, 'exit', !edge.reversed, straight, G), enterX = planX(lower, 'entry', edge.reversed, straight, G);
+    if (lower.bandIndex === upper.bandIndex + 1) {
+      edge.plan = { type: 'next', exitX, enterX, gutter: upper.bandIndex };
+      gutters[upper.bandIndex].spans.push({ edge, key: 'lane', from: Math.min(exitX, enterX), to: Math.max(exitX, enterX) });
+    } else {
+      edge.plan = { type: 'trunk', exitX, enterX, exitGutter: upper.bandIndex, enterGutter: lower.bandIndex - 1 };
+      trunks.push(edge);
+    }
+  }
+  // A trunk crosses the bands in between down the centre of the column gap nearest to its ends, one trunk per gap (the
+  // cards' own connectors keep off the centre), avoiding a gap where a band in between joins two neighbours; when no gap
+  // is free it runs down the right edge, the longest outermost.
+  const cellW = (G.right - G.left) / G.columns, used = new Map(), right = [];
+  const sides = new Set(edges.filter(edge => edge.plan?.type === 'side').map(edge => `${cards[edge.from].bandIndex}:${Math.max(cards[edge.from].col, cards[edge.to].col)}`));
+  const fits = (k, [top, bottom]) => !(used.get(k) ?? []).some(([a, b]) => top <= b && a <= bottom)
+    && !Array.from({ length: bottom - top }, (_, index) => top + 1 + index).some(band => sides.has(`${band}:${k}`));
+  for (const edge of trunks.sort((a, b) => (a.plan.enterGutter - a.plan.exitGutter) - (b.plan.enterGutter - b.plan.exitGutter) || a.index - b.index)) {
+    const range = [edge.plan.exitGutter, edge.plan.enterGutter], mid = (edge.plan.exitX + edge.plan.enterX) / 2;
+    const k = Array.from({ length: G.columns }, (_, index) => index).sort((a, b) => Math.abs(a * cellW - mid) - Math.abs(b * cellW - mid)).find(index => fits(index, range));
+    if (k === undefined) { right.push(edge); continue; }
+    used.set(k, [...(used.get(k) ?? []), range]);
+    edge.plan.trunkX = G.left + k * cellW;
+  }
+  const step = Math.min(0.007, (1 - G.right - 0.012) / Math.max(1, right.length));
+  right.sort((a, b) => b.plan.exitGutter - a.plan.exitGutter || a.plan.enterGutter - b.plan.enterGutter || a.plan.exitX - b.plan.exitX)
+    .forEach((edge, index) => { edge.plan.trunkX = G.right + 0.008 + index * step; });
+  for (const edge of trunks) {
+    gutters[edge.plan.exitGutter].spans.push({ edge, key: 'exitLane', from: Math.min(edge.plan.exitX, edge.plan.trunkX), to: Math.max(edge.plan.exitX, edge.plan.trunkX) });
+    gutters[edge.plan.enterGutter].spans.push({ edge, key: 'enterLane', from: Math.min(edge.plan.enterX, edge.plan.trunkX), to: Math.max(edge.plan.enterX, edge.plan.trunkX) });
+  }
+  for (const gutter of gutters) {
+    const ends = [];
+    for (const span of gutter.spans.sort((a, b) => a.from - b.from || a.to - b.to)) {
+      let lane = ends.findIndex(end => end < span.from - 0.012);
+      if (lane < 0) { lane = ends.length; ends.push(0); }
+      ends[lane] = span.to;
+      span.edge.plan[span.key] = lane;
+    }
+    gutter.lanes = ends.length;
+  }
+  return gutters;
+}
+
+const laneY = (gutter, lane, G) => gutter.y + 15 + lane * (gutter.lanes > G.maxLanes ? (G.lane * G.maxLanes) / gutter.lanes : G.lane);
+// Points from a card's bottom down to a lane below its band, and (reversed) from that lane up into a card's bottom; and from
+// a lane above a band down into a card's top. Through a row gap, a source leaves left of the card centre, a target right of it.
+const stub = (card, source, G) => card.cx + (source ? -G.offset : G.offset);
+const down = (card, x, y, G, source = true) => (card.below
+  ? [[stub(card, source, G), card.y + card.h], [stub(card, source, G), card.y + card.h + G.rowGap / 2], [x, card.y + card.h + G.rowGap / 2], [x, y]]
+  : [[x, card.y + card.h], [x, y]]);
+const into = (card, x, y, G, source = false) => (card.row > 0
+  ? [[x, y], [x, card.y - G.rowGap / 2], [stub(card, source, G), card.y - G.rowGap / 2], [stub(card, source, G), card.y]]
+  : [[x, y], [x, card.y]]);
+function drawRoute(edge, cards, gutters, G) {
+  const plan = edge.plan, upper = cards[edge.upper], lower = cards[edge.lower], from = cards[edge.from], to = cards[edge.to];
+  let points, lane = null, arrow = null;
+  if (plan.type === 'side') {
+    // Neighbours in one row: a short arrow across the column gap, its head in the middle of the gap.
+    const y = from.y + from.h / 2, gap = Math.max(from.x, to.x);
+    points = [[from.cx, y], [gap, y], [to.cx, y]]; arrow = 0;
+  } else if (plan.type === 'stack') {
+    points = from.row < to.row ? [[from.cx, from.y + from.h], [from.cx, to.y]] : [[from.cx, from.y], [from.cx, to.y + to.h]];
+  } else if (plan.type === 'loop') {
+    lane = laneY(gutters[plan.gutter], plan.lane, G);
+    points = [...down(from, plan.exitX, lane, G), ...down(to, plan.enterX, lane, G, false).reverse()];
+  } else if (plan.type === 'next') {
+    lane = laneY(gutters[plan.gutter], plan.lane, G);
+    points = [...down(upper, plan.exitX, lane, G, !edge.reversed), ...into(lower, plan.enterX, lane, G, edge.reversed)];
+  } else {
+    const exitLane = laneY(gutters[plan.exitGutter], plan.exitLane, G), enterLane = laneY(gutters[plan.enterGutter], plan.enterLane, G);
+    lane = exitLane;
+    points = [...down(upper, plan.exitX, exitLane, G, !edge.reversed), [plan.trunkX, exitLane], [plan.trunkX, enterLane], ...into(lower, plan.enterX, enterLane, G, edge.reversed)];
   }
   const clean = [];
   for (const point of points) {
     const last = clean.at(-1);
     if (last && Math.abs(last[0] - point[0]) < 1e-9 && Math.abs(last[1] - point[1]) < 1e-9) continue;
     const before = clean.at(-2);
-    if (before && last && ((Math.abs(before[0] - last[0]) < 1e-9 && Math.abs(last[0] - point[0]) < 1e-9) || (before[1] === last[1] && last[1] === point[1]))) clean[clean.length - 1] = point;
+    if (before && last && arrow == null && ((Math.abs(before[0] - last[0]) < 1e-9 && Math.abs(last[0] - point[0]) < 1e-9) || (before[1] === last[1] && last[1] === point[1]))) clean[clean.length - 1] = point;
     else clean.push(point);
   }
   const segments = clean.slice(1).map((point, index) => [clean[index], point]);
-  const horizontal = segments.filter(([a, b]) => a[1] === b[1] && lanes.includes(a[1])).sort((a, b) => Math.abs(b[1][0] - b[0][0]) - Math.abs(a[1][0] - a[0][0]))[0];
-  const labelAt = horizontal ? [(horizontal[0][0] + horizontal[1][0]) / 2, horizontal[0][1] - 5] : [clean[0][0] + 0.006, (clean[0][1] + clean.at(-1)[1]) / 2];
-  return { points: clean, segments, labelAt };
+  // The label sits just above the connector's longest run along a lane; a connector inside one row or column has none.
+  const runs = segments.filter(([a, b]) => a[1] === b[1] && lane != null && Math.abs(a[1] - lane) < 1e-6).sort((a, b) => Math.abs(b[1][0] - b[0][0]) - Math.abs(a[1][0] - a[0][0]));
+  const text = edge.labels.join(', ') || EDGE_KINDS[kindOf(edge.kind)];
+  const labelAt = lane == null ? null : runs[0] && Math.abs(runs[0][1][0] - runs[0][0][0]) > 0.02 ? [(runs[0][0][0] + runs[0][1][0]) / 2, lane - 4]
+    : [clean[0][0] + labelWidth(text) / 2 + 0.006, lane - 4];
+  return { points: clean, segments, labelAt, arrowSegment: arrow };
 }
 
-// Label boxes never overlap: each label tries its lane point, then alternates below/above it, then slides along the lane.
-// Widths are estimated for the narrowest wired canvas (880 px), so on wider canvases the real gaps only grow.
-export const LABEL = Object.freeze({ canvas: 880, charWidth: 6.6, pad: 10, height: 13 });
+// Label boxes never overlap: each label tries its lane point, then slides along the lane. Lanes are farther apart than a
+// label is high, so labels on different lanes never meet. Widths are estimated for the narrowest wired card area (696 px:
+// an 880 px map less the label column), so on wider maps the real gaps only grow.
+export const LABEL = Object.freeze({ canvas: 696, charWidth: 6.6, pad: 10, height: 13 });
+const labelWidth = text => (text.length * LABEL.charWidth + LABEL.pad) / LABEL.canvas;
 function placeLabels(edges) {
   const boxes = [];
-  const box = (x, y, text) => { const half = (text.length * LABEL.charWidth + LABEL.pad) / LABEL.canvas / 2; return { x1: x - half, x2: x + half, y1: y - LABEL.height + 2, y2: y + 3 }; };
+  const box = (x, y, text) => { const half = labelWidth(text) / 2; return { x1: x - half, x2: x + half, y1: y - LABEL.height + 2, y2: y + 3 }; };
   const free = candidate => boxes.every(other => candidate.x2 <= other.x1 || other.x2 <= candidate.x1 || candidate.y2 <= other.y1 || other.y2 <= candidate.y1);
-  const offsets = [0, 18, -14, 32, -28];
-  const slides = [0, 0.06, -0.06, 0.12, -0.12];
-  for (const edge of [...edges].sort((a, b) => a.labelAt[1] - b.labelAt[1] || a.labelAt[0] - b.labelAt[0])) {
+  const slides = [0, 0.06, -0.06, 0.12, -0.12, 0.18, -0.18, 0.24, -0.24];
+  for (const edge of [...edges].filter(item => item.labelAt).sort((a, b) => a.labelAt[1] - b.labelAt[1] || a.labelAt[0] - b.labelAt[0])) {
     const text = edge.labels.join(', ') || EDGE_KINDS[kindOf(edge.kind)];
     const [x, y] = edge.labelAt;
     let chosen = null;
-    for (const slide of slides) { for (const dy of offsets) { const candidate = box(x + slide, y + dy, text); if (free(candidate)) { chosen = [x + slide, y + dy, candidate]; break; } } if (chosen) break; }
+    for (const slide of slides) { const candidate = box(x + slide, y, text); if (free(candidate)) { chosen = [x + slide, y, candidate]; break; } }
     chosen ??= [x, y, box(x, y, text)];
     boxes.push(chosen[2]);
     edge.labelAt = [chosen[0], chosen[1]];
@@ -389,16 +487,18 @@ const pct = value => `${(value * 100).toFixed(3)}%`;
 const iconFor = (icons, name) => (typeof icons?.icon === 'function' ? icons.icon(name) : '');
 const glyph = (icons, name, family, label) => `<span class="dm-glyph dm-fam-${e(family)}">${iconFor(icons, name) || `<span class="dm-monogram" aria-hidden="true">${e(String(label ?? '?').trim().charAt(0).toUpperCase() || '?')}</span>`}</span>`;
 const statusText = status => STATUS_TEXT[statusOf(status)];
+// The kit's info tooltip markup (kit.info, styled by ui-kit.css); this module imports nothing, so it writes the markup itself.
+const tip = (label, text) => `<span class="ui-info"><button type="button" class="ui-info-button" aria-label="${e(label)}">i</button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">${e(text)}</span></span></span>`;
 const levelText = level => (textOf(level) ? String(level) : null);
 
 const edgeLabel = edge => edge.labels.join(', ') || EDGE_KINDS[kindOf(edge.kind)];
 const ownersOf = (edge, cards) => cards.filter(card => card.index < HIGHLIGHT_LIMIT && card.pathEdges.includes(edge.index)).map(card => ` dm-p${card.index}`).join('');
-const wireLabel = (edge, cards) => `<text class="dm-wire-label${ownersOf(edge, cards)}" x="${pct(edge.labelAt[0])}" y="${edge.labelAt[1]}" text-anchor="middle">${e(edgeLabel(edge))}</text>`;
+const wireLabel = (edge, cards) => !edge.labelAt ? '' : `<text class="dm-wire-label${ownersOf(edge, cards)}" x="${pct(edge.labelAt[0])}" y="${edge.labelAt[1]}" text-anchor="middle">${e(edgeLabel(edge))}</text>`;
 function wire(edge, cards, planned) {
   const kind = kindOf(edge.kind), from = cards[edge.from], to = cards[edge.to];
   const lines = edge.segments.map(([a, b], index) => {
-    const first = index === 0, last = index === edge.segments.length - 1;
-    const marker = edge.reversed ? (first ? ' marker-start="url(#dm-arrow)"' : '') : (last ? ' marker-end="url(#dm-arrow)"' : '');
+    const first = index === 0;
+    const marker = edge.reversed ? (first ? ' marker-start="url(#dm-arrow)"' : '') : (index === (edge.arrowSegment ?? edge.segments.length - 1) ? ' marker-end="url(#dm-arrow)"' : '');
     return `<line class="dm-seg" x1="${pct(a[0])}" y1="${a[1]}" x2="${pct(b[0])}" y2="${b[1]}"${marker}></line>`;
   }).join('');
   const inner = kind === 'process' ? edge.segments.map(([a, b]) => `<line class="dm-seg-inner" x1="${pct(a[0])}" y1="${a[1]}" x2="${pct(b[0])}" y2="${b[1]}"></line>`).join('') : '';
@@ -470,7 +570,7 @@ function groupCard(card, layout, { id, icons, planned }) {
   }).join('');
   return `<details class="dm-card dm-group dm-fam-${e(group.family)}${health.counts.bad ? ' is-error' : ''}${highlightClasses(card)}${card.col >= layout.columns - 2 ? ' dm-end' : ''}" data-ui-section="dashboard-group:${e(card.group)}" id="${e(id)}-group-${e(card.group)}">`
     + `<summary class="dm-group-face" id="${e(id)}-group-${e(card.group)}-summary" aria-label="${e(summary)}">`
-    + `<span class="dm-card-head"><span class="dm-ringed dm-fam-${e(group.family)}">${ring(groupSegments(nodes), { size: 34, stroke: 3.5 })}${iconFor(icons, group.icon)}</span>`
+    + `<span class="dm-card-head"><span class="dm-ringed dm-fam-${e(group.family)}">${ring(groupSegments(nodes), { size: 30, stroke: 3 })}${iconFor(icons, group.icon)}</span>`
     + `<span class="dm-status is-${health.tone}"><span class="dm-dot" aria-hidden="true"></span>${e(health.short)}</span></span>`
     + `<span class="dm-name">${e(group.title)}</span>`
     + `<span class="dm-facts">${e(fact)}</span><span class="dm-links">${e(connectionsText(card, layout))}</span><span class="dm-chevron" aria-hidden="true"></span></summary>`
@@ -481,9 +581,9 @@ const EDGE_LEGEND = [['http', 'HTTP request'], ['process', 'in-process call'], [
 function legend(planned) {
   const swatch = kind => `<svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-${kind}"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line>${kind === 'process' ? '<line class="dm-seg-inner" x1="1" y1="4" x2="27" y2="4"></line>' : ''}</g></svg>`;
   const statuses = ['listening', 'ready', 'planned', 'declared', 'placeholder', 'disabled', 'missing', 'error'];
-  return `<div class="dm-legend"><ul class="dm-legend-list" aria-label="Status legend">${statuses.map(status => `<li><span class="dm-dot is-${status}" aria-hidden="true"></span><strong>${STATUS_TEXT[status]}</strong> ${e(STATUS_MEANING[status])}</li>`).join('')}</ul>`
+  return `<details class="dm-legend" data-ui-section="dashboard-legend"><summary>Legend</summary><ul class="dm-legend-list" aria-label="Status legend">${statuses.map(status => `<li><span class="dm-dot is-${status}" aria-hidden="true"></span><strong>${STATUS_TEXT[status]}</strong> ${e(STATUS_MEANING[status])}</li>`).join('')}</ul>`
     + `<ul class="dm-legend-list dm-legend-edges" aria-label="Connection legend">${EDGE_LEGEND.map(([kind, text]) => `<li>${swatch(kind)}<strong>${e(text)}</strong></li>`).join('')}`
-    + `${planned ? '' : `<li><svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-http is-active"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line><line class="dm-pulse" x1="1" y1="4" x2="27" y2="4"></line></g></svg><strong>active</strong> counters moved since the previous refresh</li>`}</ul></div>`;
+    + `${planned ? '' : `<li><svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-http is-active"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line><line class="dm-pulse" x1="1" y1="4" x2="27" y2="4"></line></g></svg><strong>active</strong> counters moved since the previous refresh</li>`}</ul></details>`;
 }
 
 /** The layered map: bands of cards, the connector SVG (role="img" with a text summary), and the legend. */
@@ -500,13 +600,13 @@ export function renderTopology(layout, { mode = 'live', id = 'dashboard-topology
   const bands = layout.bands.map((band, index) => {
     const members = band.cards.flatMap(card => card.nodes), health = healthOf(members, planned);
     const cards = band.cards.map(card => (card.type === 'group' ? groupCard(card, layout, { id, icons, planned }) : nodeCard(card, layout, { id, icons, planned }))).join('');
-    return `<section class="dm-band dm-band-${band.id} dm-rows-${band.rows}" aria-labelledby="${e(id)}-band-${band.id}">`
-      + `<header class="dm-band-head"><span class="dm-band-index" aria-hidden="true">${index + 1}</span><h3 id="${e(id)}-band-${band.id}">${e(band.title)}</h3>`
-      + `<span class="dm-pill is-${health.tone}">${e(health.text)}</span><p class="dm-band-desc">${e(band.description)}</p></header>`
+    return `<section class="dm-band dm-band-${band.id} dm-rows-${band.rows}${index ? ` dm-gap-${Math.min(band.gap, GEOMETRY.maxLanes)}` : ''}" aria-labelledby="${e(id)}-band-${band.id}">`
+      + `<header class="dm-band-head"><div class="dm-band-title"><span class="dm-band-index" aria-hidden="true">${index + 1}</span><h3 id="${e(id)}-band-${band.id}">${e(band.title)}</h3></div>`
+      + `<div class="dm-band-health"><span class="dm-pill is-${health.tone}">${e(health.text)}</span>${tip(`About ${band.title}`, band.description)}</div></header>`
       + `<div class="dm-cards">${cards || `<p class="dm-band-empty">${planned ? 'Nothing in this layer is configured yet.' : 'Nothing in this layer is running.'}</p>`}</div></section>`;
   }).join('');
   return `<div class="dm-map" data-dashboard-mode="${planned ? 'planned' : 'live'}">${legend(planned)}`
-    + `<div class="dm-frame"><div class="dm-canvas" data-columns="${layout.columns}">${wires}${bands}`
+    + `<div class="dm-frame"><div class="dm-canvas" data-columns="${layout.columns}">${wires}${bands}${layout.tail ? `<div class="dm-tail dm-gap-${Math.min(layout.tail, GEOMETRY.maxLanes)}" aria-hidden="true"></div>` : ''}`
     + `<svg class="dm-wire-labels" width="100%" height="${layout.height}" aria-hidden="true" focusable="false">${layout.edges.map(edge => wireLabel(edge, layout.cards)).join('')}</svg></div></div></div>`;
 }
 
@@ -634,8 +734,9 @@ function kpiTiles(activity, series, previous, icons) {
   return `<section class="dm-kpis" aria-labelledby="dashboard-kpi-title"><h2 id="dashboard-kpi-title" class="ui-sr-only">Activity since start</h2><ul class="dm-kpi-list">${tiles.join('')}</ul></section>`;
 }
 
+const CHANGES = Object.freeze({ 'dry-run': 'kept while running', simulation: 'saved to data files', deep: 'saved with table changes', 'local-state': 'kept in a local state file' });
 const KIND_NAMES = Object.freeze({ 'power-pages': 'Power Pages runtime', 'dataverse-api': 'Dataverse API runtime', 'model-driven': 'Model-driven runtime' });
-function hero(payload, { planned, starting, preflight, now, icons }) {
+function hero(payload, { planned, starting, preflight, now, icons, compact }) {
   const runtime = payload.runtime ?? {}, nodes = (payload.nodes ?? []).map(node => ({ ...node, status: statusOf(node.status) }));
   const c = tallyStatus(nodes), total = c.total;
   const generated = Date.parse(payload.generatedAt ?? '');
@@ -644,24 +745,31 @@ function hero(payload, { planned, starting, preflight, now, icons }) {
   const state = starting ? '<span class="dm-live is-starting"><span class="dm-live-dot" aria-hidden="true"></span>Starting · waiting for the organization</span>'
     : planned ? '<span class="dm-live is-planned"><span class="dm-live-dot" aria-hidden="true"></span>Planned · not running</span>'
       : `<span class="dm-live"><span class="dm-live-dot" aria-hidden="true"></span>Live · refreshed ${e(fresh)}</span>`;
-  const chip = (label, value) => (value == null || value === '' ? '' : `<li><span>${e(label)}</span><strong>${e(value)}</strong></li>`);
-  const chips = `<ul class="dm-chips">${chip('Simulation', runtime.simulationLevel ?? (planned ? 'from configuration' : 'not reported'))}${planned ? '' : chip('Clock', runtime.clock)}`
-    + `${planned || runtime.revision == null ? '' : chip('Revision', runtime.revision)}${chip('Deployment profile', runtime.deploymentProfile)}${runtime.reloading ? chip('Reload', 'in progress') : ''}</ul>`;
-  const origin = !planned && runtime.localOrigin ? `<p class="dm-hero-meta"><span>Origin</span> <code>${e(runtime.localOrigin)}</code>${runtime.stateFile ? ` <span>State</span> <code>${e(runtime.stateFile)}</code>` : ''}</p>` : '';
+  // Each fact in plain words, with what it means behind its (i).
+  const chip = (label, value, help) => (value == null || value === '' ? '' : `<li><span>${e(label)}</span><strong>${e(value)}</strong>${tip(`About ${label.toLowerCase()}`, help)}</li>`);
+  const level = runtime.simulationLevel ?? null;
+  const chips = `<ul class="dm-chips">${chip('Record changes', level ? CHANGES[level] ?? level : planned ? 'from configuration' : 'not reported', 'What happens to records you add or change in the preview. Set in setup (Data step, or Simulation & state).')}`
+    + `${planned ? '' : chip('Clock', runtime.clock === 'system' ? 'real time' : runtime.clock === 'fixed' ? 'fixed time' : runtime.clock, 'The time the preview uses for dates and scheduled work: real time follows this computer, fixed time stays at a set moment for repeatable tests.')}`
+    + `${planned || runtime.revision == null ? '' : chip('Source version', runtime.revision, 'Starts at 1 and goes up each time the preview picks up changed export files without a restart.')}`
+    + `${chip('Deployment profile', runtime.deploymentProfile, 'The deployment settings applied, such as a test or production stage of your site.')}${runtime.reloading ? chip('Reload', 'in progress', 'The preview is reading changed export files.') : ''}</ul>`;
+  const origin = !planned && runtime.localOrigin ? `<p class="dm-hero-meta"><span>Address</span> <code>${e(runtime.localOrigin)}</code>${tip('About the address', 'Where the preview answers on this computer. Only this computer can open it.')}`
+    + `${runtime.stateFile ? ` <span>Changes saved in</span> <code>${e(runtime.stateFile)}</code>${tip('About the changes file', 'The file in your project folder where the preview keeps the records you add or change. Delete it to start again from the starting data.')}` : ''}</p>` : '';
   const segments = planned ? [{ tone: 'planned', value: c.planned + c.declared }, { tone: 'off', value: c.disabled }, { tone: 'bad', value: c.bad }]
     : [{ tone: 'ok', value: c.ready }, { tone: 'planned', value: c.declared + c.planned }, { tone: 'warn', value: c.placeholder }, { tone: 'off', value: c.disabled }, { tone: 'bad', value: c.bad }];
   const headline = planned ? `${c.planned + c.declared}` : `${c.ready}`;
   const blocking = preflight && typeof preflight === 'object' ? num(preflight.summary?.blocking ?? preflight.blocking) : null;
-  const stat = (tone, value, text) => `<li class="is-${tone}"><span class="dm-dot is-${tone === 'bad' ? 'error' : tone === 'warn' ? 'placeholder' : tone === 'off' ? 'disabled' : tone === 'ok' ? 'ready' : 'planned'}" aria-hidden="true"></span><strong>${e(value)}</strong> ${e(text)}</li>`;
-  const stats = `<ul class="dm-hero-stats">${planned ? stat('info', c.planned + c.declared, 'planned') : stat('ok', c.ready, 'ready')}${stat('warn', c.placeholder, c.placeholder === 1 ? 'placeholder' : 'placeholders')}`
-    + `${stat('bad', c.bad, c.bad === 1 ? 'error or missing' : 'errors or missing')}${stat('off', c.disabled, 'disabled')}`
-    + `<li class="is-${blocking ? 'bad' : blocking === 0 ? 'ok' : 'info'}"><span class="dm-dot is-${blocking ? 'error' : blocking === 0 ? 'ready' : 'declared'}" aria-hidden="true"></span><strong>${blocking == null ? '—' : e(blocking)}</strong> preflight blocking${blocking == null ? ' (run on demand)' : ''}</li></ul>`;
+  // A count names its components on hover.
+  const names = test => nodes.filter(test).map(node => PRODUCT_OF(node.id, node.kind, node.label).name);
+  const stat = (tone, value, text, list = []) => `<li class="is-${tone}"${list.length ? ` title="${e(list.join(', '))}"` : ''}><span class="dm-dot is-${tone === 'bad' ? 'error' : tone === 'warn' ? 'placeholder' : tone === 'off' ? 'disabled' : tone === 'ok' ? 'ready' : 'planned'}" aria-hidden="true"></span><strong>${e(value)}</strong> ${e(text)}</li>`;
+  const stats = `<ul class="dm-hero-stats">${planned ? stat('info', c.planned + c.declared, compact ? `of ${total} planned` : 'planned') : stat('ok', c.ready, compact ? `of ${total} ready` : 'ready')}${stat('warn', c.placeholder, 'local stand-in' + (c.placeholder === 1 ? '' : 's'), names(node => node.status === 'placeholder'))}`
+    + `${stat('bad', c.bad, c.bad === 1 ? 'error or missing' : 'errors or missing', names(node => BAD.has(node.status)))}${stat('off', c.disabled, 'switched off', names(node => node.status === 'disabled'))}`
+    + (compact ? '' : `<li class="is-${blocking ? 'bad' : blocking === 0 ? 'ok' : 'info'}"><span class="dm-dot is-${blocking ? 'error' : blocking === 0 ? 'ready' : 'declared'}" aria-hidden="true"></span><strong>${blocking == null ? '—' : e(blocking)}</strong> preflight blocking${blocking == null ? ' (run on demand)' : ''}</li>`) + '</ul>';
   const title = KIND_NAMES[runtime.kind] ?? (runtime.kind ? `${runtime.kind} runtime` : planned ? 'Planned runtime' : 'Mirage runtime');
-  return `<section class="dm-hero${planned ? ' is-planned' : ''}${starting ? ' is-starting' : ''}" aria-labelledby="dashboard-hero-title">`
+  return `<section class="dm-hero${planned ? ' is-planned' : ''}${starting ? ' is-starting' : ''}${compact ? ' is-compact' : ''}" aria-labelledby="dashboard-hero-title">`
     + `<div class="dm-hero-main"><div class="dm-brand"><span class="dm-mark">${iconFor(icons, 'mark')}</span><div><p class="dm-eyebrow">${e(runtime.product ?? 'Mirage')} · local Power Platform runtime</p>`
     + `<h2 id="dashboard-hero-title">${e(title)}</h2></div></div>${state}${chips}${origin}</div>`
     + (starting ? '' : `<div class="dm-hero-health" role="group" aria-label="${e(`Health: ${headline} of ${total} components ${planned ? 'planned' : 'ready'}`)}">`
-    + `<div class="dm-health-ring">${ring(segments, { size: 112, stroke: 11, className: 'dm-ring dm-ring-lg' })}<span class="dm-health-value"><strong>${e(headline)}</strong><span>of ${e(total)} ${planned ? 'planned' : 'ready'}</span></span></div>${stats}</div>`)
+    + `<div class="dm-health-ring">${ring(segments, compact ? { size: 64, stroke: 7, className: 'dm-ring dm-ring-lg' } : { size: 112, stroke: 11, className: 'dm-ring dm-ring-lg' })}<span class="dm-health-value"><strong>${e(headline)}</strong>${compact ? '' : `<span>of ${e(total)} ${planned ? 'planned' : 'ready'}</span>`}</span></div>${stats}${compact ? tip('About these counts', 'Components of the preview by state. Ready: answering. Local stand-in: a simplified local version replaces a real service. Error or missing: needed but not available; hover a count for names. Switched off: turned off in the configuration.') : ''}</div>`)
     + (planned ? '<p class="dm-ribbon">Planned from configuration — start the preview to see live status.</p>' : '')
     + (starting ? '<p class="dm-ribbon is-starting">The runtime is starting. Components appear once the organization is ready; this page keeps polling.</p>' : '')
     + '</section>';
@@ -671,10 +779,12 @@ function hero(payload, { planned, starting, preflight, now, icons }) {
  * Compose the dashboard. `mode`: 'live' reads the D5 payload, 'planned' renders configuration only, 'starting' (or a
  * `{ status: 'starting' }` payload) shows the waiting state. `history`: earlier `activity` objects, oldest first (the
  * caller keeps the last 11 or more); sparklines use the last 12 points including the current one. `preflight`: the last
- * preflight report, for the blocking count in the header. `icons`: the dashboard-icons.mjs module.
+ * preflight report, for the blocking count in the header. `icons`: the dashboard-icons.mjs module. `parts` turns sections off
+ * ({ guide, kpis, feed, blocking, configuration }: false), and `compact` shrinks the header; /_setup/ shows the header and the map only.
  */
-export function renderDashboard(payload = {}, { mode = 'live', docs, previousActivity, help, kit, pager, history = [], icons, preflight, now = Date.now() } = {}) {
+export function renderDashboard(payload = {}, { mode = 'live', docs, previousActivity, help, kit, pager, history = [], icons, preflight, now = Date.now(), parts = {}, compact = false } = {}) {
   needKit(kit);
+  const show = { guide: true, kpis: true, feed: true, blocking: true, configuration: true, ...parts };
   const starting = mode === 'starting' || payload?.status === 'starting';
   const planned = mode === 'planned', runtime = payload.runtime ?? {}, activity = payload.activity ?? {};
   const series = activitySeries(history, planned || starting ? null : activity);
@@ -684,17 +794,18 @@ export function renderDashboard(payload = {}, { mode = 'live', docs, previousAct
   const docOf = path => kit.docLink(path, docs ?? payload.docs);
   const guideFor = key => help?.[key];
   const intro = guideFor('dashboard');
-  const guide = intro ? kit.guide({ key: 'dashboard', intro: intro.intro, steps: intro.steps ?? [], example: intro.example, docs: intro.doc ? [docOf(intro.doc)] : [] }) : '';
-  const head = hero(payload, { planned, starting, preflight, now, icons });
-  const kpis = planned || starting ? '' : kpiTiles(activity, series, previous, icons);
+  const guide = intro && show.guide ? kit.guide({ key: 'dashboard', intro: intro.intro, steps: intro.steps ?? [], example: intro.example, docs: intro.doc ? [docOf(intro.doc)] : [] }) : '';
+  const head = hero(payload, { planned, starting, preflight, now, icons, compact });
+  const kpis = planned || starting || !show.kpis ? '' : kpiTiles(activity, series, previous, icons);
+  const mapInfo = kit.info?.({ label: 'About the system map', text: 'Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to trace what it depends on and what depends on it; select it (click, Enter or Space) for its facts and the view that manages it.' }) ?? '';
   const layout = layoutTopology(nodes, edges);
-  const map = `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>`
-    + `<p class="ui-help">Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to trace what it depends on and what depends on it; select it (click, Enter or Space) for its facts and the view that manages it.</p></div>`
+  const map = `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${mapInfo}</div>`
     + `${renderTopology(layout, { mode: planned ? 'planned' : 'live', icons })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section>`;
   if (starting) return `<div class="ui-dashboard dm-dashboard" data-dashboard-mode="starting">${head}${guide}<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title">`
-    + `<div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2><p class="ui-help">The six layers fill in as soon as the organization is ready.</p></div>`
+    + `<div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${kit.info?.({ label: 'About the system map', text: 'The six layers fill in as soon as the organization is ready.' }) ?? ''}</div>`
     + `<ol class="dm-skeleton">${BANDS.map((band, index) => `<li><span class="dm-band-index dm-band-${band.id}" aria-hidden="true">${index + 1}</span><strong>${e(band.title)}</strong><span>${e(band.description)}</span></li>`).join('')}</ol>`
     + '<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section></div>';
+  if (!show.feed && !show.blocking && !show.configuration) return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${head}${guide}${kpis}${map}</div>`;
   const rows = planned ? [] : activityRows(activity);
   const result = kit.pageItems(rows, pager ?? {}, { text: item => `${item.source} ${item.method ?? ''} ${item.path ?? ''} ${item.status ?? ''} ${item.code ?? ''}` });
   const feed = `<section class="ui-dash-feed dm-section" aria-labelledby="dashboard-feed-title"><h2 id="dashboard-feed-title">What is happening</h2>`
@@ -731,5 +842,5 @@ export function renderDashboard(payload = {}, { mode = 'live', docs, previousAct
     ['Settings keys present', list(configuration.settingsKeys)],
     ['Ports', Object.keys(ports).length ? Object.entries(ports).map(([name, value]) => `${e(name)} ${port(value)}`).join(' · ') : 'not reported'],
   ]) });
-  return `<div class="ui-dashboard dm-dashboard" data-dashboard-mode="${planned ? 'planned' : 'live'}">${head}${guide}${kpis}${map}${feed}${blocking}${summary}</div>`;
+  return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${head}${guide}${kpis}${map}${show.feed ? feed : ''}${show.blocking ? blocking : ''}${show.configuration ? summary : ''}</div>`;
 }

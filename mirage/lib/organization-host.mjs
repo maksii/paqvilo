@@ -802,11 +802,15 @@ function hostReports(c) {
  * The one honest difference from GET /_sim/api/preflight: operation modes are the source defaults (no /_sim/ overrides).
  */
 export async function composeHostDescription({ sources = {}, config = {}, packs = [], deploymentProfile = null, host, runtime, simulation = null,
-  projectRoot = process.cwd(), portal = null, operationPortal = null, diagnostic = () => {}, env = process.env } = {}) {
+  projectRoot = process.cwd(), portal = null, operationPortal = null, diagnostic = () => {}, env = process.env, preset = null } = {}) {
   const settings = runtimeSettings(runtime);
   host ??= settings.kind === 'power-pages' ? 'power-pages' : 'standalone';
   const surfaces = hostSurfaces({ host, dataverseApi: dataverseApiEnabled({ host, runtime: settings, dataverse: config.dataverse }) });
-  const store = await new DataStore({ state: emptyState() }).init();
+  // A startup preset is applied as a fresh running host applies it (standalone-runtime.mjs), so rows the preset seeds
+  // (service endpoints, plug-in types) resolve here as they do on that host.
+  const boot = preset && sources.solutionData ? initialOrganizationState({ solutionData: sources.solutionData, packs, environmentVariables: config.environmentVariables }) : null;
+  const store = await new DataStore(boot ? { state: boot.state, presetLibrary: boot.presetLibrary } : { state: emptyState() }).init();
+  if (preset) await store.applyPreset(preset, { returnSnapshot: false });
   const composed = await composeOrganizationHost({ store, packs, runtime: settings, config, stateDirectory: null, projectRoot, diagnostic, env,
     surfaces: () => surfaces, inventory: () => sources.inventory ?? [], portalOperations: () => operationPortal,
     sources: { plugins: () => sources.metadata?.plugins, workflows: () => sources.workflows ?? new Map(), layers: () => sources.solutionData?.layers ?? [] } });

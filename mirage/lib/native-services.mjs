@@ -1335,6 +1335,10 @@ function permissionsFor(context, entity, row) {
 }
 
 export function gridRecord(row, model, layout, context) {
+  // The service names every lookup (EntityReference Name); a stored bare id is named as a portal read names it.
+  if (context.config?.mode !== "live" && typeof context.store?.namedReferences === "function") {
+    try { row = context.store.namedReferences(context.store.resolveMapping(model.entity), row); } catch { /* unmapped table: values as stored */ }
+  }
   const fields = entityFields(context.metadata, model.entity);
   const fetch = (model.viewTree ??= parseFetchTree(model.view.fetchXml));
   const id = canonical(row[model.idColumn]);

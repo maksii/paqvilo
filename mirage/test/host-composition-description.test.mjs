@@ -131,3 +131,31 @@ test('offline preflight and both running hosts report the same module and operat
     } finally { await sim.close(); }
   }
 });
+
+test('the offline preflight applies the startup preset, so a step whose service endpoint the preset seeds resolves as on the host', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-description-preset-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const ENDPOINT = '77777777-7777-4777-8777-0000000000f1', STEP = '77777777-7777-4777-8777-0000000000f2';
+  const files = {
+    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedPreset</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/Other/Customizations.xml': '<ImportExportXml><Entities/></ImportExportXml>',
+    [`solution/SdkMessageProcessingSteps/{${STEP}}.xml`]: `<SdkMessageProcessingStep Name="x_item Create" SdkMessageProcessingStepId="{${STEP}}"><SdkMessageId>9ebdbb1b-ea3e-db11-86a7-000a3a5473e8</SdkMessageId>`
+      + `<EventHandler>${ENDPOINT}</EventHandler><PrimaryEntity>x_item</PrimaryEntity><Mode>1</Mode><Rank>1</Rank><Stage>40</Stage><SupportedDeployment>0</SupportedDeployment><StateCode>0</StateCode></SdkMessageProcessingStep>`,
+    'pack/pack.mjs': `export default { id: 'fx', name: 'I', description: 'I', matches: () => true,
+      presets: () => ({ seed: { name: 'S', description: 'x', load: () => ({ tables: { serviceendpoint: [{ serviceendpointid: '${ENDPOINT}', name: 'x-hook', contract: 8, url: 'http://127.0.0.1:9/x' }] } }) } }) };`,
+  };
+  for (const [name, text] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
+    await fs.writeFile(path.join(root, name), text);
+  }
+  const { preflight } = await import('../lib/capability-report.mjs');
+  const options = { runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } }, packs: [path.join(root, 'pack', 'pack.mjs')] };
+  const status = report => report.requirements.find(row => row.id === `plugin-step:${STEP}`)?.status;
+  assert.equal(status(await preflight({ ...options, env: {} })), 'unsupported', 'without the preset the handler is unresolved');
+  const offline = await preflight({ ...options, preset: 'seed', env: {} });
+  const sim = await createSimulator({ ...options, preset: 'seed', port: 0, watch: false });
+  t.after(() => sim.close());
+  assert.equal(status(offline), status(await sim.preflight()));
+  assert.equal(status(offline), 'satisfied');
+});

@@ -11,6 +11,9 @@ import YAML from 'yaml';
 import { createSetupHandler, startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
+// These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
+const allSettings = page => page.context().addInitScript(() => { try { localStorage.setItem('paqvilo-setup-view', 'all'); } catch { /* no storage */ } });
+
 const root = fileURLToPath(new URL('../', import.meta.url));
 
 // One loopback origin serving /_setup/ (mounted as Mirage mounts it) and invented /_sim/ answers, so the page runs in live mode.
@@ -65,6 +68,7 @@ test('setup journey: template, stage rail, packs, setting editor, restart comman
   ownedFixture(t).add(async () => { await server.close(); });
   ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await allSettings(page);
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const file = path.join(directory, 'paqvilo.config.yml'), read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
@@ -117,7 +121,7 @@ test('setup journey: template, stage rail, packs, setting editor, restart comman
   assert.equal(await page.locator('#providers').evaluate(node => node.open), true, 'the edited section stays open after the save');
 
   // The system map renders the planned topology and switches to live mode when the runtime answers.
-  await page.getByRole('navigation', { name: 'Setup navigation' }).getByRole('link', { name: 'System map' }).click();
+  await page.getByRole('navigation', { name: 'Setup navigation' }).getByRole('link', { name: 'Your system at a glance' }).click();
   const system = page.locator('#system');
   await system.locator('.ui-dashboard[data-dashboard-mode=planned]').waitFor();
   assert.ok(await system.locator('[data-node]').count() > 0);
@@ -128,9 +132,12 @@ test('setup journey: template, stage rail, packs, setting editor, restart comman
   // The drawer names the product of the clicked node; the node's own label stays a fact.
   await system.locator('.ui-drawer[data-node-detail="host:portal"] h3').filter({ hasText: 'Power Pages site' }).waitFor();
   assert.equal(await system.locator('.ui-drawer a.ui-button').getAttribute('href'), '/_sim/#overview');
-  await system.locator('#dashboard-preflight-requires').fill('table:x_item');
-  await system.getByRole('button', { name: 'Run preflight' }).click();
-  await system.locator('table[data-table=preflight]').filter({ hasText: 'table:x_item' }).waitFor();
+  // The requirements check (preflight) of the running preview sits in Start & verify.
+  const verify = page.locator('#guidance');
+  await stageLink(page, /^Start & verify/).click();
+  await verify.locator('#dashboard-preflight-requires').fill('table:x_item');
+  await verify.getByRole('button', { name: 'Run preflight' }).click();
+  await verify.locator('table[data-table=preflight]').filter({ hasText: 'table:x_item' }).waitFor();
   assert.deepEqual(server.fake.preflight, ['?requires=table%3Ax_item']);
 
   // Narrow screens keep every opened section inside the viewport.
@@ -160,6 +167,7 @@ test('identity and persona forms write only changed keys and refuse secret value
   ownedFixture(t).add(async () => { await server.close(); });
   ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const page = await browser.newPage();
+  await allSettings(page);
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(server.url + '#identity');
@@ -206,6 +214,7 @@ test('setting rows show current values, references only for secrets, and Setting
   ownedFixture(t).add(async () => { await server.close(); });
   ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const page = await browser.newPage();
+  await allSettings(page);
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(server.url + '#settings');

@@ -1492,7 +1492,7 @@ async function createPowerPagesSimulator({
     ...organizationHost.capabilityStatus(),
     inventory: inventorySummary(solutionInventory), providers: providerDescriptors(organizationHost.providers),
     services: organizationHost.providers.serviceFixtures?.describe() ?? [],
-    links: { administration: '/_sim/', setup: '/_setup/', modelDriven: '/main.aspx', powerPages: '/', dataverseApi: dataverse?.origin ?? null },
+    links: { administration: '/_sim/', setup: '/_setup/', modelDriven: modelDrivenSettingsValue.enabled === false ? null : '/main.aspx', powerPages: '/', dataverseApi: dataverse?.origin ?? null },
     simulation: organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
     recordCapabilities: Object.fromEntries(Object.keys(store.state.mappings).map(name => [name,
       storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true }])),
@@ -2169,7 +2169,7 @@ async function createPowerPagesSimulator({
         { id: 'client:browser', kind: 'client', label: 'Portal visitors', status: 'ready', detail: {}, link: '#access' },
         { id: 'client:staff', kind: 'client', label: 'Staff browser', status: 'ready', detail: {}, link: '#dataverse' },
         { id: 'host:portal', kind: 'host', label: 'Power Pages portal', status: 'listening', detail: { origin: localOrigin, pages: portal.pages.length, deploymentProfile: portal.deploymentProfile ?? null }, link: '#overview' },
-        { id: 'host:model-driven', kind: 'host', label: 'Model-driven apps', status: 'listening', detail: { path: '/main.aspx' }, link: '#dataverse' },
+        { id: 'host:model-driven', kind: 'host', label: 'Model-driven apps', status: modelDrivenSettingsValue.enabled === false ? 'disabled' : 'listening', detail: { path: modelDrivenSettingsValue.enabled === false ? null : '/main.aspx' }, link: '#dataverse' },
         { id: 'host:identity-provider', kind: 'host', label: 'Local identity provider', status: identityProvider.available ? 'listening' : 'disabled',
           detail: { port: identityProvider.port ?? null, providers: Array.isArray(identityProvider.providers) ? identityProvider.providers.length : 0 }, link: '#access' },
         { id: 'host:setup', kind: 'host', label: 'Setup workspace', status: 'listening', detail: { path: '/_setup/' } },
@@ -3468,7 +3468,7 @@ async function createPowerPagesSimulator({
       .handle(req, res, url, { identity: currentIdentity(), csrf })) return;
     if (canvasHandler(req, res, url)) return;
     if (await codeAppsHandler(req, res, url)) return;
-    if (await modelDrivenHandler(req, res, url)) return;
+    if (modelDrivenSettingsValue.enabled !== false && await modelDrivenHandler(req, res, url)) return;
     if(req.headers['x-paqvilo-local-only']==='true'&&(config().mode==='live'||config().pageMode==='live'||(config().endpoints??[]).some(endpoint=>endpoint.enabled!==false&&endpoint.path===url.pathname&&endpoint.mode==='live')))
       throw error('This visitor requires local Mirage execution.',409,'LocalRuntimeRequired');
     if (frameReadiness.handle(req, res, url)) return;

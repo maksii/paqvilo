@@ -1,57 +1,175 @@
 /* /_setup/-only extras (D22). Tokens, base elements, the shell and every shared component come from ui-kit.css and
-   shell.css; this sheet adds the stage rail items, stage cards, templates grid, settings forms, YAML editor and notice states. */
+   shell.css; this sheet adds the compact heading, stage rail, status strip, sections, forms, YAML editor and notice states.
+   Guidance lives in kit.info tooltips, so the page shows values and controls only. */
 
-/* Stage rail: one sidebar item per stage, the step number in the icon slot and the stage status as a badge. */
-#stage-rail .nav-item { flex-wrap: wrap; gap: 4px 11px; }
-#stage-rail .ui-badge { margin-left: auto; }
-.rail-title { flex: 0 1 auto; min-width: 0; }
-.nav-item .rail-step { display: inline-grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: #202c44; color: #9caee4; font-size: 11px; font-weight: 700; }
+/* Heading: the title and the configuration folder on one line. */
+.compact-heading { align-items: baseline !important; justify-content: flex-start !important; flex-wrap: wrap; gap: 4px 12px !important; margin-bottom: 12px !important; }
+.compact-heading h1 { margin: 0; font-size: 20px; letter-spacing: -0.4px; }
+.compact-heading .code-text { font-size: 12px; overflow-wrap: anywhere; }
+
+/* View switch: Quick setup (plain-language steps) and All settings (every key). Quick setup hides the stage navigation. */
+.view-switch { display: inline-flex; margin-left: auto; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.view-option { padding: 5px 14px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.view-option[aria-pressed="true"] { background: var(--accent); color: #fff; }
+body[data-setup-view="quick"] .all-only, body[data-setup-view="quick"] #stage-rail { display: none !important; }
+
+/* Quick setup: one card of numbered steps; done steps collapse to a summary with Change. */
+.quick { max-width: 920px; padding: 20px 22px !important; }
+.quick-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }
+.quick-head h2 { font-size: 19px; }
+.quick-head p { margin: 4px 0 0; font-size: 13px; }
+.quick-target { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.quick-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; counter-reset: none; }
+.quick-step { position: relative; padding: 12px 0 14px 46px; border-top: 1px solid var(--line); }
+.quick-step:first-child { border-top: 0; }
+.quick-step-head { display: flex; align-items: flex-start; gap: 12px; min-height: 30px; }
+.quick-num { position: absolute; left: 0; top: 12px; display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #eef1f7; color: #5b6984; font-size: 13px; font-weight: 700; }
+.quick-step.is-done .quick-num { background: var(--ui-ok-bg); color: var(--ui-ok); }
+.quick-step.is-current .quick-num { background: var(--accent); color: #fff; }
+.quick-title { flex: 1 1 auto; min-width: 0; }
+.quick-title h3 { margin: 4px 0 0; font-size: 15px; }
+.quick-summary { margin: 3px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.quick-step.is-locked .quick-title h3 { color: #98a3b8; }
+.quick-step-body { margin-top: 10px; font-size: 13.5px; }
+.quick-step-body > p { margin: 0 0 10px; }
+.quick-form { display: grid; gap: 12px; }
+.quick-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 0; padding: 0; border: 0; }
+.quick-group { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.quick-group legend { margin-bottom: 6px; color: #455773; font-size: 12px; font-weight: 650; }
+.quick-choice { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; font-weight: 400; cursor: pointer; }
+.quick-choice.compact { padding: 9px 12px; }
+.quick-choice:has(input:checked) { border-color: var(--accent); background: var(--ui-info-bg); }
+.quick-choice > input { flex: none; width: auto; margin: 3px 0 0; }
+.quick-choice > span { display: grid; gap: 2px; min-width: 0; }
+.quick-choice .muted { font-size: 12.5px; overflow-wrap: anywhere; }
+.quick-inline { margin-top: 4px; }
+.quick-field { display: grid; gap: 4px; max-width: 420px; margin: 0; }
+.quick-field textarea { max-width: 100%; }
+.quick-list { display: grid; gap: 6px; margin: 0 0 10px; padding: 0; list-style: none; }
+.quick-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 8px 12px; border-radius: 8px; background: #fbf6ea; }
+.quick-warn { color: #8a5300; font-weight: 600; }
+.quick-error { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; background: var(--ui-bad-bg); color: var(--ui-bad); }
+.quick-error p { margin: 0; }
+.quick-error details { margin-top: 6px; color: var(--ink, #1f2937); }
+.quick-error pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.quick-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-radius: 8px; background: var(--ui-info-bg); }
+/* Notices float, so a confirmation never moves the page under the pointer, and let clicks through to what they cover (they hold text only). */
+#notice { position: fixed; right: 20px; bottom: 20px; z-index: 60; pointer-events: none; max-width: min(460px, calc(100vw - 40px)); margin: 0; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18); }
+.quick-busy { display: flex; align-items: center; gap: 10px; margin: 0; font-weight: 600; }
+.quick-spinner { width: 16px; height: 16px; border: 2px solid #c8d2e6; border-top-color: var(--accent); border-radius: 50%; animation: quick-spin 0.8s linear infinite; }
+@keyframes quick-spin { to { transform: rotate(360deg); } }
+.quick-map { margin: 6px 0 0; }
+.quick-choices legend { grid-column: 1 / -1; margin-bottom: 2px; font-size: 13.5px; font-weight: 650; }
+.quick-field .muted { font-weight: 400; }
+.quick-picked { display: block; margin: 2px 0 6px; overflow-wrap: anywhere; }
+.quick-choice [data-pick-folder] { justify-self: start; }
+.quick-folders { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.quick-folders:empty { display: none; }
+.quick-folder { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 6px 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--ui-info-bg); overflow-wrap: anywhere; }
+.quick-group > [data-pick-folder] { justify-self: start; }
+.quick-opens { display: grid; gap: 8px; margin: 0 0 10px; padding: 0; list-style: none; }
+.quick-opens li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.quick-opens a { min-width: 168px; justify-content: center; }
+.quick-locked { margin: 2px 0 0; }
+.folder-picker { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 0; border-radius: 14px; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3); }
+.folder-picker::backdrop { background: rgba(15, 23, 42, 0.45); }
+.folder-picker-body { display: grid; gap: 10px; padding: 18px 20px; }
+.folder-picker h2 { margin: 0; font-size: 17px; }
+.folder-picker-body > p { margin: 0; }
+.folder-picker-path { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.folder-picker-path label { margin: 0; font-weight: 600; }
+.folder-picker-here { padding: 8px 12px; border-radius: 8px; background: #f3f5fa; font-size: 13px; }
+.folder-picker-here.is-match { background: var(--ui-ok-bg); color: var(--ui-ok); font-weight: 600; }
+.folder-picker-list { display: grid; gap: 2px; max-height: 46vh; margin: 0; padding: 4px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; list-style: none; }
+.folder-picker-list .folder-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
+.folder-picker-list .folder-row:hover, .folder-picker-list .folder-row:focus-visible { background: var(--ui-info-bg); }
+.folder-picker-list .tag { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--ui-ok-bg); color: var(--ui-ok); font-size: 12px; font-weight: 600; }
+.folder-picker-list .empty { padding: 8px 10px; color: var(--muted); font-size: 13px; }
+
+/* Stage rail: one line per stage; the step number turns green when done, open stages carry a small badge. */
+#stage-rail .nav-item { flex-wrap: nowrap; gap: 9px; min-width: 0; padding: 6px 10px; }
+.rail-title { flex: 1 1 auto; min-width: 0; line-height: 1.25; overflow-wrap: anywhere; }
+#stage-rail .ui-badge { flex: none; margin-left: auto; padding: 1px 6px; font-size: 10px; line-height: 1.5; }
+.nav-item .rail-step { display: inline-grid; flex: none; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #202c44; color: #9caee4; font-size: 11px; font-weight: 700; }
 .nav-item.is-done .rail-step { background: var(--ui-ok-bg); color: var(--ui-ok); }
 .nav-item.is-next .rail-step { background: var(--accent); color: #fff; }
+.nav-item.is-optional .rail-title { color: #8a98b3; }
 
-/* Stage cards: a collapsible panel per stage; .stage carries the open/closed chevron. */
-.stage { padding: 0 !important; /* beats the wide-screen .panel padding in shell.css */ }
-.stage > summary { list-style: none; position: relative; padding: 20px 24px 20px 46px; cursor: pointer; }
+/* Status strip (#overview): readiness, the running preview, the save target and findings. */
+.overview-strip { display: grid; gap: 8px; padding: 12px 16px !important; }
+.status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; font-size: 13px; }
+.status-line .status-dot { flex: none; }
+.save-target { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.save-target label { margin: 0; }
+.compact-select { width: auto; padding: 3px 8px; }
+.status-line .command-text { flex: 1 1 320px; }
+.command-text { min-width: 0; padding: 2px 8px; border-radius: 6px; background: #f3f5fa; font-size: 12px; overflow-wrap: anywhere; }
+.button.small { padding: 3px 10px; font-size: 12px; }
+.findings { grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; }
+.findings .row { font-size: 12px; }
+.small { margin: 0; font-size: 12px; }
+#scope, code { overflow-wrap: anywhere; }
+
+/* Sections: a one-line title row with its (i) guidance and badge. */
+#content [id] { scroll-margin-top: 72px; }
+.is-target { animation: setup-target 2.2s ease-out; }
+@keyframes setup-target { 0%, 35% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+.stage { margin-top: 10px; padding: 0 !important; /* beats the wide-screen .panel padding in shell.css */ }
+.stage > summary { position: relative; padding: 10px 16px 10px 36px; list-style: none; cursor: pointer; }
 .stage > summary::-webkit-details-marker { display: none; }
-.stage > summary::before { content: ''; position: absolute; left: 22px; top: 30px; width: 8px; height: 8px; border-right: 2px solid var(--ui-muted); border-bottom: 2px solid var(--ui-muted); transform: rotate(-45deg); transition: transform .15s ease; }
+.stage > summary::before { content: ''; position: absolute; left: 16px; top: 17px; width: 7px; height: 7px; border-right: 2px solid var(--ui-muted); border-bottom: 2px solid var(--ui-muted); transform: rotate(-45deg); transition: transform .15s ease; }
 .stage[open] > summary::before { transform: rotate(45deg); }
 .stage[open] > summary { border-bottom: 1px solid var(--line); }
 .stage > summary .panel-heading { margin: 0; }
-.stage > summary .panel-heading p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.title-row { display: flex; align-items: center; gap: 0; min-width: 0; }
+.title-row h2, .title-row h3 { margin: 0; }
 .panel-heading > div { min-width: 0; }
-.panel-heading > select { width: auto; max-width: 45%; }
-.stage-body { padding: 20px 24px 24px; min-width: 0; }
-.stage-body h3 { margin: 18px 0 8px; }
-.stage-body > .ui-guide { margin-bottom: 16px; }
-.stage-body .disclosure { margin: 14px 0; }
-.stage .ui-dashboard section { margin: 0 0 16px; }
+.stage-body { padding: 14px 16px 16px; min-width: 0; }
+.stage-body > :first-child { margin-top: 0; }
+.stage-body h3, .stage-body .title-row { margin: 14px 0 6px; }
+.stage-body .disclosure { margin: 10px 0; }
 .stage .ui-table td { white-space: normal; max-width: none; overflow: visible; overflow-wrap: anywhere; }
-#system-body .ui-tiles { margin-top: 0; }
-.findings { grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; }
-.findings .row { font-size: 12px; }
-#scope, code { overflow-wrap: anywhere; }
+.stage .ui-section { margin: 10px 0; }
+#system .stage-body { padding: 12px; }
+.stage .grid-two { grid-template-columns: repeat(auto-fit, minmax(min(520px, 100%), 1fr)); gap: 12px; }
+.target-card { padding: 14px 16px !important; }
+.target-card .panel-heading { margin-bottom: 10px; }
 
-/* Templates grid */
-.templates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; border: 0; padding: 0; margin: 0; min-width: 0; }
-.templates legend { font-size: 12px; font-weight: 550; color: #455773; margin-bottom: 10px; }
-.template { display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 9px; padding: 14px; font-weight: 400; cursor: pointer; margin: 0; }
-.template:has(input:checked) { border-color: var(--accent); background: var(--ui-info-bg); }
-.template-head { display: flex; align-items: center; gap: 8px; }
-.template-head input { width: auto; margin: 0; }
-.template-text, .template-steps { color: var(--muted); font-size: 12px; }
-.template-steps { display: grid; gap: 2px; }
-
-/* Settings forms: labels wrap their control and help; the control keeps the regular weight. */
+/* Forms: up to four fields per row with aligned labels; guidance sits in the label's (i). */
+.stage .form-grid { gap: 12px; max-width: 1180px; }
+.stage .inline-fields { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; align-items: end; }
+.field-label { display: flex; align-items: center; min-height: 18px; }
+.form-grid label > input, .form-grid label > select, .form-grid label > textarea { display: block; margin-top: 4px; font-weight: 400; }
 .form-grid textarea, .setting-form input, .setting-form select, .setting-form textarea { width: 100%; }
-.form-grid label > .field-help { display: block; font-weight: 400; margin: 2px 0 6px; }
-.form-grid label > input, .form-grid label > select, .form-grid label > textarea { display: block; font-weight: 400; }
-.environment-editor { display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+.stage textarea:not(.yaml) { min-height: 64px; }
+.form-grid div:has(> .checkbox-line) { display: flex; align-items: center; }
+.form-grid div:has(> .checkbox-line) > .checkbox-line { margin: 0; }
+.check-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; }
+.api-fields { display: grid; gap: 6px; }
+.environment-editor { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .command { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
 .setting-form { display: grid; gap: 6px; min-width: 0; }
 .setting-form .toolbar { margin: 4px 0 0; }
 .setting-badges { margin: 4px 0; }
 .list { min-width: 0; margin: 8px 0; }
 .references { margin: 0 0 8px; padding-left: 18px; overflow-wrap: anywhere; }
+
+/* Templates grid */
+.templates { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.template { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; font-weight: 400; cursor: pointer; margin: 0; }
+.template:has(input:checked) { border-color: var(--accent); background: var(--ui-info-bg); }
+.template-head { display: flex; align-items: center; gap: 8px; }
+.template-head input { width: auto; margin: 0; }
+.template-text { color: var(--muted); font-size: 12px; }
+
+/* Start & verify: requirements check and commands. */
+.preflight-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; max-width: 920px; }
+.preflight-form input[type=text] { flex: 1 1 320px; }
+.preflight-form .checkbox-line { margin: 0; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.command-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0 0 10px; font-size: 12.5px; }
+.command-list dt { color: #455773; font-weight: 600; }
+.command-list dd { margin: 0; overflow-wrap: anywhere; }
 
 /* YAML editor */
 .yaml { min-height: 310px; tab-size: 2; }
@@ -62,13 +180,13 @@
 #notice.error { background: var(--ui-bad-bg); border-color: #f2cbd0; color: var(--ui-bad); }
 #content[aria-busy=true] button:disabled, #refresh:disabled { cursor: wait; }
 
-@media (prefers-reduced-motion: reduce) { .stage > summary::before { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .stage > summary::before { transition: none; } .quick-spinner { animation: none; } .is-target { animation: none; } }
 @media (max-width: 700px) {
   .sidebar nav.nav-group { display: flex; flex-wrap: wrap; gap: 3px; }
-  #stage-rail .nav-item { flex-wrap: nowrap; gap: 6px; }
-  .stage > summary { padding: 16px 16px 16px 40px; }
-  .stage > summary::before { left: 18px; top: 24px; }
+  .save-target { margin-left: 0; }
+  .stage > summary { padding: 10px 12px 10px 32px; }
+  .stage > summary::before { left: 13px; }
   .stage > summary .panel-heading { flex-wrap: wrap; align-items: flex-start; }
-  .stage-body { padding: 16px; }
-  .templates { grid-template-columns: 1fr; }
+  .stage-body { padding: 12px; }
+  .command-list { grid-template-columns: 1fr; }
 }

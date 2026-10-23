@@ -178,7 +178,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
   const localConfig = path.join(process.cwd(), 'paqvilo.config.yml');
   const configFile = path.resolve(opts.config ?? (fs.existsSync(localConfig) ? localConfig : path.join(TOOL_ROOT, 'paqvilo.config.yml')));
   const base = readYamlFile(configFile);
-  if (!base) throw new Error(`Config file not found: ${configFile}`);
+  if (!base) throw Object.assign(new Error(`Config file not found: ${configFile}`), { code: 'CONFIG_NOT_FOUND' });
   const configDir = path.dirname(configFile);
   const local = readYamlFile(path.join(configDir, 'paqvilo.config.local.yml'));
   const settings = readEnvSettings(configDir, processEnv);

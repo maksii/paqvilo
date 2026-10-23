@@ -14,6 +14,9 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 
+// These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
+const allSettings = page => page.context().addInitScript(() => { try { localStorage.setItem('paqvilo-setup-view', 'all'); } catch { /* no storage */ } });
+
 const root = fileURLToPath(new URL('../', import.meta.url));
 const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -56,6 +59,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   await localGit(path.join(sources, 'code'), path.join(root, 'test-browser/fixtures/code-site'));
   const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+  await allSettings(page);
   const failures = []; page.on('pageerror', error => failures.push(error.message));
   const demoServer = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => demoServer.close());
   // Journey sections are collapsed except the next stage; a hash opens its section.
@@ -192,7 +196,7 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   if (process.env.PAQVILO_SETUP_SCREENSHOTS) await page.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'panel-setup.png') });
   const popupPromise = page.waitForEvent('popup'); await link.click(); const popup = await popupPromise;
   await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
-  assert.equal(popup.url(), setupUrl); assert.match(await popup.locator('#overview').innerText(), /Lense preview running/);
+  assert.equal(popup.url(), setupUrl); assert.match(await popup.locator('#quick-run').innerText(), /Lense preview running/);
   assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), simulator.url);
   if (process.env.PAQVILO_SETUP_SCREENSHOTS) await popup.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'lense-setup.png'), fullPage: true });
   assert.equal(await popup.locator('#paqvilo-panel').count(), 0);
@@ -204,6 +208,7 @@ test('setup shows real loading and save feedback, prevents duplicate writes and 
   const server = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => server.close());
   const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  await allSettings(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   let releaseRead; const reading = new Promise(resolve => { releaseRead = resolve; }); t.after(() => releaseRead());
   await page.route('**/_setup/api/status', async route => { await reading; await route.continue(); });

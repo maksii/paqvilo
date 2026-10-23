@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { importModelDrivenResources, clientExtensionCatalogue } from '../lib/model-driven-resources.mjs';
 import { modelDrivenSettings } from '../lib/model-driven-settings.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
@@ -315,4 +316,21 @@ test('application icons use passive declared image resources without enabling So
   assert.equal(await response.text(), svg);
   const script = catalogue.clientExtensions.resources.find(resource => resource.type === 'script'); assert.equal((await fetch(sim.url + script.url)).status, 404);
   assert.equal((await fetch(sim.url + icon.url + '?external=1')).status, 404);
+});
+
+test('modelDriven.enabled false switches the model-driven surface off on both hosts', async t => {
+  assert.deepEqual(modelDrivenSettings({ enabled: false }), { enabled: false, trustedExtensions: false });
+  assert.deepEqual(modelDrivenSettings({ enabled: true }), { trustedExtensions: false }, 'on is the default and is not echoed');
+  assert.throws(() => modelDrivenSettings({ enabled: 'no' }), /enabled must be true or false/);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-md-off-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const portal = fileURLToPath(new URL('../../examples/project/portal', import.meta.url));
+  for (const options of [{ sourceDir: portal, stateFile: path.join(dir, 'portal', 'state.json') }, { runtime: { kind: 'model-driven' }, simulation: { level: 'dry-run' } }]) {
+    const sim = await createSimulator({ ...options, modelDriven: { enabled: false }, watch: false });
+    try {
+      const status = await (await fetch(sim.url + '/_sim/api/status')).json();
+      assert.equal(status.links.modelDriven, null);
+      assert.notEqual((await fetch(sim.url + '/main.aspx', { redirect: 'manual' })).status, 200);
+    } finally { await sim.close(); }
+  }
 });

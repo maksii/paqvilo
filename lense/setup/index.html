@@ -6,10 +6,10 @@
   <div class="shell">
     <aside class="sidebar" aria-label="Setup sidebar">
       <a class="brand" href="/_setup/"><span class="brand-symbol" aria-hidden="true">P</span><span>Paqvilo<small>PROJECT SETUP</small></span></a>
-      <div class="nav-label">SETUP STAGES</div>
+      <div class="nav-label all-only">SETUP STAGES</div>
       <nav id="stage-rail" class="nav-group" aria-label="Setup stages" hidden></nav>
-      <div class="nav-label">SECTIONS</div>
-      <nav class="nav-group" aria-label="Setup navigation"><a class="nav-item" href="#overview">Overview</a><a class="nav-item" href="#system">System map</a><a class="nav-item" href="#edit-layer">Save target</a><a class="nav-item" href="#settings">Project settings</a><a class="nav-item" href="#advanced">Configuration &amp; rules</a><a class="nav-item" href="#guidance">Next steps</a></nav>
+      <div class="nav-label all-only">SECTIONS</div>
+      <nav class="nav-group all-only" aria-label="Setup navigation"><a class="nav-item" href="#system">Your system at a glance</a><a class="nav-item" href="#settings">Project settings</a><a class="nav-item" href="#advanced">Configuration &amp; rules</a></nav>
       <nav id="runtime-navigation" class="nav-group" aria-label="Preview navigation" hidden></nav>
       <div class="nav-label area-label">AREAS</div>
       <nav id="areas" class="nav-group areas" aria-label="Areas">
@@ -22,16 +22,26 @@
       <header class="topbar">
         <span class="breadcrumb">Project setup <span aria-hidden="true">/</span> <strong id="breadcrumb">Overview</strong></span>
         <div class="top-actions">
-          <a id="open-simulator" class="button" href="/_sim/" hidden>Open simulator</a><a id="open-portal" class="button" href="/" target="_blank" rel="noopener" hidden>Open portal <span aria-hidden="true">↗</span></a><button id="refresh" class="button quiet" type="button"><span aria-hidden="true">↻</span> Refresh status</button>
+          <a id="open-simulator" class="button" href="/_sim/" hidden>Open simulator</a><a id="open-portal" class="button" href="/" target="_blank" rel="noopener" hidden>Open website <span aria-hidden="true">↗</span></a><button id="refresh" class="button quiet" type="button"><span aria-hidden="true">↻</span> Refresh status</button>
         </div>
       </header>
       <main id="main" tabindex="-1">
-        <div class="page-heading"><div><span class="eyebrow">YOUR DEVELOPMENT WORKSPACE</span><h1>Project setup</h1><p id="scope">Connect sources. Choose environments. Start with confidence.</p></div></div>
+        <div class="page-heading compact-heading"><h1>Project setup</h1><span id="scope" class="code-text muted"></span><div class="view-switch" role="group" aria-label="Setup view"><button type="button" class="view-option" data-view="quick" aria-pressed="true">Quick setup</button><button type="button" class="view-option" data-view="all" aria-pressed="false">All settings</button></div></div>
         <div id="notice" class="activity-feedback" role="status" aria-live="polite" hidden></div>
         <div id="content"><div class="loading" role="status">Loading project configuration…</div></div>
       </main>
       <footer>Local configuration + project files<span>Setup never deploys, synchronizes or contacts a live portal.</span></footer>
     </div>
   </div>
+  <dialog id="folder-picker" class="folder-picker" aria-labelledby="folder-picker-title">
+    <form method="dialog" class="folder-picker-body">
+      <h2 id="folder-picker-title">Choose a folder</h2>
+      <p id="folder-picker-help" class="muted small"></p>
+      <div class="folder-picker-path"><label for="folder-picker-input">Folder</label><input id="folder-picker-input" spellcheck="false" autocomplete="off"><button type="button" class="button small" data-folder-go>Open</button></div>
+      <p id="folder-picker-here" class="folder-picker-here" role="status"></p>
+      <ul id="folder-picker-list" class="folder-picker-list" aria-label="Folders"></ul>
+      <div class="toolbar"><button type="button" class="button primary" data-folder-use>Use this folder</button><button type="submit" class="button quiet" value="cancel">Cancel</button></div>
+    </form>
+  </dialog>
   <script type="module" src="/_setup/app.mjs"></script>
 </body></html>

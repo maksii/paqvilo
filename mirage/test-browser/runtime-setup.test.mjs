@@ -8,6 +8,9 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { startSetupServer } from '../../lense/setup/server.mjs';
 
+// These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
+const allSettings = page => page.context().addInitScript(() => { try { localStorage.setItem('paqvilo-setup-view', 'all'); } catch { /* no storage */ } });
+
 const APP = '77777777-7777-4777-8777-777777777777';
 async function capture(page, name) {
   if (!process.env.PAQVILO_UI_SCREENSHOTS) return;
@@ -21,6 +24,7 @@ async function work(t) {
   t.after(async () => { try { for (const close of resources.reverse()) await close(); } finally { await fs.rm(container, { recursive: true, force: true }); } });
   const browser = await chromium.launch(browserLaunchOptions()); resources.push(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(10000);
+  await allSettings(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   return { root, page, errors, resources };
 }
@@ -54,7 +58,7 @@ test('standalone API administration hides portal surfaces and shows persistence 
   const requests = []; page.on('request', request => requests.push(new URL(request.url()).pathname));
   await page.goto(sim.url + '/_sim/#overview');
   await page.getByRole('heading', { name: 'Your local organization workspace' }).waitFor().catch(async error => { throw new Error(`${error.message}\n${await page.locator('body').innerText()}\n${errors.join('\n')}`); });
-  assert.equal(await page.getByRole('link', { name: /^Open portal/ }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: /^Open (portal|website)/ }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Model-driven apps', exact: true }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Portal identity & permissions', exact: true }).count(), 0);
   assert.match(await page.locator('#content').innerText(), /Dry run/);

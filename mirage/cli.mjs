@@ -96,7 +96,7 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage serve --project mirage.project.yml --port 8787
   paqvilo mirage serve --project mirage.project.yml --portal PORTAL_ID
   paqvilo mirage inspect --source PATH --json
-  paqvilo mirage preflight (--project FILE [--portal ID] | --config FILE --site ID [--env ID] | --source DIR [--solution-root DIR ...]) [--runtime KIND] [--scenario FILE] [--strict] [--json]
+  paqvilo mirage preflight (--project FILE [--portal ID] | --config FILE --site ID [--env ID] | --source DIR [--solution-root DIR ...]) [--runtime KIND] [--preset ID] [--scenario FILE] [--strict] [--json]
     exit 0: nothing blocking in scope; 1: blocking requirement(s); 2: invocation or configuration error
   paqvilo mirage render --source PATH --path /PAGE/ --output .paqvilo/page.html
   paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
@@ -182,11 +182,11 @@ try {
         const cfg = args.source && !args.site ? null : await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
         const sourceDir = args.source ? path.resolve(args.source) : cfg.sourceDir, siteMirage = cfg?.mirageConfig ?? null;
         const roots = await resolveSolutionRoots({ sourceDir, explicitRoots: args['solution-root'], explicitOrder: args['solution-order'], catalogue: siteMirage });
-        options = { ...runtimeOptions({ catalogue: siteMirage }), sourceDir, solutionRoots: roots.roots, solutionOrder: roots.order, dataModel: args['data-model'] ?? siteMirage?.dataModel ?? undefined };
+        options = { ...runtimeOptions({ catalogue: siteMirage }), sourceDir, solutionRoots: roots.roots, solutionOrder: roots.order, dataModel: args['data-model'] ?? siteMirage?.dataModel ?? undefined, preset: siteMirage?.preset ?? null };
       }
       const scenario = args.scenario ? { ...JSON.parse(await fs.readFile(path.resolve(args.scenario), 'utf8')), file: args.scenario } : null;
       const report = await preflight({ ...options, runtime, simulation, project: project && projectSummary(project), lcid: project?.lcid,
-        dataPacks: [...(options.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))], scenario, strict: args.strict === true });
+        dataPacks: [...(options.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))], scenario, strict: args.strict === true, preset: args.preset ?? options.preset ?? null });
       if (args.json) console.log(JSON.stringify(report, null, 2));
       else console.log([`Preflight (${report.runtime.kind}): ${report.summary.total} requirements, ${report.summary.satisfied} satisfied, ${report.summary.blocking} blocking.`,
         ...report.requirements.filter((row) => row.inScope && row.status !== 'satisfied').map((row) => `  ${row.blocking ? 'BLOCKING ' : ''}${row.status} ${row.id}${row.message ? ` - ${row.message}` : ''}`)].join('\n'));

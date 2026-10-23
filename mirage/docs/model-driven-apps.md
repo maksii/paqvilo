@@ -170,6 +170,11 @@ Relative links from an HTML web resource to sibling web resources do not resolve
 
 ### Routes
 
+`modelDriven.enabled: false` (catalogue `mirage.modelDriven` or the project key) switches the
+model-driven surface off on both hosts: its routes are not served, status `links.modelDriven`
+is `null` and the dashboard node `host:model-driven` is `disabled`. The organization and
+its Web API are unaffected.
+
 `POST /_apps/api/webapi` serves [`Xrm.WebApi.execute`](model-driven-client-api.md#xrmwebapiexecute)
 wherever the model-driven surface is: the Power Pages simulator and the standalone
 `model-driven` runtime. A standalone `dataverse-api` runtime has no model-driven surface

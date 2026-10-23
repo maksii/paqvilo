@@ -44,6 +44,18 @@
 .ui-guide-more > summary { cursor: pointer; color: var(--ui-accent); font-weight: 600; }
 .ui-guide-more ol { margin: 8px 0; padding-left: 22px; }
 .ui-guide-docs { margin: 8px 0 0; }
+/* Info tooltip (kit.info): an (i) button whose guidance shows on hover or keyboard focus; the 8 px ::before bridges the gap. */
+.ui-info { position: relative; display: inline-flex; vertical-align: middle; margin-left: 6px; font-weight: 400; letter-spacing: normal; text-transform: none; }
+.ui-info-button { display: inline-grid; place-items: center; width: 17px; height: 17px; padding: 0; border: 1px solid #b6c1d6; border-radius: 50%; background: var(--ui-surface); color: var(--ui-accent); font-size: 11px; font-weight: 700; font-style: italic; line-height: 1; cursor: help; }
+.ui-info-button:hover { border-color: var(--ui-accent); }
+.ui-info-pop { position: absolute; left: -12px; top: calc(100% + 8px); z-index: 70; display: none; gap: 6px; box-sizing: border-box; width: max-content; max-width: min(380px, 80vw); padding: 10px 12px; border-radius: 8px; background: #172036; color: #eef2fb; font-size: 12.5px; line-height: 1.45; text-align: left; white-space: normal; box-shadow: 0 8px 24px rgba(16, 24, 40, 0.22); }
+.ui-info-pop::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; height: 8px; }
+.ui-info:is(:hover, :focus-within) .ui-info-pop { display: grid; }
+.ui-info.is-end .ui-info-pop { left: auto; right: -12px; }
+.ui-info-step, .ui-info-text, .ui-info-docs { display: block; }
+.ui-info-example { display: block; padding: 6px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); font-family: var(--ui-mono); font-size: 12px; white-space: pre; overflow-x: auto; }
+.ui-info-pop a { color: #a9c6ff; }
+.ui-info-pop code { color: #dfe7f7; }
 .ui-example { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: #f3f5fa; font-family: var(--ui-mono); font-size: 13px; white-space: pre; overflow-x: auto; max-width: 100%; }
 
 /* Sections */
