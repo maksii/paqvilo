@@ -148,9 +148,13 @@ test("HTTP scalar errors retain native type/format causes and exact numeric toke
     ["choice", "false", nativeCause("False", "Edm.Int32", "Edm.Boolean")],
     ["tags", "2", nativeCause("2", "Edm.String", "Edm.Int32")],
   ];
-  for (const [field, tokenText, cause] of cases)
+  const encodedCases = cases.flatMap((entry) =>
+    [["plain", ""], ["UTF-8 BOM", "\uFEFF"]].map(([encoding, prefix]) =>
+      [...entry, encoding, prefix]),
+  );
+  for (const [field, tokenText, cause, encoding, prefix] of encodedCases)
     for (const method of ["POST", "PATCH"])
-      await t.test(`${method} ${field} ${tokenText}`, async () => {
+      await t.test(`${encoding} ${method} ${field} ${tokenText}`, async () => {
         const response = await fetch(
           api.origin +
             "/api/data/v9.2/" +
@@ -161,7 +165,7 @@ test("HTTP scalar errors retain native type/format causes and exact numeric toke
               authorization: `Bearer ${token}`,
               "content-type": "application/json",
             },
-            body: `{"${field}":${tokenText}}`,
+            body: prefix + `{"${field}":${tokenText}}`,
           },
         );
         assert.equal(response.status, 400);
@@ -175,6 +179,22 @@ test("HTTP scalar errors retain native type/format causes and exact numeric toke
         );
         assert.equal(error.message.includes("   at "), false);
       });
+  for (const prefix of ["", "\uFEFF"]) {
+    const response = await fetch(
+      api.origin + "/api/data/v9.2/samples(20000000-0000-4000-8000-000000000099)",
+      {
+        method: "PATCH",
+        headers: {
+          authorization: "Bearer " + token,
+          "content-type": "application/json",
+          "if-match": "*",
+        },
+        body: prefix + '{"quantity":1}',
+      },
+    );
+    assert.equal(response.status, 404,
+      "Valid JSON reaches the update-only missing-record check with or without a BOM");
+  }
   assert.equal(
     JSON.stringify(store.state.tables.sample),
     initial,
@@ -270,7 +290,7 @@ test("custom API actions obtain scalar causes through the actual HTTP transport"
   );
   assert.equal(tokenResponse.status, 200);
   const token = (await tokenResponse.json()).access_token;
-  for (const [body, cause] of [
+  for (const [body, cause, prefix] of [
     [
       { Count: "bad" },
       nativeFormat(
@@ -282,7 +302,7 @@ test("custom API actions obtain scalar causes through the actual HTTP transport"
     [{ Flag: 1 }, nativeCause("1", "Edm.Boolean", "Edm.Int32")],
     [{ Name: false }, nativeCause("False", "Edm.String", "Edm.Boolean")],
     [{ Labels: ["valid", 1] }, nativeCause("1", "Edm.String", "Edm.Int32")],
-  ]) {
+  ].flatMap((entry) => ["", "\uFEFF"].map((prefix) => [...entry, prefix]))) {
     const response = await fetch(
       transport.origin + "/api/data/v9.2/sample_Check",
       {
@@ -291,7 +311,7 @@ test("custom API actions obtain scalar causes through the actual HTTP transport"
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify(body),
+        body: prefix + JSON.stringify(body),
       },
     );
     assert.equal(response.status, 400);

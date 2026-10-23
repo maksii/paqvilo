@@ -74,3 +74,15 @@ test("native Boolean casing and typed causes do not invent CLR stack frames", ()
     ),
   );
 });
+
+test("leading request BOM preserves numeric lexemes and nested ambiguity without accepting extra BOMs", () => {
+  const facts = scalarNumberLexemes(
+    '\uFEFF{"name":9007199254740993,"a":1.0,"nested":{"a":1},"label":"\uFEFFinside"}',
+  );
+  assert.equal(facts("name", {
+    $type: "DataverseNumeric", numericType: "Literal", value: "9007199254740993",
+  }), "9007199254740993");
+  assert.equal(facts("a", 1), undefined);
+  for (const source of ['\uFEFF\uFEFF{}', ' \uFEFF{}'])
+    assert.throws(() => scalarNumberLexemes(source), SyntaxError);
+});

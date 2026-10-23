@@ -156,9 +156,13 @@ const withoutNullColumns = (body) => {
 };
 const emptyPage = () => ({ value: [], paging: { moreRecords: false, totalCount: 0 } });
 
-function checkQuery(url) {
+function checkQuery(url, { nativeSyntax = false } = {}) {
   for (const name of url.searchParams.keys()) {
     if (!ALLOWED_QUERY.has(name) && !name.startsWith("@")) {
+      if (nativeSyntax && name === "$skip")
+        throw new DataError("Skip Clause is not supported in CRM", 400, "UnsupportedQuery", {
+          innerCode: "0x80060888",
+        });
       if (name === "$search") throw new DataError('The "$search" query parameter isn\'t supported.', 501, "UnsupportedQueryFunction");
       throw new DataError(`The query parameter ${name} is not supported`, 400, "UnsupportedQuery", { innerCode: "0x80060888" });
     }
@@ -497,6 +501,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       const expression = parseODataExpression(filter, {
         dialect: "dataverse", aliases, rejectNotOnQueryFunctions: true,
         strictEdm: true, columnDefinition: (name) => readDefinition(mapping, name),
+        nativeSyntax: Boolean(c.dataverseHttpReader),
       });
       for (const [head] of expressionPaths(expression)) {
         if (!head || head.startsWith("@")) continue;
@@ -504,7 +509,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
         else assertProperty(mapping, head);
       }
     }
-    for (const spec of parseOrderBy(params.get("$orderby"))) {
+    for (const spec of parseOrderBy(params.get("$orderby"), { nativeSyntax: Boolean(c.dataverseHttpReader) })) {
       const head = spec.path[0];
       if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
       else assertProperty(mapping, head);
@@ -2107,7 +2112,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     projectFetchedInternal,
     secureInternal,
     async handle(ctx) {
-      checkQuery(ctx.url);
+      checkQuery(ctx.url, { nativeSyntax: Boolean(ctx.dataverseHttpReader) });
       const mapping = mappingForSet(ctx.route.set);
       const c = {
         ...ctx,

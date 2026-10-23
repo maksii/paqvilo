@@ -630,7 +630,10 @@ export async function resolveFormRecord({ kind, definition, schema, metadata, co
         const contact = await readProvider.get("contact", contactId, identity);
         id = scalarValue(contact?.[relation.from]) ?? null;
       } else {
-        const result = await readProvider.query(relation.entity, { $filter: `${relation.to} eq ${contactId}`, $top: 1 }, identity);
+        const result = await readProvider.query(relation.entity, { $filter: `${relation.to} eq ${contactId}`, $top: 2 }, identity);
+        if ((result.value ?? []).length > 1) {
+          throw componentError("Sequence contains more than one element", 500, "FORM_RECORD_SOURCE_AMBIGUOUS");
+        }
         const target = store.resolveMapping(relation.entity);
         id = result.value?.[0]?.[target.idColumn] ?? null;
       }
@@ -1496,13 +1499,19 @@ async function resolveEntityReference({ componentMetadata, mode, params, store, 
   const entity = canonicalId(fieldOf(componentMetadata, "referenceentitylogicalname"));
   const field = canonicalId(fieldOf(componentMetadata, "referencetargetlookupattributelogicalname"));
   const raw = parameter ? params[parameter] : null;
-  if (!raw || !entity || !field || typeof readProvider?.get !== "function") return null;
-  // The lookup is labelled as the reference target either way; only a primary-key parameter
-  // fills it before the save (live evidence: an attribute-matched reference renders it empty).
-  if (fieldOf(componentMetadata, "referencequerystringisprimarykey") === false) return { field, value: null };
+  const primaryKey = fieldOf(componentMetadata, "referencequerystringisprimarykey") !== false;
+  if (!raw || !entity || !field || typeof readProvider?.[primaryKey ? "get" : "query"] !== "function") return null;
   let row = null;
   try {
-    row = await readProvider.get(entity, String(raw), identity);
+    if (primaryKey) {
+      row = await readProvider.get(entity, String(raw), identity);
+    } else {
+      const attribute = canonicalId(fieldOf(componentMetadata, "referencequeryattributelogicalname"));
+      if (!/^[a-z_][a-z0-9_]*$/i.test(attribute)) return { field, value: null };
+      const literal = String(raw).replaceAll("'", "''");
+      const result = await readProvider.query(entity, { $filter: `${attribute} eq '${literal}'`, $top: 1 }, identity);
+      row = result?.value?.[0] ?? null;
+    }
   } catch {
     return null;
   }
@@ -1898,6 +1907,7 @@ async function renderForm(kind, name, context, options) {
       lookupStyle: style === 756150000 ? "dropdown" : field.lookupStyle,
       ignoreDefault: truthy(fieldOf(row, "ignoredefaultvalue")),
       randomize: truthy(fieldOf(row, "randomizeoptionsetvalues")),
+      prepopulateType: row ? Number(fieldOf(row, "prepopulatetype")) : null,
       prepopulate: row && fieldOf(row, "prepopulatetype") != null ? prepopulateValue(row, identity, now) : undefined,
       description,
       createFormId: canonicalId(fieldOf(row, "entityformforcreate")),
@@ -1932,6 +1942,13 @@ async function renderForm(kind, name, context, options) {
     // populated and inactive-record pages fill the current user's e-mail, the configured text
     // and today's date into empty columns).
     if (mode !== FORM_MODE.insert && field.prepopulate !== undefined && field.prepopulate !== null) return field.prepopulate;
+    // Native radio choice controls render their exported default for an empty existing column.
+    // This affects displayed selection only; other controls and stored values retain their semantics.
+    if (mode !== FORM_MODE.insert && record && record[field.name] == null && field.control === 'picklist' &&
+        [100000000, 100000001].includes(field.controlStyle) && !field.ignoreDefault) {
+      const defaultValue = field.default ?? field.defaultValue;
+      if (defaultValue !== undefined) return defaultValue;
+    }
     if (mode === FORM_MODE.insert) {
       if (entityReference && field.name === entityReference.field) return entityReference.value;
       if (field.prepopulate !== undefined) return field.prepopulate;
@@ -2163,7 +2180,9 @@ async function renderForm(kind, name, context, options) {
         const dateOnly = nativeDateOnly(field);
         const behavior = field.dateTimeBehavior ?? field.behavior ?? (dateOnly ? "DateOnly" : "UserLocal");
         const parsed = scalar ? parseDateValue(scalar) : null;
-        const iso = parsed ? new Date(parsed.ms).toISOString().replace(/\.\d{3}Z$/, '.0000000' + (behavior === 'UserLocal' ? 'Z' : '')) : scalar ? String(scalar) : "";
+        const clockDefault = behavior === "DateOnly" && field.prepopulateType === 100000001 && current === field.prepopulate &&
+          (mode === FORM_MODE.insert || record?.[field.name] == null);
+        const iso = parsed ? new Date(parsed.ms).toISOString().replace(/\.\d{3}Z$/, '.0000000' + (behavior === 'UserLocal' || clockDefault ? 'Z' : '')) : scalar ? String(scalar) : "";
         // crmentityformview-datetime.js: a read-only picker keeps its visible box without the
         // input group, the placeholder or the (hidden) calendar button, whose title and label
         // are the Datetimepicker_Datepicker_Label resource.

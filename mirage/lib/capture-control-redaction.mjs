@@ -182,9 +182,9 @@ export function redactSecureConfigurationTokens(text) {
     );
   return redactHtmlControlInputs(redactMultipartControlFields(redacted));
 }
-export function redactCapabilityEvidence(value) {
+function redactCapabilityEvidenceBase(value) {
   if (typeof value === "string") return redactSecureConfigurationTokens(value);
-  if (Array.isArray(value)) return value.map(redactCapabilityEvidence);
+  if (Array.isArray(value)) return value.map(redactCapabilityEvidenceBase);
   if (value && typeof value === "object") {
     const result = Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
@@ -193,7 +193,7 @@ export function redactCapabilityEvidence(value) {
           ? "{token}"
           : key === "screenshot" || key === "bodyHashInput"
             ? item
-            : redactCapabilityEvidence(item),
+            : redactCapabilityEvidenceBase(item),
       ]),
     );
     if (["name", "id"].some((key) => isProtectedField(value[key]))) {
@@ -213,6 +213,351 @@ export function redactCapabilityEvidence(value) {
   return value;
 }
 
+const CSP_HEADERS = new Set([
+  "content-security-policy",
+  "content-security-policy-report-only",
+]);
+const cspHeader = (name) =>
+  typeof name === "string" && CSP_HEADERS.has(name.toLowerCase());
+function redactCspPolicy(value, collect) {
+  return String(value).replace(
+    /('|&apos;|&#0*39;|&#x0*27;)nonce-([A-Za-z0-9+/_=-]+)\1/gi,
+    (_match, quote, nonce) => {
+      collect?.(nonce);
+      return quote + "nonce-{token}" + quote;
+    },
+  );
+}
+/** Walk HTML tags and attributes once. Only actual nonce attributes and declared CSP meta policies are protected. */
+function redactHtmlNonceAttributes(text, collect) {
+  const patches = [],
+    lower = text.toLowerCase();
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf("<", cursor);
+    if (start < 0) break;
+    if (text.startsWith("<!--", start)) {
+      const end = text.indexOf("-->", start + 4);
+      if (end < 0) break;
+      cursor = end + 3;
+      continue;
+    }
+    let at = start + 1;
+    if (!/[A-Za-z]/.test(text[at] ?? "")) {
+      cursor = at;
+      continue;
+    }
+    const tagStart = at;
+    while (/[A-Za-z0-9:_-]/.test(text[at] ?? "")) at++;
+    const tag = text.slice(tagStart, at).toLowerCase(),
+      attributes = [];
+    let finished = false;
+    while (at < text.length) {
+      while (/\s/.test(text[at] ?? "")) at++;
+      if (text[at] === ">") {
+        at++;
+        finished = true;
+        break;
+      }
+      if (text[at] === "<") break;
+      if (text[at] === "/") {
+        at++;
+        continue;
+      }
+      const nameStart = at;
+      while (at < text.length && !/[\s=<>/]/.test(text[at])) at++;
+      if (at === nameStart) {
+        at++;
+        continue;
+      }
+      const name = text.slice(nameStart, at).toLowerCase();
+      while (/\s/.test(text[at] ?? "")) at++;
+      if (text[at] !== "=") continue;
+      at++;
+      while (/\s/.test(text[at] ?? "")) at++;
+      const quote = ['"', "'"].includes(text[at]) ? text[at++] : "";
+      const valueStart = at;
+      if (quote) {
+        const end = text.indexOf(quote, at);
+        if (end < 0) {
+          at = text.length;
+          break;
+        }
+        at = end;
+      } else while (at < text.length && !/[\s<>]/.test(text[at])) at++;
+      attributes.push({
+        name,
+        start: valueStart,
+        end: at,
+        value: text.slice(valueStart, at),
+      });
+      if (quote) at++;
+    }
+    cursor = Math.max(start + 1, at);
+    if (!finished) continue;
+    if (
+      [
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "noscript",
+      ].includes(tag)
+    ) {
+      let close = lower.indexOf("</" + tag, at);
+      while (close >= 0 && !/[\s/>]/.test(text[close + tag.length + 2] ?? ">"))
+        close = lower.indexOf("</" + tag, close + 2);
+      cursor = close < 0 ? text.length : close;
+    }
+    const metaCsp =
+      tag === "meta" &&
+      attributes.some((a) => a.name === "http-equiv" && cspHeader(a.value));
+    for (const attribute of attributes) {
+      if (attribute.name === "nonce") collect?.(attribute.value);
+      const value =
+        attribute.name === "nonce"
+          ? "{token}"
+          : metaCsp && attribute.name === "content"
+            ? redactCspPolicy(attribute.value, collect)
+            : attribute.value;
+      if (value !== attribute.value)
+        patches.push({ start: attribute.start, end: attribute.end, value });
+    }
+  }
+  if (!patches.length) return text;
+  let result = "",
+    last = 0;
+  for (const patch of patches) {
+    result += text.slice(last, patch.start) + patch.value;
+    last = patch.end;
+  }
+  return result + text.slice(last);
+}
+/** Decode complete JSON strings once so escaped HTML and explicitly named policy headers are covered. */
+function redactCspNonceText(value, depth = 0, collect) {
+  const text = redactHtmlNonceAttributes(String(value), collect);
+  if (depth >= 4 || /^\s*</.test(text)) return text;
+  let cursor = 0,
+    last = 0;
+  const parts = [];
+  while (cursor < text.length) {
+    if (text[cursor] !== '"') {
+      cursor++;
+      continue;
+    }
+    const start = cursor++;
+    let closed = false;
+    while (cursor < text.length) {
+      if (text[cursor] === "\\") {
+        cursor += 2;
+        continue;
+      }
+      if (text[cursor++] === '"') {
+        closed = true;
+        break;
+      }
+    }
+    if (!closed) break;
+    const end = cursor;
+    let decoded;
+    try {
+      decoded = JSON.parse(text.slice(start, end));
+    } catch {
+      continue;
+    }
+    let next = end;
+    while (next < text.length && /\s/.test(text[next])) next++;
+    if (text[next] === ":" && cspHeader(decoded)) {
+      next++;
+      while (next < text.length && /\s/.test(text[next])) next++;
+      if (text[next] !== '"') continue;
+      const valueStart = next++;
+      let valueClosed = false;
+      while (next < text.length) {
+        if (text[next] === "\\") {
+          next += 2;
+          continue;
+        }
+        if (text[next++] === '"') {
+          valueClosed = true;
+          break;
+        }
+      }
+      if (!valueClosed) break;
+      let policy;
+      try {
+        policy = JSON.parse(text.slice(valueStart, next));
+      } catch {
+        cursor = next;
+        continue;
+      }
+      const replacement = redactCspPolicy(policy, collect);
+      if (replacement !== policy) {
+        parts.push(text.slice(last, valueStart), JSON.stringify(replacement));
+        last = next;
+      }
+      cursor = next;
+    } else if (
+      decoded.includes("<") ||
+      /content-security-policy/i.test(decoded)
+    ) {
+      const replacement = redactCspNonceText(decoded, depth + 1, collect);
+      if (replacement !== decoded) {
+        parts.push(text.slice(last, start), JSON.stringify(replacement));
+        last = end;
+      }
+    }
+  }
+  if (!parts.length) return text;
+  parts.push(text.slice(last));
+  return parts.join("");
+}
+function redactCspNonceEvidenceBase(value, collect) {
+  if (typeof value === "string") return redactCspNonceText(value, 0, collect);
+  if (Array.isArray(value))
+    return value.map((item) => redactCspNonceEvidenceBase(item, collect));
+  if (!value || typeof value !== "object") return value;
+  const element = ["tag", "tagName", "nodeName"].some(
+    (key) =>
+      typeof value[key] === "string" && /^[a-z][a-z0-9:_-]*$/i.test(value[key]),
+  );
+  const result = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      key === "screenshot" || key === "bodyHashInput"
+        ? item
+        : cspHeader(key) && typeof item === "string"
+          ? redactCspPolicy(item, collect)
+          : redactCspNonceEvidenceBase(item, collect),
+    ]),
+  );
+  if (element)
+    for (const key of ["attributes", "attrs"])
+      if (
+        result[key] &&
+        typeof result[key] === "object" &&
+        !Array.isArray(result[key])
+      ) {
+        for (const attribute of Object.keys(result[key]))
+          if (attribute.toLowerCase() === "nonce") {
+            collect?.(result[key][attribute]);
+            result[key][attribute] = "{token}";
+          }
+      }
+  if (
+    typeof value.field === "string" &&
+    cspHeader(value.field.split(/[./]/).at(-1))
+  )
+    for (const key of ["live", "mirage"])
+      if (typeof value[key] === "string")
+        result[key] = redactCspPolicy(value[key], collect);
+  if (typeof value.body === "string" && result.body !== value.body) {
+    delete result.bodyHashInput;
+    result.bodyHashProvenance = "redacted-text-sha256";
+    if (Object.hasOwn(value, "bodySha256"))
+      result.bodySha256 = createHash("sha256")
+        .update(result.body)
+        .digest("hex");
+  }
+  return result;
+}
+
+/** A finite in-memory set comes only from declared policy/HTML nonce contexts.
+ * Long complete base64 tokens may have exact copies elsewhere in this capture;
+ * ordinary nonce-named business fields and short/common strings are untouched. */
+function redactCspNonceEvidence(value) {
+  const nonces = new Set();
+  const sanitized = redactCspNonceEvidenceBase(value, (nonce) => {
+    if (
+      typeof nonce !== "string" ||
+      nonce.length < 16 ||
+      !/^[A-Za-z0-9+/_=-]+$/.test(nonce)
+    )
+      return;
+    if (nonce.length > 4096 || (!nonces.has(nonce) && nonces.size >= 256))
+      throw Error("Declared CSP nonce protection exceeds its bound.");
+    nonces.add(nonce);
+  });
+  if (!nonces.size) return sanitized;
+  const token = (text) =>
+    text
+      .replace(
+        /('|&apos;|&#0*39;|&#x0*27;)nonce-([A-Za-z0-9+/_=-]+)\1/gi,
+        (all, quote, nonce) =>
+          nonces.has(nonce) ? quote + "nonce-{token}" + quote : all,
+      )
+      .replace(/[A-Za-z0-9+/_=-]{16,}/g, (candidate) =>
+        nonces.has(candidate) ? "{token}" : candidate,
+      );
+  function text(value) {
+    let cursor = 0,
+      last = 0;
+    const parts = [];
+    while (cursor < value.length) {
+      if (value[cursor] !== '"') {
+        cursor++;
+        continue;
+      }
+      const start = cursor++;
+      let closed = false;
+      while (cursor < value.length) {
+        if (value[cursor] === "\\") {
+          cursor += 2;
+          continue;
+        }
+        if (value[cursor++] === '"') {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) break;
+      let decoded;
+      try {
+        decoded = JSON.parse(value.slice(start, cursor));
+      } catch {
+        continue;
+      }
+      const replacement = token(decoded);
+      if (replacement !== decoded) {
+        parts.push(value.slice(last, start), JSON.stringify(replacement));
+        last = cursor;
+      }
+    }
+    if (parts.length) {
+      parts.push(value.slice(last));
+      value = parts.join("");
+    }
+    return token(value);
+  }
+  function visit(item) {
+    if (typeof item === "string") return text(item);
+    if (Array.isArray(item)) return item.map(visit);
+    if (!item || typeof item !== "object") return item;
+    const result = Object.fromEntries(
+      Object.entries(item).map(([key, child]) => [
+        key,
+        key === "screenshot" || key === "bodyHashInput" ? child : visit(child),
+      ]),
+    );
+    if (typeof item.body === "string" && result.body !== item.body) {
+      delete result.bodyHashInput;
+      result.bodyHashProvenance = "redacted-text-sha256";
+      if (Object.hasOwn(item, "bodySha256"))
+        result.bodySha256 = createHash("sha256")
+          .update(result.body)
+          .digest("hex");
+    }
+    return result;
+  }
+  return visit(sanitized);
+}
+export function redactCapabilityEvidence(value) {
+  return redactCapabilityEvidenceBase(redactCspNonceEvidence(value));
+}
 export function redactCapabilityDiffEvidence(value) {
   const sanitized = redactCapabilityEvidence(value);
   function visit(item) {
@@ -346,4 +691,6 @@ export function redactEncodedLayoutEvidence(value) {
 export const redactCaptureControlEvidence = (value) =>
   redactEncodedLayoutEvidence(redactCapabilityEvidence(value));
 export const redactCaptureControlText = (text) =>
-  redactEncodedLayoutTokens(redactSecureConfigurationTokens(text));
+  redactEncodedLayoutTokens(
+    redactSecureConfigurationTokens(redactCspNonceEvidence(text)),
+  );

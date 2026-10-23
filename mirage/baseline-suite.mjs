@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+import {validateScenarioId,validateCaptureLabel,boundedScenarioDirectory,ensureCaptureDestination} from './baseline-paths.mjs';
 /**
  * Baseline suite: capture every scenario of a matrix on one side into deterministic evidence
  * folders, then compare sides with the allowlist.
@@ -42,7 +42,7 @@ export function validateMatrix(matrix) {
   if (!matrix || matrix.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length) throw new Error("A version 1 matrix with scenarios is required.");
   const ids = new Set();
   for (const scenario of matrix.scenarios) {
-    if (typeof scenario.id !== "string" || !/^[a-z0-9][a-z0-9/._-]{0,160}$/i.test(scenario.id)) throw new Error(`Scenario id is invalid: ${scenario.id}`);
+    validateScenarioId(scenario.id);
     if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
     ids.add(scenario.id);
     if (!Array.isArray(scenario.steps) || !scenario.steps.length) throw new Error(`Scenario ${scenario.id} needs steps.`);
@@ -54,7 +54,7 @@ export function validateMatrix(matrix) {
 }
 
 /** Folder of one scenario on one side: <out>/<scenario id segments>/<label>. */
-export const scenarioDir = (outDir, scenario, label) => path.join(outDir, ...scenario.id.split("/"), label);
+export const scenarioDir = boundedScenarioDirectory;
 
 /** Loopback receiver for raw evidence posted by the runner inside the bridge process. Each run has its own nonce:
  * a bridge call that timed out keeps running in the bridge, and its late post must not resolve the next run's wait
@@ -139,7 +139,7 @@ export async function startSaver() {
 }
 
 
-async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
+async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null }) {
   const bridge = matrix.live;
   if (!bridge?.command) throw new Error("matrix.live.command is required for the live side (a browser bridge that exposes a Playwright page, such as @playwright/mcp --extension).");
   const stderr = [];
@@ -173,7 +173,7 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
   // involved: the profile's SSO either completes or the run stops and names the human step.
   // A failed sign-in or persona check saves its page and throws; the bridge stays open for the next persona group.
   const fail = async (message, result, folder) => {
-    if (signInOut && result) await writeCapture(result, { outDir: path.join(signInOut, folder), origin: matrix.origin, side: folder, meta: { runtime: "reference" } }).catch(() => {});
+    if (signInOut && result) await writeCapture(result, { outDir: path.join(signInOut, folder), outputRoot, origin: matrix.origin, side: folder, meta: { runtime: "reference" } }).catch(() => {});
     throw new Error(message);
   };
   const ensureSignedIn = async () => {
@@ -283,9 +283,9 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
       // Project hooks may retry their own known-safe operations; a generic retry could duplicate a partial write.
       await runMutatingHook('liveReset', matrix.hooks?.liveReset, options);
     },
-    async capture(scenario, { outDir, ids, label, meta }) {
+    async capture(scenario, { outDir, outputRoot, ids, label, meta }) {
       const result = await runInBridge(scenario, { ids });
-      return writeCapture(result, { outDir, origin: matrix.origin, side: label, scenarioId: scenario.id, meta: { ...meta, origin: new URL(matrix.origin).hostname.replace(/^[^.]+/, "{site}"), runtime: "reference", bridge: bridge.name ?? "browser-bridge" } });
+      return writeCapture(result, { outDir, outputRoot, origin: matrix.origin, side: label, scenarioId: scenario.id, meta: { ...meta, origin: new URL(matrix.origin).hostname.replace(/^[^.]+/, "{site}"), runtime: "reference", bridge: bridge.name ?? "browser-bridge" } });
     },
     diagnostics: () => [...stderr.slice(-20), ...saver.late.map((post) => `late evidence post of an abandoned run ${post.run} at ${post.at} refused`)],
     async close() {
@@ -383,7 +383,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       const config = await fetch(owned.url + "/__sim/api/config", { method: "PATCH", headers: { "content-type": "application/json", "x-sim-csrf": csrf() }, body: JSON.stringify({ mode: "local", pageMode: "local", live: { allowWrites: false } }) });
       if (!config.ok) throw new Error(`Mirage configuration failed (${config.status})`);
     },
-    async capture(scenario, { outDir, ids, label, meta }) {
+    async capture(scenario, { outDir, outputRoot, ids, label, meta }) {
       await context.clearCookies();
       const cookie = identity.cookie();
       if (cookie) await context.addCookies([{ name: cookie.name, value: cookie.value, url: owned.url }]);
@@ -394,7 +394,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       await cdp.send("Network.enable");
       await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
       try {
-        return await captureScenario(page, scenario, { origin: owned.url, outDir, ids, side: label, matrix, allowWrites: true, meta: { ...meta, origin: "{mirage}", runtime: "mirage", preset, solutionRoots: owned.solutionRoots.map((root) => path.basename(root)), sourceFingerprint: status.status?.sourceFingerprint ?? null, implementationFingerprint: status.status?.implementationFingerprint ?? null } });
+        return await captureScenario(page, scenario, { origin: owned.url, outDir, outputRoot, ids, side: label, matrix, allowWrites: true, meta: { ...meta, origin: "{mirage}", runtime: "mirage", preset, solutionRoots: owned.solutionRoots.map((root) => path.basename(root)), sourceFingerprint: status.status?.sourceFingerprint ?? null, implementationFingerprint: status.status?.implementationFingerprint ?? null } });
       } finally {
         await page.close().catch(() => {});
       }
@@ -424,6 +424,7 @@ function uncertainMutatingHook(error) {
 }
 
 export async function captureMatrix({ matrix, side, outDir, label, ids = {}, only = null }) {
+  validateMatrix(matrix);validateCaptureLabel(label);
   const results = [];
   let currentPersona = Symbol("none");
   const failedPersonas = new Map();
@@ -437,6 +438,7 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
     .map((scenario, index) => ({ scenario, index }))
     .sort((a, b) => personaOrder.indexOf(a.scenario.persona ?? null) - personaOrder.indexOf(b.scenario.persona ?? null) || a.index - b.index)
     .map(({ scenario }) => scenario);
+  for (const scenario of selected) await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
   for (const scenario of selected) {
     const folder = scenarioDir(outDir, scenario, label);
     const personaName = scenario.persona ?? null;
@@ -469,7 +471,7 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
         currentPersona = personaName;
       }
       if (scenario.reset !== false) await timed("reset", () => side.reset());
-      const capture = await timed("capture", () => side.capture(scenario, { outDir: folder, ids, label, meta: { persona: personaName, component: scenario.component ?? null, variation: scenario.variation ?? null, state: scenario.state ?? null } }));
+      const capture = await timed("capture", () => side.capture(scenario, { outDir: folder, outputRoot: outDir, ids, label, meta: { persona: personaName, component: scenario.component ?? null, variation: scenario.variation ?? null, state: scenario.state ?? null } }));
       Object.assign(summary, { status: capture.status, problems: capture.problems, requests: capture.requests, elements: capture.elements, blockedWrites: capture.blockedWrites?.length ?? 0 });
     } catch (error) {
       const hook = uncertainMutatingHook(error);
@@ -504,15 +506,20 @@ async function main() {
   if (action === "capture") {
     // `run` is a short token scenarios embed in values that must be unique per run yet equal on both sides.
     const ids = { run: matrix.runToken ?? "r1", ...(values.ids ? JSON.parse(await fs.readFile(values.ids, "utf8")) : {}) };
+    const label = validateCaptureLabel(values.label ?? values.side);
+    for (const scenario of matrix.scenarios.filter(item => !only || only.includes(item.id))) await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
+    await ensureCaptureDestination(path.join(outDir, "_sign-in"), outDir, { create: false });
+    if (values.side === "mirage" && !values["work-dir"]) await ensureCaptureDestination(path.join(outDir, ".runtime"), outDir, { create: false });
+    const startedAt = new Date().toISOString();
+    await ensureCaptureDestination(outDir, outDir, { create: false, files: [`run-${label}.json`, `run-${label}-${startedAt.replace(/:/g, "")}.json`] });
     let side;
     if (values.side === "live") {
       if (!matrix.origin) throw new Error("matrix.origin (HTTPS reference origin) is required for the live side.");
-      side = await liveSide({ matrix, allowWrites: Boolean(values["allow-writes"]), cwd: path.dirname(matrixFile), signInOut: path.join(outDir, "_sign-in") });
+      side = await liveSide({ matrix, allowWrites: Boolean(values["allow-writes"]), cwd: path.dirname(matrixFile), outputRoot: outDir, signInOut: path.join(outDir, "_sign-in") });
     } else if (values.side === "mirage") {
       side = await mirageSide({ matrix, config: values.config, site: values.site, env: values.env, source: values.source, state: values.state, headed: Boolean(values.headed), workDir: path.resolve(values["work-dir"] ?? path.join(outDir, ".runtime")) });
     } else throw new Error("--side must be live or mirage.");
-    const label = values.label ?? values.side;
-    const startedAt = new Date().toISOString();
+
     let results;
     try {
       results = await captureMatrix({ matrix, side, outDir, label, ids, only });
@@ -520,7 +527,7 @@ async function main() {
       await side.close();
     }
     const run = { version: 1, action, side: values.side, label, startedAt, finishedAt: new Date().toISOString(), allowWrites: Boolean(values["allow-writes"]), scenarios: results, totals: { captured: results.filter((r) => r.status === "captured").length, failed: results.filter((r) => r.status === "failed").length, error: results.filter((r) => r.status === "error").length, blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0), notAttempted: results.filter(r => r.notAttempted).length } };
-    await fs.mkdir(outDir, { recursive: true });
+    await ensureCaptureDestination(outDir, outDir, { files: [`run-${label}.json`, `run-${label}-${startedAt.replace(/:/g, "")}.json`] });
     await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
     // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
     await fs.writeFile(path.join(outDir, `run-${label}-${startedAt.replace(/:/g, "")}.json`), JSON.stringify(run, null, 2));
@@ -536,17 +543,19 @@ async function main() {
     const liveDir = scenarioDir(outDir, scenario, report.live);
     const mirageDir = scenarioDir(outDir, scenario, report.mirage);
     const secondDir = values["second-live"] ? scenarioDir(outDir, scenario, values["second-live"]) : null;
+    for (const source of [liveDir, mirageDir, secondDir].filter(Boolean)) await ensureCaptureDestination(source, outDir, { create: false });
     results.push(await compareScenario({ scenario, liveDir, mirageDir, secondDir, allowlist, changes, origins: [matrix.origin, siteOriginPlaceholder(matrix.origin)].filter(Boolean) }));
   }
   // Evidence age is decided once every scenario is compared: the proof scenarios of each change are checked here.
   if (changes.length) report.evidenceChanges = finalizeEvidenceChanges(results, changes);
   for (const result of results) {
-    await fs.mkdir(path.join(outDir, ...result.id.split("/")), { recursive: true });
+    await ensureCaptureDestination(path.join(outDir, ...result.id.split("/")), outDir, { files: ["diff.json"] });
     await fs.writeFile(path.join(outDir, ...result.id.split("/"), "diff.json"), JSON.stringify(result, null, 2));
     report.scenarios.push({ id: result.id, verdict: result.verdict, counts: result.counts, signatures: result.signatures, reason: result.reason });
     console.log(JSON.stringify({ scenario: result.id, verdict: result.verdict, counts: result.counts, reason: result.reason }));
   }
   Object.assign(report, summarize(report));
+  await ensureCaptureDestination(outDir, outDir, { files: ["report.json", "summary.md"] });
   await fs.writeFile(path.join(outDir, "report.json"), JSON.stringify(report, null, 2));
   await fs.writeFile(path.join(outDir, "summary.md"), summaryMarkdown(report));
   console.log(JSON.stringify({ report: path.join(outDir, "report.json"), totals: report.totals, topSignatures: report.bySignature.slice(0, 10) }));

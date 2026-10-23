@@ -232,7 +232,9 @@ test("validateMatrix accepts a good matrix and rejects invalid ones", () => {
   assert.equal(scenarioDir("/out", { id: "a/b" }, "live"), path.join("/out", "a", "b", "live"));
 });
 
-test("captureMatrix switches personas only on change, honours reset:false and records side errors", async () => {
+test("captureMatrix switches personas only on change, honours reset:false and records side errors", async (t) => {
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-capture-matrix-"));
+  t.after(() => fs.rm(outDir, { recursive: true, force: true }));
   const calls = [];
   const side = {
     persona: async (name) => calls.push(`persona:${name}`),
@@ -245,12 +247,12 @@ test("captureMatrix switches personas only on change, honours reset:false and re
     diagnostics: () => ["diag"],
     close: async () => {},
   };
-  const matrix = { delayMs: 0, scenarios: [{ id: "one", steps: [{}] }, { id: "two", reset: false, steps: [{}] }, { id: "bad", persona: "m", steps: [{}] }, { id: "skip", steps: [{}] }] };
+  const matrix = { version: 1, personas: { m: {} }, delayMs: 0, scenarios: [{ id: "one", steps: [{}] }, { id: "two", reset: false, steps: [{}] }, { id: "bad", persona: "m", steps: [{}] }, { id: "skip", steps: [{}] }] };
   const log = console.log;
   console.log = () => {};
   let results;
   try {
-    results = await captureMatrix({ matrix, side, outDir: "/out", label: "mirage", only: ["one", "two", "bad"] });
+    results = await captureMatrix({ matrix, side, outDir, label: "mirage", only: ["one", "two", "bad"] });
   } finally {
     console.log = log;
   }

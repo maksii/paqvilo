@@ -2,6 +2,10 @@
 
 Mirage serves a Dataverse-shaped Web API on its own loopback origin. It can run [without Power Pages](standalone-organization.md), alongside model-driven apps, or beside a portal. Enabled surfaces share one organization record pipeline and storage. A portal sees Dataverse tables only under its own `Webapi/<table>/enabled`, `Webapi/<table>/fields` and table permissions; its visitor identity and error contracts remain separate from organization staff and application tokens.
 
+The service document and CSDL advertise `EntityDefinitions`, `RelationshipDefinitions` and `GlobalOptionSetDefinitions` alongside source-backed entity sets. Discovery describes implemented metadata read routes; exported model coverage determines available entities.
+
+The HTTP JSON reader accepts one leading UTF-8 BOM and preserves numeric token spelling for qualified typed errors. Record JSON parse failures retain their actual local `SyntaxError` as the error cause while using the observed HTTP error summary. Query diagnostics follow qualified native literal typing and syntax boundaries; native CLR stack frames are not fabricated. These HTTP reader rules preserve the internal SDK and portal query paths.
+
 ## Enable it
 
 Use **Project setup → Runtime configuration** to enable the HTTP API and select its port, then restart Mirage. A standalone project puts `dataverse` at its top level; a catalogue uses `defaults.mirage.dataverse` or `sites.<id>.mirage.dataverse`. See [configuration](../../docs/configuration.md) and the [standalone project example](standalone-organization.md). Model-driven staff sessions use the organization core even while the HTTP listener is off.

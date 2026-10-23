@@ -10,6 +10,8 @@ import {
   redactSecureConfigurationTokens as redact,
   redactCapabilityEvidence,
   redactCapabilityDiffEvidence,
+  redactCaptureControlText as redactText,
+  redactCaptureControlEvidence as redactEvidence,
 } from "../lib/capture-control-redaction.mjs";
 const token = Buffer.from("invented signed configuration fixture").toString(
   "base64",
@@ -667,4 +669,257 @@ test("exact upload session header redacts raw, escaped and contextual evidence",
       mirage: "{token}",
     },
   );
+});
+
+test("declared CSP header nonce sources redact and ordinary nonce business data remains exact", () => {
+  const policy =
+    "default-src 'self'; script-src 'nonce-inventedAbc123+/=' 'strict-dynamic'; img-src https://images.invalid";
+  const input = {
+    headers: {
+      "Content-Security-Policy": policy,
+      "content-security-policy-report-only": policy,
+      ordinary: policy,
+    },
+    nonce: "ordinaryBusinessNonce",
+    attributes: { nonce: "ordinary-business-value" },
+    description: "literal 'nonce-business'",
+  };
+  const result = redactEvidence(input);
+  assert.equal(
+    result.headers["Content-Security-Policy"],
+    policy.replace("inventedAbc123+/=", "{token}"),
+  );
+  assert.equal(
+    result.headers["content-security-policy-report-only"],
+    result.headers["Content-Security-Policy"],
+  );
+  assert.equal(
+    result.headers.ordinary,
+    policy.replace("inventedAbc123+/=", "{token}"),
+  ); // Same independently declared capability copied elsewhere.
+  assert.equal(result.nonce, input.nonce);
+  assert.deepEqual(result.attributes, input.attributes);
+  assert.equal(result.description, input.description);
+  assert.deepEqual(redactEvidence(result), result);
+});
+
+test("actual HTML nonce attributes and declared meta policy survive quoted greater-than and escaped JSON", () => {
+  const html =
+    '<script data-keep="a>b" NONCE="inventedNonce123">ok</script><style nonce=secondNonce456>keep</style><meta content="script-src &#39;nonce-thirdNonce789&#39; https://scripts.invalid" http-equiv="Content-Security-Policy"><div data-nonce="ordinary-business">kept</div>';
+  for (const input of [
+    html,
+    JSON.stringify({ body: html }),
+    JSON.stringify(JSON.stringify({ body: html })),
+  ]) {
+    const result = redactText(input);
+    for (const nonce of ["inventedNonce123", "secondNonce456", "thirdNonce789"])
+      assert.ok(!result.includes(nonce));
+    assert.ok(result.includes("ordinary-business"));
+    assert.ok(result.includes("scripts.invalid"));
+    assert.equal(redactText(result), result);
+  }
+});
+
+test("tagged HTML attribute maps and declared CSP diff values redact without rewriting business nonce keys", () => {
+  assert.deepEqual(
+    redactEvidence({
+      tag: "script",
+      attributes: { nonce: "inventedNonce123", title: "keep" },
+    }),
+    { tag: "script", attributes: { nonce: "{token}", title: "keep" } },
+  );
+  assert.deepEqual(
+    redactEvidence({ tagName: "STYLE", attrs: { NONCE: "inventedNonce123" } }),
+    { tagName: "STYLE", attrs: { NONCE: "{token}" } },
+  );
+  const diff = {
+    field: "response.headers.Content-Security-Policy",
+    live: "script-src 'nonce-inventedA'",
+    mirage: "script-src 'nonce-inventedB'",
+  };
+  assert.deepEqual(redactCapabilityDiffEvidence(diff), {
+    ...diff,
+    live: "script-src 'nonce-{token}'",
+    mirage: "script-src 'nonce-{token}'",
+  });
+  const business = {
+    field: "payload.nonce",
+    live: "ordinary",
+    mirage: "ordinary",
+  };
+  assert.deepEqual(redactCapabilityDiffEvidence(business), business);
+});
+
+test("nonce persistence removes protected values and raw text digests from every capture surface", async () => {
+  const out = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-csp-nonce-"));
+  const nonce = "inventedPersistenceNonce123",
+    html = `<script nonce="${nonce}">ok</script>`,
+    policy = `script-src 'nonce-${nonce}' https://scripts.invalid`,
+    hash = (value) => createHash("sha256").update(value).digest("hex");
+  try {
+    await writeCapture(
+      {
+        summary: { id: "invented/csp-nonce", status: "captured", problems: [] },
+        raw: {
+          finalUrl: "https://portal.invalid/",
+          requests: [
+            {
+              seq: 1,
+              method: "GET",
+              url: "https://portal.invalid/",
+              headers: {},
+              body: null,
+              response: {
+                status: 200,
+                headers: { "content-security-policy": policy },
+                body: html,
+                bodyBytes: Buffer.byteLength(html),
+                bodyHashInput: Buffer.from(html).toString("base64"),
+              },
+            },
+          ],
+          dom: html,
+          frames: [{ path: "/frame", dom: html }],
+          elements: [{ tag: "script", attributes: { nonce } }],
+          console: [
+            {
+              type: "log",
+              text: JSON.stringify({
+                headers: { "content-security-policy": policy },
+              }),
+            },
+          ],
+          pageErrors: [],
+          dialogs: [],
+        },
+      },
+      {
+        outDir: out,
+        origin: "https://portal.invalid",
+        side: "native",
+        scenarioId: "invented/csp-nonce",
+      },
+    );
+    const files = await fs.readdir(out);
+    for (const name of files.filter((name) => /\.(json|html)$/.test(name))) {
+      const text = await fs.readFile(path.join(out, name), "utf8");
+      assert.ok(!text.includes(nonce), name);
+      assert.ok(!text.includes(hash(html)), name);
+      assert.ok(!text.includes(Buffer.from(html).toString("base64")), name);
+    }
+    const requests = JSON.parse(
+      await fs.readFile(path.join(out, "requests.json"), "utf8"),
+    );
+    assert.equal(
+      requests[0].response.bodyHashProvenance,
+      "redacted-text-sha256",
+    );
+    assert.equal(
+      requests[0].response.bodySha256,
+      hash(requests[0].response.body),
+    );
+    assert.ok(
+      requests[0].response.headers["content-security-policy"].includes(
+        "scripts.invalid",
+      ),
+    );
+  } finally {
+    await fs.rm(out, { recursive: true, force: true });
+  }
+});
+
+test("large escaped strings and malformed HTML nonce tags remain bounded", async () => {
+  const module = new URL(
+    "../lib/capture-control-redaction.mjs",
+    import.meta.url,
+  ).href;
+  const worker = new Worker(
+    `const {parentPort}=require('node:worker_threads');import(${JSON.stringify(module)}).then(({redactCaptureControlText:redact})=>{const plain='"'+'\\\\"'.repeat(300000)+'"';if(redact(plain)!==plain)throw Error('ordinary escaped text changed');const malformed='<script nonce="'.repeat(100000);redact(malformed);const html='<script '+ ' '.repeat(1000000)+'nonce="inventedBoundedNonce">keep</script>';if(redact(html).includes('inventedBoundedNonce'))throw Error('nonce retained');parentPort.postMessage(true);});`,
+    { eval: true },
+  );
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(Error("Nonce redaction exceeded bounded worker deadline")),
+        8000,
+      );
+      worker.once("message", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      worker.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  } finally {
+    await worker.terminate();
+  }
+});
+
+test("HTML comments and raw-text business strings are not interpreted as nonce attributes", () => {
+  const business =
+    '<!-- <script nonce="ordinaryComment"> -->' +
+    "<script>const ordinary = '<span nonce=\"ordinaryBusiness\">';</script>" +
+    '<textarea><script nonce="ordinaryText"></textarea>';
+  assert.equal(redactText(business), business);
+  assert.equal(
+    redactText(JSON.stringify({ body: business })),
+    JSON.stringify({ body: business }),
+  );
+});
+
+test("independently declared long nonce exact copies redact in JS and JSON while common short business strings remain exact", () => {
+  const nonce = "inventedLongNonce123+/=",
+    header = `script-src 'nonce-${nonce}'`,
+    body =
+      "window.runtimeNonce=" + JSON.stringify(nonce).replace("/", "\\/") + ";";
+  const input = {
+    headers: { "content-security-policy": header },
+    body,
+    bodyHashInput: Buffer.from(body).toString("base64"),
+    bodySha256: createHash("sha256").update(body).digest("hex"),
+    nonce,
+    unrelatedNonce: "ordinaryBusinessNonce",
+    longerBusinessWord: "prefix" + nonce + "suffix",
+  };
+  const output = redactEvidence(input);
+  assert.equal(output.nonce, "{token}");
+  assert.ok(!output.body.includes("inventedLongNonce"));
+  assert.ok(!Object.hasOwn(output, "bodyHashInput"));
+  assert.equal(
+    output.bodySha256,
+    createHash("sha256").update(output.body).digest("hex"),
+  );
+  assert.equal(output.unrelatedNonce, input.unrelatedNonce);
+  assert.equal(output.longerBusinessWord, input.longerBusinessWord);
+  assert.deepEqual(redactEvidence(output), output);
+  assert.equal(
+    redactEvidence({
+      headers: { "content-security-policy": "script-src 'nonce-a'" },
+      business: "a",
+    }).business,
+    "a",
+  );
+});
+
+test("unbounded declared nonce sets fail closed without including capability values", () => {
+  const html = Array.from(
+    { length: 257 },
+    (_, n) =>
+      `<span nonce="inventedNonceValue${String(n).padStart(5, "0")}"></span>`,
+  ).join("");
+  assert.throws(
+    () => redactEvidence({ body: html }),
+    (error) =>
+      /exceeds its bound/.test(error.message) &&
+      !error.message.includes("inventedNonce"),
+  );
+});
+
+test("standalone HTML text also protects exact copies of its declared nonce", () => {
+  const nonce = "inventedStandaloneNonce123";
+  const html =
+    '<script nonce="' + nonce + '">window.copy="' + nonce + '";</script>';
+  assert.ok(!redactText(html).includes(nonce));
 });

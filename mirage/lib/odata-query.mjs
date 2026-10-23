@@ -3,6 +3,7 @@
 // dialect "extended" keeps the simulator's internal convenience functions
 // (tolower, length, OData 4.01 "in") for plugin predicates and admin reads.
 import { DataError } from "./data-error.mjs";
+import { dataverseNumberLiteralKind } from "./dataverse-query-literals.mjs";
 import {isExactNumeric,parseNumericLiteral,sumNumeric,averageNumeric} from './exact-numeric.mjs';
 import {
   CRM_FUNCTIONS,
@@ -66,7 +67,7 @@ const TOKEN = new RegExp(
   ].join("|"),
   "y",
 );
-function tokenize(source) {
+function tokenize(source, { nativeSyntax = false } = {}) {
   const tokens = [];
   const text = String(source);
   let index = 0;
@@ -77,8 +78,27 @@ function tokenize(source) {
     }
     TOKEN.lastIndex = index;
     const match = TOKEN.exec(text);
-    if (!match)
+    if (!match) {
+      if (nativeSyntax && text[index] === "@") {
+        const at = index + 1;
+        const message = at === text.length
+          ? `Syntax error at position ${at} in '${text}'.`
+          : `Syntax error: character '${text[at]}' is not valid at position ${at} in '${text}'.`;
+        fail(message, 400, "InvalidQuery", { innerCode: "0x80060888" });
+      }
+      if (nativeSyntax && text[index] === "-") {
+        tokens.push({ kind: "punct", value: "-", at: index++ });
+        continue;
+      }
+      if (nativeSyntax && text[index] === "+")
+        fail(
+          `Syntax error: character '+' is not valid at position ${index} in '${text}'.`,
+          400,
+          "InvalidQuery",
+          { innerCode: "0x80060888" },
+        );
       unsupported(`Unsupported OData filter near ${text.slice(index, index + 50)}`);
+    }
     const [kind, value] = Object.entries(match.groups).find(([, v]) => v !== undefined);
     tokens.push({ kind, value, at: index });
     index = TOKEN.lastIndex;
@@ -92,14 +112,30 @@ const OPERATOR_KINDS = { eq: "Equal", ne: "NotEqual", gt: "GreaterThan", ge: "Gr
 // Static operand typing (strictEdm): a comparison whose column and literal (or two columns) are of families that
 // never match fails before rows are read, so the answer does not depend on the table's contents. Single-segment
 // paths only; lambda bodies name another table and are not checked here.
-function checkOperandTypes(node, columnDefinition) {
+function checkOperandTypes(node, columnDefinition, { nativeSyntax = false } = {}) {
   const typeOf = (side) => {
     if (side.type === "path") return side.segments.length === 1 ? edmOfColumn(columnDefinition(side.segments[0])) : null;
-    if (side.type === "literal") return edmOfLiteral(side);
+    if (side.type === "literal") {
+      if (nativeSyntax && side.kind === "number" && typeof side.raw === "string")
+        return dataverseNumberLiteralKind(side.raw) ?? edmOfLiteral(side);
+      return edmOfLiteral(side);
+    }
     return null;
   };
   const visit = (n) => {
     if (!n || typeof n !== "object" || n.type === "lambda") return;
+    if (nativeSyntax && n.type === "negate") {
+      const type = typeOf(n.operand);
+      if (type && !["Edm.Int32", "Edm.Int64", "Edm.Decimal", "Edm.Double", "Edm.Single"].includes(type))
+        fail(
+          `A unary operator with an incompatible type was detected. Found operand type '${type}' for operator kind 'Negate'.`,
+          400,
+          "InvalidQuery",
+          { innerCode: "0x80060888" },
+        );
+      if (type || n.operand.kind === "null")
+        fail('The "Negate" operator isn\'t supported.', 501, "UnsupportedQueryFunction");
+    }
     if (n.type === "compare") {
       const left = typeOf(n.left), right = typeOf(n.right);
       const families = [edmFamily(left), edmFamily(right)];
@@ -122,8 +158,8 @@ function checkOperandTypes(node, columnDefinition) {
  * simulator's extended functions answer 501 "isn't supported", and comparisons between operand types that can
  * never match fail statically (0x80060888) before any row is read. columnDefinition(name) gives column metadata.
  */
-export function parseODataExpression(source, { dialect = "dataverse", aliases = {}, rejectNotOnQueryFunctions = false, strictEdm = false, columnDefinition = () => null } = {}) {
-  const tokens = tokenize(source);
+export function parseODataExpression(source, { dialect = "dataverse", aliases = {}, rejectNotOnQueryFunctions = false, strictEdm = false, columnDefinition = () => null, nativeSyntax = false } = {}) {
+  const tokens = tokenize(source, { nativeSyntax });
   let pos = 0;
   let conditions = 0;
   const peek = (offset = 0) => tokens[pos + offset];
@@ -255,10 +291,26 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
   };
   const primary = () => {
     const token = peek();
-    if (!token) unsupported("Incomplete OData filter");
+    if (!token) {
+      if (nativeSyntax)
+        fail(
+          `Expression expected at position ${String(source).length} in '${source}'.`,
+          400,
+          "InvalidQuery",
+          { innerCode: "0x80060888" },
+        );
+      unsupported("Incomplete OData filter");
+    }
     if (token.value === "(") {
       take();
       const expression = or();
+      if (nativeSyntax && !peek())
+        fail(
+          `')' or operator expected at position ${String(source).length} in '${source}'.`,
+          400,
+          "InvalidQuery",
+          { innerCode: "0x80060888" },
+        );
       expect(")");
       return expression;
     }
@@ -291,6 +343,35 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
     unsupported(`Unsupported OData syntax near ${token.value}`);
   };
   const unary = () => {
+    if (nativeSyntax && peek()?.value === "-") {
+      const minuses = [];
+      while (peek()?.value === "-") minuses.push(take());
+      if (peek()?.kind === "number" && peek().value.startsWith("-")) {
+        const token = peek();
+        const kind = dataverseNumberLiteralKind(token.value);
+        if (kind === null)
+          fail(
+            `Numeric string '${token.value}' is not a valid Int32/Int64/Double/Decimal.`,
+            400,
+            "InvalidQuery",
+            { innerCode: "0x80060888" },
+          );
+        if (kind)
+          fail(
+            `Unrecognized '${kind}' literal '-${token.value}' at '${minuses.at(-1).at}' in '${source}'.`,
+            400,
+            "InvalidQuery",
+            { innerCode: "0x80060888" },
+          );
+        unsupported(`Unsupported OData filter near ${String(source).slice(minuses[0].at, minuses[0].at + 50)}`);
+      }
+      if (minuses.length > ODATA_LIMITS.conditions)
+        unsupported("OData unary operators exceed the bounded query complexity limit");
+      let operand = unary();
+      for (let index = minuses.length - 1; index >= 0; index--)
+        operand = { type: "negate", operand };
+      return operand;
+    }
     if (peekWord() === "not") {
       take();
       const operand = unary();
@@ -348,9 +429,19 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
   }
   if (!tokens.length) return { type: "literal", kind: "boolean", value: true };
   const result = or();
-  if (pos !== tokens.length)
+  if (pos !== tokens.length) {
+    if (nativeSyntax) {
+      const token = tokens[pos];
+      fail(
+        `Syntax error at position ${token.at + token.value.length} in '${source}'.`,
+        400,
+        "InvalidQuery",
+        { innerCode: "0x80060888" },
+      );
+    }
     unsupported(`Unsupported OData syntax: ${tokens.slice(pos).map((t) => t.value).join(" ")}`);
-  if (strictEdm) checkOperandTypes(result, columnDefinition);
+  }
+  if (strictEdm) checkOperandTypes(result, columnDefinition, { nativeSyntax });
   if (conditions > ODATA_LIMITS.conditions)
     fail("Number of conditions in query exceeded maximum limit.", 400, "UnsupportedQuery", { innerCode: "0x8004430c" });
   return result;
@@ -740,11 +831,28 @@ export function splitTopLevel(text, separator = ",") {
 }
 
 /** $orderby: comma-separated property [asc|desc]. */
-export function parseOrderBy(text, { dialect = "dataverse" } = {}) {
+export function parseOrderBy(text, { dialect = "dataverse", nativeSyntax = false } = {}) {
   if (text == null || text === "") return [];
+  let cursor = 0;
   return splitTopLevel(String(text)).map((spec) => {
+    const offset = String(text).indexOf(spec, cursor);
+    cursor = offset + spec.length;
     const match = /^([A-Za-z_][\w]*(?:\/[A-Za-z_][\w]*)*)(?:\s+(asc|desc))?$/i.exec(spec.trim());
-    if (!match) unsupported(`Unsupported order ${spec}`);
+    if (!match) {
+      const plain = /^([A-Za-z_]\w*(?:\/[A-Za-z_]\w*)*)(?:[\t-\r ]+[A-Za-z_]\w*)+$/.exec(spec);
+      if (nativeSyntax && plain) {
+        const words = [...spec.slice(plain[1].length).matchAll(/[A-Za-z_]\w*/g)];
+        const word = /^(?:asc|desc)$/i.test(words[0]?.[0] ?? "") ? words[1] : words[0];
+        if (word)
+          fail(
+            `Syntax error at position ${offset + plain[1].length + word.index + word[0].length} in '${text}'.`,
+            400,
+            "InvalidQuery",
+            { innerCode: "0x80060888" },
+          );
+      }
+      unsupported(`Unsupported order ${spec}`);
+    }
     if (dialect === "dataverse" && match[1].includes("/"))
       unsupported(`Ordering by related table columns (${match[1]}) isn't supported by the Dataverse Web API.`);
     return { path: match[1].split("/"), descending: match[2]?.toLowerCase() === "desc" };

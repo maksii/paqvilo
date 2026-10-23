@@ -2,6 +2,12 @@
 
 Mirage builds native basic/multistep forms, lists, lookups, subgrids and notes from exported portal configuration and Solution form/view metadata. Standard/enhanced record fields normalize into a common model. Missing managed metadata is reported and may use an explicit local fallback; it is not inferred from a customer name.
 
+An associated-record source checks authorized related rows before binding: multiple matches produce the observed server error. An attribute-query reference binds the first authorized query result, with no match leaving the lookup blank. Use an exported unique key when the reference must identify one row; duplicate-match selection order remains provider-dependent.
+
+Radio-style picklists on existing records display the exported default for a null column unless form metadata ignores defaults. Explicit stored values and source prepopulation retain precedence. Rendering the selection leaves the stored row unchanged.
+
+DateOnly controls populated from the current clock retain the observed UTC suffix in their hidden postback value. The submitter accepts that clock default and the zone-free value produced by editing the control. Stored DateOnly values and other prepopulation sources retain their existing wire format.
+
 The client adapters provide platform-shaped form events, validators, date/picklist controls, lookup dialogs, grids, paging, actions, notes/attachments and session-sensitive requests. Permissions are checked through the local data layer. Generated form fields and unsupported controls retain diagnostics for inspection.
 
 Basic form Activate/Deactivate buttons follow exported `Actions` settings. Mirage resolves the record again from the configured query, current user or related-record source, checks read/update permissions, and changes only state/status in an atomic local write. Status values require exported state/status metadata; unsupported actions, unresolved metadata and action filter criteria retain diagnostics. Confirmation, labels and redirects use source settings, while managed dialog placement and filter behavior require reference evidence. Multiple forms with repeated button IDs dispatch through the button's full WebForms name.

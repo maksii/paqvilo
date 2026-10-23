@@ -49,7 +49,7 @@ export function dataverseHttpReaderContext({
 // classification is admitted. Cloning/deep insert cannot misattribute a token.
 export function scalarNumberLexemes(source) {
   const map = new Map();
-  JSON.parse(source, function (key, value, context) {
+  JSON.parse(String(source).replace(/^\uFEFF/, ""), function (key, value, context) {
     if (typeof value === "number" && context?.source) {
       const k = key + "\0" + canonical(parseNumericLiteral(context.source)),
         old = map.get(k);

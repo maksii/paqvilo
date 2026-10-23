@@ -671,6 +671,7 @@ export async function submitPortalForm(
         ...field,
         required: Boolean(portalField(metadata ?? {}, "fieldisrequired", portalField(metadata ?? {}, "requiredfield", field.required)) || truthy(portalField(componentMetadata, "forceallfieldsrequired"))),
         readOnly: immutable || portalField(metadata ?? {}, "readonly", field.readOnly),
+        prepopulateType: Number(portalField(metadata ?? {}, "prepopulatetype")),
         pattern: portalField(metadata ?? {}, "validationregularexpression") || field.pattern || null,
         patternMessage: text(portalField(metadata ?? {}, "validationregularexpressionerrormessage"), ""),
         validationMessage: text(portalField(metadata ?? {}, "validationerrormessage"), field.validationMessage ?? ""),
@@ -844,7 +845,8 @@ export async function submitPortalForm(
         // not the Web API's ISO date/date-time literals. Server-assigned on-save
         // dates have already been typed and do not come from that control.
         const behavior = field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal');
-        const native = behavior === 'UserLocal' ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}$/;
+        const clockDateOnly = behavior === 'DateOnly' && field.prepopulateType === 100000001;
+        const native = clockDateOnly ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z?$/ : behavior === 'UserLocal' ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}$/;
         if (typeof value !== "string" || !parseDateValue(value) || (!assigned.has(key) && !native.test(value)))
           invalid(field, "FormFieldInvalid", field.validationMessage || `${field.label} must have a valid date format.`);
       }

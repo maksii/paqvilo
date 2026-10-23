@@ -17,7 +17,14 @@ const CONTACT = "77777777-7777-4777-8777-777777777774";
 
 async function simulator(t, { images = false, applicationUser } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "portal-file-columns-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  let app;
+  // One owner hook: Node stops subsequent after hooks when an earlier one throws.
+  // Drain the current runtime (including a restarted instance and its blob flush)
+  // before touching its state directory. Preserve that directory if close fails.
+  t.after(async () => {
+    await app?.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Example`,
     "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true",
@@ -49,8 +56,7 @@ async function simulator(t, { images = false, applicationUser } = {}) {
   };
   const options = { sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false,
     ...(applicationUser ? { observed: { portalApplicationUserId: applicationUser, evidence: 'Invented loopback application principal without a field-security profile.' } } : {}) };
-  let app = await createSimulator(options);
-  t.after(() => app.close());
+  app = await createSimulator(options);
   let cookie, token;
   const signIn = async () => {
     cookie = signInHeaders(app, CONTACT, { roles: ["Member"] }).cookie;
@@ -155,4 +161,67 @@ test("a file column round-trips through the portal Web API with the visitor's ta
   // A text column keeps the JSON property routes.
   assert.equal((await call("PUT", `x_items(${ITEM})/x_name`, JSON.stringify({ value: "Renamed" }), { "content-type": "application/json" })).status, 204);
   assert.equal(await (await call("GET", `x_items(${ITEM})/x_name/$value`)).text(), "Renamed");
+});
+
+test("fixture cleanup closes the restarted runtime before directory removal can fail", async () => {
+  const hooks = [];
+  const fixture = await simulator({ after: hook => hooks.push(hook) }, { images: true });
+  const restarted = await fixture.restart();
+  const dir = path.dirname(restarted.store.file);
+  const remove = fs.rm;
+  const failure = Object.assign(new Error("Invented removal failure"), { code: "ENOTEMPTY" });
+  let removalObserved = false;
+  fs.rm = async (target, options) => {
+    if (target === dir) {
+      removalObserved = true;
+      assert.equal(restarted.server.listening, false, "a cleanup failure must not retain the current listener");
+      throw failure;
+    }
+    return remove(target, options);
+  };
+  try {
+    await assert.rejects(async () => { for (const hook of hooks) await hook(); }, error => error === failure);
+    assert.equal(removalObserved, true);
+    assert.equal(restarted.server.listening, false);
+    await assert.rejects(fetch(restarted.url, { signal: AbortSignal.timeout(1000) }));
+  } finally {
+    fs.rm = remove;
+    await restarted.close();
+    await remove(dir, { recursive: true, force: true });
+  }
+});
+
+test("fixture cleanup drains an accepted blob release before removing its directory", async () => {
+  const hooks = [];
+  const fixture = await simulator({ after: hook => hooks.push(hook) });
+  const app = fixture.app, dir = path.dirname(app.store.file), remove = fs.rm;
+  const objectPrefix = path.join(dir, "blobs", "objects") + path.sep;
+  let releaseDelete, observeDelete, removalObserved = false, cleanup;
+  const deleteGate = new Promise(resolve => { releaseDelete = resolve; });
+  const deleteStarted = new Promise(resolve => { observeDelete = resolve; });
+  fs.rm = async (target, options) => {
+    if (String(target).startsWith(objectPrefix)) { observeDelete(); await deleteGate; }
+    if (target === dir) removalObserved = true;
+    return remove(target, options);
+  };
+  try {
+    const uploaded = await fixture.call("PATCH", `x_items(${ITEM})/x_doc?x-ms-file-name=owned.txt`, "owned bytes", { "content-type": "application/octet-stream" });
+    assert.equal(uploaded.status, 204);
+    assert.equal((await fixture.call("DELETE", `x_items(${ITEM})/x_doc`)).status, 204);
+    await deleteStarted;
+    cleanup = (async () => { for (const hook of hooks) await hook(); })();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(removalObserved, false, "directory removal must wait for the accepted provider delete");
+    releaseDelete();
+    await cleanup;
+    assert.equal(removalObserved, true);
+    assert.equal(app.server.listening, false);
+    await assert.rejects(fs.stat(dir), { code: "ENOENT" });
+  } finally {
+    releaseDelete();
+    await cleanup?.catch(() => {});
+    fs.rm = remove;
+    await app.close();
+    await remove(dir, { recursive: true, force: true });
+  }
 });

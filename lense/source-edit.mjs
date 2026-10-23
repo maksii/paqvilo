@@ -26,6 +26,7 @@ export function editSource(source, transform) {
   const document = yaml ? YAML.parseDocument(raw) : null;
   if (yaml && document.errors.length) throw new Error(`Cannot edit YAML field ${label}: invalid YAML`);
   if (yaml && source.recordId != null && (typeof source.recordIdField !== 'string' || !source.recordIdField || document.getIn([...fieldPath.slice(0, -1), source.recordIdField]) !== source.recordId)) throw new Error(`Cannot edit YAML field with a stale record identity: ${label}`);
+  if (yaml && source.recordLanguageField && document.getIn([...fieldPath.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId) throw new Error(`Cannot edit YAML field with a stale language identity: ${label}`);
   const inspectedComponent = component ? inspectComponentJson(raw) : null;
   const content = inspectedComponent?.value;
   if (component && (!inspectedComponent.complete || !content)) throw new Error(`Cannot edit component field ${label}: invalid or ambiguous JSON content`);

@@ -161,6 +161,7 @@ const INLINE_KINDS = [
   { kind: 'page-summary', dir: 'web-pages', suffix: '.webpage.summary.html', mode: 'markup' },
   { kind: 'basic-form-js', dir: 'basic-forms', suffix: '.basicform.custom_javascript.js', mode: 'block', tag: 'script' },
   { kind: 'advanced-form-step-js', dir: 'advanced-forms', suffix: '.advancedformstep.custom_javascript.js', mode: 'block', tag: 'script' },
+  { kind: 'advanced-form-step-js', dir: 'advanced-form-steps', suffix: '.advancedformstep.custom_javascript.js', mode: 'block', tag: 'script' },
   { kind: 'list-js', dir: 'lists', suffix: '.list.custom_javascript.js', mode: 'block', tag: 'script' },
   { kind: 'web-template', dir: 'web-templates', suffix: '.webtemplate.source.html', mode: 'markup' },
   { kind: 'content-snippet', dir: 'content-snippets', suffix: '.contentsnippet.value.html', mode: 'markup' },
@@ -169,6 +170,8 @@ const INLINE_KINDS = [
 // Rendered literal fields; localized JSON values are extracted individually, preserving LCIDs
 // and other configuration. Structural, localization and association edits still need deployment.
 const YAML_MARKUP_KINDS = [
+  { dir: 'content-snippets', suffix: '.contentsnippet.yml', fields: ['adx_value'] },
+  { dir: 'advanced-form-steps', suffix: '.advancedformstep.yml', fields: ['adx_title'] },
   { file: 'shortcut.yml', fields: ['adx_description'] },
   { dir: 'shortcuts', suffix: '.shortcut.yml', fields: ['adx_description'] },
   { dir: 'web-files', suffix: '.webfile.yml', fields: ['adx_summary'] },
@@ -182,6 +185,8 @@ const YAML_MARKUP_KINDS = [
 ];
 // The same fields in a .powerpages-site (short-key) export: unprefixed keys, one web link per file.
 const SHORT_KEY_MARKUP_KINDS = [
+  { dir: 'content-snippets', suffix: '.contentsnippet.yml', fields: ['value'] },
+  { dir: 'advanced-form-steps', suffix: '.advancedformstep.yml', fields: ['title'] },
   { file: 'shortcut.yml', fields: ['description'] },
   { dir: 'shortcuts', suffix: '.shortcut.yml', fields: ['description'] },
   { dir: 'web-files', suffix: '.webfile.yml', fields: ['summary'] },
@@ -216,6 +221,7 @@ const yamlField = (source) => (raw) => {
   const content = source.parsedYaml?.(raw) ?? parseYaml(raw, true);
   if (content.__error) return null;
   if (source.recordId && atPath(content, [...source.fieldPath.slice(0, -1), source.recordIdField]) !== source.recordId) return null;
+  if (source.recordLanguageField && atPath(content, [...source.fieldPath.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId) return null;
   let value = atPath(content, source.fieldPath);
   if (source.jsonPath) {
     try {
@@ -233,6 +239,7 @@ function stripPreviewFields(before, after, sources) {
   for (const source of sources) {
     const keys = source.fieldPath ?? [source.field];
     if (source.recordId && (atPath(before, [...keys.slice(0, -1), source.recordIdField]) !== source.recordId || atPath(after, [...keys.slice(0, -1), source.recordIdField]) !== source.recordId)) continue;
+    if (source.recordLanguageField && (atPath(before, [...keys.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId || atPath(after, [...keys.slice(0, -1), source.recordLanguageField]) !== source.recordLanguageId)) continue;
     const oldValue = atPath(before, keys);
     const newValue = atPath(after, keys);
     if (source.jsonPath) {
@@ -924,9 +931,17 @@ export class PortalModel {
     /** @type {Map<string, {id:string, partialUrl:string, parentId:string|null, name:string, dir:string, isRoot:boolean}>} */
     this.pages = new Map();
     const pagesDir = path.join(this.sourceDir, 'web-pages');
-    for (const file of this.#files(pagesDir)) {
-      if (!file.endsWith('.webpage.yml')) continue;
-      const y = this.#readYaml(file);
+    const pageRecords = this.#files(pagesDir).filter(file => file.endsWith('.webpage.yml'))
+      .map(file => ({file, y: this.#readYaml(file)}));
+    // A language record can explicitly identify a root exported in content-pages.
+    // Folder placement alone must neither erase that identity nor create an orphan route.
+    const referencedRoots = new Set(pageRecords.flatMap(({y}) => {
+      const root = yamlValue(y, 'rootwebpageid'), id = yamlId(y, 'webpage');
+      return id && root && String(root).toLowerCase() !== String(id).toLowerCase() &&
+        yamlValue(y, 'webpagelanguageid') && Number(y.statecode ?? y.adx_statecode) !== 1
+        ? [String(root).toLowerCase()] : [];
+    }));
+    for (const {file, y} of pageRecords) {
       if (!yamlId(y, 'webpage')) continue;
       const id = String(yamlId(y, 'webpage')).toLowerCase();
       if (Number(y.statecode ?? y.adx_statecode) === 1) {
@@ -940,8 +955,9 @@ export class PortalModel {
         this.pageAlias.set(id, rootId);
         continue;
       }
-      // A language record lacking its root cannot establish a separate URL tree.
-      if (path.basename(path.dirname(file)) === 'content-pages' || path.basename(path.dirname(path.dirname(file))) === 'content-pages') {
+      // Only an independent active language reference establishes a displaced root.
+      if ((path.basename(path.dirname(file)) === 'content-pages' || path.basename(path.dirname(path.dirname(file))) === 'content-pages') &&
+          !(!rootId && !yamlValue(y, 'webpagelanguageid') && referencedRoots.has(id))) {
         this.warnings.push(`${path.relative(this.sourceDir, file).replaceAll('\\','/')}: language page has no root page`);
         continue;
       }
@@ -1045,7 +1061,7 @@ export class PortalModel {
   #loadInlineSources() {
     /** @type {Array<object>} */
     this.inlineSources = [];
-    for (const dir of ['basic-forms', 'advanced-forms']) {
+    for (const dir of ['basic-forms', 'advanced-forms', 'advanced-form-steps']) {
       for (const file of this.#files(path.join(this.sourceDir, dir))) {
         if (file.endsWith('.advancedformstep.yml')) {
           const metadata = this.#readYaml(file);
@@ -1126,7 +1142,8 @@ export class PortalModel {
             this.inactiveSources.push({ file, rel });
             continue;
           }
-          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_webformstepid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'adx_shortcutid', 'adx_webfileid', 'id'].find((key) => record[key] != null);
+          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_webformstepid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'adx_shortcutid', 'adx_webfileid', 'adx_contentsnippetid', 'id'].find((key) => record[key] != null);
+          const recordLanguageField = ['adx_contentsnippetlanguageid', 'contentsnippetlanguageid'].find(key => Object.hasOwn(record, key));
           for (const field of def.fields) {
             for (const value of markupValues(record[field])) {
               const fieldPath = index === null ? [field] : [index, field];
@@ -1138,6 +1155,7 @@ export class PortalModel {
                 format: 'yaml', field, fieldPath, ...value,
                 recordId: recordIdField ? record[recordIdField] : undefined,
                 recordIdField,
+                ...(recordLanguageField ? { recordLanguageField, recordLanguageId: record[recordLanguageField] } : {}),
                 pageUrl: null, usedOn: this.pagesShowing(formId),
               };
               source.extract = yamlField(source);

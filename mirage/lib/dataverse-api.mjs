@@ -759,14 +759,27 @@ function extensionContext(c, { user, caller, identity, bodyBuffer }) {
 }
 
 // The JSON body of a write, parsed; a body that is not JSON is the Web API's malformed-payload error.
-function bodyOf(method, headers, bodyBuffer, route) {
+function bodyOf(method, headers, bodyBuffer, route, isRecordSet = () => false) {
   if (!bodyBuffer.length || !BODY_METHODS.has(method) || !/json/i.test(headers["content-type"] ?? "")) return undefined;
   try {
     // Exact parse: a decimal, money or Int64 literal a double cannot hold keeps its digits (exact-numeric.mjs).
-    return parseExactJson(bodyBuffer.toString("utf8"));
+    return parseExactJson(bodyBuffer.toString("utf8").replace(/^\uFEFF/, ""));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     const set = route?.set ?? route?.name ?? "";
+    const recordWrite = (method === "POST" && route?.kind === "collection")
+      || (method === "PATCH" && route?.kind === "entity");
+    if (recordWrite && isRecordSet(set)) {
+      const entity = method === "POST" ? set : "";
+      const failure = new DataError(
+        `Error identified in Payload provided by the user for Entity :'${entity}', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : System.ArgumentException: Stream was not readable.`,
+        400,
+        "InvalidLookup",
+        { innerCode: "0x80048d19" },
+      );
+      Object.defineProperty(failure, "cause", { value: error, configurable: true });
+      throw failure;
+    }
     throw new DataError(
       `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: ${error.message}`,
       400,
@@ -791,7 +804,7 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyBuff
   if (plugins && !holds("prvBypassCustomPlugins")) throw privilegeDenied(d, caller, "prvBypassCustomPlugins");
   if (logic.length && !holds("prvBypassCustomBusinessLogic")) throw privilegeDenied(d, caller, "prvBypassCustomBusinessLogic");
   const bypassCustomPlugins = plugins || logic.includes("customsync");
-  const body = bodyOf(method, headers, bodyBuffer, route);
+  const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
 
   const common = { req, origin, requestId, prefer, method, url, body, bodyBuffer, user, caller, identity, bypassCustomPlugins };
   const operated = await operationCall(d, route, common);

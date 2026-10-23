@@ -1,3 +1,4 @@
+import { ensureCaptureDestination } from "./baseline-paths.mjs";
 // Baseline capture: one self-contained page runner executes a scripted scenario on a Playwright
 // page and collects raw evidence (ordered requests and responses, settled DOM, element inventory,
 // console, screenshot). The runner has no imports so the same source can run inside a browser
@@ -417,11 +418,11 @@ export async function pageRunner(page, options) {
 export const pageRunnerSource = () => pageRunner.toString();
 
 /** Redact raw evidence and write the scenario folder. Returns the capture meta. */
-export async function writeCapture({ summary, raw }, { outDir, origin, side, meta = {}, scenarioId = null }) {
+export async function writeCapture({ summary, raw }, { outDir, outputRoot = outDir, origin, side, meta = {}, scenarioId = null }) {
   ({ summary, raw } = redactCaptureQueryValues(redactCaptureControlEvidence({ summary, raw })));
   // Evidence of another scenario never lands in this folder (a late post of an abandoned bridge run once did).
   if (scenarioId && summary?.id !== scenarioId) throw new Error(`Capture of ${summary?.id ?? "(unknown)"} refused for scenario ${scenarioId}`);
-  await fs.mkdir(outDir, { recursive: true });
+  await ensureCaptureDestination(outDir, outputRoot, { files: ["requests.json", "dom.html", "elements.json", "frames.json", "console.json", "screenshot.png", "meta.json"] });
   const origins = [origin];
   // Mirage's own instrumentation (/__sim/ event stream, readiness probes) is not portal traffic and is not evidence.
   const requests = raw.requests.filter((entry) => !/\/__sim\//.test(entry.url ?? "")).map((entry) => {
@@ -502,7 +503,8 @@ export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
 }
 
 /** In-process capture (local Mirage): run the runner on `page`'s context and write the folder. */
-export async function captureScenario(page, scenario, { origin, outDir, ids = {}, side, meta = {}, matrix = {}, allowWrites = true }) {
+export async function captureScenario(page, scenario, { origin, outDir, outputRoot = outDir, ids = {}, side, meta = {}, matrix = {}, allowWrites = true }) {
+  await ensureCaptureDestination(outDir, outputRoot, { create: false });
   const result = await pageRunner(page, runnerOptions({ scenario, origin, ids, matrix, allowWrites }));
-  return writeCapture(result, { outDir, origin, side, meta, scenarioId: scenario.id });
+  return writeCapture(result, { outDir, outputRoot, origin, side, meta, scenarioId: scenario.id });
 }
