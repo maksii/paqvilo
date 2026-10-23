@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Panel refresh controls must never repeat a form POST, including URLs with fragments.
 // All submissions below go to a disposable loopback fixture, never a portal environment.
 import { test } from 'node:test';
@@ -33,15 +34,13 @@ test('panel reload, mode, scope and override toggles refresh through GET after a
       <h1 id="result">Synthetic form result</h1><script src="/scripts/app.js"></script></body></html>`);
   });
   server.on('connect', (_request, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });
-  t.after(async () => {
-    await panel?.dispose();
-    await detach?.();
-    await browser?.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    fx.cleanup();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise((resolve) => server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;

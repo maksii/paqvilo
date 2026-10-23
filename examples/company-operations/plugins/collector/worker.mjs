@@ -1,3 +1,5 @@
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 // Run independently from the Dataverse business transaction. Azure App Service managed identity only.
 import{createHash}from'node:crypto';import{DataverseClient}from'paqvilo/dataverse';import{identityToken,blobRequest}from'./collector.mjs';
 import{validateEnvelope,chunks}from'./protocol.mjs';
@@ -12,4 +14,17 @@ export async function persist(envelope){
  await client.request(`pqvd_testoperations(${envelope.operationId})`,{method:'PATCH',body:{pqvd_capturestate:183270001,pqvd_backendlastat:new Date().toISOString(),pqvd_collectorreference:`${envelope.operationId}/${envelope.eventKey}`,pqvd_serversummary:JSON.stringify({captureMode:'DurableCollector',durableReceipt:true,dataversePersisted:true,complete:false,receiptId:`${envelope.operationId}/${envelope.eventKey}`,missingArtifactReconciliation:'Runner manifest required'})}});return{state:'Persisted',parts:pieces.length};
 }
 // Explicit receipt argument avoids blindly processing unrelated blobs and supports replay after power loss.
-if(process.argv[2]){if(!/^[a-f0-9-]{36}\/[a-f0-9]{64}$/.test(process.argv[2]))throw new Error('Expected operation/event receipt ID.');const receipt=await blobRequest(`events/${process.argv[2]}.json`);if(!receipt.ok)throw new Error('ReceiptUnavailable');console.log(JSON.stringify(await persist(await receipt.json())));}
+async function main(receiptId) {
+ if(!/^[a-f0-9-]{36}\/[a-f0-9]{64}$/.test(receiptId))throw new Error('Expected operation/event receipt ID.');
+ const receipt=await blobRequest(`events/${receiptId}.json`);
+ if(!receipt.ok)throw new Error('ReceiptUnavailable');
+ console.log(JSON.stringify(await persist(await receipt.json())));
+}
+if(process.argv[2]&&process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+ main(process.argv[2]).catch(error=>{
+  const code=['DATAVERSE_HTTP_ERROR','READ_FAILED','UNKNOWN_COMMIT'].includes(error?.code)?error.code:'WORKER_FAILED';
+  const status=Number.isInteger(error?.status)&&error.status>=100&&error.status<=599?error.status:null;
+  console.error(JSON.stringify({error:'CollectorWorkerFailed',code,status}));
+  process.exitCode=1;
+ });
+}

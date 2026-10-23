@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,11 +27,12 @@ for (const mirage of [false, true]) test(`${mirage ? 'Mirage' : 'live-source Len
   const project = path.join(fx.work, 'project.json');
   fs.writeFileSync(project, JSON.stringify({ version: 2, portals: [{ id: 'fixture', path: './portal', observed }], solutions: [{ id: 'sample', path: './solution' }] }));
   let app, server, browser, panel, detach;
-  t.after(async () => {
-    await panel?.dispose(); await detach?.(); await browser?.close(); await app?.close();
-    if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
-    fx.cleanup();
-  });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await app?.close(); });
+  ownedFixture(t).add(async () => { if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   let origin;
   if (mirage) {
     app = await createSimulator({ sourceDir: fx.portal, solutionRoots: [fx.solution], observed, stateFile: path.join(fx.work, 'state.json'), watch: false });

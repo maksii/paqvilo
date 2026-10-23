@@ -5,10 +5,11 @@ import { loadProjectConfig } from '../../mirage/lib/project-config.mjs';
 import { solutionWatchFilter } from '../../mirage/lib/solution-roots.mjs';
 import { standaloneMirageConfiguration } from '../standalone-mirage.mjs';
 import { openBrowser } from '../browser.mjs';
-import { interceptOrigin } from '../intercept.mjs';
+import { interceptOrigins } from '../intercept.mjs';
 import { refreshUrl } from '../navigation.mjs';
 import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
-import { createModelDrivenOverlay, importModelDrivenProject, modelDrivenOrigin, readModelDrivenResourceMap } from '../model-driven.mjs';
+import { createModelDrivenOverlay, importModelDrivenProject } from '../model-driven.mjs';
+import { modelDrivenTargets, readTargetMappings, modelDrivenTargetSessions } from '../model-driven-targets.mjs';
 import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
 
 const cleanError = error => String(error.message).replace(/https?:\/\/[^\s<>"']+/g, value => {
@@ -59,52 +60,87 @@ async function runModelDriven(args, action, progress) {
   if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
   if (args.json && action !== 'inspect') throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
   progress?.phase('configuration');
-  const origin = modelDrivenOrigin(args.url), project = await loadProjectConfig(args.project);
+  const project = await loadProjectConfig(args.project);
+  const { targets, selected } = modelDrivenTargets(project, args);
   progress?.phase('source discovery and Solution resources');
   let imported = await importModelDrivenProject(project);
   progress?.phase('resource mappings');
-  const mappings = await readModelDrivenResourceMap(args['resource-map']);
-  let page, inspector;
-  const overlay = createModelDrivenOverlay({ origin, imported, mappings, ownsRequest: request => request.frame?.().page?.() === page,
-    onApplied: event => { if (event.count === 1) console.log(`Applied local Solution resource: ${event.resource}`); inspector?.refresh(); } });
+  const mappings = await readTargetMappings(targets, imported);
+  const origin = selected.origin;
+  let page, targetSessions;
   if (action === 'inspect') {
-    const report = { ...overlay.report(), trustedExtensions: project.modelDriven?.trustedExtensions ?? false };
+    const overlay = createModelDrivenOverlay({ origin, imported, mappings: mappings.get(selected.id) });
+    const report = { ...overlay.report(), selectedTarget: selected.id, targets: targets.map(({ id, origin }) => ({ id, origin })), trustedExtensions: project.modelDriven?.trustedExtensions ?? false };
     if (args.json) console.log(JSON.stringify(report));
     else console.log(`${report.resources.length} declared Solution resources; ${report.unbound.length} require exact native resource mappings.\n${JSON.stringify(report, null, 2)}`);
     return 0;
   }
   if (!project.modelDriven?.trustedExtensions) throw new Error('Set modelDriven.trustedExtensions: true in the project to execute local Solution code in the model-driven browser.');
-  const destination = args.path ?? '/main.aspx';
-  const url = new URL(destination, origin);
-  if (!destination.startsWith('/') || destination.startsWith('//') || destination.includes('\\') || url.origin !== origin) throw new Error('--path must be local to the selected environment origin.');
+  const url = new URL(selected.startPath, origin);
   const timeout = args.timeout == null ? null : Number(args.timeout);
   if (timeout != null && (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600000)) throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
   progress?.phase('browser setup');
   const { context, close, attached, debugPort } = await openBrowser(cfg, { debugPort: cfg.browser.debugPort });
-  let release, watcher, timer, reloadTimer, reloads, stopping = false, stop;
+  let release, watcher, timer, reloadTimer, reloads, stopping = false, stop, primaryFailure;
   const stopped = new Promise(resolve => { stop = resolve; });
   const browser = context.browser();
   const onError = error => console.error(`Model-driven overlay: ${cleanError(error)}`);
+  const onNavigation = frame => {
+    if (frame !== page.mainFrame()) return;
+    let nextOrigin; try { nextOrigin = new URL(page.url()).origin; } catch { return; }
+    if (!targets.some(target => target.origin === nextOrigin)) targetSessions?.suspend().catch(error => { primaryFailure ??= error; onError(error); stop(); });
+  };
   context.once('close', stop); browser?.once('disconnected', stop); process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
     page = attached ? await context.newPage() : context.pages()[0] ?? await context.newPage();
     page.once('close', stop);
     progress?.phase('interception and inspector setup');
-    release = await interceptOrigin(context, origin, route => { inspector?.prepareRequest(route); return overlay.handle(route); }, { bypassCSP: cfg.browser.bypassCSP, ownsPage: candidate => candidate === page, onError });
-    inspector = await startModelDrivenInspector({ context, page, overlay, cfg, imported, attached, stop,
-      runtime: { watching: !args['no-reload'], debugPort: debugPort ?? null } });
-    if (!args['no-reload']) {
+    targetSessions = modelDrivenTargetSessions({ targets, initial: selected, imported, mappings,
+      liveReload: !args['no-reload'], ownsRequest: request => request.frame?.().page?.() === page,
+      onApplied: event => { if (event.count === 1) console.log(`Applied local Solution resource: ${event.resource}`); },
+      createInspector: (session, source) => startModelDrivenInspector({ context, page, overlay: session.overlay,
+        cfg: { ...cfg, origin: session.target.origin, siteName: session.target.siteName, envName: session.target.envName,
+          caution: session.target.caution, devTargets: targets.map(({ siteName, envName, origin, startPath, caution }) => ({ siteName, envName, origin, startPath, caution })) },
+        imported: source, attached, stop, savedState: session.saved,
+        runtime: { watching: true, liveReload: session.live, setLive(value) { session.live = value; }, debugPort: debugPort ?? null } }),
+    });
+    release = await interceptOrigins(context, targets.map(target => target.origin), async route => {
+      const request = route.request(), targetOrigin = new URL(request.url()).origin;
+      try {
+        if (request.resourceType() === 'document' && !request.frame()?.parentFrame()) {
+          const previous = targetSessions.current();
+          previous?.inspector?.prepareRequest(route);
+          // Chromium cannot answer Page/Runtime teardown commands while its
+          // next main document is Fetch-paused. Continue navigation first;
+          // declared asset routes below wait for the serialized transition.
+          const transition = targetSessions.activate(targetOrigin);
+          void transition.catch(error => { primaryFailure ??= error; onError(error); stop(); });
+          route.removeRequestHeader('x-paqvilo-native-comparison');
+          return route.fallback();
+        }
+        const current = await targetSessions.ready();
+        if (current?.target.origin !== targetOrigin || !current.inspector) {
+          route.removeRequestHeader('x-paqvilo-native-comparison');
+          return route.fallback();
+        }
+        current.inspector.prepareRequest(route);
+        return current.overlay.handle(route);
+      } catch (error) { primaryFailure ??= error; onError(error); stop(); return route.abort(); }
+    }, { bypassCSP: cfg.browser.bypassCSP, ownsPage: candidate => candidate === page, onError });
+    await targetSessions.activate(origin);
+    page.on('framenavigated', onNavigation);
+    {
       progress?.phase('source watcher setup');
-      const mapFile = args['resource-map'] ? path.resolve(args['resource-map']) : null;
+      const mapFiles = targets.flatMap(target => target.mapFile ? [target.mapFile] : []);
       const clientSources = project.modelDriven?.clientSources ?? [], sourceRoots = [...project.solutionRoots, ...clientSources];
       const watchFilter = () => solutionWatchFilter({ roots: sourceRoots, layers: [...imported.layers, ...clientSources.map(dir => ({ type: 'directory', dir }))] });
       let ignoredSource = watchFilter();
       let watchedLayers = new Set(imported.layers.filter(layer => layer.type === 'directory').map(layer => layer.dir));
-      watcher = chokidar.watch([...sourceRoots, ...(mapFile ? [mapFile] : [])], { ignoreInitial: true,
+      watcher = chokidar.watch([...sourceRoots, ...mapFiles], { ignoreInitial: true,
         ignored: (candidate, stats) => {
           const resolved = path.resolve(candidate);
-          return mapFile && (resolved === mapFile || mapFile.startsWith(resolved + path.sep)) ? false : ignoredSource(candidate, stats);
+          return mapFiles.some(mapFile => resolved === mapFile || mapFile.startsWith(resolved + path.sep)) ? false : ignoredSource(candidate, stats);
         } });
       watcher.on('error', onError);
       await new Promise((resolve, reject) => {
@@ -116,9 +152,10 @@ async function runModelDriven(args, action, progress) {
       reloads = modelDrivenReloadQueue(async () => {
         if (stopping) return;
         try {
-          const next = await importModelDrivenProject(project), map = await readModelDrivenResourceMap(args['resource-map']);
-          publishModelDrivenReload(overlay, next, map); imported = next;
-          inspector.refresh(next);
+          const next = await importModelDrivenProject(project), maps = await readTargetMappings(targets, next);
+          // Preserve the same importer failure admission as the one-target runner.
+          publishModelDrivenReload({ replace() {} }, next, []);
+          await targetSessions.replace(next, maps); imported = next;
           ignoredSource = watchFilter();
           const nextLayers = new Set(imported.layers.filter(layer => layer.type === 'directory').map(layer => layer.dir));
           const addedLayers = [...nextLayers].filter(dir => !watchedLayers.has(dir));
@@ -126,7 +163,8 @@ async function runModelDriven(args, action, progress) {
           watchedLayers = nextLayers;
           // Only this session's own app tab reloads. Login pages and attached
           // user tabs remain under their existing owner's control.
-          if (!stopping && await refreshModelDrivenPage(page, origin)) console.log('Reloaded model-driven app with local Solution resources.');
+          const active = targetSessions.current();
+          if (!stopping && active?.inspector && active.live && await refreshModelDrivenPage(page, active.target.origin)) console.log('Reloaded model-driven app with local Solution resources.');
         } catch (error) { onError(error); }
       });
       watcher.on('all', () => {
@@ -142,17 +180,29 @@ async function runModelDriven(args, action, progress) {
     catch (error) { throw new Error(`Could not open the model-driven app: ${cleanError(error)}`); }
     if (loaded) console.log('Model-driven overlay installed; document and initial resources loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.');
     await stopped;
+    if (primaryFailure) throw primaryFailure;
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
     stopping = true; clearTimeout(timer); clearTimeout(reloadTimer);
-    process.off('SIGINT', stop); process.off('SIGTERM', stop); context.off('close', stop); browser?.off('disconnected', stop); page?.off('close', stop);
+    process.off('SIGINT', stop); process.off('SIGTERM', stop); context.off('close', stop); browser?.off('disconnected', stop); page?.off('close', stop); page?.off('framenavigated', onNavigation);
+    const cleanupFailures = [];
     // Finish every cleanup step even if a disconnected browser rejects one.
-    for (const cleanup of [() => watcher?.close(), () => reloads?.close(), () => inspector?.close(), () => release?.(),
+    for (const cleanup of [() => watcher?.close(), () => reloads?.close(), () => targetSessions?.close(), () => release?.(),
       () => attached && page && !page.isClosed() ? page.close() : undefined, close]) {
-      try { await cleanup(); } catch (error) { onError(error); }
+      try { await cleanup(); } catch (error) { cleanupFailures.push(error); onError(error); }
     }
-    const report = overlay.report();
-    if (args.output) { const file = path.resolve(args.output); report.writesFiles = [file]; await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(report, null, 2) + '\n'); console.log(`Model-driven overlay report: ${file}`); }
-    console.log(`Model-driven overlay stopped: ${report.applied} local resource applications; ${report.currentRevisionApplied} on the current revision; ${report.resources.filter(resource => resource.currentRevisionApplied === 0).length} current resources not observed.`);
+    const report = targetSessions?.report() ?? createModelDrivenOverlay({ origin, imported, mappings: mappings.get(selected.id) }).report();
+    try {
+      if (args.output) { const file = path.resolve(args.output); report.writesFiles = [file]; await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(report, null, 2) + '\n'); console.log(`Model-driven overlay report: ${file}`); }
+    } catch (error) { cleanupFailures.push(error); onError(error); }
+    console.log(`Model-driven overlay stopped${cleanupFailures.length ? ' with cleanup failures' : ''}: ${report.applied} local resource applications; ${report.currentRevisionApplied} on the current revision; ${report.resources.filter(resource => resource.currentRevisionApplied === 0).length} current resources not observed.`);
+    if (cleanupFailures.length) {
+      const causes = [...new Set([...(primaryFailure ? [primaryFailure] : []), ...cleanupFailures])];
+      if (causes.length === 1) throw causes[0];
+      throw new AggregateError(causes, primaryFailure ? `${cleanError(primaryFailure)} (cleanup also failed).` : 'Model-driven cleanup failed.');
+    }
   }
   return 0;
 }

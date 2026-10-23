@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,11 +14,10 @@ test('agent diagnostics distinguish documents and capture initial popup navigati
   const servers = [];
   let browser;
   let agent;
-  t.after(async () => {
-    await agent?.close(); await browser?.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 });
-  });
+  ownedFixture(t).add(async () => { await agent?.close(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }); });
   const serve = async (handler) => {
     const server = http.createServer(handler);
     server.on('connect', (_request, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -16,7 +17,9 @@ test('startup separates delayed navigation, delayed usable application, failures
     setTimeout(() => res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><p id="notice">${req.url === '/main.aspx?error' ? 'Invented catalogue failure' : ''}</p>${req.url.startsWith('/main.aspx') ? `<script>setTimeout(() => document.documentElement.dataset.mirageAppState = '${req.url.includes('error') ? 'error' : 'ready'}', 150)</script>` : req.url === '/slow-app' ? '<script>fetch("/app-data")</script>' : ''}`), delay);
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  t.after(async () => { await browser?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const origin = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   const page = await browser.newPage();
@@ -50,4 +53,126 @@ test('startup separates delayed navigation, delayed usable application, failures
   await closingPage.close();
   assert.equal(await closing, false, 'closing during a readiness wait is normal dev shutdown');
   progress.close();
+});
+
+function hideOrphanTerminalEvents(page) {
+  const bindings = new Map();
+  return new Proxy(page, {
+    get(target, key) {
+      if (key === "on")
+        return (event, handler) => {
+          const wrapper = ["requestfinished", "requestfailed"].includes(event)
+            ? (r) => {
+                if (!new URL(r.url()).pathname.startsWith("/orphan"))
+                  handler(r);
+              }
+            : handler;
+          bindings.set(handler + event, wrapper);
+          target.on(event, wrapper);
+        };
+      if (key === "off")
+        return (event, handler) =>
+          target.off(event, bindings.get(handler + event) ?? handler);
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+test("real browser replacement finishes after current data despite missing old terminal protocol event", async (t) => {
+  let essentialFinished = false;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/orphan") return;
+    if (req.url === "/essential") {
+      setTimeout(() => {
+        essentialFinished = true;
+        res.end("current");
+      }, 220);
+      return;
+    }
+    res
+      .writeHead(200, { "content-type": "text/html" })
+      .end(
+        req.url === "/first"
+          ? '<script>fetch("/orphan")</script><p>first</p>'
+          : '<script>fetch("/essential")</script><p>second</p>',
+      );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const browser = await chromium.launch(
+    browserLaunchOptions({ headless: true }),
+  );
+  ownedFixture(t).add(async () => {
+    await browser.close();
+  });
+  ownedFixture(t).add(async () => {
+    server.closeAllConnections();
+  });
+  ownedFixture(t).add(async () => {
+    await new Promise((r) => server.close(r));
+  });
+  const page = await browser.newPage(),
+    origin = "http://127.0.0.1:" + server.address().port;
+  const wrapped = hideOrphanTerminalEvents(page);
+  const loading = waitForStartupPage(wrapped, origin + "/first", {
+    timeout: 3000,
+  });
+  await page.locator("p").waitFor();
+  await page.goto(origin + "/second", { waitUntil: "domcontentloaded" });
+  assert.equal(await loading, true);
+  assert.equal(
+    essentialFinished,
+    true,
+    "current document request must really finish",
+  );
+  assert.equal(await page.locator("p").textContent(), "second");
+  await assert.rejects(
+    waitForStartupPage(wrapped, origin + "/first", { timeout: 200 }),
+    /did not settle/,
+    "a current document orphan remains a failure",
+  );
+});
+test("real browser detached frame orphan cannot hide current parent fetch", async (t) => {
+  let parentFinished = false;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/orphan-child") return;
+    if (req.url === "/parent-essential") {
+      setTimeout(() => {
+        parentFinished = true;
+        res.end("data");
+      }, 200);
+      return;
+    }
+    res
+      .writeHead(200, { "content-type": "text/html" })
+      .end(
+        req.url === "/child"
+          ? '<script>fetch("/orphan-child")</script>'
+          : '<iframe src="/child"></iframe><script>fetch("/parent-essential");setTimeout(()=>document.querySelector("iframe").remove(),100)</script>',
+      );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const browser = await chromium.launch(
+    browserLaunchOptions({ headless: true }),
+  );
+  ownedFixture(t).add(async () => {
+    await browser.close();
+  });
+  ownedFixture(t).add(async () => {
+    server.closeAllConnections();
+  });
+  ownedFixture(t).add(async () => {
+    await new Promise((r) => server.close(r));
+  });
+  const page = await browser.newPage();
+  assert.equal(
+    await waitForStartupPage(
+      hideOrphanTerminalEvents(page),
+      "http://127.0.0.1:" + server.address().port,
+      { timeout: 3000 },
+    ),
+    true,
+  );
+  assert.equal(parentFinished, true);
 });

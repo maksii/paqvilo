@@ -8,7 +8,7 @@ and loopback fixtures; they do not certify complete Power Pages parity.
 
 ### Changed
 
-- **Model-driven Lense Actions:** integrate reviewed Level Up workflows into a contextual inspector with searchable results, native navigation, diagnostics, reversible form adjustments, scoped Web API request identity, and explicit asynchronous custom commands. See the [functionality map and behavior contracts](model-driven-actions.md). Power Pages retains its separate inspector.
+- **Model-driven Lense Actions:** use the shared Power Pages Lense panel with model-driven source inspection and an Actions tab for searchable results, native navigation, diagnostics, reversible form adjustments, scoped Web API request identity, and explicit asynchronous custom commands. See the [functionality map and behavior contracts](model-driven-actions.md).
 
 - **Consumer follow-up (191, 206–218):** preserve JSON batch atomicity through dependency ordering; compose standalone managed identity and platform settings; correct field/validation diagnostics; expose relocation-stable Solution content fingerprints; retain configured site defaults in matrix runtimes; and scope client-extension sources independently of metadata. Organization startup shares one private seed transaction, bootstrap-only presets preserve restart edits, and catalogue security work yields between tables. Startup reports phases and separates listener, document and application readiness. X-ray keeps generic inactive-template matches uncertain and inspects individual accessible same-origin frame controls. See the [feedback review and regression map](consumer-feedback.md) and [measured loading improvements](../mirage/docs/runtime-performance.md).
 

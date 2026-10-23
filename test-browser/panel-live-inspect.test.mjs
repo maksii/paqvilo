@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Live Lense mode, using only invented exports and a disposable loopback portal.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,11 +36,12 @@ test('live Inspect works without Mirage and opens exact project Solution sources
     response.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><html><head><title>Widget fixture</title><link rel="stylesheet" href="/widget.css?private=excluded"></head><body><h1>Widgets</h1><form data-entityname="fx_widget"><span data-form-layout='{"Id":"widget-edit","EntityName":"fx_widget"}'></span><label for="fx_title">Title</label><input id="fx_title" name="fx_title" value="private-value-must-not-be-inspected"><input type="password" id="password" value="private-password"></form><div class="subgrid" id="ChildGrid"><div class="entity-grid" data-selected-view="child-view"></div></div><a href="/other/" id="other">Other page</a><script src="/widget.js"></script></body></html>`);
   });
   let browser, panel, detach;
-  t.after(async () => {
-    await panel?.dispose(); await detach?.(); await browser?.close();
-    server.closeAllConnections(); await new Promise((resolve) => server.close(resolve));
-    fx.cleanup();
-  });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise((resolve) => server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,8 +10,8 @@ import {xrayUi} from '../lense/xray-ui.mjs';
 import {inspectionFixture} from '../test/source-inspection-fixture.mjs';
 
 async function fixture(t,html){
-  const fx=inspectionFixture();t.after(fx.cleanup);
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  const fx=inspectionFixture();ownedFixture(t).remove(fx.cleanup);
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));ownedFixture(t).add(()=>browser.close());
   const page=await browser.newPage();
   await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:html}));
   await page.goto('http://127.0.0.1:11111/');

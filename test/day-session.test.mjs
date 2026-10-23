@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ import { createFixture, SITE } from './fixture.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8', timeout: 30_000 }).trim();
-function fixture(t) { const fx = createFixture(); t.after(() => fx.cleanup()); return fx; }
+function fixture(t) { const fx = createFixture(); ownedFixture(t).remove(() => fx.cleanup()); return fx; }
 function session(fx) { return new OverlaySession({ sourceDir: fx.dir, site: structuredClone(SITE), origin: 'https://portal.example' }); }
 
 test('scratch saves are ignored while new page code and missing asset payloads rebuild the index', async (t) => {
@@ -95,7 +96,7 @@ test('repository watching notices a commit with a pinned baseline and polling st
   const initial = await s.refreshHead();
   s.baseline = new GitBaseline(fx.dir, initial.commit);
   const watcher = watchSources(s, { pages: () => [] }, { baselinePollMs: 60_000, log: () => {} });
-  t.after(() => watcher.close());
+  ownedFixture(t).add(() => watcher.close());
   await watcher.ready;
   const updated = once(s, 'head', { signal: AbortSignal.timeout(10_000) });
   fx.write('web-files/app.js', 'window.committed = true;');
@@ -105,7 +106,7 @@ test('repository watching notices a commit with a pinned baseline and polling st
   assert.equal(s.baseline.commit, initial.commit, 'commit does not erase pinned patches');
   await watcher.close();
   const poll = watchSources(s, { pages: () => [] }, { gitWatch: false, baselinePollMs: 30, log: () => {} });
-  t.after(() => poll.close());
+  ownedFixture(t).add(() => poll.close());
   const renamed = once(s, 'head', { signal: AbortSignal.timeout(10_000) });
   git(fx.dir, 'switch', '-c', 'polling-still-aware');
   assert.equal((await renamed)[0].branch, 'polling-still-aware');

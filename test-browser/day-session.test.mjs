@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Sustained saves and panel controls against a disposable loopback portal only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,14 +51,12 @@ test('sustained saves preserve forms, scope reloads, show Git drift and repin HE
       <body><h1>${about ? 'About' : 'Home'}</h1><input id="draft" placeholder="Unsaved form input"><p class="hero">Page CSS</p><p id="web-style">Web CSS</p></body></html>`);
   });
   server.on('connect', (_request, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });
-  t.after(async () => {
-    await runtime?.close();
-    await browser?.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    fx.cleanup();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await runtime?.close(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise((resolve) => server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;

@@ -1,26 +1,36 @@
 // Browser-only developer tools. Results and transient inputs never enter inspector snapshots.
 export function modelDrivenActionsUi(data) {
-  const host = document.getElementById('paqvilo-model-inspector');
+  const host = (document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector'));
   if (location.origin !== data.origin || !host?.shadowRoot || host.__paqModelInspector?.token !== data.token) return;
   if (host.__paqModelActions?.token === data.token) { host.__paqModelActions.update(data); return; }
   host.__paqModelActions?.dispose();
+  const canonical=host.id==='paqvilo-panel';
   const root = host.shadowRoot, lifetime = new AbortController(), signal = lifetime.signal;
   const sheet = new CSSStyleSheet(); sheet.replaceSync(`
     .actions-panel{position:fixed;left:12px;bottom:68px;width:650px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 92px);overflow:auto;padding:14px;pointer-events:auto;background:white;border:1px solid #c8c8c8;border-radius:6px;box-shadow:0 4px 18px #0003}
     .actions-panel[hidden],[data-actions-hidden]{display:none!important}.actions-bar-identity{position:fixed;left:12px;bottom:64px;max-width:calc(100vw - 24px);padding:8px;background:#fff4ce;color:#6b4d00;border-radius:4px;pointer-events:auto;display:flex;align-items:center;gap:8px}.actions-bar-identity[hidden]{display:none}.actions-head,.actions-toolbar,.actions-item,.actions-buttons{display:flex;align-items:center;gap:8px}.actions-head h2{font-size:16px;margin:0;flex:1}.actions-tabs{display:flex;gap:6px;margin:12px 0}.actions-tabs button[aria-pressed=true]{background:#deecf9;border-color:#0078d4}.actions-panel input,.actions-panel textarea,.actions-panel select{font:inherit;color:inherit;box-sizing:border-box;padding:7px;border:1px solid #a19f9d;border-radius:3px;min-width:0}.actions-search{width:100%}.actions-toolbar{margin:8px 0}.actions-toolbar label{display:flex;gap:5px;align-items:center}.actions-list{max-height:34dvh;overflow:auto;border-block:1px solid #eee;margin:10px 0}.actions-group h3{position:sticky;top:0;background:white;margin:0;padding:7px 0;font-size:13px}.actions-item{border-top:1px solid #eee;padding:7px 0;align-items:flex-start}.actions-item>button:first-child{flex:1;text-align:left;border:0;background:transparent;padding:3px}.actions-item small{display:block;color:#616161;font-size:12px}.actions-star{flex:none;min-width:32px}.actions-detail{padding:10px;background:#f7f9fb;border-radius:4px}.actions-detail h3{margin:0 0 5px}.actions-input{display:flex;flex-direction:column;gap:4px;margin:9px 0}.actions-input:has(input[type=checkbox]){flex-direction:row;align-items:center}.actions-reason{color:#8a4d00;font-size:12px}.actions-result{margin-top:12px;padding-top:10px;border-top:1px solid #c8c8c8}.actions-result h3{margin:0;font-size:14px}.actions-result p{white-space:pre-wrap;overflow-wrap:anywhere}.actions-table-wrap{max-height:32dvh;overflow:auto}.actions-result table{border-collapse:collapse;width:100%;font-size:12px}.actions-result th,.actions-result td{border-bottom:1px solid #eee;padding:6px;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;max-width:360px}.actions-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28dvh;overflow:auto;font:12px/1.5 Consolas,monospace}.actions-identity{padding:9px;background:#fff4ce;color:#6b4d00;margin-top:8px;border-radius:4px}.actions-identity button{margin-left:8px}.actions-identity:empty{display:none}.actions-users{max-height:28dvh;overflow:auto}.actions-users button{display:block;width:100%;text-align:left;margin:5px 0}.actions-code{width:100%;min-height:180px;font:12px/1.5 Consolas,monospace!important;tab-size:2;resize:vertical}.actions-panel :focus-visible{outline:2px solid #0078d4;outline-offset:2px}.actions-status{min-height:20px;color:#005a9e;font-size:12px}.actions-muted{color:#616161;font-size:12px}@media(max-width:650px){.actions-panel{left:6px;bottom:70px;max-width:calc(100vw - 12px);padding:11px}.actions-toolbar,.actions-buttons{flex-wrap:wrap}.actions-list{max-height:29dvh}.actions-panel input:not([type=checkbox]){width:100%}}
   `); root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
   const identitySheet = new CSSStyleSheet(); identitySheet.replaceSync('.actions-bar-identity>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.actions-bar-identity>button{flex:none}.ui:has(.actions-bar-identity:not([hidden]))>.panel{bottom:120px;max-height:calc(100dvh - 144px)}'); root.adoptedStyleSheets = [...root.adoptedStyleSheets, identitySheet];
+  let shared;
+  if(canonical){shared=new CSSStyleSheet();shared.replaceSync(`
+    .actions-panel{position:static;inset:auto;width:100%;max-width:none;max-height:none;overflow:visible;padding:0;border:0;border-radius:0;box-shadow:none;background:var(--bg);color:var(--fg)}
+    .actions-group h3{background:var(--bg)}.actions-detail{background:var(--tint)}.actions-tabs button[aria-pressed=true]{background:var(--tint);border-color:var(--primary);color:var(--primary)}
+    .actions-panel input,.actions-panel textarea,.actions-panel select{background:var(--bg);color:var(--fg);border-color:var(--input-line);border-radius:var(--radius)}.actions-panel :focus-visible{outline-color:var(--primary)}
+    .actions-item,.actions-list,.actions-result,.actions-result th,.actions-result td{border-color:var(--line)}.actions-item small,.actions-muted{color:var(--muted)}.actions-status{color:var(--link)}.actions-reason{color:var(--warn)}
+    .actions-identity,.actions-bar-identity{background:var(--warn-bg);color:var(--fg);border-radius:var(--radius)}.actions-bar-identity{position:static;inset:auto;max-width:none;margin:6px 10px;padding:8px;border:1px solid var(--warn)}
+    .actions-list{max-height:30vh}.actions-panel .actions-table-wrap{max-height:25vh}.actions-head h2{font-size:14px}.actions-tabs{flex-wrap:wrap}.actions-toolbar,.actions-buttons{flex-wrap:wrap}
+  `);root.adoptedStyleSheets=[...root.adoptedStyleSheets,shared];}
   const make = (tag, text, cls) => { const node = document.createElement(tag); if (text != null) node.textContent = text; if (cls) node.className = cls; return node; };
-  const button = (label, callback, cls) => { const node = make('button', label, cls); node.type = 'button'; node.addEventListener('click', callback, { signal }); return node; };
+  const button = (label, callback, cls) => { const node = make('button', label, cls??(canonical?'btn':undefined)); node.type = 'button'; node.addEventListener('click', callback, { signal }); return node; };
   const bar = root.querySelector('.bar'), launch = button('Actions', () => { panel.hidden ? open() : close(true); });
-  launch.setAttribute('aria-expanded', 'false'); launch.setAttribute('aria-controls', 'paqvilo-actions-panel'); bar.insertBefore(launch, bar.querySelector('.bar-status'));
+  launch.setAttribute('aria-expanded', 'false'); launch.setAttribute('aria-controls', 'paqvilo-actions-panel'); if(!canonical)bar.insertBefore(launch, bar.querySelector('.bar-status'));
   const panel = make('section', null, 'actions-panel'); panel.id = 'paqvilo-actions-panel'; panel.hidden = true; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Model-driven actions');
-  const head = make('div', null, 'actions-head'); head.append(make('h2', 'Model-driven actions'), button('×', () => close(true))); head.lastChild.setAttribute('aria-label', 'Close actions');
+  const head = make('div', null, 'actions-head'); head.append(make('h2', 'Model-driven actions'), button('×', () => close(true))); head.lastChild.setAttribute('aria-label', 'Close actions');if(canonical)head.lastChild.remove();
   const acting = make('div', null, 'actions-identity'); acting.setAttribute('role', 'status');
-  const actingBar = make('div', null, 'actions-bar-identity'); actingBar.hidden = true; actingBar.setAttribute('role', 'status'); root.querySelector('.ui').append(actingBar);
+  const actingBar = make('div', null, 'actions-bar-identity'); actingBar.hidden = true; actingBar.setAttribute('role', 'status'); (canonical?root.querySelector('.wrap'):root.querySelector('.ui')).prepend(actingBar);
   const tabs = make('div', null, 'actions-tabs'); tabs.setAttribute('role', 'group'); tabs.setAttribute('aria-label', 'Developer tools');
   const content = make('div'), status = make('div', '', 'actions-status'), waiting = make('div', null, 'actions-buttons'), results = make('section', null, 'actions-result'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); results.hidden = true; results.setAttribute('aria-label', 'Action results');
-  panel.append(head, acting, tabs, content, status, waiting, results); root.querySelector('.ui').append(panel);
+  panel.append(head, acting, tabs, content, status, waiting, results); if(!canonical)root.querySelector('.ui').append(panel);
   let current = data, view = 'Actions', selectedAction, selectedUser, identity = { active:false }, identityRequest, disposed = false, selectedCommand, actionSearch = '', actionFilter = 'all', lastResultRequest;
   const requests = new Map(), params = new Map(), drafts = new Map(), commandKey = 'paqvilo.modelActions.commands.v1', preferenceKey = 'paqvilo.modelActions.labels.v1';
   const readStore = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
@@ -44,7 +54,7 @@ export function modelDrivenActionsUi(data) {
   function renderIdentity() {
     acting.replaceChildren();
     actingBar.replaceChildren(); actingBar.hidden = !identity.active;
-    panel.style.bottom = identity.active ? '120px' : ''; panel.style.maxHeight = identity.active ? 'calc(100dvh - 144px)' : '';
+    if (!canonical) { panel.style.bottom = identity.active ? '120px' : ''; panel.style.maxHeight = identity.active ? 'calc(100dvh - 144px)' : ''; }
     if (identity.active) { acting.append(make('span', `Acting as ${identity.label || 'the selected user'} for this tab’s Dataverse requests.`), button('Stop', () => startIdentity(null))); }
     if (identity.active) { const label = make('span', `Acting as ${identity.label || 'selected user'}`); label.title = label.textContent; actingBar.append(label, button('Stop', () => startIdentity(null))); }
   }
@@ -161,8 +171,15 @@ export function modelDrivenActionsUi(data) {
     tabs.replaceChildren(); for (const label of ['Actions','Identity','Custom']) { const tab = button(label, () => { view = label; renderView(); [...tabs.children].find(node => node.textContent === label)?.focus(); }); tab.setAttribute('aria-pressed', String(view === label)); tabs.append(tab); }
     content.replaceChildren(); if (view === 'Actions') renderActions(); else if (view === 'Identity') renderIdentityView(); else renderCommands();
   }
-  function open() { host.__paqModelInspector?.closePanel?.(); panel.hidden = false; launch.setAttribute('aria-expanded', 'true'); renderView(); content.querySelector('input,button,select')?.focus(); }
-  function close(focus = false) { panel.hidden = true; launch.setAttribute('aria-expanded', 'false'); if (focus) launch.focus(); }
+  function open() { if(canonical)host.__pp.openTab('actions');else host.__paqModelInspector?.closePanel?.(); panel.hidden = false; launch.setAttribute('aria-expanded', 'true'); renderView(); content.querySelector('input,button,select')?.focus(); }
+  function close(focus = false) { panel.hidden = true; launch.setAttribute('aria-expanded', 'false'); if(focus){if(canonical){host.__pp.openTab('overrides');root.querySelector('[data-v=overrides]')?.focus();}else launch.focus();} }
+  const mount = () => {
+    const slot = root.querySelector('[data-panel-actions-host]');
+    if (slot) { const wasHidden = panel.hidden; if (panel.parentNode !== slot) slot.append(panel); panel.hidden = false; if (wasHidden) renderView(); }
+    else panel.hidden = true;
+    if (canonical && !actingBar.isConnected) root.querySelector('.wrap')?.prepend(actingBar);
+  };
+  if (canonical) host.addEventListener('paqvilo-panel-render', event => { if (event.detail?.token === data.token) mount(); }, { signal });
   panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); } }, { signal });
   window.addEventListener('keydown', event => { if (event.key === 'Escape' && !panel.hidden) close(true); }, { signal });
   host.__paqModelActions = { token:data.token, receive, close, followup(id, value) { if (disposed || !lastResultRequest || id !== lastResultRequest || location.origin !== current.origin) return; renderResult(value); status.textContent = value?.status === 'ok' ? 'Completed.' : 'Native operation reported an error.'; if (!panel.hidden) results.querySelector('h3')?.focus(); }, update(next) {
@@ -172,6 +189,7 @@ export function modelDrivenActionsUi(data) {
   }, contextChanged() {
     for (const [id, request] of requests) if (request.kind !== 'identity') requests.delete(id);
     params.clear(); selectedUser = undefined; renderResult(null); host.__paqModelCommands?.cancelPending?.(); status.textContent = 'The native page changed. Previous results and action inputs were cleared.'; if (!panel.hidden) renderView();
-  }, dispose() { if (disposed) return; disposed = true; lifetime.abort(); requests.clear(); params.clear(); drafts.clear(); selectedUser = undefined; lastResultRequest = undefined; host.__paqModelActionState?.dispose?.(); host.__paqModelCommands?.dispose?.(); panel.remove(); actingBar.remove(); launch.remove(); root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet && item !== identitySheet); if (host.__paqModelActions?.token === data.token) delete host.__paqModelActions; } };
+  }, dispose() { if (disposed) return; disposed = true; lifetime.abort(); requests.clear(); params.clear(); drafts.clear(); selectedUser = undefined; lastResultRequest = undefined; host.__paqModelActionState?.dispose?.(); host.__paqModelCommands?.dispose?.(); panel.remove(); actingBar.remove(); launch.remove(); root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet && item !== identitySheet && item !== shared); if (host.__paqModelActions?.token === data.token) delete host.__paqModelActions; } };
   renderView();
+  if (canonical) mount();
 }

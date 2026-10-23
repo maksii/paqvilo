@@ -39,15 +39,30 @@ test('a platform WOFF2 URL explicitly aliased to verified WOFF loads and paints 
   assert.equal(response.status(),200);
   assert.equal(response.headers()['content-type'],'font/woff');
   assert.equal(response.headers()['x-sim-asset-source-format'],'woff');
-  const painted=await page.evaluate(async()=>{
+  assert.deepEqual(await response.body(),inventedCrmFont());
+  const painted=await page.evaluate(async fontBytes=>{
     const faces=await document.fonts.load('64px QualifiedCRM','\ue001');
-    const canvas=document.createElement('canvas');canvas.width=100;canvas.height=100;
-    const context=canvas.getContext('2d');context.font='64px QualifiedCRM';context.fillText('\ue001',10,70);
-    const rgba=context.getImageData(0,0,100,100).data;
-    return {faces:faces.map(face=>({family:face.family,status:face.status})),width:context.measureText('\ue001').width,ink:Array.from(rgba).filter((value,index)=>index%4===3&&value>0).length};
-  });
+    // Font hinting can round the 600/1000-em advance to a whole pixel on Linux.
+    // Compare the CSS alias with an independently loaded copy on this renderer.
+    const reference=new FontFace('ReferenceCRM',new Uint8Array(fontBytes));
+    document.fonts.add(await reference.load());
+    const paint=family=>{
+      const canvas=document.createElement('canvas');canvas.width=100;canvas.height=100;
+      const context=canvas.getContext('2d');context.font=`64px ${family}`;context.fillText('\ue001',10,70);
+      const rgba=context.getImageData(0,0,100,100).data;
+      return {width:context.measureText('\ue001').width,ink:Array.from(rgba).filter((value,index)=>index%4===3&&value>0).length,rgba};
+    };
+    const alias=paint('QualifiedCRM'),expected=paint('ReferenceCRM'),missing=paint('UnavailableInventedCRM');
+    return {faces:faces.map(face=>({family:face.family,status:face.status})),width:alias.width,ink:alias.ink,
+      expectedWidth:expected.width,expectedInk:expected.ink,
+      samePixels:alias.rgba.every((value,index)=>value===expected.rgba[index]),
+      differsFromMissing:alias.rgba.some((value,index)=>value!==missing.rgba[index])};
+  },Array.from(inventedCrmFont()));
   assert.deepEqual(painted.faces,[{family:'QualifiedCRM',status:'loaded'}]);
-  assert.ok(Math.abs(painted.width-38.4)<0.2,JSON.stringify(painted));
+  assert.equal(painted.width,painted.expectedWidth,JSON.stringify(painted));
+  assert.equal(painted.ink,painted.expectedInk,JSON.stringify(painted));
+  assert.equal(painted.samePixels,true,JSON.stringify(painted));
+  assert.equal(painted.differsFromMissing,true,'The control must distinguish a missing font from the invented triangle.');
   assert.ok(painted.ink>100&&painted.ink<1000,JSON.stringify(painted));
   assert.deepEqual(errors,[]);
 });

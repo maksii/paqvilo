@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -34,7 +35,12 @@ test('X-ray inspects fields and sources without activating portal controls acros
     res.writeHead(200,{'content-type':'text/html; charset=utf-8'}).end(`<!doctype html><html><head><title>Fieldwork · invented X-ray fixture</title><link rel="stylesheet" href="/widget.css"></head><body>${body}<script>window.actions=0;window.frameClicks=0;for(const type of ['pointerdown','mousedown','click','dblclick'])document.getElementById('save').addEventListener(type,()=>window.actions++);document.getElementById('open-dialog').onclick=()=>document.getElementById('dialog').showModal();document.getElementById('dialog-close').onclick=()=>document.getElementById('dialog').close();document.getElementById('nested-open').onclick=()=>document.querySelector('.nested').hidden=false;document.getElementById('shadow-control').attachShadow({mode:'open'}).innerHTML='<button id="shadow-button">Shadow component</button>';</script></body></html>`);
   });
   let browser,panel,detach;
-  t.after(async()=>{await panel?.dispose();await detach?.();await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fx.cleanup();});
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve=>server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
   browser=await chromium.launch(browserLaunchOptions({headless:true,args:['--disable-background-networking']}));
   const context=await browser.newContext({viewport:{width:1440,height:1060},serviceWorkers:'block'});context.setDefaultTimeout(10_000);
@@ -106,7 +112,11 @@ test('X-ray keeps nested table contexts, scaled clipping, dialog order and popov
 
 test('X-ray identifies the basic form, FormXml and column from a native Mirage-rendered form', { timeout: 45_000 }, async t => {
   const fx=inspectionFixture();let app,browser,panel,detach;
-  t.after(async()=>{await panel?.dispose();await detach?.();await browser?.close();await app?.close();fx.cleanup();});
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await app?.close(); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   fs.writeFileSync(path.join(fx.portal,'web-templates/Main.webtemplate.source.html'),"<main>{% entityform name: 'Edit widget' %}</main>");
   const formFile=path.join(fx.portal,'basic-forms/Widget.basicform.yml');fs.writeFileSync(formFile,fs.readFileSync(formFile,'utf8').replace('100000001','100000000'));
   app=await createSimulator({sourceDir:fx.portal,solutionRoots:[fx.solution],stateFile:path.join(fx.work,'state.json'),watch:false,initial:{version:1,tables:{fx_widget:[]},mappings:{fx_widget:{entitySet:'fx_widgets',idColumn:'fx_widgetid'}},permissions:[],settings:{permissionMode:'permissive'},simulator:{mode:'local',pageMode:'local',identity:null,endpoints:[],live:{}}}});

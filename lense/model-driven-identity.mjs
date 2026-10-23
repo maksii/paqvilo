@@ -32,7 +32,7 @@ export function createModelDrivenIdentity({ origin, page }) {
  * Only the Boolean acknowledgement is allowed to cross back to the controller.
  */
 export async function verifyModelDrivenIdentity({ origin, token, objectId, requestId }) {
-  const host = document.getElementById('paqvilo-model-inspector');
+  const host = (document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector'));
   const sessionLive = () => location.origin === origin && host?.isConnected && host.__paqModelActions?.token === token && !window.__paqviloRetiredModelInspectors?.includes(token);
   const live = () => sessionLive() && host.__paqModelIdentityRequest === requestId;
   const receive = result => { if (live()) host.__paqModelActions.receive(requestId, result); };
@@ -64,7 +64,7 @@ export async function verifyModelDrivenIdentity({ origin, token, objectId, reque
 }
 
 export function modelDrivenIdentityResult({ origin, token, requestId, active }) {
-  const host = document.getElementById('paqvilo-model-inspector');
+  const host = (document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector'));
   if (location.origin !== origin || host?.__paqModelActions?.token !== token || window.__paqviloRetiredModelInspectors?.includes(token)) return false;
   if (active && host.__paqModelIdentityRequest !== requestId) return false;
   host.__paqModelActions.receive(requestId, { status: 'ok', title: active ? 'Request identity active' : 'Request identity stopped', message: active ? 'This Lense app tab’s Dataverse Web API requests now use the selected user, subject to server permissions. Already loaded data keeps its previous visibility until you refresh it.' : 'Future requests use their native identity. Requests already sent cannot be recalled.', identity: { active, ...(active ? { label: host.__paqModelIdentityLabel ?? 'Selected user' } : {}) } });

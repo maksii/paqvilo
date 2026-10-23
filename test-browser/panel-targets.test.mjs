@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // Two loopback portals prove the selector without visiting any configured environment.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,12 +21,11 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   const sessions = new Map();
   const requests = [[], []];
   let browser;
-  t.after(async () => {
-    await Promise.all(panels.map((panel) => panel.dispose()));
-    await browser?.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    fixture.cleanup(); fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 });
-  });
+  ownedFixture(t).add(async () => { await drainFixture(panels.map(panel => () => panel.dispose()), { concurrent: true }); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).remove(async () => { fixture.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }); });
   const serve = async (index) => {
     const server = http.createServer((request, response) => {
       requests[index].push(request.url);

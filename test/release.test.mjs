@@ -54,6 +54,8 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
   const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
   assert.equal(validateReleaseFiles(required), required.length);
   assert.equal(validateReleaseFiles([...required, {path:'examples/company-operations/portal-harness/native-capture.mjs'}, {path:'examples/company-operations/plugins/mirage-runtime.mjs'}]), required.length + 2);
+  assert.equal(validateReleaseFiles([...required, {path:'examples/company-operations/plugins/test/collector-worker-lifecycle.test.mjs'}]), required.length + 1);
+  assert.throws(() => validateReleaseFiles([...required, {path:'examples/company-operations/plugins/test/collector-worker-live.test.mjs'}]), /Unexpected release file/);
   assert.equal(validateReleaseFiles([...required,{path:'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/PaqviloDemoPlugins.dll'}]),required.length+1);
   assert.throws(()=>validateReleaseFiles([...required,{path:'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/Unreviewed.dll'}]),/Unexpected release file/);
   for (const file of ['mirage/admin/unreviewed.png', 'mirage/admin/Unreviewed.mjs', 'mirage/admin/nested/unreviewed.mjs', 'lense/setup/unreviewed.js', '.env', '.paqvilo/agents/session.json', 'profiles/Default/Cookies', 'live.png', 'docs/assets/live.png', 'docs/assets/private.svg', 'lense/../../secret.mjs', 'mirage/test/server.test.mjs', 'mirage/test-browser/admin.test.mjs', 'mirage/node_modules/liquidjs/index.js', 'mirage/.paqvilo/state.json', 'mirage/packs/customer/pack.mjs','mirage/lib/arbitrary-plugin.cs','mirage/lib/plugin-clr-host.exe','mirage/lib/Microsoft.Xrm.Sdk.dll']) {
@@ -63,7 +65,8 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
   for (const requiredPath of ['mirage/lib/model-driven/icons.mjs', 'mirage/lib/model-driven/control-descriptors.mjs',
     'mirage/lib/model-driven/providers.mjs', 'mirage/lib/standalone-runtime.mjs', 'mirage/docs/standalone-organization.md',
     'lense/model-driven-actions.mjs', 'lense/model-driven-action-runner.mjs', 'lense/model-driven-actions-ui.mjs',
-    'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', 'lense/LICENSE-levelup.txt', 'docs/model-driven-actions.md'])
+    'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', 'lense/LICENSE-levelup.txt', 'docs/model-driven-actions.md',
+    'lense/model-driven-panel.mjs', 'lense/model-driven-native-comparison.mjs', 'lense/model-driven-targets.mjs', 'lense/owned-page-binding.mjs'])
     assert.throws(() => validateReleaseFiles(required.filter(file => file.path !== requiredPath)), /Required release file/);
   for (const file of ['mirage/lib/model-driven/unreviewed.mjs', 'mirage/lib/model-driven/reference.json', 'mirage/lib/model-driven/screenshot.png']) assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   assert.throws(() => validateReleaseFiles([...required, { path: 'lense/LICENSE-unreviewed.txt' }]), /Unexpected release file/);

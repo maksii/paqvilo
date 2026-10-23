@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // Explicit acceptance suite: only temporary extracts, local Git, and loopback HTTP fixtures.
 // Run with npm run test:browser; it never reads the repository's site/environment catalogue.
 import { test } from 'node:test';
@@ -41,18 +42,16 @@ test('real browser: local overrides, watcher, panel, form submission, origin iso
   let panel;
   let watcher;
   const servers = [];
-  t.after(async () => {
-    await watcher?.close();
-    panel?.dispose();
-    await detach?.();
-    await context?.close();
-    for (const server of servers) {
+  ownedFixture(t).add(async () => { await watcher?.close(); });
+  ownedFixture(t).add(async () => { panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
-    }
-    fx.cleanup();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+    })); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   fx.write(PAGE_JS, 'window.inlineValue = "baseline";\n');
   fx.write(PAGE_CSS, '.hero { color: rgb(100, 0, 0); }\n');

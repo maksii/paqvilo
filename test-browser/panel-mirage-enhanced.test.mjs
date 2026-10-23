@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The dev panel in Mirage mode on an enhanced-data-model export (powerpagecomponents,
 // test-browser/fixtures/enhanced). Synthetic data on a disposable loopback Mirage only.
 import { test } from 'node:test';
@@ -40,13 +41,11 @@ test('Mirage panel inspects an enhanced-data-model export and opens its componen
     },
   });
   let browser, panel, detach;
-  t.after(async () => {
-    await panel?.dispose();
-    await detach?.();
-    await browser?.close();
-    await app.close();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await app.close(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   assert.equal(app.portal.format, 'enhanced');
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true, args: ['--disable-background-networking', '--disable-component-update'] });

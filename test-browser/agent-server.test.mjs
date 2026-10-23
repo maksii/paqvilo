@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // Real browser proof using only loopback fixtures and disposable browser state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,12 +26,11 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
     trail.push(entry);
     try { return await action(); } finally { entry.ms = Date.now() - entry.startedMs; }
   };
-  t.after(async () => {
-    if (!finished) console.log(`agent-server steps: ${JSON.stringify(trail.map(({ name, ms }) => ({ name, ms: ms ?? 'unfinished' })))}`);
-    await agent?.close(); await browser?.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 });
-  });
+  ownedFixture(t).add(async () => { if (!finished) console.log(`agent-server steps: ${JSON.stringify(trail.map(({ name, ms }) => ({ name, ms: ms ?? 'unfinished' })))}`); });
+  ownedFixture(t).add(async () => { await agent?.close(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }); });
   const serve = async (handler) => {
     const server = http.createServer(handler);
     server.on('connect', (_request, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });

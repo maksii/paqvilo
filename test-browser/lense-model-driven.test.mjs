@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -25,7 +26,9 @@ test('model-driven overlay refresh bypasses an existing worker only in its owned
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   let browser, release;
-  t.after(async () => { await release?.(); await browser?.close(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { await release?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
@@ -66,11 +69,10 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   let browser, release;
-  t.after(async () => {
-    await release?.(); await browser?.close();
-    await new Promise(resolve => server.close(resolve));
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-  });
+  ownedFixture(t).add(async () => { await release?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).remove(async () => { await fs.rm(root, { recursive: true, force: true, maxRetries: 5 }); });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
@@ -96,7 +98,7 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
 });
 
 test('public model-driven Lense overlays native scripts and reloads on source save without native writes', async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-')); t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-')); ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const solution = path.join(root, 'solution'), resourceDir = path.join(solution, 'WebResources'); await fs.mkdir(path.join(solution, 'Other'), { recursive: true }); await fs.mkdir(resourceDir);
   await fs.writeFile(path.join(solution, 'Other/Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>');
   await fs.writeFile(path.join(resourceDir, 'x_script.js.data.xml'), '<WebResource><Name>x_script.js</Name><WebResourceType>3</WebResourceType><FileName>WebResources/x_script.js</FileName></WebResource>');
@@ -115,11 +117,16 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
     if (req.url.startsWith(nativeResourcePath)) { res.setHeader('content-type', 'text/javascript'); res.end(script('native')); return; }
     res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><h1>Loading</h1><script src="${nativeResourcePath}?token=never-log-this"></script>`);
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); ownedFixture(t).add(() => new Promise(resolve => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`, reportFile = path.join(root, 'report.json');
   const child = spawn(process.execPath, [cli, 'lense', 'model-driven', 'dev', '--project', project, '--url', origin, '--resource-map', resourceMap, '--browser', 'chromium', '--headless', '--timeout', '10000', '--output', reportFile], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
-  const exited = new Promise(resolve => child.once('exit', code => resolve(code))); t.after(() => { if (child.exitCode == null) child.kill(); });
+  const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
+  const closed = new Promise(resolve => child.once('close', resolve));
+  ownedFixture(t).add(async () => {
+    if (!child.killed && child.exitCode === null && child.signalCode === null) assert.ok(child.kill(), 'Owned Lense process termination must be accepted');
+    await closed;
+  });
   const waitSeen = async value => { const deadline = Date.now() + 15000; while (!seen.includes(value) && Date.now() < deadline && child.exitCode == null) await new Promise(resolve => setTimeout(resolve, 50)); assert.ok(seen.includes(value), `${value} missing: ${output}`); };
   await waitSeen('local first');
   await fs.writeFile(path.join(resourceDir, 'x_script.js'), script('local changed'));

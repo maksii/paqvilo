@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -35,7 +36,10 @@ async function fixture(t) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch(browserLaunchOptions());
-  t.after(async () => { for (const wait of waits.values()) wait.release?.(); await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { await drainFixture([...waits.values()].map(wait => async () => {wait.release?.();})); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const page = await browser.newPage(); await page.goto(origin + '/main.aspx?appid=invented-app&pagetype=entityrecord&etn=x_person&id=' + recordId);
   let sequence = 0;
   const run = async (action, params = {}, extra = {}) => { const input = validateModelDrivenAction(action, params), requestId = `request-${++sequence}`; const ack = await page.evaluate(runModelDrivenAction, { origin, token: 'invented-owned-session', ...input, requestId, cloud: { maker: 'https://maker.example.invalid', admin: 'https://admin.example.invalid' }, ...extra }); assert.deepEqual(ack, { accepted: true, requestId }); assert.doesNotMatch(JSON.stringify(ack), /PRIVATE_|aaaaaaaa|bbbbbbbb/); return page.evaluate(id => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.find(item => item.requestId === id)?.result, requestId); };
@@ -185,4 +189,20 @@ test('maker and admin navigation preserve an actual Default-prefixed environment
   await page.evaluate(() => { Xrm.Utility.getGlobalContext().organizationSettings.bapEnvironmentId = '../untrusted'; });
   assert.equal((await run('navigation:open-power-platform-admin')).status, 'unsupported');
   assert.equal(await page.evaluate(() => nativeFixture.opened.length), 2);
+});
+
+
+test('native action reads cancel bounded decoded streams before unbounded text allocation', async t => {
+  const { page, run } = await fixture(t);
+  await page.evaluate(() => {
+    const original = window.fetch;
+    window.readChunks = 0; window.readCancelled = false;
+    window.fetch = (url, options) => String(url).includes('/x_people(') ? Promise.resolve(new Response(new ReadableStream({
+      pull(controller) { window.readChunks++; controller.enqueue(new Uint8Array(512 * 1024)); },
+      cancel() { window.readCancelled = true; },
+    }, { highWaterMark: 0 }), { headers: { 'content-type': 'application/json' } })) : original(url, options);
+  });
+  const result = await run('form:all-fields');
+  assert.equal(result.status, 'error'); assert.match(result.message, /2 MiB read limit/);
+  assert.deepEqual(await page.evaluate(() => [window.readChunks, window.readCancelled]), [5, true]);
 });

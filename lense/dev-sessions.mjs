@@ -24,15 +24,42 @@ export async function startDevSessions(context, selection, { args = {}, attached
   let detach;
   let closing;
   let failure;
+  const cleanupFailures = [];
+  const combinedErrors = new WeakSet();
+  const combine = (causes, message) => {
+    const unique = [];
+    const collect = cause => {
+      if (combinedErrors.has(cause)) for (const item of cause.errors) collect(item);
+      else if (!unique.includes(cause)) unique.push(cause);
+    };
+    for (const cause of causes) collect(cause);
+    if (unique.length === 1) return unique[0];
+    const error = new AggregateError(unique, message);
+    combinedErrors.add(error);
+    return error;
+  };
+  const retainCleanupFailure = cause => {
+    if (!cleanupFailures.includes(cause)) cleanupFailures.push(cause);
+    failure = combine([...(failure ? [failure] : []), cause], 'Development session failed during cleanup.');
+  };
 
   const dispose = (record) => record.closing ??= (async () => {
-    record.stopComparisons?.();
-    record.stopLogs?.();
+    const failures = [];
+    const attempt = async operation => {
+      try { await operation(); } catch (cause) { failures.push(cause); retainCleanupFailure(cause); }
+    };
+    await attempt(() => record.stopComparisons?.());
+    await attempt(() => record.stopLogs?.());
     // Each teardown runs even if another resource has already lost its browser connection.
-    await Promise.allSettled([record.agent?.close(), record.panel?.dispose(), record.watcher?.close()]);
-    record.session.removeAllListeners();
+    await Promise.all([
+      () => record.agent?.close(),
+      () => record.panel?.dispose(),
+      () => record.watcher?.close(),
+    ].map(attempt));
+    await attempt(() => record.session.removeAllListeners());
     if (active.get(record.session.cfg.origin) === record) active.delete(record.session.cfg.origin);
     records.delete(record);
+    if (failures.length) throw combine(failures, 'Development target cleanup failed.');
   })();
 
   const ensure = (origin) => {
@@ -81,7 +108,8 @@ export async function startDevSessions(context, selection, { args = {}, attached
           active.set(origin, record);
           return record;
         } catch (error) {
-          await dispose(record);
+          try { await dispose(record); }
+          catch (cleanupError) { throw combine([error, cleanupError], 'Development target initialization and cleanup failed.'); }
           throw error;
         }
       })();
@@ -96,16 +124,15 @@ export async function startDevSessions(context, selection, { args = {}, attached
 
   const close = () => closing ??= (async () => {
     closed = true;
-    stopDialogs();
+    try { stopDialogs(); } catch (cause) { retainCleanupFailure(cause); }
     // Release paused requests first. Initializers finish before disposing any resources they own.
-    try { await detach?.(); }
-    finally {
-      await Promise.allSettled(pending.values());
-      await Promise.allSettled([...records].map(dispose));
-      records.clear();
-      pending.clear();
-      failedAt.clear();
-    }
+    try { await detach?.(); } catch (cause) { retainCleanupFailure(cause); }
+    await Promise.allSettled(pending.values());
+    await Promise.allSettled([...records].map(dispose));
+    records.clear();
+    pending.clear();
+    failedAt.clear();
+    if (cleanupFailures.length) throw combine(cleanupFailures, 'Development browser cleanup failed.');
   })();
 
   try {
@@ -132,7 +159,8 @@ export async function startDevSessions(context, selection, { args = {}, attached
     if (closed) throw failure ?? new Error('Development browser is stopping');
     return { active, close, get failure() { return failure; } };
   } catch (error) {
-    await close();
+    try { await close(); }
+    catch (cleanupError) { throw combine([error, cleanupError], 'Development browser initialization and cleanup failed.'); }
     throw error;
   }
 }

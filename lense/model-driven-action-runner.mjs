@@ -28,7 +28,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
  */
 export async function runModelDrivenAction({ origin, token, action, params = {}, requestId, cloud = {} }) {
   const ack = accepted => ({ accepted, requestId });
-  const host = document.getElementById('paqvilo-model-inspector');
+  const host = (document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector'));
   const receiver = () => location.origin === origin && host?.isConnected && host.__paqModelActions?.token === token && !window.__paqviloRetiredModelInspectors?.includes(token) ? host.__paqModelActions : undefined;
   if (window.top !== window || !receiver() || typeof requestId !== 'string' || requestId.length > 100) return ack(false);
   const safe = callback => { try { return callback(); } catch { return undefined; } };
@@ -82,7 +82,22 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
     try {
       const response = await fetch(apiRoot() + path, { credentials: 'same-origin', redirect: 'error', signal: controller.signal, headers: { accept: 'application/json', prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue,Microsoft.Dynamics.CRM.lookuplogicalname"' } }); check();
       if (!response.ok) fail(`The native read failed (HTTP ${response.status}).`, 'error');
-      const body = await response.text(); check(); if (body.length > 2 * 1024 * 1024) fail('The native result exceeds the action’s 2 MiB read limit.', 'error');
+      const limit = 2 * 1024 * 1024;
+      if (!response.body?.getReader) fail('The native read does not provide a bounded response stream.', 'error');
+      const reader = response.body.getReader(), chunks = [];
+      let size = 0;
+      try {
+        while (true) {
+          const next = await reader.read(); check();
+          if (next.done) break;
+          size += next.value.byteLength;
+          if (size > limit) { await reader.cancel().catch(() => {}); fail('The native result exceeds the action’s 2 MiB read limit.', 'error'); }
+          chunks.push(next.value);
+        }
+      } finally { reader.releaseLock(); }
+      const bytes = new Uint8Array(size); let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      const body = new TextDecoder().decode(bytes); check();
       try { return JSON.parse(body); } catch { fail('The native read did not return JSON.', 'error'); }
     } catch (error) { check(); if (timedOut) fail('The native read timed out.', 'error'); throw error; }
     finally { clearTimeout(timer); state.controllers.delete(controller); }
@@ -245,6 +260,6 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
 /** Retire only this inspector's browser-local action state. */
 export function disposeModelDrivenActions({ origin, token }) {
   if (location.origin !== origin) return;
-  const host = document.getElementById('paqvilo-model-inspector'), state = host?.__paqModelActionState;
+  const host = (document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector')), state = host?.__paqModelActionState;
   if (state?.token === token) { state.dispose(); delete host.__paqModelActionState; }
 }

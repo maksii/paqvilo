@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -9,7 +10,9 @@ test('explicit custom commands await async results, keep values browser-only and
   const server = http.createServer((_request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><div id="paqvilo-model-inspector"></div>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
-  t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const page = await browser.newPage(); await page.goto(origin);
   await page.evaluate(() => { const host = document.getElementById('paqvilo-model-inspector'); host.__paqModelInspector = { token: 'invented' }; host.__paqModelActions = { token: 'invented', receive(id, result) { (window.results ??= {})[id] = result; } }; });
   await page.evaluate(installModelDrivenCommands, { origin, token: 'invented' });
@@ -43,7 +46,9 @@ test('identity preflight requires the exact native privilege and one enabled ser
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
-  t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const page = await browser.newPage(); await page.goto(origin);
   await page.evaluate(() => { const host = document.getElementById('paqvilo-model-inspector'); host.__paqModelActions = { token: 'invented', receive(_id, result) { window.result = result; } }; window.privileges = {}; window.Xrm = { Utility: { getGlobalContext: () => ({ getClientUrl: () => location.origin, getVersion: () => '9.2.1.0', userSettings: { roles: [{ name: 'System Administrator' }], getSecurityRolePrivilegesInfo: async () => window.privileges } }) } }; });
   const input = { origin, token: 'invented', objectId, requestId: 'start' };

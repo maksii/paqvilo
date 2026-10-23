@@ -22,7 +22,7 @@ Commands
   resources discover editable files, XML fields, pages and metadata relationships offline
   agent    inspect/control a running local session: sessions, status, pages, events, state,
            snapshot, screenshot, navigate, reload, viewport, stop (always JSON)
-  model-driven inspect|dev --project FILE --url ORIGIN
+  model-driven inspect|dev --project FILE [--env REFERENCE | --url ORIGIN]
            inspect or overlay exported Solution webresources and mapped PCF bundles;
            dev provides X-ray, agent/debugger access and reloads its own app tab on save
   mirage init|start|dev|status|inspect|stop
@@ -32,7 +32,7 @@ Commands
 
 Which site and environment (default: .env, then paqvilo.config.yml)
   --site <name>     site from paqvilo.config.yml
-  --env <name>      environment of that site
+  --env <name>      catalogue environment, or declared model-driven reference ID
   --pick            ask for site and environment now
   --url <url>       use this site URL instead of a configured environment
   --source <dir>    use this extract folder instead of the configured one
@@ -248,7 +248,7 @@ try {
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
     agent: ['config', 'session', 'page-id', 'selector', 'limit', 'after', 'output', 'timeout', 'full-page', 'include-panel', 'width', 'height', 'styles', 'path', 'json'],
-    'model-driven': [...browserSelection, 'cdp-url', 'project', 'url', 'path', 'resource-map', 'headless', 'headed', 'no-reload', 'debug-port', 'timeout', 'output', 'json'],
+    'model-driven': [...browserSelection, 'cdp-url', 'project', 'env', 'url', 'path', 'resource-map', 'headless', 'headed', 'no-reload', 'debug-port', 'timeout', 'output', 'json'],
     mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'apply-configuration', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json', 'runtime', 'simulation'],
   };
   for (const option of Object.keys(values)) if (!allowed[command].includes(option)) throw Object.assign(new Error(`--${option} is not supported by ${command}`),{code:'unsupported_option'});

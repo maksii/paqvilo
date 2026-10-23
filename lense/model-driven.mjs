@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
 import { pathToFileURL } from 'node:url';
 import { hasSourceMap, withFileSourceMap } from './source-map.mjs';
@@ -11,13 +12,15 @@ export function modelDrivenOrigin(value) {
   return url.origin;
 }
 
-const pathname = value => {
+export const modelDrivenResourcePath = value => {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\?#\x00-\x1f]/.test(value)) throw new Error('Resource mappings require an origin-relative pathname without query, fragment or backslash.');
   let decoded; try { decoded = decodeURIComponent(value); } catch { throw new Error('Resource mapping contains invalid URL encoding.'); }
   if (/[\\\x00-\x1f]/.test(decoded) || decoded.split('/').some(segment => ['.', '..'].includes(segment))) throw new Error('Invalid resource mapping pathname.');
   if (/^\/(?:api|oauth[^/]*|auth|signin|sign-in|login|connect|_sim|_setup)(?:\/|$)/i.test(decoded) || /^\/(?:main\.aspx|_apps\/api)(?:\/|$)/i.test(decoded)) throw new Error('Model-driven resource mappings cannot target an API, authentication, application shell or administration route.');
   return decoded.replace(/^\/webresources\//i, '/WebResources/');
 };
+
+const pathname = modelDrivenResourcePath;
 
 export async function readModelDrivenResourceMap(file) {
   if (!file) return [];
@@ -77,6 +80,10 @@ export function createModelDrivenOverlay({ origin, imported, mappings = [], owns
     mapLimits[key] = value;
   }
   let routes, resources, pathsByResource, diagnostics, revision = 0, applied = 0, currentRevisionApplied = 0;
+  let online = false;
+  const paused = new Set();
+  let scope = 'all', editedSources = new Set();
+  const nativeReads = new Map();
   const hits = new Map(), currentHits = new Map(), unmatched = new Map();
   function replace(next, nextMappings = mappings) {
     // Prepare debugger mappings once per revision, rather than copying a bundle
@@ -109,20 +116,49 @@ export function createModelDrivenOverlay({ origin, imported, mappings = [], owns
     // Publish only a complete import. An invalid save cannot partially replace routes.
     routes = nextRoutes; resources = assets; pathsByResource = nextPaths; diagnostics = nextDiagnostics; mappings = nextMappings;
     for (const name of hits.keys()) if (!resources.has(name)) hits.delete(name);
+    for (const name of paused) if (!resources.has(name)) paused.delete(name);
     currentHits.clear(); unmatched.clear(); currentRevisionApplied = 0; revision++;
   }
   replace(imported);
   return {
     replace,
+    nativeRead(name) {
+      const paths = pathsByResource.get(name);
+      if (!paths?.size || !/(?:javascript|ecmascript|text\/css)/i.test(resources.get(name)?.mime ?? '')) throw new Error('Select a declared text resource.');
+      if (nativeReads.size >= 2) throw new Error('Two native comparisons are already in progress.');
+      const token = randomUUID(), entry = { name, expires: Date.now() + 15000 };
+      nativeReads.set(token, entry);
+      return { path: [...paths].at(-1), token, release() { nativeReads.delete(token); } };
+    },
+    isTextResource(name) { return /(?:javascript|ecmascript|text\/css)/i.test(resources.get(name)?.mime ?? ''); },
+    resourceForUrl(value) {
+      try { const url = new URL(value); return url.origin === origin ? routes.get(pathname(url.pathname))?.name ?? null : null; }
+      catch { return null; }
+    },
     async handle(route) {
       const request = route.request(), url = new URL(request.url());
-      if (url.origin !== origin || !['GET', 'HEAD'].includes(request.method()) || request.isNavigationRequest?.() || request.resourceType?.() === 'document' || !ownsRequest(request)) { await route.fallback(); return; }
-      let key; try { key = pathname(url.pathname); } catch { await route.fallback(); return; }
+      const headers = request.headers?.() ?? {}, nativeToken = headers['x-paqvilo-native-comparison'];
+      let fallbackOptions;
+      if (url.origin === origin && ownsRequest(request) && nativeToken !== undefined) {
+        const forwarded = { ...headers }; delete forwarded['x-paqvilo-native-comparison'];
+        if (typeof route.removeRequestHeader === 'function') route.removeRequestHeader('x-paqvilo-native-comparison');
+        else fallbackOptions = { headers: forwarded };
+      }
+      const fallback = () => route.fallback(fallbackOptions);
+      if (url.origin !== origin || !['GET', 'HEAD'].includes(request.method()) || request.isNavigationRequest?.() || request.resourceType?.() === 'document' || !ownsRequest(request)) { await fallback(); return; }
+      let key; try { key = pathname(url.pathname); } catch { await fallback(); return; }
       const asset = routes.get(key);
       if (!asset) {
         if ((/^\/WebResources\//.test(key) || ['script', 'stylesheet'].includes(request.resourceType?.())) && (unmatched.has(key) || unmatched.size < 256)) unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
-        await route.fallback(); return;
+        await fallback(); return;
       }
+      const nativeRead = nativeReads.get(nativeToken);
+      if (nativeRead && nativeRead.name === asset.name && nativeRead.expires > Date.now() && request.method() === 'GET') {
+        nativeReads.delete(nativeToken);
+        await fallback();
+        return;
+      }
+      if (online || paused.has(asset.name) || scope==='changed'&&!editedSources.has(asset.name)) { await fallback(); return; }
       const appliedRevision = revision;
       await route.fulfill({ status: 200, headers: { 'content-type': asset.mime, 'cache-control': 'no-store', 'x-paqvilo-source': 'local-solution', 'x-content-type-options': 'nosniff' }, body: request.method() === 'HEAD' ? Buffer.alloc(0) : asset.data });
       applied++;
@@ -136,9 +172,12 @@ export function createModelDrivenOverlay({ origin, imported, mappings = [], owns
       }
       onApplied({ resource: asset.name, path: key, count, revision: appliedRevision });
     },
+    setOnline(value) { if(typeof value!=='boolean')throw new Error('Online mode must be boolean.');online=value; },
+    setScope(value, names = []) { if(!['all','changed'].includes(value)||[...names].some(name=>!resources.has(name)))throw new Error('Select a valid scope and declared resource names.');scope=value;editedSources=new Set(names); },
+    pause(name, value) { if(!resources.has(name)||typeof value!=='boolean')throw new Error('Select a declared resource and boolean pause state.');if(value)paused.add(name);else paused.delete(name); },
     report() {
-      return { schemaVersion: 1, kind: 'model-driven-overlay', origin, revision, diagnostics,
-        resources: [...resources.keys()].map(name => ({ name, paths: [...pathsByResource.get(name)], applied: hits.get(name) ?? 0, currentRevisionApplied: currentHits.get(name) ?? 0 })),
+      return { schemaVersion: 1, kind: 'model-driven-overlay', origin, revision, online, diagnostics,
+        resources: [...resources.keys()].map(name => ({ name, mime: resources.get(name).mime, paths: [...pathsByResource.get(name)], applied: hits.get(name) ?? 0, currentRevisionApplied: currentHits.get(name) ?? 0, paused: paused.has(name) })),
         applied, currentRevisionApplied,
         unmatched: [...unmatched].map(([path, count]) => ({ path, count })), unmatchedLimit: 256,
         // Native PCF URLs vary by environment and version. Bind observed exact paths;

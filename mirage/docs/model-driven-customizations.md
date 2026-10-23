@@ -204,13 +204,16 @@ prove it was requested or executed; check the applied count and visible behavior
 
 ### Inspect and debug the live app
 
-Model-driven dev adds a separate **Lense X-ray** inspector to its app tab. Use
-**Alt+Shift+X** to toggle inspection. It reports declared resources, exact mapped
-paths, current-revision applications, import diagnostics and runtime errors.
-Select a rendered field or command to inspect the available Solution binding;
-an unresolved native element stays unresolved. The inspector does not read field
-values or infer that a delivered bundle's constructor executed. Power Pages
-retains its existing source inspector and Liquid provenance.
+Model-driven dev uses the same Lense panel and **Lense X-ray** picker as Power
+Pages. **Overrides**, **Inspect**, **Issues**, **Activity** and **Explore** retain
+that shell and its source controls; model-driven apps add an **Actions** tab for
+[native developer tools](../../docs/model-driven-actions.md). Use **Alt+Shift+X**
+to toggle inspection. It reports declared resources, exact mapped paths,
+current-revision applications, import diagnostics and runtime errors. Select a
+rendered field or command to inspect its available Solution binding. An unresolved
+native element stays unresolved. Passive inspection does not read field values or
+prove that a delivered bundle's constructor executed. Power Pages retains its
+portal-specific source and Liquid provenance inside the shared panel.
 
 Inspection shows its pending state before reading app context, including a
 reduced-motion-aware scan when X-ray is active. Refresh keeps previous results
@@ -246,16 +249,18 @@ budgets is omitted with `MODEL_SOURCE_MAP_LIMIT`; the original script still runs
 This avoids expanding newline-heavy bundles into very large debug payloads.
 
 Reloads use an explicit GET and never replay the document's POST. Source saves
-coalesce to one active import and one pending refresh. `--no-reload` disables the
-source watcher; it does not disable initial interception or the inspector.
+coalesce to one active import and one pending refresh. `--no-reload` starts with
+automatic reload paused. Sources are still watched and imported, and initial
+interception and inspection remain active. The panel Live control enables or
+pauses later automatic reloads.
 
 Native apps can cache WebResources and PCF constructors inside the application.
-A browser reload may then make no resource request for Lense to intercept. The
-native proof required explicit refresh of declared resources and rebinding a local
-form handler; automatic native cache invalidation and replacement of cached PCF
-constructors or ribbon callbacks remain unproven. Check the current revision's
-applied counts before treating a source edit as active. Mirage loads the selected
-local resources directly and does not use the native app's internal cache.
+A browser reload may make no resource request for Lense to intercept. Exact
+observed mappings must follow the native request's current path/version. Confirm
+both current-revision application and actual handler/constructor/ribbon behavior
+after a source save; counts alone do not qualify cache replacement. Record manual
+resource refresh or handler rebinding explicitly when used. Mirage loads selected
+local resources directly and does not establish native cache parity.
 
 Lense overlays code in its browser session. The app continues to use its online
 environment and identity, so Save, commands and script-triggered record operations

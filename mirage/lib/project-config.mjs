@@ -36,11 +36,11 @@ function list(value, label) {
   return value;
 }
 
-function validateOrigin(value, label) {
+function validateOrigin(value, label, allowLoopback = false) {
   let url;
   try { url = new URL(String(value)); }
   catch { throw new Error(`${label} must be an HTTPS origin`); }
-  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+  if (!(url.protocol === "https:" || allowLoopback && url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) || !url.hostname || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
     throw new Error(`${label} must be an HTTPS origin without credentials, path, query, or fragment`);
   return url.origin;
 }
@@ -325,7 +325,7 @@ function normalizeSolution(entry, index) {
   return { id, sourcePath };
 }
 
-function normalizeReference(ref, index) {
+function normalizeReference(ref, index, allowLoopback = false) {
   if (!ref || typeof ref !== "object" || Array.isArray(ref))
     throw new Error(`references[${index}] must be an object`);
   const id = String(ref.id ?? `reference-${index + 1}`);
@@ -336,7 +336,7 @@ function normalizeReference(ref, index) {
     throw new Error(`references[${index}].default must be a boolean`);
   return {
     id,
-    origin: validateOrigin(ref.origin, `references[${index}].origin`),
+    origin: validateOrigin(ref.origin, `references[${index}].origin`, allowLoopback),
     ...(ref.name ? { name: String(ref.name) } : {}),
     ...(ref.environment ? { environment: String(ref.environment) } : {}),
     default: ref.default === true,
@@ -407,7 +407,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     root: await resolveSource(solution.sourcePath, "Solution", solution.id),
   })));
   const byId = new Map(solutions.map((solution) => [solution.id, solution]));
-  const references = list(raw.references ?? raw.referenceEnvironments, "references").map(normalizeReference);
+  const references = list(raw.references ?? raw.referenceEnvironments, "references").map((ref, index) => normalizeReference(ref, index, runtime.kind === "model-driven" && Array.isArray(raw.modelDriven?.targets) && raw.modelDriven.targets.some(target => target?.reference === ref?.id)));
   unique(references, "reference");
   if (references.filter((ref) => ref.default).length > 1)
     throw new Error("Only one reference can be the default");
@@ -468,6 +468,13 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     const value = key === "dataverse" ? raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined) : raw[key];
     if (value === undefined) continue;
     settings[key] = parseSetting(key, value, { base, diagnostics });
+  }
+  const targetOrigins = new Set();
+  for (const target of settings.modelDriven?.targets ?? []) {
+    const reference = references.find(ref => ref.id === target.reference);
+    if (!reference) throw new Error(`Model-driven target selects unknown reference '${target.reference}'`);
+    if (targetOrigins.has(reference.origin)) throw new Error('Model-driven targets must have distinct origins');
+    targetOrigins.add(reference.origin);
   }
   return {
     configFile: absoluteConfig,

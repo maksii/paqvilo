@@ -396,13 +396,17 @@ export function watchSources(session, context, { reload = true, log = console.lo
     clearInterval(baselineTimer);
     pending.clear();
     closing = (async () => {
-      await closeWatcher();
-      await repositoryReady;
+      const failures = [];
+      const attempt = async work => { try { await work(); } catch (error) { failures.push(error); } };
+      await attempt(closeWatcher);
+      await attempt(() => repositoryReady);
       clearInterval(baselineTimer);
-      await repository?.close();
-      await flight;
-      await baselineFlight;
-    })();
+      await attempt(() => repository?.close());
+      await attempt(() => flight);
+      await attempt(() => baselineFlight);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, 'Source watcher shutdown failed.');
+    })().catch(error => { closing = null; throw error; });
     return closing;
   };
   return watcher;

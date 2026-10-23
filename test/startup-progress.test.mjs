@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import { startupProgress, waitForStartupPage, readStartupPhases } from '../lense/startup-progress.mjs';
 import fs from 'node:fs/promises';
@@ -97,4 +98,112 @@ for (const phase of ['document', 'application']) test(`startup cancellation duri
   await new Promise(resolve => setImmediate(resolve)); stop();
   assert.equal(await loading, false); assert.equal(progress.events.some(event => event.status === 'complete'), false);
   progress.close(); release();
+});
+
+const startupTick = (ms) => new Promise((r) => setTimeout(r, ms));
+function startupRequestFixture() {
+  const frame = {},
+    child = {},
+    p = new EventEmitter();
+  p.url = () => "http://127.0.0.1/fixture";
+  p.isClosed = () => false;
+  p.waitForLoadState = async () => {};
+  p.goto = async () => {};
+  const request = (type, f = frame, nav = false) => ({
+    resourceType: () => type,
+    frame: () => {
+      if (f === null) throw Error("Unknown worker frame");
+      return f;
+    },
+    isNavigationRequest: () => nav,
+  });
+  const begin = (r) => {
+    p.emit("request", r);
+    return r;
+  };
+  const finish = (r) => p.emit("requestfinished", r);
+  const commit = (f = frame) => p.emit("framenavigated", f);
+  return { p, frame, child, request, begin, finish, commit };
+}
+test("committed replacement retires old orphan only, preserving current preloads and redirect chain", async () => {
+  const f = startupRequestFixture();
+  f.p.goto = async () => {
+    const first = f.begin(f.request("document", f.frame, true));
+    f.commit();
+    f.finish(first);
+    f.begin(f.request("stylesheet"));
+  };
+  let done = false;
+  const loading = waitForStartupPage(f.p, f.p.url(), { timeout: 2000 }).then(
+    (x) => {
+      done = true;
+      return x;
+    },
+  );
+  await startupTick(10);
+  const redirect = f.begin(f.request("document", f.frame, true));
+  f.finish(redirect);
+  const current = f.begin(f.request("document", f.frame, true)),
+    preload = f.begin(f.request("script"));
+  f.commit();
+  f.finish(current);
+  await startupTick(140);
+  assert.equal(done, false, "current preload cannot be retired");
+  f.finish(preload);
+  assert.equal(await loading, true);
+  assert.equal(f.p.listenerCount("framenavigated"), 0);
+  assert.equal(f.p.listenerCount("framedetached"), 0);
+});
+test("same-document navigation retains pending current document requests", async () => {
+  const f = startupRequestFixture();
+  f.p.goto = async () => {
+    const doc = f.begin(f.request("document", f.frame, true));
+    f.commit();
+    f.finish(doc);
+    f.begin(f.request("fetch"));
+    f.commit();
+  };
+  await assert.rejects(
+    waitForStartupPage(f.p, f.p.url(), { timeout: 180 }),
+    /did not settle/,
+  );
+});
+test("detached child retirement retains live parent requests", async () => {
+  const f = startupRequestFixture();
+  let done = false;
+  f.p.goto = async () => {
+    const doc = f.begin(f.request("document", f.frame, true));
+    f.commit();
+    f.finish(doc);
+    f.begin(f.request("fetch", f.child));
+  };
+  const loading = waitForStartupPage(f.p, f.p.url(), { timeout: 2000 }).then(
+    (x) => {
+      done = true;
+      return x;
+    },
+  );
+  await startupTick(10);
+  const parent = f.begin(f.request("fetch"));
+  f.p.emit("framedetached", f.child);
+  await startupTick(140);
+  assert.equal(done, false);
+  f.finish(parent);
+  assert.equal(await loading, true);
+});
+test("unknown frame ownership remains pending across committed navigations", async () => {
+  const f = startupRequestFixture();
+  f.p.goto = async () => {
+    const doc = f.begin(f.request("document", f.frame, true));
+    f.commit();
+    f.finish(doc);
+    f.begin(f.request("fetch", null));
+    const next = f.begin(f.request("document", f.frame, true));
+    f.commit();
+    f.finish(next);
+  };
+  await assert.rejects(
+    waitForStartupPage(f.p, f.p.url(), { timeout: 180 }),
+    /did not settle/,
+  );
 });

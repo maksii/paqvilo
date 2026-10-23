@@ -1,8 +1,57 @@
 # Model-driven Lense Actions
 
-Start [model-driven Lense](../mirage/docs/model-driven-customizations.md#preview-the-same-code-with-lense) with your selected Solution sources and trusted local extensions. The dedicated app tab has **Resources**, **X-ray** and **Actions**. Actions opens a searchable panel beside the native app. Resources and X-ray retain their source matching and selection behavior. Power Pages uses its existing separate inspector.
+Start [model-driven Lense](../mirage/docs/model-driven-customizations.md#preview-the-same-code-with-lense) with selected Solution sources and trusted local extensions. Model-driven apps and Power Pages use the same Lense panel, source rows, Inspect view, X-ray picker, loading/error feedback and keyboard controls. Model-driven apps add an **Actions** tab. Its tools render inside the panel and follow the same theme, size and position.
+
+## Shared panel capabilities
+
+| Power Pages feature | Model-driven behavior |
+| --- | --- |
+| Local / Online | Local overlays exact declared resource mappings. Online passes native requests through. Switching reloads the owned app tab with GET. This does not deploy sources. |
+| Live reload | Source watching continues while reload is paused. Saving imports the new local revision; enabling Live reloads the owned app tab on later saves. `--no-reload` starts paused. |
+| Overrides, source counts and search | Applied counts belong to the current source revision. Unobserved and paused resources remain distinct. Explore searches declared resources, forms and command sources; Open and Copy use the selected source paths. |
+| Diff, Git baseline and scope | Edited markers and changed scope use pinned Git HEAD for each selected source root. Pin HEAD updates that baseline. Diff explicitly reads only the exact selected native script/stylesheet through the signed-in owned frame, then compares original local bytes without added debugger maps. |
+| Native comparison limits | Decoded native reads stop at 3MiB, including compressed responses. Native comparison bytes remain memory-only, with a 16MiB session budget and eviction. Unknown native equality remains unknown until observed. A navigation or source revision change invalidates an in-flight result. Non-text resources and API/authentication/shell routes are refused. The shared line diff normalizes BOM/newlines; a raw-byte difference is reported separately. |
+| Inspect and X-ray | The same picker, layers, selection guard, ancestry and source-opening controls match native `data-id` identifiers to the current exported form, field, PCF and ribbon command. Table-only matches are candidates; duplicate command matches never establish ownership. Passive inspection does not read record IDs or field values. |
+| Issues and Activity | Owned-page errors, failed requests, source diagnostics, saves and mode switches use the shared views and filters. Clearing a list does not repair its cause. |
+| Panel controls | The same drag, resize, theme, collapse, hide, search, keyboard and progress controls apply. `Alt+Shift+L` hides, `Alt+Shift+P` opens and `Alt+Shift+O` switches source mode. |
+| Session and target ownership | Agent status, debugger access and Stop retain the existing origin/tab ownership rules. The shared environment selector offers only explicitly declared model-driven targets. Selecting alone does not navigate; REAL DATA targets require confirmation. Switching retires the previous identity, action transport and agent before activating the next target. Source baselines, mode, Live and panel preferences remain per target. Native comparison bytes are released on retirement; equality is unknown again until reobserved. Authentication redirects are intermediate states; their origins are never intercepted. |
+| Portal-specific content | Liquid execution, portal snippets, page languages and portal persona setup have no native model-driven equivalent. Source deployment requirements remain diagnostics; Lense does not upload or publish. |
+
+Configured mappings and source coverage do not prove a resource executed. Inspect the current revision's applications, unmatched requests, diagnostics, actual native behavior and screenshots. Loopback UI regressions establish the shared implementation contract; native acceptance remains separately source-bound.
 
 Actions use the signed-in native environment. Each action describes its effect and explains missing native API support. Inspection results stay in the browser panel until cleared, the native target changes, or the Lense session ends. Favorites and recent action names contain no record values. Browser agent status, events and inspection snapshots do not include action results, command code, or the selected request identity.
+
+## Declared environments
+
+Reuse project references for environment names and origins, then opt each model-driven target in explicitly:
+
+```yaml
+references:
+  - id: development
+    name: Example app
+    environment: Development
+    origin: https://development.example.invalid
+    default: true
+  - id: review
+    name: Example app
+    environment: Review
+    origin: https://review.example.invalid
+modelDriven:
+  trustedExtensions: true
+  targets:
+    - reference: development
+      startPath: /main.aspx
+      resourceMap: ./mappings/development.json
+    - reference: review
+      startPath: /main.aspx
+      resourceMap: ./mappings/review.json
+      caution: true
+```
+
+Start with `paqvilo lense model-driven dev --project project.yml --env development`.
+Without `--env`, the declared default reference is selected. General references are not automatically model-driven targets. Each target's map binds only exact paths on its own origin; no origin, app URL or native cache path is guessed. Maps resolve relative to the project file. Only the selected target is activated or observed; showing a selector does not probe other environments. `--url` remains available for one explicitly supplied origin, while `--path` and `--resource-map` override only the initially selected target. Model-driven HTTP references are permitted only for explicitly opted-in loopback fixtures.
+
+These declarations authorize local source overlays, not deployment or live record writes. Browser actions still use the selected native environment. Confirm sign-in and the intended account after a switch; a login document is not application proof.
 
 ## Review and adoption map
 
@@ -30,7 +79,7 @@ The upstream community installer contains a TODO command and its component is no
 
 **Discard and refresh** asks before discarding a dirty draft and calls native refresh without Save. **Autosave guard** separately blocks save mode 70. Ordinary Save and Save & Close remain available. Diagnostic reloads also ask before discarding a dirty draft.
 
-Results are limited to 200 rows and individual displayed values are bounded. Server pagination may contain further records. Legacy navigation and diagnostic flags remain subject to the native environment's support. External maker/admin destinations use the environment ID supplied by the native context; unsupported cloud endpoints remain unavailable rather than being guessed.
+Results are limited to 200 rows and individual displayed values are bounded. Native action reads stream decoded bytes and cancel above 2MiB; a response without a bounded stream is unavailable. Server pagination may contain further records. Legacy navigation and diagnostic flags remain subject to the native environment's support. External maker/admin destinations use the environment ID supplied by the native context; unsupported cloud endpoints remain unavailable rather than being guessed.
 
 ## Request identity
 

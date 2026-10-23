@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // mirage dev with portals=all: several local Mirages and live targets in one browser
 // context, switched through the panel's portal selector. Loopback fixtures only.
 import { test } from 'node:test';
@@ -39,14 +40,12 @@ test('local Mirage portals and live targets share one browser: the selector swit
   const servers = [];
   let browser, runtime;
   const apps = [];
-  t.after(async () => {
-    await runtime?.close();
-    await browser?.close();
-    for (const app of apps) await app.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    classic.cleanup();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await runtime?.close(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...apps].map(app => async () => {await app.close();})); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).remove(async () => { classic.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const live = await serveLive(servers);
   const config = path.join(work, 'paqvilo.config.yml');
   fs.writeFileSync(config, JSON.stringify({

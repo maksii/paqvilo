@@ -262,6 +262,7 @@ export function panelUi(data) {
       ['issues', 'Issues'],
       ['activity', 'Activity'],
       ['explore', 'Explore'],
+      ['actions', 'Actions'],
     ];
     const MIRAGE_TABS = ['tweaks'];
     const PLACEHOLDER = { overrides: 'Filter overrides', runtime: 'Filter tables, templates, settings ...', issues: 'Filter issues', activity: 'Filter activity', explore: 'Find a page, file, template, snippet ...' };
@@ -339,7 +340,12 @@ export function panelUi(data) {
       const controller=new AbortController();let timedOut=false;
       const timeout=setTimeout(()=>{timedOut=true;controller.abort();},120_000);
       const stop=()=>controller.abort();lifetime.signal.addEventListener('abort',stop,{once:true});
-      try{return await nativeFetch('/__paqvilo/api/' + name, {
+      try{
+        if(S.d.transport==='model-driven'){
+          if(typeof window.__paqviloModelPanelApi!=='function')return {ok:false,error:'The model-driven dev loop is unavailable.'};
+          return await Promise.race([window.__paqviloModelPanelApi({token:S.d.token,name,body:body??{}}),new Promise(resolve=>controller.signal.addEventListener('abort',()=>resolve({ok:false,error:timedOut?'The request timed out. Its result is unknown; inspect current state before retrying.':'The dev loop has stopped.'}),{once:true}))]);
+        }
+        return await nativeFetch('/__paqvilo/api/' + name, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-paqvilo-token': S.d.token },
         body: JSON.stringify(body ?? {}),
@@ -497,8 +503,9 @@ export function panelUi(data) {
       const pos = S.ui.open ? S.ui.pos : (S.pillPos ??= {h:'left',v:'bottom',dx:12,dy:12});
       const vw = document.documentElement.clientWidth || window.innerWidth;
       const vh = window.innerHeight;
-      const dx = Math.max(4, Math.min(pos.dx, vw - 48));
-      const dy = Math.max(4, Math.min(pos.dy, vh - 34));
+      const box = (S.ui.open ? el.panel : el.pill).getBoundingClientRect();
+      const dx = Math.max(4, Math.min(pos.dx, vw - box.width - 4));
+      const dy = Math.max(4, Math.min(pos.dy, vh - box.height - 4));
       host.style.left = pos.h === 'left' ? dx + 'px' : 'auto';
       host.style.right = pos.h === 'right' ? dx + 'px' : 'auto';
       host.style.top = pos.v === 'top' ? dy + 'px' : 'auto';
@@ -612,7 +619,7 @@ export function panelUi(data) {
       const [code, cls, what] = fileIcon(it);
       const title = it.title || shortName(it.rel);
       const sub = it.url && it.kind === 'web-file' ? `${it.url}  ←  ${it.rel}` : it.rel;
-      return `<div class="row${it.fresh ? ' fresh' : ''}${it.paused ? ' off' : ''}" data-rel="${esc(it.rel)}" data-url="${esc(it.url ?? '')}">
+      return `<div class="row${it.fresh ? ' fresh' : ''}${it.paused ? ' off' : ''}" data-rel="${esc(it.rel)}" data-path="${esc(it.path??'')}" data-url="${esc(it.url ?? '')}">
         <span class="ico ${cls}" title="${esc(what)}">${code}</span>
         <button class="main" data-act="open" title="Open ${esc(it.rel)} in the editor">
           <div class="name" title="${esc(title)}"><span>${hl(title)}</span>${KIND[it.kind] ? `<span class="what">${esc(what)}</span>` : ''}${chips(it)}</div>
@@ -662,14 +669,15 @@ export function panelUi(data) {
       const counts = { all: all.length, edited: all.filter((i) => i.edited).length, differs: all.filter((i) => i.differs === true || i.isNew).length };
       const filter = counts[S.ui.filter] == null ? 'all' : S.ui.filter;
       out += `<div class="filters">
-        ${[['all', 'All'], ['edited', 'Edited'], ['differs', '≠ ' + d.env]].map(([id, label]) => `<button class="f${filter === id ? ' on' : ''}" data-act="filter" data-v="${id}">${esc(label)} <b>${counts[id]}</b></button>`).join('')}
-        <span class="grow"></span>${d.mirageMode ? '' : `<span class="lbl2">scope</span><span class="seg">${['all', 'changed'].map((s) => `<button class="${d.scope === s ? 'on' : ''}" data-act="scope" data-v="${s}" title="${s === 'all' ? 'every local file overrides the site' : 'only files that differ from the git baseline override the site'}">${s}</button>`).join('')}</span>`}
+        ${[['all', 'All'], ['edited', 'Edited'], ['differs', '≠ ' + d.env]].filter(([id])=>id==='all'||d.capabilities?.comparison!==false).map(([id, label]) => `<button class="f${filter === id ? ' on' : ''}" data-act="filter" data-v="${id}">${esc(label)} <b>${counts[id]}</b></button>`).join('')}
+        <span class="grow"></span>${d.mirageMode||d.capabilities?.scope===false ? '' : `<span class="lbl2">scope</span><span class="seg">${['all', 'changed'].map((s) => `<button class="${d.scope === s ? 'on' : ''}" data-act="scope" data-v="${s}" title="${s === 'all' ? 'every local file overrides the site' : 'only files that differ from the git baseline override the site'}">${s}</button>`).join('')}</span>`}
       </div>`;
       const shown = all.filter((i) => (filter === 'edited' ? i.edited : filter === 'differs' ? i.differs === true || i.isNew : true) && matches(i.rel, i.url ?? '', i.title ?? ''));
       let lists = '';
       for (const [id, title] of GROUPS) lists += group(id, title, shown.filter((i) => i.group === id).map(itemRow));
       const paused = d.paused.filter((i) => matches(i.rel, i.url ?? ''));
       lists += group('paused', 'Paused overrides', paused.map(itemRow));
+      if(d.modelDriven)lists += group('unobserved', 'Not observed on this revision', (d.unobserved ?? []).filter(i=>matches(i.rel,i.url??'',i.title??'')).map(itemRow));
       const insync = d.insync.filter((i) => matches(i.rel));
       lists += group('insync', `Recognised, same as ${d.env}`, insync.map(itemRow));
       if (!lists) {
@@ -731,14 +739,15 @@ export function panelUi(data) {
       const runtime = S.d.inspection ?? S.d.mirage;
       if (!runtime || inspectionPending(runtime)&&!(S.inspect?.report&&S.inspect.version>=runtime.version)) return loadingState('Reading local sources…', runtime?.phase ?? 'Matching the current address to the selected export.');
       if (!runtime?.active) return emptyState('Source inspection unavailable', esc(runtime?.error ?? 'The selected export could not be read.'));
-      const live = runtime.mode === 'live-sources';
-      let out = live ? `<div class="card"><div class="path">Live portal · local source inspection</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>` : mirageStatusCard(runtime);
+      const live = ['live-sources','model-driven'].includes(runtime.mode);
+      let out = live ? `<div class="card"><div class="path">${runtime.mode==='model-driven'?'Model-driven app · local Solution inspection':'Live portal · local source inspection'}</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>` : mirageStatusCard(runtime);
       if(inspectionPending(runtime)&&S.inspect?.report)out+=loadingState('Updating source inspection…', runtime.phase??'Previous source details remain visible until the update finishes.');
       if (!S.inspect || S.inspect.version < runtime.version) return out + loadingState('Inspecting this page…', 'Matching templates, fields and controls to their local sources.');
       if (S.inspect.error && !S.inspect.report) return out + emptyState('Dependency inspection unavailable', esc(S.inspect.error))+'<button class="btn" data-act="inspect-refresh">Retry inspection</button>';
       const report = S.inspect.report;
       if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'));
-      const sections = [['all', 'All'], ['source', 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', 'Files & snippets'], ['unresolved', 'Unresolved']];
+      if(report.modelDriven){const c=report.modelDriven;out+=`<div class="card"><div class="path">${esc(c.entity??'App context')}</div><div class="sub">${esc([c.appId&&'App: '+c.appId,c.formId&&'Form: '+c.formId,c.identity?.available?'Signed-in user context available':'Signed-in user context unavailable'].filter(Boolean).join(' · '))}</div><div class="sub">Only matching exported form IDs establish ownership; table-only matches remain candidates.</div></div>`;}
+      const sections = [['all', 'All'], ['source', report.modelDriven ? 'Solution sources' : 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', report.modelDriven ? 'Resources' : 'Files & snippets'], ['unresolved', 'Unresolved']];
       out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="xray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎ Lense X-ray</button><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
       if (S.pickingElement) out += '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
       if (S.selectedElement) {
@@ -985,7 +994,7 @@ export function panelUi(data) {
     };
 
     const issueRow = (p) => {
-      const kind = p.type === 'http' || p.type === 'failed' ? ['NET', 'k-err'] : p.type === 'deploy' ? ['SRC', 'k-warn'] : p.type === 'note' ? ['SKIP', 'k-warn'] : ['ERR', 'k-err'];
+      const kind = p.type === 'http' || p.type === 'failed' ? ['NET', 'k-err'] : p.type === 'deploy' ? ['SRC', 'k-warn'] : p.type === 'note' ? ['SKIP', 'k-warn'] : p.type === 'warning' ? ['WARN', 'k-warn'] : ['ERR', 'k-err'];
       const where = p.rel ? `${p.rel}${p.line ? ':' + p.line : ''}` : (p.where ?? '');
       const main = `<div class="name"><span>${hl(p.text)}</span>${p.status ? `<span class="c st">${p.status}</span>` : ''}${p.rel && p.type !== 'deploy' && p.type !== 'note' ? '<span class="c local" title="comes from a local file">local</span>' : ''}${p.count > 1 ? `<span class="c same">&times;${p.count}</span>` : ''}</div><div class="sub">${hl(where)}</div>`;
       return `<div class="row wrapt" data-rel="${esc(p.rel ?? '')}" data-line="${p.line ?? ''}" data-col="${p.col ?? ''}" data-text="${esc(p.text)}">
@@ -1002,10 +1011,12 @@ export function panelUi(data) {
       const notes = d.notes.map((n) => ({ type: 'note', text: n.reason, rel: n.rel })).filter(keep);
       const errors = d.problems.filter((p) => p.type === 'error' || p.type === 'console').filter(keep);
       const net = d.problems.filter((p) => p.type === 'http' || p.type === 'failed').filter(keep);
+      const warnings = d.problems.filter(p => p.type === 'warning').filter(keep);
       const lists =
         group('deploy', 'Source and deployment limitations', deploy.map(issueRow)) +
         group('notes', 'Changes not applied on this page', notes.map(issueRow)) +
         group('errors', 'JavaScript errors', errors.map(issueRow)) +
+        group('warnings', 'Console warnings', warnings.map(issueRow)) +
         group('net', 'Failed requests', net.map(issueRow));
       return lists || emptyState(S.q || S.ui.localOnly ? 'Nothing matches' : 'No issues on this page', S.q || S.ui.localOnly ? 'Clear the filter to see everything.' : 'JavaScript errors, failed requests and source or deployment limitations show up here.');
     };
@@ -1035,7 +1046,7 @@ export function panelUi(data) {
       const rows = found.slice(0, 150).map((c) => {
         const [code, cls, what] = c.t === 'page' ? KIND.page : fileIcon(c);
         const sub = [c.url, c.rel].filter(Boolean).join('  ←  ');
-        return `<div class="row" data-rel="${esc(c.rel ?? '')}" data-url="${esc(c.url ?? '')}">
+        return `<div class="row" data-rel="${esc(c.rel ?? '')}" data-path="${esc(c.path??'')}" data-url="${esc(c.url ?? '')}">
           <span class="ico ${cls}" title="${esc(what)}">${code}</span>
           <button class="main" data-act="${c.t === 'page' ? 'go' : 'open'}" title="${c.t === 'page' ? 'Open this page' : 'Open in the editor'}">
             <div class="name"><span>${hl(c.title || shortName(c.rel))}</span>${c.t !== 'page' && KIND[c.kind] ? `<span class="what">${esc(what)}</span>` : ''}</div><div class="sub">${hl(sub)}</div>
@@ -1058,7 +1069,7 @@ export function panelUi(data) {
         <span class="lbl2">local vs ${esc(f.against ?? '')}</span><span class="grow"></span>${f.ok ? `<b class="plus">+${f.added}</b> <b class="minus">&minus;${f.removed}</b>` : ''}
         <button class="ib" data-act="open" data-rel="${esc(f.rel)}" title="Open in the editor">${icon('code')}</button></div>`;
       if (!f.ok) return head + emptyState('Cannot compare', esc(f.error ?? ''));
-      if (!f.lines.length) return head + emptyState('No difference', `The local file has the same content as ${esc(f.against)}.`);
+      if (!f.lines.length) return head + (f.rawEqual === false ? emptyState('No line difference', 'Raw bytes differ, including BOM or newline formatting. The line comparison normalizes that formatting.') : emptyState('No difference', `The local file has the same content as ${esc(f.against)}.`));
       const lines = f.lines
         .map(([t, a, b, s]) =>
           t === '@'
@@ -1086,12 +1097,12 @@ export function panelUi(data) {
       if (!d) return;
       const ui = S.ui;
       const errs = d.problems.filter((p) => p.type === 'error' || p.type === 'console').length;
-      const warns = d.needsDeploy.length + d.notes.length;
-      const net = d.problems.length - errs;
+      const warns = d.needsDeploy.length + d.notes.length + d.problems.filter(p => p.type === 'warning').length;
+      const net = d.problems.filter(p => p.type === 'http' || p.type === 'failed').length;
       wrap.className = `wrap${ui.open ? ' open' : ''}${ui.hidden ? ' hidden' : ''}${ui.large ? ' large' : ''}${d.caution ? ' caution' : ''}`;
       host.dataset.mode = d.online ? 'online' : 'local';
       host.dataset.overrides = String(d.items.length);
-      host.dataset.issues = String(warns + d.problems.length);
+      host.dataset.issues = String(warns + errs + net);
       host.dataset.label = `${d.site} @ ${d.env}`;
       place();
       const dot = `<span class="dot${d.online ? ' off' : d.mirageMode || d.live ? '' : ' paused'}" title="${d.mirageMode ? 'Mirage renders local source and manages reloads' : d.online ? 'overrides are off' : d.live ? 'live reload is on' : 'live reload is off'}"></span>`;
@@ -1107,7 +1118,7 @@ export function panelUi(data) {
         el.pill,
         `${dot}<b>${d.online ? 'ONLINE' : 'LOCAL'}</b><span class="lbl">${esc(d.site)} @ ${esc(d.env)}</span>${real}${branch}
          ${d.online || d.mirageMode ? '' : `<span class="n ok" title="${d.items.length} overrides on this page">${d.items.length}</span>`}
-         ${warns ? `<span class="n warn" title="${d.mirageMode ? 'source notes or runtime issues' : `${warns} changes need a deployment or were not applied`}">${warns}</span>` : ''}
+         ${warns ? `<span class="n warn" title="${d.mirageMode ? 'source notes or runtime issues' : `${warns} source notes, deployment limitations or console warnings`}">${warns}</span>` : ''}
          ${errs + net ? `<span class="n err" title="${errs} JavaScript ${errs===1?'error':'errors'}, ${net} failed ${net===1?'request':'requests'}">${errs + net}</span>` : ''}
          ${d.pending.length || d.pendingBaseline ? `<span class="n warn" title="${d.mirageMode ? 'source changes are being applied by Mirage' : 'sources or baseline changed since this page loaded'}">${icon('reload')}</span>` : ''}`,
       );
@@ -1148,11 +1159,13 @@ export function panelUi(data) {
       const pendingTarget=S.pendingTarget;
       set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${targetGroups}</select><button data-target-go class="btn" aria-busy="${Boolean(S.targetSwitching)}" ${S.targetSwitching?'disabled':''}>${S.targetSwitching?'Opening…':'Go'}</button>${pendingTarget?`<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution?' (REAL DATA)':''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`:''}`);
       set('git', el.git, d.mirageMode ? '' : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`);
-      set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab===id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab===id?0:-1}">${label}${tabCount[id]}</button>`).join(''));
+      el.targets.hidden=d.capabilities?.targets===false;
+      el.git.hidden=d.capabilities?.git===false;
+      set('tabs', el.tabs, TABS.filter(([id]) => (id!=='actions'||d.capabilities?.actions===true)&&(!MIRAGE_TABS.includes(id) || d.mirageMode)).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab===id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab===id?0:-1}">${label}${tabCount[id]??''}</button>`).join(''));
       el.body.setAttribute('aria-labelledby','paqvilo-tab-'+ui.tab);
       el.input.placeholder = PLACEHOLDER[ui.tab] ?? '';
       el.input.setAttribute('aria-label',el.input.placeholder||'Search');
-      el.input.closest('.search').hidden=ui.tab==='tweaks';
+      el.input.closest('.search').hidden=['tweaks','actions'].includes(ui.tab);
       set(
         'toolbtns',
         el.toolbtns,
@@ -1164,9 +1177,10 @@ export function panelUi(data) {
       );
       if (ui.tab === 'runtime') ensureInspect();
       if (ui.tab === 'tweaks') ensureTweaks();
-      const body = S.diff ? diffHtml() : ui.tab === 'runtime' ? runtimeHtml() : ui.tab === 'tweaks' ? tweaksHtml() : ui.tab === 'issues' ? issuesHtml() : ui.tab === 'activity' ? activityHtml() : ui.tab === 'explore' ? exploreHtml() : overridesHtml();
+      const body = S.diff ? diffHtml() : ui.tab === 'actions'&&d.capabilities?.actions ? '<div data-panel-actions-host></div>' : ui.tab === 'runtime' ? runtimeHtml() : ui.tab === 'tweaks' ? tweaksHtml() : ui.tab === 'issues' ? issuesHtml() : ui.tab === 'activity' ? activityHtml() : ui.tab === 'explore' ? exploreHtml() : overridesHtml();
       const top = el.body.scrollTop;
       if (set('body', el.body, body)) el.body.scrollTop = S.keepScroll === false ? 0 : top;
+      host.dispatchEvent(new CustomEvent('paqvilo-panel-render',{detail:{token:d.token,tab:ui.tab}}));
       el.body.setAttribute('aria-busy',String(Boolean(S.diff?.loading||ui.tab==='runtime'&&(S.inspectLoading!==null||inspectionPending(inspection))||ui.tab==='tweaks'&&S.tweaksLoading!==null||ui.tab==='explore'&&S.catalogLoading!==null)));
       pendingFeedback();
       S.keepScroll = true;
@@ -1641,6 +1655,8 @@ export function panelUi(data) {
 
     return {
       get token() { return S.d?.token; },
+      openTab(tab) { if(TABS.some(([id])=>id===tab)&&(tab!=='actions'||S.d?.capabilities?.actions)){S.ui.tab=tab;setOpen(true);render();} },
+      collapse() { setOpen(false); },
       dispose() {
         stopPicking();
         document.getElementById('paqvilo-xray')?.__px?.dispose();
@@ -1679,6 +1695,7 @@ export function panelUi(data) {
           S.ui = { ...S.ui, ...saved, pos: { ...S.ui.pos, ...(saved.pos ?? {}) }, collapsed: { ...S.ui.collapsed, ...(saved.collapsed ?? {}) } };
           if (S.ui.open && S.ui.tab === 'explore') loadCatalog();
         }
+        if (S.ui.tab === 'actions' && !d.capabilities?.actions) S.ui.tab = 'overrides';
         render();
         S.first = false;
       },

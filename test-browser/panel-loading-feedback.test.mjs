@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Deliberately slow local tooling APIs; portal traffic and business writes are never used.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,13 @@ import { xrayUi } from '../lense/xray-ui.mjs';
 test('X-ray immediately shows its scan, survives exit during loading, and exposes failure and retry', { timeout: 60_000 }, async t => {
   const fx=inspectionFixture();let browser,panel,detach,releaseOpen,openCalls=0;
   const server=http.createServer((req,res)=>res.writeHead(200,{'content-type':'text/html'}).end('<!doctype html><title>Invented portal</title><style>body{font:15px Segoe UI;background:#f3f6fb;color:#20334c;margin:50px}main{padding:40px;background:white;border-radius:16px;max-width:800px}input{padding:12px;border:1px solid #ccd6e5}h1{font-size:38px}</style><main><h1>Project workspace</h1><p>Manage your next step.</p><form data-entityname="fx_widget" data-formid="widget-edit"><label for="fx_title">Title</label><input id="fx_title"></form></main>'));
-  t.after(async()=>{releaseOpen?.();await panel?.dispose();await detach?.();await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fx.cleanup();});
+  ownedFixture(t).add(async () => { releaseOpen?.(); });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve=>server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
   browser=await chromium.launch(browserLaunchOptions({headless:true,args:['--disable-background-networking']}));
   const context=await browser.newContext({viewport:{width:1440,height:950},serviceWorkers:'block',reducedMotion:'no-preference'});context.setDefaultTimeout(10_000);

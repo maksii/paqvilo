@@ -216,6 +216,12 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       if (!/^[!#$%&'*+.^_`|~\w-]+$/.test(name) || typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new Error('Invalid request header');
       headers[name.toLowerCase()] = value; headersChanged = true;
     },
+    /** Remove an internal owned-tool header before continuing the native request. */
+    removeRequestHeader(name) {
+      if (route.answered || fetched) throw new Error('Request headers are already sent');
+      if (typeof name !== 'string' || !/^[!#$%&'*+.^_`|~\w-]+$/.test(name)) throw new Error('Invalid request header');
+      delete headers[name.toLowerCase()]; headersChanged = true;
+    },
     request: () => ({
       postData,
       url: () => request.url + (request.urlFragment ?? ''),

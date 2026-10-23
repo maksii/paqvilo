@@ -7,7 +7,7 @@
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 /* Utilities are retained here for the legacy standalone native/platform-chrome.css URL. */
 /* Toolkit-authored structural fallback. Captured styles replace this resource. */
-.crmEntityFormView{width:100%;box-sizing:border-box}
+.crmEntityFormView{box-sizing:border-box}
 .entity-grid{min-width:0;max-width:100%}
 .entity-grid .view-grid{position:relative;max-width:100%;overflow-x:auto}
 .crmEntityFormView .tab,.crmEntityFormView table.section{width:100%;border-collapse:collapse}
@@ -30,7 +30,7 @@
 .crmEntityFormView .input-group-btn,.crmEntityFormView .input-group-addon{flex:0 0 auto;display:flex;align-items:center}
 .crmEntityFormView .validation-summary{width:100%;box-sizing:border-box;padding:12px;margin:12px 0;border:1px solid #a94442;color:#a94442}
 /* Narrow forms (frames) stack the cells; the empty zero cell stays hidden (live quick view frame). */
-@media(max-width:600px){.crmEntityFormView table.section{table-layout:fixed}.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
+@media(max-width:767px){.crmEntityFormView fieldset{min-width:0}.crmEntityFormView table.section{display:block;table-layout:fixed}.crmEntityFormView table.section>tbody,.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
 /* The lookup dialog's error block stays hidden until the grid reports an error (live: not rendered visible). */
 .modal-error.message{display:none}
 
@@ -47,3 +47,18 @@
 .modal-lookup .modal-header .close,.modal-associate .modal-header .close,.modal-lookup .modal-header .form-close,.modal-associate .modal-header .form-close{position:absolute;right:16px;top:12px;font-size:24px;line-height:1;padding:4px;border:0;background:transparent}
 .modal-lookup .view-grid,.modal-associate .view-grid{max-height:300px;overflow-y:auto}
 @media(max-width:600px){.modal-lookup .modal-dialog,.modal-associate .modal-dialog{margin:8px;max-height:calc(100dvh - 16px)}.modal-lookup .modal-content,.modal-associate .modal-content{max-height:calc(100dvh - 16px);display:flex;flex-direction:column}.modal-lookup .modal-body,.modal-associate .modal-body{min-height:0;overflow:auto}.modal-lookup .modal-footer,.modal-associate .modal-footer{flex-shrink:0;flex-wrap:wrap}.modal-lookup .view-grid,.modal-associate .view-grid{max-height:40dvh}}
+
+/* Structural form labels and readonly controls also apply inside narrow modal frames. */
+.crmEntityFormView .info label,.crmEntityFormView .table-info label{font-weight:700}
+.form-readonly .form-control{border-color:transparent;background:transparent;box-shadow:none;padding-left:0;padding-right:0;cursor:default}
+.form-readonly textarea.form-control{resize:none}
+.form-readonly select.form-control{appearance:none;pointer-events:none;user-select:none}
+/* Ordered step indicators are content lists, not the fixed-height Bootstrap progress bar. */
+ol.progress.list-group{height:auto;overflow:visible;margin-bottom:20px}
+ol.progress.list-group .number{padding-inline-end:10px}
+ol.progress.list-group.top,ol.progress.list-group.bottom{display:flex;flex-direction:row}
+@media(max-width:767px){ol.progress.list-group.top,ol.progress.list-group.bottom{flex-direction:column}}
+
+/* Map search controls retain inline layout when Bootstrap no longer defines form-inline. */
+#entity-list-map-options.form-inline .form-control{display:inline-block;width:auto;max-width:100%;vertical-align:middle}
+#entity-list-map-options{margin-bottom:10px}

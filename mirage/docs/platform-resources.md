@@ -44,6 +44,16 @@ height, matching the structural rule in Microsoft's [public preform stylesheet](
 Quick view documents use the same platform styles, and their frames follow lookup changes.
 Captured styles replace these fallbacks.
 
+The form fallback stacks fields below 768px, keeps read-only values borderless,
+and supports top and side multistep progress layouts with Bootstrap 3 and 5.
+Exported column widths and styles continue to control the authored form layout.
+These structural rules do not establish complete visual parity with a deployed site.
+
+The calendar fallback lays out the platform client's month, week and year markup,
+including event spans, date badges and narrow viewports. A captured native calendar
+stylesheet takes precedence. Calendar navigation and authored event validation still
+run through the client; a layout fallback does not repair invalid event data.
+
 An explicit `AssetCache.capturePublicAlias()` operation can supply the observed
 CRM MDL2 font URLs from Microsoft's public CRM MDL2 WOFF asset. The cache verifies
 the font family, PostScript name and required glyph coverage. A `.woff2` target

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The overlay treats a .powerpages-site (short-key) export like any other: its per-folder web
 // files and its content-pages/<language>/ page sources apply to the online page. Loopback only:
 // the synthetic code site (fixtures/code-site, NOTICE.md) in a temporary git repository.
@@ -47,13 +48,11 @@ test('real browser: a code site\'s per-folder web file and language page script 
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   let context, detach;
-  t.after(async () => {
-    await detach?.();
-    await context?.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise((resolve) => server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
   context = await chromium.launchPersistentContext(path.join(work, 'profile'), {
     channel: channel === 'chromium' ? undefined : channel,

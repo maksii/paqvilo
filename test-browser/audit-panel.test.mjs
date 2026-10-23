@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Adversarial panel checks: invented data and a disposable loopback document only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +13,11 @@ import {panelUi} from '../lense/panel-ui.mjs';
 test('panel preserves row focus, editable slash input, filtered facets and translucent-theme contrast', {timeout:60000}, async t => {
   const fx=createFixture(); let browser,panel;
   const server=http.createServer((_req,res)=>res.writeHead(200,{'content-type':'text/html'}).end('<!doctype html><style>html{background:white}body{background:rgba(0,0,0,.5)}.btn-primary{background:rgb(20,20,20);color:white}</style><h1>Invented fixture</h1><input id="portal-input">'));
-  t.after(async()=>{await panel?.dispose();await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fx.cleanup();});
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(resolve=>server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
   browser=await chromium.launch({channel:process.platform==='win32'?'msedge':undefined,headless:true,args:['--disable-background-networking']});
   const context=await browser.newContext();const page=await context.newPage();

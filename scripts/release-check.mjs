@@ -53,6 +53,7 @@ const COMPANY_QUALIFICATION_SOURCES = new Set([
   'portal-harness/query-budget-probes.mjs', 'test/query-budget-probes.test.mjs',
   'portal-harness/query-drop-flags.mjs', 'test/query-drop-flags.test.mjs',
   'plugins/mirage-runtime.mjs', 'plugins/test/mirage-runtime.test.mjs',
+  'plugins/test/collector-worker-lifecycle.test.mjs',
   'plugins/currency-observer-plan.mjs', 'plugins/test/currency-observer-plan.test.mjs',
   'plugins/sdk-projection-probes.mjs', 'plugins/test/sdk-projection-probes.test.mjs',
   'plugins/SdkProjectionDriver.cs', 'plugins/SdkProbes/SdkProbes.csproj', 'plugins/SdkProbes/packages.lock.json',
@@ -77,6 +78,8 @@ export const PROJECT_TEMPLATE_FILES = [
 
 export const REQUIRED_RELEASE_FILES = [
   'lense/model-driven.mjs', 'lense/commands/model-driven.mjs',
+  'lense/model-driven-panel.mjs', 'lense/model-driven-native-comparison.mjs',
+  'lense/model-driven-targets.mjs', 'lense/owned-page-binding.mjs',
   'lense/model-driven-inspection.mjs', 'lense/model-driven-inspector.mjs', 'lense/model-driven-inspector-ui.mjs',
   'lense/model-driven-actions.mjs', 'lense/model-driven-action-runner.mjs', 'lense/model-driven-actions-ui.mjs',
   'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', LENSE_ACTION_LICENSE, 'docs/model-driven-actions.md',

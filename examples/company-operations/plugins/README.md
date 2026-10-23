@@ -40,6 +40,22 @@ Current capture mode is **TransactionalLab**. Complete payloads are saved as Uni
 
 P08 rollback with durable acknowledgments and P13/P14 Azure/flow secret profiles are blocked until their dependencies exist. [The flow contract](collector/flow-secret-contract.json) identifies the flow-only `RetrieveEnvironmentVariableSecretValue` action and exact `EnvironmentVariableName` parameter. No direct plugin bypass is attempted. The contract is not a deployed Power Automate flow; FlowCallback, connection references, synthetic Key Vault binding and identity qualification remain required. Optional bulk and Merge profiles are also unqualified.
 
+From `examples/company-operations`, run the local collector checks with:
+
+```sh
+node --test plugins/test/collector.test.mjs plugins/test/collector-worker-lifecycle.test.mjs
+```
+
+The process regression runs the actual worker against invented loopback identity,
+Blob and Dataverse HTTP gateways. Its test-only fetch adapter accepts only the exact
+invented service origins. It verifies sanitized nonzero CLI failure, retained receipt
+and accepted parts after a denied write, independent-process resume and duplicate
+prevention. An invalid receipt ID makes no network request, and importing the worker
+does not execute another program's arguments. These checks do not deploy or emulate
+Azure, qualify managed identity or RBAC, or prove hosted durability, scheduling,
+retention, combined quotas or survival of a live business rollback. Deployment
+readiness remains unchanged.
+
 Local checks:
 
 ```powershell

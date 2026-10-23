@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -60,7 +61,9 @@ test('setup journey: template, stage rail, packs, setting editor, restart comman
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
   const server = await journeyServer(directory);
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => { await browser.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await server.close(); });
+  ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -153,7 +156,9 @@ test('identity and persona forms write only changed keys and refuse secret value
   await fs.writeFile(file, YAML.stringify({ sourceRoot: '.', defaultSite: 'invented', sites: { invented: { mirage: { port: 0, runtime: { kind: 'dataverse-api' }, simulation: { level: 'dry-run' }, dataverse: { enabled: true, port: 0, applications: [application] } } } } }));
   const server = await startSetupServer({ directory, processEnv: {} });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => { await browser.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await server.close(); });
+  ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const page = await browser.newPage();
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -197,7 +202,9 @@ test('setting rows show current values, references only for secrets, and Setting
     sites: { invented: { webFiles: { enabled: true }, mirage: { port: 0, runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true }, secrets, project: './alpha.project.yml' } } } }));
   const server = await startSetupServer({ directory, processEnv: {} });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => { await browser.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await server.close(); });
+  ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const page = await browser.newPage();
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));

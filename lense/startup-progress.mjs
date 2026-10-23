@@ -55,12 +55,34 @@ export function startupProgress({ structured = false, intervalMs = 5000, now = (
 /** Navigation completion is separate from application readiness; no arbitrary live-page readiness is inferred. */
 export async function waitForStartupPage(page, url, { progress, stopped = new Promise(() => {}), modelDriven = false, timeout = 120000 } = {}) {
   let cancelled = false;
-  const deadline = Date.now() + timeout, requests = new Set();
-  let idleSince = Date.now();
-  const started = request => { if (['document', 'script', 'stylesheet', 'image', 'font', 'xhr', 'fetch'].includes(request.resourceType())) { requests.add(request); idleSince = Date.now(); } };
-  const finished = request => { requests.delete(request); idleSince = Date.now(); };
+  const deadline = Date.now() + timeout, requests = new Map(), navigations = new Map();
+  let idleSince = Date.now(), sequence = 0;
+  const started = request => {
+    if (!['document', 'script', 'stylesheet', 'image', 'font', 'xhr', 'fetch'].includes(request.resourceType())) return;
+    let frame = null;
+    try { frame = request.frame(); } catch { /* Worker/unknown ownership remains pending until its terminal event. */ }
+    const order = ++sequence;
+    requests.set(request, { frame, order });
+    if (frame && request.isNavigationRequest?.()) navigations.set(frame, order);
+    idleSince = Date.now();
+  };
+  const finished = request => { if (requests.delete(request)) idleSince = Date.now(); };
+  const committed = frame => {
+    const boundary = navigations.get(frame);
+    if (boundary === undefined) return;
+    // A replaced document can lose terminal resource events during CDP interception.
+    // Retain its new navigation and every request started afterward, including preloads.
+    for (const [request, record] of requests) if (record.frame === frame && record.order < boundary) requests.delete(request);
+    idleSince = Date.now();
+  };
+  const detached = frame => {
+    for (const [request, record] of requests) if (record.frame === frame) requests.delete(request);
+    navigations.delete(frame);
+    idleSince = Date.now();
+  };
   const remaining = () => Math.max(1, deadline - Date.now());
   page.on('request', started); page.on('requestfinished', finished); page.on('requestfailed', finished);
+  page.on('framenavigated', committed); page.on('framedetached', detached);
   const cancelledResult = stopped.then(() => { cancelled = true; return 'cancelled'; });
   try {
     progress?.phase('document navigation');
@@ -90,5 +112,6 @@ export async function waitForStartupPage(page, url, { progress, stopped = new Pr
     throw error;
   } finally {
     page.off('request', started); page.off('requestfinished', finished); page.off('requestfailed', finished);
+    page.off('framenavigated', committed); page.off('framedetached', detached);
   }
 }

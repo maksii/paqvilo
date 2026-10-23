@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -153,10 +154,10 @@ test('enhanced optional fields expose presence and language-root rendering separ
 });
 
 test('every JSON command failure has a truthful envelope and status retains comparison rows',async t=>{
-  const fx=createFixture();t.after(fx.cleanup);
+  const fx=createFixture();ownedFixture(t).remove(fx.cleanup);
   const server=http.createServer((_req,res)=>res.writeHead(403).end('denied'));
   server.listen(0,'127.0.0.1');await once(server,'listening');
-  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  ownedFixture(t).add(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
   const config=fx.file('audit-contract.yml');fs.writeFileSync(config,YAML.stringify({sourceRoot:fx.dir,sites:{sample:{source:'.',environments:{local:`http://127.0.0.1:${server.address().port}`}}}}));
   for(const command of ['list','map','status','doctor','audit','resources','verify','mirage','agent']){
     const result=run('lense',command,'--json','--not-a-real-option'),report=JSON.parse(result.stdout);

@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -84,7 +85,7 @@ test('Mirage-rendered pages pass through unchanged while the toolkit panel API r
 
 test('Mirage Liquid output is not patched a second time by the remote overlay', async (t) => {
   const local = createFixture();
-  t.after(() => local.cleanup());
+  ownedFixture(t).remove(() => local.cleanup());
   const copy = 'web-pages/home/content-pages/Home.en-US.webpage.copy.html';
   const snippet = 'content-snippets/promo/Promo.en-US.contentsnippet.value.html';
   local.write(copy, "<p id=\"liquid\">{{ snippets['Promo'] }}</p><span id=\"literal\">Old local greeting</span>");
@@ -96,7 +97,7 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
     initial: { version: 1, mappings: {}, tables: {}, permissions: [], settings: { permissionMode: 'permissive' }, simulator: { mode: 'local', pageMode: 'local', identity: { id: 'person', roles: [] }, endpoints: [], live: {} } },
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const rendered = await (await fetch(app.url + '/')).text();
   assert.match(rendered, /id="liquid">New local greeting/);
   assert.match(rendered, /id="literal">Old local greeting/);

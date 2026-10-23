@@ -10,13 +10,14 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
+import { AssetCache } from "../lib/asset-cache.mjs";
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e70";
 const YEAR = "1b000000-0000-4000-8000-000000000011";
 const MONTH = "1b000000-0000-4000-8000-000000000012";
 const CONTACT = "c0000000-0000-4000-8000-000000000011";
 
-async function open(t, list) {
+async function open(t, list, { width = 1200, bootstrapV5 = true, capturedCss = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "list-calendar-browser-"));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calendar = "adx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_summaryfieldname: name\nadx_calendar_descriptionfieldname: city";
@@ -29,7 +30,7 @@ async function open(t, list) {
     // A year list in the list style (event list beside the year), and a month list without an end date column.
     "Year.list.yml": `adx_entitylistid: ${YEAR}\nadx_name: Year\nadx_entityname: account\n${calendar}\nadx_calendar_enddatefieldname: closes\nadx_calendar_initialview: 756150000\nadx_calendar_style: 756150001\nadx_calendar_initialdate: 2026-01-01T00:00:00.0000000`,
     "Month.list.yml": `adx_entitylistid: ${MONTH}\nadx_name: Month\nadx_entityname: account\n${calendar}\nadx_calendar_initialview: 756150001\nadx_calendar_initialdate: 2026-10-01T00:00:00.0000000`,
-    "sitesetting.yml": '- adx_sitesettingid: 5e000000-0000-4000-8000-000000000071\n  adx_name: Site/BootstrapV5Enabled\n  adx_value: "true"',
+    "sitesetting.yml": '- adx_sitesettingid: 5e000000-0000-4000-8000-000000000071\n  adx_name: Site/BootstrapV5Enabled\n  adx_value: "' + bootstrapV5 + '"',
   };
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(dir, name), body);
   const initial = {
@@ -46,11 +47,19 @@ async function open(t, list) {
     settings: { permissionMode: "enforce" },
     simulator: { mode: "local", pageMode: "local", identity: { id: CONTACT, contactId: CONTACT, fullname: "Ada", roles: ["Editor"] }, live: { origin: null }, endpoints: [], componentSchemas: {} },
   };
+  if (capturedCss !== null) {
+    const origin = 'https://calendar.example.test';
+    initial.simulator.live.origin = origin;
+    const cache = await new AssetCache({ directory: path.join(dir, 'assets'), origin }).init();
+    await cache.capture(['/Areas/EntityList/css/' + (bootstrapV5 ? 'BootstrapV5/' : '') + 'calendar.min.css'], {
+      origin, request: async () => ({ status: 200, headers: { 'content-type': 'text/css' }, body: Buffer.from(capturedCss) }),
+    });
+  }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
   ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
-  const context = await browser.newContext({ timezoneId: "UTC" });
+  const context = await browser.newContext({ timezoneId: "UTC", viewport: { width, height: 900 } });
   await signInContext(context, app, CONTACT, { roles: ["Editor"] });
   const page = await context.newPage();
   const requests = [];
@@ -61,8 +70,61 @@ async function open(t, list) {
   await page.route("**/*", (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
   await page.goto(`${app.url}/`);
   await page.locator(".entitylist .announce-calendar-title-sr-only").waitFor({ state: "attached" });
-  return { page, requests };
+  return { page, requests, app };
 }
+
+test('explicitly captured calendar stylesheet bytes replace the structural fallback', async t => {
+  const capturedCss = '/* Invented reference bytes */ .calendar{--calendar-capture:retained}';
+  const { page, app } = await open(t, "Month", { capturedCss });
+  const response = await page.request.get(app.url + '/Areas/EntityList/css/BootstrapV5/calendar.min.css');
+  assert.equal(response.status(), 200);
+  assert.equal(await response.text(), capturedCss);
+  assert.equal(await page.locator('.calendar').evaluate(node => getComputedStyle(node).getPropertyValue('--calendar-capture')), 'retained');
+});
+
+for (const bootstrapV5 of [true, false]) for (const width of [1200, 390]) {
+  test("calendar fallback lays out seven usable day columns (Bootstrap " + (bootstrapV5 ? 5 : 3) + ", " + width + "px)", async t => {
+    const { page } = await open(t, "Month", { width, bootstrapV5 });
+    const geometry = await page.locator('.cal-month-box > .cal-row-fluid').first().locator(':scope > .cal-cell1').evaluateAll(cells => cells.map(cell => {
+      const r = cell.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height };
+    }));
+    assert.equal(geometry.length, 7);
+    assert.ok(geometry.every(r => Math.abs(r.y - geometry[0].y) < 1), JSON.stringify(geometry));
+    assert.ok(geometry.every(r => r.width > 30 && r.height >= 60), JSON.stringify(geometry));
+    for (let index = 1; index < geometry.length; index++) assert.ok(geometry[index].x >= geometry[index - 1].x + geometry[index - 1].width - 1, JSON.stringify(geometry));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await page.locator('[data-cal-date="2026-10-01"][data-cal-view="day"]').first().click();
+    await page.waitForFunction(() => document.querySelector('.calendar-title').textContent.includes('October') && !document.querySelector('.cal-month-box'));
+    assert.equal(await page.locator('.calendar-error .message').textContent(), 'Calendars require both a start and end date.');
+  });
+}
+
+test('year month targets, event badges and week spans have visible geometry through actual navigation', async t => {
+  const { page } = await open(t, "Year");
+  const months = await page.locator('.cal-year-box > .row').first().locator(':scope > .cal-cell').evaluateAll(cells => cells.map(cell => { const r = cell.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; }));
+  assert.equal(months.length, 4);
+  assert.ok(months.every(r => Math.abs(r.y - months[0].y) < 1 && r.height >= 24), JSON.stringify(months));
+  const badge = await page.locator('.cal-events-num').first().evaluate(node => { const s = getComputedStyle(node), r = node.getBoundingClientRect(); return { color: s.color, background: s.backgroundColor, width: r.width, height: r.height }; });
+  assert.notEqual(badge.color, badge.background);
+  assert.notEqual(badge.background, 'rgba(0, 0, 0, 0)');
+  assert.ok(badge.width >= 10 && badge.height >= 10, JSON.stringify(badge));
+  await page.locator('[data-cal-date="2026-03-01"][data-cal-view="month"]').click();
+  await page.locator('.cal-month-box').waitFor();
+  await page.locator('[data-cal-date="2026-03-04"][data-cal-view="day"]').click();
+  await page.waitForFunction(() => !document.querySelector('.cal-month-box') && document.querySelectorAll('.event-list .event-item').length === 1);
+  assert.equal(await page.locator('.event-list .event-item').count(), 1);
+  await page.locator('[data-calendar-view="week"]').click();
+  await page.locator('.cal-week-box').waitFor();
+  const week = await page.locator('.cal-week-box').evaluate(node => {
+    const row = node.querySelector('.cal-row-head'), cells = [...row.children].map(cell => { const r = cell.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width }; });
+    const event = node.querySelector('.day-highlight').getBoundingClientRect();
+    return { cells, event: { x: event.x, width: event.width }, row: row.getBoundingClientRect().width };
+  });
+  assert.equal(week.cells.length, 7);
+  assert.ok(week.cells.every(r => Math.abs(r.y - week.cells[0].y) < 1), JSON.stringify(week));
+  assert.ok(week.event.x > week.cells[0].x + week.row / 7, JSON.stringify(week));
+  assert.ok(week.event.width > week.row / 7 && week.event.width < week.row / 2, JSON.stringify(week));
+});
 
 test("a list-style year calendar fetches the platform templates in order and renders the event list beside the year", async (t) => {
   const { page, requests } = await open(t, "Year");

@@ -2,7 +2,7 @@
  * the inspector binding or enter agent metadata. Execution requires explicit Run.
  */
 export function installModelDrivenCommands({ origin, token }) {
-  const host = document.getElementById('paqvilo-model-inspector');
+  const host = (document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector'));
   const live = () => location.origin === origin && host?.isConnected && host.__paqModelInspector?.token === token && !window.__paqviloRetiredModelInspectors?.includes(token);
   if (!live() || host.__paqModelCommands?.token === token) return;
   host.__paqModelCommands?.dispose();

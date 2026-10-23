@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Synthetic form workflows run only against disposable local sources and a loopback server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +29,9 @@ async function localBrowser(t, handler) {
   });
   server.on('connect', (_request, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });
   let browser;
-  t.after(async () => { await browser?.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise((resolve) => server.close(resolve)); });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
@@ -82,7 +85,10 @@ for (const layout of ['classic', 'enhanced']) test(`${layout} form sources edit 
   const sourceDir = layout === 'enhanced' ? fx.file('enhanced-source') : fx.dir;
   let watcher;
   let detach;
-  t.after(async () => { await watcher?.close(); await detach?.(); fx.cleanup(); fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }); });
+  ownedFixture(t).add(async () => { await watcher?.close(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }); });
   const source = (kind, id, rel) => ({ kind, id, rel, file: path.join(sourceDir, rel), code: `document.getElementById("${id}").textContent = "${id} baseline";\nwindow.fixtureExecutions = window.fixtureExecutions || {};\nwindow.fixtureExecutions["${id}"] = (window.fixtureExecutions["${id}"] || 0) + 1;\n` });
   let sources;
   if (layout === 'classic') {

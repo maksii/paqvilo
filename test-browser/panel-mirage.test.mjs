@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The dev panel in Mirage mode against a disposable loopback Mirage with a synthetic
 // portal export and Solution root. No portal environment is contacted.
 import { test } from 'node:test';
@@ -61,13 +62,11 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
     },
   });
   let browser, panel, detach;
-  t.after(async () => {
-    await panel?.dispose();
-    await detach?.();
-    await browser?.close();
-    await app.close();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await app.close(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true, args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'] });
   const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
@@ -246,13 +245,11 @@ test('Mirage panel signs this browser in and out through the site\'s identity pr
     },
   });
   let browser, panel, detach;
-  t.after(async () => {
-    await panel?.dispose();
-    await detach?.();
-    await browser?.close();
-    await app.close();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await app.close(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const idp = (await (await fetch(`${app.url}/_sim/api/session`)).json()).identityProvider;
   assert.equal(idp.available, true, idp.reason);
   const provider = idp.providers.find((item) => item.default) ?? idp.providers[0];

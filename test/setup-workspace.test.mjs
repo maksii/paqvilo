@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,7 +14,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 
 async function work(t, prefix = 'paqvilo-setup-unit-') {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
 const minimal = { sourceRoot: '.', defaultSite: 'portal', sites: { portal: { source: '.', environments: { dev: 'http://127.0.0.1:8787' }, mirage: { port: 0 } } } };
@@ -156,7 +157,7 @@ test('symlinked configuration writes are refused without modifying the destinati
 
 test('setup HTTP enforces Host, Origin, fetch metadata, CSRF, payload bounds and fixed routes', async t => {
   const directory = await work(t), server = await startSetupServer({ directory, processEnv: {} });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const base = new URL(server.url).origin;
   const status = await fetch(base + '/_setup/api/status').then(response => response.json());
   assert.equal((await fetch(base + '/_setup/')).status, 200);
@@ -179,7 +180,7 @@ test('setup HTTP enforces Host, Origin, fetch metadata, CSRF, payload bounds and
 test('unsafe configuration paths remain inspectable while writes stay disabled', async t => {
   const directory = await work(t);
   await fs.mkdir(path.join(directory, 'paqvilo.config.yml'));
-  const server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
   const response = await fetch(new URL('api/status', server.url));
   assert.equal(response.status, 200);
   const status = await response.json();
@@ -188,11 +189,11 @@ test('unsafe configuration paths remain inspectable while writes stay disabled',
 });
 
 test('Mirage serves setup independently from simulation identity/state and reports restart drift', async t => {
-  const directory = await work(t), fixture = createFixture(); t.after(() => fixture.cleanup());
+  const directory = await work(t), fixture = createFixture(); ownedFixture(t).remove(() => fixture.cleanup());
   const filename = path.join(directory, 'paqvilo.config.yml');
   await fs.writeFile(filename, YAML.stringify({ ...minimal, sourceRoot: fixture.dir }));
   const simulator = await createSimulator({ sourceDir: fixture.dir, watch: false, setup: { config: filename, processEnv: {} } });
-  t.after(() => simulator.close());
+  ownedFixture(t).add(() => simulator.close());
   const before = simulator.state();
   const response = await fetch(simulator.setupUrl); assert.equal(response.status, 200);
   const status = await fetch(simulator.url + '/_setup/api/status').then(res => res.json());
@@ -230,7 +231,7 @@ test('setup status carries stages, planned topology, templates, the settings cat
   const directory = await work(t);
   await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify({ ...minimal, defaults: { mirage: { simulation: { level: 'dry-run' } } },
     sites: { portal: { ...minimal.sites.portal, source: './missing-export', mirage: { port: 0, dataPacks: [{ id: 'x-pack', module: './missing-pack.mjs' }] } } } }));
-  const server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
   const status = await fetch(new URL('api/status', server.url)).then(response => response.json());
   assert.deepEqual(status.stages.map(item => item.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   for (const stage of status.stages) assert.ok(['done', 'next', 'optional', 'blocked'].includes(stage.status) && stage.anchor.startsWith('#') && Array.isArray(stage.findings), JSON.stringify(stage));
@@ -251,7 +252,7 @@ test('setup status carries stages, planned topology, templates, the settings cat
 });
 
 test('setup creates configuration from a template and serves own and shared assets by pattern', async t => {
-  const directory = await work(t), server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const directory = await work(t), server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
   const base = new URL(server.url).origin, status = await fetch(base + '/_setup/api/status').then(response => response.json());
   const post = body => fetch(base + '/_setup/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base, 'X-Paqvilo-Setup-CSRF': status.csrf }, body: JSON.stringify(body) });
   assert.equal((await post({ layer: 'shared', revision: status.revision, template: 'unknown', values: {} })).status, 400);
@@ -274,7 +275,7 @@ test('setup creates configuration from a template and serves own and shared asse
 test('restart drift follows the runtime identity and names the restart command', async t => {
   const directory = await work(t, 'paqvilo-setup-unit-quoted-~'), filename = path.join(directory, 'paqvilo.config.yml');
   await fs.writeFile(filename, YAML.stringify(minimal));
-  const server = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Lense', site: 'portal' } }); t.after(() => server.close());
+  const server = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Lense', site: 'portal' } }); ownedFixture(t).add(() => server.close());
   const base = new URL(server.url).origin;
   let status = await fetch(base + '/_setup/api/status').then(response => response.json());
   assert.equal(status.runtime.restartRequired, false);
@@ -289,7 +290,7 @@ test('restart drift follows the runtime identity and names the restart command',
   assert.equal(status.runtime.restartRequired, true);
   const projectFile = path.join(directory, 'mirage.project.yml');
   await fs.writeFile(projectFile, YAML.stringify({ version: 2, runtime: { kind: 'dataverse-api' }, solutions: [] }));
-  const project = await startSetupServer({ directory, project: projectFile, processEnv: {}, runtime: { product: 'Mirage' } }); t.after(() => project.close());
+  const project = await startSetupServer({ directory, project: projectFile, processEnv: {}, runtime: { product: 'Mirage' } }); ownedFixture(t).add(() => project.close());
   const projectStatus = await fetch(new URL('api/status', project.url)).then(response => response.json());
   assert.match(projectStatus.runtime.restartCommand, /^npx paqvilo mirage serve --project .*mirage\.project\.yml"?$/);
   assert.equal(projectStatus.ready, true); assert.equal(projectStatus.stages.find(item => item.id === 10).status, 'done');
@@ -302,7 +303,7 @@ test('linked project files outside the catalogue folder, under .paqvilo/ or not 
   await fs.writeFile(path.join(directory, 'notes.json'), '{"note":"never-return-notes"}');
   const site = project => ({ source: '.', environments: { dev: 'http://127.0.0.1:8787' }, mirage: { port: 0, project } });
   await fs.writeFile(filename, YAML.stringify({ sourceRoot: '.', defaultSite: 'a', sites: { a: site('./.paqvilo/session-77777777.json'), b: site(path.join(outside, 'private.json')), c: site('./notes.json'), d: site('../escape.project.yml') } }));
-  const server = await startSetupServer({ directory, processEnv: {} }); t.after(() => server.close());
+  const server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
   const base = new URL(server.url).origin, status = await fetch(base + '/_setup/api/status').then(response => response.json());
   assert.doesNotMatch(JSON.stringify(status), /never-return|outside-tree-value/);
   assert.deepEqual(Object.keys(status.layers).sort(), ['personal', 'shared']);
@@ -370,7 +371,7 @@ test('restart drift names the running site and command, is unknown when the iden
   await fs.writeFile(filename, YAML.stringify(two));
   const store = new SetupStore({ directory, config: filename, processEnv: {} });
   const mirage = await createSetupHandler({ store, site: 'beta', command: 'mirage serve', runtime: { product: 'Mirage' } });
-  const first = await serve(t, mirage); t.after(() => first.server.close());
+  const first = await serve(t, mirage); ownedFixture(t).add(() => first.server.close());
   const status = await fetch(first.base + '/_setup/api/status').then(response => response.json());
   assert.equal(status.runtime.site, 'beta'); assert.equal(status.runtime.restartCommand, `npx paqvilo mirage serve --config "${filename}" --site beta`);
   assert.equal(status.commandArgs.site, '--site beta'); assert.match(status.runtime.restartScope, /Mirage runtime/);
@@ -378,7 +379,7 @@ test('restart drift names the running site and command, is unknown when the iden
   process.env.MIRAGE_SETUP_RUNTIME = JSON.stringify({ site: 'beta', command: 'mirage dev' });
   try {
     const launched = await createSetupHandler({ store, runtime: { product: 'Mirage' } });
-    const { server, base } = await serve(t, launched); t.after(() => server.close());
+    const { server, base } = await serve(t, launched); ownedFixture(t).add(() => server.close());
     const value = await fetch(base + '/_setup/api/status').then(response => response.json());
     assert.match(value.runtime.restartCommand, /^npx paqvilo mirage dev --config .* --site beta$/);
   } finally { if (previous === undefined) delete process.env.MIRAGE_SETUP_RUNTIME; else process.env.MIRAGE_SETUP_RUNTIME = previous; }
@@ -386,7 +387,7 @@ test('restart drift names the running site and command, is unknown when the iden
   await fs.writeFile(path.join(directory, 'alpha.project.yml'), 'version: 2\nportals: []\n');
   await fs.writeFile(filename, YAML.stringify({ ...two, sites: { ...two.sites, beta: { ...two.sites.beta, mirage: { port: 0, project: './alpha.project.yml' } } } }));
   const broken = await createSetupHandler({ store, site: 'beta', runtime: { product: 'Mirage' } });
-  const { server, base } = await serve(t, broken); t.after(() => server.close());
+  const { server, base } = await serve(t, broken); ownedFixture(t).add(() => server.close());
   let value = await fetch(base + '/_setup/api/status').then(response => response.json());
   assert.equal(value.runtime.restartRequired, null); assert.match(value.runtime.restartReason, /^identity unavailable: .*portal source is required/);
   assert.notEqual(value.stages.find(item => item.id === 10).status, 'done');
@@ -394,7 +395,7 @@ test('restart drift names the running site and command, is unknown when the iden
   // Lense compares the environments it loaded as well.
   await fs.writeFile(filename, YAML.stringify(two));
   const lense = await createSetupHandler({ store, runtime: { product: 'Lense', site: 'portal' } });
-  const lenseServer = await serve(t, lense); t.after(() => lenseServer.server.close());
+  const lenseServer = await serve(t, lense); ownedFixture(t).add(() => lenseServer.server.close());
   value = await fetch(lenseServer.base + '/_setup/api/status').then(response => response.json());
   assert.equal(value.runtime.restartRequired, false); assert.match(value.runtime.restartCommand, /^npx paqvilo lense dev /); assert.match(value.runtime.restartScope, /environments/);
   await fs.writeFile(filename, YAML.stringify({ ...two, sites: { ...two.sites, portal: { ...two.sites.portal, environments: { dev: 'http://127.0.0.1:9797' } } } }));

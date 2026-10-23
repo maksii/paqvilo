@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Invented exports and loopback only. Real short page routes are not language prefixes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,10 +26,12 @@ test('live overlays and panel source identity preserve native short routes along
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   let browser, panel, detach;
-  t.after(async () => {
-    panel?.dispose(); await detach?.(); await browser?.close();
-    server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); fx.cleanup();
-  });
+  ownedFixture(t).add(async () => { panel?.dispose(); });
+  ownedFixture(t).add(async () => { await detach?.(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise((resolve) => server.close(resolve)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true, args: ['--disable-background-networking', '--disable-sync'] });
   const context = await browser.newContext({ serviceWorkers: 'block' });

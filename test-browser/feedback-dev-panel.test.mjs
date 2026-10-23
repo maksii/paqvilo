@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -20,7 +21,11 @@ async function fixture(t,html='<h1>Invented page</h1>',contextOptions={}){
     }
     res.writeHead(200,{'content-type':'text/html'}).end('<!doctype html>'+html);
   });
-  t.after(async()=>{await panel?.dispose();await browser?.close();server.closeAllConnections();await new Promise(r=>server.close(r));fx.cleanup();});
+  ownedFixture(t).add(async () => { await panel?.dispose(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); });
+  ownedFixture(t).add(async () => { await new Promise(r=>server.close(r)); });
+  ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin='http://127.0.0.1:'+server.address().port;
   browser=await chromium.launch(browserLaunchOptions({headless:true}));const context=await browser.newContext({viewport:{width:1000,height:700},...contextOptions});context.setDefaultTimeout(10000);
   const session=new OverlaySession({sourceDir:fx.dir,origin,site:structuredClone(SITE),sourceMaps:false,siteName:'invented',envName:'local'});

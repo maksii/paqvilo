@@ -1,3 +1,4 @@
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Response ordering and history navigation on an invented loopback document.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,9 @@ async function fixture(t){
   const session=new OverlaySession({origin,sourceDir:source.dir,site:structuredClone(SITE),siteName:'Invented',envName:'loopback',stateDir:source.dir});
   const controller=enablePanel(fake.context,session),state=controller.stateFor(fakeTab.page);
   const browser=await chromium.launch(browserLaunchOptions({headless:true}));
-  t.after(async()=>{await controller.dispose();await browser.close();source.cleanup();});
+  ownedFixture(t).add(async () => { await controller.dispose(); });
+  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).remove(async () => { source.cleanup(); });
   const page=await browser.newPage({viewport:{width:1440,height:1000}}),pending=[];
   page.setDefaultTimeout(5000);
   await page.route('**/*',route=>{

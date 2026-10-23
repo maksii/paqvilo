@@ -7,6 +7,27 @@ const fail = (errors, message) => {
   if (errors.length > 1) throw new AggregateError(errors, message);
 };
 
+/** Drain a late-bound resource collection without skipping later owners after failure. */
+export async function drainFixture(callbacks, { concurrent = false } = {}) {
+  const errors = [];
+  if (concurrent) {
+    const results = await Promise.allSettled(
+      callbacks.map(async (callback) => callback()),
+    );
+    for (const result of results)
+      if (result.status === "rejected") errors.push(result.reason);
+  } else {
+    for (const callback of callbacks) {
+      try {
+        await callback();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
+  fail(errors, "Owned fixture resource collection failed to close.");
+}
+
 export function ownedFixture(context) {
   const existing = owners.get(context);
   if (existing) return existing;

@@ -1,3 +1,4 @@
+import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // All catalogue/browser traffic in this proof stays on disposable loopback origins.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,11 +45,9 @@ test('headless checks preserve the saved headed window placement in owned and se
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-headless-placement-'));
   const servers = [];
   let browser;
-  t.after(async () => {
-    await browser?.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const fixture = await serve('placement', servers);
   const launch = chromium.launchPersistentContext;
   t.mock.method(chromium, 'launchPersistentContext', function (profile, options) {
@@ -86,14 +85,13 @@ test('one catalogue browser isolates lazy portal sessions, environments, panels,
   let runtime;
   const launches = [];
   const launch = chromium.launchPersistentContext;
-  t.after(async () => {
-    chromium.launchPersistentContext = launch;
-    await runtime?.close();
-    await browser?.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    alpha.cleanup(); beta.cleanup();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { chromium.launchPersistentContext = launch; });
+  ownedFixture(t).add(async () => { await runtime?.close(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).remove(async () => { alpha.cleanup(); });
+  ownedFixture(t).remove(async () => { beta.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const [alphaDev, alphaTest, betaDev, betaExtra, foreign] = await Promise.all(['alpha-dev', 'alpha-test', 'beta-dev', 'beta-extra', 'foreign'].map((name) => serve(name, servers)));
   for (const [fixture, name, color] of [[alpha, 'alpha-v1', 'rgb(10, 20, 30)'], [beta, 'beta-v1', 'rgb(40, 50, 60)']]) {
     fixture.write(APP, script(name));
@@ -260,14 +258,13 @@ test('all-day navigation retains template edits after commit and recovers a rest
   const servers = [];
   const logs = [];
   let browser, runtime;
-  t.after(async () => {
-    await runtime?.close();
-    await browser?.close();
-    for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    if (fs.existsSync(hidden)) fs.renameSync(hidden, beta.dir);
-    alpha.cleanup(); beta.cleanup();
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  ownedFixture(t).add(async () => { await runtime?.close(); });
+  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
+  ownedFixture(t).add(async () => { if (fs.existsSync(hidden)) fs.renameSync(hidden, beta.dir); });
+  ownedFixture(t).remove(async () => { alpha.cleanup(); });
+  ownedFixture(t).remove(async () => { beta.cleanup(); });
+  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const header = 'web-templates/header/Header.webtemplate.source.html';
   const original = '<h2 id="work-status">Initial status</h2>\n';
   alpha.write(header, original);
