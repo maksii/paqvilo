@@ -6,13 +6,14 @@ import os from 'node:os';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const website = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const parent = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 test('lookup changes reload quick views, clearing blanks them, and quick documents share modal styles', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-quick-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, source] of Object.entries({
     'website.yml': `adx_websiteid: ${website}\nadx_name: Synthetic`,
     'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template',
@@ -29,9 +30,9 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
   const schema = { entity: 'widget', mode: 100000000, fields, layout: [{ name: 'tab', columns: [{ sections: [{ name: 'main', rows: [[{ name: 'name' }], [{ name: 'parentid' }], [{ name: 'email' }], [{ type: 'quickform', id: 'ParentDetails', lookup: 'parentid', entity: 'parent', schema: { formName: 'Parent details', fields: [{ name: 'name', label: 'Parent name' }] } }]] }] }] }] };
   const initial = { mappings: { widget: { idColumn: 'widgetid', entitySet: 'widgets', relationships: { parent: { entity: 'parent', from: 'parentid', to: 'parentid', many: false } } }, parent: { idColumn: 'parentid', entitySet: 'parents', nameColumn: 'name' } }, tables: { widget: [], parent: [{ parentid: parent, name: 'Synthetic parent' }] }, permissions: [], settings: { permissionMode: 'permissive' }, simulator: { componentSchemas: { create: schema }, endpoints: [], mode: 'local', pageMode: 'local', live: { origin: null } } };
   const app = await createSimulator({ sourceDir: root, initial, watch: false, projectRoot: root, head: { stylesheets: ['./local.css'] } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.goto(app.url);
   assert.equal(await page.locator('#ParentDetails').getAttribute('src'), 'about:blank');

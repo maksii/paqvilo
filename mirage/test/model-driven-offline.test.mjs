@@ -17,6 +17,7 @@ import { createOfflineSessions, offlineProfileGaps, offlineSessionState, profile
 import { DataStore } from '../lib/data.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const PROFILE = '77777777-7777-4777-8777-777777777791', APP = '77777777-7777-4777-8777-777777777790';
 const item = (entity, distribution, extra = '') => `<MobileOfflineProfileItem><SelectedEntityTypeCode>${entity}</SelectedEntityTypeCode><RecordDistributionCriteria>${distribution}</RecordDistributionCriteria>${extra}</MobileOfflineProfileItem>`;
@@ -103,7 +104,7 @@ const entity = (name, set, attributes) => `<Entity><Name>${name}</Name><EntityIn
 
 async function organization(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-offline-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>FxOffline</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'Entities/x_item/Entity.xml': entity('x_item', 'x_items', field('x_count', 'int')),
@@ -116,7 +117,7 @@ async function organization(t) {
   for (const [name, content] of Object.entries(files)) { const file = path.join(root, 'solution', name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); }
   const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false, simulation: { level: 'dry-run' },
     dataverse: { enabled: false, tds: { enabled: false }, users: ['a', 'b', 'c'].map((name, index) => ({ objectId: `77777777-7777-4777-8777-0000000000a${index}`, domainname: `${name}@example.test`, fullname: `Staff ${name.toUpperCase()}`, roles: [name === 'c' ? 'Fx Reader' : 'Basic User'] })) } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const users = (await (await fetch(sim.url + '/_sim/api/dataverse/session')).json()).users;
   const webApi = createModelDrivenWebApi({ organization: () => sim.organization });
   const principals = { A: { principalId: users.find(user => user.name === 'Staff A').id, kind: 'staff' }, B: { principalId: users.find(user => user.name === 'Staff B').id, kind: 'staff' }, C: { principalId: users.find(user => user.name === 'Staff C').id, kind: 'staff' },

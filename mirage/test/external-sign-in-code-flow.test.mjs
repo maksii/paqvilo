@@ -7,6 +7,7 @@ import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createSimulator } from "../server.mjs";
 import { contactFieldsFromClaims, externalProviders, oidcOptions } from "../lib/external-login.mjs";
 import { startIdentityProvider } from "../lib/identity-provider.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // The authorization code flow and the request options of an OpenID Connect provider (Learn,
 // "Set up an OpenID Connect provider"; lib/identity-provider.mjs, lib/sign-in-flow.mjs).
@@ -238,13 +239,13 @@ const initial = () => ({
 });
 async function portal(t, settings) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-code-flow-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, initial: initial() });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const jar = new Map();
   const request = async (target, { headers = {}, ...init } = {}) => {
     const response = await fetch(new URL(target, app.url), { redirect: "manual", ...init, headers: { "sec-fetch-site": "same-origin", ...(jar.size ? { cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") } : {}), ...headers } });

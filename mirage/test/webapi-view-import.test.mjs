@@ -5,11 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { importSolutionMetadata } from "../lib/solution-metadata.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test("imported Web API view columns combine with explicit fields without exposing related, filter or sort columns", async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-api-column-view-"));
   const portal = path.join(directory, "portal"), solution = path.join(directory, "solution");
-  t.after(async () => {
+  ownedFixture(t).remove(async () => {
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
     await fs.rm(directory, { recursive: true, force: true });
   });
@@ -35,7 +36,7 @@ test("imported Web API view columns combine with explicit fields without exposin
     settings: { permissionMode: "permissive" },
     simulator: { mode: "local", pageMode: "local", identityScope: "configured", identity: { id: "invented-persona", roles: [] }, endpoints: [], live: {} },
   } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const get = query => fetch(app.url + "/_api/viewwidgets?" + new URLSearchParams(query), { headers: { __RequestVerificationToken: app.state().csrf } });
   const allowed = await get({ $select: "title,tagline,_groupid_value" });
   assert.equal(allowed.status, 200, await allowed.clone().text());

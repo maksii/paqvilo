@@ -6,6 +6,7 @@ import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { DataStore } from "../lib/data.mjs";
 import { webApiPolicy, webApiFetchPolicy } from "../lib/webapi-policy.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // HTTP errors carry the documented Power Pages code in the body
 // (web-api-http-requests-handle-errors); the simulator's own classification
@@ -161,7 +162,7 @@ test("Web API settings are failclosed and system-view columns require exact impo
 
 test("complete local mapping distinguishes invalid columns from known but disabled columns", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-webapi-schema-complete-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_name: Complete schema\nadx_websiteid: site");
   await fs.writeFile(path.join(directory, "settings.sitesetting.yml"), [
     "- adx_name: Webapi/contact/enabled",
@@ -177,7 +178,7 @@ test("complete local mapping distinguishes invalid columns from known but disabl
     secret: { type: "text" },
   };
   const app = await createSimulator({ sourceDir: directory, initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const request = (query) => fetch(`${app.url}/_api/contacts?${query}`);
   let response = await request("$select=unknowncolumn");
   assert.equal(response.status, 400);
@@ -499,7 +500,7 @@ test("HTTP optional profile default inherits table grants while explicit sensiti
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "pp-profile-default-"),
   );
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, "Home.webpage.yml"),
     "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n",
@@ -537,7 +538,7 @@ test("HTTP optional profile default inherits table grants while explicit sensiti
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const request = (route, method = "GET", body) =>
     fetch(app.url + route, {
       method,
@@ -594,7 +595,7 @@ test("HTTP optional profile default inherits table grants while explicit sensiti
 
 test("native lookup bindings do not publish target endpoints and enforce source append, target appendTo and source column writes", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-webapi-bind-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, "Home.webpage.yml"),
     "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n",
@@ -644,7 +645,7 @@ test("native lookup bindings do not publish target endpoints and enforce source 
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const call = (route, method = "GET", body) =>
     fetch(app.url + route, {
       method,
@@ -729,7 +730,7 @@ test("HTTP Web API field gates cover projection, selects, filters, expands, Fetc
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "pp-webapi-policy-"),
   );
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, "Home.webpage.yml"),
     "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n",
@@ -749,7 +750,7 @@ test("HTTP Web API field gates cover projection, selects, filters, expands, Fetc
     initial: fixture(),
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const request = (route, method = "GET", body) =>
     fetch(app.url + route, {
       method,

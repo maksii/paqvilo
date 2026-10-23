@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // These are invented local records. Acceptance of an input by this fixture does
 // not establish that the hosted portal's request-validation policy accepts it.
@@ -22,7 +23,7 @@ const CASES = [
 
 async function fixture(t, extraFields = [], contextOptions = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "input-roundtrip-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: input-site\nadx_name: Input fixture',
     'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /\nadx_pagetemplateid: template',
@@ -64,9 +65,9 @@ async function fixture(t, extraFields = [], contextOptions = {}) {
     },
   };
   const app = await createSimulator({ sourceDir: root, initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext(contextOptions);
   await signInContext(context, app, 'fixture-editor', { roles: ['Editor'] });
   const page = await context.newPage();

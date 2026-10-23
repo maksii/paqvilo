@@ -15,6 +15,7 @@ import {
   signInContent,
 } from "../lib/auth-session.mjs";
 import { signInHeaders } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const page = (id, name, partial, parent = "home") =>
   [
@@ -123,13 +124,13 @@ const initialState = (identity = { contactId: "alex", roleSource: "memberships",
 
 async function simulator(t, initial = initialState()) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-auth-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, initial });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const state = await (await fetch(app.url + "/__sim/api/state?summary=1")).json();
   // A browser sends Fetch Metadata (Sec-Fetch-Site) with every request.
   const browser = (target, { cookie, headers = {}, ...init } = {}) =>

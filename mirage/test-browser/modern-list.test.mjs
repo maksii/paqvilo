@@ -8,6 +8,7 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { PAGES_CLIENT_API_SCRIPT } from "../lib/platform.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "77777777-7777-4777-8777-777777777701";
 const CONTACT = "77777777-7777-4777-8777-777777777702";
@@ -28,7 +29,7 @@ const FEATURE_LIST = [`adx_view: ${VIEW_ALL}`, `adx_views: '{"Views":[{"ViewId":
 // Invented site: one x_item list (page size 3) included twice on the home page, as a modern and a classic list.
 async function launch(t, { operations = ["read"], features = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "modern-list-browser-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const solutionDir = path.join(dir, "solution");
   if (features)
     for (const [name, body] of Object.entries(SOLUTION)) { await fs.mkdir(path.dirname(path.join(solutionDir, name)), { recursive: true }); await fs.writeFile(path.join(solutionDir, name), body); }
@@ -53,9 +54,9 @@ list.on('rowclick',function(e){window.clicked.push(e.row.getId());});window.page
     simulator: { mode: "local", pageMode: "local", identity: { id: CONTACT, contactId: CONTACT, roles: ["Member"] }, live: { origin: null }, endpoints: [] },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, port: 0, ...(features ? { solutionRoots: [solutionDir] } : {}) });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 800, height: 120 } });
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();

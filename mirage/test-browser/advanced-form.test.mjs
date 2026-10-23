@@ -6,10 +6,11 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test("advanced form validates, saves a record, and advances to a persisted edit step", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "advanced-form-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     "website.yml": "adx_websiteid: website\nadx_name: Test",
     "Home.webpage.yml":
@@ -150,9 +151,9 @@ test("advanced form validates, saves a record, and advances to a persisted edit 
   initial.simulator.componentSchemas.wizard.steps[0].js =
     'window.stepScriptSawField=!!document.getElementById("fullname");document.addEventListener("DOMContentLoaded",()=>{document.getElementById("disabledcount").disabled=true;document.getElementById("parentcustomerid").value="11111111-1111-1111-1111-111111111111";const ui=document.createElement("input");ui.type="number";ui.name="no-autofill";ui.value="123";document.querySelector("#WebFormPanel").append(ui);});';
   const app = await createSimulator({ sourceDir: root, initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage(),
     errors = [],
     writes = [];

@@ -78,6 +78,12 @@ Stale evidence remains a coverage gap until recaptured.
 
 ## Interpret the result
 
+The capture command returns exit code `0` when every scenario succeeds, `1` for
+failed assertions or blocked writes, and `2` for execution errors in a completed
+run. Validation and setup failures return `1`. Completed runs persist both the
+latest report and dated history before setting their exit code; inspect those
+reports even when the command fails.
+
 Read `report.json`, `summary.md` and each scenario's `diff.json`. Capture folders contain
 metadata, DOM, elements, requests, console output, screenshots and same-origin frame data.
 A failed capture, unexpected sign-in page or blocked scenario is not successful coverage.
@@ -87,6 +93,11 @@ position indicator does not delay readiness. A settle timeout makes the capture 
 and remains in its problems and settlement records; it is not silently accepted.
 `ALLOWED` means differences were explained by the supplied allowlist; it does not mean
 identical output. Screenshots are retained but are not compared by the tool.
+
+Capture metadata also records `stepOutcomes`: each top-level matrix action is marked `performed`,
+`skipped` or `error`. Optional absent or hidden targets are explicitly skipped;
+an invalid optional selector is an error. The legacy step count and timeline
+include skipped optional actions, so they alone do not prove an action occurred.
 
 Review allowlist proposals against their evidence. Do not hide missing controls, permission
 failures or incorrect saved data behind broad patterns. Keep raw project evidence private;

@@ -8,12 +8,13 @@ import {DataError} from '../lib/data.mjs';
 import {observedConfig} from '../lib/project-config.mjs';
 import {webApiErrorResponse} from '../lib/webapi-handler.mjs';
 import {attachODataReaderDetails, odataConversionDetails} from '../lib/webapi-error-details.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const id='00000000-0000-4000-8000-000000000001';
 const prefix="Error identified in Payload provided by the user for Entity :'', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : ";
 async function fixture(t,mode) {
   const source=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-reader-error-'));
-  t.after(()=>fs.rm(source,{recursive:true,force:true}));
+  ownedFixture(t).remove(()=>fs.rm(source,{recursive:true,force:true}));
   await fs.writeFile(path.join(source,'website.yml'),'adx_websiteid: invented-reader-site\nadx_name: Reader fixture\n');
   await fs.writeFile(path.join(source,'sitesetting.yml'),'- adx_name: Webapi/probe/enabled\n  adx_value: "true"\n- adx_name: Webapi/probe/fields\n  adx_value: "probeid,title,quantity,amount,ratio,enabled,day,externalid"\n- adx_name: Webapi/error/innererror\n  adx_value: "true"\n');
   const app=await createSimulator({sourceDir:source,watch:false,observed:{webApiErrorDetails:mode,evidence:'Invented loopback reader fixture'},initial:{
@@ -21,7 +22,7 @@ async function fixture(t,mode) {
       probeid:{dataverseType:'uniqueidentifier'},title:{dataverseType:'nvarchar',maxLength:30},quantity:{dataverseType:'int',minValue:0,maxValue:10},amount:{dataverseType:'decimal'},ratio:{dataverseType:'float'},enabled:{dataverseType:'bit'},day:{dataverseType:'datetime'},externalid:{dataverseType:'uniqueidentifier'},
     }}},tables:{probe:[{probeid:id,title:'Original',quantity:2}]},settings:{permissionMode:'permissive'},
   }});
-  t.after(()=>app.close());
+  ownedFixture(t).add(()=>app.close());
   return app;
 }
 async function send(app,raw,{method='PATCH',contentType='application/json'}={}) {

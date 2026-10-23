@@ -5,10 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveTargets } from '../portal-matrix.mjs';
 import { createMirageContext } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('matrix runtimes retain site-bound platform, observations, profiles and explicit packs with independent state', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-matrix-context-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (name, value) => { const file = path.join(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, value); return file; };
   for (const site of ['first', 'second']) {
     await write(`${site}/website.yml`, `adx_websiteid: ${site}\nadx_name: ${site}\n`);
@@ -33,7 +34,7 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
   }])) }));
   const { targets } = await resolveTargets({ config, repo: root, sites: ['first', 'second'] });
   const opened = [];
-  t.after(async () => { for (const runtime of opened) await runtime.close(); });
+  ownedFixture(t).add(async () => { for (const runtime of opened) await runtime.close(); });
   const inspect = async runtime => {
     const home = await fetch(runtime.url);
     const platform = await fetch(`${runtime.url}/_sim/api/platform-settings`).then(response => response.json());
@@ -61,7 +62,7 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
 
 test('matrix and public site contexts retain the explicitly selected environment and its runtime origin', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-matrix-env-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (name, value) => { const file = path.join(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, value); return file; };
   await write('portal/website.yml', 'adx_websiteid: invented\nadx_name: Invented\n');
   await write('portal/web-pages/Home.webpage.yml', 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main\n');
@@ -73,7 +74,7 @@ test('matrix and public site contexts retain the explicitly selected environment
   const first = 'https://first.example.invalid', second = 'https://second.example.invalid';
   const config = await write('catalogue.json', JSON.stringify({ sourceRoot: root, sites: { invented: { source: 'portal', defaultEnv: 'first',
     environments: { first, second }, mirage: { solutionRoots: [], observed: { headers: { page: { 'x-invented-local': 'retained' } }, evidence: 'Synthetic local response fixture' } } } } }));
-  const opened = []; t.after(async () => { for (const runtime of opened) await runtime.close(); });
+  const opened = []; ownedFixture(t).add(async () => { for (const runtime of opened) await runtime.close(); });
   const open = async (context, state) => { const runtime = await context.createSimulator({ stateFile: path.join(root, state), watch: false, port: 0 }); opened.push(runtime); return runtime; };
   const { targets: [target] } = await resolveTargets({ config, sites: ['invented'], env: { invented: 'second' } });
   assert.equal(target.label, 'invented/second'); assert.equal(target.reference, 'second'); assert.equal(target.origin, second);

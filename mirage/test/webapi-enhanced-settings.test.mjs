@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SETTINGS = {
   "Webapi/contact/enabled": "true",
@@ -63,13 +64,13 @@ const state = () => ({
 for (const [format, files] of Object.entries(FORMATS))
   test(`Webapi site settings from ${format} enable tables, columns and innererror`, async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-webapi-format-"));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     for (const [file, content] of Object.entries(files)) {
       await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
       await fs.writeFile(path.join(directory, file), content);
     }
     const app = await createSimulator({ sourceDir: directory, initial: state(), watch: false });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     for (const [name, value] of Object.entries(SETTINGS)) assert.equal(app.portal.settings[name], value, name);
     const call = (route, options = {}) =>
       fetch(app.url + route, {

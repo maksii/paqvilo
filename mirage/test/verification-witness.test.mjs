@@ -6,6 +6,7 @@ import os from 'node:os';
 import { verificationWitness, compareVerificationWitnesses } from '../lib/verification-witness.mjs';
 import { createSimulator } from '../server.mjs';
 import { connectRuntime, createPortalSession } from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const initial = () => ({ version: 1, mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid' },
   fixture: { entitySet: 'fixtures', idColumn: 'fixtureid' }, recording: { entitySet: 'recordings', idColumn: 'recordingid' } },
@@ -65,11 +66,11 @@ test('pending visitor session inspections protect role changes and closing just 
 });
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-witness-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-witness-')); ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_name: Witness fixture\nadx_websiteid: source-site');
   await fs.writeFile(path.join(directory, 'webrole.yml'), '- adx_webroleid: reader\n  adx_name: Reader');
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, '.paqvilo', 'state.json'), initial: initial(), watch: false, port: 0 });
-  t.after(() => app.close()); return { app, runtime: await connectRuntime({ origin: app.url }) };
+  ownedFixture(t).add(() => app.close()); return { app, runtime: await connectRuntime({ origin: app.url }) };
 }
 
 test('real witness route binds cookie-isolated visitors, remains anonymous without cookie and does not run queries/plugins', async t => {

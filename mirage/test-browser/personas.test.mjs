@@ -7,13 +7,14 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test(
   "admin contact memberships refresh Liquid/source scripts and isolate companies for API reads and writes",
   { timeout: 45000 },
   async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-personas-"));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(
       path.join(directory, "Home.webpage.yml"),
       "adx_webpageid: home\nadx_name: Persona portal\nadx_partialurl: /\n",
@@ -105,9 +106,9 @@ test(
       watch: false,
       initial,
     });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
+    ownedFixture(t).add(() => browser.close());
     const context = await browser.newContext({ serviceWorkers: "block" });
     await context.route("**/*", (route) =>
       route.request().url().startsWith(app.url)

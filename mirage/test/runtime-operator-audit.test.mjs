@@ -7,6 +7,7 @@ import {createPersonaContexts} from '../lib/persona-contexts.mjs';
 import {createSimulator} from '../server.mjs';
 import {fixture,initial} from './fixtures/platform-experiments.mjs';
 import {personaFixture,contactId} from './fixtures/persona-catalog.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('warming the persona cache anonymously does not change reported defaults or leak browser sessions',async t=>{
   const {app}=await personaFixture(t);
@@ -20,10 +21,10 @@ test('warming the persona cache anonymously does not change reported defaults or
 });
 
 test('failed context cleanup cannot be reused and does not prevent other runtimes closing',async t=>{
-  const root=await fs.mkdtemp(join(tmpdir(),'context-audit-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root=await fs.mkdtemp(join(tmpdir(),'context-audit-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const paths=[],stopped=[];let fail=true;
   const manager=createPersonaContexts({directory:root,snapshot:async file=>{paths.push(dirname(file));await fs.writeFile(file,'fixture');},start:async({definition})=>({url:'http://127.0.0.1:1',close:async()=>{if(definition.id==='one'&&fail)throw Error('Synthetic stop failure');stopped.push(definition.id);}})});
-  t.after(()=>manager.close());
+  ownedFixture(t).add(()=>manager.close());
   const first=await manager.open({id:'one'});await manager.open({id:'two'});
   await assert.rejects(manager.stop(first.id),/Synthetic stop failure/);
   assert.equal(manager.list().items[0].status,'stopping');
@@ -35,8 +36,8 @@ test('failed context cleanup cannot be reused and does not prevent other runtime
 });
 
 test('operator configuration reads avoid cloning unrelated business tables',async t=>{
-  const root=await fs.mkdtemp(join(tmpdir(),'operator-reads-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));await fixture(root);
-  const app=await createSimulator({sourceDir:root,initial:initial(),watch:false});t.after(()=>app.close());
+  const root=await fs.mkdtemp(join(tmpdir(),'operator-reads-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));await fixture(root);
+  const app=await createSimulator({sourceDir:root,initial:initial(),watch:false});ownedFixture(t).add(()=>app.close());
   const snapshot=app.store.snapshot.bind(app.store);let fullCopies=0;
   app.store.snapshot=projection=>{if(!projection||projection.sections?.includes('tables'))fullCopies++;return snapshot(projection);};
   const responses=await Promise.all(['/platform-settings','/experiments','/experiments/source-defaults'].map(async path=>{const response=await fetch(app.url+'/__sim/api'+path);assert.equal(response.status,200);return response.json();}));

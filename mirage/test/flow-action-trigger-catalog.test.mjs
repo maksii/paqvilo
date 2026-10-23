@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ASSIGNED = '77777777-7777-4777-8777-0000000000e5', UNASSIGNED = '77777777-7777-4777-8777-0000000000e6', CLIENT = '77777777-7777-4777-8777-0000000000e7';
 const trigger = message => ({ properties: { definition: { triggers: { performed: { type: 'OpenApiConnectionWebhook', inputs: { host: { apiId: '/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps', operationId: 'BusinessEventsTrigger' },
@@ -23,7 +24,7 @@ const CATALOGS = {
 
 async function simulator(t, extra) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-catalog-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedCatalog</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'customapis/x_Notify/customapi.xml': api('x_Notify'), 'customapis/x_Other/customapi.xml': api('x_Other'),
@@ -31,7 +32,7 @@ async function simulator(t, extra) {
   for (const [name, text] of Object.entries(files)) { await fs.mkdir(path.dirname(path.join(root, 'solution', name)), { recursive: true }); await fs.writeFile(path.join(root, 'solution', name), text); }
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const simApi = async (method, suffix, payload) => (await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'x-sim-csrf': sim.state().csrf, 'content-type': 'application/json' }, body: JSON.stringify(payload) })).status;
   const enabled = { mode: 'exported', activation: 'local-enabled' };
   assert.equal(await simApi('PATCH', '/config', { operations: { [`cloud-flow:${ASSIGNED}`]: enabled, [`cloud-flow:${UNASSIGNED}`]: enabled } }), 200);

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = '77777777-7777-4777-8777-777777777710';
 const DETAILS = '77777777-7777-4777-8777-777777777711';
@@ -13,7 +14,7 @@ const view = (table, id, name, columns, filter = '') => `<savedquery><savedquery
 
 async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', 'true']], markers = true } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-search-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': `adx_websiteid: ${SITE}\nadx_name: Invented search`,
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: main',
@@ -53,7 +54,7 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
     simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] },
   };
   const sim = await createSimulator({ sourceDir: path.join(dir, 'portal'), solutionRoots: [path.join(dir, 'solution')], stateFile: path.join(dir, 'state.json'), port: 0, watch: false, initial });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = async (query, headers = {}) => {
     const response = await fetch(`${sim.url}/?${new URLSearchParams(query)}`, { headers });
     const html = await response.text();
@@ -106,7 +107,7 @@ test('the default /search/ page renders the search results markup and states a d
 // with Internal set to No, and "This behavior can't be modified". The store row decides, never the view's projected columns.
 test('knowledge article eligibility does not depend on the Portal Search view columns', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-search-ka-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': `adx_websiteid: ${SITE}\nadx_name: Invented search`,
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: main',
@@ -134,7 +135,7 @@ test('knowledge article eligibility does not depend on the Portal Search view co
     permissions: [{ id: 'ka', entity: 'knowledgearticle', scope: 'global', roles: ['Anonymous Users'], operations: ['read'] }],
     settings: { permissionMode: 'enforce' }, simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] } };
   const sim = await createSimulator({ sourceDir: path.join(dir, 'portal'), solutionRoots: [path.join(dir, 'solution')], stateFile: path.join(dir, 'state.json'), port: 0, watch: false, initial });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const html = await (await fetch(`${sim.url}/?q=lantern`)).text();
   const main = /<main id=probe>([\s\S]*?)<\/main>/.exec(html)?.[1] ?? html;
   assert.deepEqual([...main.matchAll(/<li>([^<]*)<\/li>/g)].map(match => match[1]).sort(), ['Lantern public', 'Lantern unflagged']);

@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {createSimulator} from '../server.mjs';
 import {portalMonthFirstDate,parseDateValue} from '../lib/dataverse-values.mjs';
 import {observedConfig} from '../lib/project-config.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('month-first conversion validates calendar and clock without relaxing the ISO parser',()=>{
   assert.equal(portalMonthFirstDate('2/7/2025'),'2025-02-07');
@@ -23,10 +24,10 @@ test('month-first conversion validates calendar and clock without relaxing the I
 });
 
 for(const enabled of [false,true])test(`portal Web API conversion is evidenced and opt-in (${enabled})`,async t=>{
-  const root=await fs.mkdtemp(join(tmpdir(),'mirage-month-first-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root=await fs.mkdtemp(join(tmpdir(),'mirage-month-first-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.writeFile(join(root,'website.yml'),'adx_name: Synthetic date site\nadx_websiteid: site\n');
   await fs.writeFile(join(root,'sitesetting.yml'),'- adx_name: Webapi/item/enabled\n  adx_value: true\n- adx_name: Webapi/item/fields\n  adx_value: date,instant,name\n');
-  const app=await createSimulator({sourceDir:root,watch:false,observed:enabled?{webApiDateParsing:'month-first',evidence:'Synthetic opt-in boundary regression'}:{},initial:{settings:{permissionMode:'permissive'},mappings:{item:{entitySet:'items',idColumn:'itemid',fields:{date:{type:'datetime',behavior:'dateonly'},instant:{type:'datetime'},name:{type:'string'}}}},tables:{item:[]}}});t.after(()=>app.close());
+  const app=await createSimulator({sourceDir:root,watch:false,observed:enabled?{webApiDateParsing:'month-first',evidence:'Synthetic opt-in boundary regression'}:{},initial:{settings:{permissionMode:'permissive'},mappings:{item:{entitySet:'items',idColumn:'itemid',fields:{date:{type:'datetime',behavior:'dateonly'},instant:{type:'datetime'},name:{type:'string'}}}},tables:{item:[]}}});ownedFixture(t).add(()=>app.close());
   const csrf=(await fetch(app.url+'/__sim/api/state?summary=1').then(r=>r.json())).csrf;
   const headers={'content-type':'application/json',__RequestVerificationToken:csrf};
   for(const [value,expected]of [['2/7/2025','2025-02-07T00:00:00Z'],['10/14/2026','2026-10-14T00:00:00Z'],['2025-02-07','2025-02-07T00:00:00Z']]){

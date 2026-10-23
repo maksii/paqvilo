@@ -14,10 +14,11 @@ import {nativeFormControlIds} from '../lib/native-postback.mjs';
 import {createMirageContext} from '../api.mjs';
 import {loadProjectConfig} from '../lib/project-config.mjs';
 import {signInHeaders} from '../testing/session.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function fixture(t,{wizard=false,attachments=false,webapi=false,...options}={}){
   const root=await fs.mkdtemp(path.join(tmpdir(),'mirage-feedback-'));
-  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const files={'website.yml':'adx_websiteid: site\nadx_name: Invented feedback',
     'Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
     'Main.pagetemplate.yml':'adx_pagetemplateid: main\nadx_webtemplateid: main',
@@ -31,7 +32,7 @@ async function fixture(t,{wizard=false,attachments=false,webapi=false,...options
   const stateFile=path.join(root,'state.json'),settings={sourceDir:root,stateFile,watch:false,persistence:{journalThresholdBytes:0},...options};
   const initial={settings:{permissionMode:'permissive'},mappings:{item:{entitySet:'items',idColumn:'itemid'}},tables:{item:[{itemid:'one',title:'Before'}]},simulator:{componentSchemas:{edit:{entity:'item',fields:[{name:'title'}]},create:{entity:'item',fields:[{name:'title'}]},wizard:{initialStepId:'first',steps:[{stepId:'first',entity:'item',mode:100000000,fields:[{name:'title'}]}]}}}};
   if(attachments){initial.mappings.annotation={entitySet:'annotations',idColumn:'annotationid'};initial.tables.annotation=[];}
-  const app=await createSimulator({...settings,initial});t.after(()=>app.close());
+  const app=await createSimulator({...settings,initial});ownedFixture(t).add(()=>app.close());
   const submit=(route,body,type='application/json')=>fetch(app.url+route,{method:'POST',redirect:'manual',headers:{'content-type':type,__RequestVerificationToken:app.state().csrf},body:type==='application/json'?JSON.stringify(body):body});
   return {app,root,stateFile,settings,submit};
 }

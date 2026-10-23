@@ -10,6 +10,7 @@ import { signInHeaders } from '../testing.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { portalAuthorizationModel } from '../lib/portal-authorization.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const text = { dataverseType: 'nvarchar' };
 const files = (state) => ({
@@ -57,13 +58,13 @@ const initial = () => ({
 
 async function site(t, state) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-authorization-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(state))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false, initial: initial() });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const alex = signInHeaders(sim, 'alex');
   const call = (method, route, body, headers = alex) => fetch(sim.url + route, { method, headers: { ...headers, ...(body ? { 'content-type': 'application/json', __RequestVerificationToken: sim.state().csrf } : method === 'GET' ? {} : { __RequestVerificationToken: sim.state().csrf }) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const ids = async (route, headers) => { const response = await call('GET', route, undefined, headers); return response.status === 200 ? (await response.json()).value.map(row => Object.values(row).find(value => /^[iol]\d$/.test(value))).sort() : response.status; };

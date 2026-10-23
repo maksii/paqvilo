@@ -8,6 +8,7 @@ import path from 'node:path';
 import { normalizeContract, compareReferenceContracts } from '../reference-parity.mjs';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession } from '../testing/sessions.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('reference projections preserve nulls, missing-field errors, ordering and explicit status-only checks', () => {
   const plan = { collection: 'value', fields: ['id', 'name'], unordered: true };
@@ -32,7 +33,7 @@ test('malformed reference options fail before local or reference reads instead o
 
 test('reference parity uses explicit local visitors, membership and override roles without changing runtime identity', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reference-visitor-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_name: Parity fixture\nadx_websiteid: site',
     'webrole.yml': '- adx_webroleid: reader\n  adx_name: Reader\n- adx_webroleid: public\n  adx_name: Public\n  adx_anonymoususersrole: true',
@@ -41,7 +42,7 @@ test('reference parity uses explicit local visitors, membership and override rol
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(directory, name), body);
   const initial = { mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid' }, widget: { entitySet: 'widgets', idColumn: 'widgetid' } }, tables: { contact: [{ contactid: 'reader', fullname: 'Local Reader' }, { contactid: 'other', fullname: 'Other' }], widget: [{ widgetid: 'one' }] }, permissions: [{ id: 'read', entity: 'widget', scope: 'global', roles: ['Reader'], operations: ['read'] }], settings: { permissionMode: 'enforce' }, simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', identity: { contactId: 'reader', roleSource: 'memberships' }, contactRoles: [{ contactId: 'reader', roleId: 'reader' }], endpoints: [] } };
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, 'state.json'), initial, port: 0, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const options = { localUrl: app.url, origin: 'https://reference.invalid', outputDir: path.join(directory, 'evidence'), contracts: [{ id: 'protected', path: '/_api/widgets', collection: 'value', fields: ['widgetid'] }], bridge: { request: async () => ({ status: 200, body: { value: [{ widgetid: 'one' }] } }) } };
   const identity = structuredClone(app.store.state.simulator.identity);
   assert.equal((await compareReferenceContracts(options)).contracts[0].localStatus, 403);

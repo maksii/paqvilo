@@ -17,6 +17,7 @@ import { runAtomic } from '../lib/dataverse-api.mjs';
 import { install } from '../lib/dataverse-org-messages.mjs';
 import { createSecretResolver } from '../lib/secret-resolver.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const ADMIN_OID = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -97,7 +98,7 @@ test('NotifyEnvironmentVariableSecretChange stays validate-only with a secrets c
 
 test('the /_sim environment table carries no value for secret definitions', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'env-secret-sim-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries({
     'website.yml': 'adx_websiteid: site\nadx_name: Secret table fixture',
     'web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
@@ -125,7 +126,7 @@ test('the /_sim environment table carries no value for secret definitions', asyn
     permissions: [],
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state', 'state.json'), port: 0, watch: false, initial });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const response = await fetch(app.url + '/__sim/api/environment', { headers: { 'x-sim-csrf': app.state().csrf } });
   const text = await response.text();
   assert.equal(response.status, 200, text);

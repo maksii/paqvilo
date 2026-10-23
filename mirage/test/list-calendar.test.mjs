@@ -7,6 +7,7 @@ import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 import { calendarSettings, renderCalendarList, calendarResources, calendarLanguageScript, parseCalendarPath } from "../lib/list-views.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const LIST = "1b000000-0000-4000-8000-000000000001";
@@ -36,7 +37,7 @@ test("calendar list settings, markup shell and resources follow the exported lis
 
 test("calendar event feed returns rows in the requested period with summary and description", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "list-calendar-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Calendar`,
     "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template",
@@ -63,7 +64,7 @@ test("calendar event feed returns rows in the requested period with summary and 
     simulator: { mode: "local", pageMode: "local", identity: { id: CONTACT, contactId: CONTACT, fullname: "Ada", roles: ["Editor"] }, live: { origin: null }, endpoints: [], componentSchemas: { Accounts: { entity: "account", fields: [{ name: "name", label: "Name" }] } } },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const headers = signInHeaders(app, CONTACT, { roles: ["Editor"] });
   const base = `${app.url}/EntityList/Calendar/${SITE}/${LIST}/${VIEW}`;
   const march = await fetch(`${base}?from=2026-02-28T22:00:00Z&to=2026-03-31T21:00:00Z`, { headers });

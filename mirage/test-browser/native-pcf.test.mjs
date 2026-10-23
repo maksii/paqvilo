@@ -7,10 +7,11 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('explicit portal metadata activates exported form-bound PCF and saves through the native form', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-pcf-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'), solution = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: site\nadx_name: Synthetic native PCF',
@@ -31,8 +32,8 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
   const app = await createSimulator({ sourceDir: portal, solutionRoots: [solution], port: 0, watch: false, initial: {
     version: 1, mappings: { tst_row: { entitySet: 'tst_rows', idColumn: 'tst_rowid', nameColumn: 'tst_title' } }, tables: { tst_row: [] }, permissions: [], settings: { permissionMode: 'permissive' }, simulator: { mode: 'local', pageMode: 'local', identity: { id: 'editor', roles: ['Editor'] }, endpoints: [], live: { origin: null }, componentSchemas: {} },
   } });
-  t.after(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true })); t.after(() => browser.close());
+  ownedFixture(t).add(() => app.close());
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true })); ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext(); await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage(), errors = [], external = [];
   page.setDefaultTimeout(10000);

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { presetId, presetBody, syntheticPresetPack } from "./fixtures/lazy-preset-pack.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const FILES = {
   "website.yml": "adx_websiteid: site\nadx_name: Admin API fixture\nadx_headerwebtemplateid: header",
@@ -410,7 +411,7 @@ test("administration calls through /_sim are not audited as portal pages and the
 
 test("local environment variable values persist over Solution re-seeding until reset", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-admin-envvars-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portal = path.join(dir, "portal"), solution = path.join(dir, "solution");
   for (const [name, body] of Object.entries({
     "website.yml": "adx_websiteid: site\nadx_name: Variables",
@@ -424,7 +425,7 @@ test("local environment variable values persist over Solution re-seeding until r
   await fs.writeFile(path.join(variable, "environmentvariabledefinition.xml"), '<environmentvariabledefinition schemaname="sample_Seeded"><defaultvalue>default</defaultvalue><displayname default="Seeded"><label description="Seeded" languagecode="1033" /></displayname><type>100000000</type></environmentvariabledefinition>');
   await fs.writeFile(path.join(variable, "environmentvariablevalues.json"), JSON.stringify({ environmentvariablevalues: { environmentvariablevalue: [{ schemaname: "sample_Seeded", value: "solution" }] } }));
   const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state", "state.json"), watch: false, solutionRoots: [solution] });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const csrf = app.state().csrf;
   const call = async (route, method = "GET", body) => {
     const response = await fetch(app.url + route, { method, headers: { "content-type": "application/json", "x-sim-csrf": csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

@@ -6,17 +6,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../api.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test("a reload while a job that calls change() is pending completes", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "standalone-reload-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, "solution");
   await fs.mkdir(path.join(solution, "Other"), { recursive: true });
   await fs.writeFile(path.join(solution, "Other", "Solution.xml"),
     "<ImportExportXml><SolutionManifest><UniqueName>InventedReload</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>");
   const sim = await createSimulator({ runtime: { kind: "dataverse-api" }, solutionRoots: [solution], projectRoot: root, port: 0, watch: false,
     simulation: { level: "dry-run" }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
 
   let ran = false;
   const reloading = sim.reload();

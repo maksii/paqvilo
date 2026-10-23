@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const PACK = `export default {
   id: 'invented-pack', name: 'Invented pack', description: 'Invented fixture pack',
@@ -33,7 +34,7 @@ async function json(response, status = 200) {
 
 test('standalone /packs lists an invented pack with exports, presets provenance and DATA ownership', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-packs-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await writeFiles(root, {
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedPacks</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/Entities/x_widget/Entity.xml': '<Entity><Name>x_widget</Name><EntityInfo><entity Name="x_widget"><EntitySetName>x_widgets</EntitySetName><PrimaryIdAttribute>x_widgetid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_widgetid"><Name>x_widgetid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
@@ -43,7 +44,7 @@ test('standalone /packs lists an invented pack with exports, presets provenance 
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     stateFile: path.join(root, 'state', 'state.json'), simulation: { level: 'simulation' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } },
     dataPacks: [{ module: path.join(root, 'packs', 'invented', 'pack.mjs') }] });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
 
   const body = await json(await fetch(`${sim.url}/_sim/api/packs`));
   assert.equal(body.packs.length, 1);
@@ -72,7 +73,7 @@ test('standalone /packs lists an invented pack with exports, presets provenance 
 
 test('Power Pages /packs reports the portal match of every registered pack', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-packs-pp-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await writeFiles(dir, {
     'portal/website.yml': 'adx_name: Invented Site\nadx_websiteid: site\nadx_defaultlanguage: lang-en\nadx_website_language: 1033',
     'portal/websitelanguage.yml': '- adx_websitelanguageid: lang-en\n  adx_name: English',
@@ -86,7 +87,7 @@ test('Power Pages /packs reports the portal match of every registered pack', asy
   const sim = await createSimulator({ sourceDir: path.join(dir, 'portal'), stateFile: path.join(dir, 'state.json'), port: 0, watch: false, projectRoot: dir,
     dataPacks: [{ module: path.join(dir, 'packs', 'match', 'pack.mjs') }, { module: path.join(dir, 'packs', 'other', 'pack.mjs') }],
     initial: { version: 1, mappings: {}, tables: {}, permissions: [], simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const body = await json(await fetch(`${sim.url}/_sim/api/packs`));
   const byId = Object.fromEntries(body.packs.map(item => [item.id, item]));
   assert.deepEqual([byId['invented-pack'].matched, byId['invented-other'].matched], [true, false]);

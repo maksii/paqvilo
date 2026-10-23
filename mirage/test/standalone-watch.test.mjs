@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -14,7 +15,7 @@ async function eventually(fn) {
 }
 for (const level of [null, 'simulation']) test(`standalone watcher ignores runtime/build/DATA outputs and reloads authored XML (${level ?? 'legacy'})`, { timeout: 20000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-source-watch-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedWatch</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'Entities/x_item/Entity.xml': '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><LocalizedNames><LocalizedName description="Before" languagecode="1033"/></LocalizedNames><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
@@ -27,7 +28,7 @@ for (const level of [null, 'simulation']) test(`standalone watcher ignores runti
     stateFile: path.join(root, level ? process.platform === 'win32' ? 'OTHER' : 'Other' : '.paqvilo', 'state.json'), packs: [path.join(root, 'pack', 'pack.mjs')],
     initial: { tables: { x_item: [{ x_itemid: ID, x_name: 'Before' }] } },
     ...(level ? { simulation: { level } } : {}), watch: true });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   // The root itself is a selected Solution. Runtime checkpoint/cache and pack DATA
   // therefore sit below the watch root and must not be mistaken for authored XML.
   await pause(300);

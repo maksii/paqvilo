@@ -9,17 +9,18 @@ import {browserLaunchOptions} from '../lib/browser-launch.mjs';
 import {startIdentityProvider} from '../lib/identity-provider.mjs';
 import {identityChooserFixture} from '../test/fixtures/identity-chooser.mjs';
 import {identityProviderSettings,identityProviderAssets} from '../lib/identity-provider-settings.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('identity chooser works without JS, enhances search/pins/recent, and supports project appearance', {timeout:60000},async t=>{
-  const callback=http.createServer((req,res)=>res.end('<h1>Signed in</h1>'));await new Promise(resolve=>callback.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>callback.close(resolve)));
-  const root=await fs.mkdtemp(join(tmpdir(),'idp-appearance-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const callback=http.createServer((req,res)=>res.end('<h1>Signed in</h1>'));await new Promise(resolve=>callback.listen(0,'127.0.0.1',resolve));ownedFixture(t).add(()=>new Promise(resolve=>callback.close(resolve)));
+  const root=await fs.mkdtemp(join(tmpdir(),'idp-appearance-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.writeFile(join(root,'custom.css'),'.chooser-header{background:rgb(240,230,255)}');await fs.writeFile(join(root,'custom.js'),'document.documentElement.dataset.projectIdentity="ready";');
   const settings=identityProviderSettings({presentation:'dialog',title:'Choose your test operator',head:{stylesheets:['custom.css'],scripts:['custom.js']}});
   const {users,report,provider,params}=identityChooserFixture();provider.redirectUri=`http://127.0.0.1:${callback.address().port}/callback`;params.redirect_uri=provider.redirectUri;
   let registration=false;
-  const idp=await startIdentityProvider({providers:()=>[provider],users:()=>users,personaCatalog:()=>report,registration:()=>({registration}),settings,assets:identityProviderAssets(settings,root)});t.after(()=>idp.close());
+  const idp=await startIdentityProvider({providers:()=>[provider],users:()=>users,personaCatalog:()=>report,registration:()=>({registration}),settings,assets:identityProviderAssets(settings,root)});ownedFixture(t).add(()=>idp.close());
   const url=idp.authority(provider)+'oauth2/authorize?'+new URLSearchParams(params);
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));ownedFixture(t).add(()=>browser.close());
   const noJS=await browser.newContext({javaScriptEnabled:false});const plain=await noJS.newPage();await plain.goto(url);await plain.getByRole('searchbox').fill('orsted unique');await plain.getByRole('button',{name:'Search',exact:true}).click();assert.match(await plain.locator('.chooser-count').textContent(),/of 1 matching/);await plain.getByRole('button',{name:'Continue as Ørsted Unique',exact:true}).click();await plain.waitForURL('**/callback?**');assert.ok(new URL(plain.url()).searchParams.get('code'));await noJS.close();
   const context=await browser.newContext(),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(url);
   assert.equal(await page.locator('h1').textContent(),'Choose your test operator');assert.equal(await page.locator('.chooser-header').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(240, 230, 255)');assert.equal(await page.locator('html').getAttribute('data-project-identity'),'ready');

@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ME = "00000000-0000-0000-0000-0000000000aa";
 const OTHER = "00000000-0000-0000-0000-0000000000bb";
@@ -24,7 +25,7 @@ const setting = (index, name, value) => [
 
 async function start(t, files, { permissions, contactRoles, dataModel }) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-site-tables-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [file, content] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
     await fs.writeFile(path.join(directory, file), content);
@@ -56,7 +57,7 @@ async function start(t, files, { permissions, contactRoles, dataModel }) {
       },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const get = async (route) => {
     const response = await fetch(app.url + route);
     return { status: response.status, body: await response.json() };

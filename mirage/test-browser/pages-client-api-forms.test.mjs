@@ -10,6 +10,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "77777777-7777-4777-8777-777777777701";
 const ROW = "77777777-7777-4777-8777-777777777702";
@@ -18,7 +19,7 @@ const CONTACT = "77777777-7777-4777-8777-777777777704";
 
 test("$pages forms bind to the rendered basic form: tabs, sections, values, visibility, required state and validators", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pages-forms-browser-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Example`,
     "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: form",
@@ -59,9 +60,9 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
     },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();

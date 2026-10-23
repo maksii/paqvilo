@@ -6,12 +6,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
 
 async function start(t, canvas) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'apps/fx_invented/Src/HomeScreen.pa.yaml': HOME,
@@ -21,7 +22,7 @@ async function start(t, canvas) {
   }
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, canvas, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 
@@ -61,7 +62,7 @@ test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing prefli
 
 test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-pp-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'portal/website.yml': 'adx_websiteid: fixture\nadx_name: Invented site',
@@ -72,7 +73,7 @@ test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too',
   }
   const sim = await createSimulator({ sourceDir: path.join(root, 'portal'), solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, canvas: { enabled: false } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   for (const suffix of ['/_apps/canvas/', '/_apps/canvas/x_app']) {
     const response = await fetch(sim.url + suffix, { headers: { accept: 'application/json' } });
     assert.equal(response.status, 404, suffix);

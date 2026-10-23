@@ -10,6 +10,7 @@ import { createManagedIdentityEndpoints, seedManagedIdentityRows } from "../lib/
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { createSimulator } from "../server.mjs";
 import { uuidV5 } from "../lib/dataverse-security.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // Invented identifiers and a loopback origin only.
 const ORIGIN = "https://127.0.0.1:9443";
@@ -220,10 +221,10 @@ test("P24: seedManagedIdentityRows upserts by clientId and drops rows of identit
 
 test("F5: an identity added through the runtime route gets a managedidentity row and its token passes WhoAmI", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "pp-runtime-mi-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Runtime identity\n");
   const app = await createSimulator({ sourceDir: directory, watch: false, dataverse: { enabled: true } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const origin = app.dataverse.origin;
   const admin = async (route, { method = "GET", body } = {}) => {
     const response = await fetch(`${app.url}/_sim/api${route}`, {

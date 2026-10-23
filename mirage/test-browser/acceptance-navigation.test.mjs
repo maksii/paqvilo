@@ -5,10 +5,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function navigationFixture(t, { history = 'hash', late = false, completed = false, noCommit = false, noContent = false, resetNavigation=false, documentDelay, redirectHops = 1, noNavigation = false, redirect = false, child = false, writeMs = 0, actionDelay = 0, replacementRead = false, embedded = false, crossOrigin = false, timeout = 4000, navigationCommitReserveMs } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const historyChange = history === 'none' ? '' : history === 'hash' ? "location.hash='pending'" : "history.pushState({},'', '?pending=1')";
   const writes = `fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})`;
   const form = `<form action="/submit" method="${redirect ? 'POST' : 'GET'}"><button id="save">Save</button></form>`;
@@ -48,7 +49,7 @@ async function navigationFixture(t, { history = 'hash', late = false, completed 
     res.end(form + `<script>${child ? `window.startWrites=()=>{${writes}}` : script}</script>`);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const result = await runAcceptance({ localUrl: `http://127.0.0.1:${server.address().port}`, outputDir: path.join(root, 'evidence'), timeout, navigationCommitReserveMs,
     flows: [{ name: 'Document boundary', steps: [{ action: 'navigate', path: '/' }, ...(child || embedded ? [{action: 'visible', frame: '#child', selector: '#save'}] : []), { action: 'click', selector: '#save', ...(embedded ? {frame: '#child'} : {}) }, { action: 'settle' }, ...(!noCommit && !noContent && !resetNavigation && !noNavigation ? [{ action: 'visible', selector: '#done', ...(embedded ? {frame: '#child'} : {}) }] : [])] }] });
   return result.flows[0];
@@ -147,7 +148,7 @@ test('cross-origin child document commits retire only their predecessor requests
 
 
 test('acceptance distinguishes failed loopback writes from external proxy refusals', {timeout:30000}, async t=>{
- const directory=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-acceptance-local-boundary-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-acceptance-local-boundary-'));ownedFixture(t).remove(()=>fs.rm(directory,{recursive:true,force:true}));
  const server=http.createServer((req,res)=>{
   req.resume();const url=new URL(req.url,'http://fixture');
   if(url.pathname.startsWith('/__sim/api/')){res.setHeader('content-type','application/json');return res.end(JSON.stringify(url.pathname.endsWith('/state')?{config:{mode:'local',pageMode:'local',endpoints:[]},status:{sourceFingerprint:'fixture',implementationFingerprint:'fixture'}}:{events:[]}));}
@@ -160,7 +161,7 @@ test('acceptance distinguishes failed loopback writes from external proxy refusa
   }
   res.end(`<iframe id="child" src="http://localhost:${server.address().port}/child?case=${url.pathname.slice(1)}"></iframe>`);
  });
- await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));ownedFixture(t).add(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
  for(const kind of ['abort','fail','external'])await t.test(kind,async()=>{
   const result=await runAcceptance({localUrl:`http://127.0.0.1:${server.address().port}`,outputDir:path.join(directory,kind),timeout:3000,flows:[{name:kind,steps:[{action:'navigate',path:'/'+kind},{action:'click',frame:'#child',selector:'#send'},{action:'settle'}]}]});
   const flow=result.flows[0];assert.equal(flow.passed,false,JSON.stringify(flow));
@@ -222,7 +223,7 @@ test('a reset navigation without an HTTP response remains a failed request',{tim
 
 test('a previously completed comparable redirect chain extends the next commit reserve', { timeout: 30000 }, async t => {
  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-comparable-chain-'));
- t.after(() => fs.rm(directory, { recursive: true, force: true }));
+ ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
  const markup = writes => `<p id="done">Invented page</p><form action="/save" method="POST"><button id="save">Save</button></form>${writes ? `<script>document.querySelector('form').addEventListener('submit',()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});})</script>` : ''}`;
  const server = http.createServer((req, res) => {
   req.resume(); const pathname = new URL(req.url, 'http://fixture').pathname;
@@ -236,7 +237,7 @@ test('a previously completed comparable redirect chain extends the next commit r
   res.end(markup(false));
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
- t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+ ownedFixture(t).add(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
  const result = await runAcceptance({localUrl:`http://127.0.0.1:${server.address().port}`,outputDir:path.join(directory,'evidence'),timeout:5000,flows:[{name:'Comparable chain',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#save'},{action:'visible',selector:'#done'},{action:'click',selector:'#save'},{action:'settle'},{action:'visible',selector:'#done'}]}]});
  const flow=result.flows[0]; assert.equal(flow.passed,true,JSON.stringify(flow));
  assert.ok(flow.navigationWaits.length>0);

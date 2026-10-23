@@ -8,6 +8,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ROLE = '77777777-7777-4777-8777-0000000000a1';
 const PORTAL_FLOW = '77777777-7777-4777-8777-0000000000a2';
@@ -21,9 +22,9 @@ async function fixture(t) {
   const calls = [];
   const local = http.createServer((req, res) => { calls.push(req.url); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ path: req.url })); });
   await new Promise((resolve) => local.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => local.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => local.close(resolve)));
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-connector-host-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const call = (uri) => ({ type: 'Http', inputs: { method: 'GET', uri } });
   const portalFlow = { properties: { definition: { parameters, triggers: { manual: { type: 'Request', kind: 'powerpages' } },
     actions: { call: call(`@{parameters('${PARAMETER}')}@{triggerBody()?['name']}`), reply: { type: 'Response', runAfter: { call: ['Succeeded'] }, inputs: { body: "@body('call')" } } } } } };
@@ -57,7 +58,7 @@ async function fixture(t) {
     initial: { version: 1, tables: { x_widget: [], x_audit: [] }, permissions: [], plugins: [], settings: { permissionMode: 'enforce' },
       mappings: { x_widget: { entitySet: 'x_widgets', idColumn: 'x_widgetid' }, x_audit: { entitySet: 'x_audits', idColumn: 'x_auditid' } },
       simulator: { mode: 'local', pageMode: 'local', identityScope: 'configured', identity: { id: 'caller', roles: ['Runner'], roleSource: 'override' } } } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   return { app, calls };
 }
 

@@ -5,6 +5,7 @@
 .displayNone{display:none!important}
 #offlineNotificationBar #message{position:relative;font-family:Segoe UI,sans-serif;font-style:normal;font-weight:600;font-size:12px;line-height:133%;color:#323130}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+/* Utilities are retained here for the legacy standalone native/platform-chrome.css URL. */
 /* Toolkit-authored structural fallback. Captured styles replace this resource. */
 .crmEntityFormView{width:100%;box-sizing:border-box}
 .entity-grid{min-width:0;max-width:100%}
@@ -35,3 +36,14 @@
 
 /* Map lists: the error box shows only when the map script reports an error (live). */
 #entity-list-map-error{display:none}
+/* Structural preform affordances. These are replaced with captured preform CSS. */
+.crmEntityFormView .info.required label:after,.entity-form .table-info.required label:after{content:' *';color:#a4262c}
+.entity-form .form-control[readonly]:not(.lookup),.form-readonly .form-control[readonly]{border-color:transparent;background:transparent;box-shadow:none;padding-left:0;cursor:default}
+.entity-grid td[data-th="Select"] [role="checkbox"]{display:inline-flex;align-items:center;justify-content:center;width:1em;height:1em;min-width:1em;border:1px solid currentColor;box-sizing:border-box;vertical-align:middle;cursor:pointer}
+.entity-grid td[data-th="Select"] [role="checkbox"]:focus-visible{outline:2px solid #005fcc;outline-offset:3px}
+.entity-grid tr.selected>td{background:#d6f0f7}
+.modal-lookup .modal-header,.modal-associate .modal-header{position:relative;display:block;padding:16px}
+.modal-lookup .modal-title,.modal-associate .modal-title{font-size:20px;line-height:1.4;margin:0;padding-right:32px}
+.modal-lookup .modal-header .close,.modal-associate .modal-header .close,.modal-lookup .modal-header .form-close,.modal-associate .modal-header .form-close{position:absolute;right:16px;top:12px;font-size:24px;line-height:1;padding:4px;border:0;background:transparent}
+.modal-lookup .view-grid,.modal-associate .view-grid{max-height:300px;overflow-y:auto}
+@media(max-width:600px){.modal-lookup .modal-dialog,.modal-associate .modal-dialog{margin:8px;max-height:calc(100dvh - 16px)}.modal-lookup .modal-content,.modal-associate .modal-content{max-height:calc(100dvh - 16px);display:flex;flex-direction:column}.modal-lookup .modal-body,.modal-associate .modal-body{min-height:0;overflow:auto}.modal-lookup .modal-footer,.modal-associate .modal-footer{flex-shrink:0;flex-wrap:wrap}.modal-lookup .view-grid,.modal-associate .view-grid{max-height:40dvh}}

@@ -11,6 +11,7 @@ import {clrContext,recordToSdkEntity,prepareClrRuntime} from '../lib/plugin-clr.
 import {pluginCatalogue,runPluginPhase} from '../lib/exported-plugins.mjs';
 import {createAsyncPluginRunner} from '../lib/plugin-async.mjs';
 import {localOrganizationService} from '../lib/local-organization-service.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 const user='10000000-0000-0000-0000-000000000001',id='20000000-0000-0000-0000-000000000001',replacement='20000000-0000-0000-0000-000000000002';
 const choiceField={type:'multiselectpicklist',options:[{value:1,label:'First'},{value:2,label:'Second'},{value:3,label:'Third'}]};
 const profile={userId:user,evidence:'Invented SDK context and choices contract',grants:[{entity:'widget',operations:['read']},{entity:'secondary',operations:['read','update']}]};
@@ -33,14 +34,14 @@ test('External update CLR context preserves the native message and typed externa
 });
 
 test('Original external-event DLL receives typed snapshots after commit',{skip:process.platform!=='win32'||!process.env.PAQ_TEST_XRM_SDK},async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-external-context-'));t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-external-context-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));
  const sdk=path.resolve(process.env.PAQ_TEST_XRM_SDK),source=path.join(root,'ExternalObserver.cs'),assembly=path.join(root,'ExternalObserver.dll');
  await fs.writeFile(source,`using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class ExternalObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.MessageName!="OnExternalUpdated"||c.Mode!=1||c.Stage!=40||c.IsInTransaction)throw new InvalidPluginExecutionException("External execution context mismatch");var target=(Entity)c.InputParameters["Target"];var before=(Entity)c.InputParameters["PreImage"];var changed=(string[])c.InputParameters["ChangedFields"];if(target.GetAttributeValue<string>("title")!="After"||before.GetAttributeValue<string>("title")!="Before"||changed.Length!=1||changed[0]!="title")throw new InvalidPluginExecutionException("External snapshots lost type or value");((ITracingService)services.GetService(typeof(ITracingService))).Trace("External snapshots verified");}}}`);
  const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),build=spawnSync(compiler,['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,source],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000});assert.equal(build.status,0,build.stdout+build.stderr);
  const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.ExternalObserver',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
  const step={id:'30000000-0000-0000-0000-000000000001',enabled:true,assemblyId:'invented',typeName:'Invented.ExternalObserver',entity:'widget',message:'OnExternalUpdated',stage:40,rank:1,mode:1,supportedDeployment:0,filteringAttributes:['title'],images:[]};
  const runtimes=new Map([[step.id,runtime]]),items=()=>pluginCatalogue({plugins:{steps:[step]},runtimes,overrides:{['plugin-step:'+step.id]:{mode:'clr'}}}),store=data(),notes=[];
- const runner=createAsyncPluginRunner({store,items,handlers:new Map(),runtimes,diagnostic:note=>notes.push(note)});t.after(()=>runner.close());
+ const runner=createAsyncPluginRunner({store,items,handlers:new Map(),runtimes,diagnostic:note=>notes.push(note)});ownedFixture(t).add(()=>runner.close());
  await store.transact(()=>store.recordCommittedEvent('widget','onexternalupdated',{widgetid:id,title:'After'},['title'],{target:{title:'After'},previous:{widgetid:id,title:'Before'},identity:{}}));
  await runner.drain();
  assert.equal(notes.filter(note=>note.code==='PLUGIN_STEP_CLR_EXECUTED').length,1,JSON.stringify(notes));

@@ -6,10 +6,11 @@ import os from 'node:os';
 import http from 'node:http';
 import {createSimulator} from '../api.mjs';
 import {readStateFile} from '../lib/state-storage.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function fixture(t,options={}){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-audit-runtime-api-'));
-  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const files={'website.yml':'adx_websiteid: invented\nadx_name: Runtime audit',
     'Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
     'Main.pagetemplate.yml':'adx_pagetemplateid: main\nadx_webtemplateid: main',
@@ -17,7 +18,7 @@ async function fixture(t,options={}){
     'Main.webtemplate.source.html':'<!doctype html><html><body><h1>Invented runtime audit</h1></body></html>'};
   for(const [file,body]of Object.entries(files))await fs.writeFile(path.join(root,file),body);
   const stateFile=path.join(root,'state.json'),initial={settings:{permissionMode:'permissive'},mappings:{contact:{entitySet:'contacts',idColumn:'contactid'},account:{entitySet:'accounts',idColumn:'accountid'}},tables:{contact:[{contactid:'person',fullname:'Invented person',parentcustomerid:{id:'first',logical_name:'account'}}],account:[{accountid:'first',name:'First invented account'},{accountid:'second',name:'Second invented account'}]},simulator:{mode:'local',pageMode:'local',endpoints:[],identity:{id:'person',roles:[]}}};
-  const app=await createSimulator({sourceDir:root,stateFile,initial,watch:false,...options});t.after(()=>app.close());
+  const app=await createSimulator({sourceDir:root,stateFile,initial,watch:false,...options});ownedFixture(t).add(()=>app.close());
   const call=(route,method='GET',body,headers={})=>fetch(app.url+route,{method,headers:{'x-sim-csrf':app.state().csrf,'content-type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
   return {app,root,stateFile,call};
 }

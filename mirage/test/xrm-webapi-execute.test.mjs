@@ -8,12 +8,13 @@ import { createWebApiExecute } from '../lib/model-driven/client-runtime.mjs';
 import { createModelDrivenWebApi } from '../lib/dataverse-model-driven.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ENTITY = '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><MaxLength>20</MaxLength></attribute></attributes></entity></EntityInfo></Entity>';
 
 async function organizationFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xrm-execute-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedExecute</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/Entities/x_item/Entity.xml': ENTITY,
@@ -22,7 +23,7 @@ async function organizationFixture(t) {
   for (const [name, content] of Object.entries(files)) { const file = path.join(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); }
   const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const webApi = createModelDrivenWebApi({ organization: () => sim.organization });
   const principal = { principalId: uuidV5(sim.organization.organizationId, 'systemuser:SYSTEM'), kind: 'local-admin' };
   const host = { tables: { x_item: { entity: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid' } }, webApi: request => webApi({ ...request, principal, host: '127.0.0.1' }) };

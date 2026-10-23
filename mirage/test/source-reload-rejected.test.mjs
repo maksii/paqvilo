@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SOLUTION = {
   'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedReload</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -18,13 +19,13 @@ const apis = (sim) => (sim.store.state.tables.customapi ?? []).map((row) => row.
 
 async function renameBetweenReloads(t, portal) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-rejected-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await write(solution, SOLUTION);
   if (portal) await write(path.join(root, 'portal'), { 'website.yml': 'adx_websiteid: fixture\nadx_name: Invented site', 'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true' });
   const sim = await createSimulator({ ...(portal ? { sourceDir: path.join(root, 'portal') } : { runtime: { kind: 'dataverse-api' } }), solutionRoots: [solution], projectRoot: root,
     port: 0, watch: false, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.deepEqual(apis(sim), ['x_Echo']);
   await fs.rename(solution, `${solution}-moved`);
   await assert.rejects(sim.reload(), (error) => error.code === 'SOURCE_RELOAD_REJECTED' && error.details.diagnostics.some((d) => d.code === 'SOLUTION_ROOT_READ_FAILED'));

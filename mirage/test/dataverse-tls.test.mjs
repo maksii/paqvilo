@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { createSelfSignedCertificate, ensureCertificate } from "../lib/dataverse-tls.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // Invented names and loopback endpoints only.
 const DAY = 86_400_000;
@@ -76,12 +77,12 @@ test("https server is trusted via ca option and rejected without it", async (t) 
 
 test("global fetch trusts the certificate through NODE_EXTRA_CA_CERTS", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "paqvilo-tls-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => rm(dir, { recursive: true, force: true }));
   const { key, cert } = createSelfSignedCertificate();
   const caFile = join(dir, "ca.pem");
   await writeFile(caFile, cert);
   const server = https.createServer({ key, cert }, (req, res) => res.end("ok"));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const port = await listen(server);
 
   const script = "fetch(process.env.TEST_URL).then((r) => r.text()).then((text) => process.stdout.write(text))";
@@ -93,12 +94,12 @@ test("global fetch trusts the certificate through NODE_EXTRA_CA_CERTS", async (t
 
 test("python ssl trusts the certificate as a CA bundle", { skip: python ? false : "python is not installed" }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "paqvilo-tls-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => rm(dir, { recursive: true, force: true }));
   const { key, cert } = createSelfSignedCertificate();
   const caFile = join(dir, "ca.pem");
   await writeFile(caFile, cert);
   const server = https.createServer({ key, cert }, (req, res) => res.end("ok"));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const port = await listen(server);
 
   const code = [

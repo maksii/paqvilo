@@ -1,6 +1,6 @@
 # Platform resources
 
-Uncaptured platform styles are placeholders with toolkit-authored structural form rules. Doctor, Mirage status and administration report the provider; entity-form pages emit `PLATFORM_STYLES_PLACEHOLDER`. Capture the shell to reproduce deployed styles:
+Uncaptured platform styles use toolkit-authored structural form, icon, private-banner and offline-visibility rules. The icon symbols and banner layout are partial fallbacks, reported as `local-platform-partial`; they do not reproduce the native fonts or every platform style. PCF styles remain a placeholder. Doctor, Mirage status and administration report the provider; entity-form pages retain style diagnostics. Capture the shell to reproduce deployed styles:
 
 ```sh
 paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /
@@ -43,6 +43,14 @@ The toolkit-authored fallback includes full-width, borderless modal frames with 
 height, matching the structural rule in Microsoft's [public preform stylesheet](https://content.powerapps.com/resource/powerappsportal/dist/preform.bundle-b72a6ea21d.css).
 Quick view documents use the same platform styles, and their frames follow lookup changes.
 Captured styles replace these fallbacks.
+
+An explicit `AssetCache.capturePublicAlias()` operation can supply the observed
+CRM MDL2 font URLs from Microsoft's public CRM MDL2 WOFF asset. The cache verifies
+the font family, PostScript name and required glyph coverage. A `.woff2` target
+using this alias still serves the original WOFF bytes with `font/woff`, recorded
+source format and fallback headers. Existing captured native target bytes take
+precedence. This operation neither converts the font nor repairs a failing native
+gateway; ordinary font requests do not automatically fetch a fallback.
 
 Modal and quick-view documents also include exported root styles and native container wrappers.
 Captured stylesheet links take precedence over duplicate exported links. Local head additions

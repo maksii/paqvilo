@@ -8,6 +8,7 @@ import {
   injectRuntimeCompatibility,
   injectRuntimeDependencies,
 } from "../lib/source-dependencies.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // Power Pages serves the output of a page template that does not use the website
 // header/footer verbatim: ExampleApp "fetch" pages return JSON or HTML fragments that
@@ -83,7 +84,7 @@ test("runtime injectors leave non-document output untouched and are idempotent o
 
 test("documents report local compatibility adapters in a response header, not as html or body attributes", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "liquid-compat-header-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     "website.yml": "adx_websiteid: site\nadx_name: Test\nadx_footerwebtemplateid: footer",
     "web-pages/home/Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /\nadx_pagetemplateid: main",
@@ -108,7 +109,7 @@ test("documents report local compatibility adapters in a response header, not as
     watch: false,
     initial: { settings: { permissionMode: "permissive" }, simulator: { identity: { id: null, roles: [] } } },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   // Layout pages load the platform bundles, whose local equivalents include the adapters
   // (lib/platform-manifest.mjs): no adapter is in the document, so none is reported.
   const response = await fetch(new URL("/", app.url));

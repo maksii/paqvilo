@@ -10,6 +10,11 @@ DateOnly controls populated from the current clock retain the observed UTC suffi
 
 The client adapters provide platform-shaped form events, validators, date/picklist controls, lookup dialogs, grids, paging, actions, notes/attachments and session-sensitive requests. Permissions are checked through the local data layer. Generated form fields and unsupported controls retain diagnostics for inspection.
 
+Opening a lookup dialog restores its current selection only when both the record
+ID and entity match a row returned by the authorized grid query. Filtered or
+unreadable records remain unselected. Selecting a row updates the form control;
+the parent record changes only after a successful form save.
+
 Basic form Activate/Deactivate buttons follow exported `Actions` settings. Mirage resolves the record again from the configured query, current user or related-record source, checks read/update permissions, and changes only state/status in an atomic local write. Status values require exported state/status metadata; unsupported actions, unresolved metadata and action filter criteria retain diagnostics. Confirmation, labels and redirects use source settings, while managed dialog placement and filter behavior require reference evidence. Multiple forms with repeated button IDs dispatch through the button's full WebForms name.
 
 Native subgrid quick-find visibility follows its exported FormXml flag. Native PCF fields require explicit portal attribute enablement and a supported desktop binding. Native list/subgrid PCF hosting retains diagnostics and the native grid fallback; dataset hosting uses explicit Liquid table/view bindings. See [code components](code-components.md) for the host and save boundary, and [coverage](../../docs/coverage.md) for remaining limits.

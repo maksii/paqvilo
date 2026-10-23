@@ -15,6 +15,7 @@ import {
   webApiErrorResponse,
 } from "../lib/webapi-handler.mjs";
 import { DataError } from "../lib/data-error.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 const FORMATTED = "@OData.Community.Display.V1.FormattedValue";
@@ -146,11 +147,11 @@ const fixture = () => ({
 
 async function start(t, { settings = SETTINGS, state = fixture(), observed = null } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-odata-parity-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: OData parity\n");
   await fs.writeFile(path.join(directory, "sitesetting.yml"), settingsYaml(settings));
   const app = await createSimulator({ sourceDir: directory, initial: state, watch: false, observed });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const call = (route, { method = "GET", body, headers = {}, token = true } = {}) =>
     fetch(app.url + route, {
       method,

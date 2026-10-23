@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { executeGridQuery } from '../lib/native-services.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ITEM = '78787878-7878-4787-8787-787878787881', MEMBER = '78787878-7878-4787-8787-787878787801', RULE = '78787878-7878-4787-8787-787878787883';
 const text = { dataverseType: 'nvarchar' }, secured = { ...text, columnMetadata: { isSecured: true } };
@@ -21,7 +22,7 @@ const model = {
 
 async function grid(t, enhanced) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'list-masked-search-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), `adx_websiteid: 78787878-7878-4787-8787-787878787878\nadx_name: Invented\nadx_enhancedauthorization: ${enhanced ? 3 : 0}`);
   await fs.writeFile(path.join(dir, 'webrole.yml'), `- adx_webroleid: ${MEMBER}
   adx_name: Member`);
@@ -32,7 +33,7 @@ async function grid(t, enhanced) {
       attributemaskingrule: [{ attributemaskingruleid: '78787878-7878-4787-8787-787878787884', entityname: 'x_item', attributelogicalname: 'x_secret', maskingruleid: { id: RULE, logical_name: 'maskingrule' } }] },
     permissions: [{ id: 'i', name: 'I', entity: 'x_item', roles: ['Member'], operations: ['read'], scope: 'global' }],
     simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: {}, endpoints: [], contactRoles: [{ contactId: 'alex', roleId: MEMBER }] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   if (enhanced) {
     // The mapped user reads both secured columns (CanRead All); a portal read never sends UnMaskedData, so x_secret stays masked.
     await sim.store.portalAuthorization.prepare(identity);

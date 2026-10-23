@@ -14,6 +14,7 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { parseCustomApiFiles, parseFxExpressionFiles } from '../lib/dataverse-customapi.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FX = '77777777-7777-4777-8777-777777777741';
@@ -34,20 +35,20 @@ const files = {
 
 async function organization(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'customapi-fxexpression-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await fs.writeFile(path.join(root, name), text);
   }
   const variable = `PAQVILO_FXSOL_${process.pid}_${Math.random().toString(36).slice(2).toUpperCase()}`;
   process.env[variable] = 'invented';
-  t.after(() => { delete process.env[variable]; });
+  ownedFixture(t).add(() => { delete process.env[variable]; });
   const store = await new DataStore({ state: emptyState() }).init();
   const runtime = await createOrganizationRuntime({ store, providers: { powerFx: createPowerFxEvaluator({}) },
     extensions: await sourceOrganizationExtensions({ layers: (await importSolutionData([root])).layers }),
     settings: dataverseSettings({ enabled: true, applications: [{ appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] }] }) });
   const transport = await startDataverseApi({ organization: runtime });
-  t.after(async () => { await transport.close(); await runtime.close(); });
+  ownedFixture(t).add(async () => { await transport.close(); await runtime.close(); });
   const token = (await (await fetch(transport.authority + '/oauth2/v2.0/token', { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: APP, client_secret: 'invented', scope: transport.origin + '/.default' }) })).json()).access_token;
   return async (route) => {

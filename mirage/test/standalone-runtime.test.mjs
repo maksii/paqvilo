@@ -10,6 +10,7 @@ import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
@@ -47,7 +48,7 @@ async function readOwnedArcSecret(challenge) {
 }
 async function fixture(t, options, sourceOverrides = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-organization-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedStandalone</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -59,7 +60,7 @@ async function fixture(t, options, sourceOverrides = {}) {
   const stateFile = path.join(root, 'must-not-be-written.json');
   const sim = await createSimulator({ solutionRoots: [solution], stateFile, projectRoot: root, watch: false,
     simulation: { level: 'dry-run' }, ...options });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return { sim, root, solution, stateFile, files };
 }
 async function body(response, status = 200) {

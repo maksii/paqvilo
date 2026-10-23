@@ -7,11 +7,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { publishTransactionalFiles, recoverTransactionalFiles } from '../lib/transactional-files.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-interrupted-files-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const files = ['one.json', 'two.json'].map(name => path.join(directory, name));
   const before = files.map((_, index) => JSON.stringify({ value: `Original ${index}` }));
   await Promise.all(files.map((file, index) => fs.writeFile(file, before[index])));
@@ -37,7 +38,7 @@ async function interruptedWriter(t, fixture, alive = false) {
   let diagnostic = '';
   child.stderr.on('data', chunk => { diagnostic += chunk; });
   const exited = once(child, 'exit');
-  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } });
+  ownedFixture(t).add(async () => { if (child.exitCode === null && child.signalCode === null) { assert.ok(child.kill(), "Owned writer termination must be accepted"); await exited; } });
   if (alive) await Promise.race([once(child, 'message'), exited.then(() => { throw Error(`Writer stopped before publication: ${diagnostic}`); })]);
   else assert.equal((await exited)[0], 77, diagnostic);
   return { child, exited };
@@ -181,4 +182,41 @@ test('transaction publication refuses an ancestor junction instead of treating i
   await assert.rejects(publishTransactionalFiles({ entries: f.entries.map((entry, index) => ({ ...entry, file: files[index] })),
     allowedFiles: files, journalFile: path.join(alias, 'transaction.json') }), { code: 'PersistenceRecoveryRequired' });
   assert.deepEqual(await Promise.all(f.files.map(file => fs.readFile(file, 'utf8'))), f.before);
+});
+test("fixture stops a live owned writer before directory cleanup can fail", async () => {
+  const hooks = [],
+    context = { after: (hook) => hooks.push(hook) };
+  const f = await fixture(context),
+    { child, exited } = await interruptedWriter(context, f, true);
+  const remove = fs.rm,
+    failure = Object.assign(
+      new Error("Invented writer fixture removal failure"),
+      { code: "ENOTEMPTY" },
+    );
+  fs.rm = async (target, options) => {
+    if (target === f.directory) {
+      assert.ok(
+        child.exitCode !== null || child.signalCode !== null,
+        "Directory cleanup must wait for the owned writer exit",
+      );
+      throw failure;
+    }
+    return remove(target, options);
+  };
+  try {
+    await assert.rejects(
+      async () => {
+        for (const hook of hooks) await hook();
+      },
+      (error) => error === failure,
+    );
+    assert.ok(child.exitCode !== null || child.signalCode !== null);
+  } finally {
+    fs.rm = remove;
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      await exited;
+    }
+    await remove(f.directory, { recursive: true, force: true });
+  }
 });

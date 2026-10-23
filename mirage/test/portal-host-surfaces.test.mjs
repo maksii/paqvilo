@@ -9,6 +9,7 @@ import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { describe as serverLogicDescribe } from '../lib/exported-operations.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = '77777777-7777-4777-8777-777777777761', CASE = '77777777-7777-4777-8777-777777777760', ITEM = '77777777-7777-4777-8777-777777777762';
 const ROLE = '77777777-7777-4777-8777-777777777763';
@@ -18,7 +19,7 @@ const siteSettings = settings => settings.map(([name, value], index) => `- adx_s
 
 async function host(t, { files = {}, settings = [], initial = {}, authorization = 0 }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-host-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, {
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedHost</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/Entities/x_case/Entity.xml': entity('x_case'), 'solution/Entities/x_item/Entity.xml': entity('x_item'),
@@ -36,7 +37,7 @@ async function host(t, { files = {}, settings = [], initial = {}, authorization 
     settings: { permissionMode: 'enforce' }, simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] } };
   for (const [key, value] of Object.entries(initial)) state[key] = Array.isArray(value) ? [...state[key], ...value] : { ...state[key], ...value };
   const sim = await createSimulator({ sourceDir: path.join(root, 'portal'), solutionRoots: [path.join(root, 'solution')], stateFile: path.join(root, 'state.json'), port: 0, watch: false, initial: state });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 const token = async (sim, headers) => /value="([^"]+)"/.exec(await (await fetch(sim.url + '/_layout/tokenhtml', { headers })).text())?.[1];

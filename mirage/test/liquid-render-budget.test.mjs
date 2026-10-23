@@ -10,6 +10,7 @@ import { renderSettings } from '../lib/render-settings.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const guid = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const portal = { templates: {}, pages: [], snippets: {}, settings: {} };
@@ -117,7 +118,7 @@ test('indexed equality retains GUID decorations, OR predicates, paging totals an
 
 test('runtime answers status after a render has begun and before a long Liquid loop completes', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-render-budget-'));
-  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  ownedFixture(t).remove(() => fs.rm(root, {recursive:true, force:true}));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Invented render fixture',
     'web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /\nadx_pagetemplateid: main',
@@ -127,7 +128,7 @@ test('runtime answers status after a render has begun and before a long Liquid l
   };
   for (const [name, body] of Object.entries(files)) { const file=path.join(root,name); await fs.mkdir(path.dirname(file),{recursive:true}); await fs.writeFile(file,body); }
   const app = await createSimulator({sourceDir:root, stateFile:path.join(root,'state.json'), initial:fixture(), watch:false, render:{timeLimitMs:15000}});
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const started = Promise.withResolvers(), original = app.store.fetchXml.bind(app.store);
   app.store.fetchXml = (...args) => { started.resolve(); return original(...args); };
   let complete = false;
@@ -141,7 +142,7 @@ test('runtime answers status after a render has begun and before a long Liquid l
   assert.equal(rendered.status,200);
   assert.match(rendered.html,/75000/);
   const limited = await createSimulator({sourceDir:root, stateFile:path.join(root,'limited.json'), initial:fixture(), watch:false, render:{timeLimitMs:5}});
-  t.after(() => limited.close());
+  ownedFixture(t).add(() => limited.close());
   const failed = await fetch(limited.url);
   assert.equal(failed.status,500);
   assert.match(await failed.text(),/local render time limit of 5 ms exceeded/);

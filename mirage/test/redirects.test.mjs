@@ -20,6 +20,7 @@ import {
 } from "../lib/redirects.mjs";
 import { siteHeaders, sitePolicy, webFileHeaders, webFileDisposition, notModified } from "../lib/response-headers.mjs";
 import { signInHeaders } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const page = (id, name, partial, parent = "home") =>
   [
@@ -522,7 +523,7 @@ test("web files are served inline or as attachments from their Content-Dispositi
     [`powerpagecomponents/${id}/filecontent/${name}`]: name,
   });
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-enhanced-disposition-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     [`powerpagecomponents/${HOME}/powerpagecomponent.xml`]: component(HOME, 2, "Home", { partialurl: "/" }),
     ...webFile("bbbbbbbb-0000-4000-8000-000000000001", "theme.css", { contentdisposition: 756150000 }),
@@ -535,7 +536,7 @@ test("web files are served inline or as attachments from their Content-Dispositi
     await fs.writeFile(path.join(dir, name), body);
   }
   const enhanced = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false });
-  t.after(() => enhanced.close());
+  ownedFixture(t).add(() => enhanced.close());
   const get = (target) => fetch(enhanced.url + target, { redirect: "manual" });
   assert.equal(await disposition(get, "/theme.css"), "inline;filename*=UTF-8''theme.css");
   assert.equal(await disposition(get, "/robots.txt"), "attachment;filename*=UTF-8''robots.txt");

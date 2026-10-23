@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const FLOW = '77777777-7777-4777-8777-0000000000e1', CLIENT = '77777777-7777-4777-8777-0000000000e2';
 const ENTITY = '<Entity><Name>x_case</Name><EntityInfo><entity Name="x_case"><EntitySetName>x_cases</EntitySetName><PrimaryIdAttribute>x_caseid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_caseid"><Name>x_caseid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type><MaxLength>10</MaxLength></attribute></attributes></entity></EntityInfo></Entity>';
@@ -22,11 +23,11 @@ const files = {
 
 test('a committed custom API action starts one run; the same action in a rolled-back changeset starts none', { timeout: 60000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-host-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) { await fs.mkdir(path.dirname(path.join(root, 'solution', name)), { recursive: true }); await fs.writeFile(path.join(root, 'solution', name), text); }
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const simApi = async (method, suffix, payload) => { const r = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'x-sim-csrf': sim.state().csrf, ...(payload ? { 'content-type': 'application/json' } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}) }); return { status: r.status, body: await r.text() }; };
   assert.equal((await simApi('PATCH', '/config', { operations: { [`cloud-flow:${FLOW}`]: { mode: 'exported', activation: 'local-enabled' } } })).status, 200);
   const { secret } = JSON.parse((await simApi('POST', '/dataverse/applications', { appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] })).body);

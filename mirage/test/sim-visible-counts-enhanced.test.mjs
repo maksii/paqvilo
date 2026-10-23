@@ -8,11 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const MEMBER = '77777777-7777-4777-8777-777777777701';
 test('enhanced site: /_sim counts the signed-in visitor through its mapping, before and after a portal request, without provisioning', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-visible-counts-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 3');
   await fs.writeFile(path.join(dir, 'webrole.yml'), `- adx_webroleid: ${MEMBER}\n  adx_name: Member`);
   await fs.writeFile(path.join(dir, 'sitesetting.yml'), ['enabled: true', 'fields: x_name'].map((pair, index) =>
@@ -25,7 +26,7 @@ test('enhanced site: /_sim counts the signed-in visitor through its mapping, bef
     simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [], contactRoles: [{ contactId: 'alex', roleId: MEMBER }] },
   };
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false, initial });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const alex = signInHeaders(sim, 'alex');
   const counts = async (headers) => (await (await fetch(sim.url + '/_sim/api/state', { headers })).json()).status.permissionModel.visibleCounts.x_item;
   const users = () => sim.store.tableRows('systemuser').length;

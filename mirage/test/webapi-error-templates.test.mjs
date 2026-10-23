@@ -5,6 +5,7 @@ import {collectWebApiErrorTemplates,validateWebApiErrorTemplates,webApiReaderTem
 import {validatePack} from '../lib/preset-registry.mjs';import {observedConfig} from '../lib/project-config.mjs';
 import {attachODataReaderDetails,odataConversionDetails} from '../lib/webapi-error-details.mjs';
 import {DataError} from '../lib/data.mjs';import {webApiErrorResponse} from '../lib/webapi-handler.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 const sha=value=>createHash('sha256').update(value).digest('hex'),id='00000000-0000-4000-8000-000000000001';
 const suffix='\r\n   at Invented.Reader.Convert()\r\n   at Invented.Reader.Read()',descriptor={kind:'primitive-format',expectedType:'Edm.Int32'};
 const capability=()=>({version:1,evidence:'Invented response and fresh variation fixture',templates:['POST','PATCH'].map(method=>({method,descriptor,suffix,suffixSha256:sha(suffix),capturedSourceSha256:'a'.repeat(64),qualifiedVariationSha256:'b'.repeat(64)}))});
@@ -47,11 +48,11 @@ test('POST and PATCH use independently evidenced suffixes without cross-method f
 });
 
 async function fixture(t,{mode='response-template',match=true,inner=true,register=true}={}){
- const source=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-response-template-'));t.after(()=>fs.rm(source,{recursive:true,force:true}));
+ const source=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-response-template-'));ownedFixture(t).remove(()=>fs.rm(source,{recursive:true,force:true}));
  await fs.writeFile(path.join(source,'website.yml'),'adx_websiteid: invented-reader-site\nadx_name: Reader fixture\n');
  await fs.writeFile(path.join(source,'sitesetting.yml'),'- adx_name: Webapi/probe/enabled\n  adx_value: "true"\n- adx_name: Webapi/probe/fields\n  adx_value: "probeid,title,quantity"\n- adx_name: Webapi/error/innererror\n  adx_value: "'+inner+'"\n');
  const file=path.join(source,'pack.mjs');await fs.writeFile(file,'export default {id:"reader-format",name:"Reader format",description:"Invented fixture",matches:()=>'+match+',presets:()=>({}),webApiErrorTemplates:'+JSON.stringify(capability())+'};');
- const app=await createSimulator({sourceDir:source,watch:false,dataPacks:register?[{id:'reader-format',module:file}]:[],observed:{webApiErrorDetails:'odata-wrapper',webApiErrorStacks:mode,evidence:'Invented loopback response capture and fresh variations'},initial:{mappings:{probe:{entitySet:'probes',idColumn:'probeid',schemaComplete:true,fields:{probeid:{dataverseType:'uniqueidentifier'},title:{dataverseType:'nvarchar'},quantity:{dataverseType:'int'}}}},tables:{probe:[{probeid:id,title:'Original',quantity:2}]},settings:{permissionMode:'permissive'}}});t.after(()=>app.close());return app;
+ const app=await createSimulator({sourceDir:source,watch:false,dataPacks:register?[{id:'reader-format',module:file}]:[],observed:{webApiErrorDetails:'odata-wrapper',webApiErrorStacks:mode,evidence:'Invented loopback response capture and fresh variations'},initial:{mappings:{probe:{entitySet:'probes',idColumn:'probeid',schemaComplete:true,fields:{probeid:{dataverseType:'uniqueidentifier'},title:{dataverseType:'nvarchar'},quantity:{dataverseType:'int'}}}},tables:{probe:[{probeid:id,title:'Original',quantity:2}]},settings:{permissionMode:'permissive'}}});ownedFixture(t).add(()=>app.close());return app;
 }
 async function request(app,body,method='PATCH'){const r=await fetch(app.url+'/_api/probes'+(method==='POST'?'':'('+id+')'),{method,headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify(body)});return{status:r.status,headers:Object.fromEntries(r.headers),body:r.status===204?null:await r.json()};}
 test('registered matching pack formats POST/PATCH failures while writes, status and headers retain their behavior',async t=>{

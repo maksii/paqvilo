@@ -6,10 +6,11 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test("rich text editor changes preserve native JSON binding, authored observers and stored HTML through native form submit", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "rte-browser-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     "website.yml": "adx_websiteid: site\nadx_name: Test",
     "web-pages/home/Home.webpage.yml":
@@ -61,9 +62,9 @@ test("rich text editor changes preserve native JSON binding, authored observers 
     watch: false,
     richTextCompatibility: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));

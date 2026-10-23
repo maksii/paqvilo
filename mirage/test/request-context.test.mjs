@@ -18,6 +18,7 @@ import { pluginCatalogue, pluginPhaseRequiresCheckpoint, pluginStepMatchesEntity
 import { createRequestContext, currentRequest, runWithRequest } from '../lib/request-context.mjs';
 import { ownsChange, runOwned } from '../lib/dataverse-transaction-context.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const APP_ID = '77777777-7777-4777-8777-777777777771';
 const ENDPOINT = '77777777-7777-4777-8777-777777777772';
@@ -41,10 +42,10 @@ createServer((req, res) => {
 
 async function receiver(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'request-context-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'receiver.mjs'), RECEIVER);
   const child = childProcess.spawn(process.execPath, [path.join(dir, 'receiver.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
-  t.after(() => child.kill());
+  ownedFixture(t).add(() => child.kill());
   const port = await new Promise((resolve, reject) => {
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; const match = /PORT (\d+)/.exec(output); if (match) resolve(Number(match[1])); });

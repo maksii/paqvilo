@@ -7,10 +7,11 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import http from 'node:http';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('standard PCF host loads only declared local resources and preserves lifecycle, bound output and disabled context', async t => {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-pcf-browser-'));
-  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const id='d0000000-0000-4000-8000-000000000001';
   const portal=path.join(root,'portal'),solution=path.join(root,'solution');
   const files={
@@ -27,8 +28,8 @@ test('standard PCF host loads only declared local resources and preserves lifecy
   };
   for(const[name,text]of Object.entries(files)){const file=path.join(root,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,text);}
   const app=await createSimulator({sourceDir:portal,solutionRoots:[solution],port:0,watch:false,observed:{codeComponents:{[id]:'tst_Synthetic.Editor'},evidence:'Invented fixture manifest and literal tag'}});
-  t.after(()=>app.close());
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  ownedFixture(t).add(()=>app.close());
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));ownedFixture(t).add(()=>browser.close());
   const page=await browser.newPage(),errors=[],external=[];
   page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(!request.url().startsWith(app.url))external.push(request.url());});
   await page.goto(app.url);await page.locator('[data-pcf-ready=true]').waitFor();
@@ -69,7 +70,7 @@ async function hostFixture(t) {
 
 test('PCF classic SDK bundle resolves its declared export after repeated whitespace and block comments', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-classic-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'), solution = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: site\nadx_name: Invented classic bundle',
@@ -86,9 +87,9 @@ test('PCF classic SDK bundle resolves its declared export after repeated whitesp
     const file = path.join(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, body);
   }
   const app = await createSimulator({ sourceDir: portal, solutionRoots: [solution], port: 0, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage(), errors = [], external = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (!request.url().startsWith(app.url)) external.push(request.url()); });

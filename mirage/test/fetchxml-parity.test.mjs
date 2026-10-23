@@ -8,6 +8,7 @@ import path from "node:path";
 import { DataStore } from "../lib/data.mjs";
 import { createPortalRenderer } from "../lib/liquid.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 const DAY = 24 * 60 * 60 * 1000;
@@ -390,7 +391,7 @@ test("count/page paging cookies round-trip through Liquid and stay XML-attribute
 
 test("Web API FetchXML publishes the documented paging cookie wrapper and continuation", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-fetch-parity-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Fetch parity\n");
   await fs.writeFile(
     path.join(directory, "sitesetting.yml"),
@@ -399,7 +400,7 @@ test("Web API FetchXML publishes the documented paging cookie wrapper and contin
   const state = fixture();
   state.tables.tag = ["Alpha", "Beta", "Gamma"].map((name, index) => ({ tagid: G(300 + index), name }));
   const app = await createSimulator({ sourceDir: directory, initial: state, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const read = async (cookie) => {
     const xml = `<fetch count="2" page="${cookie ? 2 : 1}"${cookie ? ` paging-cookie="${cookie.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}"` : ""}><entity name="tag"><attribute name="name"/><order attribute="name"/></entity></fetch>`;
     const response = await fetch(`${app.url}/_api/tags?fetchXml=${encodeURIComponent(xml)}`);

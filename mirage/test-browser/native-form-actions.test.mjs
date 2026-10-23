@@ -7,10 +7,11 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('exported native state-action buttons send configured actions without submitting editable values', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-state-actions-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const actions = [{ Type: 'DeactivateAction', ButtonLabel: [{ LCID: 1033, Value: 'Close entry' }] }, { Type: 'ActivateAction', ButtonLabel: [{ LCID: 1033, Value: 'Reopen entry' }] }];
   const files = {
     'website.yml': 'adx_websiteid: state-site\nadx_name: State fixture',
@@ -36,9 +37,9 @@ test('exported native state-action buttons send configured actions without submi
     settings: { permissionMode: 'enforce', 'Webapi/sample/enabled': false },
     simulator: { observed: { nativeFormTransport: 'json', evidence: 'Invented loopback JSON transport fixture' }, componentSchemas: { 'entry-form': { entity: 'sample', fields: formFields }, 'second-form': { entity: 'sample', recordId: secondId, fields: formFields } } },
   } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage(), errors = [];

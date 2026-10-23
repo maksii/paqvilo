@@ -14,6 +14,7 @@ import { submitPortalForm } from "../lib/form-service.mjs";
 import { createLocalDiskStorage } from "../lib/storage-local-disk.mjs";
 import { createMemoryStorage } from "../lib/storage-memory.mjs";
 import { guardProvider } from "../lib/storage-provider.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "8c3d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e81";
 const NOTE = "a0000000-0000-4000-8000-000000000081";
@@ -23,7 +24,7 @@ const CLIENT = "99999999-9999-4999-8999-999999999981";
 
 async function portalFixture(t, { settings = [], providers } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "portal-storage-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, "portal"), stateDir = path.join(dir, "state");
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Invented Storage`,
@@ -45,7 +46,7 @@ async function portalFixture(t, { settings = [], providers } = {}) {
           documentbody: Buffer.from("evidence").toString("base64"), objectid: { id: CONTACT, logical_name: "contact" } }] },
       permissions: [], settings: { permissionMode: "permissive" },
       simulator: { mode: "local", pageMode: "local", live: { allowWrites: false }, endpoints: [] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return { sim, dir, stateDir };
 }
 
@@ -61,13 +62,13 @@ test("a portal note download reads the body from the storage provider once it ha
 
 test("a standalone runtime without a state directory routes note bodies to the in-memory provider", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "standalone-storage-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, "solution");
   await fs.mkdir(path.join(solution, "Other"), { recursive: true });
   await fs.writeFile(path.join(solution, "Other", "Solution.xml"), "<ImportExportXml><SolutionManifest><UniqueName>InventedStorage</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>");
   const sim = await createSimulator({ runtime: { kind: "dataverse-api" }, solutionRoots: [solution], projectRoot: root, port: 0, watch: false,
     simulation: { level: "dry-run" }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const status = sim.status();
   assert.equal(status.providers.storage.providers.find((entry) => entry.id === "local").kind, "memory");
   assert.equal(status.providers.storage.providers.find((entry) => entry.id === "local").ready, true);

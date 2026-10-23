@@ -11,6 +11,7 @@ import { bootstrapReport, resolveReportInputs } from "../bootstrap-report.mjs";
 import { SolutionFileCache } from "../lib/solution-cache.mjs";
 import { portalWebRoles, resolvePortalIdentity } from "../lib/permissions.mjs";
 import { languageRoute, deniedPageRoute } from "../lib/redirects.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function write(root, files) {
   for (const [name, body] of Object.entries(files)) {
@@ -245,13 +246,13 @@ test("a running runtime reloads solution changes, recompiles metadata and report
   // Keep the spelling os.tmpdir() gives (possibly a Windows 8.3 short path): the watcher
   // reports paths in this spelling while scanned layers use real paths.
   const solutions = await fs.mkdtemp(path.join(os.tmpdir(), "pp-reload-solutions-"));
-  t.after(() => fs.rm(solutions, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(solutions, { recursive: true, force: true }));
   await write(dir, portalFiles);
   await write(solutions, { "Other/Solution.xml": "<ImportExportXml><SolutionManifest><UniqueName>Reload</UniqueName></SolutionManifest></ImportExportXml>", "Entities/sample_item/Entity.xml": entity("sample_itemrecords") });
   const project = { configFile: "mirage.project.yml", portals: [{ id: "site", sourceDir: dir }], solutions: [{ id: "base", root: solutions }], references: [], dataPacks: [] };
   const stateDir = await temp(t, "pp-reload-state-");
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(stateDir, "state.json"), port: 0, watch: true, solutionRoots: [solutions], project, environmentVariables: {} });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const state = async () => (await fetch(app.url + "/__sim/api/state")).json();
   const before = await state();
   assert.equal(before.status.project.configFile, "mirage.project.yml");

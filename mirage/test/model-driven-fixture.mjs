@@ -2,10 +2,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 export async function modelDrivenFixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const sourceDir = path.join(root, 'portal'), solutionDir = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: 11111111-1111-4111-8111-111111111111\nadx_name: Invented portal',
@@ -34,7 +35,7 @@ export async function modelDrivenFixture(t, options = {}) {
     tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Copper', x_quantity: 2 }, { x_itemid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', x_name: 'Silver', x_quantity: 8 }, { x_itemid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', x_name: 'Empty', x_quantity: 0 }],
       x_child: [{ x_childid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', x_name: 'Copper child', x_parentid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }, { x_childid: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', x_name: 'Silver child', x_parentid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }] },
   }, ...options, ...extra });
-  const sim = await start(); t.after(() => sim.close());
+  const sim = await start(); ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   return { sim, origin, root, sourceDir, solutionDir, stateFile, start };
 }

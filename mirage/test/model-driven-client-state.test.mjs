@@ -9,6 +9,7 @@ import { compileForm } from '../lib/model-driven/solution.mjs';
 import { staffContext, USER_SETTINGS_EXTENSION } from '../lib/staff-session.mjs';
 import { createModelDrivenWebApi } from '../lib/dataverse-model-driven.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('$batch answers split on their declared boundaries only, so a body holding -- stays whole', () => {
   const body = ['--batchresponse_1', 'Content-Type: multipart/mixed; boundary=changesetresponse_2', '',
@@ -42,13 +43,13 @@ test('the en-US staff short date pattern is the .NET M/d/yyyy', () => {
 
 test('usersettingscollection answers GET and PATCH for the caller and feeds the staff context', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'usersettings-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution', 'Other');
   await fs.mkdir(solution, { recursive: true });
   await fs.writeFile(path.join(solution, 'Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>InventedSettings</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>');
   const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   // The extension is listed in dataverse-extensions.mjs; installing it here as well is harmless (the first route wins).
   USER_SETTINGS_EXTENSION.install(sim.organization.api);
   const system = uuidV5(sim.organization.organizationId, 'systemuser:SYSTEM');

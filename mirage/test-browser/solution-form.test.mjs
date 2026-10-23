@@ -8,6 +8,7 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
 import { clientRuntime } from "../lib/platform.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function write(root, files) {
   for (const [name, content] of Object.entries(files)) {
@@ -26,7 +27,7 @@ const SUCCESS = "Submission completed successfully.";
 
 test("solution form layout creates typed data, saved view filters rows, and sources reload", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "solution-browser-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portalRoot = path.join(root, "portal"),
     solutionRoot = path.join(root, "solution");
   await write(portalRoot, {
@@ -121,9 +122,9 @@ test("solution form layout creates typed data, saved view filters rows, and sour
     initial,
     watch: true,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   // Portal requests are signed in explicitly as the configured Editor persona.
   const context = await browser.newContext();
   await signInContext(context, app, "editor", { roles: ["Editor"] });

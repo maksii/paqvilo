@@ -9,6 +9,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e70";
 const YEAR = "1b000000-0000-4000-8000-000000000011";
@@ -17,7 +18,7 @@ const CONTACT = "c0000000-0000-4000-8000-000000000011";
 
 async function open(t, list) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "list-calendar-browser-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calendar = "adx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_summaryfieldname: name\nadx_calendar_descriptionfieldname: city";
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Calendar`,
@@ -46,9 +47,9 @@ async function open(t, list) {
     simulator: { mode: "local", pageMode: "local", identity: { id: CONTACT, contactId: CONTACT, fullname: "Ada", roles: ["Editor"] }, live: { origin: null }, endpoints: [], componentSchemas: {} },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ timezoneId: "UTC" });
   await signInContext(context, app, CONTACT, { roles: ["Editor"] });
   const page = await context.newPage();

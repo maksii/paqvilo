@@ -7,10 +7,11 @@ import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { runAcceptance } from "../acceptance.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('acceptance settles abandoned frame writes and records navigation cancellations', {timeout: 30000}, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-detached-flow-'));
-  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  ownedFixture(t).remove(() => fs.rm(root, {recursive: true, force: true}));
   const state = {config: {mode: 'local', pageMode: 'local', endpoints: []}, status: {sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic'}};
   const server = http.createServer((req, res) => {
     const route = new URL(req.url, 'http://fixture').pathname;
@@ -21,7 +22,7 @@ test('acceptance settles abandoned frame writes and records navigation cancellat
     res.end('<iframe id="child" src="/frame"></iframe><p id="done" hidden>Saved</p>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  ownedFixture(t).add(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
   const result = await runAcceptance({localUrl: `http://127.0.0.1:${server.address().port}`, outputDir: path.join(root, 'evidence'), timeout: 3000,
     flows: [{name: 'Detached form frame', steps: [{action: 'navigate', path: '/'}, {action: 'visible', frame: '#child', selector: '#save'}, {action: 'click', frame: '#child', selector: '#save'}, {action: 'settle'}, {action: 'visible', selector: '#done'}]}]});
   assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
@@ -32,7 +33,7 @@ test('acceptance settles abandoned frame writes and records navigation cancellat
 });
 
 test('acceptance records old main-document reads as cancelled after navigation commits', {timeout: 30000}, async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-replaced-flow-')); t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-replaced-flow-')); ownedFixture(t).remove(() => fs.rm(root, {recursive: true, force: true}));
   const server = http.createServer((req, res) => {
     const route = new URL(req.url, 'http://fixture').pathname;
     if (route.startsWith('/__sim/api/')) {res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(route.endsWith('/state') ? {config: {mode: 'local', pageMode: 'local', endpoints: []}, status: {sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic'}} : {events: []}));}
@@ -40,7 +41,7 @@ test('acceptance records old main-document reads as cancelled after navigation c
     res.setHeader('content-type', 'text/html');
     res.end(route === '/done' ? '<p id="done">Saved</p>' : `<button id="save" onclick="fetch('/slow-one').catch(()=>{});fetch('/slow-two').catch(()=>{});setTimeout(()=>location.href='/done',100)">Save</button>`);
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); ownedFixture(t).add(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
   const result = await runAcceptance({localUrl: `http://127.0.0.1:${server.address().port}`, outputDir: path.join(root, 'evidence'), timeout: 3000, flows: [{name: 'Replaced page', steps: [{action: 'navigate', path: '/'}, {action: 'click', selector: '#save'}, {action: 'visible', selector: '#done'}, {action: 'settle'}]}]});
   assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
   assert.equal(result.flows[0].navigationCancelledRequests.length, 2);
@@ -48,7 +49,7 @@ test('acceptance records old main-document reads as cancelled after navigation c
 });
 
 for (const [beforeNavigation,lateStart] of [[false,0],[true,0],[true,1200]]) test(`acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateStart})`, { timeout:30000 }, async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-navigation-boundary-')); t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-navigation-boundary-')); ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const server = http.createServer((req,res)=>{
     const route = new URL(req.url,'http://fixture').pathname;
     if(route.startsWith('/__sim/api/')) {res.setHeader('content-type','application/json');return res.end(JSON.stringify(route.endsWith('/state')?{config:{mode:'local',pageMode:'local',endpoints:[]},status:{sourceFingerprint:'synthetic',implementationFingerprint:'synthetic'}}:{events:[]}));}
@@ -57,7 +58,7 @@ for (const [beforeNavigation,lateStart] of [[false,0],[true,0],[true,1200]]) tes
     if(route==='/done') return setTimeout(()=>res.end('<p id="done">Saved</p>'),beforeNavigation?50:1500);
     res.end(`<form action="/done"><button id="save">Save</button></form><script>document.querySelector('form').addEventListener('submit',event=>{${lateStart?`event.preventDefault();setTimeout(()=>location.href='/done',${lateStart});`:''}${beforeNavigation?`fetch('/slow-before',{method:'PATCH'}).catch(()=>{});`:''}setTimeout(()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})},150)})</script>`);
   });
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));ownedFixture(t).add(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
   const result=await runAcceptance({localUrl:`http://127.0.0.1:${server.address().port}`,outputDir:path.join(root,'evidence'),timeout:3000,flows:[{name:'Late document writes',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#save'},{action:'settle'},{action:'visible',selector:'#done'}]}]});
   assert.equal(result.passed,true,JSON.stringify(result.flows[0]));
   const cancelled=result.flows[0].navigationCancelledRequests;
@@ -67,12 +68,12 @@ for (const [beforeNavigation,lateStart] of [[false,0],[true,0],[true,1200]]) tes
 });
 
 test('acceptance opens and settles a modal without counting frame lifecycle requests as portal failures', {timeout:30000}, async t=>{
-  const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-modal-acceptance-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-modal-acceptance-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.writeFile(path.join(root,'website.yml'),'adx_websiteid: site\nadx_name: Modal fixture');
   await fs.writeFile(path.join(root,'Home.webpage.yml'),'adx_webpageid: home\nadx_name: Host\nadx_partialurl: /\n');
   await fs.writeFile(path.join(root,'Home.webpage.copy.html'),'<button id="open" onclick="document.getElementById(\'holder\').innerHTML=\'<iframe id=modal src=/_portal/modal-form-template-path/site?entityformid=create></iframe>\'">Open</button><div id="holder"></div>');
   await fs.writeFile(path.join(root,'Create.basicform.yml'),'adx_entityformid: create\nadx_name: Create\nadx_entityname: sample\nadx_mode: 100000000');
-  const app=await createSimulator({sourceDir:root,stateFile:path.join(root,'state.json'),watch:false,initial:{settings:{permissionMode:'permissive'},mappings:{sample:{idColumn:'sampleid'}},tables:{sample:[]},simulator:{mode:'local',pageMode:'local',live:{allowWrites:false},endpoints:[],componentSchemas:{create:{entity:'sample',fields:[{name:'name',type:'text'}]}}}}});t.after(()=>app.close());
+  const app=await createSimulator({sourceDir:root,stateFile:path.join(root,'state.json'),watch:false,initial:{settings:{permissionMode:'permissive'},mappings:{sample:{idColumn:'sampleid'}},tables:{sample:[]},simulator:{mode:'local',pageMode:'local',live:{allowWrites:false},endpoints:[],componentSchemas:{create:{entity:'sample',fields:[{name:'name',type:'text'}]}}}}});ownedFixture(t).add(()=>app.close());
   const report=await runAcceptance({localUrl:app.url,outputDir:path.join(root,'evidence'),flows:[{name:'Modal',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#open'},{action:'visible',frame:'#modal',selector:'#name'},{action:'settle'}]}]});
   assert.equal(report.passed,true,JSON.stringify(report.flows.map(flow=>({error:flow.error,failedResponses:flow.failedResponses,pageErrors:flow.pageErrors,failedRequests:flow.failedRequests}))));
   assert.equal(report.flows[0].failedRequests.length,0);
@@ -80,11 +81,11 @@ test('acceptance opens and settles a modal without counting frame lifecycle requ
 
 test('acceptance retains Chromium script SyntaxErrors even when their stack is empty', { timeout: 30000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-syntax-flow-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Syntax fixture\nadx_partialurl: /\n');
   await fs.writeFile(path.join(directory, 'Home.webpage.copy.html'), '<h1>Syntax fixture</h1><script>const duplicatedFixture = 1;</script><script>const duplicatedFixture = 2;</script>');
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, 'state.json'), watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const report = await runAcceptance({ localUrl: app.url, flows: [{ name: 'Syntax fixture', steps: [{ action: 'navigate', path: '/' }] }], outputDir: path.join(directory, 'evidence') });
   assert.equal(report.passed, false);
   assert.match(report.flows[0].pageErrors[0], /Identifier 'duplicatedFixture' has already been declared/);
@@ -98,7 +99,7 @@ test(
   { timeout: 45000 },
   async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-flow-"));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(
       path.join(directory, "Home.webpage.yml"),
       "adx_webpageid: home\nadx_name: Flows\nadx_partialurl: /\n",
@@ -161,7 +162,7 @@ test(
         },
       },
     });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     const flows = [
       {
         name: "Role switching reaches portal scripts without manual reload",
@@ -264,7 +265,7 @@ test(
   { timeout: 30000 },
   async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-ready-"));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const state = {
       config: { mode: "local", pageMode: "local", live: { allowWrites: false }, endpoints: [] },
       status: { sourceFingerprint: "fixture-source", implementationFingerprint: "fixture-implementation" },
@@ -288,7 +289,7 @@ test(
       res.end('<h1 id="ready">DOM is ready</h1><img src="/never-finishes.png">');
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => {
+    ownedFixture(t).add(() => {
       server.closeAllConnections();
       return new Promise((resolve) => server.close(resolve));
     });

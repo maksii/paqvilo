@@ -1,0 +1,7 @@
+/* Local equivalent of the platform PWA chrome styles (pwa-style.bundle-<hash>.css) for the
+   offline notification bar, and of the screen-reader-only class used by the heading
+   announcer, for pages without a captured platform stylesheet. */
+#offlineNotificationBar{padding-top:10px;padding-bottom:10px;background:#fff4ce}
+.displayNone{display:none!important}
+#offlineNotificationBar #message{position:relative;font-family:Segoe UI,sans-serif;font-style:normal;font-weight:600;font-size:12px;line-height:133%;color:#323130}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}

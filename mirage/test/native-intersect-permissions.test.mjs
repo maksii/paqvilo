@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {observedConfig} from '../lib/project-config.mjs';
 import {createSimulator} from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 const G=n=>'66666666-6666-4666-8666-'+String(n).padStart(12,'0');
 async function fixture(t,{append=true,appendTo=true,manual=false,self=false,observed=null}={}){
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-intersect-rights-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-intersect-rights-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
  const portal=path.join(root,'portal'),solution=path.join(root,'solution');await fs.mkdir(portal,{recursive:true});await fs.mkdir(path.join(solution,'Other'),{recursive:true});
  await fs.writeFile(path.join(portal,'website.yml'),'adx_name: Invented\nadx_websiteid: invented\n');
  await fs.writeFile(path.join(portal,'webrole.yml'),JSON.stringify([{adx_webroleid:G(1),adx_name:'Member'}]));
@@ -15,7 +16,7 @@ async function fixture(t,{append=true,appendTo=true,manual=false,self=false,obse
  await fs.writeFile(path.join(portal,'sitesetting.yml'),JSON.stringify([{adx_name:'Webapi/error/innererror',adx_value:'true'},...['widget','label','widget_label'].flatMap(entity=>[{adx_name:'Webapi/'+entity+'/enabled',adx_value:'true'},{adx_name:'Webapi/'+entity+'/fields',adx_value:entity==='widget'?'widgetid,widget_labels':entity==='label'?'labelid':'widget_labelid,widgetid,labelid'}])]));
  for(const [entity,set]of[['widget','widgets'],['label','labels']]){await fs.mkdir(path.join(solution,'Entities',entity),{recursive:true});await fs.writeFile(path.join(solution,'Entities',entity,'Entity.xml'),'<Entity><Name>'+entity+'</Name><EntityInfo><entity Name="'+entity+'"><EntitySetName>'+set+'</EntitySetName><attributes><attribute PhysicalName="'+entity+'id"><Name>'+entity+'id</Name><Type>primarykey</Type></attribute></attributes></entity></EntityInfo></Entity>');}
  await fs.writeFile(path.join(solution,'Other/Relationships.xml'),'<EntityRelationships><EntityRelationship Name="widget_labels"><EntityRelationshipType>ManyToMany</EntityRelationshipType><FirstEntityName>widget</FirstEntityName><SecondEntityName>'+ (self?'widget':'label') +'</SecondEntityName><IntersectEntityName>widget_label</IntersectEntityName><Entity1IntersectAttribute>widgetid</Entity1IntersectAttribute><Entity2IntersectAttribute>labelid</Entity2IntersectAttribute><EntityRelationshipRoles><EntityRelationshipRole><AssociationRoleOrdinal>1</AssociationRoleOrdinal><NavigationPropertyName>widget_labels</NavigationPropertyName></EntityRelationshipRole><EntityRelationshipRole><AssociationRoleOrdinal>2</AssociationRoleOrdinal><NavigationPropertyName>label_widgets</NavigationPropertyName></EntityRelationshipRole></EntityRelationshipRoles></EntityRelationship></EntityRelationships>');
- const sim=await createSimulator({sourceDir:portal,solutionRoots:[solution],solutionOrder:'explicit',watch:false,port:0,observed});t.after(()=>sim.close());
+ const sim=await createSimulator({sourceDir:portal,solutionRoots:[solution],solutionOrder:'explicit',watch:false,port:0,observed});ownedFixture(t).add(()=>sim.close());
  await sim.store.transact(()=>{sim.store.state.tables.widget=[{widgetid:G(2)},...(self?[{widgetid:G(3)}]:[])];sim.store.state.tables.label=[{labelid:G(3)}];sim.store.state.tables.contact=[{contactid:G(4),fullname:'Invented member',statecode:0}];if(manual==='untyped'){delete sim.store.state.mappings.widget.relationships.widget_labels.schemaName;delete sim.store.state.mappings.widget.relationships.widget_labels.type;}else if(manual)sim.store.state.mappings.widget_label.userConfigured=true;});
  const signed=sim.signIn(G(4),{roles:['Member']}),cookie=signed.cookieHeader,endpoint='/_api/widgets('+G(2)+')/widget_labels';
  const call=(route,{method='GET',body}={})=>fetch(sim.url+route,{method,headers:{cookie,__RequestVerificationToken:sim.state().csrf,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});

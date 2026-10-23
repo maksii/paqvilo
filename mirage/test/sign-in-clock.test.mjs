@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { createSimulator } from "../server.mjs";
 import { fixedClock } from "../lib/runtime-clock.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // Helpers copied from external-sign-in.test.mjs (a test file cannot be imported without running its tests).
 const AUTHORITY = "https://idp.example.test/local/";
@@ -89,14 +90,14 @@ function initialState({ tables = {}, mappings = {} } = {}) {
 
 async function simulator(t, settings = LOCAL_PROVIDER, state = initialState(), options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-external-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, initial: state, ...options });
   let closed = false;
-  t.after(() => (closed ? undefined : app.close()));
+  ownedFixture(t).add(() => (closed ? undefined : app.close()));
   const { csrf } = await (await fetch(app.url + "/__sim/api/state?summary=1")).json();
   return { app, csrf, idp: app.identityProvider, close: async () => ((closed = true), app.close()) };
 }

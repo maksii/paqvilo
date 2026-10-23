@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const page = (id, name, partial, parent = "home") =>
   [`adx_webpageid: ${id}`, `adx_name: ${name}`, `adx_partialurl: ${partial}`, ...(parent ? [`adx_parentpageid: ${parent}`] : []), "adx_pagetemplateid: main"].join("\n");
@@ -41,7 +42,7 @@ test(
   { timeout: 60000 },
   async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-auth-browser-"));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     for (const [name, body] of Object.entries(files)) {
       await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
       await fs.writeFile(path.join(directory, name), body);
@@ -79,9 +80,9 @@ test(
         },
       },
     });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
+    ownedFixture(t).add(() => browser.close());
     const context = await browser.newContext({ serviceWorkers: "block" });
     await context.route("**/*", (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
     const portal = await context.newPage();

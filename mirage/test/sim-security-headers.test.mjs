@@ -7,6 +7,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const CSP = "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
@@ -44,7 +45,7 @@ async function assertHeaders(base) {
 
 test('Power Pages /_sim/ sends the admin CSP and nosniff; assets resolve by pattern only', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-headers-pp-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await writeFiles(dir, {
     'website.yml': 'adx_name: Invented Site\nadx_websiteid: site\nadx_defaultlanguage: lang-en\nadx_website_language: 1033',
     'websitelanguage.yml': '- adx_websitelanguageid: lang-en\n  adx_name: English',
@@ -55,16 +56,16 @@ test('Power Pages /_sim/ sends the admin CSP and nosniff; assets resolve by patt
   });
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false,
     initial: { version: 1, mappings: {}, tables: {}, permissions: [], simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   await assertHeaders(sim.url);
 });
 
 test('standalone /_sim/ sends the same CSP and nosniff; assets resolve by pattern only', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-headers-sa-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await writeFiles(root, { 'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedHeaders</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>' });
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   await assertHeaders(sim.url);
 });

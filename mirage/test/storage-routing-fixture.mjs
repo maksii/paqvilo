@@ -10,6 +10,7 @@ import { EXTENSIONS } from "../lib/dataverse-extensions.mjs";
 import { EXTENSION as routing } from "../lib/dataverse-storage-routing.mjs";
 import { createStorageRouter } from "../lib/storage-provider.mjs";
 import { createLocalDiskStorage } from "../lib/storage-local-disk.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 export const APP_ID = "77777777-7777-4777-8777-7777777777b1";
 export const WIDGET = "77777777-7777-4777-8777-7777777777b2";
@@ -45,7 +46,7 @@ export function routedExtensions(storage, diagnostics = []) {
 
 export async function tempRoot(t, prefix = "storage-routing-") {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -59,18 +60,27 @@ export function localRouter(root, routes) {
 /** Starts the API. `file` persists the store; `state` seeds it (ignored when the file exists). */
 export async function routingApi(t, { storage = true, routes, root, file, state, before = () => {} } = {}) {
   root ??= await tempRoot(t);
+  let provider, server, closing;
+  const close = () => closing ??= (async () => {
+    const failures = [];
+    for (const resource of [server, provider]) {
+      try { await resource?.close(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Storage fixture API/provider cleanup failed.");
+  })().catch(error => { closing = null; throw error; });
+  ownedFixture(t).add(close);
   process.env[SECRET_VAR] = "storage-routing-fixture-secret";
-  const { provider, router } = storage ? localRouter(root, routes) : { provider: null, router: null };
+  const local = storage ? localRouter(root, routes) : { provider: null, router: null };
+  provider = local.provider;
+  const router = local.router;
   const diagnostics = [];
   const store = await new DataStore({ file: file ?? null, state: state ?? widgetState() }).init();
   await before(store);
   const settings = dataverseSettings({
     enabled: true, applications: [{ appId: APP_ID, displayName: "Invented storage app", secretEnvironmentVariable: SECRET_VAR, roles: ["System Administrator"] }],
   });
-  const server = await startDataverseApi({ store, settings, log: () => {}, extensions: routedExtensions(router, diagnostics) });
-  let closed = false;
-  const close = async () => { if (!closed) { closed = true; await server.close(); await provider?.close(); } };
-  t.after(close);
+  server = await startDataverseApi({ store, settings, log: () => {}, extensions: routedExtensions(router, diagnostics) });
   const token = await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
     method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: APP_ID, client_secret: process.env[SECRET_VAR], scope: `${server.origin}/.default` }),

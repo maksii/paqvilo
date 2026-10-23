@@ -4,10 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function host(t, embed) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'powerbi-host-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: 77777777-7777-4777-8777-777777777793\nadx_name: Invented fixture host',
     'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: page',
@@ -20,7 +21,7 @@ async function host(t, embed) {
     observed: { powerBiOutput: 'empty', evidence: 'Invented empty-output capture' },
     packs: [{ id: 'invented-service-fixture', name: 'Invented fixture', description: 'Loopback host wiring regression', matches: () => true, presets: () => ({}), serviceFixtures: { powerBi: { embed } } }],
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 

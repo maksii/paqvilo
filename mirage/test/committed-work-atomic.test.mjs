@@ -8,6 +8,7 @@ import { builtInKey } from '../lib/dataverse-elastic.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { committedJobs, stageCommittedJobs } from '../lib/committed-work.mjs';
 import { createScheduler, fixedClock, storeScheduler } from '../lib/runtime-clock.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // Learn "Asynchronous service": Dataverse saves the asynchronous context in the System Job (AsyncOperation) table as part
 // of processing the event, so a committed write always carries its Ready job (or the write does not happen).
@@ -33,10 +34,10 @@ async function open(file, state) {
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'committed-atomic-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const opened = await open(file, invented());
-  t.after(() => opened.runner.close());
+  ownedFixture(t).add(() => opened.runner.close());
   const saved = async () => { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return { tables: {} }; throw error; } };
   return { ...opened, file, saved };
 }

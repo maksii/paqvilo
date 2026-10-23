@@ -6,6 +6,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 
 const TENANT = "https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/";
@@ -77,15 +78,15 @@ const state = {
 
 async function portal(t, settings, header) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-external-browser-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(settings, header))) {
     await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
     await fs.writeFile(path.join(directory, name), body);
   }
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, "state.json"), watch: false, initial: structuredClone(state) });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ serviceWorkers: "block" });
   const idp = app.identityProvider.origin;
   // Only the portal and its local identity provider are reachable.

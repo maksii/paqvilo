@@ -7,6 +7,7 @@ import { createSimulator } from '../api.mjs';
 import { staffContext } from '../lib/staff-session.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 import { pcfUserSettings, staffFormatting, ANONYMOUS_STAFF_CONTEXT } from '../lib/model-driven/pcf-runtime.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const USER = '77777777-7777-4777-8777-777777777777', ROLE = '77777777-7777-4777-8777-777777777778', EURO = '77777777-7777-4777-8777-777777777779';
 
@@ -61,7 +62,7 @@ test('an unknown session answers the documented anonymous context', () => {
 
 test('the staff session payload carries the server-built context and record capabilities flag secured columns', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'staff-context-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const entity = '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes>'
     + '<attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute>'
     + '<attribute PhysicalName="x_secret"><Name>x_secret</Name><Type>nvarchar</Type><IsSecured>1</IsSecured></attribute></attributes></entity></EntityInfo></Entity>';
@@ -70,7 +71,7 @@ test('the staff session payload carries the server-built context and record capa
   }
   const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false, simulation: { level: 'dry-run' },
     dataverse: { enabled: false, tds: { enabled: false }, users: [{ objectId: USER, domainname: 'staff@example.test', fullname: 'Invented staff', roles: ['Basic User'] }] } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf };
   const session = await (await fetch(sim.url + '/_sim/api/dataverse/session', { headers })).json();
   const staff = session.users.find(entry => entry.name === 'Invented staff');

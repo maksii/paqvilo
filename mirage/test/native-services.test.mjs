@@ -9,6 +9,7 @@ import { notesFilter } from "../lib/form-service.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 import {reportCapturedBundleRequirements} from '../lib/native-services.mjs';
 import {gridRecord} from '../lib/native-services.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('native grids preserve zone-less DateOnly and independent dates across host time zones',()=>{
   const previous=process.env.TZ;
@@ -46,7 +47,7 @@ const INTERNAL_NOTE = "e0000000-0000-4000-8000-000000000002";
 
 async function fixture(t, { roles = ["Editor"] } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "native-services-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Native`,
     "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template",
@@ -118,7 +119,7 @@ async function fixture(t, { roles = ["Editor"] } = {}) {
     },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   // Portal requests are signed in explicitly (paqvilo-mirage-auth session) as the persona.
   const session = signInHeaders(app, CONTACT, { roles });
   const token = app.state().csrf;

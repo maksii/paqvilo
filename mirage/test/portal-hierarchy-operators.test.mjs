@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../api.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const id = (n) => `10000000-0000-4000-8000-0000000000${String(n).padStart(2, "0")}`;
 const ROOT = id(41), BRANCH = id(42), LEAF = id(43), OTHER = id(44);
@@ -49,13 +50,13 @@ const initial = {
 
 async function portalFixture(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "portal-hierarchy-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, initial });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 

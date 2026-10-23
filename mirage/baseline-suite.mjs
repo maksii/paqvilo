@@ -532,7 +532,7 @@ async function main() {
     // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
     await fs.writeFile(path.join(outDir, `run-${label}-${startedAt.replace(/:/g, "")}.json`), JSON.stringify(run, null, 2));
     console.log(JSON.stringify({ run: path.join(outDir, `run-${label}.json`), totals: run.totals }));
-    process.exitCode = run.totals.error ? 2 : 0;
+    process.exitCode = run.totals.error ? 2 : run.totals.failed || run.totals.blockedWrites ? 1 : 0;
     return;
   }
   const allowlist = values.allowlist ? await loadAllowlist(values.allowlist) : { entries: [] };

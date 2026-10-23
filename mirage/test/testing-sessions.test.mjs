@@ -5,10 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import {createSimulator} from '../server.mjs';
 import {createPortalSession,runSessionMatrix,connectRuntime} from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const guid=index=>`10000000-0000-0000-0000-${String(index).padStart(12,'0')}`;
 async function fixture(t, {liveBridge, template} = {}) {
- const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-many-visitors-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-many-visitors-'));ownedFixture(t).remove(()=>fs.rm(dir,{recursive:true,force:true}));
  const sources={
   'website.yml':'adx_name: Concurrent fixture\nadx_websiteid: site',
   'webrole.yml':'- adx_webroleid: reader\n  adx_name: Reader',
@@ -25,7 +26,7 @@ async function fixture(t, {liveBridge, template} = {}) {
   mappings:{contact:{entitySet:'contacts',idColumn:'contactid',nameColumn:'fullname'},widget:{entitySet:'widgets',idColumn:'widgetid',nameColumn:'name'}},
   tables:{contact:contacts,widget:contacts.map((contact,index)=>({widgetid:guid(index+101),name:'Owned '+index,owner:{id:contact.contactid,logical_name:'contact'}}))},
   permissions:[{id:'own',entity:'widget',scope:'contact',field:'owner',roles:['Reader'],operations:['read','update']}],settings:{permissionMode:'enforce'},
-  simulator:{mode:'local',pageMode:'local',permissionSource:'configured',identity:{roles:[]},contactRoles:contacts.map(contact=>({contactId:contact.contactid,roleId:'reader'})),endpoints:[]}}});t.after(()=>app.close());return{app,contacts};
+  simulator:{mode:'local',pageMode:'local',permissionSource:'configured',identity:{roles:[]},contactRoles:contacts.map(contact=>({contactId:contact.contactid,roleId:'reader'})),endpoints:[]}}});ownedFixture(t).add(()=>app.close());return{app,contacts};
 }
 test('ten cookie-isolated visitors read and write through real portal handlers without identity leakage',async t=>{
  const {app,contacts}=await fixture(t),runtime=await connectRuntime({origin:app.url}),sessions=await Promise.all(contacts.map(contact=>runtime.createSession({id:contact.contactid,contactId:contact.contactid})));t.after(()=>sessions.forEach(session=>session.close()));

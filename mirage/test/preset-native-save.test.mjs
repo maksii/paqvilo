@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const STAFF = '77777777-7777-4777-8777-777777777795';
 const CURRENCY = '77777777-7777-4777-8777-777777777796';
@@ -15,7 +16,7 @@ const TYPE = '77777777-7777-4777-8777-777777777790';
 
 async function fixture(t, create = false) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preset-native-save-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const source = path.join(root, 'portal'), solution = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: invented-site\nadx_name: Invented secured native save',
@@ -44,7 +45,7 @@ async function fixture(t, create = false) {
   const fields = [{ name: 'exa_title', type: 'text', required: true }, { name: 'exa_secret', type: 'textarea' }, { name: 'exa_price', dataverseType: 'money' }, { name: 'transactioncurrencyid', type: 'lookup', targets: ['transactioncurrency'] }];
   const sim = await createSimulator({ sourceDir: source, stateFile: path.join(root, 'state.json'), solutionRoots: [solution], watch: false, port: 0, packs: [pack],
     initial: { simulator: { mode: 'local', pageMode: 'local', live: {}, componentSchemas: { sample: { entity: 'exa_sample', fields } } } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   await sim.applyPreset('replacement');
   const controls = nativeFormControlIds('entityform', 'sample'), route = '/?id=' + ITEM;
   const post = () => fetch(sim.url + route, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams([

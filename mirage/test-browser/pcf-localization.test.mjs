@@ -7,10 +7,11 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('PCF localized instances keep languages, missing keys and empty labels across updates and teardown', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-localization-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'Controls', 'tst_Synthetic.Localized');
   await fs.mkdir(path.join(dir, 'strings'), { recursive: true });
   await fs.writeFile(path.join(dir, 'ControlManifest.xml'), '<manifest><control namespace="Synthetic" constructor="Localized" control-type="standard"><property name="value" display-name-key="Empty" of-type="SingleLine.Text" usage="bound"/><resources><resx path="strings/Labels.1036.resx" version="2.0.0"/><code path="bundle.js"/><resx path="strings/Labels.1033.resx" version="1.0.0"/></resources></control></manifest>');
@@ -36,9 +37,9 @@ test('PCF localized instances keep languages, missing keys and empty labels acro
     else { response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end(html); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise(resolve => server.close(resolve)));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage(); page.setDefaultTimeout(10000);
   const errors = [], external = [], origin = `http://127.0.0.1:${server.address().port}`;
   page.on('pageerror', error => errors.push(error.message));

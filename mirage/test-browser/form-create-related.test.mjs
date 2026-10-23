@@ -7,12 +7,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // Invented schema: a record form with a Create related record action whose target form opens
 // in a modal, and the record state hiding the inapplicable state action.
 test('create related record opens the target form dialog; the record state hides its state action', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-create-related-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const actions = [
     { Type: 'DeactivateAction', ButtonLabel: [{ LCID: 1033, Value: 'Close entry' }] },
     { Type: 'ActivateAction', ButtonLabel: [{ LCID: 1033, Value: 'Reopen entry' }] },
@@ -41,9 +42,9 @@ test('create related record opens the target form dialog; the record state hides
     settings: { permissionMode: 'enforce', 'Webapi/sample/enabled': false, 'Site/BootstrapV5Enabled': 'true' },
     simulator: { componentSchemas: { 'entry-form': { entity: 'sample', fields }, 'note-form': { entity: 'sample', fields } }, endpoints: [], mode: 'local', pageMode: 'local', live: { origin: null } },
   } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage();

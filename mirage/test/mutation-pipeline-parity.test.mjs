@@ -12,6 +12,7 @@ import { localOrganizationService } from "../lib/local-organization-service.mjs"
 import { DATAVERSE_CONNECTOR, createConnectorRuntime } from "../lib/connector-runtime.mjs";
 import { portalRecordWrites } from "../lib/form-service.mjs";
 import { dispatchSdkCall } from "../lib/plugin-clr.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const CLIENT = "77777777-7777-4777-8777-777777777777";
 const CONTACT = "77777777-7777-4777-8777-000000000011";
@@ -46,7 +47,7 @@ const state = () => ({
 
 async function organization(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mutation-pipeline-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Invented pipeline\n");
   await fs.writeFile(path.join(directory, "sitesetting.yml"), [
     "- adx_name: Webapi/x_item/enabled\n  adx_value: 'true'",
@@ -55,7 +56,7 @@ async function organization(t) {
   ].join("\n"));
   const sim = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, "state.json"), initial: state(), port: 0, watch: false,
     dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const registered = await fetch(sim.url + "/_sim/api/dataverse/applications", { method: "POST",
     headers: { "content-type": "application/json", "x-sim-csrf": sim.state().csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: "Invented client", roles: ["System Administrator"] }) });

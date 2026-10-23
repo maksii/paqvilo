@@ -9,6 +9,7 @@ import path from 'node:path';
 import { stringify } from 'yaml';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const MEMBER = '77777777-7777-4777-8777-777777777701';
 const files = state => ({
@@ -36,14 +37,14 @@ const initial = () => ({
 
 async function site(t, state) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-portal-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(state))) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await fs.writeFile(path.join(root, name), body);
   }
   const sim = await createSimulator({ sourceDir: path.join(root, 'portal'), stateFile: path.join(root, 'state.json'), projectRoot: root, port: 0, watch: false,
     initial: initial(), canvas: { sources: ['apps/fx_portalapp'] } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 const api = (sim, headers = {}, body) => fetch(`${sim.url}/_apps/api/canvas/fx_portalapp`, body

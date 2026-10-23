@@ -5,13 +5,14 @@ import path from 'node:path';
 import os from 'node:os';
 import {createSimulator} from '../server.mjs';
 import {signInHeaders} from '../testing/session.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function fixture(t,options={}){
-  const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-feedback-diagnostics-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-feedback-diagnostics-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const files={'website.yml':'adx_websiteid: invented\nadx_name: Invented diagnostics','Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /','Create.basicform.yml':'adx_entityformid: create\nadx_name: Create\nadx_entityname: item\nadx_mode: 100000000','Api.sitesetting.yml':'adx_name: Webapi/item/enabled\nadx_value: True','Fields.sitesetting.yml':'adx_name: Webapi/item/fields\nadx_value: title,parentid'};
   for(const [file,body]of Object.entries(files))await fs.writeFile(path.join(root,file),body);
   const initial={settings:{permissionMode:'enforce'},mappings:{item:{entitySet:'items',idColumn:'itemid'},note:{entitySet:'notes',idColumn:'noteid'}},tables:{item:[],note:[{noteid:'foreign',contactid:'another'}]},permissions:[{id:'scoped',name:'Children through membership',entity:'item',scope:'parent',roles:['Member'],operations:['create'],parentPermissionId:'parent',relationship:{entity:'note',from:'parentid',to:'noteid'}},{id:'parent',entity:'note',scope:'contact',field:'contactid',roles:['Member'],operations:['read']}],simulator:{componentSchemas:{create:{entity:'item',fields:[{name:'title'},{name:'parentid'}]}}}};
-  const app=await createSimulator({sourceDir:root,initial,watch:false,...options});t.after(()=>app.close());
+  const app=await createSimulator({sourceDir:root,initial,watch:false,...options});ownedFixture(t).add(()=>app.close());
   return {app,root};
 }
 

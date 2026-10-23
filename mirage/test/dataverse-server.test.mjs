@@ -13,16 +13,17 @@ import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 import { TDS, createMessageReader, encodePrelogin, writeMessage } from "../lib/dataverse-tds-framing.mjs";
 import { GRANT_TYPES } from "../lib/dataverse-settings.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const APP_ID = "44444444-4444-4444-8444-444444444444";
 const OBJECT_ID = "33333333-3333-4333-8333-333333333333";
 
 async function start(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-dataverse-server-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Dataverse server\n");
   const app = await createSimulator({ sourceDir: directory, watch: false, ...options });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const admin = async (route, { method = "GET", body } = {}) => {
     const response = await fetch(`${app.url}/_sim/api${route}`, {
       method,
@@ -203,7 +204,7 @@ test("Dataverse tables follow the portal's site settings and table permissions",
   });
   const portal = async (settings, permissions) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-dataverse-gating-"));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Gating\n");
     if (settings)
       await fs.writeFile(
@@ -211,7 +212,7 @@ test("Dataverse tables follow the portal's site settings and table permissions",
         "- adx_name: Webapi/systemuser/enabled\n  adx_value: 'true'\n- adx_name: Webapi/systemuser/fields\n  adx_value: 'fullname,businessunitid'\n",
       );
     const app = await createSimulator({ sourceDir: directory, watch: false, dataverse: { enabled: true }, initial: initial(permissions) });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     return async (route) => {
       const response = await fetch(app.url + route);
       return { status: response.status, body: await response.json() };

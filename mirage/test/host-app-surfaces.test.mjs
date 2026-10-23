@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const solutionFiles = {
   'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedApps</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -29,14 +30,14 @@ async function write(root, files) {
 
 async function hosts(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-app-surfaces-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, { ...solutionFiles, ...portalFiles });
   const common = { solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false, codeApps: [{ name: 'invented-app', dir: 'app' }] };
   const standalone = await createSimulator({ ...common, runtime: { kind: 'dataverse-api' }, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => standalone.close());
+  ownedFixture(t).add(() => standalone.close());
   const portal = await createSimulator({ ...common, sourceDir: path.join(root, 'portal'), stateFile: path.join(root, 'state.json'),
     initial: { version: 1, mappings: {}, tables: {}, permissions: [], simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] } } });
-  t.after(() => portal.close());
+  ownedFixture(t).add(() => portal.close());
   return { standalone, portal };
 }
 

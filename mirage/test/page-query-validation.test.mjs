@@ -6,6 +6,7 @@ import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { observedConfig } from "../lib/project-config.mjs";
 import { observedPageQueryValidation } from "../lib/page-query-validation.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const observed = { requestValidation: "aspnet-query", evidence: "invented-loopback/query-rejection.json" };
 
@@ -32,7 +33,7 @@ test("query validation configuration requires site evidence and a known mode", (
 
 async function start(t, options) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-query-validation-"));
-  t.after(async () => {
+  ownedFixture(t).remove(async () => {
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
     await fs.rm(directory, { recursive: true, force: true });
   });
@@ -53,7 +54,7 @@ async function start(t, options) {
   const simulator = await createSimulator({ sourceDir: directory, watch: false, ...options,
     initial: { mappings: { validationwidget: { entitySet: "validationwidgets", idColumn: "validationwidgetid", nameColumn: "title", fields: { title: { dataverseType: "nvarchar", maxLength: 1000 } } } }, tables: { validationwidget: [] }, settings: { permissionMode: "permissive" }, simulator: { mode: "local", pageMode: "local", identityScope: "configured", identity: { id: "invented-local-persona", roles: [] }, live: {}, endpoints: [], componentSchemas: { entry: { entity: "validationwidget", fields: [{ name: "title", required: true }] } } } },
   });
-  t.after(() => simulator.close());
+  ownedFixture(t).add(() => simulator.close());
   return simulator;
 }
 

@@ -1346,7 +1346,8 @@
     const clearButton = () => control.querySelector(".clearlookupfield");
     const primary = modal.querySelector(".modal-footer button.primary");
     const remove = modal.querySelector(".modal-footer .remove-value");
-    // The dialog's Remove value button is disabled from the first show (live evidence).
+    // An existing returned lookup row is selected on the first successful draw.
+    let restoreCurrentSelection = false;
     const sync = () => {
       const hasValue = Boolean(id()?.value);
       const clear = clearButton();
@@ -1389,6 +1390,7 @@
     on(modal, "show.bs.modal", (event) => {
       if (event.target !== modal) return;
       grid.state.selected = null;
+      restoreCurrentSelection = true;
       // Opening any lookup dialog disables Select and Remove value in every lookup dialog of the page (live DOM).
       for (const button of lookupButtons) button.disabled = true;
       trigger(gridElement, "refresh");
@@ -1411,6 +1413,22 @@
     });
     on(gridElement, "loaded", (event) => {
       if (event.target !== gridElement) return;
+      if (restoreCurrentSelection) {
+        restoreCurrentSelection = false;
+        const currentId = id()?.value.trim().toLowerCase();
+        const currentEntity = entityInput()?.value.trim().toLowerCase();
+        // Only use a row already returned by the authorized lookup query. Equal
+        // IDs in another target table do not identify the current lookup value.
+        const current = currentId && currentEntity
+          ? [...gridElement.querySelectorAll('.view-grid tbody tr[data-id]')].find(row =>
+            row.getAttribute('data-id')?.toLowerCase() === currentId &&
+            row.getAttribute('data-entity')?.toLowerCase() === currentEntity)
+          : null;
+        if (current) {
+          grid.setRowSelected(current, true);
+          if (remove) remove.disabled = false;
+        }
+      }
       if (primary) primary.disabled = !grid.selectedRows().length;
     });
     primary?.addEventListener("click", (event) => {

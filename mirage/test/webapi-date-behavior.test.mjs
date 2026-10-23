@@ -4,16 +4,17 @@ import fs from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createSimulator} from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('portal round trips preserve five date behaviors and per-request formatted timezone rules',async t=>{
-  const source=await fs.mkdtemp(join(tmpdir(),'invented-date-behaviors-'));t.after(()=>fs.rm(source,{recursive:true,force:true}));
+  const source=await fs.mkdtemp(join(tmpdir(),'invented-date-behaviors-'));ownedFixture(t).remove(()=>fs.rm(source,{recursive:true,force:true}));
   await fs.writeFile(join(source,'website.yml'),'adx_name: Invented date site\nadx_websiteid: site\n');
   await fs.writeFile(join(source,'sitesetting.yml'),'- adx_name: Webapi/event/enabled\n  adx_value: true\n- adx_name: Webapi/event/fields\n  adx_value: local,localdate,independent,independentdate,calendar\n');
   const fields=Object.fromEntries([['local','UserLocal','DateAndTime'],['localdate',1,'DateOnly'],['independent','TimeZoneIndependent','DateAndTime'],['independentdate',3,'DateOnly'],['calendar',2,'DateOnly']].map(([key,behavior,format])=>[key,{type:'datetime',behavior,format}]));
   const rule={effectivedatetime:'1753-01-01T00:00:00Z',bias:-240,standardbias:0,daylightbias:-60,
     daylightyear:0,daylightmonth:3,daylightday:5,daylightdayofweek:0,daylighthour:3,daylightminute:0,daylightsecond:0,
     standardyear:0,standardmonth:10,standardday:5,standarddayofweek:0,standardhour:4,standardminute:0,standardsecond:0};
-  const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',evidence:'Invented portal culture regression'},initial:{settings:{permissionMode:'permissive',formattedValueTimeZone:{evidence:'Invented zone rules',rules:[rule]}},mappings:{event:{entitySet:'events',idColumn:'eventid',fields}},tables:{event:[]}}});t.after(()=>app.close());
+  const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',evidence:'Invented portal culture regression'},initial:{settings:{permissionMode:'permissive',formattedValueTimeZone:{evidence:'Invented zone rules',rules:[rule]}},mappings:{event:{entitySet:'events',idColumn:'eventid',fields}},tables:{event:[]}}});ownedFixture(t).add(()=>app.close());
   const headers={'content-type':'application/json',__RequestVerificationToken:app.state().csrf};
   const body={local:'7/7/2025 10:30',localdate:'2025-07-06T22:30:00Z',independent:'7/7/2025 10:30',independentdate:'2025-07-06T22:30:00Z',calendar:'2025-7-7'};
   const created=await fetch(app.url+'/_api/events',{method:'POST',headers,body:JSON.stringify(body)});assert.equal(created.status,204,await created.text());
@@ -26,11 +27,11 @@ test('portal round trips preserve five date behaviors and per-request formatted 
 });
 
 test('month-first range errors preserve submitted text and the configured native minimum-date message',async t=>{
-  const source=await fs.mkdtemp(join(tmpdir(),'invented-date-boundaries-'));t.after(()=>fs.rm(source,{recursive:true,force:true}));
+  const source=await fs.mkdtemp(join(tmpdir(),'invented-date-boundaries-'));ownedFixture(t).remove(()=>fs.rm(source,{recursive:true,force:true}));
   await fs.writeFile(join(source,'website.yml'),'adx_name: Invented date site\nadx_websiteid: site\n');
   await fs.writeFile(join(source,'sitesetting.yml'),'- adx_name: Webapi/event/enabled\n  adx_value: true\n- adx_name: Webapi/event/fields\n  adx_value: date\n- adx_name: Webapi/error/innererror\n  adx_value: true\n');
   for (const invalidDate of ['invalid-format','crm-minimum']) {
-    const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',webApiInvalidDate:invalidDate,evidence:'Synthetic date range regression'},initial:{settings:{permissionMode:'permissive'},mappings:{event:{entitySet:'events',idColumn:'eventid',fields:{date:{type:'datetime',behavior:3,format:'date'}}}},tables:{event:[]}}});t.after(()=>app.close());
+    const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',webApiInvalidDate:invalidDate,evidence:'Synthetic date range regression'},initial:{settings:{permissionMode:'permissive'},mappings:{event:{entitySet:'events',idColumn:'eventid',fields:{date:{type:'datetime',behavior:3,format:'date'}}}},tables:{event:[]}}});ownedFixture(t).add(()=>app.close());
     const headers={'content-type':'application/json',__RequestVerificationToken:app.state().csrf};
     const good=await fetch(app.url+'/_api/events',{method:'POST',headers,body:JSON.stringify({date:'2/7/2025'})});assert.equal(good.status,204,await good.text());
     const rowUrl=app.url+`/_api/events(${good.headers.get('entityid')})`,before=await fetch(rowUrl).then(r=>r.json());

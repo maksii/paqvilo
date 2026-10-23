@@ -10,12 +10,13 @@ import { createSimulator } from '../api.mjs';
 import { INTERNAL_TABLES } from '../lib/dataverse-organization.mjs';
 import { QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
 import { OUTBOX_TABLE } from '../lib/outbox.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ENTITY = '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>';
 
 test('a standalone runtime at level simulation sends one message and captures one outbox entry without a schema diagnostic', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'internal-tables-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedInternal</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/Entities/x_item/Entity.xml': ENTITY,
@@ -31,7 +32,7 @@ test('a standalone runtime at level simulation sends one message and captures on
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     stateFile: path.join(root, 'state', 'state.json'), simulation: { level: 'simulation' }, packs: [path.join(root, 'pack.mjs')],
     dataverse: { enabled: true, tls: false, tds: { enabled: false } }, diagnostic: (entry) => diagnostics.push(entry) });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   for (const name of [QUEUE_MESSAGE_TABLE, OUTBOX_TABLE]) {
     assert.ok(INTERNAL_TABLES.includes(name), `${name} is registered as an internal table`);
     assert.ok(sim.store.state.mappings[name], `${name} is composed at startup`);

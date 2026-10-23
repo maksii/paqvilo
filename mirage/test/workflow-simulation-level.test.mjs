@@ -13,6 +13,7 @@ import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { loadPack } from '../lib/preset-registry.mjs';
 import { createSimulationPersistence } from '../lib/simulation-persistence.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const WORKFLOW = '77777777-7777-4777-8777-0000000000b1';
 const FACT = { id: WORKFLOW, name: 'Invented triage', uniquename: 'InventedTriage', category: 0, type: 1, mode: 0, scope: 4, state: 1,
@@ -20,7 +21,7 @@ const FACT = { id: WORKFLOW, name: 'Invented triage', uniquename: 'InventedTriag
 
 test('a classic workflow on Create completes its job at simulation level with a DATA file owning only the business table', async t => {
   const directory = await fs.mkdtemp(path.join(tmpdir(), 'paqvilo-wf-sim-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'records.json'), JSON.stringify({ tables: { x_widget: [] } }));
   await fs.writeFile(path.join(directory, 'pack.mjs'), `export default {id:'invented',name:'Invented',description:'Invented fixture',matches:()=>true,presets:()=>({}),
     dataFiles:[{file:'records.json',tables:{x_widget:{path:['tables','x_widget'],idColumn:'x_widgetid'}}}]};`);
@@ -34,7 +35,7 @@ test('a classic workflow on Create completes its job at simulation level with a 
   const handlers = workflowHandlers([{ id: 'invented', workflows: { InventedTriage: async () => ({ message: 'triaged' }) } }]);
   const core = await createOrganizationRuntime({ store, scheduler, settings: dataverseSettings({ enabled: false }),
     extensions: [...EXTENSIONS, workflowExtension({ facts: [FACT], handlers, diagnostic: () => {} })] });
-  t.after(() => core.close());
+  ownedFixture(t).add(() => core.close());
   storageAdapter.activate(store.state);
 
   await store.create('x_widget', { x_name: 'kept' }, { admin: true });

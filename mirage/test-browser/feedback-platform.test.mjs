@@ -10,9 +10,10 @@ import {createSimulator} from '../server.mjs';
 import {importPortal} from '../lib/importer.mjs';
 import {inspectPage} from '../lib/page-resources.mjs';
 import {enrichInspection} from '../../lense/source-inspection.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function fixture(t,body,extraFiles={},options={}){
-  const root=await fs.mkdtemp(path.join(tmpdir(),'mirage-platform-feedback-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root=await fs.mkdtemp(path.join(tmpdir(),'mirage-platform-feedback-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const files={'website.yml':'adx_websiteid: site\nadx_name: Invented platform',
     'Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
     'Scripts.webpage.yml':'adx_webpageid: scripts\nadx_name: Scripts\nadx_partialurl: scripts\nadx_parentpageid: home',
@@ -25,8 +26,8 @@ async function fixture(t,body,extraFiles={},options={}){
     'web-files/a.css':'body { color: rgb(1, 2, 3); }',
     'web-files/a.css.webfile.yml':'adx_webfileid: style\nadx_name: a.css\nadx_partialurl: a.css\nadx_parentpageid: scripts\nfilename: a.css',...extraFiles};
   for(const [file,text]of Object.entries(files)){await fs.mkdir(path.dirname(path.join(root,file)),{recursive:true});await fs.writeFile(path.join(root,file),text);}
-  const app=await createSimulator({sourceDir:root,watch:false,...options});t.after(()=>app.close());
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());const page=await browser.newPage();
+  const app=await createSimulator({sourceDir:root,watch:false,...options});ownedFixture(t).add(()=>app.close());
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));ownedFixture(t).add(()=>browser.close());const page=await browser.newPage();
   return {app,page,root};
 }
 

@@ -4,12 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const CLIENT = '99999999-9999-4999-8999-999999999999'; // invented application user
 
 async function solutionFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-standalone-overrides-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedOverrides</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -22,7 +23,7 @@ async function solutionFixture(t) {
   }
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root,
     port: 0, watch: false, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 

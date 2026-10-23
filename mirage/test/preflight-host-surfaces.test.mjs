@@ -10,6 +10,7 @@ import { preflight, preflightExitCode, buildPreflightReport } from '../lib/capab
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // gap: a served modern list whose settings configure an action the local adapter does not serve (a real unsupported row).
 async function site(t, authorization, { gap = false } = {}) {
@@ -156,14 +157,14 @@ test('a virtual code component under a portal source is a portal:pcf row with th
 
 test('offline preflight and GET /_sim/api/preflight agree on provider, connector, outbox and storage rows', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-parity-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
   await fs.writeFile(path.join(solution, 'Other', 'Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>FxParity</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>');
   const options = { runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root, simulation: { level: 'dry-run' },
     dataverse: { enabled: true, tls: false, tds: { enabled: false } } };
   const sim = await createSimulator({ ...options, port: 0, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const live = await (await fetch(`${sim.url}/_sim/api/preflight`)).json();
   const offline = await preflight({ ...options, packs: [], env: process.env });
   const shared = /^(?:provider:|connector:|outbox:|message-bus:)/;
@@ -177,7 +178,7 @@ test('offline preflight and GET /_sim/api/preflight agree on provider, connector
 
 test('offline and live preflight judge a dashboard over a locally mapped table as its page does', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-dashboard-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const write = async (name, text) => { await fs.mkdir(path.dirname(path.join(solution, name)), { recursive: true }); await fs.writeFile(path.join(solution, name), text); };
   const BOARD = '77777777-7777-4777-8777-7777777777b1';
@@ -188,7 +189,7 @@ test('offline and live preflight judge a dashboard over a locally mapped table a
   const options = { runtime: { kind: 'model-driven' }, solutionRoots: [solution], projectRoot: root, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } },
     initial: { mappings: { x_local: { entitySet: 'x_locals', idColumn: 'x_localid', nameColumn: 'x_name', inferred: false } } } };
   const sim = await createSimulator({ ...options, port: 0, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const live = await (await fetch(`${sim.url}/_sim/api/preflight`)).json();
   const offline = await preflight({ ...options, packs: [], env: process.env });
   const rows = report => report.requirements.filter(row => /dashboard/.test(row.id)).map(row => [row.id, row.status, row.reason ?? null]);

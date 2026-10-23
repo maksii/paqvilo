@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function json(response, status = 200) {
   const text = await response.text();
@@ -15,7 +16,7 @@ async function json(response, status = 200) {
 
 test('standalone environment routes edit local overrides and report deployment profiles as unsupported', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-environment-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedEnvironment</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -29,7 +30,7 @@ test('standalone environment routes edit local overrides and report deployment p
   }
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root, port: 0, watch: false,
     stateFile: path.join(root, 'state.json'), dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf };
   const variable = (name, method, body) => fetch(`${sim.url}/_sim/api/environment/variables/${name}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
 

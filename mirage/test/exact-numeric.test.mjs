@@ -13,6 +13,7 @@ import {dispatchSdkCall,prepareClrRuntime,recordToSdkEntity} from '../lib/plugin
 import {pluginCatalogue,runPluginPhase} from '../lib/exported-plugins.mjs';
 import {resolveFlowValue,executeFlowDefinition} from '../lib/flow-runtime.mjs';
 import {parseExactJson,stringifyExactJson,exactNumeric,compareNumeric,roundNumeric,averageNumeric} from '../lib/exact-numeric.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 const id='20000000-0000-0000-0000-000000000001',user='10000000-0000-0000-0000-000000000001';
 const fields={precisionrowid:{dataverseType:'uniqueidentifier'},counter:{dataverseType:'bigint',minValue:'-9223372036854775808',maxValue:'9223372036854775807'},quantity:{dataverseType:'decimal',precision:10,minValue:'-100000000000',maxValue:'100000000000'},price:{dataverseType:'money',precision:4,minValue:'-100000000000',maxValue:'100000000000'}};
 const initial={version:1,mappings:{widget:{entitySet:'widgets',idColumn:'widgetid'},precisionrow:{entitySet:'precisionrows',idColumn:'precisionrowid',schemaComplete:true,fields}},tables:{widget:[],precisionrow:[]},plugins:[],settings:{permissionMode:'permissive'}};
@@ -72,10 +73,10 @@ test('Typed SDK numeric columns survive persisted reload, exact bounds, OData an
 });
 
 test('Loopback API reads and writes numeric JSON literals without rounding their digits or quoting them',async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-exact-http-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-exact-http-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
  await fs.writeFile(path.join(root,'website.yml'),'adx_websiteid: invented-precision\nadx_name: Precision\n');
  await fs.writeFile(path.join(root,'sitesetting.yml'),"- adx_name: Webapi/precisionrow/enabled\n  adx_value: 'true'\n- adx_name: Webapi/precisionrow/fields\n  adx_value: 'precisionrowid,counter,quantity,price'\n");
- const app=await createSimulator({sourceDir:root,watch:false,initial:{...initial,simulator:{mode:'local',pageMode:'local',identityScope:'configured',identity:{id:'precision-persona',roles:[]},live:{},endpoints:[]}}});t.after(()=>app.close());
+ const app=await createSimulator({sourceDir:root,watch:false,initial:{...initial,simulator:{mode:'local',pageMode:'local',identityScope:'configured',identity:{id:'precision-persona',roles:[]},live:{},endpoints:[]}}});ownedFixture(t).add(()=>app.close());
  const response=await fetch(app.url+'/_api/precisionrows',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf,Prefer:'return=representation'},body:'{"precisionrowid":"'+id+'","counter":9223372036854775807,"quantity":99999999999.1234567891,"price":99999999999.1234}'});
  const body=await response.text();assert.equal(response.status,201,body);assert.match(body,/"counter":9223372036854775807/);assert.match(body,/"quantity":99999999999\.1234567891/);assert.match(body,/"price":99999999999\.1234/);assert.doesNotMatch(body,/DataverseNumeric/);
  const read=await fetch(app.url+'/_api/precisionrows('+id+')?$select=counter,quantity,price');assert.equal(read.status,200);assert.match(await read.text(),/"counter":9223372036854775807/);

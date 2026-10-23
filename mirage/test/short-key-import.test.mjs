@@ -11,6 +11,7 @@ import { buildSiteTables } from "../lib/site-tables.mjs";
 import { loadProjectConfig, bootstrapProject } from "../lib/project-config.mjs";
 import { serverLogicName } from "../lib/server-logic.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 // The short-key .powerpages-site dialect imports like any other export (ecosystem review
 // docs/runtime-evidence.md, X1): the synthetic code site
@@ -125,7 +126,7 @@ test("server logic paths are recognised by name", () => {
 
 test("serve treats a code site like any export, and discovered server logic enforces roles and verification before simulation", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-code-site-serve-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = [];
   const liveBridge = {
     origin: "https://portal.example.test",
@@ -138,7 +139,7 @@ test("serve treats a code site like any export, and discovered server logic enfo
     },
   };
   const app = await createSimulator({ sourceDir: PROJECT, stateFile: path.join(dir, "state.json"), port: 0, watch: false, requirePortalSource: true, liveBridge });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const home = await fetch(app.url + "/");
   assert.equal(home.status, 200);
   const html = await home.text();
@@ -220,9 +221,9 @@ test("cloud flows import with their trigger, flow and roles; source operations d
   const portal = await importPortal(SITE);
   assert.deepEqual(portal.cloudFlows.map((flow) => [flow.name, flow.path, flow.processId, flow.roleIds]), [["Request Callback", `/_api/cloudflow/v1.0/trigger/${g(82)}`, g(82), [ID.roleAuth]]]);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-cloud-flow-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const app = await createSimulator({ sourceDir: PROJECT, stateFile: path.join(dir, "state.json"), port: 0, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const token = /value="([^"]+)"/.exec(await (await fetch(app.url + "/_layout/tokenhtml")).text())[1];
   const trigger = () => fetch(`${app.url}/_api/cloudflow/v1.0/trigger/${g(82)}`, { method: "POST", headers: { "content-type": "application/json", __requestverificationtoken: token }, body: JSON.stringify({ eventData: "{}" }) });
   const unsupported = await trigger();

@@ -1649,7 +1649,7 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
     }
   }
   const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle, context.compat) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
-  const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
+  const placeholder = equivalent.placeholder ?? (equivalent.bundle && (!equivalent.bundle.local.length || equivalent.bundle.partial) ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
   // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
   // The platform's /xrm-adx/samples/ images are static files too (live map list loader image).
@@ -1667,7 +1667,7 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers["cache-control"] = "public,max-age=604800";
   if (/^\/areas\/entitylist\/tmpls\//.test(key)) Object.assign(headers, { "cache-control": "no-cache, no-store, must-revalidate", expires: "-1", pragma: "no-cache" });
   const unchanged = Boolean(kind && kind !== "resource-manager" && notModified(req.headers, headers));
-  res.writeHead(unchanged ? 304 : 200, { ...headers, "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
+  res.writeHead(unchanged ? 304 : 200, { ...headers, "x-sim-resource-provider": placeholder?.partial ? "local-platform-partial" : placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
   res.end(req.method === "HEAD" || unchanged ? undefined : body);
   return true;
 }
@@ -1734,11 +1734,13 @@ function reportPlaceholder(context, placeholder, pathname) {
   if (seen.has(placeholder.id)) return;
   seen.add(placeholder.id);
   record({
-    code: "PLATFORM_BUNDLE_PLACEHOLDER",
+    code: placeholder.partial ? "PLATFORM_BUNDLE_PARTIAL_FALLBACK" : "PLATFORM_BUNDLE_PLACEHOLDER",
     severity: "info",
     path: pathname,
     bundle: placeholder.id,
-    message: `${placeholder.reason} No captured copy exists, so an empty local placeholder is served at the platform path.`,
+    message: placeholder.partial
+      ? `${placeholder.reason} No captured copy exists; a limited structural fallback is served, and full platform visual coverage is unqualified.`
+      : `${placeholder.reason} No captured copy exists, so an empty local placeholder is served at the platform path.`,
   });
 }
 

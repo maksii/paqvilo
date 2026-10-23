@@ -13,6 +13,7 @@ import { signInHeaders } from '../testing.mjs';
 import { renderComponent } from '../lib/platform.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { submitPortalForm } from '../lib/form-service.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = '77777777-7777-4777-8777-777777777777', MEMBER = '77777777-7777-4777-8777-777777777701';
 const ITEM = '77777777-7777-4777-8777-777777777781', PARENT = '77777777-7777-4777-8777-777777777782';
@@ -54,13 +55,13 @@ const initial = () => ({
 
 async function site(t, state) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-form-read-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(state))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false, initial: initial() });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   // One portal request prepares the reading principal (application user or mapped user).
   assert.equal((await fetch(sim.url + '/', { headers: signInHeaders(sim, 'alex') })).status, 200);
   return sim;

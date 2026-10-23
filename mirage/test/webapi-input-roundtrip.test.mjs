@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
 import { parseDateValue } from "../lib/dataverse-values.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const BASE_ID = "00000000-0000-0000-0000-000000000001";
 const COLLECTION = "/_api/probeentries";
@@ -25,7 +26,7 @@ const literal = (value) => `'${value.replace(/'/g, "''")}'`;
 
 async function start(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-input-roundtrip-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: probe-site\nadx_name: Input probe\n");
   await fs.writeFile(path.join(directory, "sitesetting.yml"), [
     "- adx_name: Webapi/probeentry/enabled\n  adx_value: 'true'",
@@ -65,7 +66,7 @@ async function start(t) {
       simulator: { mode: "local", pageMode: "local", identityScope: "configured", identity: { id: "probe-persona", roles: [] }, live: {}, endpoints: [] },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const call = async (route, { method = "GET", body, rawBody, token = app.state().csrf } = {}) => {
     const response = await fetch(app.url + route, {
       method,

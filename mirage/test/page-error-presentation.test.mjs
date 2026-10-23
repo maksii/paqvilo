@@ -8,6 +8,7 @@ import { parse } from "parse5";
 import { observedPageErrorResponse } from "../lib/page-error-presentation.mjs";
 import { observedConfig } from "../lib/project-config.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const observed = { pageErrorPresentation: "generic-error", evidence: "invented-loopback/error-structure.json" };
 const failure = { status: 500, code: "PAGE_QUERY_REQUEST_VALIDATION", message: "invented diagnostic detail" };
@@ -77,7 +78,7 @@ test("loopback HTTP preserves the selected status, media type and structure with
 
 test("Mirage leaves ordinary pages and unrelated route errors unchanged in the selected mode", async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-page-presentation-"));
-  t.after(async () => {
+  ownedFixture(t).remove(async () => {
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
     await fs.rm(directory, { recursive: true, force: true });
   });
@@ -95,7 +96,7 @@ test("Mirage leaves ordinary pages and unrelated route errors unchanged in the s
   }
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, "state.json"), port: 0, watch: false,
     observed: { ...observed, siteMarkerRedirect: "null-reference" } });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const page = await fetch(app.url + "/");
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Ordinary page/);

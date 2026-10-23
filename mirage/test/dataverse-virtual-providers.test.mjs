@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, validateVirtualTableProviders } from "../lib/dataverse-virtual-providers.mjs";
 import { contractModuleFixture } from "./contract-module-fixture.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const ROW = "55555555-5555-4555-8555-555555555555";
 const NEW = "55555555-5555-4555-8555-555555555556";
@@ -163,9 +164,9 @@ test("a PATCH another write hook refuses never calls provider.update (host exten
   const CLIENT = "99999999-9999-4999-8999-999999999999";
   const KEY = `__virtualOrder${process.pid}${Math.random().toString(36).slice(2)}`;
   const calls = (globalThis[KEY] = []);
-  t.after(() => { delete globalThis[KEY]; });
+  ownedFixture(t).add(() => { delete globalThis[KEY]; });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "virtual-order-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const attribute = (name, type) => `<attribute PhysicalName="${name}"><Name>${name}</Name><Type>${type}</Type></attribute>`;
   const files = {
     "solution/Other/Solution.xml": "<ImportExportXml><SolutionManifest><UniqueName>InventedVirtual</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>",
@@ -188,7 +189,7 @@ export default { id: "invented-virtual", name: "Invented virtual", description: 
   const sim = await createSimulator({ runtime: { kind: "dataverse-api" }, solutionRoots: [path.join(root, "solution")], projectRoot: root,
     dataPacks: [{ module: path.join(root, "pack.mjs") }], port: 0, watch: false, simulation: { level: "dry-run" },
     dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const registered = await fetch(sim.url + "/_sim/api/dataverse/applications", { method: "POST",
     headers: { "content-type": "application/json", "x-sim-csrf": sim.state().csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: "Invented client", roles: ["System Administrator"] }) });

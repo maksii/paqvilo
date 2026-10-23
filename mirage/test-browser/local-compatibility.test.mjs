@@ -6,10 +6,11 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test("clean source-only forms use local date and rich-text compatibility assets with explicit mode", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "local-compatibility-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     "website.yml": "adx_websiteid: site\nadx_name: Test",
     "web-pages/home/Home.webpage.yml":
@@ -61,9 +62,9 @@ test("clean source-only forms use local date and rich-text compatibility assets 
       },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage(), errors = [], assets = [];
   page.on("requestfailed", (request) => errors.push(`FAILED ${request.url()} ${request.failure()?.errorText}`));
   const probe = await page.request.get(`${app.url}/__sim-static/vendor/jquery.min.js`);
@@ -189,4 +190,3 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   );
   assert.ok(errors.length === 0, errors.join("\n") + `\n${JSON.stringify({ assets })}`);
 });
-

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { AssetCache } from "../lib/asset-cache.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const origin = "https://portal.example.test";
 
@@ -85,7 +86,7 @@ function crmWoffFixture() {
 
 test("CRM MDL2 public font fallback is source-bound, glyph-checked, and reusable offline", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-crm-font-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const bytes = crmWoffFixture(), requests = [];
   const cache = await new AssetCache({
     directory,
@@ -137,7 +138,7 @@ test("CRM MDL2 public font fallback is source-bound, glyph-checked, and reusable
     origin,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.equal(app.state().config.live.origin, origin);
   const reloaded = await new AssetCache({ directory: path.join(directory, "assets"), origin: app.state().config.live.origin }).init();
   assert.equal((await reloaded.get("/uclient/resources/styles/CRMMDL2.woff"))?.status, 200);

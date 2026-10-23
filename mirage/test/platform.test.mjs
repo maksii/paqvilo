@@ -13,6 +13,7 @@ import {
   readLookupView,
 } from "../lib/platform.mjs";
 import { createWebFormSessions } from "../lib/form-service.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('exported advanced redirect steps retain an omitted record query name when rendered directly', async () => {
   const id = 'd6300000-0000-4000-8000-000000000001';
@@ -1107,7 +1108,7 @@ test("basic forms without exported form XML render an approximated native sectio
 test("FormXml section labels become fieldset aria-labels; legends follow showlabel", async (t) => {
   const { createSimulator } = await import("../server.mjs");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "formxml-sections-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, "portal"), solution = path.join(root, "solution");
   const files = {
     [path.join(portal, "website.yml")]: "adx_websiteid: site\nadx_name: Test",
@@ -1135,7 +1136,7 @@ test("FormXml section labels become fieldset aria-labels; legends follow showlab
     watch: false,
     initial: { mappings: { contact: { entitySet: "contacts", idColumn: "contactid" } }, tables: { contact: [] }, permissions: [], settings: { permissionMode: "permissive" }, simulator: { identity: { id: "editor" } } },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const html = await (await fetch(app.url + "/")).text();
   // A labelled section keeps its FormXml label (languagecode 1033) as aria-label and legend.
   assert.match(html, /<fieldset aria-label="Contact details"><legend class="section-title"><h3>Contact details<\/h3><\/legend><table role="presentation" data-name="details" class="section">/);

@@ -4,9 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createSimulator} from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('runtime imports portal-referenced standalone FormXml without an Entity.xml table definition',async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'form-only-metadata-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'form-only-metadata-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
  const files={
   'portal/website.yml':'adx_websiteid: 77777777-7777-4777-8777-777777777791\nadx_name: Invented standalone form',
   'portal/Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: page',
@@ -21,7 +22,7 @@ test('runtime imports portal-referenced standalone FormXml without an Entity.xml
   'solution/Entities/exa_partial/FormXml/main/standalone.xml':'<systemform><formid>77777777-7777-4777-8777-777777777792</formid><type>2</type><form><tabs><tab name="general"><columns><column><sections><section name="authored"><rows><row><cell><labels><label languagecode="1033" description="Authored standalone field"/></labels><control id="exa_label" datafieldname="exa_label" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Exported standalone" languagecode="1033"/></LocalizedNames></systemform>',
  };
  for(const [name,body]of Object.entries(files)){const file=path.join(root,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,body);}
- const sim=await createSimulator({sourceDir:path.join(root,'portal'),solutionRoots:[path.join(root,'solution')],stateFile:path.join(root,'state.json'),initial:{mappings:{exa_partial:{entitySet:'exa_partials',idColumn:'exa_partialid',nameColumn:'exa_label'}},tables:{exa_partial:[]},settings:{permissionMode:'permissive'}},watch:false,port:0});t.after(()=>sim.close());
+ const sim=await createSimulator({sourceDir:path.join(root,'portal'),solutionRoots:[path.join(root,'solution')],stateFile:path.join(root,'state.json'),initial:{mappings:{exa_partial:{entitySet:'exa_partials',idColumn:'exa_partialid',nameColumn:'exa_label'}},tables:{exa_partial:[]},settings:{permissionMode:'permissive'}},watch:false,port:0});ownedFixture(t).add(()=>sim.close());
  const response=await fetch(sim.url),html=await response.text();assert.equal(response.status,200);
  const diagnostics=(await(await fetch(sim.url+'/_sim/api/diagnostics')).json()).diagnostics;
  assert.ok(html.includes('Authored standalone field'),'the authored standalone field label is rendered');assert.ok(html.includes('id="exa_label"'),'the authored field is rendered');

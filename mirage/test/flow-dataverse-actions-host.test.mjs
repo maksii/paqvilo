@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const UNBOUND = '77777777-7777-4777-8777-0000000000d1', BOUND = '77777777-7777-4777-8777-0000000000d2';
 const USER = '77777777-7777-4777-8777-0000000000d3', WIDGET = '77777777-7777-4777-8777-0000000000d4', NOBODY = '77777777-7777-4777-8777-0000000000d5';
@@ -30,7 +31,7 @@ const files = {
 
 async function host(t, profile) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-dv-actions-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (dir, entries) => { for (const [name, text] of Object.entries(entries)) { await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true }); await fs.writeFile(path.join(dir, name), text); } };
   await write(path.join(root, 'solution'), files);
   await write(path.join(root, 'portal'), { 'website.yml': 'adx_websiteid: 77777777-7777-4777-8777-0000000000d6\nadx_name: Invented actions' });
@@ -42,7 +43,7 @@ async function host(t, profile) {
     initial: { version: 1, permissions: [], plugins: [], settings: { permissionMode: 'enforce' },
       tables: { x_widget: [{ x_widgetid: WIDGET, x_name: 'Invented widget' }], systemuser: [{ systemuserid: USER, fullname: 'Invented flow owner', domainname: 'owner@example.test', isdisabled: false }] },
       mappings: { x_widget: { entitySet: 'x_widgets', idColumn: 'x_widgetid', fields: { x_name: { type: 'string' } } } } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const call = async (method, suffix, payload) => {
     const response = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify(payload) });
     return { status: response.status, body: await response.json() };

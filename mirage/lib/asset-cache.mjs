@@ -18,6 +18,8 @@ const platformCdn = "https://content.powerapps.com";
 const officeFontPrefix = "/__sim-static/office-fonts/";
 const crmFontSource = "/resource/powerappsportal/fonts/CRMMDL2.woff";
 const crmFontTarget = "/uclient/resources/styles/CRMMDL2.woff";
+const crmPlatformFontTarget = "/resource/powerappsportal/fonts/CRMMDL2.woff2";
+const crmFontTargets = new Set([crmFontTarget, crmPlatformFontTarget]);
 export function officeFontPath(value) {
   const url = new URL(value);
   if (
@@ -333,7 +335,7 @@ function crmFontMetadata(bytes, requiredCodepoints) {
     throw fail("Microsoft CDN WOFF name table is not the expected CRM MDL2 asset font.", 502, "ASSET_FONT_FAMILY");
   if (requiredCodepoints.length && !cmapCovers(tables.get("cmap"), requiredCodepoints))
     throw fail("Microsoft CDN CRM font does not cover every glyph codepoint referenced by captured CSS.", 502, "ASSET_FONT_GLYPH_COVERAGE");
-  return { cssFamily: "CRMMDL2", fontFamily: names.family, postScriptName: names.postScriptName, requiredCodepoints };
+  return { cssFamily: "CRMMDL2", fontFamily: names.family, postScriptName: names.postScriptName, sourceFormat: "woff", requiredCodepoints };
 }
 
 /** Cache same-origin static bytes only; authentication stays in the browser. */
@@ -357,9 +359,12 @@ export class AssetCache {
       for (const item of value.assets) {
         const checked = assetPath(item.path);
         const origin = safeOrigin(item.origin);
+        // Alternate-format aliases are finite and must also pass the strict
+        // provenance checks below. Ordinary .woff2 metadata stays unchanged.
+        const contentExtension = item.fallback !== undefined && crmFontTargets.has(item.path) ? ".woff" : checked.extension;
         if (
           !/^[\da-f]{64}$/.test(item.sha256) ||
-          !types[checked.extension]?.includes(mediaType(item.contentType)) ||
+          !types[contentExtension]?.includes(mediaType(item.contentType)) ||
           !Number.isSafeInteger(item.bytes) ||
           item.bytes < 0
         )
@@ -369,7 +374,7 @@ export class AssetCache {
         if (item.fallback !== undefined) {
           const value = item.fallback;
           if (
-            item.path !== crmFontTarget ||
+            !crmFontTargets.has(item.path) ||
             item.finalPath !== crmFontSource ||
             item.sourceOrigin !== platformCdn ||
             value?.kind !== "microsoft-public-cdn-font" ||
@@ -377,6 +382,8 @@ export class AssetCache {
             value?.cssFamily !== "CRMMDL2" ||
             value?.fontFamily !== "CRM MDL2 Assets" ||
             value?.postScriptName !== "CRMMDL2Assets" ||
+            (value?.sourceFormat !== undefined && value.sourceFormat !== "woff") ||
+            (item.path === crmPlatformFontTarget && value.sourceFormat !== "woff") ||
             !Array.isArray(value.requiredCodepoints) ||
             value.requiredCodepoints.length > 256 ||
             value.requiredCodepoints.some(
@@ -391,6 +398,7 @@ export class AssetCache {
             cssFamily: value.cssFamily,
             fontFamily: value.fontFamily,
             postScriptName: value.postScriptName,
+            sourceFormat: "woff",
             requiredCodepoints: [...value.requiredCodepoints],
           };
         }
@@ -809,7 +817,7 @@ export class AssetCache {
     { sourcePath, targetPath, requiredCodepoints = [] } = {},
     { portalOrigin = this.origin } = {},
   ) {
-    if (sourcePath !== crmFontSource || targetPath !== crmFontTarget)
+    if (sourcePath !== crmFontSource || !crmFontTargets.has(targetPath))
       throw fail("Only the observed CRM MDL2 native font path can use a public fallback.", 400, "ASSET_FONT_ALIAS");
     if (
       !Array.isArray(requiredCodepoints) ||
@@ -819,7 +827,13 @@ export class AssetCache {
       )
     )
       throw fail("CRM font glyph requirements must be bounded Unicode codepoints.", 400, "ASSET_FONT_GLYPH_COVERAGE");
-    const origin = safeOrigin(portalOrigin), report = await this.capturePublic(
+    const origin = safeOrigin(portalOrigin);
+    const current = await this.get(targetPath, { origin });
+    if (current && !current.headers["x-sim-asset-fallback"]) {
+      // An explicitly captured native target always wins over an alternate-format alias.
+      return { captured: [], failures: [], retained: [structuredClone(this.entries[hash(origin + targetPath)])] };
+    }
+    const report = await this.capturePublic(
       [sourcePath],
       { portalOrigin: origin, recursive: false },
     );
@@ -840,6 +854,13 @@ export class AssetCache {
         sourceOrigin: platformCdn,
         fallback,
       };
+      // A native capture may finish while the source bytes are being read.
+      // Recheck immediately before committing an alias so it cannot replace it.
+      const native = this.entries[hash(origin + targetPath)];
+      if (native && !native.fallback) {
+        await this.get(targetPath, { origin });
+        return { captured: report.captured, failures: report.failures, retained: [structuredClone(native)] };
+      }
       this.entries[hash(origin + targetPath)] = alias;
       await this.save();
       report.captured.push(structuredClone(alias));
@@ -892,9 +913,10 @@ export class AssetCache {
         500,
         "ASSET_INTEGRITY",
       );
-    verifyAsset(bytes, entry.contentType, requested.extension, {
+    verifyAsset(bytes, entry.contentType, entry.fallback ? ".woff" : requested.extension, {
       observedEmpty: entry.observedEmpty === true,
     });
+    if (entry.fallback) crmFontMetadata(bytes, entry.fallback.requiredCodepoints);
     return {
       status: 200,
       headers: {
@@ -902,7 +924,7 @@ export class AssetCache {
         "cache-control": "no-cache",
         "x-sim-asset-sha256": entry.sha256,
         ...(entry.fallback
-          ? { "x-sim-asset-fallback": entry.fallback.kind }
+          ? { "x-sim-asset-fallback": entry.fallback.kind, "x-sim-asset-source-format": entry.fallback.sourceFormat ?? "woff" }
           : {}),
       },
       body: bytes,

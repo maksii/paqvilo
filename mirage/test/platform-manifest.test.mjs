@@ -17,6 +17,7 @@ import {
 } from "../lib/platform-manifest.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 import { injectRuntime } from "../lib/platform.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const CONTACT = "c0000000-0000-4000-8000-000000000011";
@@ -126,7 +127,7 @@ test("AXD scripts load inside the form on form pages and nowhere else; captured 
 
 async function shellFixture(t, { shellProfile, settings = [], observed = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-shell-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Shell\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
     "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: plain",
@@ -173,7 +174,7 @@ async function shellFixture(t, { shellProfile, settings = [], observed = null } 
     },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, ...(observed ? { observed } : {}) });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
   return { app, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
 }
@@ -268,7 +269,7 @@ test("local platform files are dated by their file and answer conditional reques
 
 test("an exported web file at a native platform path wins over the local equivalent", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-webfile-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, "web-files"), { recursive: true });
   await fs.writeFile(path.join(dir, "website.yml"), `adx_websiteid: ${SITE}\nadx_name: Files`);
   await fs.writeFile(path.join(dir, "Home.webpage.yml"), "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true");
@@ -276,7 +277,7 @@ test("an exported web file at a native platform path wins over the local equival
   await fs.writeFile(path.join(dir, "web-files", "jquery.blockUI.js.webfile.yml"), "adx_webfileid: blockui\nadx_name: jquery.blockUI.js\nadx_partialurl: jquery.blockUI.js\nadx_parentpageid: jsfolder\nfilename: jquery.blockUI.js\nmimetype: application/javascript");
   await fs.writeFile(path.join(dir, "web-files", "jquery.blockUI.js"), "window.exportedBlockUI = true;");
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial: { version: 1, simulator: { mode: "local", pageMode: "local", identity: { roles: [] }, live: { origin: null }, endpoints: [] } }, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const response = await fetch(`${app.url}/js/jquery.blockUI.js`);
   assert.equal(response.status, 200);
   assert.equal((await response.text()).split("\n//# sourceMappingURL=")[0], "window.exportedBlockUI = true;");
@@ -285,7 +286,7 @@ test("an exported web file at a native platform path wins over the local equival
 
 test("legacy ASPX page templates render their WebForms layout with the page's attached form and list", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-rewrite-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Rewrite\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
     "Header.webtemplate.yml": "adx_webtemplateid: header\nadx_name: Header",
@@ -323,7 +324,7 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
     },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
   const body = async (pathname) => bodyOf(await (await fetch(app.url + pathname, { headers: session })).text());
   // WebForm.aspx (WebForms.master): content_form, page heading, page copy, default
@@ -473,7 +474,7 @@ test("pages load the platform bundles in live order per Bootstrap build; bundle 
       const response = await get(pathname);
       assert.equal(response.status, 200, pathname);
       assert.equal(response.headers.get("content-type"), bundle.kind === "stylesheet" ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8", pathname);
-      assert.equal(response.headers.get("x-sim-resource-provider"), bundle.local.length ? "local-platform-equivalent" : "local-platform-placeholder", pathname);
+      assert.equal(response.headers.get("x-sim-resource-provider"), bundle.partial ? "local-platform-partial" : bundle.local.length ? "local-platform-equivalent" : "local-platform-placeholder", pathname);
       const body = await response.text();
       assert.equal(body.length > 0, bundle.local.length > 0, pathname);
       for (const marker of markers[bundle.id] ?? []) assert.match(body, marker, `${bundle.id} ${marker}`);
@@ -668,7 +669,7 @@ test("the captcha challenge image and audio answer as the platform's resource ha
 
 test("an HTML web resource is served as a page; other web resources keep their private caching", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-webresource-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portal = path.join(dir, "portal"), solution = path.join(dir, "solution");
   await fs.mkdir(portal, { recursive: true });
   await fs.writeFile(path.join(portal, "website.yml"), "adx_websiteid: site\nadx_name: Resources");
@@ -676,7 +677,7 @@ test("an HTML web resource is served as a page; other web resources keep their p
   await fs.writeFile(path.join(solution, "WebResources", "banner.html"), "<!DOCTYPE html><html><body><p>Banner</p></body></html>");
   await fs.writeFile(path.join(solution, "WebResources", "icon.svg"), "<svg/>");
   const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state.json"), watch: false, solutionRoots: [solution] });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const html = await fetch(`${app.url}/_webresource/banner.html`);
   assert.equal(html.headers.get("content-type"), "text/html; charset=utf-8");
   assert.equal(html.headers.get("cache-control"), "no-cache, no-store, must-revalidate");

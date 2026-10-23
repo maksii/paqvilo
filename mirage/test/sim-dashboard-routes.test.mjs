@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { createDashboardRoutes, DASHBOARD_STATUSES, activityFacts } from '../lib/sim-dashboard-routes.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const CLIENT = '77777777-7777-4777-8777-777777777781';
 const ENDPOINT = '77777777-7777-4777-8777-777777777782';
@@ -25,7 +26,7 @@ async function json(response, status = 200) {
 
 async function standalone(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedDashboard</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -39,7 +40,7 @@ async function standalone(t) {
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root, port: 0, watch: false,
     stateFile: path.join(root, 'state.json'), dataverse: { enabled: true, tls: false, tds: { enabled: false } },
     connections: { 'x-invented-connection': { provider: 'fixture', settings: { url: `https://api.example.test/x?code=${FUNCTION_KEY}` } } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 
@@ -152,14 +153,14 @@ const portalFiles = {
 
 test('Power Pages dashboard adds the portal listener, admin hosts and the portal request ring', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-pp-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false,
     initial: { version: 1, mappings: {}, tables: {}, permissions: [], simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.equal((await fetch(`${sim.url}/`)).status, 200);
   const body = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assertShape(body);

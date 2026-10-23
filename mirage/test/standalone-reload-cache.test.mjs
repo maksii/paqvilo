@@ -5,12 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const entity = (name, label) => `<Entity><Name>${name}</Name><EntityInfo><entity Name="${name}"><LocalizedNames><LocalizedName description="${label}" languagecode="1033"/></LocalizedNames><EntitySetName>${name}s</EntitySetName><PrimaryIdAttribute>${name}id</PrimaryIdAttribute><PrimaryNameAttribute>${name}_name</PrimaryNameAttribute><attributes><attribute PhysicalName="${name}id"><Name>${name}id</Name><Type>primarykey</Type></attribute><attribute PhysicalName="${name}_name"><Name>${name}_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>`;
 
 test('a source save then reload refreshes the standalone Solution with the cache, parsing only the changed file', { timeout: 30000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-standalone-reload-cache-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
     'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedReloadCache</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -28,7 +29,7 @@ test('a source save then reload refreshes the standalone Solution with the cache
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root,
     stateFile: path.join(root, 'state', 'state.json'), port: 0, watch: false,
     dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.ok((await fs.stat(cacheFile)).size > 0, 'startup writes the solution cache');
 
   // Count the parses that were not answered by the cache, from the first reload onward.

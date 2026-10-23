@@ -8,6 +8,7 @@ import {likeMatcher} from '../lib/dataverse-values.mjs';
 import {parseODataExpression} from '../lib/odata-query.mjs';
 import {webApiErrorResponse} from '../lib/webapi-handler.mjs';
 import {DataError} from '../lib/data.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const G = n => `00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const observed = {
@@ -42,14 +43,14 @@ test('SQL bracket patterns and OData quoted values preserve the distinct wire gr
 
 test('observed API errors retain rejection and atomicity without contacting bound origins', async t => {
   const source = await fs.mkdtemp(path.join(os.tmpdir(),'mirage-observed-input-'));
-  t.after(() => fs.rm(source,{recursive:true,force:true}));
+  ownedFixture(t).remove(() => fs.rm(source,{recursive:true,force:true}));
   await fs.writeFile(path.join(source,'website.yml'),'adx_websiteid: invented-observation\nadx_name: Input observation\n');
   await fs.writeFile(path.join(source,'sitesetting.yml'),'- adx_name: Webapi/probe/enabled\n  adx_value: "true"\n- adx_name: Webapi/probe/fields\n  adx_value: "probeid,title,category,parentid"\n- adx_name: Webapi/error/innererror\n  adx_value: "true"\n');
   const app = await createSimulator({sourceDir:source,watch:false,observed,initial:{
     mappings:{probe:{entitySet:'probes',idColumn:'probeid',schemaComplete:true,alternateKeys:[{attributes:['title']}],fields:{probeid:{dataverseType:'uniqueidentifier',validForUpdate:false},title:{dataverseType:'nvarchar',maxLength:20},category:{dataverseType:'picklist',options:[{value:1,label:'One'}]},parentid:{dataverseType:'lookup',targets:['probe']}},relationships:{parentid:{entity:'probe',from:'parentid',to:'probeid',many:false}}}},
     tables:{probe:[{probeid:G(1),title:'Original',versionnumber:1},{probeid:G(3),title:'Lookup target',versionnumber:1}]},settings:{permissionMode:'permissive'},
   }});
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const baseline = app.store.snapshot().tables;
   const route = '/_api/probes('+G(1)+')';
   async function send(body,{token=app.state().csrf,raw}={}) {

@@ -10,6 +10,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "77777777-7777-4777-8777-777777777711";
 const CASE = "77777777-7777-4777-8777-777777777712";
@@ -19,7 +20,7 @@ const entity = (name) => `<Entity><Name>${name}</Name><EntityInfo><entity Name="
 
 test("the document grid creates, opens, fills and deletes subfolders", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "portal-documents-folders-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     "solution/Other/Solution.xml": "<ImportExportXml><SolutionManifest><UniqueName>InventedDocs</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>",
     "solution/Entities/x_case/Entity.xml": entity("x_case"),
@@ -51,9 +52,9 @@ test("the document grid creates, opens, fills and deletes subfolders", async (t)
     },
   };
   const app = await createSimulator({ sourceDir: path.join(root, "portal"), solutionRoots: [path.join(root, "solution")], stateFile: path.join(root, "state.json"), port: 0, watch: false, initial });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();

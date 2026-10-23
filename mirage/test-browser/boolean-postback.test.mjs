@@ -7,10 +7,11 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('native checkbox saves typed values visible to Web API, FetchXML and Liquid', async t => {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'checkbox-postback-'));
-  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
   const files={
     'website.yml':'adx_websiteid: checkbox-site\nadx_name: Checkbox fixture',
     'Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /\nadx_pagetemplateid: template',
@@ -23,8 +24,8 @@ test('native checkbox saves typed values visible to Web API, FetchXML and Liquid
   for(const [name,content] of Object.entries(files))await fs.writeFile(path.join(root,name),content);
   const id='10000000-0000-4000-8000-000000000001',fields=[{name:'enabled',type:'boolean'},{name:'locked',type:'boolean',readOnly:true}];
   const app=await createSimulator({sourceDir:root,port:0,watch:false,initial:{mappings:{sample:{entitySet:'samples',idColumn:'sampleid',fields:Object.fromEntries(fields.map(f=>[f.name,{type:'bit'}]))}},tables:{sample:[{sampleid:id,enabled:false,locked:true}]},permissions:[{entity:'sample',scope:'global',roles:['Editor'],operations:['read','update']}],settings:{permissionMode:'enforce'},simulator:{componentSchemas:{entry:{entity:'sample',fields}}}}});
-  t.after(()=>app.close());
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  ownedFixture(t).add(()=>app.close());
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));ownedFixture(t).add(()=>browser.close());
   const context=await browser.newContext();await signInContext(context,app,'editor',{roles:['Editor']});const page=await context.newPage(),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
   const check=async expected=>{

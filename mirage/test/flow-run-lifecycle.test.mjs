@@ -14,6 +14,7 @@ import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns, flowRunsOf } from '../lib/flow-runs.mjs';
 import { runTrackedFlow } from '../lib/flow-runtime.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const FLOW = '77777777-7777-4777-8777-0000000000f1';
 const CHILD = '77777777-7777-4777-8777-0000000000f2';
@@ -233,7 +234,7 @@ test('without a run store a waiting action keeps answering 501 FlowSuspendNotWir
 
 async function standalone(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const definition = { properties: { definition: {
     triggers: { row: { type: 'OpenApiConnectionWebhook', inputs: { host: { apiId: '/apis/shared_commondataserviceforapps', operationId: 'SubscribeWebhookTrigger' },
@@ -253,7 +254,7 @@ async function standalone(t) {
   const pack = { id: 'invented-flow-runs', name: 'Invented', description: 'Invented flow identity', matches: () => true, presets: () => ({}), flowIdentities: { [FLOW]: profile } };
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root, packs: [pack],
     port: 0, watch: false, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const json = async (response, status) => { const text = await response.text(); assert.equal(response.status, status, text); return text ? JSON.parse(text) : null; };
   const registration = await json(await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },

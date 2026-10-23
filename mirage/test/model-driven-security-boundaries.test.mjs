@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const guid = number => `${String(number).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const A = guid(1), B = guid(2), ROLE = guid(3), PERMISSION = guid(4), FIELDS = guid(5), APP = guid(6);
@@ -13,7 +14,7 @@ const field = (name, type = 'nvarchar', extra = '') => `<attribute PhysicalName=
 
 async function fixture(t, enabled = true, presets, unflaggedCore = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-staff-boundary-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const sourceDir = path.join(directory, 'portal'), solution = path.join(directory, 'solution');
   const files = {
     'portal/website.yml': `adx_websiteid: ${guid(10)}\nadx_name: Invented security portal`,
@@ -30,14 +31,14 @@ async function fixture(t, enabled = true, presets, unflaggedCore = false) {
   };
   for (const [name, content] of Object.entries(files)) { const file = path.join(directory, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); }
   const variable = `PAQVILO_STAFF_TEST_${randomUUID().replaceAll('-', '_').toUpperCase()}`;
-  process.env[variable] = 'invented-secret'; t.after(() => { delete process.env[variable]; });
+  process.env[variable] = 'invented-secret'; ownedFixture(t).add(() => { delete process.env[variable]; });
   const sim = await createSimulator({ sourceDir, solutionRoots: [solution], watch: false, dataverse: { enabled,
     applications: [{ appId: APP, displayName: 'Invented boundary client', secretEnvironmentVariable: variable, roles: ['System Administrator'] }],
     users: [{ objectId: STAFF_A, domainname: 'staff-a@example.test', fullname: 'Staff A', roles: ['Basic User'] }, { objectId: STAFF_B, domainname: 'staff-b@example.test', fullname: 'Staff B', roles: ['Basic User'] }] },
     initial: { ...(presets ? { presets } : {}), mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' },
       ...(unflaggedCore ? Object.fromEntries(['organization', 'systemuser', 'role', 'customapi'].map(name => [name, { entitySet: name === 'customapi' ? 'customapis' : `${name}s`, idColumn: `${name}id`, userConfigured: true, metadataSources: ['invented-configured-core'] }])) : {}) }, tables: { contact: [{ contactid: A, fullname: 'Contact A', statecode: 0 }, { contactid: B, fullname: 'Contact B', statecode: 0 }] },
       settings: { permissionMode: 'enforce' }, simulator: { mode: 'local', pageMode: 'local', permissionSource: 'exported', identity: { roles: [] }, contactRoles: [{ contactId: A, roleId: ROLE }, { contactId: B, roleId: ROLE }] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const request = (route, { method = 'GET', body, cookie, etag, bearer } = {}) => fetch(sim.url + route, { method,
     headers: { 'x-sim-csrf': sim.state().csrf, ...(body ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(etag ? { 'if-match': etag } : {}), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const json = async (response, expected = 200) => { const text = await response.text(); assert.equal(response.status, expected, text); return text ? JSON.parse(text) : null; };

@@ -12,6 +12,7 @@ import { portalDocumentAccess } from "../lib/permissions.mjs";
 import { createLocalDiskStorage } from "../lib/storage-local-disk.mjs";
 import { createStorageRouter, storageSettings } from "../lib/storage-provider.mjs";
 import { contractModuleFixture } from "./contract-module-fixture.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const CASE = "77777777-7777-4777-8777-777777777760";
 const SITE = "77777777-7777-4777-8777-777777777761";
@@ -29,9 +30,9 @@ async function documents(t, { permissions, settings = {}, withStorage = true } =
   let storage;
   if (withStorage) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "portal-documents-"));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const local = createLocalDiskStorage({ root });
-    t.after(() => local.close());
+    ownedFixture(t).add(() => local.close());
     storage = createStorageRouter({ config: storageSettings({}), providers: { local } });
   }
   const { api, store } = await contractModuleFixture(t, { mappings, tables, extension: EXTENSION, options: { storage } });
@@ -43,7 +44,7 @@ async function documents(t, { permissions, settings = {}, withStorage = true } =
     if (!(await service.handle(req, res, new URL(req.url, "http://127.0.0.1"), { identity, csrf: CSRF }))) { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}${PORTAL_DOCUMENTS_ROUTE}x_case/${CASE}`;
   const call = (method, suffix = "", body, headers = {}) => fetch(base + suffix, { method, body, headers: { ...(method === "GET" ? {} : { __RequestVerificationToken: CSRF }), ...headers } });
   return { call, store };

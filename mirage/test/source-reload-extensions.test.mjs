@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const CLASSIC = '77777777-7777-4777-8777-777777777771';
 const BASE = {
@@ -90,12 +91,12 @@ test('a failed reload leaves the previous registrations', async (t) => {
 
 test('the Power Pages host reload refreshes source modules too', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-pp-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(path.join(root, 'solution'), BASE);
   await write(path.join(root, 'portal'), { 'website.yml': 'adx_websiteid: fixture\nadx_name: Invented site', 'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true' });
   const sim = await createSimulator({ sourceDir: path.join(root, 'portal'), solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   await write(path.join(root, 'solution'), { 'customapis/x_Echo/customapi.xml': EXTRA['customapis/x_Echo/customapi.xml'] });
   await sim.reload();
   assert.deepEqual(seen(sim).customapi, ['x_Echo']);

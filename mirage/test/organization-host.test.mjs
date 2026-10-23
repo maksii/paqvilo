@@ -13,12 +13,13 @@ import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeOrganizationHost } from '../lib/organization-host.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const GUID = (n) => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
 
 test('a standalone runtime switch to clr prepares the CLR runtime and stores nothing when preparation fails', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedPlugins</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/Entities/fx_widget/Entity.xml': '<Entity><Name>fx_widget</Name><EntityInfo><entity Name="fx_widget"><EntitySetName>fx_widgets</EntitySetName><PrimaryIdAttribute>fx_widgetid</PrimaryIdAttribute><PrimaryNameAttribute>fx_title</PrimaryNameAttribute><attributes><attribute PhysicalName="fx_widgetid"><Name>fx_widgetid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="fx_title"><Name>fx_title</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
@@ -33,7 +34,7 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
   const pack = { id: 'invented-clr', name: 'Invented CLR', description: 'Invented', matches: () => true, presets: () => ({}), pluginRuntimes: { [pluginId(3)]: descriptor } };
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     packs: [pack], simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const key = `plugin-step:${pluginId(3)}`;
   const items = await (await fetch(`${sim.url}/_sim/api/operations`)).json();
   assert.equal(items.items.find((item) => item.key === key)?.clrAvailable, true, 'the step has its trusted descriptor');
@@ -84,14 +85,14 @@ test('the operation catalogue is memoised on an unchanged store revision and reb
 
 test('host clock and ids reach the store and the organization in the standalone host', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-clock-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(path.join(root, 'solution', 'Other', 'Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>InventedClock</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>');
   const start = Date.parse('2026-03-01T00:00:00.000Z');
   const clock = fixedClock(start), ids = sequentialIds();
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     clock, ids, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.equal(sim.store.clock, clock);
   assert.equal(sim.store.ids, ids);
   assert.equal(sim.organization.clock(), start);

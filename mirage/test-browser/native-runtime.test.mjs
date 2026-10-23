@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const require = createRequire(import.meta.url);
 const SITE = "6a2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c2d";
@@ -15,7 +16,7 @@ const ACCOUNTS = ["a1000000-0000-4000-8000-000000000001", "a1000000-0000-4000-80
 
 test("native client runtime: WebForms validators, jQuery grid events, paging and the lookup modal", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "native-runtime-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   // Synthetic fixture: the portal's own jQuery is a source web file; nothing leaves loopback.
   const jquery = await fs.readFile(path.join(path.dirname(require.resolve("jquery/package.json")), "dist", "jquery.min.js"));
   const files = {
@@ -68,9 +69,9 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
     },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   const errors = [], external = [];
   page.on("pageerror", (error) => errors.push(error.message));

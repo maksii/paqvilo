@@ -8,6 +8,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const require = createRequire(import.meta.url);
 const SITE = "7c2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c4e";
@@ -22,7 +23,7 @@ const account = (index, extra = {}) => ({ accountid: `a3000000-0000-4000-8000-00
 // The create privilege enables the create links (live: without it they render disabled).
 async function launch(t, { search = true, configured = true, operations = ["read", "create", "update", "delete"] } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bootstrap5-list-browser-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const jquery = await fs.readFile(path.join(path.dirname(require.resolve("jquery/package.json")), "dist", "jquery.min.js"));
   const settings = {
     ViewActions: [{ Type: "CrmEntityFormView-CreateAction", TargetType: 1, RedirectWebpageId: CREATE, ButtonLabel: [{ LCID: 1033, Value: "New account" }] }],
@@ -61,9 +62,9 @@ async function launch(t, { search = true, configured = true, operations = ["read
     },
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();

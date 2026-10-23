@@ -6,6 +6,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const SITE = "8b3c4d5e-2f30-4b6c-9d7e-8f9a0b1c2d3e";
 const ACCOUNTS = ["a2000000-0000-4000-8000-000000000001", "a2000000-0000-4000-8000-000000000002"];
@@ -14,7 +15,7 @@ const ACCOUNTS = ["a2000000-0000-4000-8000-000000000001", "a2000000-0000-4000-80
 // widgets from the platform's preform bundle. Nothing leaves loopback.
 test("platform bundle equivalents: the row action menu opens below its button, jQuery UI datepicker and tabs work", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-bundle-widgets-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const settings = JSON.stringify({ ItemActions: [{ Type: "CrmEntityFormView-DeleteAction", Label: "Remove" }] });
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Widgets`,
@@ -43,9 +44,9 @@ test("platform bundle equivalents: the row action menu opens below its button, j
       simulator: { mode: "local", pageMode: "local", identityScope: "configured", identity: { id: null, roles: [] }, live: { origin: null }, endpoints: [], componentSchemas: { Accounts: { entity: "account", fields: [{ name: "name", label: "Account name" }] } } },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));

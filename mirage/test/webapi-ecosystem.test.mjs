@@ -26,6 +26,7 @@ import { resolvePortalIdentity } from "../lib/permissions.mjs";
 import { importPortal } from "../lib/importer.mjs";
 import { serverLogicUnsupported } from "../lib/server-logic.mjs";
 import { buildSolutionSchema, scanSolutionSources } from "../lib/solution-schema.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const mirage = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
@@ -83,11 +84,11 @@ const fixture = (settings = {}) => ({
 
 async function start(t, { settings = SETTINGS, state = fixture() } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-webapi-ecosystem-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Ecosystem\n");
   await fs.writeFile(path.join(directory, "sitesetting.yml"), settingsYaml(settings));
   const app = await createSimulator({ sourceDir: directory, initial: state, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const json = async (route, { method = "GET", body, headers = {}, token = true } = {}) => {
     const response = await fetch(app.url + route, {
       method,
@@ -462,7 +463,7 @@ test("web roles of the persona's parent account are reported, not applied", () =
 test("a list with Enable Table Permissions off still reads under table permissions", async (t) => {
   const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-list-permissions-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Lists`,
     "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template",
@@ -477,7 +478,7 @@ test("a list with Enable Table Permissions off still reads under table permissio
   state.simulator.identity = { id: G(11), roles: ["Reader"] };
   state.simulator.componentSchemas = { Accounts: { entity: "account", fields: [{ name: "name", label: "Name" }] } };
   const app = await createSimulator({ sourceDir: dir, initial: state, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const page = await (await fetch(`${app.url}/`)).text();
   const encoded = /data-view-layouts="([^"]*)"/.exec(page)[1];
   const [layout] = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));

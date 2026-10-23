@@ -6,12 +6,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const lowerId = (value) => String(value && typeof value === "object" ? value.id ?? value.value : value ?? "").replace(/[{}]/g, "").toLowerCase();
 
 test("_sim environment variable PUT keeps exactly one value row per definition across re-seeding", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-sim-envput-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portal = path.join(dir, "portal"), solution = path.join(dir, "solution");
   for (const [name, body] of Object.entries({
     "website.yml": "adx_websiteid: site\nadx_name: Variables",
@@ -25,7 +26,7 @@ test("_sim environment variable PUT keeps exactly one value row per definition a
   await fs.mkdir(variable, { recursive: true });
   await fs.writeFile(path.join(variable, "environmentvariabledefinition.xml"), '<environmentvariabledefinition schemaname="sample_NoValue"><defaultvalue>default</defaultvalue><displayname default="No value"><label description="No value" languagecode="1033" /></displayname><type>100000000</type></environmentvariabledefinition>');
   const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state", "state.json"), watch: false, solutionRoots: [solution] });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const csrf = app.state().csrf;
   const call = async (route, method = "GET", body) => {
     const response = await fetch(app.url + route, { method, headers: { "content-type": "application/json", "x-sim-csrf": csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

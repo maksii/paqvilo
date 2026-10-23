@@ -8,27 +8,28 @@ import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../api.mjs";
 import { assertAcceptanceCapabilities, runAcceptance } from "../acceptance.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 async function standalone(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "host-capabilities-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, "solution");
   await fs.mkdir(path.join(solution, "Other"), { recursive: true });
   await fs.writeFile(path.join(solution, "Other", "Solution.xml"), "<ImportExportXml><SolutionManifest><UniqueName>InventedCapabilities</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>");
   const sim = await createSimulator({ runtime: { kind: "dataverse-api" }, solutionRoots: [solution], projectRoot: root, port: 0, watch: false,
     simulation: { level: "dry-run" }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 
 async function portal(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "portal-capabilities-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, "website.yml"), "adx_websiteid: 8c3d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e91\nadx_name: Invented Capabilities");
   await fs.writeFile(path.join(dir, "Home.webpage.yml"), "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true");
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false,
     initial: { version: 1, mappings: {}, tables: {}, permissions: [], simulator: { mode: "local", pageMode: "local", live: { allowWrites: false }, endpoints: [] } } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim;
 }
 

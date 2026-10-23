@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectRuntime } from '../testing/runtime.mjs';
 import { captureThroughRuntime } from '../capture-shell.mjs';
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('capture cleanup is attempted without masking the original timeout', async () => {
   const error = Object.assign(new Error('Capture timeout'), {code: 'SHELL_CAPTURE_TIMEOUT'}), calls = [];
@@ -32,7 +33,7 @@ test('capture has no default deadline, configurable deadlines identify the optio
 
 test('CLI captures an endpoint taking 45 seconds, prints waiting progress and disconnects', {timeout: 65000}, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-long-capture-'));
-  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  ownedFixture(t).remove(() => fs.rm(root, {recursive: true, force: true}));
   const sourceDir = path.join(root, 'portal'); await fs.mkdir(sourceDir);
   await fs.mkdir(path.join(sourceDir, 'web-pages'));
   await fs.writeFile(path.join(sourceDir, 'website.yml'), 'adx_name: Synthetic\nadx_websiteid: synthetic\n');
@@ -49,11 +50,11 @@ test('CLI captures an endpoint taking 45 seconds, prints waiting progress and di
     res.end('{}');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { timers.forEach(clearTimeout); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  ownedFixture(t).add(async () => { timers.forEach(clearTimeout); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const config = path.join(root, 'paqvilo.config.json');
   await fs.writeFile(config, JSON.stringify({sourceRoot: '.', sites: {synthetic: {source: 'portal', environments: {dev: 'https://synthetic.example.test'}, mirage: {port: server.address().port}}}}));
   const child = spawn(process.execPath, [fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'capture-shell', '--config', config, '--cdp', 'http://127.0.0.1:9222'], {windowsHide: true});
-  t.after(() => { if (child.exitCode === null) child.kill(); });
+  ownedFixture(t).add(() => { if (child.exitCode === null) child.kill(); });
   let stdout = '', stderr = '';
   child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data);
   const code = await new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });

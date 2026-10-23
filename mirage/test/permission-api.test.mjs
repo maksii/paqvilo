@@ -4,12 +4,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
+import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test("permission source changes apply atomically and failed reload retains the applied grant ledger", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "pp-permission-api-"),
   );
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, "Home.webpage.yml"),
     "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n",
@@ -63,7 +64,7 @@ test("permission source changes apply atomically and failed reload retains the a
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const patch = (body) =>
     fetch(app.url + "/__sim/api/config", {
       method: "PATCH",
