@@ -205,3 +205,10 @@ body[data-setup-view="all"] #content { padding-bottom: 60vh; }
   .stage-body { padding: 12px; }
   .command-list { grid-template-columns: 1fr; }
 }
+/* Narrow screens: a grid child never grows past its column (the YAML example scrolls inside itself), a long badge wraps,
+   and a finding's Review link moves under its text. */
+.form-grid > * { min-width: 0; }
+.form-grid .ui-example { max-width: 100%; overflow-x: auto; }
+.target-card .panel-heading { flex-wrap: wrap; }
+.target-card .panel-heading .ui-badge { white-space: normal; }
+.findings .row { flex-wrap: wrap; }
