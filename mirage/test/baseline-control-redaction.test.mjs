@@ -1,3 +1,4 @@
+import { Worker } from "node:worker_threads";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -361,13 +362,18 @@ test("capture persistence removes plain and encoded signed tokens in every evide
   const nativeToken = Buffer.from(
     "invented per-process signed control configuration",
   ).toString("base64");
+  const uploadHandle = Buffer.from(
+    "invented per-process upload handle",
+  ).toString("base64");
   const json = JSON.stringify({
       base64SecureConfiguration: nativeToken,
+      ctl00$Main$AttachFile_HiddenField_InstanceId: uploadHandle,
       sibling: 17,
     }),
     layout = Buffer.from(
       JSON.stringify({
         Base64SecureConfiguration: nativeToken,
+        AttachFile_HiddenField_InstanceId: uploadHandle,
         Sibling: "kept",
         Image: "ordinary-base64-image",
       }),
@@ -377,7 +383,9 @@ test("capture persistence removes plain and encoded signed tokens in every evide
       layout +
       '"><input data-before="a>b" value="' +
       nativeToken +
-      '" name="base64SecureConfiguration"></main>',
+      '" name="base64SecureConfiguration"><input id="AttachFile_HiddenField_InstanceId" value="' +
+      uploadHandle +
+      '"></main>',
     hash = (value) => createHash("sha256").update(value).digest("hex");
   try {
     await writeCapture(
@@ -394,7 +402,10 @@ test("capture persistence removes plain and encoded signed tokens in every evide
               seq: 1,
               method: "POST",
               url: "https://portal.invalid/service",
-              headers: {},
+              headers: {
+                "x-ms-form-session-id": uploadHandle,
+                "x-preserved": "kept",
+              },
               body: json,
               response: {
                 status: 200,
@@ -409,6 +420,12 @@ test("capture persistence removes plain and encoded signed tokens in every evide
           frames: [{ path: "/frame", dom: html }],
           elements: [
             { attributes: { "data-view-layouts": layout }, sibling: 17 },
+            {
+              attributes: {
+                name: "ctl00$Main$AttachFile_HiddenField_InstanceId",
+                value: uploadHandle,
+              },
+            },
           ],
           console: [{ type: "log", text: json }],
           pageErrors: [json],
@@ -430,6 +447,7 @@ test("capture persistence removes plain and encoded signed tokens in every evide
       );
     assert.deepEqual(JSON.parse(requests[0].body), {
       base64SecureConfiguration: "{token}",
+      ctl00$Main$AttachFile_HiddenField_InstanceId: "{token}",
       sibling: 17,
     });
     assert.deepEqual(
@@ -441,11 +459,15 @@ test("capture persistence removes plain and encoded signed tokens in every evide
       ),
       {
         Base64SecureConfiguration: "{token}",
+        AttachFile_HiddenField_InstanceId: "{token}",
         Sibling: "kept",
         Image: "ordinary-base64-image",
       },
     );
+    assert.equal(requests[0].headers["x-ms-form-session-id"], "{token}");
+    assert.equal(requests[0].headers["x-preserved"], "kept");
     assert.equal(elements[0].sibling, 17);
+    assert.equal(elements[1].attributes.value, "{token}");
     assert.equal(requests[0].response.bodySha256, hash(redactTokens(html)));
     assert.equal(
       requests[0].response.bodyHashProvenance,
@@ -456,6 +478,7 @@ test("capture persistence removes plain and encoded signed tokens in every evide
       if (!/\.(json|html)$/.test(file)) continue;
       const text = await fs.readFile(path.join(out, file), "utf8");
       assert.ok(!text.includes(nativeToken), file);
+      assert.ok(!text.includes(uploadHandle), file);
       assert.ok(!text.includes(layout), file);
       assert.ok(!text.includes(hash(html)), file);
     }
@@ -465,4 +488,183 @@ test("capture persistence removes plain and encoded signed tokens in every evide
     );
     await fs.rm(out, { recursive: true, force: true });
   }
+});
+
+test(
+  "escaped-quote text finishes in bounded worker and still redacts a following real field",
+  { timeout: 10000 },
+  async () => {
+    const worker = new Worker(
+      `const{parentPort,workerData}=require('node:worker_threads');import(workerData.module).then(({redactSecureConfigurationTokens:redact})=>{const text='"'+String.fromCharCode(92,34).repeat(500000)+'"';const field='{"base64SecureConfiguration":"invented-secret","sibling":17}';parentPort.postMessage({unchanged:redact(text)===text,redacted:redact(text+field)===text+'{"base64SecureConfiguration":"{token}","sibling":17}'});});`,
+      {
+        eval: true,
+        workerData: {
+          module: new URL(
+            "../lib/capture-control-redaction.mjs",
+            import.meta.url,
+          ).href,
+        },
+      },
+    );
+    let timer;
+    try {
+      const result = await new Promise((resolve, reject) => {
+        timer = setTimeout(
+          () => reject(Error("Control redaction exceeded worker deadline")),
+          5000,
+        );
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      assert.deepEqual(result, { unchanged: true, redacted: true });
+    } finally {
+      clearTimeout(timer);
+      await worker.terminate();
+    }
+  },
+);
+
+test(
+  "malformed repeated multipart headers and large input whitespace finish in a bounded worker",
+  { timeout: 10000 },
+  async () => {
+    const worker = new Worker(
+      `const { parentPort, workerData } = require('node:worker_threads');
+    import(workerData.module).then(({ redactSecureConfigurationTokens: redact }) => {
+      const headers = 'name="base64SecureConfiguration"\\r\\n'.repeat(500000);
+      const whitespace = ' '.repeat(1000000);
+      const ordinary = '<input ' + whitespace + 'disabled>';
+      const secure = '<input name="base64SecureConfiguration" value="fixture-value" ' + whitespace + 'disabled>';
+      parentPort.postMessage({ headers: redact(headers) === headers, ordinary: redact(ordinary) === ordinary, secure: redact(secure) === secure.replace('"fixture-value"', '"{token}"') });
+    }).catch(error => { throw error; });`,
+      {
+        eval: true,
+        workerData: {
+          module: new URL(
+            "../lib/capture-control-redaction.mjs",
+            import.meta.url,
+          ).href,
+        },
+      },
+    );
+    let timer;
+    try {
+      const result = await new Promise((resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(new Error("Control scanner exceeded its worker deadline.")),
+          5000,
+        );
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      assert.deepEqual(result, { headers: true, ordinary: true, secure: true });
+    } finally {
+      clearTimeout(timer);
+      await worker.terminate();
+    }
+  },
+);
+
+for (const name of [
+  "AttachFile_HiddenField_InstanceId",
+  "ctl00$Main$AttachFile_HiddenField_InstanceId",
+  "ctl00_Main_AttachFile_HiddenField_InstanceId",
+]) {
+  test("protected upload handle " + name, () => {
+    for (const input of [
+      JSON.stringify({ [name]: token, sibling: "kept" }),
+      JSON.stringify(JSON.stringify({ [name]: token })),
+      '<input name="' + name + '" value="' + token + '">',
+      '<input id="' + name + '" value="' + token + '">',
+      'Content-Disposition: form-data; name="' +
+        name +
+        '"\r\n\r\n' +
+        token +
+        "\r\n--b",
+      name + "=" + encodeURIComponent(token) + "&sibling=kept",
+    ]) {
+      const output = redact(input);
+      assert.ok(!output.includes(token), output);
+      assert.ok(output.includes("{token}"));
+    }
+    assert.equal(redactCapabilityEvidence({ [name]: token })[name], "{token}");
+    assert.equal(
+      redactCapabilityEvidence({ name, value: token }).value,
+      "{token}",
+    );
+    assert.equal(
+      redactCapabilityEvidence({ id: name, defaultValue: token }).defaultValue,
+      "{token}",
+    );
+    const diff = redactCapabilityDiffEvidence({
+      field: "body." + name,
+      live: token,
+      mirage: token,
+    });
+    assert.equal(diff.live, "{token}");
+    assert.equal(diff.mirage, "{token}");
+  });
+}
+test("general instance and annotation identities remain exact", () => {
+  const value = {
+    InstanceId: token,
+    runtime: { instanceId: token },
+    AttachFile_HiddenField_AnnotationIds: token,
+  };
+  assert.deepEqual(redactCapabilityEvidence(value), value);
+});
+
+test("encoded scoped form names redact while adjacent and general IDs remain exact", () => {
+  assert.equal(
+    redact(
+      "ctl00%24Main%24AttachFile_HiddenField_InstanceId=" +
+        token +
+        "&InstanceId=" +
+        token,
+    ),
+    "ctl00%24Main%24AttachFile_HiddenField_InstanceId={token}&InstanceId=" +
+      token,
+  );
+  assert.equal(
+    redact("NotAttachFile_HiddenField_InstanceId=" + token),
+    "NotAttachFile_HiddenField_InstanceId=" + token,
+  );
+});
+
+test("exact upload session header redacts raw, escaped and contextual evidence", () => {
+  for (const input of [
+    JSON.stringify({ "x-ms-form-session-id": token, sibling: "kept" }),
+    JSON.stringify(
+      JSON.stringify({ "x-ms-form-session-id": token, sibling: "kept" }),
+    ),
+  ]) {
+    const out = redact(input);
+    assert.ok(!out.includes(token));
+    assert.ok(out.includes("kept"));
+  }
+  assert.equal(
+    redactCapabilityEvidence({
+      headers: { "x-ms-form-session-id": token, sessionId: "ordinary-row-id" },
+    }).headers["x-ms-form-session-id"],
+    "{token}",
+  );
+  assert.equal(
+    redactCapabilityEvidence({
+      headers: { "x-ms-form-session-id": token, sessionId: "ordinary-row-id" },
+    }).headers.sessionId,
+    "ordinary-row-id",
+  );
+  assert.deepEqual(
+    redactCapabilityDiffEvidence({
+      field: "headers.x-ms-form-session-id",
+      live: token,
+      mirage: token,
+    }),
+    {
+      field: "headers.x-ms-form-session-id",
+      live: "{token}",
+      mirage: "{token}",
+    },
+  );
 });

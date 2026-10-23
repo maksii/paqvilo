@@ -414,27 +414,46 @@ const xmlUnescape = (s) =>
     dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : XML_ENTITIES[name.toLowerCase()],
   );
 
+/** Shared linear XML tag cursor. Text in comments, CDATA and processing instructions is never a tag. */
+function* xmlElementTags(xml, fromIndex = 0) {
+  const text = String(xml);
+  for (let cursor = fromIndex; cursor < text.length;) {
+    const opening = text.indexOf('<', cursor);
+    if (opening < 0) return;
+    const section = text.startsWith('<!--', opening) ? { marker: '-->', length: 4 }
+      : text.startsWith('<![CDATA[', opening) ? { marker: ']]>', length: 9 }
+        : text.startsWith('<?', opening) ? { marker: '?>', length: 2 } : null;
+    if (section) {
+      const end = text.indexOf(section.marker, opening + section.length);
+      if (end < 0) { yield { invalid: true }; return; }
+      cursor = end + section.marker.length;
+      continue;
+    }
+    let quote = null;
+    let closing = opening + 1;
+    for (; closing < text.length; closing++) {
+      const character = text[closing];
+      if (quote) { if (character === quote) quote = null; }
+      else if (character === '"' || character === "'") quote = character;
+      else if (character === '<') { yield { invalid: true }; return; }
+      else if (character === '>') break;
+    }
+    if (closing === text.length) { yield { invalid: true }; return; }
+    const tag = text.slice(opening + 1, closing);
+    const name = /^\/?([A-Za-z_][\w:.-]*)(?=[\s/>]|$)/.exec(tag);
+    yield { start: opening, end: closing + 1, name: name?.[1] ?? null, closing: tag.startsWith('/'), attributes: name ? tag.slice(name[0].length) : '' };
+    cursor = closing + 1;
+  }
+}
+
 /** Real element body boundaries; closing-tag text in CDATA/comments is never an element. */
 export function componentContentSpan(xml, fromIndex = 0) {
-  const opening = /<!--|<!\[CDATA\[|<content\b(?:[^>"']|"[^"]*"|'[^']*')*>/g;
-  opening.lastIndex = fromIndex;
-  let open;
-  while ((open = opening.exec(xml))) {
-    if (open[0].startsWith('<content')) break;
-    const marker = open[0] === '<!--' ? '-->' : ']]>';
-    const end = xml.indexOf(marker, opening.lastIndex);
-    if (end < 0) return null;
-    opening.lastIndex = end + marker.length;
-  }
-  if (!open) return null;
-  const closing = /<!--|<!\[CDATA\[|<\/content\s*>/g;
-  closing.lastIndex = opening.lastIndex;
-  for (let close; (close = closing.exec(xml));) {
-    if (close[0].startsWith('</content')) return { openStart: open.index, contentStart: opening.lastIndex, contentEnd: close.index, closeEnd: closing.lastIndex };
-    const marker = close[0] === '<!--' ? '-->' : ']]>';
-    const end = xml.indexOf(marker, closing.lastIndex);
-    if (end < 0) return null;
-    closing.lastIndex = end + marker.length;
+  let opening = null;
+  for (const tag of xmlElementTags(xml, fromIndex)) {
+    if (tag.invalid) return null;
+    if (tag.name !== 'content') continue;
+    if (!opening && !tag.closing) opening = tag;
+    else if (opening && tag.closing) return { openStart: opening.start, contentStart: opening.end, contentEnd: tag.start, closeEnd: tag.end };
   }
   return null;
 }
@@ -453,36 +472,13 @@ function xmlText(raw) {
 
 /** Exact real element identity; comments, CDATA and processing instructions are not records. */
 export function componentIdentity(xml) {
-  const text = String(xml);
   let attributes = null;
-  for (let cursor = 0; cursor < text.length;) {
-    const opening = text.indexOf('<', cursor);
-    if (opening < 0) break;
-    const marker = text.startsWith('<!--', opening) ? '-->'
-      : text.startsWith('<![CDATA[', opening) ? ']]>' : text.startsWith('<?', opening) ? '?>' : null;
-    if (marker) {
-      const end = text.indexOf(marker, opening + 2);
-      if (end < 0) return null;
-      cursor = end + marker.length;
-      continue;
-    }
-    let quote = null;
-    let closing = opening + 1;
-    for (; closing < text.length; closing++) {
-      const character = text[closing];
-      if (quote) { if (character === quote) quote = null; }
-      else if (character === '"' || character === "'") quote = character;
-      else if (character === '<') return null;
-      else if (character === '>') break;
-    }
-    if (closing === text.length) return null;
-    const tag = text.slice(opening + 1, closing);
-    const name = /^([A-Za-z_][\w:.-]*)(?=[\s/>]|$)/.exec(tag);
-    if (name?.[1] === 'powerpagecomponent') {
+  for (const tag of xmlElementTags(xml)) {
+    if (tag.invalid) return null;
+    if (tag.name === 'powerpagecomponent' && !tag.closing) {
       if (attributes !== null) return null;
-      attributes = tag.slice(name[0].length);
+      attributes = tag.attributes;
     }
-    cursor = closing + 1;
   }
   if (attributes === null) return null;
   const attribute = /([A-Za-z_:][\w:.-]*)\s*=\s*(["'])([\s\S]*?)\2/y;

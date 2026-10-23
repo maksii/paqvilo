@@ -281,7 +281,7 @@ test("many-to-many returns the intersect with both sides", () => {
 test("service document lists entity sets sorted by name", () => {
   const doc = mapped.serviceDocument("https://org.example", "v9.2");
   assert.equal(doc["@odata.context"], "https://org.example/api/data/v9.2/$metadata");
-  assert.deepEqual(doc.value.map((v) => v.name), ["gadgets", "tags", "widgets"]);
+  assert.deepEqual(doc.value.map((v) => v.name), ["EntityDefinitions", "GlobalOptionSetDefinitions", "RelationshipDefinitions", "gadgets", "tags", "widgets"]);
   assert.equal(doc.value[0].kind, "EntitySet");
 });
 
@@ -383,10 +383,10 @@ test("csdl declares entities, navigation, the container and the functions", () =
   assert.match(xml, /<Schema Namespace="Microsoft\.Dynamics\.CRM" Alias="mscrm"/);
   assert.match(block(xml, "widget"), /<PropertyRef Name="widgetid" \/>/);
   assert.match(block(xml, "widget"), /<Property Name="_ownerid_value" Type="Edm\.Guid" \/>/);
-  assert.match(block(xml, "widget"), /<NavigationProperty Name="widget_gadgets" Type="Collection\(mscrm\.gadget\)" Partner="widgetid" \/>/);
-  assert.match(block(xml, "gadget"), /<NavigationProperty Name="widgetid" Type="mscrm\.widget" Partner="widget_gadgets">\s*<ReferentialConstraint Property="_widgetid_value" ReferencedProperty="widgetid" \/>\s*<\/NavigationProperty>/);
+  assert.match(block(xml, "widget"), /<NavigationProperty Name="gadgets" Type="Collection\(mscrm\.gadget\)" Partner="widget" \/>/);
+  assert.match(block(xml, "gadget"), /<NavigationProperty Name="widget" Type="mscrm\.widget" Partner="gadgets">\s*<ReferentialConstraint Property="_widgetid_value" ReferencedProperty="widgetid" \/>\s*<\/NavigationProperty>/);
   assert.match(xml, /<EntityContainer Name="System">/);
-  assert.match(xml, /<EntitySet Name="widgets" EntityType="mscrm\.widget">\s*<NavigationPropertyBinding Path="widget_gadgets" Target="gadgets" \/>/);
+  assert.match(xml, /<EntitySet Name="widgets" EntityType="mscrm\.widget">\s*<NavigationPropertyBinding Path="gadgets" Target="gadgets" \/>/);
   assert.match(xml, /<ComplexType Name="WhoAmIResponse">/);
   assert.match(xml, /<Function Name="WhoAmI">/);
   assert.ok(!xml.includes("OData.Community.Keys.V1"), "annotations are opt-in");

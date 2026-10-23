@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { parseArgs } from "node:util";
-import { spawn } from "node:child_process";
+import { runMutatingHook, MUTATING_HOOK_FAILURE } from "./baseline-hooks.mjs";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { captureScenario, pageRunnerSource, runnerOptions, siteOriginPlaceholder, writeCapture } from "./baseline-capture.mjs";
@@ -56,81 +56,104 @@ export function validateMatrix(matrix) {
 /** Folder of one scenario on one side: <out>/<scenario id segments>/<label>. */
 export const scenarioDir = (outDir, scenario, label) => path.join(outDir, ...scenario.id.split("/"), label);
 
-async function runHook(command, { persona, cwd } = {}) {
-  if (!command) return { skipped: true };
-  const resolved = command.replace(/\{persona\}/g, persona ?? "");
-  const [file, ...args] = resolved.match(/(?:[^\s"]+|"[^"]*")+/g).map((item) => item.replace(/^"|"$/g, ""));
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { cwd: cwd ?? process.cwd(), stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
-    let out = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (out += chunk));
-    child.on("error", reject);
-    child.on("exit", (code) => (code === 0 ? resolve({ code, output: out.slice(-2000) }) : reject(new Error(`Hook failed (${code}): ${resolved}\n${out.slice(-2000)}`))));
-  });
-}
-
 /** Loopback receiver for raw evidence posted by the runner inside the bridge process. Each run has its own nonce:
  * a bridge call that timed out keeps running in the bridge, and its late post must not resolve the next run's wait
  * (it once wrote a step2-back capture into the resume folder). Late posts answer 409 and are recorded in `late`. */
 export async function startSaver() {
-  const token = randomBytes(16).toString("hex");
-  let waiting = null;
+  const token = randomBytes(16).toString('hex');
+  let waiting = null, closePromise, closed = false;
   const late = [];
+  const refuseLate = (run, response) => {
+    late.push({ run: run ?? null, at: new Date().toISOString() });
+    process.stderr.write(`baseline-suite: refused a late evidence post of an abandoned bridge run (${run ?? 'no run id'})\n`);
+    response.writeHead(409).end();
+  };
   const server = http.createServer((request, response) => {
-    if (request.method !== "POST" || request.url !== "/capture" || request.headers["x-baseline-token"] !== token) {
+    if (request.method !== 'POST' || request.url !== '/capture' || request.headers['x-baseline-token'] !== token) {
+      request.resume();
       response.writeHead(403).end();
       return;
     }
-    const run = request.headers["x-baseline-run"];
-    if (!waiting || run !== waiting.run) {
-      late.push({ run: run ?? null, at: new Date().toISOString() });
-      process.stderr.write(`baseline-suite: refused a late evidence post of an abandoned bridge run (${run ?? "no run id"})
-`);
+    const run = request.headers['x-baseline-run'];
+    const target = waiting;
+    if (!target || run !== target.run) {
       request.resume();
-      response.writeHead(409).end();
+      refuseLate(run, response);
       return;
     }
     const chunks = [];
-    request.on("data", (chunk) => chunks.push(chunk));
-    request.on("end", () => {
+    request.on('data', chunk => chunks.push(chunk));
+    request.on('aborted', () => {
+      if (waiting === target) waiting = null;
+      target.reject(new Error('Evidence post ended before its body completed.'));
+    });
+    request.on('error', error => {
+      if (waiting === target) waiting = null;
+      target.reject(error);
+    });
+    request.on('end', () => {
+      // Admission at headers is insufficient: another run can be armed while this body streams.
+      if (closed || waiting !== target || run !== waiting.run) {
+        refuseLate(run, response);
+        return;
+      }
+      waiting = null;
       try {
-        waiting.resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        target.resolve(result);
         response.writeHead(204).end();
       } catch (error) {
-        waiting.reject(error);
+        target.reject(error);
         response.writeHead(400).end();
       }
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve,reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
   const url = `http://127.0.0.1:${server.address().port}/capture`;
   return {
-    url,
-    token,
-    late,
-    /** Arms the wait for one run; returns its nonce and the promise of its evidence. */
+    url, token, late,
     expect() {
-      const run = randomBytes(8).toString("hex");
-      const received = new Promise((resolve, reject) => {
-        waiting = { run, resolve, reject };
-      });
+      if (closed) throw new Error('Evidence receiver is closed.');
+      waiting?.reject(new Error('Evidence wait was superseded by another run.'));
+      const run = randomBytes(8).toString('hex');
+      const received = new Promise((resolve,reject) => { waiting = { run, resolve, reject }; });
+      // The bridge can fail before runInBridge reaches this promise; keep it handled meanwhile.
+      void received.catch(() => {});
       return { run, received };
     },
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close() {
+      if (!closePromise) {
+        closed = true;
+        waiting?.reject(new Error('Evidence receiver closed before a post completed.'));
+        waiting = null;
+        closePromise = new Promise(resolve => server.close(resolve));
+        // Only this owned loopback receiver's connections are closed, including incomplete posts.
+        server.closeAllConnections?.();
+      }
+      return closePromise;
+    },
   };
 }
+
 
 async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
   const bridge = matrix.live;
   if (!bridge?.command) throw new Error("matrix.live.command is required for the live side (a browser bridge that exposes a Playwright page, such as @playwright/mcp --extension).");
   const stderr = [];
   const client = startMcpServer({ command: bridge.command === "node" ? process.execPath : bridge.command, args: bridge.args ?? [], cwd: bridge.cwd ? path.resolve(cwd, bridge.cwd) : cwd, onStderr: (text) => stderr.push(text.slice(0, 300)) });
-  await client.initialize();
-  const tools = new Set((await client.listTools()).map((tool) => tool.name));
+  let saver;
+  const abortSetup = async (error) => {
+    await Promise.allSettled([saver?.close(), client.close()]);
+    throw error;
+  };
+  await client.initialize().catch(abortSetup);
+  const tools = new Set((await client.listTools().catch(abortSetup)).map((tool) => tool.name));
   const runTool = bridge.tool ?? "browser_run_code_unsafe";
-  if (!tools.has(runTool)) throw new Error(`The browser bridge offers no ${runTool} tool.`);
-  const saver = await startSaver();
+  if (!tools.has(runTool)) await abortSetup(new Error(`The browser bridge offers no ${runTool} tool.`));
+  saver = await startSaver().catch(abortSetup);
   const source = pageRunnerSource();
   const runInBridge = async (scenario, { ids = {}, allowWrites: writes = allowWrites } = {}) => {
     const options = runnerOptions({ scenario, origin: matrix.origin, ids, matrix, allowWrites: writes });
@@ -139,7 +162,12 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     const { run, received } = saver.expect();
     const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)}, "x-baseline-run": ${JSON.stringify(run)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
     const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
-    return Promise.race([received, sleep(30000).then(() => { throw new Error(`Bridge returned without posting evidence: ${text.slice(0, 300)}`); })]);
+    let timer;
+    try {
+      return await Promise.race([received, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Bridge returned without posting evidence: ${text.slice(0, 300)}`)), 30000);
+      })]);
+    } finally { clearTimeout(timer); }
   };
   // Optional scripted portal sign-in through the profile's identity provider. No credentials are
   // involved: the profile's SSO either completes or the run stops and names the human step.
@@ -204,22 +232,40 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
   const adminCycle = async () => {
     const options = { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd };
     const clear = bridge.clearCache;
-    await runHook(matrix.hooks.liveAdminAdd, options);
-    let result;
-    for (let attempt = 1; attempt <= (clear.attempts ?? 12); attempt++) {
-      result = await runInBridge({ id: "clear-cache", steps: clear.steps, expect: clear.expect ?? {} }, { allowWrites: true });
-      if (result.summary.status === "captured") break;
-      await sleep(clear.delay ?? 10000);
+    // Failed add hooks must reconcile their own partial effects; generic code cannot infer original membership.
+    await runMutatingHook('liveAdminAdd', matrix.hooks.liveAdminAdd, options);
+    let failure;
+    try {
+      let result;
+      for (let attempt = 1; attempt <= (clear.attempts ?? 12); attempt++) {
+        result = await runInBridge({ id: 'clear-cache', steps: clear.steps, expect: clear.expect ?? {} }, { allowWrites: true });
+        if (result.summary.status === 'captured') break;
+        await sleep(clear.delay ?? 10000);
+      }
+      if (result?.summary.status !== 'captured') {
+        await fail(`Portal cache clear did not complete (${result?.summary.problems.join('; ') ?? 'no attempt completed'}).`, result, 'clear-cache');
+      }
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      try {
+        await runMutatingHook('liveAdminRemove', matrix.hooks.liveAdminRemove, options);
+      } catch (cleanupError) {
+        if (failure) {
+          throw new AggregateError([failure, cleanupError], `Portal cache clear failed (${failure.message}); admin role cleanup also failed (${cleanupError.message}).`);
+        }
+        throw cleanupError;
+      }
     }
-    await runHook(matrix.hooks.liveAdminRemove, options);
-    if (result.summary.status !== "captured") await fail(`Portal cache clear did not complete (${result.summary.problems.join("; ")}).`, result, "clear-cache");
   };
-  await ensureSignedIn();
+
+  await ensureSignedIn().catch(abortSetup);
   return {
     name: "live",
     async persona(name, { ids = {} } = {}) {
       const persona = matrix.personas?.[name] ?? {};
-      await runHook(matrix.hooks?.livePersona, { persona: name, cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd });
+      await runMutatingHook('livePersona', matrix.hooks?.livePersona, { persona: name, cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd });
       await ensureSignedIn();
       await refresh();
       if (persona.anonymous) await signOut();
@@ -234,8 +280,8 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     },
     async reset() {
       const options = { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd };
-      // Dataverse answers an occasional transient 500: one retry before the scenario is charged with the failure.
-      await runHook(matrix.hooks?.liveReset, options).catch(() => sleep(5000).then(() => runHook(matrix.hooks?.liveReset, options)));
+      // Project hooks may retry their own known-safe operations; a generic retry could duplicate a partial write.
+      await runMutatingHook('liveReset', matrix.hooks?.liveReset, options);
     },
     async capture(scenario, { outDir, ids, label, meta }) {
       const result = await runInBridge(scenario, { ids });
@@ -243,8 +289,7 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     },
     diagnostics: () => [...stderr.slice(-20), ...saver.late.map((post) => `late evidence post of an abandoned run ${post.run} at ${post.at} refused`)],
     async close() {
-      await saver.close();
-      await client.close();
+      try { await saver.close(); } finally { await client.close(); }
     },
   };
 }
@@ -364,10 +409,25 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   };
 }
 
+/** Preserve uncertain hook markers through aggregate cleanup errors. */
+function uncertainMutatingHook(error) {
+  const pending = [error], seen = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (value.code === MUTATING_HOOK_FAILURE && typeof value.hook === 'string') return value.hook;
+    if (Array.isArray(value.errors)) pending.push(...value.errors);
+    if (value.cause) pending.push(value.cause);
+  }
+  return null;
+}
+
 export async function captureMatrix({ matrix, side, outDir, label, ids = {}, only = null }) {
   const results = [];
   let currentPersona = Symbol("none");
   const failedPersonas = new Map();
+  let blockedBy = null;
   // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
   // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
   const personaOrder = [];
@@ -381,7 +441,9 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
     const folder = scenarioDir(outDir, scenario, label);
     const personaName = scenario.persona ?? null;
     const summary = { id: scenario.id, folder: path.relative(outDir, folder), ms: {} };
+    let phase = null;
     const timed = async (name, work) => {
+      phase = name;
       const started = Date.now();
       try {
         return await work();
@@ -390,6 +452,11 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
       }
     };
     try {
+      if (blockedBy) {
+        summary.notAttempted = true;
+        summary.blockedBy = { ...blockedBy };
+        throw new Error(`Not attempted: uncertain mutating hook ${blockedBy.hook} in ${blockedBy.scenario} requires project reconciliation.`);
+      }
       // A persona that did not take effect fails every scenario of its group at once instead of re-probing per scenario.
       if (failedPersonas.has(personaName)) throw new Error(failedPersonas.get(personaName));
       if (personaName !== currentPersona) {
@@ -405,11 +472,16 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
       const capture = await timed("capture", () => side.capture(scenario, { outDir: folder, ids, label, meta: { persona: personaName, component: scenario.component ?? null, variation: scenario.variation ?? null, state: scenario.state ?? null } }));
       Object.assign(summary, { status: capture.status, problems: capture.problems, requests: capture.requests, elements: capture.elements, blockedWrites: capture.blockedWrites?.length ?? 0 });
     } catch (error) {
-      Object.assign(summary, { status: "error", problems: [String(error.message).slice(0, 500), ...side.diagnostics().slice(-3)] });
+      const hook = uncertainMutatingHook(error);
+      if (hook) {
+        blockedBy = { scenario: scenario.id, phase, hook, code: MUTATING_HOOK_FAILURE };
+        summary.uncertainHook = { hook, code: MUTATING_HOOK_FAILURE, reconciliationRequired: true };
+      }
+      Object.assign(summary, { status: 'error', problems: [String(error.message).slice(0, 500), ...(summary.notAttempted ? [] : side.diagnostics().slice(-3))] });
     }
     results.push(summary);
-    console.log(JSON.stringify({ scenario: scenario.id, side: label, status: summary.status, problems: summary.problems ?? [], ms: summary.ms }));
-    await sleep(matrix.delayMs ?? 250);
+    console.log(JSON.stringify({ scenario: scenario.id, side: label, status: summary.status, problems: summary.problems ?? [], ms: summary.ms, ...(summary.notAttempted ? { notAttempted: true, blockedBy: summary.blockedBy } : {}), ...(summary.uncertainHook ? { uncertainHook: summary.uncertainHook } : {}) }));
+    if (!summary.notAttempted) await sleep(matrix.delayMs ?? 250);
   }
   return results;
 }
@@ -447,7 +519,7 @@ async function main() {
     } finally {
       await side.close();
     }
-    const run = { version: 1, action, side: values.side, label, startedAt, finishedAt: new Date().toISOString(), allowWrites: Boolean(values["allow-writes"]), scenarios: results, totals: { captured: results.filter((r) => r.status === "captured").length, failed: results.filter((r) => r.status === "failed").length, error: results.filter((r) => r.status === "error").length, blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0) } };
+    const run = { version: 1, action, side: values.side, label, startedAt, finishedAt: new Date().toISOString(), allowWrites: Boolean(values["allow-writes"]), scenarios: results, totals: { captured: results.filter((r) => r.status === "captured").length, failed: results.filter((r) => r.status === "failed").length, error: results.filter((r) => r.status === "error").length, blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0), notAttempted: results.filter(r => r.notAttempted).length } };
     await fs.mkdir(outDir, { recursive: true });
     await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
     // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.

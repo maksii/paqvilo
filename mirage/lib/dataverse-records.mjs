@@ -1,3 +1,4 @@
+import {parseDataverseTop} from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { assertDataverseRootBody } from "./dataverse-reader-details.mjs";
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
@@ -758,7 +759,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       throw new DataError("Query option '$top' was specified more than once, but it must be specified at most once.", 400, "InvalidRequest", { innerCode: "0x80060888", route: true });
     }
     const top = url.searchParams.get("$top");
-    if (top != null && !(/^\d+$/.test(top) && Number(top) > 0)) throw invalid("Invalid value for $top query option.", "0x80060888");
+    parseDataverseTop(top);
     const count = url.searchParams.get("$count");
     if (count != null && count !== "true" && count !== "false") throw invalid(`'${count}' is not a valid count option.`, "0x80060888");
     const filter = url.searchParams.get("$filter");

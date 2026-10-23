@@ -1,3 +1,4 @@
+import {parseDataverseTop} from './dataverse-top.mjs';
 // Read-only activitypointer view over the activity tables. A GET reads each activity table through api.records, so that
 // table's privileges, ownership and sharing apply. Each row is projected onto the activitypointer columns with
 // activitytypecode set to its source table, then filtered, ordered and paged with the store's own OData helpers.
@@ -105,7 +106,7 @@ async function getCollection(c, api) {
   const rows = await matchingRows(c, api);
   const select = selectOf(params.get("$select"));
   const top = params.get("$top");
-  if (top != null && !(/^\d+$/.test(top) && Number(top) > 0)) throw invalid("Invalid value for $top query option.");
+  parseDataverseTop(top,{occurrences:params.getAll("$top").length});
   const cap = top == null ? rows.length : Math.min(rows.length, Number(top));
   const pageSize = Math.min(c.prefer.maxPageSize ?? PAGE_CAP, PAGE_CAP);
   const skip = params.get("$skiptoken");

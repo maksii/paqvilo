@@ -5,6 +5,14 @@ import { PLATFORM_OPERATIONS, platformOperationCsdl, platformCsdl } from "./data
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KINDS = new Set(["function", "action"]);
 const BINDINGS = new Set(["unbound", "entity", "collection"]);
+const ENTITY_RESPONSE_TYPES = new Set([
+  "mscrm.crmbaseentity", "Collection(mscrm.crmbaseentity)",
+  "Microsoft.Dynamics.CRM.crmbaseentity", "Collection(Microsoft.Dynamics.CRM.crmbaseentity)",
+]);
+const responseMember = ([name, type]) => {
+  const tag = ENTITY_RESPONSE_TYPES.has(type) ? "NavigationProperty" : "Property";
+  return `<${tag} Name="${name}" Type="${type}" />`;
+};
 const platformNames = PLATFORM_OPERATIONS.map(([, attributes]) => attributes.Name.toLowerCase());
 
 // The CSDL declaration of an operation that has no csdl text of its own, from its signature: { params: [[name, type]],
@@ -17,7 +25,7 @@ function declarationOf(op) {
   const bound = op.binding === "collection" ? `Collection(${table})` : op.binding === "entity" ? table : null;
   const returns = sig.response ? `mscrm.${op.name}Response` : (sig.returns ?? null);
   const complex = sig.response
-    ? `<ComplexType Name="${op.name}Response">${sig.response.map(([p, t]) => `<Property Name="${p}" Type="${t}" />`).join("")}</ComplexType>`
+    ? `<ComplexType Name="${op.name}Response">${sig.response.map(responseMember).join("")}</ComplexType>`
     : null;
   const parts = bound ? [`<Parameter Name="entity" Type="${bound}" Nullable="false" />`] : [];
   for (const [param, type] of sig.params ?? []) parts.push(`<Parameter Name="${param}" Type="${type}" />`);

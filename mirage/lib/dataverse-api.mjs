@@ -1,3 +1,4 @@
+import {dataverseHttpReaderContext} from './dataverse-scalar-reader.mjs';
 // Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
 // Order in the router: managed identity, STS, Prefer, extension routes (bearer first), discovery, SOAP, then the Web API.
@@ -607,7 +608,7 @@ async function recordCall(d, route, common) {
     identity: common.identity,
     requestId: common.requestId,
     bypassCustomPlugins: common.bypassCustomPlugins === true,
-    dataverseHttpReader: { method: common.method, entitySet: route.set, recordPayload: ["collection", "entity"].includes(route.kind), ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(String(common.req.headers["content-type"] ?? "")), hasJsonBody: Boolean(common.bodyBuffer?.length) && /json/i.test(common.req.headers["content-type"] ?? "") },
+    dataverseHttpReader: dataverseHttpReaderContext({method:common.method,route,headers:common.req.headers,bodyBuffer:common.bodyBuffer}),
   });
   return result ?? { status: 204 };
 }
@@ -890,6 +891,7 @@ async function runOperation(d, op, route, paramsText, common, target) {
     headers,
     body: common.body,
     bodyBuffer: common.bodyBuffer,
+    dataverseHttpReader: dataverseHttpReaderContext({method:common.method,route,headers,bodyBuffer:common.bodyBuffer}),
     params: parseFunctionParameters(paramsText, common.url.searchParams),
     user: common.user,
     caller: common.caller,

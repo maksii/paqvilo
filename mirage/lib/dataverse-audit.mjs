@@ -347,7 +347,7 @@ const CSDL_RECORD_HISTORY = `<ComplexType Name="PagingInfo">
 </ComplexType>
 <ComplexType Name="RelationshipAuditDetail" BaseType="mscrm.AuditDetail">
   <Property Name="RelationshipName" Type="Edm.String" />
-  <NavigationProperty Name="TargetRecords" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+  <NavigationProperty Name="TargetRecords" Type="Collection(mscrm.crmbaseentity)" />
 </ComplexType>
 <ComplexType Name="AuditDetailCollection">
   <Property Name="AuditDetails" Type="Collection(mscrm.AuditDetail)" />

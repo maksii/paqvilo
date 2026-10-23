@@ -4409,7 +4409,7 @@ function assertOption(value, definition, { entity, attribute }) {
 /** Validate and normalise one Web API column value from its Dataverse type. */
 function coerceValue(entity, attribute, value, definition, options = {}) {
   const kind = fieldKind(definition);
-  if(isExactNumeric(value)&&!['integer','decimal','money','double'].includes(kind))
+  if(isExactNumeric(value)&&!['integer','decimal','money','double'].includes(kind)&&!options.dataverseHttpReader)
     throw new DataError('An exact numeric value cannot be stored in nonnumeric column '+entity+'.'+attribute,400,'InvalidValue',{innerCode:'0x80048d19'});
   // An exact numeric echoes the literal the client sent (its digits), never the internal marker object.
   const literal = isExactNumeric(value) ? value.value : typeof value === "object" ? JSON.stringify(value) : String(value);
@@ -4421,6 +4421,11 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       "InvalidValue",
       { innerCode: "0x80048d19" },
     ), options.odataErrorDetails ? odataConversionDetails(originalValue, type, attribute, options) : null), originalValue, attribute, options.dataverseHttpReader, type);
+  if(isExactNumeric(value)&&!['integer','decimal','money','double'].includes(kind)&&options.dataverseHttpReader){
+    const expected=kind==='string'||kind==='multichoice'?'Edm.String':kind==='boolean'?'Edm.Boolean':kind==='choice'?'Edm.Int32':kind==='datetime'?(isDateOnlyField(definition)?'Edm.Date':'Edm.DateTimeOffset'):null;
+    if(expected)throw conversion(expected);
+    throw new DataError('An exact numeric value cannot be stored in nonnumeric column '+entity+'.'+attribute,400,'InvalidValue',{innerCode:'0x80048d19'});
+  }
   if (options.dataverseHttpReader && ['decimal','money'].includes(kind)) {
     const compatible = options.dataverseHttpReader.ieee754Compatible === true;
     if (typeof value === 'string') {

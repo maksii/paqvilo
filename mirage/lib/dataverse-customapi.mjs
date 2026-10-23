@@ -1,3 +1,4 @@
+import {dataverseScalarCause} from './dataverse-scalar-reader.mjs';
 // Simulated Dataverse custom APIs: the customapi tables, unpacked solution parsing, and registry
 // operations for unbound, entity-bound and collection-bound functions and actions. A pack handler answers an API; without
 // one, responses carry each response property at its type default.
@@ -236,10 +237,19 @@ function typedValue(type, value) {
 }
 
 // Native names the first element of a string array that is not a string.
-function conversionFailure(type, value) {
+function conversionFailure(type, value, context, property) {
   const array = type === 'StringArray' && Array.isArray(value);
   const shown = array ? value.find((item) => !CHECKS.String(item)) : value;
-  return `Cannot convert the literal '${literal(shown)}' to the expected type '${array ? 'Edm.String' : EDM[type]}'.`;
+  const expected = array ? 'Edm.String' : EDM[type];
+  if (context.method === 'POST' && context.dataverseHttpReader?.hasJsonBody === true) {
+    const key = array ? String(value.findIndex(item => !CHECKS.String(item))) : property;
+    const cause = dataverseScalarCause(shown, expected, {
+      ieee754Compatible: context.dataverseHttpReader.ieee754Compatible,
+      numericLexeme: context.dataverseHttpReader.numberLexemeFor?.(key, shown),
+    });
+    if (cause) return cause;
+  }
+  return `Cannot convert the literal '${literal(shown)}' to the expected type '${expected}'.`;
 }
 
 // Parameter values come from the URL for functions and the JSON body for actions. Returns the typed values by name.
@@ -260,7 +270,7 @@ function checkParameters(store, row, c) {
       continue;
     }
     const converted = typedValue(type, value);
-    if (converted === undefined) throw payloadError(conversionFailure(type, value));
+    if (converted === undefined) throw payloadError(conversionFailure(type, value, c, p.uniquename));
     typed[p.uniquename] = converted;
   }
   return typed;

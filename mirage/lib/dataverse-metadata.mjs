@@ -1,3 +1,4 @@
+import {METADATA_ENTITY_SETS,METADATA_ENTITY_TYPE_CSDL,METADATA_ENTITY_SET_CSDL} from './dataverse-metadata-contracts.mjs';
 // Dataverse metadata for the simulated Web API: EntityDefinitions, Attributes, Keys,
 // RelationshipDefinitions and GlobalOptionSetDefinitions. A Solution schema table wins over the
 // store mapping of the same name; virtual tables are read-only fallbacks. Shapes follow
@@ -1015,18 +1016,31 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
         for (const target of lookup.Targets ?? []) {
           if (!known.has(target)) continue;
           const rel = oneToMany.find((r) => r.referencingEntity === logical && r.referencingAttribute === lookup.LogicalName && r.referencedEntity === target);
-          navs.get(logical).push({ name: singleNav(lookup, target), target, type: `mscrm.${target}`, lookup: lookup.LogicalName, partner: rel?.schemaName ?? null });
+          navs.get(logical).push({ name: rel?.referencingNav ?? singleNav(lookup, target), target, type: `mscrm.${target}`, lookup: lookup.LogicalName, partner: rel?.referencedNav ?? rel?.schemaName ?? null });
         }
       }
     }
     // Collection navigation sits on the referenced table, named by its relationship; N:N uses the schema name on both sides.
     for (const r of oneToMany) {
       const lookup = lookupOf(r.referencingEntity, r.referencingAttribute);
-      navs.get(r.referencedEntity).push({ name: r.schemaName, target: r.referencingEntity, type: `Collection(mscrm.${r.referencingEntity})`, partner: lookup ? singleNav(lookup, r.referencedEntity) : r.referencingAttribute });
+      navs.get(r.referencedEntity).push({ name: r.referencedNav ?? r.schemaName, target: r.referencingEntity, type: `Collection(mscrm.${r.referencingEntity})`, partner: r.referencingNav ?? (lookup ? singleNav(lookup, r.referencedEntity) : r.referencingAttribute) });
     }
     for (const r of manyToMany) {
-      navs.get(r.entity1).push({ name: r.schemaName, target: r.entity2, type: `Collection(mscrm.${r.entity2})`, partner: r.schemaName });
-      navs.get(r.entity2).push({ name: r.schemaName, target: r.entity1, type: `Collection(mscrm.${r.entity1})`, partner: r.schemaName });
+      const left = r.nav1 ?? r.schemaName, right = r.nav2 ?? r.schemaName;
+      navs.get(r.entity1).push({ name: left, target: r.entity2, type: `Collection(mscrm.${r.entity2})`, partner: right });
+      navs.get(r.entity2).push({ name: right, target: r.entity1, type: `Collection(mscrm.${r.entity1})`, partner: left });
+    }
+    for (const [logical, entries] of navs) {
+      const seen = new Set();
+      navs.set(logical, entries.filter(entry => {
+        // Source relationships win in relationshipRecords. Multiple records can
+        // describe one identical HTTP navigation with different inverse names;
+        // retain its first source declaration, never merge differing targets.
+        const identity = JSON.stringify([entry.name, entry.target, entry.type, entry.lookup ?? null]);
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      }));
     }
     const edm = (a) => (a.Format === "DateOnly" && stemOf(a) === "DateTime" ? "Edm.Date" : (EDM[stemOf(a)] ?? "Edm.String"));
     const alternateKeys = (src) => {
@@ -1042,6 +1056,20 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     };
     // Native $metadata: activitypointer is abstract, and each activity table derives from it and declares only its own columns.
     const activityColumns = known.has("activitypointer") ? new Set(tables.get("activitypointer").attributes.map((a) => a.LogicalName)) : null;
+    const effectiveNavs = new Map(names.map(logical => {
+      const inherited = activityColumns && entityOf(tables.get(logical).src).IsActivity && logical !== "activitypointer" ? navs.get("activitypointer") : [];
+      const entries = new Map(inherited.map(n => [n.name, n]));
+      for (const n of navs.get(logical)) {
+        const base = entries.get(n.name);
+        if (!base || base.type !== n.type || base.lookup !== n.lookup || base.target !== n.target) entries.set(n.name, n);
+      }
+      return [logical, entries];
+    }));
+    const partnerOf = (logical, n) => {
+      if (!n.partner || !n.target) return null;
+      const reciprocal = effectiveNavs.get(n.target)?.get(n.partner);
+      return reciprocal && reciprocal.partner === n.name && !(logical === n.target && n.partner === n.name) ? n.partner : null;
+    };
     const typeLines = names.map((logical) => {
       const { src, attributes: all } = tables.get(logical);
       const entity = entityOf(src);
@@ -1054,7 +1082,8 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       }).sort(byName).map((p) => xmlElement("Property", { Name: p.name, Type: p.type, Nullable: p.id ? "false" : null, Scale: p.scale ? "Variable" : null },
         annotations && p.label ? xmlElement("Annotation", { Term: DESCRIPTION, String: p.label }) : [],
         annotations && p.computed ? xmlElement("Annotation", { Term: COMPUTED, Bool: "true" }) : []));
-      const navigation = navs.get(logical).sort(byName).map((n) => xmlElement("NavigationProperty", { Name: n.name, Type: n.type, Partner: n.partner },
+      const inheritedNavs = derived ? navs.get("activitypointer") : [];
+      const navigation = navs.get(logical).filter(n => !inheritedNavs.some(base => base.name === n.name && base.type === n.type && base.lookup === n.lookup && base.target === n.target)).sort(byName).map((n) => xmlElement("NavigationProperty", { Name: n.name, Type: n.type, Partner: partnerOf(logical, n) },
         n.lookup ? xmlElement("ReferentialConstraint", { Property: `_${n.lookup}_value`, ReferencedProperty: n.target ? tables.get(n.target).src.idColumn : "ownerid" }) : []));
       const label = labelText(entity.DisplayName);
       // Native $metadata: a principal (systemuser, team) derives from the abstract mscrm.principal and declares the ownerid key
@@ -1081,10 +1110,10 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const extraImports = [...extraText.matchAll(/<(Function|Action) Name="(\w+)"(?![^>]*IsBound)/g)].map(([, tag, name]) => (tag === "Action"
       ? `<ActionImport Name="${name}" Action="mscrm.${name}" />`
       : `<FunctionImport Name="${name}" Function="mscrm.${name}" IncludeInServiceDocument="false" />`));
-    const platformFragments = platformCsdl([CSDL_TYPES, known.has("systemuser") ? CSDL_USER_FUNCTIONS : "", known.has("role") ? CSDL_ROLE_ACTIONS : "", CSDL_OPERATIONS, extraText].join("\n"), { queryFunctions: true });
+    const platformFragments = platformCsdl([CSDL_TYPES, METADATA_ENTITY_TYPE_CSDL, known.has("systemuser") ? CSDL_USER_FUNCTIONS : "", known.has("role") ? CSDL_ROLE_ACTIONS : "", CSDL_OPERATIONS, extraText].join("\n"), { queryFunctions: true });
     const schemaLines = xmlElement("Schema", { Namespace: "Microsoft.Dynamics.CRM", Alias: "mscrm", xmlns: "http://docs.oasis-open.org/odata/ns/edm" },
       xmlFixed(platformFragments), typeLines,
-      xmlElement("EntityContainer", { Name: "System" }, sets, xmlFixed(CSDL_IMPORTS), xmlFixed(extraImports.join("\n"))));
+      xmlElement("EntityContainer", { Name: "System" }, sets, xmlFixed(METADATA_ENTITY_SET_CSDL), xmlFixed(CSDL_IMPORTS), xmlFixed(extraImports.join("\n"))));
     return ['<?xml version="1.0" encoding="utf-8"?>', ...xmlElement("edmx:Edmx", { Version: "4.0", "xmlns:edmx": "http://docs.oasis-open.org/odata/ns/edmx" }, xmlElement("edmx:DataServices", {}, schemaLines))].join("\n") + "\n";
   }
 
@@ -1340,8 +1369,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     },
 
     serviceDocument(origin, version) {
-      const value = logicalNames()
-        .map((name) => source(name).entitySet)
+      const value = [...new Set([...METADATA_ENTITY_SETS, ...logicalNames().map((name) => source(name).entitySet)])]
         .sort()
         .map((name) => ({ name, kind: "EntitySet", url: name }));
       return { "@odata.context": `${origin}/api/data/${version}/$metadata`, value };
