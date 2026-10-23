@@ -206,7 +206,7 @@ export function compileForm(form, fields, lcid = 1033) {
     visible: tab.attrs.visible !== 'false',
     columnWidths: (child(tab, 'columns')?.children ?? []).filter(column => column.name === 'column').map(column => Number.parseFloat(column.attrs.width) || 100),
     sections: descendants(tab, 'section').map(section => ({
-      label: label(child(section, 'labels'), lcid) ?? '',
+      ...(section.attrs.name ? { name: section.attrs.name } : {}), label: label(child(section, 'labels'), lcid) ?? '',
       showLabel: section.attrs.showlabel !== 'false', visible: section.attrs.visible !== 'false',
       column: (child(tab, 'columns')?.children ?? []).findIndex(column => descendants(column, 'section').includes(section)),
       columns: sectionColumns(section),

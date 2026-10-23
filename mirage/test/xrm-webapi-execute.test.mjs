@@ -88,3 +88,29 @@ test('the /_apps/api/webapi bridge validates the request and forwards the staff 
   await unwired({ method: 'POST', headers: { 'x-sim-csrf': 'token' }, body: { method: 'GET', path: '/api/data/v9.2/WhoAmI' } }, res, new URL('http://127.0.0.1:1/_apps/api/webapi'));
   assert.equal(res.status, 501); assert.equal(res.body.error.code, 'WebApiExecuteUnavailable');
 });
+
+test('the app address answers Web API reads as the staff user and refuses writes through the session', async () => {
+  const seen = [];
+  const handler = createModelDrivenHandler({ catalogue: () => ({ tables: {} }), data: {}, csrf: () => 'token', json: (res, status, body) => { res.status = status; res.body = body; },
+    readBody: async req => req.body, change: fn => fn(), principal: () => ({ principalId: '77777777-7777-4777-8777-777777777777', kind: 'staff' }),
+    webApi: async input => { seen.push(input); return { status: 200, headers: { 'content-type': 'application/json', 'odata-version': '4.0' }, body: '{"value":[]}' }; } });
+  const call = async (method, target) => {
+    const res = { setHeader() {}, writeHead(status, headers) { this.status = status; this.headers = headers; }, end(body) { this.payload = body; } };
+    await handler({ method, headers: { host: '127.0.0.1:1', accept: 'application/json', cookie: 'ignored', referer: 'http://127.0.0.1:1/main.aspx?appid=x' } }, res, new URL(`http://127.0.0.1:1${target}`)); return res;
+  };
+  const read = await call('GET', '/api/data/v9.2/EntityDefinitions?$select=LogicalName');
+  assert.equal(read.status, 200); assert.equal(read.payload, '{"value":[]}'); assert.equal(read.headers['odata-version'], '4.0');
+  assert.deepEqual(seen[0], { method: 'GET', path: '/api/data/v9.2/EntityDefinitions?$select=LogicalName', headers: { accept: 'application/json' },
+    principal: { principalId: '77777777-7777-4777-8777-777777777777', kind: 'staff' }, host: '127.0.0.1:1' });
+  const write = await call('POST', '/api/data/v9.2/x_items');
+  assert.equal(write.status, 405); assert.equal(write.body.error.code, 'AppAddressReadOnly'); assert.equal(seen.length, 1, 'a write never reaches the Web API');
+  // A portal page (or a request without the app page as its referrer) is not answered: the shared address stays a portal address.
+  for (const referer of ['http://127.0.0.1:1/contact', undefined, 'http://other.example.test/main.aspx']) {
+    const res = { setHeader() {} };
+    assert.equal(await handler({ method: 'GET', headers: { host: '127.0.0.1:1', ...(referer ? { referer } : {}) } }, res, new URL('http://127.0.0.1:1/api/data/v9.2/WhoAmI')), false, String(referer));
+  }
+  assert.equal(seen.length, 1);
+  // Without the in-process Web API the address is not claimed.
+  const unwired = createModelDrivenHandler({ catalogue: () => ({}), data: {}, csrf: () => 'token', json() {}, readBody: async () => null, change: fn => fn() });
+  assert.equal(await unwired({ method: 'GET', headers: {} }, { setHeader() {} }, new URL('http://127.0.0.1:1/api/data/v9.2/WhoAmI')), false);
+});

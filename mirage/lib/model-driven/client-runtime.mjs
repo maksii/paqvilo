@@ -279,6 +279,8 @@ export function createFormClientRuntime(host) {
     }, `control(${name})`);
   }
   const controls = host.controlNames().map(name => makeControl(name));
+  const formItem = client({ getId: () => (host.form?.id ? `{${String(host.form.id).replace(/[{}]/g, '')}}` : null), getLabel: () => host.form?.name ?? '',
+    navigate: () => unsupported('formSelector item.navigate') }, 'formContext.ui.formSelector.item');
   const formContext = client({ getAttribute: name => name === undefined ? attributes : attributes.find(attribute => attribute.getName() === name) ?? null,
     getControl: name => name === undefined ? controls : controls.find(control => control.getName() === name) ?? null,
     data: client({ entity: client({ getId: () => host.record[host.table.idColumn] ? `{${host.record[host.table.idColumn]}}` : '', getEntityName: () => host.table.entity,
@@ -289,6 +291,13 @@ export function createFormClientRuntime(host) {
       addOnLoad: callback => add('onload', callback), removeOnLoad: callback => remove('onload', callback),
     }, 'formContext.data'),
     ui: client({ controls: collection(controls), getFormType: () => host.getFormType?.() ?? (host.record[host.table.idColumn] ? 2 : 1),
+      // Learn formContext.ui.formSelector: the open form; switching forms from a script is not supported locally.
+      formSelector: client({ getCurrentItem: () => formItem, items: collection(host.form?.id ? [formItem] : []) }, 'formContext.ui.formSelector'),
+      // Learn formContext.ui.tabs and tab.sections: names, labels and visibility of the exported form layout.
+      tabs: collection((host.form?.tabs ?? []).map(tab => client({ getName: () => tab.id, getLabel: () => tab.label, getVisible: () => host.layoutVisible?.(tab) ?? tab.visible !== false,
+        setVisible: visible => host.setLayoutVisible(tab, Boolean(visible)),
+        sections: collection((tab.sections ?? []).map(section => client({ getName: () => section.name ?? null, getLabel: () => section.label, getVisible: () => host.layoutVisible?.(section) ?? section.visible !== false,
+          setVisible: visible => host.setLayoutVisible(section, Boolean(visible)) }, 'formContext.ui.tab.section'))) }, 'formContext.ui.tab'))),
       setFormNotification: (message, level, id = 'default') => { notifications.add(id); host.notification(String(message), level, id); return true; },
       clearFormNotification: (id = 'default') => { notifications.delete(id); host.notification(null, null, id); return true; }, close: () => host.close(),
     }, 'formContext.ui'),
@@ -365,11 +374,17 @@ export function createFormClientRuntime(host) {
   const staff = host.staffContext ?? (host.user ? { ...ANONYMOUS_STAFF_CONTEXT, anonymous: false, userId: host.user.userId ?? host.user.principalId ?? host.user.id ?? '', userName: host.user.userName ?? host.user.name ?? '' } : ANONYMOUS_STAFF_CONTEXT);
   const roles = staff.roles.map(role => ({ ...role, getName: () => role.name }));
   const Xrm = client({ Page: formContext, WebApi: webApi,
-    Navigation: client({ openAlertDialog: options => host.alert(options.text ?? '', options.title ?? 'Message'), openConfirmDialog: options => host.confirm(options.text ?? '', options.title ?? 'Confirm').then(confirmed => ({ confirmed })), openForm: options => host.openForm(options),
+    Navigation: client({ openAlertDialog: options => host.alert(options.text ?? '', options.title ?? 'Message'),
+      // Learn Xrm.Navigation.openUrl: opens the address in a new window; only http(s) addresses are opened.
+      openUrl: url => { const target = new URL(String(url), (host.environment?.location ?? globalThis.location).href); if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Xrm.Navigation.openUrl opens http(s) addresses only.'); (host.environment?.open ?? globalThis.open)?.(target.href, '_blank', 'noopener'); }, openConfirmDialog: options => host.confirm(options.text ?? '', options.title ?? 'Confirm').then(confirmed => ({ confirmed })), openForm: options => host.openForm(options),
       navigateTo: (pageInput, navigationOptions) => { try { return host.openPage(...pageRequest(pageInput, navigationOptions, host.tables, host.dashboards)); } catch (error) { return Promise.reject(error); } },
     }, 'Xrm.Navigation'),
     ...(host.sidePanes ? { App: client({ sidePanes: host.sidePanes }, 'Xrm.App') } : {}),
-    Utility: client({ getGlobalContext: () => client({ getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
+    // Learn Xrm.Utility.getPageContext: the page the app shows (entityrecord or entitylist), from the shell's route.
+    Utility: client({ getPageContext: () => ({ input: { ...(host.pageContext?.() ?? { pageType: 'entityrecord', entityName: host.table.entity, entityId: host.record[host.table.idColumn] ?? null, formId: host.form?.id ?? null }) } }),
+      getGlobalContext: () => client({ getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
+      // Learn getGlobalContext.getVersion: the Web API version this organization serves.
+      getVersion: () => host.version ?? '9.2.0.0',
       // Learn (getGlobalContext.userSettings): the server-built staff context, the same one the PCF context reads.
       userSettings: client({ userId: staff.userId, userName: staff.userName, languageId: staff.languageId, isRTL: staff.isRTL, securityRoles: [...staff.securityRoles], roles: collection(roles),
         transactionCurrency: staff.transactionCurrency ? { id: staff.transactionCurrency.id, entityType: 'transactioncurrency', name: staff.transactionCurrency.name } : null,

@@ -51,29 +51,58 @@ export function modelDrivenPanelData(state, { cfg, ui = {}, activity = [], live 
     inspection: { active: true, version: state.inspectionVersion, loading: state.pendingInspection, loadingId: state.inspectionVersion,
       phase: state.inspectionError || 'Reading the current app and matching exported Solution sources.', mode: 'model-driven', status: { solutionCount: state.catalogue?.solutionCount ?? 0 } },
     sourceCatalogue: [...resources.map(item => ({ t: 'file', kind: 'web-file', title: item.name, rel: item.name, path: item.source, url: item.paths?.[0] })),
-      ...forms.map(form => ({ t: 'file', title: form.name, rel: form.source, path: form.source })),
+      ...forms.map(form => ({ t: 'file', kind: 'form', title: `${form.name} · ${form.type ?? 'main'} form of ${form.entity}`, rel: form.source, path: form.source })),
+      ...(state.catalogue?.tables ?? []).filter(table => table.source).map(table => ({ t: 'file', kind: 'table', title: `${table.label || table.logicalName} · table ${table.logicalName}`, rel: table.source, path: table.source })),
+      ...(state.catalogue?.views ?? []).filter(view => view.source).map(view => ({ t: 'file', kind: 'view', title: `${view.name} · ${view.type} view of ${view.entity}`, rel: view.source, path: view.source })),
+      ...(state.catalogue?.apps ?? []).filter(app => app.source).map(app => ({ t: 'file', kind: 'app', title: `${app.name ?? app.uniqueName} · app`, rel: app.source, path: app.source })),
       ...(state.catalogue?.commands ?? []).filter(command => command.source).map(command => ({ t: 'file', title: command.label || command.id, rel: command.source, path: command.source }))],
   };
 }
 
-/** Same Inspect and X-ray report contract; candidate ownership is kept distinct from an exact form ID. */
+/**
+ * Same Inspect and X-ray report contract, filled from the model-driven catalogue: the page's table (entity set, typed
+ * columns, Entity.xml), its form (by the native form ID, else the table's main forms as candidates), the form's bound
+ * columns, subgrids and code components, and on a list page the table's views (the current one first).
+ */
 export function modelDrivenPanelInspection(state) {
   const context = state.context ?? {}, catalogue = state.catalogue ?? { forms: [], commands: [] };
-  const exact = catalogue.forms.filter(form => form.id === context.formId);
-  const forms = exact.length ? exact : catalogue.forms.filter(form => form.entity === context.entity);
-  const mapped = forms.map(form => ({ ...form, kind: 'system-form', ref: form.source, formName: form.name,
-    evidence: exact.length ? 'native-form-id' : 'candidate-table-form' }));
+  const tables = new Map((catalogue.tables ?? []).map(table => [table.logicalName, table]));
+  const onForm = context.pageType === 'entityrecord' || Boolean(context.formId);
+  const exact = onForm ? catalogue.forms.filter(form => form.id === context.formId) : [];
+  // Without the native form ID the table's main forms are candidates; the first is what the app opens unless another is chosen.
+  const forms = !onForm ? [] : exact.length ? exact : catalogue.forms.filter(form => form.entity === context.entity && (!form.type || form.type.startsWith('main')));
+  const evidence = exact.length ? 'native-form-id' : 'candidate-table-form';
+  const evidenceLabel = exact.length ? 'Form ID of this page matched to the selected Solution' : `Candidate: ${forms.length === 1 ? 'the only main form' : 'a main form'} of ${context.entity ?? 'this table'}`;
+  const mapped = forms.map(form => ({ ...form, kind: 'model-driven-form', formType: form.type, ref: form.source, formName: form.name, evidence, evidenceLabel }));
+  const column = (table, name) => table?.columns?.find(item => item.name === name);
+  const columns = forms.flatMap(form => form.controls.filter(control => control.kind === 'field' || control.kind === 'pcf').map(control => {
+    const table = tables.get(form.entity), meta = column(table, control.name);
+    return { entity: form.entity, name: control.name, label: control.label ?? meta?.label, type: meta?.type, required: meta?.required ? meta.required !== 'none' : undefined,
+      maxLength: meta?.maxLength, resolved: Boolean(meta), ref: meta?.source ?? table?.source, formRef: form.source, formId: form.id, controlId: control.id, evidence };
+  }));
+  const view = !onForm ? (catalogue.views ?? []).find(item => item.id === context.viewId) : null;
+  const views = onForm ? forms.flatMap(form => form.controls.filter(control => control.subgrid?.view).map(control => (catalogue.views ?? []).find(item => item.id === control.subgrid.view)).filter(Boolean))
+    : (catalogue.views ?? []).filter(item => item.entity === context.entity && ['public', 'associated'].includes(item.type)).sort((a, b) => Number(b.id === view?.id) - Number(a.id === view?.id) || Number(b.isDefault) - Number(a.isDefault));
+  const usedTables = [...new Set([context.entity, ...forms.flatMap(form => form.controls.map(control => control.subgrid?.entity))].filter(Boolean))];
   return {
-    evidence: { source: 'Exported Solution forms, PCF resources and commands matched to read-only native context. Native record values and effective access are not inferred.' },
+    evidence: { source: 'Tables, forms, views and commands of the selected Solution matched to read-only native context. Native record values and effective access are not inferred.' },
     modelDriven: { ...context, catalogue },
-    pageSources: mapped.map(form => ({ name: form.name, kind: 'System form', ref: form.ref })),
-    forms: mapped, columns: forms.flatMap(form => form.controls.map(control => ({ entity: form.entity, name: control.name, label: control.label,
-      ref: form.source, formId: form.id, controlId: control.id, evidence: exact.length ? 'native-form-id' : 'candidate-table-form' }))),
+    pageSources: [...mapped.map(form => ({ name: form.name, kind: `${form.formType ?? 'main'} form`, ref: form.ref })),
+      ...(view ? [{ name: view.name, kind: 'View', ref: view.source }] : []),
+      ...(tables.get(context.entity)?.source ? [{ name: `${tables.get(context.entity).label || context.entity} table`, kind: 'Table definition', ref: tables.get(context.entity).source }] : [])],
+    forms: mapped,
+    columns: onForm ? columns : (view ? view.columns.map(name => { const table = tables.get(context.entity), meta = column(table, name); return { entity: context.entity, name, label: meta?.label, type: meta?.type, resolved: Boolean(meta), ref: meta?.source ?? table?.source, evidence: 'view-column' }; }) : []),
+    views: views.map(item => ({ ...item, fields: item.columns.map(name => ({ name })), ref: item.source, evidence: item.id === context.viewId ? 'rendered-view-id' : undefined })),
+    nativeComponents: forms.flatMap(form => form.controls.filter(control => control.kind === 'subgrid' || control.kind === 'quick-view').map(control => ({ id: control.id, name: control.label ?? control.id, kind: control.kind === 'subgrid' ? 'subgrid' : 'quickform',
+      owner: form.name, formId: form.id, entity: control.subgrid?.entity, relationship: control.subgrid?.relationship, view: control.subgrid?.view, ref: form.source, evidence: 'exported-form-control' }))),
+    codeComponents: forms.flatMap(form => form.controls.filter(control => control.pcf).map(control => ({ name: control.pcf.name, schemaName: control.pcf.name, owner: form.name, formId: form.id, field: control.name,
+      expression: `${form.entity}.${control.name || control.id}`, binding: 'native-formxml', selectedDesktop: true, enablement: 'configured', ref: form.source }))),
     assets: state.resources.map(item => ({ name: item.name, url: item.paths?.[0], ref: item.name, path: item.source,
       evidence: item.currentRevisionApplied ? 'rendered-asset' : 'declared-asset' })),
     components: forms.flatMap(form => form.events.map(event => ({ name: event.name, kind: 'form-event', owner: form.name, entity: form.entity,
       ref: form.source, handlers: event.handlers, evidence: 'exported-event' }))),
-    tables: context.entity ? [{ logicalName: context.entity, displayName: context.entity }] : [],
+    tables: usedTables.map(name => { const table = tables.get(name); return table ? { logicalName: name, displayName: table.label || undefined, entitySet: table.entitySet, fieldCount: table.fieldCount, ref: table.source, sourceRefs: [{ ref: table.source }] }
+      : { logicalName: name, displayName: name }; }),
     unresolved: state.diagnostics.map(item => ({ name: item.code, message: item.message, ref: item.source })),
   };
 }
@@ -95,7 +124,7 @@ export function modelDrivenPanelUi(input) {
 export function modelDrivenSourceFiles(state) {
   const allowed = new Map();
   for (const resource of state.resources ?? []) if (resource.source && path.isAbsolute(resource.source)) { allowed.set(resource.name, resource.source); allowed.set(resource.source, resource.source); }
-  for (const entry of [...(state.catalogue?.forms ?? []), ...(state.catalogue?.commands ?? [])]) if (entry.source && path.isAbsolute(entry.source)) allowed.set(entry.source, entry.source);
+  for (const entry of [...(state.catalogue?.forms ?? []), ...(state.catalogue?.commands ?? []), ...(state.catalogue?.tables ?? []), ...(state.catalogue?.views ?? []), ...(state.catalogue?.apps ?? [])]) if (entry.source && path.isAbsolute(entry.source)) allowed.set(entry.source, entry.source);
   return allowed;
 }
 

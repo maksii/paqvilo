@@ -35,3 +35,25 @@ test('diagnostic toggles preserve source routes and unrelated duplicate flags, t
   for (const parameter of ['monitor', 'ribbondebug', 'perf']) assert.equal(reset.searchParams.has(parameter), false);
   assert.equal(reset.searchParams.get('id'), 'record'); assert.equal(reset.hash, '#tab');
 });
+
+test('availability follows the page: a list page keeps form actions apart even when a closed form left Xrm.Page behind', async () => {
+  const { modelDrivenActionAvailability } = await import('../lense/model-driven-action-runner.mjs');
+  const saved = { window: globalThis.window, location: globalThis.location };
+  const stalePage = { data: { entity: { getEntityName: () => 'inv_item', getId: () => '{00000000-0000-4000-8000-000000000001}' } }, ui: { getFormType: () => 2 } };
+  const context = { getClientUrl: () => 'http://127.0.0.1:1', getVersion: () => '9.2.0.0', get organizationSettings() { throw new Error('Mirage client API does not support globalContext.organizationSettings.'); } };
+  const page = (pageType, search) => {
+    globalThis.location = { origin: 'http://127.0.0.1:1', search };
+    globalThis.window = { fetch() {}, Xrm: { Page: stalePage, Utility: { getGlobalContext: () => context, getPageContext: () => ({ input: { pageType } }) }, Navigation: { openUrl() {}, openForm() {} } } };
+    return Object.fromEntries(modelDrivenActionAvailability({ origin: 'http://127.0.0.1:1', actions: MODEL_DRIVEN_ACTIONS }).map(item => [item.id, item]));
+  };
+  try {
+    const list = page('entitylist', '?appid=x');
+    assert.equal(list['form:show-logical-names'].available, false); assert.equal(list['form:show-logical-names'].needsRecord, true);
+    assert.match(list['form:record-id'].reason, /Open a record form/);
+    assert.equal(list['navigation:open-list'].available, true, 'app-level actions stay available on a list');
+    assert.match(list['navigation:open-security'].reason, /Power Platform environment ID/);
+    const record = page('entityrecord', '?pagetype=entityrecord&etn=inv_item');
+    assert.equal(record['form:show-logical-names'].available, true); assert.equal(record['form:record-id'].available, true);
+    assert.equal(record['form:all-fields'].available, true, 'the reported Web API version allows metadata reads');
+  } finally { globalThis.window = saved.window; globalThis.location = saved.location; }
+});

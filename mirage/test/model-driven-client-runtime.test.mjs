@@ -185,3 +185,28 @@ test('modern AppAction compiles its exported WebResource ID and PrimaryControl w
   assert.equal(parseAppActionCommand(xml.replace('<hidden>0</hidden>', '<statecode>1</statecode>'), { webresourcesById: { 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa': 'x_/sample.js' } }).supported, false);
   assert.equal(parseAppActionCommand(xml.replace('[{"type":5,"value":null}]', 'window.alert(1)'), { webresourcesById: { 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa': 'x_/sample.js' } }).supported, false);
 });
+
+test('page context, version, openUrl, form selector and tab visibility follow Learn and the shell route', () => {
+  const opened = [], visibility = [];
+  const tab = { id: 'general', label: 'General', visible: true, sections: [{ name: 'details', label: 'Details', visible: true }] };
+  const { runtime } = runtimeFixture({ form: { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'Invented form', clientEvents: [], tabs: [tab] },
+    pageContext: () => ({ pageType: 'entitylist', entityName: 'x_item', viewId: 'view-1', viewType: 'savedquery' }),
+    setLayoutVisible: (item, visible) => visibility.push([item.id ?? item.name, visible]),
+    environment: { location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' }, open: (...args) => opened.push(args) } });
+  assert.deepEqual(runtime.Xrm.Utility.getPageContext().input, { pageType: 'entitylist', entityName: 'x_item', viewId: 'view-1', viewType: 'savedquery' });
+  assert.equal(runtime.Xrm.Utility.getGlobalContext().getVersion(), '9.2.0.0');
+  runtime.Xrm.Navigation.openUrl('/api/data/v9.2/x_items');
+  assert.deepEqual(opened, [['http://127.0.0.1:1234/api/data/v9.2/x_items', '_blank', 'noopener']]);
+  assert.throws(() => runtime.Xrm.Navigation.openUrl('javascript:alert(1)'), /http\(s\) addresses only/);
+  const selector = runtime.formContext.ui.formSelector;
+  assert.equal(selector.getCurrentItem().getId(), '{bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb}'); assert.equal(selector.getCurrentItem().getLabel(), 'Invented form'); assert.equal(selector.items.getLength(), 1);
+  const general = runtime.formContext.ui.tabs.get('general');
+  assert.equal(general.getLabel(), 'General'); assert.equal(general.getVisible(), true);
+  general.setVisible(false); general.sections.get('details').setVisible(false);
+  assert.deepEqual(visibility, [['general', false], ['details', false]]);
+});
+
+test('without a shell route the page context describes the open record', () => {
+  const { runtime } = runtimeFixture({ form: { id: 'form-1', clientEvents: [] } });
+  assert.deepEqual(runtime.Xrm.Utility.getPageContext().input, { pageType: 'entityrecord', entityName: 'x_item', entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', formId: 'form-1' });
+});

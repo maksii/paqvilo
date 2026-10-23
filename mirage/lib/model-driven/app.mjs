@@ -14,6 +14,9 @@ const storage = {
 let catalogue, app, table, current, query = {}, selected = new Set(), record, recordCapabilities, etag, formId, activeTab, activeArea, activeNavigationItem, controls = [], dirty = false, pending = false, generation = 0, tabObserver, commandObserver, staffIdentity, staffSession, staffSessionError = '';
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
 let touchedFields = new Set();
+// Tab and section visibility changed by client scripts, for the open form only (Learn tab.setVisible, section.setVisible).
+const layoutState = new Map();
+const layoutVisible = item => (layoutState.has(item) ? layoutState.get(item) : item.visible !== false);
 let loadedFormType = 1;
 let clientRuntime, clientReady = Promise.resolve(), clientChanges = Promise.resolve(), requestingSave = false;
 let gridSearchTimer, dialogLifetime, formLifetime, dismissPicker;
@@ -36,7 +39,7 @@ function reflowSectionFields(host) {
   }
 }
 const disposeControls = () => { for (const entry of controls) entry.control.destroy?.(); controls = []; };
-function disposeClient() { dismissPicker?.(false); clearTimeout(gridSearchTimer); formLifetime?.abort(); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); $('#form-notifications')?.remove(); $('#record-status')?.remove(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
+function disposeClient() { layoutState.clear(); dismissPicker?.(false); clearTimeout(gridSearchTimer); formLifetime?.abort(); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); $('#form-notifications')?.remove(); $('#record-status')?.remove(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
 function contentLoading(text) {
   document.documentElement.dataset.mirageAppState = 'loading';
@@ -406,7 +409,8 @@ function display(value, field, row, name) {
   return String(value);
 }
 function gridCell(source, row, name) {
-  const cell = document.createElement('td'), field = source.fields[name], raw = row[name], text = display(raw, field, row, name); cell.title = text;
+  // Grid headers and cells carry their column name (data-id), so tools such as Lense X-ray can name the column.
+  const cell = document.createElement('td'), field = source.fields[name], raw = row[name], text = display(raw, field, row, name); cell.title = text; cell.dataset.id = name;
   if (field?.type === 'number' && !field.options) cell.className = 'numeric-cell';
   if (name === source.nameColumn) cell.append(button(text || '(No name)', () => navigate(source.entity, { id: row[source.idColumn] }), { className: 'link' + (source.grid?.control === 'Microsoft.PowerApps.PowerAppsOneGrid' ? ' primary-grid-link' : '') }));
   else if (field?.type === 'lookup' && raw != null && text) {
@@ -456,7 +460,7 @@ function renderGrid() {
   const head = document.createElement('thead'), headings = document.createElement('tr'), selection = document.createElement('th'); selection.className = 'selection';
   const all = document.createElement('input'); all.type = 'checkbox'; all.setAttribute('aria-label', 'Select all records'); all.addEventListener('change', () => { selected = new Set(all.checked ? current.rows.map(row => String(row[table.idColumn])) : []); renderRows(); renderCommands('grid'); }); selection.append(all); headings.append(selection);
   for (const name of current.columns) {
-    const th = document.createElement('th'); th.scope = 'col';
+    const th = document.createElement('th'); th.scope = 'col'; th.dataset.id = name;
     const direction = current.sort === name ? current.direction === 'desc' ? ' ↓' : ' ↑' : '';
     const heading = button((table.fields[name]?.label ?? name) + direction, () => columnMenu(heading, name), { disabled: !table.fields[name], chevron: true }); heading.setAttribute('aria-haspopup', 'menu'); heading.setAttribute('aria-expanded', 'false'); th.append(heading);
     if (current.sort === name) th.setAttribute('aria-sort', current.direction === 'desc' ? 'descending' : 'ascending'); headings.append(th);
@@ -691,10 +695,10 @@ async function renderRecord() {
   }
   if (selectedForm.hasScripts) { const warning = document.createElement('span'); warning.className = 'script-indicator'; warning.textContent = catalogue.clientExtensions?.trusted ? 'Local Solution scripts' : 'Local scripts disabled'; warning.title = catalogue.clientExtensions?.trusted ? 'Explicitly trusted exported scripts execute against the bounded local client API.' : 'Trust local Solution client extensions in configuration to run exported form events.'; header.append(warning); }
   const tabs = document.createElement('div'); tabs.className = 'tabs'; tabs.setAttribute('role', 'tablist');
-  const availableTabs = selectedForm.tabs.filter(tab => tab.visible !== false);
+  const availableTabs = selectedForm.tabs.filter(layoutVisible);
   activeTab = availableTabs.some(tab => tab.id === activeTab) ? activeTab : availableTabs[0]?.id;
   const chooseTab = async (tab, focus = false) => { captureDraft(); activeTab = tab.id; await renderRecord(); if (focus) $('#content [role="tab"][aria-selected="true"]')?.focus(); };
-  for (const [index, tab] of availableTabs.entries()) { const tabButton = button(tab.label, () => chooseTab(tab)); tabButton.id = `record-tab-${index}`; tabButton.setAttribute('role', 'tab'); tabButton.setAttribute('aria-controls', 'record-form'); tabButton.setAttribute('aria-selected', String(tab.id === activeTab)); tabButton.tabIndex = tab.id === activeTab ? 0 : -1; tabs.append(tabButton); }
+  for (const [index, tab] of availableTabs.entries()) { const tabButton = button(tab.label, () => chooseTab(tab)); tabButton.id = `record-tab-${index}`; tabButton.dataset.id = `tablist-${tab.id}`; tabButton.setAttribute('role', 'tab'); tabButton.setAttribute('aria-controls', 'record-form'); tabButton.setAttribute('aria-selected', String(tab.id === activeTab)); tabButton.tabIndex = tab.id === activeTab ? 0 : -1; tabs.append(tabButton); }
   const tabButtons = [...tabs.children];
   const moreTabs = button('More tabs', () => picker(moreTabs, availableTabs.map(tab => ({ label: tab.label, value: tab.id })), { label: 'Record tabs', selected: activeTab, choose: id => chooseTab(availableTabs.find(tab => tab.id === id), true) }), { iconName: 'more', iconOnly: true }); moreTabs.setAttribute('aria-haspopup', 'dialog'); moreTabs.setAttribute('aria-expanded', 'false'); moreTabs.hidden = true;
   tabs.addEventListener('keydown', event => {
@@ -725,8 +729,9 @@ async function renderRecord() {
   form.style.gridTemplateColumns = widths.map(width => `${Math.max(1, width)}fr`).join(' ');
   const columns = widths.map(() => { const column = document.createElement('div'); column.className = 'form-column'; form.append(column); return column; });
   for (const section of tab?.sections ?? []) {
-    if (section.visible === false) continue;
-    const panel = document.createElement('section'); panel.className = 'form-section'; if (section.label && section.showLabel !== false) { const title = document.createElement('h2'); title.textContent = section.label; panel.append(title); }
+    if (!layoutVisible(section)) continue;
+    // Native-style markers (data-id) name each section, field and subgrid as the exported form does, for tools such as Lense X-ray.
+    const panel = document.createElement('section'); panel.className = 'form-section'; if (section.name) panel.dataset.id = section.name; if (section.label && section.showLabel !== false) { const title = document.createElement('h2'); title.textContent = section.label; panel.append(title); }
     if (section.labelPosition) panel.dataset.labelPosition = section.labelPosition;
     if (section.labelAlignment) panel.dataset.labelAlignment = section.labelAlignment;
     const fields = document.createElement('div'); fields.className = 'section-fields'; fields.dataset.columns = String(section.columns ?? 1); panel.append(fields);
@@ -741,7 +746,7 @@ async function renderRecord() {
       if (cell.showLabel === false) label.className = 'sr-only';
       setFieldLock(label, disabled && (cell.disabled || field.isPrimaryId || field[existing ? 'validForUpdate' : 'validForCreate'] === false));
       const name = cell.sourceControl?.id ?? field.name;
-      const control = renderFieldControl(cell, field, disabled); wrapper.append(label, control.element); position(wrapper); controls.push({ name: field.name, controlName: name, cell, wrapper, label, control, disabled });
+      const control = renderFieldControl(cell, field, disabled); wrapper.dataset.id = name; control.element.dataset.id ??= `${name}.fieldControl-${field.type}`; wrapper.append(label, control.element); position(wrapper); controls.push({ name: field.name, controlName: name, cell, wrapper, label, control, disabled });
     }
     reflowSectionFields(fields); columns[Math.max(0, section.column ?? 0)]?.append(panel);
   }
@@ -804,6 +809,9 @@ function createShellClient(selectedForm) {
     webApi: request => api('/webapi', { method: 'POST', body: JSON.stringify(request) }),
     offline: offlineHost(),
     openPage, sidePanes, dashboards: app.dashboards,
+    pageContext: () => (record ? { pageType: 'entityrecord', entityName: table.entity, entityId: record[table.idColumn] ?? null, formId: selectedForm.id ?? null }
+      : { pageType: 'entitylist', entityName: table.entity, viewId: query.view ?? null, viewType: 'savedquery' }),
+    layoutVisible, setLayoutVisible: (item, visible) => { layoutState.set(item, visible); const runtime = clientRuntime; requestAnimationFrame(() => { if (runtime === clientRuntime && record) { captureDraft(); renderRecord(); } }); },
     read: name => { const entry = controls.find(entry => entry.name === name); return entry?.control.supported ? entry.control.read() : record?.[name]; },
     write: (name, value) => {
       const field = table.fields[name], cell = cells.find(cell => cell.name === name) ?? (selectedForm.attributes?.includes(name) ? { name } : undefined), mode = record?.[table.idColumn] ? 'update' : 'create';
@@ -841,7 +849,7 @@ function createShellClient(selectedForm) {
 }
 /** A form sub-grid, or a dashboard list (`cell.dashboard`: the same grid over the view query without a parent record). */
 function renderSubgrid(cell) {
-  const panel = document.createElement('section'); panel.className = 'related-grid';
+  const panel = document.createElement('section'); panel.className = 'related-grid'; if (cell.sourceControl?.id) panel.dataset.id = `dataSetRoot_${cell.sourceControl.id}`;
   const target = catalogue.tables[cell.subgrid.entity], parentId = cell.dashboard ? null : record[table.idColumn];
   const label = cell.label?.trim() || target?.label || 'Related records';
   const heading = document.createElement('h3'); heading.textContent = label;
@@ -914,7 +922,7 @@ function renderSubgrid(cell) {
       const head = document.createElement('thead'), headings = document.createElement('tr'), selectHeading = document.createElement('th'); selectHeading.className = 'selection';
       const all = document.createElement('input'); all.type = 'checkbox'; all.setAttribute('aria-label', `Select all ${label}`); selectHeading.append(all); headings.append(selectHeading);
       for (const name of result.columns) {
-        const th = document.createElement('th'), arrow = result.sort === name ? result.direction === 'desc' ? ' ↓' : ' ↑' : '';
+        const th = document.createElement('th'), arrow = result.sort === name ? result.direction === 'desc' ? ' ↓' : ' ↑' : ''; th.dataset.id = name;
         th.append(button((target.fields[name]?.label ?? name) + arrow, () => { direction = result.sort === name && result.direction !== 'desc' ? 'desc' : 'asc'; sort = name; return load(); }, { chevron: true, disabled: !target.fields[name] })); headings.append(th);
       }
       head.append(headings); grid.append(head);
@@ -1209,6 +1217,8 @@ async function loadRoute() {
     const saved = history.state?.grid, restore = saved?.application === app.id && saved?.entity === entity && saved?.query?.view === view ? saved.query : {};
     query = { page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}), ...restore, view };
     await loadGrid(); remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
+    // A list page has its own client: the closed form's Xrm.Page never answers here, and getPageContext says entitylist.
+    if (!clientRuntime) clientRuntime = createShellClient({ clientEvents: [], tabs: [] });
   }
 }
 $('#mobile-navigation').addEventListener('click', () => { const sidebar = $('#sidebar'); sidebar.classList.toggle('mobile-open'); $('#mobile-navigation').setAttribute('aria-expanded', String(sidebar.classList.contains('mobile-open'))); });

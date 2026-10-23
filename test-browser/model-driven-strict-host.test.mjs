@@ -73,7 +73,7 @@ test('a strict CSP and throwing client API keep Actions readable and runnable, X
   await host.getByRole('button', { name: 'Run action', exact: true }).click();
   await host.locator('.actions-status').filter({ hasText: 'Completed.' }).waitFor();
   await host.getByText('The current form draft has no changed attributes.').waitFor();
-  assert.match(await host.getByRole('button', { name: /^Table processes/ }).textContent(), /does not provide metadata support/);
+  assert.match(await host.getByRole('button', { name: /^Table processes/ }).textContent(), /does not report its Web API version/);
 
   // Inspect counts the selected roots; X-ray outlines and binds a field without a native data-id.
   await host.getByRole('tab', { name: 'Inspect', exact: true }).click();

@@ -41,10 +41,11 @@ commands disabled with an explanation.
 | Attributes | Get/set values, initial values, dirty state, metadata-derived type, required level, choice options/text, add/remove/fire OnChange, attribute control collection. Only the columns bound on the selected form (body, header and footer controls) are attributes: `getAttribute(name)` and `getControl(name)` return `null` for any other column, including the primary id when it is not on the form. Header and footer columns have the controls `header_<column>` and `footer_<column>`; they are not rendered, so their getters answer the column defaults and their setters throw a named error. Business process flow stage columns are not attributes |
 | Controls | Get/set visibility, disabled state and label; focus; notifications; bound attribute |
 | Form data | Entity ID/name/primary name, attributes, dirty state, add/remove OnSave, save and refresh |
-| Form UI | Create/existing/disabled inactive form type, control collection, form notifications, close |
-| Navigation | Alert and confirmation dialogs; `openForm` (another imported local form, including its app-owned `formId`); `navigateTo` for `entityrecord`, `entitylist` and `webresource` pages, inline (`target: 1`) or as a dialog (`target: 2`, `position: 1` center or `2` side). A dialog resolves when it closes; a record opened in create mode resolves with `savedEntityReference` once it was saved, and every other page resolves with no value. `pageType: 'dashboard'` opens one of the app's Solution dashboards by `dashboardId`, or the app's first dashboard when no id is given, inline or as a dialog, and rejects with `DashboardPageUnsupported` when the app's sources hold no such dashboard; `pageType: 'custom'` (a `name`, optional `entityName` and `recordId`, a GUID) opens the headless canvas host of the canvas app with that logical name (see [Canvas apps](canvas-apps.md)) |
+| Form UI | Create/existing/disabled inactive form type, control collection, form notifications, close; `formSelector.getCurrentItem()` and `items` (the open form; switching forms from a script is not supported); `tabs` and their `sections` with names, labels and `getVisible`/`setVisible` for the open form |
+| Navigation | Alert and confirmation dialogs; `openUrl` (http(s) addresses, in a new window); `openForm` (another imported local form, including its app-owned `formId`); `navigateTo` for `entityrecord`, `entitylist` and `webresource` pages, inline (`target: 1`) or as a dialog (`target: 2`, `position: 1` center or `2` side). A dialog resolves when it closes; a record opened in create mode resolves with `savedEntityReference` once it was saved, and every other page resolves with no value. `pageType: 'dashboard'` opens one of the app's Solution dashboards by `dashboardId`, or the app's first dashboard when no id is given, inline or as a dialog, and rejects with `DashboardPageUnsupported` when the app's sources hold no such dashboard; `pageType: 'custom'` (a `name`, optional `entityName` and `recordId`, a GUID) opens the headless canvas host of the canvas app with that logical name (see [Canvas apps](canvas-apps.md)) |
 | App | `Xrm.App.sidePanes`: `createPane`, `getAllPanes`, `getPane`, `getSelectedPane`, `state`; a pane `navigate`s to the same page types, `select`s and `close`s. Panes stay open across in-app navigation until closed. `state` reads back the value set (0 collapsed, 1 expanded) |
-| Global context | Local client URL, Web client, client and online state from the session's offline mode (`getClient()` `Web`, or `Mobile` while offline; `getClientState()` `Online` or `Offline`; `isOffline()`), and `userSettings` from the [staff context](#staff-context): `userId`, `userName`, `languageId`, `isRTL`, `roles`, `securityRoles`, `transactionCurrency`, `transactionCurrencyId`, `dateFormattingInfo`, `getTimeZoneOffsetMinutes()` |
+| Utility | `getPageContext().input`: `entityrecord` (table, record ID, form ID) on a record form, `entitylist` (table, view ID) on a list page. A list page has its own client, so a closed form never answers there |
+| Global context | `getVersion()` (`9.2.0.0`, the Web API version served), local client URL, Web client, client and online state from the session's offline mode (`getClient()` `Web`, or `Mobile` while offline; `getClientState()` `Online` or `Offline`; `isOffline()`), and `userSettings` from the [staff context](#staff-context): `userId`, `userName`, `languageId`, `isRTL`, `roles`, `securityRoles`, `transactionCurrency`, `transactionCurrencyId`, `dateFormattingInfo`, `getTimeZoneOffsetMinutes()` |
 | WebApi | Retrieve one/multiple records, scalar and multiselect writes, imported single-valued lookup bindings, create/update/delete through the local staff pipeline, plus `execute` and `executeMultiple` (also on `Xrm.WebApi.online`) |
 
 WebApi reads use the canonical organization query engine and current staff
@@ -134,3 +135,16 @@ registered organization extension; the row lives in the private runtime table
 `usersettings`, seeded rows win on reset, and another user's row answers 403. When the
 staff session cannot be read, components and scripts get the documented anonymous context:
 no user, no roles, language 1033, UTC, no currency and no formatting information.
+
+## Page markers and the Web API on the app address
+
+Like a native app, the shell marks what tools such as Lense X-ray read: each form section, field (container
+`data-id="<control>"`, control `data-id="<control>.fieldControl-<type>"`), tab (`tablist-<tab>`) and subgrid
+(`dataSetRoot_<control>`), and each grid header and cell with its column name.
+
+The app's own pages (`/main.aspx` and `/_apps/`, by their same-origin referrer) can read `/api/data/v9.x/` on the app's
+address with `GET` and `HEAD`, as the signed-in staff user (the local administrator without a staff session), through the
+same in-process Web API as `Xrm.WebApi`. Other pages, such as a Power Pages page on the shared address, get no Web API there,
+as on a native portal. Other methods are refused
+with `AppAddressReadOnly`, so a page cannot change data through the session; scripts write through `Xrm.WebApi`, and
+programs use the Dataverse Web API listener with a token.

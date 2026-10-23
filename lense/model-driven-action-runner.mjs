@@ -3,13 +3,23 @@
 
 /** Passive API presence checks. Do not call getId/getValue or read form values here. */
 export function modelDrivenActionAvailability({ origin, actions = [] }) {
+  // Inside the function: page.evaluate serializes this function alone.
+  const REQUIREMENT_TEXT = { metadata: 'This app does not report its Web API version (getGlobalContext().getVersion), so table metadata cannot be read.',
+    environment: 'This app does not report a Power Platform environment ID; a local simulator has none.', privileges: 'This app does not expose the security role privileges of the signed-in user.',
+    navigate: 'This app cannot open addresses (Xrm.Navigation.openUrl).', 'open-form': 'This app cannot open forms from a script (Xrm.Navigation.openForm).',
+    'side-panes': 'This app has no side panes (Xrm.App.sidePanes).', 'form-selector': 'This form does not report which form is open (formSelector).',
+    'save-events': 'This form does not expose save events.', refresh: 'This form cannot be refreshed from a script.', context: 'This app does not expose its global context.' };
   const safe = callback => { try { return callback(); } catch { return undefined; } };
   const xrm = window.Xrm, form = safe(() => xrm?.Page), context = safe(() => xrm?.Utility?.getGlobalContext()), type = safe(() => form?.ui?.getFormType());
   // A bounded client API (or a native getter) may throw for an unsupported member;
   // that member is unavailable, never a failure of every other check.
+  // The page decides what a form action can work on: the native page context, else the address (pagetype). A list,
+  // dashboard or custom page has no form even when the app keeps an Xrm.Page object around.
+  const pageType = safe(() => xrm?.Utility?.getPageContext?.()?.input?.pageType) ?? new URLSearchParams(location.search).get('pagetype') ?? undefined;
+  const onRecord = pageType === undefined ? Boolean(safe(() => form?.data?.entity?.getEntityName?.())) : pageType === 'entityrecord';
   const checks = {
-    context: () => context, form: () => form?.data?.entity && form?.ui,
-    'saved-record': () => form?.data?.entity?.getId && type !== 1,
+    context: () => context, form: () => onRecord && form?.data?.entity && form?.ui,
+    'saved-record': () => onRecord && form?.data?.entity?.getId && type !== 1,
     metadata: () => context?.getClientUrl && context?.getVersion && window.fetch,
     'open-form': () => typeof xrm?.Navigation?.openForm === 'function', navigate: () => context?.getClientUrl && xrm?.Navigation?.openUrl,
     refresh: () => typeof form?.data?.refresh === 'function',
@@ -21,7 +31,11 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
   };
   return actions.map(action => {
     const missing = action.requirements?.find(requirement => !checks[requirement] || !safe(checks[requirement]));
-    return { id: action.id, available: location.origin === origin && !missing, reason: location.origin !== origin ? 'The app left this Lense environment.' : missing ? `The current native page does not provide ${missing.replaceAll('-', ' ')} support.` : undefined };
+    const reason = location.origin !== origin ? 'The app left this Lense environment.'
+      : ['form', 'saved-record'].includes(missing) && !onRecord ? 'Open a record form to use this; this page is not a form.'
+      : missing === 'saved-record' ? 'Save the record first; this form has no saved record yet.'
+      : missing ? REQUIREMENT_TEXT[missing] ?? `The current native page does not provide ${missing.replaceAll('-', ' ')} support.` : undefined;
+    return { id: action.id, available: location.origin === origin && !missing, reason, needsRecord: ['form', 'saved-record'].includes(missing) && !onRecord };
   });
 }
 
@@ -150,8 +164,9 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
       outcome = result('Native identity', allowed ? 'The signed-in user has the native acting-as privilege. Server authorization still applies to each request.' : 'The exact native acting-as privilege was not found.', { identity: { canImpersonate: allowed, signedInUserId: guid(user.userId), name: bounded(user.userName) } });
     } else if (action === 'admin:environment-context') {
       if (!context) fail('The native global context is unavailable.');
-      const org = context.organizationSettings ?? {}, user = context.userSettings ?? {};
-      outcome = rowsResult('Environment and signed-in user', ['Property', 'Value'], [['Client URL', client()], ['Version', context.getVersion?.()], ['Environment ID', org.bapEnvironmentId], ['Organization ID', org.organizationId], ['Unique name', org.uniqueName], ['User ID', user.userId], ['User name', user.userName], ['Language', user.languageId], ['Roles', list(user.roles).map(role => role.name).join(', ')]]);
+      // Each value is read on its own: one the app does not report (a local simulator has no Power Platform environment) shows as not reported.
+      const org = safe(() => context.organizationSettings) ?? {}, user = safe(() => context.userSettings) ?? {}, read = (owner, key) => safe(() => owner[key]) ?? 'not reported';
+      outcome = rowsResult('Environment and signed-in user', ['Property', 'Value'], [['Client URL', client()], ['Version', safe(() => context.getVersion?.()) ?? 'not reported'], ['Environment ID', read(org, 'bapEnvironmentId')], ['Organization ID', read(org, 'organizationId')], ['Unique name', read(org, 'uniqueName')], ['User ID', read(user, 'userId')], ['User name', read(user, 'userName')], ['Language', read(user, 'languageId')], ['Roles', list(user.roles).map(role => role.name).join(', ')]]);
     } else if (action === 'form:record-id' || action === 'form:record-url') {
       requireForm(); const id = recordId(), value = action.endsWith('record-id') ? id : (() => { const url = pageUrl(entity(), id, 'entityrecord'); const formId = safe(() => guid(captured.form)); if (formId) url.searchParams.set('formid', formId); return url.href; })();
       outcome = result(action.endsWith('record-id') ? 'Record ID' : 'Record URL', value, { copyText: value });

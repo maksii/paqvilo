@@ -34,7 +34,12 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
     const shell = url.pathname === '/main.aspx' || /^\/_apps\/?$/.test(url.pathname);
     const asset = /^\/_apps\/assets\/([^/]+)$/.exec(url.pathname);
     const api = /^\/_apps\/api(?:\/(.*))?$/.exec(url.pathname);
-    if (!shell && !asset && !api && !url.pathname.startsWith('/_apps/')) return false;
+    // The app's own pages read the Dataverse Web API on their address as the signed-in staff user, as a native app does
+    // (reads only). Only requests from those pages (same-origin Referer /main.aspx or /_apps/) are answered: the Power
+    // Pages host shares this address with the portal, which never answers /api/data.
+    const fromAppPage = (() => { try { const referer = new URL(req.headers.referer ?? ''); return referer.host === req.headers.host && (referer.pathname === '/main.aspx' || referer.pathname.startsWith('/_apps/')); } catch { return false; } })();
+    const dataApi = Boolean(webApi) && fromAppPage && /^\/api\/data\/v9\.\d(?:\/|$)/.test(url.pathname);
+    if (!shell && !asset && !api && !dataApi && !url.pathname.startsWith('/_apps/')) return false;
     res.setHeader('cache-control', 'no-store');
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('x-frame-options', 'SAMEORIGIN');
@@ -61,6 +66,18 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
         res.writeHead(200, { 'content-type': shell ? 'text/html; charset=utf-8' : assets[name] });
         res.end(req.method === 'HEAD' ? undefined : content);
         return true;
+      }
+      if (dataApi) {
+        // Learn (Web API from client-side script): same-origin requests carry the signed-in session. Only GET and HEAD are
+        // served here, so a page cannot change data through the session cookie; scripts write through Xrm.WebApi.
+        if (!['GET', 'HEAD'].includes(req.method)) throw Object.assign(fail('The Web API on the app address accepts GET only; use Xrm.WebApi or the Dataverse Web API listener to change data.', 405), { code: 'AppAddressReadOnly' });
+        const actor = principal(req);
+        if (!['staff', 'local-admin'].includes(actor?.kind)) throw Object.assign(fail('Sign in to the app to read the Web API on its address.', 401), { code: 'StaffPrincipalUnavailable' });
+        const headers = Object.fromEntries(Object.entries(req.headers).filter(([name, value]) => /^(?:prefer|accept|if-none-match)$/i.test(name) && typeof value === 'string'));
+        const result = await webApi({ method: 'GET', path: url.pathname + url.search, headers, principal: actor, host: req.headers.host });
+        res.writeHead(result.status, { 'content-type': result.headers?.['content-type'] ?? 'application/json; odata.metadata=minimal',
+          ...(result.headers?.['odata-version'] ? { 'odata-version': result.headers['odata-version'] } : {}) });
+        res.end(req.method === 'HEAD' ? undefined : result.body); return true;
       }
       if (!api) throw fail('Model-driven resource not found.', 404);
       const method = req.method;

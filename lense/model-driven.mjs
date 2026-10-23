@@ -4,6 +4,8 @@ import { pathToFileURL } from 'node:url';
 import { hasSourceMap, withFileSourceMap } from './source-map.mjs';
 import { importModelDrivenResources } from '../mirage/lib/model-driven-resources.mjs';
 import { scanSolutionSources } from '../mirage/lib/solution-schema.mjs';
+import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
+import { solutionApps } from '../mirage/lib/model-driven/catalogue.mjs';
 
 export function modelDrivenOrigin(value) {
   let url; try { url = new URL(value); } catch { throw new Error('Provide the model-driven environment origin with --url.'); }
@@ -36,8 +38,12 @@ export async function readModelDrivenResourceMap(file) {
 export async function importModelDrivenProject(project) {
   const scan = await scanSolutionSources(project.solutionRoots, { order: project.solutionOrder });
   const imported = await importModelDrivenResources(scan.layers, { clientSources: project.modelDriven?.clientSources });
+  // The same tables, columns, forms, views and apps Mirage builds its model-driven apps from (one scan, read once).
+  const metadata = await importSolutionMetadata(project.solutionRoots, { scan, lcid: project.lcid ?? 1033 });
+  const apps = solutionApps(scan, { lcid: project.lcid ?? 1033 });
   // Inventory components (canvas apps, connectors, dashboards...) are listed with counts; they are never overlaid or counted as coverage.
-  return { ...imported, layers: scan.layers, diagnostics: [...scan.diagnostics, ...imported.diagnostics], inventory: scan.inventory ?? [], inventoryCounts: inventoryCounts(scan.inventory) };
+  return { ...imported, layers: scan.layers, metadata, apps, diagnostics: [...scan.diagnostics, ...imported.diagnostics, ...metadata.diagnostics.map(item => ({ code: item.code, message: item.message, source: item.file }))],
+    inventory: scan.inventory ?? [], inventoryCounts: inventoryCounts(scan.inventory) };
 }
 
 /** `{ component: { level: count } }` for Solution inventory records. */

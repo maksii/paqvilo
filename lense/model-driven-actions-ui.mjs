@@ -129,9 +129,13 @@ export function modelDrivenActionsUi(data) {
     for (const [label, value] of [['All','all'], ['Favorites','favorites'], ['Recent','recent']]) { const control = button(label, () => { actionFilter = value; for (const item of controls.children) item.setAttribute('aria-pressed', String(item === control)); draw(); }, chip); control.setAttribute('aria-pressed', String(value === actionFilter)); controls.append(control); } content.append(controls, list, detail);
     function draw() {
       list.replaceChildren(); const term = search.value.toLocaleLowerCase(), entries = (current.actions ?? []).filter(action => `${action.label} ${action.description} ${action.group}`.toLocaleLowerCase().includes(term) && (actionFilter === 'all' || actionFilter === 'favorites' && favorites.has(action.label) || actionFilter === 'recent' && recent.includes(action.label)));
-      for (const group of [...new Set(entries.map(action => action.group))]) {
+      // Off a record form, form and record actions gather at the end under one heading instead of mixing with what works here.
+      const groupOf = action => (availability(action).needsRecord ? 'Needs a record form' : action.group);
+      const groups = [...new Set(entries.map(groupOf))].sort((left, right) => Number(left === 'Needs a record form') - Number(right === 'Needs a record form'));
+      for (const group of groups) {
         const section = make('section', null, 'actions-group'); section.append(make('h3', group));
-        for (const action of entries.filter(entry => entry.group === group)) {
+        if (group === 'Needs a record form') section.append(make('p', 'Open a record of this table (or any table) to use these.', 'actions-muted'));
+        for (const action of entries.filter(entry => groupOf(entry) === group)) {
           const row = make('div', null, 'actions-item'), select = button(action.label, () => { selectedAction = action.id; detail.replaceChildren(); actionForm(action, detail); }, 'actions-select');
           const support = availability(action); select.append(make('small', support.available ? action.description : support.reason || 'Unavailable on this page.'));
           const favorite = button(favorites.has(action.label) ? '★' : '☆', () => { favorites.has(action.label) ? favorites.delete(action.label) : favorites.add(action.label); persistLabels(); draw(); }, 'actions-star'); favorite.setAttribute('aria-label', `Favorite ${action.label}`); favorite.setAttribute('aria-pressed', String(favorites.has(action.label))); row.append(select, favorite); section.append(row);
