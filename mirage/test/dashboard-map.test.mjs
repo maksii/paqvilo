@@ -475,11 +475,15 @@ test('highlight classes: each card knows its key and its direct connections only
   assert.ok(layout.cards.length <= HIGHLIGHT_LIMIT);
   const css = fs.readFileSync(new URL('../admin/dashboard.css', import.meta.url), 'utf8');
   assert.equal(
-    css.match(/\.dm-canvas:has\(\.dm-k\d+:hover, \.dm-k\d+:focus-within\) \.dm-p\d+ \{ --dm-on: 1; \}/g).length,
+    [
+      ...css.matchAll(
+        /\.dm-canvas:has\(\.dm-k\d+:hover,\s*\.dm-k\d+:focus-within\)\s+\.dm-p\d+\s*\{\s*--dm-on:\s*1;\s*\}/g,
+      ),
+    ].length,
     HIGHLIGHT_LIMIT,
     'one CSS rule per highlight index',
   );
-  assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.dm-pulse \{ animation: none/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce[\s\S]*\.dm-pulse\s*\{\s*animation:\s*none/);
 });
 
 test('active edges pulse only in live mode when their counters moved', () => {
@@ -569,9 +573,10 @@ test('the wide map stylesheet matches GEOMETRY, so connectors meet the cards', (
     .readFileSync(new URL('../admin/dashboard.css', import.meta.url), 'utf8')
     .split('/* ---------- Narrow containers')[0];
   const rule = (selector) => {
-    const start = css.indexOf(`\n${selector} {`);
-    if (start < 0) assert.fail(`no rule ${selector}`);
-    return css.slice(css.indexOf('{', start) + 1, css.indexOf('}', start));
+    const selectors = selector.split(/,\s*/).map(RegExp.escape).join(',\\s*');
+    const match = new RegExp(`(?:^|\\n)${selectors}\\s*\\{([^}]*)\\}`).exec(css);
+    if (!match) assert.fail(`no rule ${selector}`);
+    return match[1];
   };
   const value = (selector, property) =>
     rule(selector)

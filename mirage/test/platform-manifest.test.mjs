@@ -355,7 +355,11 @@ test('native platform paths are served from local equivalents unless the export 
     ],
     ['/__sim-static/native/platform-app-compat.js', /application\/javascript/, /aria-roledescription/],
     ['/__sim-static/native/jquery-blockui-compat.js', /application\/javascript/, /blockOverlay/],
-    ['/__sim-static/native/platform-chrome.css', /text\/css/, /\.displayNone\{display:none!important\}/],
+    [
+      '/__sim-static/native/platform-chrome.css',
+      /text\/css/,
+      /\.displayNone\s*\{\s*display:\s*none\s*!important;?\s*\}/,
+    ],
   ];
   for (const [pathname, type, body] of expectations) {
     const response = await get(pathname);
@@ -792,8 +796,7 @@ test('form pages load the WebForms script resources at their native paths, serve
     '/ScriptResource.axd?d=paqvilo-microsoftajax&t=0',
     '/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0',
   ]);
-  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-  assert.doesNotMatch(form, /<(?:script|link)[^>]*(?:src|href)="[^"]*__sim-static/);
+  assert.doesNotMatch(form, /<(?:script|link)\b[^>]*(?:src|href)="[^"]*__sim-static/);
   const body = async (pathname) => {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
@@ -809,11 +812,11 @@ test('form pages load the WebForms script resources at their native paths, serve
   assert.match(webForms.text, /WebForm_DoPostBackWithOptions/);
   // MicrosoftAjax contributes Date.prototype.format on form pages; Datejs belongs to postpreform.
   const ajax = await body(axd[2]);
-  assert.match(ajax.text, /Date\.prototype, "format"/);
+  assert.match(ajax.text, /Date\.prototype,\s*(['"])format\1/);
   assert.doesNotMatch(ajax.text, /__ppSimDatejs/);
   const postpreform = await body(platformShell().bundles.find((bundle) => bundle.id === 'postpreform').path);
   assert.match(postpreform.text, /__ppSimDatejs/);
-  assert.doesNotMatch(postpreform.text, /Date\.prototype, "format"/);
+  assert.doesNotMatch(postpreform.text, /Date\.prototype,\s*(['"])format\1/);
   assert.equal((await body(axd[3])).provider, 'local-platform-placeholder');
   // A d value that is not a local equivalent is not served by them.
   assert.equal((await get('/ScriptResource.axd?d=unknown&t=0')).headers.get('x-sim-resource-provider'), null);
@@ -1126,8 +1129,10 @@ test('an HTML web resource is served as a page; other web resources keep their p
 
 test('the narrow-form stacking rule leaves the empty zero cell hidden (quick view frame)', async () => {
   const css = await fs.readFile(new URL('../lib/platform-chrome.css', import.meta.url), 'utf8');
-  assert.match(css, /\.crmEntityFormView \.cell\.zero-cell\{display:none\}/);
-  const cells = [...css.matchAll(/@media\(max-width:\d+px\)\{[^@]*?([^{}]*td\.cell[^{}]*)\{display:block/g)]
+  assert.match(css, /\.crmEntityFormView\s+\.cell\.zero-cell\s*\{\s*display:\s*none;?\s*\}/);
+  const cells = [
+    ...css.matchAll(/@media\s*\(max-width:\s*\d+px\)\s*\{[^@]*?([^{}]*td\.cell[^{}]*)\{\s*display:\s*block/g),
+  ]
     .flatMap((match) => match[1].split(','))
     .filter((selector) => /td\.cell/.test(selector));
   assert.ok(cells.length > 0, 'the narrow rule stacks table cells');

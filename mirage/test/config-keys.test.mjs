@@ -488,7 +488,7 @@ test('the configuration guide lists every registered setting', async () => {
   const guide = await fs.readFile(new URL('../../docs/configuration.md', import.meta.url), 'utf8');
   const table = guide.slice(guide.indexOf('<!-- settings-table'), guide.indexOf('<!-- /settings-table -->'));
   assert.deepEqual(
-    [...table.matchAll(/^\| `(\w+)` \|/gm)].map((match) => match[1]),
+    [...table.matchAll(/^\|\s*`(\w+)`\s*\|/gm)].map((match) => match[1]),
     Object.keys(MIRAGE_SETTINGS),
   );
 });

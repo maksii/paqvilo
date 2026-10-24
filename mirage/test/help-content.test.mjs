@@ -45,7 +45,7 @@ test('every current and new view, its main panels and every setup stage have gui
       ['const builtInViews = [', 'const views = [', 'const NAV_GROUPS = ['].flatMap((marker) => {
         const start = app.indexOf(marker);
         if (start < 0) return [];
-        return [...app.slice(start, app.indexOf('];', start)).matchAll(/"([a-z-]+)"/g)].map((match) => match[1]);
+        return [...app.slice(start, app.indexOf('];', start)).matchAll(/(['"])([a-z-]+)\1/g)].map((match) => match[2]);
       }),
     ),
   ];
