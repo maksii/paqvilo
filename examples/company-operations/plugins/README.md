@@ -11,16 +11,16 @@ do not establish Power Pages Contact authorization; only the portal harness, sig
 
 ## Contents
 
-| Path | What it is |
-| --- | --- |
+| Path                                             | What it is                                                                                                                                                                                                                         |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `QueryObservation/`, `PipelineTests/`, `Shared/` | Two strong-name signed .NET Framework 4.6.2 assemblies: the incoming-query observer, and the pipeline chain, guards and recording code. They use pinned `Microsoft.CrmSdk.CoreAssemblies` 9.0.2.60 with committed NuGet lockfiles. |
-| `LabPublicSigning.snk` | A deliberately public synthetic signing key. It is not a production certificate or a managed-identity federation credential. |
-| `registrations.json` | The authored step registry (231 step intentions) and the readiness flags of external dependencies. |
-| `secure-provisioning.json` | Symbolic secret references and safe version labels for secure step configuration. No secret values. |
-| `collector/` | Collector and worker source, deployment contract and the flow-only secret contract. |
-| `Tests/`, `test/` | .NET fixture checks and Node tests. |
-| `SdkProbes/`, `sdk-projection-probes.mjs` | Read-only SDK projection and count controls. |
-| `mirage-runtime.mjs` | Helpers that replay native captures against the original assemblies in Mirage. |
+| `LabPublicSigning.snk`                           | A deliberately public synthetic signing key. It is not a production certificate or a managed-identity federation credential.                                                                                                       |
+| `registrations.json`                             | The authored step registry (231 step intentions) and the readiness flags of external dependencies.                                                                                                                                 |
+| `secure-provisioning.json`                       | Symbolic secret references and safe version labels for secure step configuration. No secret values.                                                                                                                                |
+| `collector/`                                     | Collector and worker source, deployment contract and the flow-only secret contract.                                                                                                                                                |
+| `Tests/`, `test/`                                | .NET fixture checks and Node tests.                                                                                                                                                                                                |
+| `SdkProbes/`, `sdk-projection-probes.mjs`        | Read-only SDK projection and count controls.                                                                                                                                                                                       |
+| `mirage-runtime.mjs`                             | Helpers that replay native captures against the original assemblies in Mirage.                                                                                                                                                     |
 
 Builds, environment-specific registrations, exported solutions and observed evidence stay under ignored `.paqvilo/`.
 
@@ -56,11 +56,11 @@ node examples/company-operations/plugins/verify-live.mjs
 
 The unsecure step configuration selects `captureMode`:
 
-| Mode | What it records | Limit |
-| --- | --- | --- |
-| `TraceOnly` | Safe IDs and hashes in the plug-in trace log. | No full queries; traces are capped and purged by the platform. |
+| Mode                                              | What it records                                                                                                                                                                     | Limit                                                                                                                                                    |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TraceOnly`                                       | Safe IDs and hashes in the plug-in trace log.                                                                                                                                       | No full queries; traces are capped and purged by the platform.                                                                                           |
 | `TransactionalLab` (what `deploy.mjs` configures) | Complete payloads as immutable, Unicode-safe event parts with a full SHA-256. Operation headers stay Partial with provenance `DataversePlugin.TransactionalLab.RollbackVulnerable`. | Evidence written inside the request transaction rolls back with a failed request. A recording write fault aborts the transaction; it is never swallowed. |
-| `DurableCollector` | Each snapshot is sent to an authenticated collector that stores it durably before acknowledging; an independent worker writes it to Dataverse. | Needs the hosted collector, worker, storage and managed-identity federation, which this example does not deploy. |
+| `DurableCollector`                                | Each snapshot is sent to an authenticated collector that stores it durably before acknowledging; an independent worker writes it to Dataverse.                                      | Needs the hosted collector, worker, storage and managed-identity federation, which this example does not deploy.                                         |
 
 `registrations.json` `readiness` marks external dependencies as not ready: business projection maintenance, the durable
 collector, the flow secret profile, Azure identity binding and the optional bulk and Merge profiles. Profiles that need
@@ -107,11 +107,11 @@ further request is made. Unmatched receipts are kept privately; the worker never
 
 ## Optional contracts (off by default)
 
-| Setting | Allows |
-| --- | --- |
-| `allowAnonymousObservation: true` with an `anonymousObservationTables` allowlist (intent guard and query observer) | Capture of anonymous portal reads against an SDK-created intent with provenance `AnonymousPortal.ConfiguredSDKIntent`. Requires a root portal call with an empty `PortalsContactId`. The controller Contact is never treated as the request identity. |
-| `allowOwnedEvidenceDeletion: true` with exactly one `writerId` | Root Delete of an archived `pqvd_pluginevent` by that SDK writer, bound by the tag `CO-OWNED-EVIDENCE-DELETE:<maintenance-intent-GUID>` to a maintenance intent at most 30 minutes old that names the event GUID, original operation and full event hash. Archive and verify the event first. |
-| `allowOwnedEquipmentLookupTests: true` (Source5 only) | Room rebind of a disposable Stock canary within its Building and Account, and Probe-to-Equipment binding within the same Run. Needs the Source5 schema, where `pqvd_testoperation.pqvd_variant` is 128 characters. |
+| Setting                                                                                                            | Allows                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowAnonymousObservation: true` with an `anonymousObservationTables` allowlist (intent guard and query observer) | Capture of anonymous portal reads against an SDK-created intent with provenance `AnonymousPortal.ConfiguredSDKIntent`. Requires a root portal call with an empty `PortalsContactId`. The controller Contact is never treated as the request identity.                                         |
+| `allowOwnedEvidenceDeletion: true` with exactly one `writerId`                                                     | Root Delete of an archived `pqvd_pluginevent` by that SDK writer, bound by the tag `CO-OWNED-EVIDENCE-DELETE:<maintenance-intent-GUID>` to a maintenance intent at most 30 minutes old that names the event GUID, original operation and full event hash. Archive and verify the event first. |
+| `allowOwnedEquipmentLookupTests: true` (Source5 only)                                                              | Room rebind of a disposable Stock canary within its Building and Account, and Probe-to-Equipment binding within the same Run. Needs the Source5 schema, where `pqvd_testoperation.pqvd_variant` is 128 characters.                                                                            |
 
 Each of these needs its own registration, assembly build and native qualification before its results count.
 

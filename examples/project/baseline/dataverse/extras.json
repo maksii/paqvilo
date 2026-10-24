@@ -72,18 +72,9 @@
       "label": "Local choice",
       "kind": "localchoice",
       "options": [
-        [
-          "Alpha",
-          1
-        ],
-        [
-          "Beta",
-          2
-        ],
-        [
-          "Gamma",
-          3
-        ]
+        ["Alpha", 1],
+        ["Beta", 2],
+        ["Gamma", 3]
       ],
       "default": 2,
       "viaManifest": false
@@ -336,10 +327,7 @@
     "table": "pqvd_baselineitem",
     "name": "pqvd_anyid",
     "label": "Any record",
-    "targets": [
-      "pqvd_baselineparent",
-      "account"
-    ],
+    "targets": ["pqvd_baselineparent", "account"],
     "relationships": {
       "pqvd_baselineparent": "pqvd_baselineparent_baselineitem_any",
       "account": "pqvd_account_baselineitem_any"
@@ -579,16 +567,9 @@
     "displayName": "Baseline banner",
     "type": 1,
     "content": "PCFET0NUWVBFIGh0bWw+PGh0bWw+PGhlYWQ+PG1ldGEgY2hhcnNldD0idXRmLTgiPjx0aXRsZT5CYXNlbGluZSBiYW5uZXI8L3RpdGxlPjwvaGVhZD48Ym9keT48aDIgY2xhc3M9ImJhc2VsaW5lLWJhbm5lciI+QmFzZWxpbmUgd2ViIHJlc291cmNlPC9oMj48cD5TdGF0aWMgSFRNTCB3ZWIgcmVzb3VyY2Ugb2YgdGhlIGJhc2VsaW5lIGZpeHR1cmUuPC9wPjwvYm9keT48L2h0bWw+",
-    "retire": [
-      "pqvd_baseline_icon.png",
-      "pqvd_baseline_icon.svg"
-    ]
+    "retire": ["pqvd_baseline_icon.png", "pqvd_baseline_icon.svg"]
   },
-  "includeAllSubcomponents": [
-    "pqvd_baselineparent",
-    "pqvd_baselineitem",
-    "pqvd_baselinechild"
-  ],
+  "includeAllSubcomponents": ["pqvd_baselineparent", "pqvd_baselineitem", "pqvd_baselinechild"],
   "platformComponents": [
     {
       "type": 26,

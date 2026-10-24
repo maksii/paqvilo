@@ -1,1 +1,15 @@
-<div class="baseline-page" data-baseline-page="liquid-entitylist"><h1>Baseline Liquid Entitylist</h1>{% entitylist name: 'Baseline Item List' %}<p class="baseline-list-name">{{ entitylist.adx_name }}</p>{% entityview id: '62b3ced1-b09b-4335-833a-138dbbb64555', page_size: 2, page: 1, order: 'pqvd_code ASC', search: 'Baseline', language_code: 1033 %}<p class="baseline-total">{{ entityview.total_records }}</p>{% endentityview %}{% endentitylist %}{% entitylist id: '20fa6034-9d07-4bae-84ef-8111a0c24623' %}{% entityview logical_name: 'pqvd_baselineitem', name: 'Active Baseline Items', filter: 'all' %}<p class="baseline-by-id">{{ entityview.total_records }}</p>{% endentityview %}{% endentitylist %}{% entitylist key: 'Baseline Item List Filters', language_code: 1033 %}{% entityview id: '62b3ced1-b09b-4335-833a-138dbbb64555', metafilter: '' %}<p class="baseline-by-key">{{ entityview.total_records }}</p>{% endentityview %}{% endentitylist %}</div>
+<div class="baseline-page" data-baseline-page="liquid-entitylist">
+  <h1>Baseline Liquid Entitylist</h1>
+  {% entitylist name: 'Baseline Item List' %}
+  <p class="baseline-list-name">{{ entitylist.adx_name }}</p>
+  {% entityview id: '62b3ced1-b09b-4335-833a-138dbbb64555', page_size: 2, page: 1, order: 'pqvd_code ASC', search:
+  'Baseline', language_code: 1033 %}
+  <p class="baseline-total">{{ entityview.total_records }}</p>
+  {% endentityview %}{% endentitylist %}{% entitylist id: '20fa6034-9d07-4bae-84ef-8111a0c24623' %}{% entityview
+  logical_name: 'pqvd_baselineitem', name: 'Active Baseline Items', filter: 'all' %}
+  <p class="baseline-by-id">{{ entityview.total_records }}</p>
+  {% endentityview %}{% endentitylist %}{% entitylist key: 'Baseline Item List Filters', language_code: 1033 %}{%
+  entityview id: '62b3ced1-b09b-4335-833a-138dbbb64555', metafilter: '' %}
+  <p class="baseline-by-key">{{ entityview.total_records }}</p>
+  {% endentityview %}{% endentitylist %}
+</div>

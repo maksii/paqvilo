@@ -26,16 +26,16 @@ In Power Automate, open **Example Location**, select **Turn on** if required, an
 
 The import adds 12 accounts, 24 related contacts, two notes, an attachment and a EUR currency record. The data export uses fixed sample IDs. Reimporting restores those sample records.
 
-| Folder or file | Purpose |
-|---|---|
-| `portal/` | Editable PAC portal export: pages, forms, templates, snippets, web files and permissions |
-| `solution/` | Unpacked solution: account columns, forms, views, flow, plugin assembly/steps and site components |
-| `code-solution/` | Separate PCF solution sources with the components' exa publisher |
-| `deployment/PaqviloDemoCodeComponents.zip` | Importable PCF solution; import before the main sample solution |
-| `deployment/PaqviloDemoSample.zip` | Importable unmanaged solution built with PAC |
-| `deployment/PaqviloDemoSample.cdsproj` | PAC-cloned solution project pointing to `solution/` |
-| `deployment/demo-data.zip` | Filtered PAC data export containing only the invented records |
-| `components/` | TypeScript/manifest PCF projects and the C# Dataverse plugin project |
+| Folder or file                             | Purpose                                                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `portal/`                                  | Editable PAC portal export: pages, forms, templates, snippets, web files and permissions          |
+| `solution/`                                | Unpacked solution: account columns, forms, views, flow, plugin assembly/steps and site components |
+| `code-solution/`                           | Separate PCF solution sources with the components' exa publisher                                  |
+| `deployment/PaqviloDemoCodeComponents.zip` | Importable PCF solution; import before the main sample solution                                   |
+| `deployment/PaqviloDemoSample.zip`         | Importable unmanaged solution built with PAC                                                      |
+| `deployment/PaqviloDemoSample.cdsproj`     | PAC-cloned solution project pointing to `solution/`                                               |
+| `deployment/demo-data.zip`                 | Filtered PAC data export containing only the invented records                                     |
+| `components/`                              | TypeScript/manifest PCF projects and the C# Dataverse plugin project                              |
 
 To rebuild the solution after source changes:
 

@@ -5,7 +5,7 @@ adx_delete: false
 adx_entitylogicalname: pqvd_baselineitem
 adx_entityname: Baseline privileges create appendto
 adx_entitypermission_webrole:
-- 5d031fb8-a8ea-4eae-8dd5-6baf1d414731
+  - 5d031fb8-a8ea-4eae-8dd5-6baf1d414731
 adx_entitypermissionid: f820faf1-f2c3-4ca5-8074-ce0bc30570e1
 adx_read: false
 adx_scope: 756150000

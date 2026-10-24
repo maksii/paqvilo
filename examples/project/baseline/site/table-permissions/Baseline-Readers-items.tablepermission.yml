@@ -5,7 +5,7 @@ adx_delete: false
 adx_entitylogicalname: pqvd_baselineitem
 adx_entityname: Baseline Readers items
 adx_entitypermission_webrole:
-- df58c547-3567-4627-8dcb-ce3755db2f44
+  - df58c547-3567-4627-8dcb-ce3755db2f44
 adx_entitypermissionid: e293df2d-f825-46c0-867f-cfdbd1c1066c
 adx_read: true
 adx_scope: 756150000

@@ -30,12 +30,12 @@ How the graph grants access:
 
 Binding rights the recorder needs (each missing flag makes binding fail with `90040106`):
 
-| Permission | Rights |
-| --- | --- |
-| Own Contact (Self) | Read, Append, Append To |
-| Own runs' Results | Create, Read, Write, Append, Append To |
-| Own Probes | Create, Read, Write, Delete, Append, Append To |
-| Disposable equipment targets (IT Account and Room) | Read, Append, Append To |
+| Permission                                         | Rights                                         |
+| -------------------------------------------------- | ---------------------------------------------- |
+| Own Contact (Self)                                 | Read, Append, Append To                        |
+| Own runs' Results                                  | Create, Read, Write, Append, Append To         |
+| Own Probes                                         | Create, Read, Write, Delete, Append, Append To |
+| Disposable equipment targets (IT Account and Room) | Read, Append, Append To                        |
 
 `model-audit.mjs` compares the intended scope contract with independently authored fixture assertions. It is an offline
 model and does not prove runtime authorization.
@@ -142,18 +142,18 @@ references, organisation, site and controller Contact IDs, an ignored `.paqvilo`
 `allowNativeConfigurationMutation: true`, `baseRoleCampaignFreezeActive: false`, and these adapters (missing ones are an
 error):
 
-| Adapter | Must |
-| --- | --- |
-| `assertExclusiveNativeWriter` | Confirm the sole writer owns this organisation, site and actor, and the base-role campaign is released. |
-| `provisionFixtures` | Create planned disposable records with the trusted SDK identity, write-ahead journals and exact readbacks, without disabling any guard. |
-| `verifyFixtures` | Return the bindings, fixture snapshot hash, actor and Account GUIDs. |
-| `prepareCell` | Reset the operation target and its lookup targets before reading source state. |
-| `readSourceWitnesses` | Return the five native hashes `sealConfigurationWitnesses` needs, read fresh before each cell. |
-| `clearPortalCaches` | Run both `clearConfig` and `clearCache` and return both receipts. |
-| `collectNativeCell` | Run the Liquid/Web API read or portal CRUD and keep every page, HTTP bytes, identity, witnesses, plug-in parts and history. |
-| `replayNativeCell` | Run the same operation locally with the frozen graph, data and original DLL, returning actual local output. |
-| `recoverFixtures` | Reconcile journalled pending writes without blindly repeating uncertain mutations. |
-| `cleanupFixtures` | Restore all regions and return `{ verified: true, allRegionsRestored: true, snapshotSha256 }` from readbacks. |
+| Adapter                       | Must                                                                                                                                    |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `assertExclusiveNativeWriter` | Confirm the sole writer owns this organisation, site and actor, and the base-role campaign is released.                                 |
+| `provisionFixtures`           | Create planned disposable records with the trusted SDK identity, write-ahead journals and exact readbacks, without disabling any guard. |
+| `verifyFixtures`              | Return the bindings, fixture snapshot hash, actor and Account GUIDs.                                                                    |
+| `prepareCell`                 | Reset the operation target and its lookup targets before reading source state.                                                          |
+| `readSourceWitnesses`         | Return the five native hashes `sealConfigurationWitnesses` needs, read fresh before each cell.                                          |
+| `clearPortalCaches`           | Run both `clearConfig` and `clearCache` and return both receipts.                                                                       |
+| `collectNativeCell`           | Run the Liquid/Web API read or portal CRUD and keep every page, HTTP bytes, identity, witnesses, plug-in parts and history.             |
+| `replayNativeCell`            | Run the same operation locally with the frozen graph, data and original DLL, returning actual local output.                             |
+| `recoverFixtures`             | Reconcile journalled pending writes without blindly repeating uncertain mutations.                                                      |
+| `cleanupFixtures`             | Restore all regions and return `{ verified: true, allRegionsRestored: true, snapshotSha256 }` from readbacks.                           |
 
 `createNativeConfigurationAdapters` provides concrete implementations over the Dataverse client and the native-browser
 bridge; supply only the sole-writer assertion, cache control, leased Liquid endpoint and replay bootstrap callbacks.

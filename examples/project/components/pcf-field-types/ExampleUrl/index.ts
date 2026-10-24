@@ -1,7 +1,7 @@
-import { IInputs, IOutputs } from "./generated/ManifestTypes";
+import { IInputs, IOutputs } from './generated/ManifestTypes';
 
 export class ExampleUrl implements ComponentFramework.StandardControl<IInputs, IOutputs> {
-  private _value = "";
+  private _value = '';
   private _notifyOutputChanged: () => void = () => undefined;
   private input: HTMLInputElement | HTMLTextAreaElement;
   private readonly onInput = (): void => {
@@ -13,22 +13,22 @@ export class ExampleUrl implements ComponentFramework.StandardControl<IInputs, I
     context: ComponentFramework.Context<IInputs>,
     notifyOutputChanged: () => void,
     _state: ComponentFramework.Dictionary,
-    container: HTMLDivElement
+    container: HTMLDivElement,
   ): void {
     this._notifyOutputChanged = notifyOutputChanged;
-    this._value = context.parameters.controlValue.raw ?? "";
-    const field = document.createElement("input");
-    field.type = "url";
+    this._value = context.parameters.controlValue.raw ?? '';
+    const field = document.createElement('input');
+    field.type = 'url';
     this.input = field;
-    field.className = "ExampleUrl";
+    field.className = 'ExampleUrl';
     field.value = this._value;
-    field.addEventListener("input", this.onInput);
+    field.addEventListener('input', this.onInput);
     container.appendChild(field);
   }
 
   public updateView(context: ComponentFramework.Context<IInputs>): void {
     if (document.activeElement === this.input) return;
-    const next = context.parameters.controlValue.raw ?? "";
+    const next = context.parameters.controlValue.raw ?? '';
     if (next === this._value) return;
     this._value = next;
     this.input.value = next;
@@ -39,6 +39,6 @@ export class ExampleUrl implements ComponentFramework.StandardControl<IInputs, I
   }
 
   public destroy(): void {
-    this.input.removeEventListener("input", this.onInput);
+    this.input.removeEventListener('input', this.onInput);
   }
 }

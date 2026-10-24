@@ -9,14 +9,8 @@
       "webRoot": "${workspaceFolder}/portal",
       "timeout": 60000,
       "preLaunchTask": "demo: Mirage + browser debugger",
-      "skipFiles": [
-        "**/xrm-adx/**",
-        "**/*.min.js"
-      ],
-      "resolveSourceMapLocations": [
-        "${workspaceFolder}/**",
-        "!**/node_modules/**"
-      ]
+      "skipFiles": ["**/xrm-adx/**", "**/*.min.js"],
+      "resolveSourceMapLocations": ["${workspaceFolder}/**", "!**/node_modules/**"]
     },
     {
       "name": "Demo: Lense and browser debugger",
@@ -26,15 +20,8 @@
       "webRoot": "${workspaceFolder}/portal",
       "timeout": 60000,
       "preLaunchTask": "demo: Lense + browser debugger",
-      "skipFiles": [
-        "https://content.powerapps.com/**",
-        "**/xrm-adx/**",
-        "**/*.min.js"
-      ],
-      "resolveSourceMapLocations": [
-        "${workspaceFolder}/**",
-        "!**/node_modules/**"
-      ]
+      "skipFiles": ["https://content.powerapps.com/**", "**/xrm-adx/**", "**/*.min.js"],
+      "resolveSourceMapLocations": ["${workspaceFolder}/**", "!**/node_modules/**"]
     },
     {
       "name": "Demo: Attach to the running browser",
@@ -43,14 +30,8 @@
       "port": 9222,
       "webRoot": "${workspaceFolder}/portal",
       "timeout": 60000,
-      "skipFiles": [
-        "**/xrm-adx/**",
-        "**/*.min.js"
-      ],
-      "resolveSourceMapLocations": [
-        "${workspaceFolder}/**",
-        "!**/node_modules/**"
-      ]
+      "skipFiles": ["**/xrm-adx/**", "**/*.min.js"],
+      "resolveSourceMapLocations": ["${workspaceFolder}/**", "!**/node_modules/**"]
     }
   ]
 }

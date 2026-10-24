@@ -1,35 +1,203 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildQualificationDomain,requiredNativeWitnesses} from '../portal-security/qualification-domain.mjs';
-import {validateRoleReplayCell} from '../portal-harness/mirage-role-replay.mjs';
-const guid=index=>'10000000-0000-0000-0000-'+String(index).padStart(12,'0');
-function fixture(){
- const blueprint={roles:Array.from({length:12},(_,bit)=>({id:guid(bit+1),code:'B'+bit,name:'Business '+bit})),nodes:[{id:guid(50)}]},schema={tables:[]},catalogue={crudFixtures:[]},manifest={cases:[{id:'Q1',table:'widget',variant:'fetchxml',fetchXml:'<fetch/>',pageSize:2,fragments:[{variant:'part1'},{variant:'part2'}]}]};
- const domain=buildQualificationDomain({blueprint,schema,catalogue,manifest,witnesses:Object.fromEntries(requiredNativeWitnesses.map(name=>[name,'a'.repeat(64)]))}),contract={domainHash:domain.domainHash,actorId:guid(100),siteId:guid(101),campaignDirectory:'D:\\Private\\Native',auxiliaryRoleIds:[guid(102)]},roleIds=[guid(1),guid(102)],permissions=blueprint.roles.map(role=>({powerpagecomponentid:role.id,powerpagecomponenttype:11,statecode:0,_powerpagesiteid_value:contract.siteId,name:role.name})),snapshot={contactId:contract.actorId,siteId:contract.siteId,roleIds,roles:['Business 0','Runner'],permissions};
- const requests=['part1','part2'].flatMap(variant=>['liquid','webapi'].map((lane,index)=>({operationId:guid((variant==='part1'?200:202)+index),caseId:'Q1',variant,lane,page:1}))),runId=guid(150),capture={runId,actorRoles:snapshot.roles,requests,recordingInputs:{run:{pqvd_testrunid:runId,_pqvd_runnercontactid_value:contract.actorId},operations:requests.map(row=>({pqvd_testoperationid:row.operationId}))},liquidPages:requests.filter(row=>row.lane==='liquid').map(row=>({operationId:row.operationId,outcome:'success',more:false,rows:[]})),results:requests.filter(row=>row.lane==='webapi').map(row=>({operationId:row.operationId,status:200,body:'{"value":[]}'}))},history={runId,runSummary:{status:'verified'},entries:requests.map(row=>({id:row.operationId,status:'verified',summary:{runId,contactId:contract.actorId,caseId:row.caseId,lane:row.lane,page:1,campaign:{domainHash:domain.domainHash,mask:1,directory:contract.campaignDirectory,page:1,roleCodes:['B0']}}}))};
- return {contract,cell:{id:'m1',mask:1},inputs:{domain,blueprint,schema,catalogue,manifest,snapshotBefore:snapshot,snapshotAfter:structuredClone(snapshot),capture,history},identityFor:snapshot=>({contactId:snapshot.contactId,roleIds:snapshot.roleIds,roles:snapshot.roles})};
+import { buildQualificationDomain, requiredNativeWitnesses } from '../portal-security/qualification-domain.mjs';
+import { validateRoleReplayCell } from '../portal-harness/mirage-role-replay.mjs';
+const guid = (index) => '10000000-0000-0000-0000-' + String(index).padStart(12, '0');
+function fixture() {
+  const blueprint = {
+      roles: Array.from({ length: 12 }, (_, bit) => ({ id: guid(bit + 1), code: 'B' + bit, name: 'Business ' + bit })),
+      nodes: [{ id: guid(50) }],
+    },
+    schema = { tables: [] },
+    catalogue = { crudFixtures: [] },
+    manifest = {
+      cases: [
+        {
+          id: 'Q1',
+          table: 'widget',
+          variant: 'fetchxml',
+          fetchXml: '<fetch/>',
+          pageSize: 2,
+          fragments: [{ variant: 'part1' }, { variant: 'part2' }],
+        },
+      ],
+    };
+  const domain = buildQualificationDomain({
+      blueprint,
+      schema,
+      catalogue,
+      manifest,
+      witnesses: Object.fromEntries(requiredNativeWitnesses.map((name) => [name, 'a'.repeat(64)])),
+    }),
+    contract = {
+      domainHash: domain.domainHash,
+      actorId: guid(100),
+      siteId: guid(101),
+      campaignDirectory: 'D:\\Private\\Native',
+      auxiliaryRoleIds: [guid(102)],
+    },
+    roleIds = [guid(1), guid(102)],
+    permissions = blueprint.roles.map((role) => ({
+      powerpagecomponentid: role.id,
+      powerpagecomponenttype: 11,
+      statecode: 0,
+      _powerpagesiteid_value: contract.siteId,
+      name: role.name,
+    })),
+    snapshot = {
+      contactId: contract.actorId,
+      siteId: contract.siteId,
+      roleIds,
+      roles: ['Business 0', 'Runner'],
+      permissions,
+    };
+  const requests = ['part1', 'part2'].flatMap((variant) =>
+      ['liquid', 'webapi'].map((lane, index) => ({
+        operationId: guid((variant === 'part1' ? 200 : 202) + index),
+        caseId: 'Q1',
+        variant,
+        lane,
+        page: 1,
+      })),
+    ),
+    runId = guid(150),
+    capture = {
+      runId,
+      actorRoles: snapshot.roles,
+      requests,
+      recordingInputs: {
+        run: { pqvd_testrunid: runId, _pqvd_runnercontactid_value: contract.actorId },
+        operations: requests.map((row) => ({ pqvd_testoperationid: row.operationId })),
+      },
+      liquidPages: requests
+        .filter((row) => row.lane === 'liquid')
+        .map((row) => ({ operationId: row.operationId, outcome: 'success', more: false, rows: [] })),
+      results: requests
+        .filter((row) => row.lane === 'webapi')
+        .map((row) => ({ operationId: row.operationId, status: 200, body: '{"value":[]}' })),
+    },
+    history = {
+      runId,
+      runSummary: { status: 'verified' },
+      entries: requests.map((row) => ({
+        id: row.operationId,
+        status: 'verified',
+        summary: {
+          runId,
+          contactId: contract.actorId,
+          caseId: row.caseId,
+          lane: row.lane,
+          page: 1,
+          campaign: {
+            domainHash: domain.domainHash,
+            mask: 1,
+            directory: contract.campaignDirectory,
+            page: 1,
+            roleCodes: ['B0'],
+          },
+        },
+      })),
+    };
+  return {
+    contract,
+    cell: { id: 'm1', mask: 1 },
+    inputs: {
+      domain,
+      blueprint,
+      schema,
+      catalogue,
+      manifest,
+      snapshotBefore: snapshot,
+      snapshotAfter: structuredClone(snapshot),
+      capture,
+      history,
+    },
+    identityFor: (snapshot) => ({ contactId: snapshot.contactId, roleIds: snapshot.roleIds, roles: snapshot.roles }),
+  };
 }
-test('role labels require the exact frozen source domain, actual memberships and every fragment/lane/history claim',()=>{
- const args=fixture(),proof=validateRoleReplayCell(args);assert.equal(proof.verified,true);assert.equal(proof.complete,true);assert.equal(proof.mask,1);assert.equal(proof.physicalReads,4);
- for(const [mutate,expected] of [[a=>(a.cell.id='m2'),/exact m<mask>/],[a=>(a.cell.mask=2),/exact m<mask>/],[a=>(a.inputs.snapshotAfter.roleIds=[]),/memberships changed/],[a=>a.inputs.snapshotBefore.roleIds.push(guid(103)),/memberships changed/],[a=>(a.inputs.domain.businessRoles[0].name='Changed'),/domain does not match/],[a=>(a.inputs.capture.actorRoles=[]),/role claims differ/],[a=>(a.inputs.history.entries[0].summary.campaign.mask=2),/history does not bind/],[a=>(a.inputs.history.entries[0].summary.contactId=guid(999)),/history does not bind/],[a=>(a.inputs.capture.requests[0].variant='foreign'),/foreign or duplicated fragment/],[a=>(a.inputs.capture.recordingInputs=undefined),/pre-query Run and operation readbacks/],[a=>(a.inputs.snapshotBefore.permissions[0].name='Other'),/role definitions do not match/],[a=>(a.inputs.history.entries[0].status='pending'),/history does not bind/]]){const changed=fixture();mutate(changed);assert.throws(()=>validateRoleReplayCell(changed),expected);}
- const missing=fixture();missing.inputs.capture.requests.pop();missing.inputs.capture.results.pop();missing.inputs.capture.recordingInputs.operations.pop();missing.inputs.history.entries.pop();const diagnostic=validateRoleReplayCell(missing);assert.equal(diagnostic.complete,false);assert.equal(diagnostic.missing.length,1);
- const continued=fixture();continued.inputs.capture.liquidPages[0].more=true;assert.equal(validateRoleReplayCell(continued).complete,false);
- const replayed=fixture();replayed.inputs.nativePages=[replayed.inputs,replayed.inputs];assert.throws(()=>validateRoleReplayCell(replayed),/distinct native Runs/);
+test('role labels require the exact frozen source domain, actual memberships and every fragment/lane/history claim', () => {
+  const args = fixture(),
+    proof = validateRoleReplayCell(args);
+  assert.equal(proof.verified, true);
+  assert.equal(proof.complete, true);
+  assert.equal(proof.mask, 1);
+  assert.equal(proof.physicalReads, 4);
+  for (const [mutate, expected] of [
+    [(a) => (a.cell.id = 'm2'), /exact m<mask>/],
+    [(a) => (a.cell.mask = 2), /exact m<mask>/],
+    [(a) => (a.inputs.snapshotAfter.roleIds = []), /memberships changed/],
+    [(a) => a.inputs.snapshotBefore.roleIds.push(guid(103)), /memberships changed/],
+    [(a) => (a.inputs.domain.businessRoles[0].name = 'Changed'), /domain does not match/],
+    [(a) => (a.inputs.capture.actorRoles = []), /role claims differ/],
+    [(a) => (a.inputs.history.entries[0].summary.campaign.mask = 2), /history does not bind/],
+    [(a) => (a.inputs.history.entries[0].summary.contactId = guid(999)), /history does not bind/],
+    [(a) => (a.inputs.capture.requests[0].variant = 'foreign'), /foreign or duplicated fragment/],
+    [(a) => (a.inputs.capture.recordingInputs = undefined), /pre-query Run and operation readbacks/],
+    [(a) => (a.inputs.snapshotBefore.permissions[0].name = 'Other'), /role definitions do not match/],
+    [(a) => (a.inputs.history.entries[0].status = 'pending'), /history does not bind/],
+  ]) {
+    const changed = fixture();
+    mutate(changed);
+    assert.throws(() => validateRoleReplayCell(changed), expected);
+  }
+  const missing = fixture();
+  missing.inputs.capture.requests.pop();
+  missing.inputs.capture.results.pop();
+  missing.inputs.capture.recordingInputs.operations.pop();
+  missing.inputs.history.entries.pop();
+  const diagnostic = validateRoleReplayCell(missing);
+  assert.equal(diagnostic.complete, false);
+  assert.equal(diagnostic.missing.length, 1);
+  const continued = fixture();
+  continued.inputs.capture.liquidPages[0].more = true;
+  assert.equal(validateRoleReplayCell(continued).complete, false);
+  const replayed = fixture();
+  replayed.inputs.nativePages = [replayed.inputs, replayed.inputs];
+  assert.throws(() => validateRoleReplayCell(replayed), /distinct native Runs/);
 });
 
-test('native FetchXML more-records annotations require their terminal continuation without an OData nextLink',()=>{
- const args=fixture(),first=structuredClone(args.inputs),second=structuredClone(args.inputs);
- const request=first.capture.requests.find(row=>row.variant==='part1'&&row.lane==='webapi');
- first.capture.results.find(row=>row.operationId===request.operationId).body=JSON.stringify({value:[{id:guid(700)},{id:guid(701)}],'@Microsoft.Dynamics.CRM.morerecords':true,'@Microsoft.Dynamics.CRM.fetchxmlpagingcookie':'invented-cookie'});
- const continuation={...request,operationId:guid(800),page:2},runId=guid(801);
- second.capture={runId,actorRoles:first.capture.actorRoles,requests:[continuation],recordingInputs:{run:{pqvd_testrunid:runId,_pqvd_runnercontactid_value:args.contract.actorId},operations:[{pqvd_testoperationid:continuation.operationId}]},liquidPages:[],results:[{operationId:continuation.operationId,status:200,body:JSON.stringify({value:[]})}]};
- const entry=structuredClone(first.history.entries.find(row=>row.id===request.operationId));
- entry.id=continuation.operationId;entry.summary.runId=runId;entry.summary.page=2;entry.summary.campaign.page=2;
- second.history={runId,runSummary:{status:'verified'},entries:[entry]};
- args.inputs.nativePages=[first,second];
- const proof=validateRoleReplayCell(args);assert.equal(proof.complete,true);assert.equal(proof.physicalReads,5);
- args.inputs.nativePages=[first];assert.deepEqual(validateRoleReplayCell(args).missing.map(row=>row.page),[2]);
- args.inputs.nativePages=[first,second];
- const response=first.capture.results.find(row=>row.operationId===request.operationId);
- for(const value of [false,'true']){response.body=JSON.stringify({value:[],'@Microsoft.Dynamics.CRM.morerecords':value});assert.throws(()=>validateRoleReplayCell(args),/continuation after a terminal/);}
+test('native FetchXML more-records annotations require their terminal continuation without an OData nextLink', () => {
+  const args = fixture(),
+    first = structuredClone(args.inputs),
+    second = structuredClone(args.inputs);
+  const request = first.capture.requests.find((row) => row.variant === 'part1' && row.lane === 'webapi');
+  first.capture.results.find((row) => row.operationId === request.operationId).body = JSON.stringify({
+    value: [{ id: guid(700) }, { id: guid(701) }],
+    '@Microsoft.Dynamics.CRM.morerecords': true,
+    '@Microsoft.Dynamics.CRM.fetchxmlpagingcookie': 'invented-cookie',
+  });
+  const continuation = { ...request, operationId: guid(800), page: 2 },
+    runId = guid(801);
+  second.capture = {
+    runId,
+    actorRoles: first.capture.actorRoles,
+    requests: [continuation],
+    recordingInputs: {
+      run: { pqvd_testrunid: runId, _pqvd_runnercontactid_value: args.contract.actorId },
+      operations: [{ pqvd_testoperationid: continuation.operationId }],
+    },
+    liquidPages: [],
+    results: [{ operationId: continuation.operationId, status: 200, body: JSON.stringify({ value: [] }) }],
+  };
+  const entry = structuredClone(first.history.entries.find((row) => row.id === request.operationId));
+  entry.id = continuation.operationId;
+  entry.summary.runId = runId;
+  entry.summary.page = 2;
+  entry.summary.campaign.page = 2;
+  second.history = { runId, runSummary: { status: 'verified' }, entries: [entry] };
+  args.inputs.nativePages = [first, second];
+  const proof = validateRoleReplayCell(args);
+  assert.equal(proof.complete, true);
+  assert.equal(proof.physicalReads, 5);
+  args.inputs.nativePages = [first];
+  assert.deepEqual(
+    validateRoleReplayCell(args).missing.map((row) => row.page),
+    [2],
+  );
+  args.inputs.nativePages = [first, second];
+  const response = first.capture.results.find((row) => row.operationId === request.operationId);
+  for (const value of [false, 'true']) {
+    response.body = JSON.stringify({ value: [], '@Microsoft.Dynamics.CRM.morerecords': value });
+    assert.throws(() => validateRoleReplayCell(args), /continuation after a terminal/);
+  }
 });

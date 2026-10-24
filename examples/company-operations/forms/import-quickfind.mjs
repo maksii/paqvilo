@@ -1,26 +1,137 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {loadConnection,connectedClient} from '../../../lense/dataverse/index.mjs';
-import {privateJson,runProcess} from '../../../lense/dataverse/connection.mjs';
-import {metadataXml} from '../../../lense/dataverse/provision.mjs';
-const here=path.dirname(fileURLToPath(import.meta.url)),project=path.resolve(here,'..');
-export async function importQuickFind(connection,resume){
- const info=await loadConnection(connection),client=connectedClient(info);await client.verify(info.organisationId);
- const updates=JSON.parse(await fs.readFile(path.join(project,'.paqvilo/forms/quickfind-import.json'),'utf8'));const stamp=Date.now(),folder=resume?path.dirname(path.resolve(resume)):path.join(project,'.paqvilo/forms',`native-import-${stamp}`);if(!folder.startsWith(path.join(project,'.paqvilo/forms')+path.sep))throw new Error('Resume journal must belong to this project forms evidence.');await fs.mkdir(folder,{recursive:true});const journal=resume?JSON.parse(await fs.readFile(resume,'utf8')):{startedAt:new Date().toISOString(),entries:[]};
- const waitImport=async(entry)=>{const deadline=Date.now()+600000;while(Date.now()<deadline){const job=await client.optional(`importjobs(${entry.importJobId})?$select=progress,data,completedon`);if(job?.progress===100&&job.completedon){if(!/succeeded="success"/.test(job.data))throw new Error('Native solution import failed; inspect private job log.');entry.status='Imported';await privateJson(path.join(folder,'journal.json'),journal);return;}await new Promise(resolve=>setTimeout(resolve,5000));}throw new Error('Import is still pending; resume the same journal, do not redispatch.');};
- const publishViews=async(scoped)=>{const tables=[...new Set(scoped.map(v=>v.table))];if(tables.length)await client.request('PublishXml',{method:'POST',body:{ParameterXml:`<importexportxml><entities>${tables.map(t=>`<entity>${t}</entity>`).join('')}</entities></importexportxml>`}});};
- for(const solution of [...new Set(updates.map(v=>v.solution))]){
-  const prior=journal.entries.find(e=>e.solution===solution);if(prior){if(!prior.importJobId)throw new Error('Import identity missing; reconcile it before resume.');if(prior.status!=='Imported')await waitImport(prior);await publishViews(updates.filter(v=>v.solution===solution));continue;}
-  const scoped=updates.filter(v=>v.solution===solution);const input=path.join(folder,solution+'.original.zip'),output=path.join(folder,solution+'.edited.zip'),changes=path.join(folder,solution+'.updates.json');await privateJson(changes,scoped);
-  const exported=await client.request('ExportSolution',{method:'POST',body:{SolutionName:solution,Managed:false}});await fs.writeFile(input,Buffer.from(exported.data.ExportSolutionFile,'base64'),{flag:'wx'});
-  await runProcess('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(here,'update-quickfind.ps1'),'-InputZip',input,'-OutputZip',output,'-Adjustments',changes]);
-  const importJobId=crypto.randomUUID();journal.entries.push({solution,views:scoped.map(v=>v.id),input,output,importJobId,status:'Prepared'});await privateJson(path.join(folder,'journal.json'),journal);
-  try{const response=await client.request('ImportSolutionAsync',{method:'POST',body:{CustomizationFile:(await fs.readFile(output)).toString('base64'),PublishWorkflows:false,OverwriteUnmanagedCustomizations:false,ImportJobId:importJobId}});journal.entries.at(-1).asyncOperationId=response.data?.AsyncOperationId;journal.entries.at(-1).status='Dispatched';}catch(error){journal.entries.at(-1).status=error.code==='UNKNOWN_COMMIT'?'UnknownCommit':'Failed';await privateJson(path.join(folder,'journal.json'),journal);throw error;}await privateJson(path.join(folder,'journal.json'),journal);await waitImport(journal.entries.at(-1));await publishViews(scoped);console.log(JSON.stringify({solution,status:'ImportedAndPublished'}));
- }
- const tables=[...new Set(updates.map(v=>v.table))];if(tables.length)await client.request('PublishXml',{method:'POST',body:{ParameterXml:`<importexportxml><entities>${tables.map(t=>`<entity>${t}</entity>`).join('')}</entities></importexportxml>`}});
- // Dataverse serializes imported XML; validate selected/find fields and row GUIDs.
- for(const v of updates){const actual=await client.get(`savedqueries(${v.id})?$select=fetchxml,layoutxml,querytype`);if(actual.querytype!==4||metadataXml(actual.fetchxml)!==metadataXml(v.fetchXml)||metadataXml(actual.layoutxml)!==metadataXml(v.layoutXml))throw new Error(`Quick Find full readback mismatch on ${v.table}.`);}
- journal.finishedAt=new Date().toISOString();journal.verifiedViews=updates.length;await privateJson(path.join(folder,'journal.json'),journal);return{solutions:journal.entries.length,views:updates.length,journal:path.join(folder,'journal.json')};
+import { fileURLToPath } from 'node:url';
+import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
+import { privateJson, runProcess } from '../../../lense/dataverse/connection.mjs';
+import { metadataXml } from '../../../lense/dataverse/provision.mjs';
+const here = path.dirname(fileURLToPath(import.meta.url)),
+  project = path.resolve(here, '..');
+export async function importQuickFind(connection, resume) {
+  const info = await loadConnection(connection),
+    client = connectedClient(info);
+  await client.verify(info.organisationId);
+  const updates = JSON.parse(await fs.readFile(path.join(project, '.paqvilo/forms/quickfind-import.json'), 'utf8'));
+  const stamp = Date.now(),
+    folder = resume
+      ? path.dirname(path.resolve(resume))
+      : path.join(project, '.paqvilo/forms', `native-import-${stamp}`);
+  if (!folder.startsWith(path.join(project, '.paqvilo/forms') + path.sep))
+    throw new Error('Resume journal must belong to this project forms evidence.');
+  await fs.mkdir(folder, { recursive: true });
+  const journal = resume
+    ? JSON.parse(await fs.readFile(resume, 'utf8'))
+    : { startedAt: new Date().toISOString(), entries: [] };
+  const waitImport = async (entry) => {
+    const deadline = Date.now() + 600000;
+    while (Date.now() < deadline) {
+      const job = await client.optional(`importjobs(${entry.importJobId})?$select=progress,data,completedon`);
+      if (job?.progress === 100 && job.completedon) {
+        if (!/succeeded="success"/.test(job.data))
+          throw new Error('Native solution import failed; inspect private job log.');
+        entry.status = 'Imported';
+        await privateJson(path.join(folder, 'journal.json'), journal);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+    throw new Error('Import is still pending; resume the same journal, do not redispatch.');
+  };
+  const publishViews = async (scoped) => {
+    const tables = [...new Set(scoped.map((v) => v.table))];
+    if (tables.length)
+      await client.request('PublishXml', {
+        method: 'POST',
+        body: {
+          ParameterXml: `<importexportxml><entities>${tables.map((t) => `<entity>${t}</entity>`).join('')}</entities></importexportxml>`,
+        },
+      });
+  };
+  for (const solution of [...new Set(updates.map((v) => v.solution))]) {
+    const prior = journal.entries.find((e) => e.solution === solution);
+    if (prior) {
+      if (!prior.importJobId) throw new Error('Import identity missing; reconcile it before resume.');
+      if (prior.status !== 'Imported') await waitImport(prior);
+      await publishViews(updates.filter((v) => v.solution === solution));
+      continue;
+    }
+    const scoped = updates.filter((v) => v.solution === solution);
+    const input = path.join(folder, solution + '.original.zip'),
+      output = path.join(folder, solution + '.edited.zip'),
+      changes = path.join(folder, solution + '.updates.json');
+    await privateJson(changes, scoped);
+    const exported = await client.request('ExportSolution', {
+      method: 'POST',
+      body: { SolutionName: solution, Managed: false },
+    });
+    await fs.writeFile(input, Buffer.from(exported.data.ExportSolutionFile, 'base64'), { flag: 'wx' });
+    await runProcess('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      path.join(here, 'update-quickfind.ps1'),
+      '-InputZip',
+      input,
+      '-OutputZip',
+      output,
+      '-Adjustments',
+      changes,
+    ]);
+    const importJobId = crypto.randomUUID();
+    journal.entries.push({ solution, views: scoped.map((v) => v.id), input, output, importJobId, status: 'Prepared' });
+    await privateJson(path.join(folder, 'journal.json'), journal);
+    try {
+      const response = await client.request('ImportSolutionAsync', {
+        method: 'POST',
+        body: {
+          CustomizationFile: (await fs.readFile(output)).toString('base64'),
+          PublishWorkflows: false,
+          OverwriteUnmanagedCustomizations: false,
+          ImportJobId: importJobId,
+        },
+      });
+      journal.entries.at(-1).asyncOperationId = response.data?.AsyncOperationId;
+      journal.entries.at(-1).status = 'Dispatched';
+    } catch (error) {
+      journal.entries.at(-1).status = error.code === 'UNKNOWN_COMMIT' ? 'UnknownCommit' : 'Failed';
+      await privateJson(path.join(folder, 'journal.json'), journal);
+      throw error;
+    }
+    await privateJson(path.join(folder, 'journal.json'), journal);
+    await waitImport(journal.entries.at(-1));
+    await publishViews(scoped);
+    console.log(JSON.stringify({ solution, status: 'ImportedAndPublished' }));
+  }
+  const tables = [...new Set(updates.map((v) => v.table))];
+  if (tables.length)
+    await client.request('PublishXml', {
+      method: 'POST',
+      body: {
+        ParameterXml: `<importexportxml><entities>${tables.map((t) => `<entity>${t}</entity>`).join('')}</entities></importexportxml>`,
+      },
+    });
+  // Dataverse serializes imported XML; validate selected/find fields and row GUIDs.
+  for (const v of updates) {
+    const actual = await client.get(`savedqueries(${v.id})?$select=fetchxml,layoutxml,querytype`);
+    if (
+      actual.querytype !== 4 ||
+      metadataXml(actual.fetchxml) !== metadataXml(v.fetchXml) ||
+      metadataXml(actual.layoutxml) !== metadataXml(v.layoutXml)
+    )
+      throw new Error(`Quick Find full readback mismatch on ${v.table}.`);
+  }
+  journal.finishedAt = new Date().toISOString();
+  journal.verifiedViews = updates.length;
+  await privateJson(path.join(folder, 'journal.json'), journal);
+  return { solutions: journal.entries.length, views: updates.length, journal: path.join(folder, 'journal.json') };
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const args=process.argv.slice(2),connection=args[args.indexOf('--connection')+1];if(!args.includes('--connection')||!connection)throw new Error('--connection required');console.log(JSON.stringify(await importQuickFind(connection,args.includes('--resume')?args[args.indexOf('--resume')+1]:undefined)));}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2),
+    connection = args[args.indexOf('--connection') + 1];
+  if (!args.includes('--connection') || !connection) throw new Error('--connection required');
+  console.log(
+    JSON.stringify(
+      await importQuickFind(connection, args.includes('--resume') ? args[args.indexOf('--resume') + 1] : undefined),
+    ),
+  );
+}

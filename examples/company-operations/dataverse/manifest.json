@@ -17,35 +17,25 @@
       "uniqueName": "PaqviloCompanyOperationsForms",
       "friendlyName": "Company Operations Forms",
       "version": "1.0.0.0",
-      "dependsOn": [
-        "PaqviloCompanyOperationsCore"
-      ]
+      "dependsOn": ["PaqviloCompanyOperationsCore"]
     },
     {
       "uniqueName": "PaqviloPermissionTestSupport",
       "friendlyName": "Permission Test Support",
       "version": "1.0.0.0",
-      "dependsOn": [
-        "PaqviloCompanyOperationsCore"
-      ]
+      "dependsOn": ["PaqviloCompanyOperationsCore"]
     },
     {
       "uniqueName": "PaqviloPluginEvidence",
       "friendlyName": "Plugin Evidence",
       "version": "1.0.0.0",
-      "dependsOn": [
-        "PaqviloCompanyOperationsCore",
-        "PaqviloPermissionTestSupport"
-      ]
+      "dependsOn": ["PaqviloCompanyOperationsCore", "PaqviloPermissionTestSupport"]
     },
     {
       "uniqueName": "PaqviloBehaviorPlugins",
       "friendlyName": "Behaviour Plugins",
       "version": "1.0.0.0",
-      "dependsOn": [
-        "PaqviloPluginEvidence",
-        "PaqviloPermissionTestSupport"
-      ]
+      "dependsOn": ["PaqviloPluginEvidence", "PaqviloPermissionTestSupport"]
     }
   ],
   "choices": [
@@ -730,9 +720,7 @@
       "entitySetName": "accounts",
       "solution": "PaqviloCompanyOperationsCore",
       "existing": true,
-      "existingColumns": [
-        "accountnumber"
-      ],
+      "existingColumns": ["accountnumber"],
       "columns": [
         {
           "name": "pqvd_orgkind",
@@ -745,9 +733,7 @@
       "keys": [
         {
           "name": "pqvd_ak_account_number",
-          "columns": [
-            "accountnumber"
-          ],
+          "columns": ["accountnumber"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -770,9 +756,7 @@
       "keys": [
         {
           "name": "pqvd_ak_contact_personcode",
-          "columns": [
-            "pqvd_personcode"
-          ],
+          "columns": ["pqvd_personcode"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -826,16 +810,12 @@
       "keys": [
         {
           "name": "pqvd_ak_currencyreference_code",
-          "columns": [
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         },
         {
           "name": "pqvd_ak_currencyreference_currency",
-          "columns": [
-            "pqvd_systemcurrencyid"
-          ],
+          "columns": ["pqvd_systemcurrencyid"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -879,9 +859,7 @@
       "keys": [
         {
           "name": "pqvd_ak_accessrole_code",
-          "columns": [
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -961,19 +939,12 @@
       "keys": [
         {
           "name": "pqvd_ak_accesspermission_number",
-          "columns": [
-            "pqvd_number"
-          ],
+          "columns": ["pqvd_number"],
           "solution": "PaqviloCompanyOperationsCore"
         },
         {
           "name": "pqvd_ak_accesspermission_scope",
-          "columns": [
-            "pqvd_granteecontactid",
-            "pqvd_scopeaccountid",
-            "pqvd_roleid",
-            "pqvd_scopekey"
-          ],
+          "columns": ["pqvd_granteecontactid", "pqvd_scopeaccountid", "pqvd_roleid", "pqvd_scopekey"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1032,17 +1003,12 @@
       "keys": [
         {
           "name": "pqvd_ak_orgcontact_code",
-          "columns": [
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         },
         {
           "name": "pqvd_ak_orgcontact_member",
-          "columns": [
-            "pqvd_accountid",
-            "pqvd_contactid"
-          ],
+          "columns": ["pqvd_accountid", "pqvd_contactid"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1079,10 +1045,7 @@
       "keys": [
         {
           "name": "pqvd_ak_department_code",
-          "columns": [
-            "pqvd_accountid",
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_accountid", "pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1157,9 +1120,7 @@
       "keys": [
         {
           "name": "pqvd_ak_employment_number",
-          "columns": [
-            "pqvd_number"
-          ],
+          "columns": ["pqvd_number"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1226,9 +1187,7 @@
       "keys": [
         {
           "name": "pqvd_ak_employmentterms_employment",
-          "columns": [
-            "pqvd_employmentid"
-          ],
+          "columns": ["pqvd_employmentid"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1272,10 +1231,7 @@
       "keys": [
         {
           "name": "pqvd_ak_site_code",
-          "columns": [
-            "pqvd_accountid",
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_accountid", "pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1313,10 +1269,7 @@
       "keys": [
         {
           "name": "pqvd_ak_building_code",
-          "columns": [
-            "pqvd_siteid",
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_siteid", "pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1369,10 +1322,7 @@
       "keys": [
         {
           "name": "pqvd_ak_room_code",
-          "columns": [
-            "pqvd_buildingid",
-            "pqvd_code"
-          ],
+          "columns": ["pqvd_buildingid", "pqvd_code"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1459,9 +1409,7 @@
       "keys": [
         {
           "name": "pqvd_ak_equipment_tag",
-          "columns": [
-            "pqvd_assettag"
-          ],
+          "columns": ["pqvd_assettag"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1518,9 +1466,7 @@
       "keys": [
         {
           "name": "pqvd_ak_equipmentfinance_equipment",
-          "columns": [
-            "pqvd_equipmentid"
-          ],
+          "columns": ["pqvd_equipmentid"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1586,9 +1532,7 @@
       "keys": [
         {
           "name": "pqvd_ak_assignment_number",
-          "columns": [
-            "pqvd_number"
-          ],
+          "columns": ["pqvd_number"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1654,9 +1598,7 @@
       "keys": [
         {
           "name": "pqvd_ak_servicerequest_number",
-          "columns": [
-            "pqvd_number"
-          ],
+          "columns": ["pqvd_number"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1701,9 +1643,7 @@
       "keys": [
         {
           "name": "pqvd_ak_workorder_number",
-          "columns": [
-            "pqvd_number"
-          ],
+          "columns": ["pqvd_number"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1758,10 +1698,7 @@
       "keys": [
         {
           "name": "pqvd_ak_worktask_sequence",
-          "columns": [
-            "pqvd_workorderid",
-            "pqvd_sequence"
-          ],
+          "columns": ["pqvd_workorderid", "pqvd_sequence"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1807,10 +1744,7 @@
       "keys": [
         {
           "name": "pqvd_ak_checklistitem_sequence",
-          "columns": [
-            "pqvd_taskid",
-            "pqvd_sequence"
-          ],
+          "columns": ["pqvd_taskid", "pqvd_sequence"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1872,10 +1806,7 @@
       "keys": [
         {
           "name": "pqvd_ak_inspection_attempt",
-          "columns": [
-            "pqvd_checklistitemid",
-            "pqvd_attempt"
-          ],
+          "columns": ["pqvd_checklistitemid", "pqvd_attempt"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -1928,10 +1859,7 @@
       "keys": [
         {
           "name": "pqvd_ak_finding_sequence",
-          "columns": [
-            "pqvd_inspectionid",
-            "pqvd_sequence"
-          ],
+          "columns": ["pqvd_inspectionid", "pqvd_sequence"],
           "solution": "PaqviloCompanyOperationsCore"
         }
       ]
@@ -2045,9 +1973,7 @@
       "keys": [
         {
           "name": "pqvd_ak_testrun_key",
-          "columns": [
-            "pqvd_runkey"
-          ],
+          "columns": ["pqvd_runkey"],
           "solution": "PaqviloPermissionTestSupport"
         }
       ]
@@ -2217,12 +2143,7 @@
       "keys": [
         {
           "name": "pqvd_ak_testresult_part",
-          "columns": [
-            "pqvd_runid",
-            "pqvd_observationkey",
-            "pqvd_artifactkind",
-            "pqvd_partnumber"
-          ],
+          "columns": ["pqvd_runid", "pqvd_observationkey", "pqvd_artifactkind", "pqvd_partnumber"],
           "solution": "PaqviloPermissionTestSupport"
         }
       ]
@@ -2292,9 +2213,7 @@
       "keys": [
         {
           "name": "pqvd_ak_crudprobe_token",
-          "columns": [
-            "pqvd_token"
-          ],
+          "columns": ["pqvd_token"],
           "solution": "PaqviloPermissionTestSupport"
         }
       ]
@@ -2702,11 +2621,7 @@
       "keys": [
         {
           "name": "pqvd_ak_pluginevent_part",
-          "columns": [
-            "pqvd_operationid",
-            "pqvd_eventkey",
-            "pqvd_partnumber"
-          ],
+          "columns": ["pqvd_operationid", "pqvd_eventkey", "pqvd_partnumber"],
           "solution": "PaqviloPluginEvidence"
         }
       ]
@@ -2854,10 +2769,7 @@
       "keys": [
         {
           "name": "pqvd_ak_chainnode_code",
-          "columns": [
-            "pqvd_operationid",
-            "pqvd_nodecode"
-          ],
+          "columns": ["pqvd_operationid", "pqvd_nodecode"],
           "solution": "PaqviloPluginEvidence"
         }
       ]
@@ -3871,10 +3783,7 @@
       "child": "account",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_accounts",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "accountid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "accountid"]
     },
     {
       "name": "pqvd_access_orgcontacts",
@@ -3883,10 +3792,7 @@
       "child": "pqvd_orgcontact",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_orgcontacts",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "pqvd_orgcontactid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "pqvd_orgcontactid"]
     },
     {
       "name": "pqvd_access_departments",
@@ -3895,10 +3801,7 @@
       "child": "pqvd_department",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_departments",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "pqvd_departmentid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "pqvd_departmentid"]
     },
     {
       "name": "pqvd_access_employments",
@@ -3907,10 +3810,7 @@
       "child": "pqvd_employment",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_employments",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "pqvd_employmentid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "pqvd_employmentid"]
     },
     {
       "name": "pqvd_access_currencyreferences",
@@ -3919,10 +3819,7 @@
       "child": "pqvd_currencyreference",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_currencyreferences",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "pqvd_currencyreferenceid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "pqvd_currencyreferenceid"]
     },
     {
       "name": "pqvd_access_equipments",
@@ -3931,10 +3828,7 @@
       "child": "pqvd_equipment",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_equipments",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "pqvd_equipmentid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "pqvd_equipmentid"]
     },
     {
       "name": "pqvd_contact_testruns",
@@ -4163,10 +4057,7 @@
       "child": "pqvd_chainnode",
       "solution": "PaqviloPluginEvidence",
       "intersectName": "pqvd_chainnodepeer",
-      "intersectColumns": [
-        "pqvd_chainnodeidone",
-        "pqvd_chainnodeidtwo"
-      ]
+      "intersectColumns": ["pqvd_chainnodeidone", "pqvd_chainnodeidtwo"]
     },
     {
       "name": "pqvd_testoperation_results",
@@ -4235,10 +4126,7 @@
       "child": "transactioncurrency",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_currencies",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "transactioncurrencyid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "transactioncurrencyid"]
     },
     {
       "name": "pqvd_access_referenceaccounts",
@@ -4247,10 +4135,7 @@
       "child": "account",
       "solution": "PaqviloCompanyOperationsCore",
       "intersectName": "pqvd_access_referenceaccounts",
-      "intersectColumns": [
-        "pqvd_accesspermissionid",
-        "accountid"
-      ]
+      "intersectColumns": ["pqvd_accesspermissionid", "accountid"]
     }
   ],
   "forms": [],

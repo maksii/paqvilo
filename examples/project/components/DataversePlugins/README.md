@@ -2,10 +2,10 @@
 
 Two small C# plugins demonstrate synchronous Create and Update behavior for accounts and contacts. The solution contains the assembly and eight registered steps. The same assembly also contains `BaselineRules`, which only the [native component baseline](../../baseline/) registers on its fixture table. See [registrations.json](registrations.json) for exact IDs, stages and Update filtering attributes.
 
-| Plugin | PreValidation, stage 10 | PreOperation, stage 20 |
-| --- | --- | --- |
-| AccountRules | Supplied account names require at least three characters after trimming. | Trim the name, lowercase and trim the email, and derive a ticker from the first ten ASCII letters or digits in a supplied name. |
-| ContactRules | Supplied contact last names require at least two characters after trimming. | Trim supplied first and last names, and lowercase and trim the email. |
+| Plugin       | PreValidation, stage 10                                                     | PreOperation, stage 20                                                                                                          |
+| ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| AccountRules | Supplied account names require at least three characters after trimming.    | Trim the name, lowercase and trim the email, and derive a ticker from the first ten ASCII letters or digits in a supplied name. |
+| ContactRules | Supplied contact last names require at least two characters after trimming. | Trim supplied first and last names, and lowercase and trim the email.                                                           |
 
 Both stages run synchronously on Create and Update with rank 10. Update steps filter on the relevant input fields. A rejected write leaves the record unchanged.
 

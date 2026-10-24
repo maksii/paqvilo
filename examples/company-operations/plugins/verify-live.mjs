@@ -1,19 +1,277 @@
-import{connectionPath}from'./registration.mjs';
-import{readFile,writeFile,mkdir}from'node:fs/promises';import{randomUUID,createHash}from'node:crypto';import{resolve,dirname}from'node:path';import{fileURLToPath}from'node:url';
-import{loadConnection,connectedClient,retrieveFetchXml}from'../../../lense/dataverse/index.mjs';
-const connection=await loadConnection(connectionPath());
-const project=resolve(dirname(fileURLToPath(import.meta.url)),'..');const client=connectedClient(connection);const who=await client.verify(connection.organisationId);const out=resolve(project,'.paqvilo/plugins');await mkdir(out,{recursive:true});
-const fetchNative=client.fetch;client.fetch=async(...params)=>{const r=await fetchNative(...params);if(!r.ok){const e=await r.clone().json().catch(()=>null);await writeFile(resolve(out,'qualification-last-error.json'),JSON.stringify({status:r.status,code:e?.error?.code,message:String(e?.error?.message??'').slice(0,2500)},null,2));}return r;};
-const catalogue=JSON.parse(await readFile(resolve(project,'data/catalogue.json'),'utf8'));const person=catalogue.records.find(r=>r.key==='P01');const nonce=randomUUID();const runId=randomUUID();const probeId=randomUUID();const hash=createHash('sha256').update(await readFile(resolve(project,'dataverse/manifest.json'))).digest('hex');
-await client.request('pqvd_testruns',{method:'POST',body:{pqvd_testrunid:runId,pqvd_name:'Live SDK qualification '+nonce,pqvd_runkey:nonce,pqvd_suiteversion:'plugin-v1',pqvd_manifesthash:hash,pqvd_datasetversion:catalogue.version,pqvd_environment:'Dataverse.SDK.ApplicationIdentity',pqvd_startedat:new Date().toISOString(),pqvd_runstate:183270000,pqvd_rolesnapshot:JSON.stringify({source:'SDK application identity; not portal authorization',userId:who.applicationUserId}),'pqvd_runnercontactid@odata.bind':`/contacts(${person.id})`}});
-await client.request('pqvd_crudprobes',{method:'POST',body:{pqvd_crudprobeid:probeId,pqvd_name:'SDK qualification probe',pqvd_token:nonce,pqvd_counter:0,'pqvd_runid@odata.bind':`/pqvd_testruns(${runId})`,'pqvd_ownercontactid@odata.bind':`/contacts(${person.id})`}});
-const outcomes=[];async function operation(caseId,table='pqvd_crudprobe',message='Update'){const id=randomUUID();await client.request('pqvd_testoperations',{method:'POST',body:{pqvd_testoperationid:id,pqvd_name:caseId+' '+id,pqvd_pairkey:randomUUID(),pqvd_caseid:caseId,pqvd_lane:183270002,pqvd_variant:'live-qualification',pqvd_phase:183270001,pqvd_attempt:1,pqvd_pagenumber:1,pqvd_expectedmessage:message,pqvd_roottable:table,'pqvd_runid@odata.bind':`/pqvd_testruns(${runId})`}});return await client.get(`pqvd_testoperations(${id})`);}
-async function complete(outcome){if(outcome.operationId)await client.request(`pqvd_testoperations(${outcome.operationId})`,{method:'PATCH',body:{pqvd_clientsummary:JSON.stringify({...outcome,source:'LiveSDK.ApplicationIdentity.NotPortalAuthorization'}),pqvd_clientfinishedat:new Date().toISOString()}});}
-const readOp=await operation('SDK-Marked-Fetch','account','RetrieveMultiple');const xml=`<fetch><entity name="account"><attribute name="accountid"/><attribute name="name"/><filter type="and"><condition attribute="accountnumber" operator="begins-with" value="CO-"/><filter type="or"><condition attribute="name" operator="null"/><filter type="and"><condition attribute="name" operator="ne" value="${readOp.pqvd_markerutc}"/><condition attribute="name" operator="ne" value="${readOp.pqvd_markeroperation}"/></filter></filter></filter></entity></fetch>`;
-try{const result=await retrieveFetchXml(client,{entitySet:'accounts',fetchXml:xml});const events=await client.list(`pqvd_pluginevents?$select=pqvd_artifacttype,pqvd_stage,pqvd_payloadtext,pqvd_payloadhash,pqvd_partnumber,pqvd_partcount&$filter=_pqvd_operationid_value eq ${readOp.pqvd_testoperationid}`);outcomes.push({caseId:'SDK-Marked-Fetch',operationId:readOp.pqvd_testoperationid,status:events.length>=4?'Passed':'MissingBackendEvidence',returnedCount:result.rows.length,events:events.map(e=>({artifact:e.pqvd_artifacttype,stage:e.pqvd_stage,hash:e.pqvd_payloadhash,parts:e.pqvd_partcount}))});}catch(e){outcomes.push({caseId:'SDK-Marked-Fetch',status:'Failed',code:e.code,http:e.status});}
-for(const scenario of ['ABC','P02','P03','P04','P05','P06','P07','P10','P11','P12']){const op=await operation(scenario);try{await client.request(`pqvd_crudprobes(${probeId})`,{method:'PATCH',body:{'pqvd_activeoperationid@odata.bind':`/pqvd_testoperations(${op.pqvd_testoperationid})`,pqvd_pluginscenario:scenario,pqvd_hopbudget:3,pqvd_triggernonce:randomUUID(),pqvd_counter:outcomes.length}});const events=await client.list(`pqvd_pluginevents?$select=pqvd_artifacttype,pqvd_depth,pqvd_message,pqvd_stage,pqvd_provenance,pqvd_querytype,pqvd_payloadtext&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`);const nodes=await client.list(`pqvd_chainnodes?$select=pqvd_nodecode,pqvd_hop&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`);const snapshots=events.map(e=>JSON.parse(e.pqvd_payloadtext));outcomes.push({caseId:scenario,operationId:op.pqvd_testoperationid,status:events.some(e=>e.pqvd_artifacttype==='ChainA')&&events.some(e=>e.pqvd_artifacttype==='ChainB')&&events.some(e=>e.pqvd_artifacttype==='ChainC')?'Passed':'MissingBackendEvidence',events:events.length,nodes:nodes.length,maxObservedDepth:Math.max(...events.map(e=>e.pqvd_depth??0)),messages:[...new Set(events.map(e=>e.pqvd_message))],queryTypes:[...new Set(events.map(e=>e.pqvd_querytype).filter(Boolean))],beforeImages:snapshots.filter(s=>s.context.preImages?.Before).length,afterImages:snapshots.filter(s=>s.context.postImages?.After).length,secureVersionLabels:[...new Set(snapshots.map(s=>s.content?.secureConfiguration?.version).filter(Boolean))],secretValueRecorded:events.some(e=>e.pqvd_payloadtext.includes('syntheticSecret'))});}catch(e){const error=JSON.parse(await readFile(resolve(out,'qualification-last-error.json'),'utf8').catch(()=> '{}'));outcomes.push({caseId:scenario,operationId:op.pqvd_testoperationid,status:'Failed',code:error.code??e.code,http:e.status,safeMessage:error.message});}await complete(outcomes.at(-1));await writeFile(resolve(out,'qualification-progress.json'),JSON.stringify({runId,probeId,outcomes},null,2));console.log(JSON.stringify(outcomes.at(-1)));}
-for(const budget of [1,3,7,8,9,10]){const op=await operation(`P09-Depth-${budget}`);const previous=await client.get(`pqvd_crudprobes(${probeId})?$select=pqvd_triggernonce,_pqvd_activeoperationid_value`);try{await client.request(`pqvd_crudprobes(${probeId})`,{method:'PATCH',body:{'pqvd_activeoperationid@odata.bind':`/pqvd_testoperations(${op.pqvd_testoperationid})`,pqvd_pluginscenario:'P09',pqvd_hopbudget:budget,pqvd_triggernonce:randomUUID()}});const events=await client.list(`pqvd_pluginevents?$select=pqvd_artifacttype,pqvd_depth&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`);outcomes.push({caseId:`P09-Depth-${budget}`,operationId:op.pqvd_testoperationid,status:'Passed',outcome:'Committed',maxObservedDepth:Math.max(...events.map(e=>e.pqvd_depth??0)),depthHops:events.filter(e=>e.pqvd_artifacttype==='DepthChain').length});}catch{const error=JSON.parse(await readFile(resolve(out,'qualification-last-error.json'),'utf8'));const after=await client.get(`pqvd_crudprobes(${probeId})?$select=pqvd_triggernonce,_pqvd_activeoperationid_value`);const nodes=await client.list(`pqvd_chainnodes?$select=pqvd_chainnodeid&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`);const rollback=after.pqvd_triggernonce===previous.pqvd_triggernonce&&after._pqvd_activeoperationid_value===previous._pqvd_activeoperationid_value&&nodes.length===0;outcomes.push({caseId:`P09-Depth-${budget}`,operationId:op.pqvd_testoperationid,status:rollback&&/depth|loop|recursive|cancel/i.test(error.message??'')?'Passed':'Failed',outcome:'PlatformFault',code:error.code,safeMessage:error.message,rollbackVerified:rollback,durableFailedHopEvidence:false});}await complete(outcomes.at(-1));console.log(JSON.stringify(outcomes.at(-1)));}
-const asyncCase=outcomes.find(o=>o.caseId==='P10');for(let attempt=0;attempt<6&&asyncCase;attempt++){const events=await client.list(`pqvd_pluginevents?$select=pqvd_mode,pqvd_artifacttype&$filter=_pqvd_operationid_value eq ${asyncCase.operationId} and pqvd_artifacttype eq 'AsyncContext'`);if(events.length){asyncCase.asyncObserved=true;asyncCase.asyncMode=events[0].pqvd_mode;break;}await new Promise(resolve=>setTimeout(resolve,3000));}if(asyncCase&&!asyncCase.asyncObserved)asyncCase.asyncQualification='Pending.NoAsyncEventInObservationWindow';
+import { connectionPath } from './registration.mjs';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { randomUUID, createHash } from 'node:crypto';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadConnection, connectedClient, retrieveFetchXml } from '../../../lense/dataverse/index.mjs';
+const connection = await loadConnection(connectionPath());
+const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const client = connectedClient(connection);
+const who = await client.verify(connection.organisationId);
+const out = resolve(project, '.paqvilo/plugins');
+await mkdir(out, { recursive: true });
+const fetchNative = client.fetch;
+client.fetch = async (...params) => {
+  const r = await fetchNative(...params);
+  if (!r.ok) {
+    const e = await r
+      .clone()
+      .json()
+      .catch(() => null);
+    await writeFile(
+      resolve(out, 'qualification-last-error.json'),
+      JSON.stringify(
+        { status: r.status, code: e?.error?.code, message: String(e?.error?.message ?? '').slice(0, 2500) },
+        null,
+        2,
+      ),
+    );
+  }
+  return r;
+};
+const catalogue = JSON.parse(await readFile(resolve(project, 'data/catalogue.json'), 'utf8'));
+const person = catalogue.records.find((r) => r.key === 'P01');
+const nonce = randomUUID();
+const runId = randomUUID();
+const probeId = randomUUID();
+const hash = createHash('sha256')
+  .update(await readFile(resolve(project, 'dataverse/manifest.json')))
+  .digest('hex');
+await client.request('pqvd_testruns', {
+  method: 'POST',
+  body: {
+    pqvd_testrunid: runId,
+    pqvd_name: 'Live SDK qualification ' + nonce,
+    pqvd_runkey: nonce,
+    pqvd_suiteversion: 'plugin-v1',
+    pqvd_manifesthash: hash,
+    pqvd_datasetversion: catalogue.version,
+    pqvd_environment: 'Dataverse.SDK.ApplicationIdentity',
+    pqvd_startedat: new Date().toISOString(),
+    pqvd_runstate: 183270000,
+    pqvd_rolesnapshot: JSON.stringify({
+      source: 'SDK application identity; not portal authorization',
+      userId: who.applicationUserId,
+    }),
+    'pqvd_runnercontactid@odata.bind': `/contacts(${person.id})`,
+  },
+});
+await client.request('pqvd_crudprobes', {
+  method: 'POST',
+  body: {
+    pqvd_crudprobeid: probeId,
+    pqvd_name: 'SDK qualification probe',
+    pqvd_token: nonce,
+    pqvd_counter: 0,
+    'pqvd_runid@odata.bind': `/pqvd_testruns(${runId})`,
+    'pqvd_ownercontactid@odata.bind': `/contacts(${person.id})`,
+  },
+});
+const outcomes = [];
+async function operation(caseId, table = 'pqvd_crudprobe', message = 'Update') {
+  const id = randomUUID();
+  await client.request('pqvd_testoperations', {
+    method: 'POST',
+    body: {
+      pqvd_testoperationid: id,
+      pqvd_name: caseId + ' ' + id,
+      pqvd_pairkey: randomUUID(),
+      pqvd_caseid: caseId,
+      pqvd_lane: 183270002,
+      pqvd_variant: 'live-qualification',
+      pqvd_phase: 183270001,
+      pqvd_attempt: 1,
+      pqvd_pagenumber: 1,
+      pqvd_expectedmessage: message,
+      pqvd_roottable: table,
+      'pqvd_runid@odata.bind': `/pqvd_testruns(${runId})`,
+    },
+  });
+  return await client.get(`pqvd_testoperations(${id})`);
+}
+async function complete(outcome) {
+  if (outcome.operationId)
+    await client.request(`pqvd_testoperations(${outcome.operationId})`, {
+      method: 'PATCH',
+      body: {
+        pqvd_clientsummary: JSON.stringify({
+          ...outcome,
+          source: 'LiveSDK.ApplicationIdentity.NotPortalAuthorization',
+        }),
+        pqvd_clientfinishedat: new Date().toISOString(),
+      },
+    });
+}
+const readOp = await operation('SDK-Marked-Fetch', 'account', 'RetrieveMultiple');
+const xml = `<fetch><entity name="account"><attribute name="accountid"/><attribute name="name"/><filter type="and"><condition attribute="accountnumber" operator="begins-with" value="CO-"/><filter type="or"><condition attribute="name" operator="null"/><filter type="and"><condition attribute="name" operator="ne" value="${readOp.pqvd_markerutc}"/><condition attribute="name" operator="ne" value="${readOp.pqvd_markeroperation}"/></filter></filter></filter></entity></fetch>`;
+try {
+  const result = await retrieveFetchXml(client, { entitySet: 'accounts', fetchXml: xml });
+  const events = await client.list(
+    `pqvd_pluginevents?$select=pqvd_artifacttype,pqvd_stage,pqvd_payloadtext,pqvd_payloadhash,pqvd_partnumber,pqvd_partcount&$filter=_pqvd_operationid_value eq ${readOp.pqvd_testoperationid}`,
+  );
+  outcomes.push({
+    caseId: 'SDK-Marked-Fetch',
+    operationId: readOp.pqvd_testoperationid,
+    status: events.length >= 4 ? 'Passed' : 'MissingBackendEvidence',
+    returnedCount: result.rows.length,
+    events: events.map((e) => ({
+      artifact: e.pqvd_artifacttype,
+      stage: e.pqvd_stage,
+      hash: e.pqvd_payloadhash,
+      parts: e.pqvd_partcount,
+    })),
+  });
+} catch (e) {
+  outcomes.push({ caseId: 'SDK-Marked-Fetch', status: 'Failed', code: e.code, http: e.status });
+}
+for (const scenario of ['ABC', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P10', 'P11', 'P12']) {
+  const op = await operation(scenario);
+  try {
+    await client.request(`pqvd_crudprobes(${probeId})`, {
+      method: 'PATCH',
+      body: {
+        'pqvd_activeoperationid@odata.bind': `/pqvd_testoperations(${op.pqvd_testoperationid})`,
+        pqvd_pluginscenario: scenario,
+        pqvd_hopbudget: 3,
+        pqvd_triggernonce: randomUUID(),
+        pqvd_counter: outcomes.length,
+      },
+    });
+    const events = await client.list(
+      `pqvd_pluginevents?$select=pqvd_artifacttype,pqvd_depth,pqvd_message,pqvd_stage,pqvd_provenance,pqvd_querytype,pqvd_payloadtext&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`,
+    );
+    const nodes = await client.list(
+      `pqvd_chainnodes?$select=pqvd_nodecode,pqvd_hop&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`,
+    );
+    const snapshots = events.map((e) => JSON.parse(e.pqvd_payloadtext));
+    outcomes.push({
+      caseId: scenario,
+      operationId: op.pqvd_testoperationid,
+      status:
+        events.some((e) => e.pqvd_artifacttype === 'ChainA') &&
+        events.some((e) => e.pqvd_artifacttype === 'ChainB') &&
+        events.some((e) => e.pqvd_artifacttype === 'ChainC')
+          ? 'Passed'
+          : 'MissingBackendEvidence',
+      events: events.length,
+      nodes: nodes.length,
+      maxObservedDepth: Math.max(...events.map((e) => e.pqvd_depth ?? 0)),
+      messages: [...new Set(events.map((e) => e.pqvd_message))],
+      queryTypes: [...new Set(events.map((e) => e.pqvd_querytype).filter(Boolean))],
+      beforeImages: snapshots.filter((s) => s.context.preImages?.Before).length,
+      afterImages: snapshots.filter((s) => s.context.postImages?.After).length,
+      secureVersionLabels: [...new Set(snapshots.map((s) => s.content?.secureConfiguration?.version).filter(Boolean))],
+      secretValueRecorded: events.some((e) => e.pqvd_payloadtext.includes('syntheticSecret')),
+    });
+  } catch (e) {
+    const error = JSON.parse(await readFile(resolve(out, 'qualification-last-error.json'), 'utf8').catch(() => '{}'));
+    outcomes.push({
+      caseId: scenario,
+      operationId: op.pqvd_testoperationid,
+      status: 'Failed',
+      code: error.code ?? e.code,
+      http: e.status,
+      safeMessage: error.message,
+    });
+  }
+  await complete(outcomes.at(-1));
+  await writeFile(resolve(out, 'qualification-progress.json'), JSON.stringify({ runId, probeId, outcomes }, null, 2));
+  console.log(JSON.stringify(outcomes.at(-1)));
+}
+for (const budget of [1, 3, 7, 8, 9, 10]) {
+  const op = await operation(`P09-Depth-${budget}`);
+  const previous = await client.get(
+    `pqvd_crudprobes(${probeId})?$select=pqvd_triggernonce,_pqvd_activeoperationid_value`,
+  );
+  try {
+    await client.request(`pqvd_crudprobes(${probeId})`, {
+      method: 'PATCH',
+      body: {
+        'pqvd_activeoperationid@odata.bind': `/pqvd_testoperations(${op.pqvd_testoperationid})`,
+        pqvd_pluginscenario: 'P09',
+        pqvd_hopbudget: budget,
+        pqvd_triggernonce: randomUUID(),
+      },
+    });
+    const events = await client.list(
+      `pqvd_pluginevents?$select=pqvd_artifacttype,pqvd_depth&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`,
+    );
+    outcomes.push({
+      caseId: `P09-Depth-${budget}`,
+      operationId: op.pqvd_testoperationid,
+      status: 'Passed',
+      outcome: 'Committed',
+      maxObservedDepth: Math.max(...events.map((e) => e.pqvd_depth ?? 0)),
+      depthHops: events.filter((e) => e.pqvd_artifacttype === 'DepthChain').length,
+    });
+  } catch {
+    const error = JSON.parse(await readFile(resolve(out, 'qualification-last-error.json'), 'utf8'));
+    const after = await client.get(
+      `pqvd_crudprobes(${probeId})?$select=pqvd_triggernonce,_pqvd_activeoperationid_value`,
+    );
+    const nodes = await client.list(
+      `pqvd_chainnodes?$select=pqvd_chainnodeid&$filter=_pqvd_operationid_value eq ${op.pqvd_testoperationid}`,
+    );
+    const rollback =
+      after.pqvd_triggernonce === previous.pqvd_triggernonce &&
+      after._pqvd_activeoperationid_value === previous._pqvd_activeoperationid_value &&
+      nodes.length === 0;
+    outcomes.push({
+      caseId: `P09-Depth-${budget}`,
+      operationId: op.pqvd_testoperationid,
+      status: rollback && /depth|loop|recursive|cancel/i.test(error.message ?? '') ? 'Passed' : 'Failed',
+      outcome: 'PlatformFault',
+      code: error.code,
+      safeMessage: error.message,
+      rollbackVerified: rollback,
+      durableFailedHopEvidence: false,
+    });
+  }
+  await complete(outcomes.at(-1));
+  console.log(JSON.stringify(outcomes.at(-1)));
+}
+const asyncCase = outcomes.find((o) => o.caseId === 'P10');
+for (let attempt = 0; attempt < 6 && asyncCase; attempt++) {
+  const events = await client.list(
+    `pqvd_pluginevents?$select=pqvd_mode,pqvd_artifacttype&$filter=_pqvd_operationid_value eq ${asyncCase.operationId} and pqvd_artifacttype eq 'AsyncContext'`,
+  );
+  if (events.length) {
+    asyncCase.asyncObserved = true;
+    asyncCase.asyncMode = events[0].pqvd_mode;
+    break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+}
+if (asyncCase && !asyncCase.asyncObserved) asyncCase.asyncQualification = 'Pending.NoAsyncEventInObservationWindow';
 // Immutable markers cannot be overwritten, even by the SDK provisioner.
-try{await client.request(`pqvd_testoperations(${readOp.pqvd_testoperationid})`,{method:'PATCH',body:{pqvd_markerutc:'CO-UTC:2000-01-01T00:00:00.000Z'}});outcomes.push({caseId:'ImmutableMarkers',status:'Failed'});}catch(e){outcomes.push({caseId:'ImmutableMarkers',status:e.status===400?'Passed':'Failed',http:e.status});}
-const report={schemaVersion:1,source:'Observed live Dataverse SDK/application identity',runId,probeId,environment:who,time:new Date().toISOString(),captureMode:'TransactionalLab',durability:'RollbackVulnerable',portalAuthorizationQualified:false,collectorReady:false,outcomes};await writeFile(resolve(out,'qualification.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({runId,passed:outcomes.filter(o=>o.status==='Passed').length,failed:outcomes.filter(o=>o.status!=='Passed').length,report:resolve(out,'qualification.json')}));
+try {
+  await client.request(`pqvd_testoperations(${readOp.pqvd_testoperationid})`, {
+    method: 'PATCH',
+    body: { pqvd_markerutc: 'CO-UTC:2000-01-01T00:00:00.000Z' },
+  });
+  outcomes.push({ caseId: 'ImmutableMarkers', status: 'Failed' });
+} catch (e) {
+  outcomes.push({ caseId: 'ImmutableMarkers', status: e.status === 400 ? 'Passed' : 'Failed', http: e.status });
+}
+const report = {
+  schemaVersion: 1,
+  source: 'Observed live Dataverse SDK/application identity',
+  runId,
+  probeId,
+  environment: who,
+  time: new Date().toISOString(),
+  captureMode: 'TransactionalLab',
+  durability: 'RollbackVulnerable',
+  portalAuthorizationQualified: false,
+  collectorReady: false,
+  outcomes,
+};
+await writeFile(resolve(out, 'qualification.json'), JSON.stringify(report, null, 2));
+console.log(
+  JSON.stringify({
+    runId,
+    passed: outcomes.filter((o) => o.status === 'Passed').length,
+    failed: outcomes.filter((o) => o.status !== 'Passed').length,
+    report: resolve(out, 'qualification.json'),
+  }),
+);

@@ -1,4 +1,29 @@
-import{connectionPath,localAssemblyIdentity}from'./registration.mjs';
-import{readFile,writeFile}from'node:fs/promises';import{resolve,dirname}from'node:path';import{fileURLToPath}from'node:url';import{createHash}from'node:crypto';import{loadConnection,connectedClient}from'../../../lense/dataverse/index.mjs';import{id,assemblies}from'./registration.mjs';
-const connection=await loadConnection(connectionPath());
-const root=dirname(fileURLToPath(import.meta.url));const c=connectedClient(connection);await c.verify(connection.organisationId);const hashes=[];for(const a of assemblies){const b=await readFile(resolve(root,a.project,'bin/Release/net462',a.name+'.dll'));await c.request(`pluginassemblies(${id('assembly/'+a.name)})`,{method:'PATCH',body:{content:b.toString('base64')}});hashes.push({name:a.name,sha256:createHash('sha256').update(b).digest('hex'),assemblyIdentity:localAssemblyIdentity(resolve(root,a.project,'bin/Release/net462',a.name+'.dll'))});}await writeFile(resolve(root,'../.paqvilo/plugins/assembly-update.json'),JSON.stringify({time:new Date().toISOString(),hashes},null,2));console.log(JSON.stringify({state:'Updated',hashes}));
+import { connectionPath, localAssemblyIdentity } from './registration.mjs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
+import { id, assemblies } from './registration.mjs';
+const connection = await loadConnection(connectionPath());
+const root = dirname(fileURLToPath(import.meta.url));
+const c = connectedClient(connection);
+await c.verify(connection.organisationId);
+const hashes = [];
+for (const a of assemblies) {
+  const b = await readFile(resolve(root, a.project, 'bin/Release/net462', a.name + '.dll'));
+  await c.request(`pluginassemblies(${id('assembly/' + a.name)})`, {
+    method: 'PATCH',
+    body: { content: b.toString('base64') },
+  });
+  hashes.push({
+    name: a.name,
+    sha256: createHash('sha256').update(b).digest('hex'),
+    assemblyIdentity: localAssemblyIdentity(resolve(root, a.project, 'bin/Release/net462', a.name + '.dll')),
+  });
+}
+await writeFile(
+  resolve(root, '../.paqvilo/plugins/assembly-update.json'),
+  JSON.stringify({ time: new Date().toISOString(), hashes }, null, 2),
+);
+console.log(JSON.stringify({ state: 'Updated', hashes }));

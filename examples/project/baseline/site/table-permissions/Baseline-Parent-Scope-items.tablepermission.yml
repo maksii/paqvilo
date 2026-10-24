@@ -5,7 +5,7 @@ adx_delete: false
 adx_entitylogicalname: pqvd_baselineitem
 adx_entityname: Baseline Parent Scope items
 adx_entitypermission_webrole:
-- 83b55915-2899-484c-8d57-298482ed7d81
+  - 83b55915-2899-484c-8d57-298482ed7d81
 adx_entitypermissionid: 643eb798-e8d7-4d50-899c-fadfc9344d5a
 adx_parententitypermission: dd796195-3da4-440e-898f-974abf5fee37
 adx_parentrelationship: pqvd_baselineparent_baselineitem
