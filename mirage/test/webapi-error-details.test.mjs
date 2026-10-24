@@ -24,7 +24,6 @@ async function fixture(t,mode) {
   }});
   ownedFixture(t).add(()=>app.close());
   // app.state() clones the whole state, so send() reads the token once per runtime.
-  app.csrf=app.csrf;
   return app;
 }
 async function send(app,raw,{method='PATCH',contentType='application/json'}={}) {

@@ -99,7 +99,7 @@ function moneyColumnsOf(api, logical) {
 }
 
 // Stamps the currency, its exchange rate and each money column's base amount onto the payload (data).
-function stamp(api, state, mapping, { operation, data, existing }) {
+function stamp(api, state, mapping, { operation: _operation, data, existing }) {
   const money = moneyColumnsOf(api, mapping.logicalName);
   if (!money.length) return;
   // Clearing a money value clears its stored base companion as well, while the

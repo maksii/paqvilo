@@ -63,7 +63,7 @@
   };
   function hint(element, kind, options = {}) {
     const $ = window.jQuery;
-    let state = data.get(element) ?? {};
+    const state = data.get(element) ?? {};
     const command = typeof options === "string" ? options : null;
     const hide = () => { state.tip?.remove(); state.tip = null; element.removeAttribute("aria-describedby"); };
     const show = () => {

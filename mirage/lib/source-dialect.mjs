@@ -70,7 +70,7 @@ function sampleRecords(dir, limit = 5) {
   const found = [];
   const visit = (folder, depth) => {
     if (found.length >= limit || depth > 3) return;
-    let entries = [];
+    let entries;
     try {
       entries = fs.readdirSync(folder, { withFileTypes: true });
     } catch {

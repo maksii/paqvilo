@@ -137,10 +137,10 @@ async function yamlManifestsOf(dir) {
   const folder = entries.find((e) => e.isDirectory() && !e.isSymbolicLink() && /^solutions$/i.test(e.name));
   if (!folder) return [];
   const manifests = [];
-  let solutions = [];
+  let solutions;
   try { solutions = await fs.readdir(path.join(dir, folder.name), { withFileTypes: true }); } catch { return []; }
   for (const solution of solutions.filter((e) => e.isDirectory() && !e.isSymbolicLink()).sort((a, b) => compare(a.name, b.name))) {
-    let files = [];
+    let files;
     try { files = await fs.readdir(path.join(dir, folder.name, solution.name), { withFileTypes: true }); } catch { continue; }
     const manifest = files.find((e) => e.isFile() && /^solution\.ya?ml$/i.test(e.name));
     if (manifest) manifests.push({ name: solution.name, file: path.join(dir, folder.name, solution.name, manifest.name) });

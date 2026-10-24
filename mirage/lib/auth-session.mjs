@@ -86,13 +86,15 @@ export function createAuthSessions({ secret = randomBytes(32), name = AUTH_COOKI
  */
 export function safeReturnUrl(value, fallback = "/") {
   if (typeof value !== "string" || !value || value.length > 2048) return fallback;
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (!value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u001f\u007f]/.test(value)) return fallback;
-  let decoded = value;
+  let decoded;
   try {
     decoded = decodeURIComponent(value);
   } catch {
     return fallback;
   }
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (decoded.startsWith("//") || /[\\\u0000-\u001f\u007f]/.test(decoded)) return fallback;
   try {
     const resolved = new URL(value, "http://local.invalid");

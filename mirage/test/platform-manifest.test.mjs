@@ -498,6 +498,7 @@ test("form pages load the WebForms script resources at their native paths, serve
   const form = await (await get("/form/")).text();
   const axd = [...form.matchAll(/<script src="(\/(?:Web|Script)Resource\.axd\?[^"]+)"/g)].map((match) => match[1].replace(/&amp;/g, "&"));
   assert.deepEqual(axd, ["/WebResource.axd?d=paqvilo-webforms&t=0", "/ScriptResource.axd?d=paqvilo-webuivalidation&t=0", "/ScriptResource.axd?d=paqvilo-microsoftajax&t=0", "/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0"]);
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   assert.doesNotMatch(form, /<(?:script|link)[^>]*(?:src|href)="[^"]*__sim-static/);
   const body = async (pathname) => {
     const response = await get(pathname);

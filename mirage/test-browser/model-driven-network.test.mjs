@@ -48,21 +48,21 @@ test('form-only overlays retain the trusted Xrm CRUD/query round trip with bound
   assert.equal(paths.includes('/_apps/api'), false);
   assert.ok(paths.filter(route => route.startsWith('/_apps/api/metadata/')).every(route => ['/_apps/api/metadata/x_item', '/_apps/api/metadata/x_child'].includes(route)));
   const result = await page.evaluate(async () => {
-    const made = await Xrm.WebApi.createRecord('x_item', { x_name: 'Browser mapped row', x_quantity: 3 });
-    await Xrm.WebApi.updateRecord('x_item', made.id, { x_name: 'Browser mapped update' });
-    const saved = await Xrm.WebApi.retrieveRecord('x_item', made.id, '?$select=x_name');
-    const filtered = await Xrm.WebApi.retrieveMultipleRecords('x_item', "?$select=x_name&$filter=x_name eq 'Browser mapped update'");
-    let unknown; try { await Xrm.WebApi.retrieveRecord('x_item', made.id, '?$select=x_unknown'); } catch (error) { unknown = error.message; }
-    await Xrm.WebApi.deleteRecord('x_item', made.id);
+    const made = await window.Xrm.WebApi.createRecord('x_item', { x_name: 'Browser mapped row', x_quantity: 3 });
+    await window.Xrm.WebApi.updateRecord('x_item', made.id, { x_name: 'Browser mapped update' });
+    const saved = await window.Xrm.WebApi.retrieveRecord('x_item', made.id, '?$select=x_name');
+    const filtered = await window.Xrm.WebApi.retrieveMultipleRecords('x_item', "?$select=x_name&$filter=x_name eq 'Browser mapped update'");
+    let unknown; try { await window.Xrm.WebApi.retrieveRecord('x_item', made.id, '?$select=x_unknown'); } catch (error) { unknown = error.message; }
+    await window.Xrm.WebApi.deleteRecord('x_item', made.id);
     return { saved, filtered, unknown, id: made.id };
   });
   assert.equal(result.saved.x_name, 'Browser mapped update'); assert.equal(result.filtered.entities.length, 1);
   assert.match(result.unknown, /Could not find a property/);
   assert.equal((await fetch(sim.url + '/_apps/api/tables/x_item/' + result.id)).status, 404);
   const related = await page.evaluate(async () => {
-    const made = await Xrm.WebApi.createRecord('x_extra', { x_name: 'Lazy relation', 'x_parentid@odata.bind': '/x_items(aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)' });
-    const saved = await Xrm.WebApi.retrieveRecord('x_extra', made.id, '?$select=x_name,_x_parentid_value');
-    await Xrm.WebApi.deleteRecord('x_extra', made.id); return saved;
+    const made = await window.Xrm.WebApi.createRecord('x_extra', { x_name: 'Lazy relation', 'x_parentid@odata.bind': '/x_items(aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)' });
+    const saved = await window.Xrm.WebApi.retrieveRecord('x_extra', made.id, '?$select=x_name,_x_parentid_value');
+    await window.Xrm.WebApi.deleteRecord('x_extra', made.id); return saved;
   });
   assert.equal(related._x_parentid_value, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   assert.ok(paths.includes('/_apps/api/metadata/x_extra'));
@@ -84,10 +84,10 @@ test('model-driven Xrm lookup writes use the local staff transport, CSRF and cur
   requests.length = 0;
   const result = await page.evaluate(async ({ navigation }) => {
     const original = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', replacement = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-    const created = await Xrm.WebApi.createRecord('x_child', { x_name: 'Network proof', [navigation + '@odata.bind']: `/x_items(${original})` });
-    await Xrm.WebApi.updateRecord('x_child', created.id, { x_name: 'Network updated', [navigation + '@odata.bind']: `/x_items(${replacement})` });
-    const saved = await Xrm.WebApi.retrieveRecord('x_child', created.id);
-    await Xrm.WebApi.deleteRecord('x_child', created.id);
+    const created = await window.Xrm.WebApi.createRecord('x_child', { x_name: 'Network proof', [navigation + '@odata.bind']: `/x_items(${original})` });
+    await window.Xrm.WebApi.updateRecord('x_child', created.id, { x_name: 'Network updated', [navigation + '@odata.bind']: `/x_items(${replacement})` });
+    const saved = await window.Xrm.WebApi.retrieveRecord('x_child', created.id);
+    await window.Xrm.WebApi.deleteRecord('x_child', created.id);
     return { created, saved };
   }, { navigation });
   assert.equal(result.saved.x_name, 'Network updated'); assert.equal(result.saved._x_parentid_value, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
@@ -100,7 +100,7 @@ test('model-driven Xrm lookup writes use the local staff transport, CSRF and cur
   assert.deepEqual(writes[1].data.x_parentid, { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', entity: 'x_item' });
   assert.equal((await fetch(origin + '/_apps/api/tables/x_child/' + result.created.id)).status, 404);
   const count = requests.length;
-  const failure = await page.evaluate(async () => { try { await Xrm.WebApi.createRecord('x_child', { x_name: 'Invalid reference', 'x_parentid@odata.bind': 'https://example.invalid/x_items(aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)' }); } catch (error) { return error.message; } });
+  const failure = await page.evaluate(async () => { try { await window.Xrm.WebApi.createRecord('x_child', { x_name: 'Invalid reference', 'x_parentid@odata.bind': 'https://example.invalid/x_items(aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)' }); } catch (error) { return error.message; } });
   assert.match(failure, /local entity-set/); assert.equal(requests.length, count, 'invalid paths never trigger a record request');
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
 });
@@ -115,15 +115,15 @@ for (const kind of ['portal', 'model-driven']) test(`Xrm queries share canonical
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   const navigation = Object.entries(catalogue.tables.x_child.relationships).find(([, value]) => value.from === 'x_parentid' && value.entity === 'x_item' && value.many === false)?.[0] ?? 'x_parentid';
   const result = await page.evaluate(async ({ navigation }) => {
-    const matched = await Xrm.WebApi.retrieveMultipleRecords('x_item', "?$select=x_name&$filter=contains(x_name,'pp')");
-    const expanded = await Xrm.WebApi.retrieveMultipleRecords('x_child', `?$select=x_name&$expand=${navigation}($select=x_name)&$orderby=x_name`);
-    const single = await Xrm.WebApi.retrieveRecord('x_child', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', `?$select=x_name,_x_parentid_value&$expand=${navigation}($select=x_name)`);
+    const matched = await window.Xrm.WebApi.retrieveMultipleRecords('x_item', "?$select=x_name&$filter=contains(x_name,'pp')");
+    const expanded = await window.Xrm.WebApi.retrieveMultipleRecords('x_child', `?$select=x_name&$expand=${navigation}($select=x_name)&$orderby=x_name`);
+    const single = await window.Xrm.WebApi.retrieveRecord('x_child', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', `?$select=x_name,_x_parentid_value&$expand=${navigation}($select=x_name)`);
     const names = [], links = [];
     let next = '?$select=x_name&$orderby=x_name';
-    do { const page = await Xrm.WebApi.retrieveMultipleRecords('x_item', next, 1); names.push(...page.entities.map(row => row.x_name)); next = page.nextLink; if (next) links.push(next); } while (next && links.length < 5);
+    do { const page = await window.Xrm.WebApi.retrieveMultipleRecords('x_item', next, 1); names.push(...page.entities.map(row => row.x_name)); next = page.nextLink; if (next) links.push(next); } while (next && links.length < 5);
     const xml = '<fetch><entity name="x_item"><attribute name="x_name"/><filter><condition attribute="x_quantity" operator="eq" value="0"/></filter></entity></fetch>';
-    const fetched = await Xrm.WebApi.retrieveMultipleRecords('x_item', '?fetchXml=' + encodeURIComponent(xml));
-    let invalid; try { await Xrm.WebApi.retrieveMultipleRecords('x_item', 'https://example.invalid/api/data/v9.2/x_items?$skiptoken=ignored'); } catch (error) { invalid = error.message; }
+    const fetched = await window.Xrm.WebApi.retrieveMultipleRecords('x_item', '?fetchXml=' + encodeURIComponent(xml));
+    let invalid; try { await window.Xrm.WebApi.retrieveMultipleRecords('x_item', 'https://example.invalid/api/data/v9.2/x_items?$skiptoken=ignored'); } catch (error) { invalid = error.message; }
     return { matched, parents: expanded.entities.map(row => row[navigation].x_name), single: { name: single.x_name, parent: single[navigation].x_name, parentId: single._x_parentid_value }, names, links, fetched, invalid };
   }, { navigation });
   assert.deepEqual(result.matched.entities.map(row => row.x_name), ['Copper']);
@@ -145,7 +145,7 @@ test('saved form and Xrm edits share concurrency without overwriting either a ne
   await page.goto(origin + route);
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
   await page.getByLabel('Name', { exact: true }).fill('Form draft retained');
-  await page.evaluate(async id => { await Xrm.WebApi.online.updateRecord('x_item', id, { x_quantity: 19 }); }, id);
+  await page.evaluate(async id => { await window.Xrm.WebApi.online.updateRecord('x_item', id, { x_quantity: 19 }); }, id);
   const conflict = page.waitForResponse(response => response.request().method() === 'PATCH' && response.status() === 412);
   await page.getByRole('button', { name: 'Save', exact: true }).click(); await conflict;
   await page.getByRole('status').filter({ hasText: /version|changed|match/i }).waitFor();
@@ -184,12 +184,12 @@ test('leaving a form during Xrm ETag preflight prevents the pending update from 
     if (route.request().method() === 'GET') { intercepted(); await gate; }
     await route.continue();
   });
-  await page.evaluate(id => { window.pendingXrmUpdate = Xrm.WebApi.updateRecord('x_child', id, { x_name: 'Disposed form must not write' }).then(() => 'unexpected success', error => error.message); }, child);
+  await page.evaluate(id => { window.pendingXrmUpdate = window.Xrm.WebApi.updateRecord('x_child', id, { x_name: 'Disposed form must not write' }).then(() => 'unexpected success', error => error.message); }, child);
   await started;
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   release();
-  assert.match(await page.evaluate(() => pendingXrmUpdate), /disposed/);
+  assert.match(await page.evaluate(() => window.pendingXrmUpdate), /disposed/);
   assert.deepEqual(methods, ['GET']);
   const saved = await (await fetch(origin + endpoint)).json();
   assert.equal(saved.row.x_name, 'Copper child');

@@ -56,7 +56,7 @@ describe("activity, email and queue messages", () => {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await response.text();
-    let json = null;
+    let json;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
     return { status: response.status, text, json, headers: response.headers };
   }

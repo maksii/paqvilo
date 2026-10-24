@@ -17,7 +17,7 @@ const sameId=(a,b)=>String(a??'').toLowerCase()===String(b??'').toLowerCase();
  * removed, and so is every run while the Dataverse API is off (systemJobs() false): the row is then only the durable queue entry.
  * ponytail: a plug-in run writes Locked and its final state in one transaction, so only Ready and the final state are observable. */
 function jobColumns(store,item,event,chain){
- let idColumn=null;try{idColumn=store.resolveMapping(event.entity)?.idColumn;}catch{}
+ let idColumn=null;try{idColumn=store.resolveMapping(event.entity)?.idColumn;}catch{ /* A removed entity has no primary-key column to include. */ }
  const recordId=idColumn?event.row?.[idColumn]??null:null;
  return{name:item.name??item.id,owningextensionid:{id:item.id,logical_name:'sdkmessageprocessingstep',name:item.name},regardingobjectid:recordId?{id:recordId,logical_name:event.entity}:null,regardingobjecttypecode:event.entity,primaryentitytype:event.entity,messagename:messageNameOf(event.operation),correlationid:chain.id,depth:chain.depth+1};
 }

@@ -4,11 +4,7 @@
 // Switch, IfError, record scope functions, behaviour functions that name their target).
 // Semantics follow each function's Learn reference page (https://learn.microsoft.com/power-platform/power-fx/reference/).
 import { decimalParts, decimalText, exactNumeric, isExactNumeric, numericPair, roundNumeric } from './exact-numeric.mjs';
-import {
-  ALIASES, CAUSE, FxFloat, decimalArithmetic, invariantNumberText, parseNumber, toDecimal, ErrorKind, FxDataSource, FxDate, FxError, FxGuid, FxRecordRef, FxUntyped, compare, equals, fieldName, formatDate,
-  fromWall, fxError, isBlank, isRecord, isoOf, member, numberText, parseDateText, readAll, round15, toBoolean, toDate,
-  toFx, toNumber, toText, wallOf, zoneOffset,
-} from './power-fx.mjs';
+import { ALIASES, CAUSE, FxFloat, decimalArithmetic, invariantNumberText, parseNumber, toDecimal, ErrorKind, FxDataSource, FxDate, FxError, FxGuid, FxRecordRef, FxUntyped, compare, equals, fieldName, formatDate, fromWall, fxError, isBlank, isRecord, isoOf, member, readAll, round15, toBoolean, toDate, toFx, toNumber, toText, wallOf, zoneOffset } from './power-fx.mjs';
 
 const DAY = 86_400_000;
 const fail = (kind, message) => fxError(ErrorKind[kind], message);
@@ -155,6 +151,7 @@ function isoWeek(d) {
 function regexOf(fx, pattern, options, fallback) {
   const opts = String(options ?? fallback);
   let source = String(pattern);
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (opts.includes('x')) source = source.replace(/\\#/g, '\u0000').replace(/#[^\n]*/g, '').replace(/\s+/g, '').replace(/\u0000/g, '\\#');
   const begins = opts.includes('^c'), ends = opts.includes('c$');
   source = `${begins ? '^' : ''}(?:${source})${ends ? '$' : ''}`;
@@ -312,7 +309,7 @@ function delegate(fx, source, node, asName) {
   return null;
 }
 // Filter over a data source: delegated when every predicate translates, else read up to the row limit and filtered here.
-function filterSource(fx, source, preds, asName, name) {
+function filterSource(fx, source, preds, asName, _name) {
   const clauses = preds.map((pred) => delegate(fx, source, pred, asName));
   if (clauses.every((clause) => clause !== null)) {
     if (clauses.includes(false)) return [];

@@ -112,7 +112,7 @@ export function registerPackExport(name, spec) {
 
 /** Adapts a module validator `validate(value)` (throws without a pack id) to a registry check that names the pack. */
 export const packCheck = validate => (value, packId) => {
-  try { validate(value); } catch (error) { throw new TypeError(`Data pack ${packId}: ${error.message}`); }
+  try { validate(value); } catch (error) { throw new TypeError(`Data pack ${packId}: ${error.message}`, { cause: error }); }
 };
 
 const CAPABILITY_LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];

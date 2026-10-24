@@ -35,6 +35,7 @@ export function resolveDeploymentProfiles(value = {}, base = process.cwd(), { so
       const resolvedFiles = files.map(file => {
         let directory=base;
         if (object(file)) { keys(file,['source','sourceRoot'],`Profile '${id}' ${section} source`); if(Object.keys(file).length!==1)fail('A source path requires exactly one base.'); directory=Object.hasOwn(file,'source')?sourceDir:sourceRoot; file=file.source??file.sourceRoot; }
+        // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
         if (typeof file !== 'string' || !file.trim() || /[\x00-\x1f]/.test(file) || !/\.(?:json|ya?ml)$/i.test(file)) fail(`Profile '${id}' ${section} requires a JSON or YAML file path.`);
         return path.resolve(directory,file);
       });
@@ -111,6 +112,7 @@ export async function loadDeploymentProfiles(config, pin = null) {
         for (const previous of Object.keys(environmentVariables)) if(previous.toLowerCase()===name.toLowerCase())delete environmentVariables[previous];
         environmentVariables[name] = String(row.Value);
       } else {
+        // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
         for (const field of ['ConnectionId', 'ConnectorId']) if (typeof row[field] !== 'string' || /[\x00-\x1f]/.test(row[field])) fail(`ConnectionReferences requires valid ${field} fields.`);
         if(!row.ConnectionId.trim()) { unset.push({logicalName:name,file:path.relative(config.configDirectory??process.cwd(),file).replaceAll('\\','/')}); continue; }
         if(!row.ConnectorId.trim())fail('ConnectionReferences requires non-empty ConnectorId fields.');

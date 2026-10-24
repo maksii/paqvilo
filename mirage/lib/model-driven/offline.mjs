@@ -150,7 +150,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     if (typeof webApi !== 'function') throw fail('This host does not provide the in-process Web API that mobile offline sync uses.', 501, 'OfflineSyncUnavailable');
     const result = await webApi({ method, path, principal: session.principal, host: session.host, body: body === undefined ? undefined : JSON.stringify(body),
       headers: { accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers } });
-    let parsed = null;
+    let parsed;
     try { parsed = result.body ? JSON.parse(result.body) : null; } catch { parsed = null; }
     return { status: result.status, body: parsed };
   };

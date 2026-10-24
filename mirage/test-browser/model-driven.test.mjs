@@ -134,7 +134,7 @@ test('completion of a save cannot clear pending feedback on a newer form route',
   });
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 10));
-  await page.evaluate(() => { void Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }); });
+  await page.evaluate(() => { void window.Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }); });
   await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
   while (!releaseForm) await new Promise(resolve => setTimeout(resolve, 10));
   releaseSave();

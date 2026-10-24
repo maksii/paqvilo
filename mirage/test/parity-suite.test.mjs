@@ -273,7 +273,7 @@ test("runner compares synthetic loopback sides, classifies deltas, redacts value
   const writes = { live: 0, local: 0 };
   const signIns = [];
   const localCookies = [];
-  let identity = { contactId: "local", roles: ["Authenticated Users"] };
+  const identity = { contactId: "local", roles: ["Authenticated Users"] };
   const page = (title, body) => `<!doctype html><html><head><title>${title}</title></head><body>${body}</body></html>`;
   const serve = async (side) => {
     const server = http.createServer(async (req, res) => {

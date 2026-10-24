@@ -5,7 +5,7 @@ import { X509Certificate, constants, createHash, createPublicKey, generateKeyPai
 import { GRANT_TYPES, grantAllowed } from "./dataverse-settings.mjs";
 
 const DATAVERSE_APP_ID = "00000007-0000-0000-c000-000000000000";
-const CLIENT_CREDENTIALS = "client_credentials";
+
 const AUTH_CODE = "authorization_code";
 const DEVICE_GRANT = GRANT_TYPES.device_code;
 const JWT_BEARER = GRANT_TYPES.on_behalf_of;
@@ -497,7 +497,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
   };
 
   // /common/oauth2/deviceauth: the user types the code and picks an account; POST approves the pending device code.
-  const handleDeviceVerification = ({ origin, url, query, form = {}, method = "GET" }) => {
+  const handleDeviceVerification = ({ origin: _origin, url, query, form = {}, method = "GET" }) => {
     const now = clock();
     const input = fieldsOf({ url, query, form });
     if (String(method).toUpperCase() !== "POST") {

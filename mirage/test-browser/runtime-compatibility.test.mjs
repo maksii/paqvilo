@@ -110,7 +110,7 @@ test("local jQuery UI dialogs render the widget DOM that portal confirm dialogs 
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.evaluate(() => {
     window.answers = [];
-    window.showConfirm("Remove this section?", (dialog) => { window.answers.push("yes"); $(dialog).dialog("close"); }, (dialog) => { window.answers.push("no"); $(dialog).dialog("close"); });
+    window.showConfirm("Remove this section?", (dialog) => { window.answers.push("yes"); window.$(dialog).dialog("close"); }, (dialog) => { window.answers.push("no"); window.$(dialog).dialog("close"); });
   });
   const dialog = page.locator(".ui-dialog.confirmContainer");
   await dialog.waitFor({ state: "visible" });
@@ -123,7 +123,7 @@ test("local jQuery UI dialogs render the widget DOM that portal confirm dialogs 
   await dialog.waitFor({ state: "hidden" });
   assert.equal(await page.locator(".ui-widget-overlay").count(), 0);
   // Re-initialising the same element reopens it; the title-bar close routes to "No".
-  await page.evaluate(() => window.showConfirm("Again?", () => window.answers.push("yes"), (dialog) => { window.answers.push("no"); $(dialog).dialog("close"); }));
+  await page.evaluate(() => window.showConfirm("Again?", () => window.answers.push("yes"), (dialog) => { window.answers.push("no"); window.$(dialog).dialog("close"); }));
   await dialog.waitFor({ state: "visible" });
   await dialog.locator(".ui-dialog-titlebar-close").click();
   await dialog.waitFor({ state: "hidden" });

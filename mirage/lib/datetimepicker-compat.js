@@ -178,7 +178,7 @@
   }
   const plugin = function (argument, ...args) {
     if (typeof argument === "string") {
-      const result = this.map(function () {
+      this.map(function () {
         const api = instances.get(this);
         if (!api || typeof api[argument] !== "function")
           throw new Error(`Unsupported local DateTimePicker method: ${argument}`);

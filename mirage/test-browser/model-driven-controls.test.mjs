@@ -23,49 +23,49 @@ test('model-driven choice fields preserve typed values, required validation, key
       [{ name: 'x_kind', label: 'Kind', type: 'number', required: true, options: [{ value: 3, label: 'Bronze' }, { value: 7, label: 'Gold' }] }, null],
       [{ name: 'x_enabled', label: 'Enabled', type: 'boolean', options: [{ value: 1, label: 'Available' }, { value: 0, label: 'Unavailable' }] }, false],
       [{ name: 'x_tags', label: 'Tags', type: 'text', dataverseType: 'multiselectpicklist', options: [{ value: 2, label: 'Red' }, { value: 5, label: 'Blue' }] }, '2,5'],
-    ]) { const control = renderControl(field, value); fields[field.name] = control; form.append(control.element); }
-    form.addEventListener('change', event => changes.push(event.target.name));
+    ]) { const control = renderControl(field, value); window.fields[field.name] = control; form.append(control.element); }
+    form.addEventListener('change', event => window.changes.push(event.target.name));
   });
   assert.equal(await page.locator('form').evaluate(form => form.checkValidity()), false);
   const kind = page.getByRole('combobox', { name: 'Kind', exact: true });
   await kind.focus(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   assert.equal(await kind.inputValue(), 'Gold');
-  assert.equal(await page.evaluate(() => fields.x_kind.read()), 7);
+  assert.equal(await page.evaluate(() => window.fields.x_kind.read()), 7);
   assert.equal(await page.locator('form').evaluate(form => form.checkValidity()), true);
-  await page.evaluate(() => fields.x_kind.setDisabled(true));
+  await page.evaluate(() => window.fields.x_kind.setDisabled(true));
   assert.equal(await kind.isDisabled(), true); assert.equal(await kind.locator('..').locator('.choice-chevron').isVisible(), false);
-  assert.equal(await page.evaluate(() => fields.x_kind.read()), 7);
-  await page.evaluate(() => fields.x_kind.setDisabled(false));
+  assert.equal(await page.evaluate(() => window.fields.x_kind.read()), 7);
+  await page.evaluate(() => window.fields.x_kind.setDisabled(false));
   assert.equal(await kind.locator('..').locator('.choice-chevron').isVisible(), true);
   await kind.click(); assert.equal(await page.getByRole('listbox').isVisible(), true); await page.keyboard.press('Escape');
   assert.equal(await page.getByRole('combobox', { name: 'Enabled', exact: true }).inputValue(), 'Unavailable');
-  assert.equal(await page.evaluate(() => fields.x_enabled.read()), false);
+  assert.equal(await page.evaluate(() => window.fields.x_enabled.read()), false);
   await page.getByRole('combobox', { name: 'Enabled', exact: true }).click();
   assert.deepEqual(await page.getByRole('option').allTextContents(), ['Unavailable', 'Available'], 'native Boolean choices order false first even when the export serializes TrueOption first');
   await page.keyboard.press('Escape');
   const tags = page.getByRole('combobox', { name: 'Tags', exact: true });
   assert.equal(await tags.inputValue(), 'Red; Blue');
   await tags.click(); await page.getByRole('option', { name: 'Red', exact: true }).click();
-  assert.deepEqual(await page.evaluate(() => fields.x_tags.read()), [5]);
+  assert.deepEqual(await page.evaluate(() => window.fields.x_tags.read()), [5]);
   assert.equal(await page.locator('.choice-chip').filter({ hasText: 'Blue' }).isVisible(), true, 'selected chips remain visible above the open search field');
   await page.keyboard.press('Escape');
   assert.deepEqual(await page.locator('.choice-chip>span').allTextContents(), ['Blue']);
   await page.getByRole('button', { name: 'Remove Blue', exact: true }).click();
-  assert.equal(await page.evaluate(() => fields.x_tags.read()), null);
+  assert.equal(await page.evaluate(() => window.fields.x_tags.read()), null);
   assert.equal(await tags.getAttribute('aria-expanded'), 'false', 'removing a collapsed chip must not open the menu');
-  await page.evaluate(() => fields.x_tags.setValue([5]));
+  await page.evaluate(() => window.fields.x_tags.setValue([5]));
   assert.equal(await tags.getAttribute('aria-expanded'), 'false');
-  assert.deepEqual(await page.evaluate(() => changes), ['x_kind', 'x_tags', 'x_tags']);
-  await page.evaluate(() => { fields.x_tags.setValue('2'); fields.x_tags.setDisabled(true); });
+  assert.deepEqual(await page.evaluate(() => window.changes), ['x_kind', 'x_tags', 'x_tags']);
+  await page.evaluate(() => { window.fields.x_tags.setValue('2'); window.fields.x_tags.setDisabled(true); });
   assert.equal(await tags.inputValue(), 'Red'); assert.equal(await tags.isDisabled(), true);
   assert.equal(await tags.locator('..').evaluate(node => node.getBoundingClientRect().height), 44);
   assert.equal(await tags.locator('..').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(240, 240, 240)');
-  await page.evaluate(() => fields.x_tags.setDisabled(false));
+  await page.evaluate(() => window.fields.x_tags.setDisabled(false));
   assert.equal(await tags.locator('..').evaluate(node => node.getBoundingClientRect().height), 32);
   await tags.click(); await tags.fill('Blue');
   assert.equal(await page.getByRole('option', { name: 'Red', exact: true }).count(), 0);
   await page.getByRole('option', { name: 'Select all', exact: true }).click();
-  assert.deepEqual(await page.evaluate(() => fields.x_tags.read()), [2, 5]);
+  assert.deepEqual(await page.evaluate(() => window.fields.x_tags.read()), [2, 5]);
   await page.keyboard.press('Escape');
 });
 
@@ -76,17 +76,17 @@ test('disabled lookup presentation hides search and clear while preserving typed
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren(); window.readonlyLookups = [];
     for (const [name, value] of [['Empty', null], ['Selected', { id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', entity:'x_item', name:'Copper' }]]) {
       const control = renderControl({ name, label:name, type:'lookup', targets:['x_item'] }, value, { disabled:true, tables:{ x_item:{ label:'Items' } }, lookupSuggestions:async () => [{ id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', entity:'x_item', name:'Silver' }] });
-      const wrapper = document.createElement('div'); wrapper.className = 'field'; wrapper.append(control.element); document.body.append(wrapper); readonlyLookups.push(control);
+      const wrapper = document.createElement('div'); wrapper.className = 'field'; wrapper.append(control.element); document.body.append(wrapper); window.readonlyLookups.push(control);
     }
   });
   assert.equal(await page.getByRole('combobox', { name:'Empty', exact:true }).getAttribute('placeholder'), '');
   assert.equal(await page.getByRole('button', { name:/Look up|Clear/ }).count(), 0);
-  assert.deepEqual(await page.evaluate(() => readonlyLookups[1].read()), { id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', entity:'x_item', name:'Copper' });
-  await page.evaluate(() => readonlyLookups.forEach(control => control.setDisabled(false)));
+  assert.deepEqual(await page.evaluate(() => window.readonlyLookups[1].read()), { id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', entity:'x_item', name:'Copper' });
+  await page.evaluate(() => window.readonlyLookups.forEach(control => control.setDisabled(false)));
   assert.equal(await page.getByRole('combobox', { name:'Empty', exact:true }).getAttribute('placeholder'), '---');
-  await page.getByRole('button', { name:'Clear Selected', exact:true }).click(); assert.equal(await page.evaluate(() => readonlyLookups[1].read()), null);
+  await page.getByRole('button', { name:'Clear Selected', exact:true }).click(); assert.equal(await page.evaluate(() => window.readonlyLookups[1].read()), null);
   await page.getByRole('button', { name:'Look up Empty', exact:true }).click(); await page.getByRole('option', { name:'Silver', exact:true }).click();
-  assert.deepEqual(await page.evaluate(() => readonlyLookups[0].read()), { id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', entity:'x_item', name:'Silver' });
+  assert.deepEqual(await page.evaluate(() => window.readonlyLookups[0].read()), { id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', entity:'x_item', name:'Silver' });
 });
 
 test('numeric controls show exported precision and currency without changing raw values, validation or editing', async t => {
@@ -98,7 +98,7 @@ test('numeric controls show exported precision and currency without changing raw
     for (const [name, dataverseType, precision, value, formatted] of [['Ratio', 'decimal', 2, 12.5, '12.50'], ['Measurement', 'float', 3, 25.125, '25.125'], ['Amount', 'money', 2, 2500, '¤2,500.00']]) {
       const field = document.createElement('div'); field.className = 'field';
       const control = renderControl({ name, label: name, type: 'number', dataverseType, precision, minValue: 0, maxValue: 10000 }, value, { formatted });
-      numbers[name] = control; field.append(control.element); document.body.append(field);
+      window.numbers[name] = control; field.append(control.element); document.body.append(field);
     }
     const next = document.createElement('button'); next.textContent = 'Next'; document.body.append(next);
   });
@@ -108,15 +108,15 @@ test('numeric controls show exported precision and currency without changing raw
   assert.equal(await page.locator('.number-formatted').first().evaluate(node => getComputedStyle(node).visibility), 'hidden');
   await ratio.fill('14.25'); await page.getByRole('button', { name: 'Next', exact: true }).click();
   assert.equal(await page.locator('.number-formatted').first().textContent(), '14.25');
-  assert.equal(await page.evaluate(() => numbers.Ratio.read()), 14.25);
+  assert.equal(await page.evaluate(() => window.numbers.Ratio.read()), 14.25);
   const amount = page.getByLabel('Amount', { exact: true }); await amount.fill('1234.5'); await page.getByRole('button', { name: 'Next', exact: true }).click();
   assert.equal(await page.locator('.number-formatted').last().textContent(), '¤1,234.50');
-  assert.equal(await page.evaluate(() => numbers.Amount.read()), 1234.5);
+  assert.equal(await page.evaluate(() => window.numbers.Amount.read()), 1234.5);
   await amount.fill('-1'); assert.equal(await amount.evaluate(node => node.checkValidity()), false, 'native numeric bounds remain enforced');
-  await page.evaluate(() => numbers.Amount.setValue(73.5));
+  await page.evaluate(() => window.numbers.Amount.setValue(73.5));
   assert.equal(await page.locator('.number-formatted').last().textContent(), '¤73.50');
   assert.equal(await amount.evaluate(node => node.checkValidity()), true);
-  await amount.fill(''); assert.equal(await page.evaluate(() => numbers.Amount.read()), null);
+  await amount.fill(''); assert.equal(await page.evaluate(() => window.numbers.Amount.read()), null);
   assert.equal(await page.locator('.number-formatted').last().textContent(), '');
 });
 
@@ -127,16 +127,16 @@ test('source text formats retain native scalar action glyphs and input semantics
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren(); window.textFields = {};
     for (const [format, value] of [['email', 'person@example.invalid'], ['phone', '+1 555 0100'], ['url', 'https://example.invalid/'], ['tickersymbol', 'SAMPLE'], ['text', 'Plain']]) {
       const wrapper = document.createElement('div'); wrapper.className = 'field';
-      const control = renderControl({ name: format, label: format, type: 'text', format, required: true, maxLength: 80 }, value); textFields[format] = control; wrapper.append(control.element); document.body.append(wrapper);
+      const control = renderControl({ name: format, label: format, type: 'text', format, required: true, maxLength: 80 }, value); window.textFields[format] = control; wrapper.append(control.element); document.body.append(wrapper);
     }
   });
   assert.deepEqual(await page.locator('.text-field-action').evaluateAll(nodes => nodes.map(node => ({ disabled: node.disabled, reason: node.title, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height }))), Array.from({ length: 4 }, () => ({ disabled: true, reason: 'External field actions are not supported locally.', width: 32, height: 32 })));
   assert.deepEqual(await page.locator('input').evaluateAll(nodes => nodes.map(node => node.type)), ['email', 'tel', 'url', 'text', 'text']);
   const email = page.getByLabel('email', { exact: true }); await email.fill('invalid'); assert.equal(await email.evaluate(node => node.checkValidity()), false);
-  await page.evaluate(() => textFields.email.setValue('updated@example.invalid'));
-  assert.equal(await email.evaluate(node => node.checkValidity()), true); assert.equal(await page.evaluate(() => textFields.email.read()), 'updated@example.invalid');
-  await page.evaluate(() => textFields.url.setDisabled(true)); assert.equal(await page.getByLabel('url', { exact: true }).isDisabled(), true);
-  await page.evaluate(() => textFields.url.setDisabled(false)); assert.equal(await page.getByLabel('url', { exact: true }).isDisabled(), false);
+  await page.evaluate(() => window.textFields.email.setValue('updated@example.invalid'));
+  assert.equal(await email.evaluate(node => node.checkValidity()), true); assert.equal(await page.evaluate(() => window.textFields.email.read()), 'updated@example.invalid');
+  await page.evaluate(() => window.textFields.url.setDisabled(true)); assert.equal(await page.getByLabel('url', { exact: true }).isDisabled(), true);
+  await page.evaluate(() => window.textFields.url.setDisabled(false)); assert.equal(await page.getByLabel('url', { exact: true }).isDisabled(), false);
   assert.equal(await page.getByRole('button', { name: 'Open website for url', exact: true }).isDisabled(), true);
   assert.equal(await page.locator('.text-field-action .icon-mail').count(), 1); assert.equal(await page.locator('.text-field-action .icon-phone').count(), 1);
   assert.equal(await page.locator('.text-field-action .icon-globe').count(), 1); assert.equal(await page.locator('.text-field-action .icon-ticker').count(), 1);
@@ -349,26 +349,26 @@ test('inline lookup rejects stale keyboard choices during debounce and after an 
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren();
     window.requests = [];
-    window.lookup = renderControl({ name: 'x_lookup', label: 'Related', type: 'lookup', targets: ['x_item'] }, null, { tables: { x_item: {} }, lookupSuggestions: () => new Promise(resolve => requests.push(resolve)) });
-    document.body.append(lookup.element);
+    window.lookup = renderControl({ name: 'x_lookup', label: 'Related', type: 'lookup', targets: ['x_item'] }, null, { tables: { x_item: {} }, lookupSuggestions: () => new Promise(resolve => window.requests.push(resolve)) });
+    document.body.append(window.lookup.element);
   });
   const input = page.getByRole('combobox', { name: 'Related', exact: true });
   await page.getByRole('button', { name: 'Look up Related', exact: true }).click();
-  await page.evaluate(() => requests[0]([{ id: 'a', entity: 'x_item', name: 'Old result' }]));
+  await page.evaluate(() => window.requests[0]([{ id: 'a', entity: 'x_item', name: 'Old result' }]));
   await page.getByRole('option', { name: 'Old result', exact: true }).waitFor();
   await input.fill('Second'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   assert.equal(await input.inputValue(), 'Second');
   assert.equal(await page.getByRole('option', { name: 'Old result', exact: true }).count(), 0);
-  await page.waitForFunction(() => requests.length === 2);
-  await input.fill('Latest'); await page.waitForFunction(() => requests.length === 3);
-  await page.evaluate(() => requests[2]([{ id: 'c', entity: 'x_item', name: 'Latest result' }]));
+  await page.waitForFunction(() => window.requests.length === 2);
+  await input.fill('Latest'); await page.waitForFunction(() => window.requests.length === 3);
+  await page.evaluate(() => window.requests[2]([{ id: 'c', entity: 'x_item', name: 'Latest result' }]));
   await page.getByRole('option', { name: 'Latest result', exact: true }).waitFor();
-  await page.evaluate(() => requests[1]([{ id: 'b', entity: 'x_item', name: 'Stale result' }]));
+  await page.evaluate(() => window.requests[1]([{ id: 'b', entity: 'x_item', name: 'Stale result' }]));
   await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-  assert.deepEqual(await page.evaluate(() => lookup.read()), { id: 'c', entity: 'x_item', name: 'Latest result' });
+  assert.deepEqual(await page.evaluate(() => window.lookup.read()), { id: 'c', entity: 'x_item', name: 'Latest result' });
   await page.getByRole('button', { name: 'Look up Related', exact: true }).click();
-  await page.evaluate(() => lookup.setDisabled(true));
+  await page.evaluate(() => window.lookup.setDisabled(true));
   assert.equal(await input.getAttribute('aria-expanded'), 'false');
-  await page.evaluate(() => requests[3]([{ id: 'd', entity: 'x_item', name: 'Denied late result' }]));
-  assert.deepEqual(await page.evaluate(() => lookup.read()), { id: 'c', entity: 'x_item', name: 'Latest result' });
+  await page.evaluate(() => window.requests[3]([{ id: 'd', entity: 'x_item', name: 'Denied late result' }]));
+  assert.deepEqual(await page.evaluate(() => window.lookup.read()), { id: 'c', entity: 'x_item', name: 'Latest result' });
 });

@@ -158,6 +158,7 @@ export function validateFooterLogoMarkup(markup) {
         name === "src" &&
         (!attribute.value.startsWith("/") ||
           attribute.value.startsWith("//") ||
+          // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
           /[\\\u0000-\u001f]/.test(attribute.value))
       )
         throw fail("Footer images must use a captured portal-relative asset.");

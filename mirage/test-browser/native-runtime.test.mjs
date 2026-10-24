@@ -89,7 +89,7 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   await page.waitForFunction(() => window.listLoads >= 2);
   assert.equal(await list.locator(".view-grid tbody tr td[data-attribute=name]").getAttribute("data-value"), "Beta");
   // Authored code refreshes a grid with the native jQuery "refresh" event.
-  await page.evaluate(() => $(".entity-grid.entitylist").trigger("refresh"));
+  await page.evaluate(() => window.$(".entity-grid.entitylist").trigger("refresh"));
   await page.waitForFunction(() => window.listLoads >= 3);
   assert.equal(await list.locator(".view-grid tbody tr").count(), 1);
   // Quick search re-queries page 1 with begins-with semantics.
@@ -101,15 +101,15 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   // WebForms validation globals: required validator, summary and ValidatorEnable.
   assert.equal(await page.evaluate(() => window.validatorCount), 1);
   await page.locator("#fullname").fill("");
-  assert.equal(await page.evaluate(() => Page_ClientValidate("")), false);
+  assert.equal(await page.evaluate(() => window.Page_ClientValidate("")), false);
   // Invalid validation schedules focus on the summary; observe it before moving on.
   await page.waitForFunction(() => document.activeElement === document.querySelector(".validation-summary a"));
   const summary = page.locator("#EntityFormPanel .validation-summary");
   assert.equal(await summary.isVisible(), true);
   assert.match(await summary.innerText(), /The form could not be submitted for the following reasons:/);
   assert.match(await summary.locator("a").first().innerText(), /Full name is a required field\./);
-  assert.equal(await page.evaluate(() => { ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), false); return Page_ClientValidate(""); }), true);
-  await page.evaluate(() => ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), true));
+  assert.equal(await page.evaluate(() => { window.ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), false); return window.Page_ClientValidate(""); }), true);
+  await page.evaluate(() => window.ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), true));
   await page.locator("#fullname").fill("Ada Lovelace");
   // Commit the field before clicking elsewhere: its change event re-validates and hides the
   // inline required message, and that layout shift between mousedown and mouseup would move
@@ -140,7 +140,7 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   await modal.locator(".modal-footer button.primary").click();
   await modal.waitFor({ state: "hidden" });
   assert.deepEqual(
-    await page.evaluate(() => [$("#parentcustomerid").val(), $("#parentcustomerid_name").val(), $("#parentcustomerid_entityname").val()]),
+    await page.evaluate(() => [window.$("#parentcustomerid").val(), window.$("#parentcustomerid_name").val(), window.$("#parentcustomerid_entityname").val()]),
     [ACCOUNTS[1], "Beta", "account"],
   );
   assert.ok((await page.evaluate(() => window.gridResponses)).includes("1/3"));

@@ -500,7 +500,7 @@ test("HTTP: declarative plugins enforce validation and atomic secondary side eff
     { Prefer: "return=representation" },
   );
   assert.equal(response.status, 201);
-  let row = await response.json();
+  const row = await response.json();
   assert.equal(row.fullname, "Ada Lovelace");
   assert.equal(response.headers.get("entityid"), row.contactid);
   response = await call("/__sim/api/records/audit");
@@ -1005,11 +1005,10 @@ test("HTTP: shell capture persists a complete profile and preserves it on captur
 });
 
 test("HTTP: shutdown requires CSRF, acknowledges before callback and closes idempotently", async (t) => {
-  let fixture;
   let finishShutdown;
   const shutdownDone = new Promise((resolve) => { finishShutdown = resolve; });
   let shutdownCalls = 0;
-  fixture = await setup(t, {
+  const fixture = await setup(t, {
     onShutdown: async () => {
       shutdownCalls++;
       await fixture.app.close();

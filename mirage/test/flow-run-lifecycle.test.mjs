@@ -219,7 +219,7 @@ test('a child flow that waits inside a parent loop suspends the parent at that i
   assert.equal(runs.get(answer.runId).status, 'Succeeded');
 });
 
-test('without a run store a waiting action keeps answering 501 FlowSuspendNotWired', async t => {
+test('without a run store a waiting action keeps answering 501 FlowSuspendNotWired', async _t => {
   const store = await new DataStore({ state: emptyState() }).init();
   const connectors = createConnectorRuntime({ store });
   assert.equal(flowRunsOf(store), null);

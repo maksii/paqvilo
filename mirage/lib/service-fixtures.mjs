@@ -85,7 +85,7 @@ export function createServiceFixtureRegistry({ packs = [], diagnostic } = {}) {
   for (const pack of packs) {
     const packId = pack.id ?? "anonymous";
     let map;
-    try { map = validateServiceFixtures(pack.serviceFixtures); } catch (error) { throw new TypeError(`Data pack ${packId}: ${error.message}`); }
+    try { map = validateServiceFixtures(pack.serviceFixtures); } catch (error) { throw new TypeError(`Data pack ${packId}: ${error.message}`, { cause: error }); }
     for (const [service, operations] of Object.entries(map)) {
       for (const [operation, run] of Object.entries(operations)) {
         const k = key(service, operation);

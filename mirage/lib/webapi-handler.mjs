@@ -1196,7 +1196,7 @@ async function deleteEntity(t) {
 }
 
 async function putProperty(t) {
-  const { mapping, policy, store, deps, target } = t;
+  const { mapping, policy, target } = t;
   const body = await readBody(t);
   if (!own(body, "value")) throw badRequest("A property value is required: { \"value\": ... }.", "InvalidRequest", "0x0");
   const { id } = locate(t, mapping, target.key);
@@ -1280,7 +1280,7 @@ async function fileColumnRequest(t) {
 }
 
 async function deleteProperty(t) {
-  const { mapping, policy, store, deps, target } = t;
+  const { mapping, policy, target } = t;
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
   const prepared = policy.prepareWrite({ [target.segment]: null }, "update");
@@ -1290,7 +1290,7 @@ async function deleteProperty(t) {
 
 /** $ref: POST/DELETE on collection-valued, PUT/DELETE on single-valued navigation properties. */
 async function reference(t) {
-  const { mapping, policy, store, deps, target, method } = t;
+  const { mapping, policy, store, target, method } = t;
   const navigation = target.segment;
   if (!["POST", "PUT", "DELETE"].includes(method)) throw methodNotAllowed(method, "$ref");
   policy.assertWrite({ [`${navigation}@odata.bind`]: null }, "update");

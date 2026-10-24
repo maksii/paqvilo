@@ -36,14 +36,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { AuditLog } from "./lib/audit-log.mjs";
 import { watchSources } from './lib/source-watcher.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles, profileSelection, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
-import {
-  DataStore,
-  parseFetchXml,
-  builtinPresets,
-  resolvePreset,
-  normalizeMockLiquidRecord,
-  normalizeMockLiquidFetchXml,
-} from "./lib/data.mjs";
+import { DataStore, parseFetchXml, resolvePreset, normalizeMockLiquidRecord, normalizeMockLiquidFetchXml } from "./lib/data.mjs";
 import { DATA_MODELS, importPortal, normalizePortalPath } from "./lib/importer.mjs";
 import { createPortalRenderer, renderShellResource } from "./lib/liquid.mjs";
 import { formContentStyles } from './lib/form-head.mjs';
@@ -56,12 +49,12 @@ import {withFileSourceMap,identityMapUrl} from '../lense/source-map.mjs';
 import {assetKind} from './lib/asset-type.mjs';
 import { listPresets } from "./lib/presets.mjs";
 import { applyPortalOverrides, bindPortalEnvironment, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
-import { platformSettingEntries, validatePlatformOverrides, platformValues } from './lib/platform-settings.mjs';
+import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
 import { configurationPresetDiagnostics } from './lib/preset-registry.mjs';
 import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment, configurationPresetReport, configurationPresetCollisions } from './lib/experiment-presets.mjs';
 import { inspectPage } from "./lib/page-resources.mjs";
 import { enrichReference } from "./enrich-reference.mjs";
-import { discoverSourceDependencies, runtimeDependencyPaths, injectRuntimeDependencies, injectRuntimeCompatibility, isHtmlDocument } from "./lib/source-dependencies.mjs";
+import { discoverSourceDependencies, injectRuntimeDependencies, injectRuntimeCompatibility, isHtmlDocument } from "./lib/source-dependencies.mjs";
 import { resolveLocalOverrides, injectLocalHead } from './lib/local-overrides.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from './lib/platform-styles.mjs';
 import { LiveBridge, normalizeLiveRecord } from "./lib/live.mjs";
@@ -115,8 +108,7 @@ import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './lib/sim-mes
 import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
-import { sourceRecordId } from './lib/source-record-id.mjs';
-import { parseSecretReference, environmentVariablePayload } from './lib/secret-resolver.mjs';
+import { environmentVariablePayload } from './lib/secret-resolver.mjs';
 import { authenticationSettings } from "./lib/external-login.mjs";
 import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
 import { uuidV5, createApplicationUser } from './lib/dataverse-security.mjs';
@@ -244,6 +236,7 @@ function validateEndpoint(value) {
     typeof value.path !== "string" ||
     !value.path.startsWith("/") ||
     value.path.startsWith("//") ||
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
     /[\\\u0000-\u001f]/.test(value.path)
   )
     throw error("Endpoint path must be portal-relative.");
@@ -638,8 +631,7 @@ async function createPowerPagesSimulator({
     diagnostic: entry => sourceDiagnostic(entry),
     timeoutMs: () => environmentValue('pluginTimeoutSeconds', dataverseConfig.pluginTimeoutSeconds) * 1000,
     clock: hostClock, ids: settingOptionsRest.ids, scheduler: settingOptionsRest.scheduler });
-  const { handlers: { operations: registeredOperations, plugins: registeredPluginSteps }, descriptors: registeredPluginDescriptors,
-    runtimes: registeredPluginRuntimes, pluginSteps, operations, cloudFlow: cloudFlowOf } = organizationHost;
+  const { handlers: { operations: registeredOperations }, operations } = organizationHost;
   const workflowsView = organizationHost.workflows;
   const codeApps = codeAppSettings(settingOptionsRest.codeApps);
   const validateStartupConfiguration = () => {
@@ -655,6 +647,7 @@ async function createPowerPagesSimulator({
   startupPhase('state-restore');
   bootstrapStageAt = performance.now();
   await store.init({ restoredState, restoredStorage });
+  // eslint-disable-next-line no-useless-assignment -- Release bootstrap snapshots before long-lived route closures.
   restoredState = restoredStorage = undefined;
   bootstrapTimings.stateRestoreMs = Math.round(performance.now() - bootstrapStageAt) + (bootstrapTimings.statePreloadMs ?? 0);
   bootstrapTimings.stateRestore = { existed: stateExisted, journal: store.storage?.journal ?? false,
@@ -833,7 +826,7 @@ async function createPowerPagesSimulator({
   const stagedAttachments = (controls, { prefix } = {}) => {
     const field = prefix ? `${prefix}AttachFile_HiddenField_AnnotationIds` : [...controls.keys()].find((key) => /AttachFile_HiddenField_AnnotationIds$/.test(key));
     if (!field || !controls.has(field)) return [];
-    let ids = [];
+    let ids;
     try { ids = JSON.parse(controls.get(field) || "[]"); } catch { throw error('Staged attachment IDs must be a JSON array.', 400, 'FormAttachmentInvalid'); }
     if (!Array.isArray(ids) || ids.length > 50 || controls.getAll(field).length !== 1) throw error('Staged attachment IDs must be one bounded JSON array.', 400, 'FormAttachmentInvalid');
     if (new Set(ids.map(id => String(id).toLowerCase())).size !== ids.length) throw error('A staged attachment was repeated.', 400, 'FormAttachmentInvalid');
@@ -870,7 +863,7 @@ async function createPowerPagesSimulator({
     closing = false,
     closePromise = null,
     // External sign-in and its local identity provider (lib/sign-in-flow.mjs), set below.
-    externalSignIn = null,triggerRunner=null,asyncPluginRunner=null;
+    externalSignIn = null;
   // GET observers may commit SDK writes too. Drain every accepted handler
   // before stopping its services; event-stream handlers finish on registration.
   const activeRequests=new Set();
@@ -1081,9 +1074,9 @@ async function createPowerPagesSimulator({
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
   };
   sourceDiagnostic = recordDiagnostic; earlySourceDiagnostics.splice(0).forEach(recordDiagnostic);
-  const backend = await organizationHost.createBackend();
-  const { webhooks } = backend;
-  ({ triggerRunner, asyncPluginRunner } = backend);
+  await organizationHost.createBackend();
+  
+
   const liveMapping = (entity) => {
     const mapping = store.resolveMapping(entity);
     return {
@@ -1331,7 +1324,7 @@ async function createPowerPagesSimulator({
   };
   const formSubmissionOptions = (formIdentity, visitor, pageTarget) => {
     const formLanguage = renderer.requestLanguage(pageTarget);
-    const associateFormRecord = async (entity, id, navigation, targetId, identity) => {
+    const associateFormRecord = async (entity, id, navigation, targetId, _identity) => {
       const mapping = liveMapping(entity),
         target = liveMapping(mapping.relationships?.[navigation]?.entity);
       const response = await live.request(
@@ -1917,7 +1910,7 @@ async function createPowerPagesSimulator({
         operations[operation] = { allowed: true, scoped: false, grants: [], reason: "Permission enforcement is permissive: every local identity may use this table." };
         continue;
       }
-      let rules = [];
+      let rules;
       try {
         rules = store.rules(entity, operation, identity);
       } catch {
@@ -2099,7 +2092,7 @@ async function createPowerPagesSimulator({
     state.simulator.activeScenario = { id: scenario.id, name: scenario.name, appliedAt: new Date().toISOString() };
     validateConfig(state.simulator);
   };
-  const ENVIRONMENT_TABLES = { definition: "environmentvariabledefinition", value: "environmentvariablevalue" };
+  
   const tableMapping = (entity) => {
     try {
       return store.resolveMapping(entity);
@@ -2107,7 +2100,7 @@ async function createPowerPagesSimulator({
       return null;
     }
   };
-  const lookupId = (value) => personaKey(value && typeof value === "object" ? value.id ?? value.value : value);
+  
   /** Environment variable definitions joined with their current local values, when imported (sim-environment-routes.mjs). */
   const environmentVariableTable = () => sharedEnvironmentVariableTable(store, { secrets: organization?.api?.secrets ?? null });
   async function largeJsonBody(req, limit = 256 * 1024 * 1024) {
@@ -2260,7 +2253,7 @@ async function createPowerPagesSimulator({
       return deploymentProfilesSummary(profileConfig, activeProfiles);
     },
     extra: async () => {
-      let deploymentProfiles = [];
+      let deploymentProfiles;
       try {
         deploymentProfiles = (await fs.readdir(path.join(portal.sourceDir, "deployment-profiles")))
           .filter((name) => /\.deployment\.ya?ml$/i.test(name))
@@ -2523,6 +2516,7 @@ async function createPowerPagesSimulator({
             if (required) throw error(`${label} is required.`);
             return null;
           }
+          // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
           if (typeof value !== "string" || value.length > 200 || /[\u0000-\u001f]/.test(value)) throw error(`${label} must be text of at most 200 characters.`);
           return value.trim();
         };
@@ -3176,7 +3170,7 @@ async function createPowerPagesSimulator({
               : undefined,
           error: value?.error,
         };
-      } catch {}
+      } catch { /* Non-JSON content follows the ordinary response or script path below. */ }
     if (headers["content-type"]?.includes("text/html"))
       bytes = Buffer.from(
         bytes.toString("utf8").replaceAll(live.origin, localOrigin),
@@ -4255,7 +4249,7 @@ async function createPowerPagesSimulator({
         });
       let body=await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER });
       const contentType=asset.mimeType||mime(file),kind=assetKind(contentType,file);
-      let jsonPayload=false;if(kind==='script'){try{JSON.parse(body.toString('utf8'));jsonPayload=true;}catch{}}
+      let jsonPayload=false;if(kind==='script'){try{JSON.parse(body.toString('utf8'));jsonPayload=true;}catch{ /* Non-JSON content follows the ordinary response or script path below. */ }}
       if(kind==='script'&&!jsonPayload){body=withFileSourceMap(body,file);if(!body.toString('utf8').includes('sourceURL='))body=Buffer.concat([body,Buffer.from('\n//# sourceURL='+pathToFileURL(file).href+'\n')]);}
       else if(kind==='stylesheet'&&!body.toString('utf8').includes('sourceMappingURL=')){const text=body.toString('utf8');body=Buffer.concat([body,Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(file,text.split(/\r\n?|\n/).length,text)} */\n`)]);}
       return sendFile(body, contentType);

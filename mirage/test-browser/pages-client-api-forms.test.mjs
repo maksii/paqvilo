@@ -74,7 +74,7 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
   await page.goto(`${app.url}/?id=${ROW}`);
 
   const read = await page.evaluate(async () => {
-    const $pages = await Microsoft.PowerPages.onPagesClientApiReady();
+    const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
     const forms = $pages.currentPage.forms.getAll();
     const form = $pages.currentPage.forms.getFormByName("Item");
     const name = form.getControlByLogicalName("x_name");
@@ -113,14 +113,14 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
 
   // setRequired and addValidator register submit-time validators that block the postback and fill the summary.
   const blocked = await page.evaluate(async () => {
-    const $pages = await Microsoft.PowerPages.onPagesClientApiReady();
+    const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
     const form = $pages.currentPage.forms.getFormByName("Item");
     const count = form.getControlByLogicalName("x_count");
     count.setRequired(true, "Count is needed.");
     // A fresh lookup per call: validators belong to the rendered control, not to one lookup.
     form.getControlByLogicalName("x_name").addValidator("upper", () => true, "Replaced by the next addition.");
     form.getControlByLogicalName("x_name").addValidator("upper", (value) => value === value.toUpperCase(), "Name must be upper case.");
-    const valid = Page_ClientValidate("");
+    const valid = window.Page_ClientValidate("");
     return { valid, required: count.getRequired(), summary: document.querySelector(".validation-summary").textContent };
   });
   assert.equal(blocked.valid, false);
@@ -128,12 +128,12 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
   assert.match(blocked.summary, /Count is needed\./);
   assert.match(blocked.summary, /Name must be upper case\./);
   const cleared = await page.evaluate(async () => {
-    const $pages = await Microsoft.PowerPages.onPagesClientApiReady();
+    const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
     const form = $pages.currentPage.forms.getFormByName("Item");
     form.getControlByLogicalName("x_name").removeValidator("upper");
-    if (Page_Validators.some((span) => /upper case|Replaced/.test(span.errormessage))) return "validator left behind";
+    if (window.Page_Validators.some((span) => /upper case|Replaced/.test(span.errormessage))) return "validator left behind";
     form.getControlByLogicalName("x_count").setValue("7");
-    return Page_ClientValidate("");
+    return window.Page_ClientValidate("");
   });
   assert.equal(cleared, true);
   await Promise.all([page.waitForEvent("load"), page.locator("#UpdateButton").click()]);
@@ -142,7 +142,7 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
 
   // File columns through the portal Web API.
   const file = await page.evaluate(async (id) => {
-    const $pages = await Microsoft.PowerPages.onPagesClientApiReady();
+    const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
     await $pages.webAPI.uploadFileToColumn("x_items", id, "x_doc", new File(["file body"], "notes.txt", { type: "text/plain" }));
     const blob = await $pages.webAPI.downloadFileFromColumn("x_items", id, "x_doc");
     return [await blob.text(), blob.type];
@@ -197,19 +197,19 @@ test("$pages full name, rich text and code component controls read and write the
   // A real code component: it shows its bound value and records every updateView the host makes.
   await page.evaluate(async (spec) => {
     window.observed = [];
-    ComponentFramework.registerControl("Invented.Echo", class {
+    window.ComponentFramework.registerControl("Invented.Echo", class {
       init(context, notify, state, container) { this.box = document.createElement("output"); this.box.id = "echo"; container.append(this.box); this.box.textContent = context.parameters.value.raw ?? ""; }
-      updateView(context) { this.box.textContent = context.parameters.value.raw ?? ""; observed.push(context.parameters.value.raw ?? null); }
+      updateView(context) { this.box.textContent = context.parameters.value.raw ?? ""; window.observed.push(context.parameters.value.raw ?? null); }
       getOutputs() { return {}; }
       destroy() {}
     });
-    await __paqviloPcf.mount({ id: "x_code", constructor: "Invented.Echo", resources: [], properties: [{ name: "value", "of-type": "SingleLine.Text", usage: "bound" }], strings: {},
+    await window.__paqviloPcf.mount({ id: "x_code", constructor: "Invented.Echo", resources: [], properties: [{ name: "value", "of-type": "SingleLine.Text", usage: "bound" }], strings: {},
       args: spec.args, identity: { roles: [] }, mappings: {}, nativeBinding: spec.nativeBinding }, document.querySelector("[data-invented-pcf-host]"));
   }, spec);
   await page.addScriptTag({ content: clientPortalObjectRuntime({}, { websiteId: SITE, language: "en-US" }) });
   await page.addScriptTag({ content: await fs.readFile(new URL("../lib/pages-client-api.js", import.meta.url), "utf8") });
   const result = await page.evaluate(async () => {
-    const $pages = await Microsoft.PowerPages.onPagesClientApiReady();
+    const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
     const form = $pages.currentPage.forms.getFormByName("Contact");
     const changes = [];
     document.addEventListener("change", (event) => changes.push(event.target.id));
@@ -247,7 +247,7 @@ test("$pages full name, rich text and code component controls read and write the
   // Each written box raises change, so the native form posts the parts and the mounted code component sees the value.
   for (const id of ["firstname", "middlename", "lastname", "fullname", "x_body", "x_code"]) assert.ok(result.changes.includes(id), id);
   await page.waitForFunction(() => document.getElementById("echo")?.textContent === "After");
-  assert.equal(await page.evaluate(() => observed.at(-1)), "After");
+  assert.equal(await page.evaluate(() => window.observed.at(-1)), "After");
   assert.match(result.wrongType, /needs an object/);
   assert.deepEqual(errors, []);
 });

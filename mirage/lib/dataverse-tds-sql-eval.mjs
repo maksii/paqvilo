@@ -51,7 +51,7 @@ function tick(st) {
   if (st.signal?.aborted) fail(3617, "Query was cancelled by the user.");
 }
 
-export async function executeBatch(sql, { catalog, scan, params = {}, principal, signal, now, collation = "CI_AI" } = {}) {
+export async function executeBatch(sql, { catalog, scan, params = {}, principal: _principal, signal, now, collation = "CI_AI" } = {}) {
   const { statements } = parseBatch(sql);
   const batches = splitBatches(sql);
   // A statement belongs to the last batch that starts at or before its line.

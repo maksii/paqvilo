@@ -119,7 +119,7 @@ test("a note re-created under the same id while the release flush is between its
   const h = await routingApi(t);
   assert.equal((await h.call("POST", "annotations", note())).status, 204);
   const remove = h.provider.delete;
-  let reached, gate, deletes = [];
+  let reached, gate; const deletes = [];
   const atDelete = new Promise((resolve) => { reached = resolve; });
   const opened = new Promise((resolve) => { gate = resolve; });
   h.provider.delete = async (key, options) => { deletes.push([key, options?.ifMatch]); reached(); await opened; return remove(key, options); };

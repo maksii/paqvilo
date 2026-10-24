@@ -2,7 +2,7 @@ import { emptyState } from './data.mjs';
 import { applySolutionData } from './solution-data.mjs';
 import { bootstrapPresetLibrary } from './presets.mjs';
 
-export function initialOrganizationState({ solutionData, packs = [], environmentVariables, platform } = {}) {
+export function initialOrganizationState({ solutionData, packs = [], environmentVariables, platform: _platform } = {}) {
   const state = emptyState();
   state.simulator = { mode: 'local', operations: {}, endpoints: [], identity: { roles: [] } };
   const prepared = applySolutionData(state, solutionData, {

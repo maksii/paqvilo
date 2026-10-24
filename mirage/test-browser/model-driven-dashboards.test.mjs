@@ -59,8 +59,8 @@ test('navigateTo with pageType dashboard opens the dashboard inline; an unknown 
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm);
-  assert.equal(await page.evaluate(() => Xrm.Navigation.navigateTo({ pageType: 'dashboard', dashboardId: '77777777-7777-4777-8777-000000000000' }).catch(error => error.code)), 'DashboardPageUnsupported');
-  await page.evaluate(id => { Xrm.Navigation.navigateTo({ pageType: 'dashboard', dashboardId: id }); }, BOARD);
+  assert.equal(await page.evaluate(() => window.Xrm.Navigation.navigateTo({ pageType: 'dashboard', dashboardId: '77777777-7777-4777-8777-000000000000' }).catch(error => error.code)), 'DashboardPageUnsupported');
+  await page.evaluate(id => { window.Xrm.Navigation.navigateTo({ pageType: 'dashboard', dashboardId: id }); }, BOARD);
   await page.getByRole('heading', { name: 'Invented board', exact: true }).waitFor();
   await page.getByRole('table', { name: 'Stocked list' }).getByText('Copper', { exact: true }).waitFor();
   assert.deepEqual(errors, []);

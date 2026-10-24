@@ -36,7 +36,7 @@ const ASSEMBLY = 'a1000000-0000-4000-8000-000000000001';
 const TYPE = 'a1000000-0000-4000-8000-000000000002';
 const STEP = 'a1000000-0000-4000-8000-000000000003';
 const CONTOSO = 'Contoso.Plugins.WidgetCheck';
-const CRM = 'Microsoft.Dynamics.CRM.';
+
 
 // The Solution's facts as importSolutionPlugins returns them: one assembly, one type, one Update step with a pre-image.
 const PLUGINS = {

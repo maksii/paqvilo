@@ -684,7 +684,7 @@ async function renderRecord() {
   const header = document.createElement('div'); header.className = 'record-header'; header.innerHTML = `<div class="record-identity"><div class="record-title"><h1>${esc(existing ? record[table.nameColumn] ?? '(No name)' : 'New ' + table.singular)}</h1><span class="record-saved" id="save-status"> - ${dirty ? 'Unsaved changes' : existing ? 'Saved' : 'New record'}</span></div><div class="record-subtitle"><small>${esc(table.singular)}</small></div></div>`;
   recordCard.append(header);
   const availableForms = appForms();
-  let selectedForm = availableForms.find(form => form.id === formId) ?? availableForms[0];
+  const selectedForm = availableForms.find(form => form.id === formId) ?? availableForms[0];
   const renderingForm = formId, renderingLifetime = formLifetime;
   await Promise.all([...new Set(selectedForm.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).map(cell => cell.subgrid?.entity).filter(Boolean))].map(entity => ensureMetadata(entity)));
   if (renderGeneration !== generation || renderingForm !== formId || renderingLifetime.signal.aborted) return;
@@ -1019,7 +1019,7 @@ async function deleteRecords(rows) {
     for (const row of rows) { await api(tablePath(entity, row.id), { method: 'DELETE', headers: { 'if-match': row.etag } }); deleted++; }
     if (deleteGeneration !== generation) return;
     dirty = false; catalogue = await api(); table = catalogue.tables[table.entity]; await navigate(table.entity); notice(`${deleted} record${deleted === 1 ? '' : 's'} deleted locally.`);
-  } catch (error) { throw new Error(`${deleted} record${deleted === 1 ? '' : 's'} deleted. ${error.message}`); }
+  } catch (error) { throw new Error(`${deleted} record${deleted === 1 ? '' : 's'} deleted. ${error.message}`, { cause: error }); }
   finally { pending = false; if (deleteGeneration === generation) contentLoaded(); }
 }
 /** The local address of a navigateTo page input (the native main.aspx page types). */

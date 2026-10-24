@@ -1000,8 +1000,8 @@ export async function probeWebApi(simulator, { cookie = null } = {}) {
   const headers = { accept: "application/json", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty", ...(cookie ? { cookie } : {}) };
   const results = [];
   for (const table of [...new Set(tables)]) {
-    let entitySet = null,
-      idColumn = null;
+    let entitySet,
+      idColumn;
     try {
       ({ entitySet, idColumn } = simulator.store.resolveMapping(table));
     } catch (error) {
@@ -1269,7 +1269,7 @@ async function serveOnce(projectFile, timeoutMs) {
           const parsed = JSON.parse(output);
           clearTimeout(timer);
           resolve(parsed);
-        } catch {}
+        } catch { /* Partial or missing JSON remains pending or fails the explicit check below. */ }
       });
       child.stderr.on("data", (chunk) => {
         errors += chunk;
@@ -1351,7 +1351,7 @@ async function serveStage(resolved, context) {
           const parsed = JSON.parse(output);
           clearTimeout(timer);
           resolve(parsed);
-        } catch {}
+        } catch { /* Partial or missing JSON remains pending or fails the explicit check below. */ }
       });
       child.stderr.on("data", (chunk) => {
         errors += chunk;
@@ -1401,7 +1401,7 @@ async function serveStage(resolved, context) {
     let discovery = null;
     try {
       discovery = JSON.parse(await fs.readFile(ready.discovery, "utf8"));
-    } catch {}
+    } catch { /* Partial or missing JSON remains pending or fails the explicit check below. */ }
     check("discovery file lists every portal", (discovery?.portals ?? []).length === portals.length, ready.discovery ?? null);
     try {
       const { mirageStatus, miragePaths } = await import("../lense/commands/mirage.mjs");
@@ -1579,7 +1579,7 @@ export function matrixProblems(matrix) {
 
 // ---- Markdown
 const cell = (value) => (value === undefined || value === null || value === "" ? "–" : String(value)
-  .replace(/[&<>\\|`\[\]]/g, (char) => `&#${char.codePointAt(0)};`).replace(/\r?\n/g, " "));
+  .replace(/[&<>\\|`[\]]/g, (char) => `&#${char.codePointAt(0)};`).replace(/\r?\n/g, " "));
 const statuses = (byStatus) =>
   byStatus && Object.keys(byStatus).length
     ? Object.entries(byStatus)

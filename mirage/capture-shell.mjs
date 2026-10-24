@@ -40,6 +40,7 @@ export async function captureThroughRuntime(client, cdp, pagePath, options = {})
   catch (error) { failure = error; throw error; }
   finally {
     try { await client.liveDisconnect(); }
+    // eslint-disable-next-line no-unsafe-finally -- Cleanup failure is deliberately reported while preserving the primary failure.
     catch (error) { if (!failure) throw error; failure.disconnectFailed = true; }
   }
 }

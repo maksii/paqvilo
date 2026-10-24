@@ -64,13 +64,13 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   const { page, sim, errors, external } = await fixture(t);
   await page.getByText('Exported OnLoad completed', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('Calculated quantity', { exact: true }).inputValue(), '2');
-  assert.equal(await page.evaluate(() => clientLoads), 1);
+  assert.equal(await page.evaluate(() => window.clientLoads), 1);
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   await page.getByRole('button', { name: 'Copper child', exact: true }).waitFor();
   assert.equal(await page.getByText('Exported OnLoad completed', { exact: true }).isVisible(), true, 'form notifications persist across tab changes');
   await page.getByRole('tab', { name: 'General', exact: true }).click();
   await page.getByLabel('Calculated quantity', { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => clientLoads), 1, 'tab switches do not replay OnLoad');
+  assert.equal(await page.evaluate(() => window.clientLoads), 1, 'tab switches do not replay OnLoad');
   const notificationTop = await page.locator('#form-notifications').evaluate(node => node.getBoundingClientRect().top);
   const commandTop = await page.getByRole('toolbar', { name: 'Commands', exact: true }).evaluate(node => node.getBoundingClientRect().top);
   assert.ok(notificationTop < commandTop, 'source notifications sit above the command bar');
@@ -93,13 +93,13 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   await page.getByRole('status').filter({ hasText: 'does not support formContext.ui.nonexistentApi' }).waitFor();
   // A handler may navigate. Completion of the disposed form must not overwrite
   // the newly selected record or retain executable form-context references.
-  await page.evaluate(() => { window.priorControl = Xrm.Page.getControl('x_name'); InventedClient.load = async () => { if (!window.didRedirect) { window.didRedirect = true; await Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }); } }; });
+  await page.evaluate(() => { window.priorControl = window.Xrm.Page.getControl('x_name'); window.InventedClient.load = async () => { if (!window.didRedirect) { window.didRedirect = true; await window.Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }); } }; });
   await (await formCommand(page, 'Refresh')).click();
   await page.getByRole('heading', { name: 'Copper child', exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
   assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Copper child');
   assert.equal(await page.getByText('Exported OnLoad completed', { exact: true }).count(), 0, 'navigation disposes the previous form notifications');
-  assert.match(await page.evaluate(() => { try { priorControl.setVisible(false); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
+  assert.match(await page.evaluate(() => { try { window.priorControl.setVisible(false); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
 });
 
@@ -107,7 +107,7 @@ test('retry recreates failed client initialization and clears its error after re
   const { page, errors } = await fixture(t);
   await page.getByText('Exported OnLoad completed', { exact: true }).waitFor();
   await page.evaluate(() => {
-    InventedClient.load = async executionContext => {
+    window.InventedClient.load = async executionContext => {
       window.retryLoads = (window.retryLoads ?? 0) + 1;
       if (window.retryLoads === 1) throw new Error('Invented first-load failure');
       executionContext.getFormContext().ui.setFormNotification('Recovered form initialization', 'INFO', 'recovered');
@@ -119,7 +119,7 @@ test('retry recreates failed client initialization and clears its error after re
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await page.getByText('Recovered form initialization', { exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  assert.equal(await page.evaluate(() => retryLoads), 2);
+  assert.equal(await page.evaluate(() => window.retryLoads), 2);
   assert.equal(await page.locator('#notice').isVisible(), false);
   assert.equal(await page.locator('#record-form').evaluate(node => node.inert), false);
   await page.getByLabel('Name', { exact: true }).fill('Recovered editable record');
@@ -145,7 +145,7 @@ test('a source zero-sequence modern form command precedes standard actions and e
 test('a staff change in another tab revokes extension contexts while retaining the blocked draft', async t => {
   const { page, sim, errors } = await fixture(t);
   await page.getByText('Exported OnLoad completed', { exact: true }).waitFor();
-  await page.evaluate(() => { window.priorControl = Xrm.Page.getControl('x_name'); window.priorWebApi = Xrm.WebApi; });
+  await page.evaluate(() => { window.priorControl = window.Xrm.Page.getControl('x_name'); window.priorWebApi = window.Xrm.WebApi; });
   await page.getByLabel('Name', { exact: true }).fill('Unsaved draft');
   const context = page.context();
   const made = await context.request.post(sim.origin + '/_sim/api/dataverse/users', { headers: { 'x-sim-csrf': sim.state().csrf }, data: { fullname: 'Invented replacement staff', domainname: 'replacement@example.test', roles: ['System Administrator'] } });
@@ -155,8 +155,8 @@ test('a staff change in another tab revokes extension contexts while retaining t
   await page.getByRole('status').filter({ hasText: 'The staff session changed in another tab.' }).waitFor();
   assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Unsaved draft');
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true);
-  assert.match(await page.evaluate(() => { try { priorControl.setVisible(false); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
-  assert.match(await page.evaluate(() => { try { priorWebApi.createRecord('x_item', { x_name: 'stale' }); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
+  assert.match(await page.evaluate(() => { try { window.priorControl.setVisible(false); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
+  assert.match(await page.evaluate(() => { try { window.priorWebApi.createRecord('x_item', { x_name: 'stale' }); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
   assert.deepEqual(errors, []);
 });
 
@@ -232,7 +232,7 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
   await page.getByRole('tab', { name: 'General', exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('formid'), 'item-form', 'excluded form IDs fall back to a form belonging to the app');
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  await page.evaluate(async formId => { await Xrm.Navigation.openForm({ entityName: 'x_item', entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', formId }); }, reviewId);
+  await page.evaluate(async formId => { await window.Xrm.Navigation.openForm({ entityName: 'x_item', entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', formId }); }, reviewId);
   await page.getByRole('tab', { name: 'Review details', exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('formid'), reviewId);
   await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole('button', { name: 'Record form', exact: true }).click();
@@ -265,50 +265,50 @@ test('a persisted inactive two-state record disables its default UI while explic
   const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + id);
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 4);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
   await page.getByRole('button', { name: 'Inactive action', exact: true }).click();
   await page.getByText('Inactive source command ran', { exact: true }).waitFor();
   const commandLabels = await page.getByRole('toolbar', { name: 'Commands', exact: true }).getByRole('button').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label') ?? node.textContent.trim()));
   assert.ok(commandLabels.indexOf('Inactive action') < commandLabels.indexOf('New'), 'source zero-sequence commands precede the first retained action after inactive Save removal');
-  assert.equal(await page.evaluate(() => Xrm.Page.getControl('x_name').getLabel()), 'Name', 'client labels retain authored text without required markers or lock glyphs');
-  await page.evaluate(() => Xrm.Page.getControl('x_name').setLabel('Updated title'));
-  assert.equal(await page.evaluate(() => Xrm.Page.getControl('x_name').getLabel()), 'Updated title');
+  assert.equal(await page.evaluate(() => window.Xrm.Page.getControl('x_name').getLabel()), 'Name', 'client labels retain authored text without required markers or lock glyphs');
+  await page.evaluate(() => window.Xrm.Page.getControl('x_name').setLabel('Updated title'));
+  assert.equal(await page.evaluate(() => window.Xrm.Page.getControl('x_name').getLabel()), 'Updated title');
   assert.equal(await page.locator('label[for="field-x_name"] .required').count(), 1, 'label changes preserve the separate required marker');
-  await page.evaluate(() => Xrm.Page.getAttribute('x_name').setRequiredLevel('none'));
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_name').setRequiredLevel('none'));
   assert.equal(await page.locator('label[for="field-x_name"] .required').count(), 0);
-  await page.evaluate(() => { Xrm.Page.getControl('x_name').setLabel('Name'); Xrm.Page.getAttribute('x_name').setRequiredLevel('required'); });
+  await page.evaluate(() => { window.Xrm.Page.getControl('x_name').setLabel('Name'); window.Xrm.Page.getAttribute('x_name').setRequiredLevel('required'); });
   assert.equal(await page.locator('label[for="field-x_name"] .required').count(), 1);
   assert.equal(await page.locator('#record-status').textContent(), 'Read-only This record’s status: Inactive');
-  await page.evaluate(() => Xrm.Page.ui.setFormNotification('Readonly source notification', 'INFO', 'readonly-note'));
+  await page.evaluate(() => window.Xrm.Page.ui.setFormNotification('Readonly source notification', 'INFO', 'readonly-note'));
   assert.equal(await page.locator('#record-status').evaluate(node => node.nextElementSibling.id), 'form-notifications', 'native read-only status precedes source notifications');
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Save & Close', exact: true }).count(), 0);
-  assert.equal(await page.evaluate(() => { Xrm.Page.getControl('x_name').setDisabled(false); return Xrm.Page.getControl('x_name').getDisabled(); }), false);
-  assert.equal(await page.evaluate(() => { Xrm.Page.getControl('x_quantity').setDisabled(false); return Xrm.Page.getControl('x_quantity').getDisabled(); }), true, 'a presentation override cannot enable a column denied by update metadata');
-  assert.match(await page.evaluate(() => { try { Xrm.Page.getAttribute('x_quantity').setValue(9); return 'unexpected'; } catch (error) { return error.message; } }), /cannot be changed/);
+  assert.equal(await page.evaluate(() => { window.Xrm.Page.getControl('x_name').setDisabled(false); return window.Xrm.Page.getControl('x_name').getDisabled(); }), false);
+  assert.equal(await page.evaluate(() => { window.Xrm.Page.getControl('x_quantity').setDisabled(false); return window.Xrm.Page.getControl('x_quantity').getDisabled(); }), true, 'a presentation override cannot enable a column denied by update metadata');
+  assert.match(await page.evaluate(() => { try { window.Xrm.Page.getAttribute('x_quantity').setValue(9); return 'unexpected'; } catch (error) { return error.message; } }), /cannot be changed/);
   await page.getByLabel('Name', { exact: true }).fill('Unlocked inactive draft');
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   assert.equal(await page.locator('#record-status').count(), 1); assert.match(await page.locator('#record-status').textContent(), /Inactive$/);
   assert.equal(await page.getByText('Readonly source notification', { exact: true }).isVisible(), true);
-  assert.equal(await page.evaluate(() => Xrm.Page.getControl('statecode').getDisabled()), true);
-  assert.equal(await page.evaluate(() => Xrm.Page.getControl('x_quantity').getDisabled()), true, 'source denial remains accurately reported while its control is on another tab');
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 4);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.getControl('statecode').getDisabled()), true);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.getControl('x_quantity').getDisabled()), true, 'source denial remains accurately reported while its control is on another tab');
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
   assert.deepEqual(writes, [], 'default inactive navigation and an unlocked draft do not save automatically');
   await page.getByRole('tab', { name: 'General', exact: true }).click();
   assert.equal(await page.getByLabel('Name', { exact: true }).isEnabled(), true, 'an explicit client unlock survives tab rendering');
   assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Unlocked inactive draft');
-  await page.evaluate(async () => { Xrm.Page.getAttribute('x_name').setValue('Inactive SDK edit'); await Xrm.Page.data.save(); });
+  await page.evaluate(async () => { window.Xrm.Page.getAttribute('x_name').setValue('Inactive SDK edit'); await window.Xrm.Page.data.save(); });
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
   assert.deepEqual(writes, ['PATCH'], 'an explicit SDK save persists the inactive draft once');
   const inactiveSaved = await (await page.request.get(sim.url + '/_apps/api/tables/x_item/' + id)).json();
   assert.equal(inactiveSaved.row.x_name, 'Inactive SDK edit'); assert.equal(inactiveSaved.row.statecode, 1);
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 4);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true, 'reload after save restores default inactive presentation');
   assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).count(), 0);
   // A disabled presentation does not remove independent staff Web API rights.
-  await page.evaluate(async id => Xrm.WebApi.updateRecord('x_item', id, { statecode: 0 }), id);
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 4, 'the loaded form remains disabled until refreshed');
+  await page.evaluate(async id => window.Xrm.WebApi.updateRecord('x_item', id, { statecode: 0 }), id);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4, 'the loaded form remains disabled until refreshed');
   let releaseRead;
   const holdRead = new Promise(resolve => { releaseRead = resolve; }), recordRead = sim.url + '/_apps/api/tables/x_item/' + id;
   t.after(() => releaseRead());
@@ -319,20 +319,20 @@ test('a persisted inactive two-state record disables its default UI while explic
   assert.equal(await page.getByLabel('Name', { exact: true }).isVisible(), true, 'the old label stays visible while its form context is disposed');
   assert.equal(await page.locator('#content').evaluate(node => node.inert), true);
   assert.equal(await page.evaluate(() => document.documentElement.dataset.mirageAppState), 'loading');
-  assert.match(await page.evaluate(() => { try { Xrm.Page.ui.getFormType(); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
+  assert.match(await page.evaluate(() => { try { window.Xrm.Page.ui.getFormType(); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
   releaseRead();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 2);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 2);
   assert.equal(await page.locator('#record-status').count(), 0, 'refreshing an activated record removes its old status strip');
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true, 'source-authored read-only presentation remains the default on an active form');
-  await page.evaluate(() => Xrm.Page.getAttribute('x_name').setValue('Copper'));
+  await page.evaluate(() => window.Xrm.Page.getAttribute('x_name').setValue('Copper'));
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true, 'SDK attribute writes do not implicitly unlock a source-disabled control');
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
-  await page.evaluate(() => Xrm.Page.getAttribute('statecode').setValue(1));
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 2, 'draft state transitions stay editable until saved');
+  await page.evaluate(() => window.Xrm.Page.getAttribute('statecode').setValue(1));
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 2, 'draft state transitions stay editable until saved');
   await (await formCommand(page, 'Save')).click();
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
-  assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 4);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.ui.getFormType()), 4);
   const saved = await (await page.request.get(sim.url + '/_apps/api/tables/x_item/' + id)).json();
   assert.equal(saved.row.statecode, 1); assert.equal(saved.row.x_name, 'Copper');
   assert.equal(await page.locator('#record-status').count(), 1);
@@ -355,15 +355,15 @@ test('a header-only column set through the client API is saved with the record; 
   await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  assert.equal(await page.evaluate(() => Xrm.Page.getControl('header_x_quantity')?.getName()), 'header_x_quantity');
-  assert.equal(await page.evaluate(() => { Xrm.Page.getAttribute('x_quantity').setValue(42); return Xrm.Page.data.entity.getIsDirty(); }), true);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.getControl('header_x_quantity')?.getName()), 'header_x_quantity');
+  assert.equal(await page.evaluate(() => { window.Xrm.Page.getAttribute('x_quantity').setValue(42); return window.Xrm.Page.data.entity.getIsDirty(); }), true);
   await page.getByRole('button', { name: 'Save', exact: true }).first().click();
   await page.getByText('Record saved locally.', { exact: true }).waitFor();
   const row = await (await fetch(sim.origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
   assert.equal(row.row.x_quantity, 42);
   assert.equal(row.row.x_name, 'Copper');
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  assert.equal(await page.evaluate(() => Xrm.Page.data.entity.getIsDirty()), false);
+  assert.equal(await page.evaluate(() => window.Xrm.Page.data.entity.getIsDirty()), false);
   assert.deepEqual(errors, []);
 });
 
@@ -379,7 +379,7 @@ test('a save that cannot carry every changed column still runs Save & Close, the
   await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
-  await page.evaluate(() => { Xrm.Page.getAttribute('x_name').setValue('Copper two'); Xrm.Page.getAttribute('x_quantity').setValue(42); });
+  await page.evaluate(() => { window.Xrm.Page.getAttribute('x_name').setValue('Copper two'); window.Xrm.Page.getAttribute('x_quantity').setValue(42); });
   await page.getByRole('button', { name: 'Save & Close', exact: true }).first().click();
   // The normal path ran: the grid is shown again, and the notice names the column the save could not carry.
   await page.getByText('Record saved locally. These changed columns cannot be saved locally: x_quantity.', { exact: true }).waitFor();

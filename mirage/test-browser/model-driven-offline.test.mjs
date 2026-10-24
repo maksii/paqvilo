@@ -32,7 +32,7 @@ test('the shell goes offline, edits a record in the offline copy, shows it pendi
   assert.equal(await toggle.textContent(), 'Online');
   await switchMode('Go offline');
   await page.waitForFunction(() => document.querySelector('#offline-mode')?.textContent === 'Offline' && document.documentElement.dataset.mirageAppState === 'ready');
-  assert.equal(await page.evaluate(() => Xrm.Utility.getGlobalContext().client.isOffline()), true);
+  assert.equal(await page.evaluate(() => window.Xrm.Utility.getGlobalContext().client.isOffline()), true);
 
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.getByLabel('Name', { exact: true }).fill('Copper offline');
@@ -41,7 +41,7 @@ test('the shell goes offline, edits a record in the offline copy, shows it pendi
   await page.waitForFunction(() => document.querySelector('#offline-mode')?.textContent === 'Offline · 1 pending');
   assert.equal(serverName(), 'Copper', 'nothing reaches the organization while offline');
   // Scripts and the shell read the same copy.
-  assert.equal(await page.evaluate(id => Xrm.WebApi.retrieveRecord('x_item', id, '?$select=x_name').then(row => row.x_name), COPPER), 'Copper offline');
+  assert.equal(await page.evaluate(id => window.Xrm.WebApi.retrieveRecord('x_item', id, '?$select=x_name').then(row => row.x_name), COPPER), 'Copper offline');
 
   await switchMode('Go online');
   await page.waitForFunction(() => document.querySelector('#offline-mode')?.textContent === 'Online');

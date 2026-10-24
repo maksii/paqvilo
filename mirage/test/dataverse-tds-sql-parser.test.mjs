@@ -10,11 +10,7 @@ const one = (sql) => {
   return statements[0];
 };
 
-const select = (sql) => {
-  const stmt = one(sql);
-  assert.equal(stmt.type, "Select", sql);
-  return stmt;
-};
+
 
 // Every rejected construct is an unsupported 102 error (or 2715 for types) carrying its absolute line.
 function assertRejected(sql, { number = 102, line }) {

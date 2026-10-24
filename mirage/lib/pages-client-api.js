@@ -637,7 +637,7 @@
   const visibleArea = (element, title) => ({ getVisible: () => shown(element), setVisible: visible => { show(element, visible); show(title, visible); } });
   function formOf(panel) {
     const wrapper = panel.closest('[id^="EntityFormControl"], [id^="WebFormControl"]') ?? panel;
-    let config = {};
+    let config;
     try { config = JSON.parse(wrapper.querySelector('script[data-paqvilo-mirage-form-config]')?.textContent || '{}'); } catch { config = {}; }
     const controlsIn = root => [...root.querySelectorAll('.control[data-logical-name]')].map(cell => controlOf(cell, panel));
     const sectionOf = table => ({ get controls() { return controlsIn(table); }, getName: () => table.getAttribute('data-name') ?? table.closest('fieldset')?.querySelector('legend')?.textContent.trim() ?? '', ...visibleArea(table.closest('fieldset') ?? table) });

@@ -58,7 +58,7 @@ function validateItem(markup) {
     throw fail("Notification item must be one bounded static list item.");
   const allowed = new Set(["li", "div", "p", "button", "span", "svg"]);
   let descriptions = 0;
-  function visit(node, inSvg = false) {
+  function visit(node, _inSvg = false) {
     if (node.tagName === "svg") {
       validateFooterLogoMarkup(serialize({ childNodes: [node] }));
       return;
@@ -311,7 +311,7 @@ export function reconcileHeaderNotifications(
             },
           ];
         if (node.tagName === "button") {
-          let style = node.attrs.find((a) => a.name === "style");
+          const style = node.attrs.find((a) => a.name === "style");
           if (n.showCloseButton === false) {
             if (style) style.value += ";display:none";
             else node.attrs.push({ name: "style", value: "display:none" });

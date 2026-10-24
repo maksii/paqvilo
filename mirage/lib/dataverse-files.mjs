@@ -160,6 +160,7 @@ const header = (c, name) => {
 // Node decodes header bytes as latin1; a name a client sent as raw UTF-8 bytes is decoded back when it is valid UTF-8.
 const utf8Header = (value) => {
   const text = String(value);
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (!/[\x80-\xff]/.test(text) || /[^\x00-\xff]/.test(text)) return text;
   const decoded = Buffer.from(text, "latin1").toString("utf8");
   return decoded.includes("�") ? text : decoded;
@@ -223,7 +224,7 @@ function prepared({ logical, id = null, column, kind, def, name, size, head, mim
   };
 }
 
-const filesOf = (store) => (store.state.dataverse ??= {}).files ??= {};
+const filesOf = (store) => (((store.state.dataverse ??= {})).files ??= {});
 const filesRead = (store) => store.state.dataverse?.files ?? {};
 
 // ---- Storage routes

@@ -117,7 +117,7 @@ for (const [name, start] of [['Power Pages', sharedPowerPages], ['standalone', s
   });
 }
 
-test('Power Pages: /state carries docs and the dashboard reports request times as ISO strings', async t => {
+test('Power Pages: /state carries docs and the dashboard reports request times as ISO strings', async _t => {
   const sim = await sharedPowerPages();
   assert.equal((await fetch(sim.url + '/')).status, 200);
   const state = await body(await simApi(sim, 'GET', '/state'), 200);

@@ -938,7 +938,7 @@
       const details = this.enableActions ? (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Details && action.Enabled) ?? (config.DetailsActionLink?.Enabled ? config.DetailsActionLink : null) : null;
       const edit = this.enableActions ? (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Edit && action.Enabled && action.Target !== 0) ?? null : null;
       const disabled = new Set((data.DisabledItemActionLinks ?? []).map((item) => `${String(item.EntityId).toLowerCase()}|${String(item.LinkUniqueId).toLowerCase()}`));
-      let firstData = true;
+      let firstData;
       for (const record of data.Records ?? []) {
         const tr = document.createElement("tr");
         const name = this.primaryName(record);

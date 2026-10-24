@@ -444,7 +444,7 @@ export async function capturePortalShell(
             try {
               await fs.access(exported.file);
               available = true;
-            } catch {}
+            } catch { /* An inaccessible optional export is reported as unavailable below. */ }
           if (!available) {
             required.add(resource.sourceOrigin + resource.path);
             pending.push(resource);
@@ -820,7 +820,6 @@ export async function capturePortalShell(
     } catch { /* Page inspection is optional; static resource capture still works. */ }
     const loaded = typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:[-.][\w]+)*$/.test(version);
     if (loaded) {
-      hasJquery = true;
       shellProfile.jquery = { kind: 'browser-observed', pagePath: safePath(path), version };
       diagnostics.push({ code: 'SHELL_JQUERY_OBSERVED', path: safePath(path), version, message: 'The loaded page exposes jQuery under an exported or bundled reference.' });
     } else issue(path, fail('No observed script provides jQuery; shell application requires a captured, exported or browser-observed provider.', 422, 'SHELL_JQUERY_MISSING'));

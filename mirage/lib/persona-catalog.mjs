@@ -9,9 +9,11 @@ export const personaCatalogError = message => Object.assign(new Error(message), 
 
 export function personaStartPath(value, source = 'Persona startPath') {
   const fail = message => { throw Object.assign(personaCatalogError(message), source === 'returnUrl' ? { invalidParameter: 'returnUrl' } : {}); };
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value)) fail(`${source} must be a relative path starting with "/"`);
   let decoded;
   try { decoded = decodeURIComponent(value.split(/[?#]/, 1)[0]); } catch { fail(`${source} has invalid path encoding`); }
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (decoded.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(decoded)) fail(`${source} must be a relative path starting with "/"`);
   return value;
 }

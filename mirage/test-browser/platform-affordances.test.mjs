@@ -100,7 +100,7 @@ const bundlePaths=[
 ];
 
 test('captured platform style bytes win over all three toolkit structural fallbacks',async t=>{
-  const {app,launchBrowser}=await fixture(t,{captured:true});
+  const { app }=await fixture(t,{captured:true});
   for(const resource of bundlePaths){
     const response=await fetch(app.url+resource);
     assert.equal(response.status,200);

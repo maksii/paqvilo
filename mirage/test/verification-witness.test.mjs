@@ -90,7 +90,7 @@ test('real witness route binds cookie-isolated visitors, remains anonymous witho
 
 test('witness waits for actual in-flight mutation and catches chosen row/settings drift while leaving excluded history unobserved', async t => {
   const { app, runtime } = await fixture(t), before = await runtime.witness({ tables: ['fixture'] });
-  let release, started; const ready = new Promise(resolve => started = resolve), gate = new Promise(resolve => release = resolve);
+  let release, started; const ready = new Promise(resolve => (started = resolve)), gate = new Promise(resolve => (release = resolve));
   const write = app.store.transact(async () => { app.store.state.tables.fixture[0].name = 'Committed fixture'; started(); await gate; });
   await ready; let returned = false; const pending = runtime.witness({ tables: ['fixture'] }).then(value => { returned = true; return value; });
   await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(returned, false); release(); await write;

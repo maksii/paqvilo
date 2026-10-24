@@ -142,11 +142,11 @@ export async function observeManagedResources(live) {
             if (entry.type === "link" || /\.css(?:\?|$)/.test(path))
               stylesheets.push(path);
           }
-        } catch {}
+        } catch { /* Unsupported optional resources remain outside the local asset inventory. */ }
         try {
           officeFontPath(name);
           fonts.push(name);
-        } catch {}
+        } catch { /* Unsupported optional resources remain outside the local asset inventory. */ }
       }
     } catch {
       diagnostics.push(
@@ -247,7 +247,7 @@ export function extractManagedRichTextControls(html) {
         // The local renderer initializes managed controls itself after vendor scripts.
         if (local)
           (node.tagName === "script" ? scripts : stylesheets).push(local);
-      } catch {}
+      } catch { /* Unsupported optional resources remain outside the local asset inventory. */ }
     }
     if (node.tagName !== "template")
       for (const child of node.childNodes ?? []) visit(child);

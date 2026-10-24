@@ -63,7 +63,7 @@ test('map search controls remain inline on desktop and keyboard reachable withou
     const facts=await page.evaluate(()=>{const boxes=['place','radius','search'].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return{x:r.x,y:r.y,right:r.right,bottom:r.bottom}});return{boxes,overflow:document.documentElement.scrollWidth>innerWidth}});
     assert.equal(facts.overflow,false);assert.ok(facts.boxes.every(box=>box.right<=width));if(width===1200)assert.ok(Math.abs(facts.boxes[0].y-facts.boxes[1].y)<2);
   }
-  await page.locator('#search').evaluate(button=>button.addEventListener('click',()=>button.dataset.activated='true'));await page.locator('#place').focus();await page.keyboard.press('Tab');await page.keyboard.press('Tab');await page.keyboard.press('Enter');assert.equal(await page.locator('#search').getAttribute('data-activated'),'true');
+  await page.locator('#search').evaluate(button=>button.addEventListener('click',()=>(button.dataset.activated='true')));await page.locator('#place').focus();await page.keyboard.press('Tab');await page.keyboard.press('Tab');await page.keyboard.press('Enter');assert.equal(await page.locator('#search').getAttribute('data-activated'),'true');
 });
 
 

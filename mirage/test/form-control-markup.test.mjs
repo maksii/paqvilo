@@ -80,7 +80,7 @@ test("edit form: string, e-mail, phone and memo boxes carry the platform handler
   const memo = element(html, /<textarea [^>]*id="description"[^>]*>/);
   assert.match(memo, / rows="4"/);
   assert.match(memo, / onkeydown="javascript:return LimitInput\(this, event\);" oninput="javascript:return LimitInput\(this, event\);" onpaste="javascript:return LimitPaste\(this, event\);"/);
-  assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), / rows="4"[^>]*class="textarea form-control  readonly"[^>]*readonly="readonly"/);
+  assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), / rows="4"[^>]*class="textarea form-control {2}readonly"[^>]*readonly="readonly"/);
   // A field-level read-only cell has no validator container.
   assert.match(html, /<label for="notes" id="notes_label" class="field-label">Notes<\/label><\/div>/);
   // Option sets: an empty "Select" option, required="" on a required dropdown.
@@ -125,7 +125,7 @@ test("read-only form: MakeControlsReadonly marks labels, validators, summary and
   assert.match(name, / class="text form-control " /);
   assert.match(name, / readonly="readonly"/);
   assert.doesNotMatch(name, /aria-required/);
-  assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), /class="textarea form-control  readonly"/);
+  assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), /class="textarea form-control {2}readonly"/);
   // Dropdowns: aspNetDisabled, disabled and readonly, every option kept, no aria-disabled.
   const picklist = element(html, /<select [^>]*id="preferred"[^>]*>.*?<\/select>/);
   assert.match(
@@ -137,7 +137,7 @@ test("read-only form: MakeControlsReadonly marks labels, validators, summary and
   assert.match(bool, /class="aspNetDisabled form-control boolean-dropdown " onchange="setIsDirty\(this.id\);" disabled="disabled" readonly="readonly">/);
   // The lookup name box is readonly="readonly"; the server leaves the containers unfocusable
   // (the app bundle adds their tabindex for read-only lookups and option sets).
-  assert.match(html, /<div class="control" data-logical-name="parentcustomerid"><div><input [^>]*class="text form-control lookup form-control  readonly" readonly="readonly"/);
+  assert.match(html, /<div class="control" data-logical-name="parentcustomerid"><div><input [^>]*class="text form-control lookup form-control {2}readonly" readonly="readonly"/);
   assert.match(html, /<div class="control" data-logical-name="preferred"><div|<div class="control" data-logical-name="preferred"><select/);
   assert.doesNotMatch(html, /data-logical-name="[^"]*" tabindex/);
   // Read-only date: the server renders the bound readonly="readonly" box alone (live response

@@ -7,7 +7,7 @@
 // ponytail: AddToFeedbackLoop does not write the prediction input and output file columns (upgrade via dataverse-files).
 // The probes ignore arguments when the corresponding cloud feature is unavailable.
 import { parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
-import { aiUnavailable, argsOf, idOf, registerAddon, registerInternalMessage } from "./dataverse-addon-common.mjs";
+import { aiUnavailable, argsOf, registerAddon, registerInternalMessage } from "./dataverse-addon-common.mjs";
 
 // Documented as "This public message is for internal use only."
 const INTERNAL = new Set(["AIModelPublish"]);

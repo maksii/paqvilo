@@ -3,6 +3,7 @@ import path from "node:path";
 
 const invalidSegment = (value) =>
   typeof value !== "string" || !value || value === "." || value === ".." ||
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   /[<>:"/\\|?*\u0000-\u001f]/.test(value) || /[. ]$/.test(value) ||
   /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(value);
 
@@ -42,11 +43,11 @@ async function statIfPresent(file) {
 export async function ensureCaptureDestination(outDir, outputRoot = outDir, { create = true, files = [] } = {}) {
   const root = path.resolve(outputRoot), target = path.resolve(outDir);
   const relative = relativeWithin(root, target);
-  let rootStat = await statIfPresent(root);
+  const rootStat = await statIfPresent(root);
   if (!rootStat) {
     if (!create) return;
     await fs.mkdir(root, { recursive: true });
-    rootStat = await fs.lstat(root);
+    await fs.lstat(root);
   }
   const realRoot = await fs.realpath(root);
   if (!(await fs.stat(root)).isDirectory()) throw Error("Capture output root must be a directory.");

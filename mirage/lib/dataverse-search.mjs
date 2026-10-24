@@ -255,7 +255,7 @@ function compareHits(a, b, clauses) {
     const x = valueOfHit(a, key);
     const y = valueOfHit(b, key);
     if (x == null || y == null) {
-      if (x != y) return x == null ? 1 : -1;
+      if ((x == null) !== (y == null)) return x == null ? 1 : -1;
       continue;
     }
     const order = typeof x === "number" && typeof y === "number" ? x - y : String(x) < String(y) ? -1 : String(x) > String(y) ? 1 : 0;

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import {validateRichTextConfiguration,findRichTextResource} from '../acceptance-api.mjs';
+import { validateRichTextConfiguration } from '../acceptance-api.mjs';
 import { AssetCache } from "../lib/asset-cache.mjs";
 import {
   captureRichTextConfiguration,

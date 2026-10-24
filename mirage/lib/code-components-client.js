@@ -415,7 +415,7 @@
         container.dispatchEvent(new CustomEvent('paqvilo:pcf-output', { bubbles: true, detail: outputs }));
         if (updates.length) queueMicrotask(() => { if (!disposed) { context.updatedProperties = updates; try { trace('updateView:output'); control.updateView(context); } catch (error) { failure(error); } } });
       };
-      let state = {}; try { state = JSON.parse(sessionStorage.getItem(stateKey) || '{}'); } catch {}
+      let state = {}; try { state = JSON.parse(sessionStorage.getItem(stateKey) || '{}'); } catch { /* Malformed saved client state falls back to an empty state. */ }
       trace('init'); control.init(context, changed, state, container); if (disposed) return; trace('updateView'); control.updateView(context);
       debug.updateParameters = values => {
         if (disposed) throw new Error('PCF instance is disposed');

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { importPortal } from "./lib/importer.mjs";
 import { createPortalRenderer } from "./lib/liquid.mjs";
@@ -20,7 +19,7 @@ import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSu
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
 import { runtimeOptions, configuredSettingKeys } from './lib/config-keys.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
 let parsed;
 try {
   parsed = parseArgs({

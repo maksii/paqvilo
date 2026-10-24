@@ -36,8 +36,8 @@ export async function createOrganizationBackend({ store, items = () => [], handl
   let closed;
   return { webhooks, triggerRunner, asyncPluginRunner, resume, get scheduler() { return store.scheduler; },
     settle: () => settleCommittedWork(store, [triggerRunner, asyncPluginRunner]),
-    close: () => closed ??= (async () => {
+    close: () => (closed ??= (async () => {
       await settleCommittedWork(store, [triggerRunner, asyncPluginRunner], { close: true });
       for (const runtime of runtimes.values()) await closeClrHostPool({ runtime, diagnostic });
-    })() };
+    })()) };
 }

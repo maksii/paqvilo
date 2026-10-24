@@ -21,7 +21,7 @@ test('footer spacing ignores clipped and modal controls, repairs visible occlusi
   assert.equal(await page.locator('footer').evaluate(element => getComputedStyle(element).position), 'absolute');
   await page.evaluate(() => { const button = document.createElement('button'); button.id = 'covered'; button.textContent = 'Covered'; button.style.cssText = 'position:absolute;top:540px;left:20px'; document.body.append(button); });
   await page.waitForFunction(() => getComputedStyle(document.querySelector('footer')).position === 'static');
-  assert.equal(await page.evaluate(() => __portalSimulation.compatibility.footerSpacingControl), 'covered');
+  assert.equal(await page.evaluate(() => window.__portalSimulation.compatibility.footerSpacingControl), 'covered');
   await page.locator('#covered').evaluate(element => { element.style.zIndex = '200'; });
   await page.waitForFunction(() => getComputedStyle(document.querySelector('footer')).position === 'absolute');
   await page.locator('#covered').evaluate(element => { element.style.zIndex = '0'; });
@@ -29,7 +29,7 @@ test('footer spacing ignores clipped and modal controls, repairs visible occlusi
   await page.locator('#covered').evaluate(element => { element.style.top = '100px'; });
   await page.waitForFunction(() => getComputedStyle(document.querySelector('footer')).position === 'absolute');
   assert.equal(await page.locator('footer').evaluate(element => element.style.marginTop), '');
-  assert.equal(await page.evaluate(() => __portalSimulation.compatibility.footerSpacingMode), 'source');
+  assert.equal(await page.evaluate(() => window.__portalSimulation.compatibility.footerSpacingMode), 'source');
   assert.deepEqual(errors, []);
 });
 

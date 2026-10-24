@@ -906,7 +906,7 @@ async function request(path, options = {}) {
   } catch (error) {
     if (deadline.aborted) throw new Error(options.method && !['GET', 'HEAD'].includes(options.method.toUpperCase())
       ? 'The local operation timed out. Its result may be unknown; refresh the workspace and check before retrying.'
-      : 'The local request timed out. Refresh the workspace to try again.');
+      : 'The local request timed out. Refresh the workspace to try again.', { cause: error });
     throw error;
   } finally { finish(); }
 }
@@ -1209,7 +1209,7 @@ function records() {
           )
         : tableTools("records", page.total, page.pages, { search: false }) +
           `<div class="table-wrap"><table data-table="records"><thead><tr>${columns.map((column) => `<th>${escape(column)}</th>`).join("")}<th>Actions</th></tr></thead><tbody>${page.items
-            .map((record, index) => {
+            .map((record, _index) => {
               const id = record[idColumn] ?? record.id;
               return `<tr>${columns.map((column) => `<td title="${escape(previewValue(record[column]))}">${escape(previewValue(record[column]))}</td>`).join("")}<td class="actions">${id === undefined ? `<span class="muted">Missing ${escape(idColumn)}</span>` : rowActions("records", id)}</td></tr>`;
             })
@@ -1435,7 +1435,7 @@ function collectionTable(name) {
       .map(
         (item) =>
           `<tr>${def.columns
-            .map(([label, field, format], index) => {
+            .map(([_label, field, format], index) => {
               const value = format
                 ? format(item)
                 : item[field] ??
@@ -1803,8 +1803,7 @@ function evidence() {
 }
 
 function audit() {
-  const result = auditResult || { items: [], total: 0, pageCount: 1 },
-    settings = browserFor("audit");
+  const result = auditResult || { items: [], total: 0, pageCount: 1 }; browserFor("audit");
   const select = (name, label, values) =>
     `<label>${label}<select id="audit-filter-${name}" data-audit-filter="${name}" aria-describedby="audit-filter-${name}-help"><option value="">All</option>${values.map((value) => `<option value="${escape(value)}" ${auditFilters[name] === value ? "selected" : ""}>${escape(value)}</option>`).join("")}</select></label>`;
   return (

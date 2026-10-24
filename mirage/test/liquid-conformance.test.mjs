@@ -58,7 +58,7 @@ test("conformance classifies differing cases, reports unexplained ones as engine
   assert.match(text, /\| echo tag \| 1 \| No echo tag\. \| unsupported \|/);
   assert.match(text, /\| `order` \| 1 \| Characters compare ordinally\. \|/);
   assert.match(text, /\| divergence \| "BzAa4" \| "4#A#B#a#z" \| "4#A#B#a#z" \(all\) \| `order` \|/);
-  assert.match(text, /\| unexplained \| "x" \| "ab" \|  \| No rule explains this difference\. \|/);
+  assert.match(text, /\| unexplained \| "x" \| "ab" \| {2}\| No rule explains this difference\. \|/);
   assert.match(text, /Stale rules \(their cases now pass\): passes\./);
 });
 

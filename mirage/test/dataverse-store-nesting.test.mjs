@@ -24,7 +24,6 @@ test("default transact commits once and keeps its plain behaviour", async () => 
   assert.equal(store.revision, before + 1);
   assert.deepEqual(ids(store), ["a", "b"]);
   // Without isolated, a concurrent reader sees in-flight rows (existing behaviour).
-  let seenInFlight;
   let release;
   const gate = new Promise((resolve) => (release = resolve));
   const pending = store.transact(async () => {
@@ -32,7 +31,7 @@ test("default transact commits once and keeps its plain behaviour", async () => 
     await gate;
   });
   await new Promise((resolve) => setImmediate(resolve));
-  seenInFlight = ids(store);
+  const seenInFlight = ids(store);
   release();
   await pending;
   assert.deepEqual(seenInFlight, ["a", "b", "c"]);

@@ -22,7 +22,7 @@ export async function discoverSolutionRoots(sourceDir, { cacheFile, diagnostics 
     try {
       await fs.stat(path.join(current, ".git"));
       break;
-    } catch {}
+    } catch { /* This ancestor is not a readable repository root; continue upward. */ }
     const parent = path.dirname(current);
     if (parent === current) return [];
     current = parent;

@@ -470,7 +470,7 @@ test("native live FetchXML preserves joins/filters and normalizes lookup/choice 
 });
 
 test("native FetchXML top uses a bounded first page and rejects an endpoint ignoring limits", async () => {
-  let records = [{ accountid: "one" }];
+  const records = [{ accountid: "one" }];
   const { bridge, calls } = bridgeWith((url) =>
     url.endsWith("/_layout/tokenhtml")
       ? response({

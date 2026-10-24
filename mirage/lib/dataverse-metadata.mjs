@@ -1404,7 +1404,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       const wantsPrivileges = listOf(query?.Properties?.PropertyNames).includes("Privileges");
       // Mutable metadata is normalized once per request, never cached across schema updates.
       let relationships;
-      const getRelationships = () => relationships ??= relationshipRecords();
+      const getRelationships = () => (relationships ??= relationshipRecords());
       const EntityMetadata = logicalNames().map((name) => changeOf(name, query, index, wantsPrivileges, getRelationships)).filter(Boolean);
       // LabelQuery.FilterLanguages limits the labels of every returned item (the argument wins when a caller passes one).
       const languages = labelLanguages ?? query?.LabelQuery?.FilterLanguages ?? null;

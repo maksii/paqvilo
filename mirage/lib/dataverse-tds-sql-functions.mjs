@@ -129,7 +129,7 @@ const fields = (d) => ({
 });
 const daysIn = (y, month1) => new Date(Date.UTC(y, month1, 0)).getUTCDate();
 const weekdaySun0 = (d) => (((Math.floor(d.getTime() / DAY) + 4) % 7) + 7) % 7;
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
 
 // Decimal text helpers: a value is { coef: BigInt, scale } meaning coef / 10^scale.
 export function parseDecimal(text) {
@@ -385,7 +385,7 @@ function fromText(text, style) {
   }
   return new Date(Date.UTC(y, mo - 1, d, h, mi, sec, ms));
 }
-function toDatetime(value, style, fromType) {
+function toDatetime(value, style, _fromType) {
   if (value instanceof Date) return new Date(value.getTime());
   if (typeof value === 'string') return fromText(value.trim(), style);
   if (typeof value === 'boolean') fail(8114, 'Error converting data type bit to datetime.');
@@ -537,7 +537,7 @@ const likeToRegExp = (pattern, ctx) => {
     else if (c === '_') out += '[\\s\\S]';
     else if (close > i + 1) {
       const negate = pattern[i + 1] === '^';
-      const body = pattern.slice(i + 1 + (negate ? 1 : 0), close).replace(/[\\\]\[]/g, '\\$&');
+      const body = pattern.slice(i + 1 + (negate ? 1 : 0), close).replace(/[\\\][]/g, '\\$&');
       out += `[${negate ? '^' : ''}${body}]`;
       i = close;
     } else out += escapeRe(c);
@@ -687,7 +687,7 @@ const cultureOf = (name) => {
   let tag;
   try {
     [tag] = Intl.getCanonicalLocales(String(name).trim());
-  } catch (e) {
+  } catch (_e) {
     return null;
   }
   return Intl.NumberFormat.supportedLocalesOf(tag).length ? tag : null;
@@ -844,7 +844,7 @@ def('ISDATE', 1, 1, INT, ([v]) => {
   try {
     castValue(v, 'datetime');
     return 1;
-  } catch (e) {
+  } catch (_e) {
     return 0;
   }
 });

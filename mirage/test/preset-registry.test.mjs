@@ -13,15 +13,7 @@ import {
   presetLibrary,
   validatePack,
 } from "../lib/preset-registry.mjs";
-import {
-  bootstrapPresetLibrary,
-  builtinPresets,
-  compactBuiltinPresets,
-  listPresets,
-  resolvePreset,
-} from "../lib/presets.mjs";
-import * as data from "../lib/data.mjs";
-import { initialState } from "../lib/bootstrap.mjs";
+import { bootstrapPresetLibrary, compactBuiltinPresets, listPresets, resolvePreset } from "../lib/presets.mjs";
 import { expressionOperator, footerLogoClasses, packEndpoints, registerShellConventions } from "../lib/extensions.mjs";
 import { DataStore } from "../lib/data.mjs";
 

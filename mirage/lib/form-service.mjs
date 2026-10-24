@@ -603,7 +603,7 @@ export async function submitPortalForm(
     // (its postback answers 302 ?stepid=<next>).
     const source = await resolveFormRecord({ kind, definition, schema, metadata, context: { request: { params: query } }, readProvider, store, identity, session });
     const viewedId = source.id ? canonical(source.id) : null;
-    let viewed = {};
+    let viewed;
     try {
       viewed = (viewedId && (await readProvider.get(schema.entity, viewedId, identity))) || {};
     } catch {
@@ -775,7 +775,7 @@ export async function submitPortalForm(
     } else {
       value = scalar(value);
       if (["boolean", "checkbox"].includes(field.type)) {
-        if (value === true || value === false) {
+        if (value === true || value === false) { /* The value is already a Boolean and needs no coercion. */ 
         } else if (/^(true|false|0|1)$/i.test(String(value))) value = /^(true|1)$/i.test(String(value));
         else fail(`On-save boolean '${name}' is invalid`, 501, "FormSaveValueInvalid");
       } else if (field.type === "number") {

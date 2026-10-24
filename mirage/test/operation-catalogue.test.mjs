@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+
 import { operationCatalogue, validateOperationOverrides } from '../lib/operation-catalogue.mjs';
 import { operationFixture } from './operation-fixture.mjs';
 
-const role = 'f0000000-0000-4000-8000-000000000001';
+
 const flow = 'f0000000-0000-4000-8000-000000000002';
 const standalone = 'f0000000-0000-4000-8000-000000000003';
 

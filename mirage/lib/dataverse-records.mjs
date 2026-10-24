@@ -19,18 +19,7 @@ import { fixedScaleNumeric } from "./exact-numeric.mjs";
 import { isSecuredField, maskedOperand } from "./dataverse-fls.mjs";
 import { createChangeLog, encodeDeltaToken, nextRowVersion } from "./dataverse-changes.mjs";
 import { standardNavigation } from "./dataverse-standard.mjs";
-import {
-  JSON_CONTENT_TYPE,
-  annotationMatcher,
-  skipTokenQueryValue,
-  contextUrl,
-  decodeSkipToken,
-  encodeSkipToken,
-  entityUrl,
-  keySyntaxError,
-  parseKey,
-  preferenceApplied,
-} from "./dataverse-odata.mjs";
+import { annotationMatcher, skipTokenQueryValue, contextUrl, decodeSkipToken, encodeSkipToken, entityUrl, keySyntaxError, parseKey, preferenceApplied } from "./dataverse-odata.mjs";
 
 const PAGE_CAP = 5000;
 // Control annotations a write may carry; other @ annotations are dropped by payload().

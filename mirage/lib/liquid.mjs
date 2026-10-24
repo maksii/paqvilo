@@ -732,7 +732,7 @@ function communityPlacementTag(portal, kind) {
 // ---- Renderer
 /** Render exported templates with Power Pages tags and request-local data/identity. */
 export function createPortalRenderer(portal, options = {}) {
-  const templateDiagnostics = new WeakMap();
+  
   const findTemplate = (name) => {
     if (name == null) return undefined;
     const wanted = String(name);
@@ -1422,7 +1422,7 @@ export function createPortalRenderer(portal, options = {}) {
         if (stylesheet?.file)
           try {
             styleSources[layoutPath] = await fs.readFile(stylesheet.file, "utf8");
-          } catch {}
+          } catch { /* A missing optional stylesheet contributes no captured styles. */ }
         const reconciled = reconcileFooterLogos(renderedFooter, footer.source, observedLogos, {
           styleSources,
           origin: extra.observationOrigin ?? options.observationOrigin,
@@ -1549,7 +1549,7 @@ export function createPortalRenderer(portal, options = {}) {
    * default /css/bootstrap.min.css is the platform bundle slot's). Hrefs are the web file URLs
    * without a query: the platform's occasional cache-busting query is not derivable from the export.
    */
-  async function contentStylesheets(page, context) {
+  async function contentStylesheets(page, _context) {
     const path = [];
     const visited = new Set();
     for (let current = page; current && !visited.has(current.id); current = portal.pages.find((p) => p.id === current.parentId)) {

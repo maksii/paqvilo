@@ -15,7 +15,7 @@ function fixture() {
 test('snapshot provenance rejects later replacement after an SDK write commits during asynchronous preparation', async () => {
   const store = fixture(), snapshot = store.snapshot(), revision = store.snapshotRevision(snapshot);
   snapshot.simulator.example = 'Prepared before async work';
-  await store.transact(() => store.state.tables.fixture[0].name = 'Committed SDK write');
+  await store.transact(() => (store.state.tables.fixture[0].name = 'Committed SDK write'));
   // Provenance follows the original snapshot even if saveState starts later.
   assert.equal(store.snapshotRevision(snapshot), revision);
   assert.equal(store.snapshotRevision(JSON.parse(JSON.stringify(snapshot))), undefined);
@@ -27,7 +27,7 @@ test('snapshot provenance rejects later replacement after an SDK write commits d
 test('replacement checks the revision inside the queue after an already pending SDK transaction commits', async () => {
   const store = fixture(), snapshot = store.snapshot(), revision = store.snapshotRevision(snapshot);
   let release, entered;
-  const gate = new Promise(resolve => release = resolve), started = new Promise(resolve => entered = resolve);
+  const gate = new Promise(resolve => (release = resolve)), started = new Promise(resolve => (entered = resolve));
   const write = store.transact(async () => { store.state.tables.fixture[0].name = 'Queued SDK write'; entered(); await gate; });
   await started;
   const replacement = store.replaceState(snapshot, { expectedRevision: revision });

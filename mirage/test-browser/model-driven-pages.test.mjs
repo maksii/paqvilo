@@ -92,19 +92,19 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
   const { page, origin, errors, sim } = await fixture(t);
   sim.origin = origin; await selectStaff(page, sim);
   await openRecord(page, origin);
-  await page.evaluate(() => { window.pageClosed = Xrm.Navigation.navigateTo({ pageType: 'webresource', webresourceName: 'x_/pages/summary.html', data: 'invented' }, { target: 2, width: 500, title: 'Summary dialog' }).then(result => ({ result: result ?? null })); });
+  await page.evaluate(() => { window.pageClosed = window.Xrm.Navigation.navigateTo({ pageType: 'webresource', webresourceName: 'x_/pages/summary.html', data: 'invented' }, { target: 2, width: 500, title: 'Summary dialog' }).then(result => ({ result: result ?? null })); });
   const dialog = page.getByRole('dialog', { name: 'Summary dialog' });
   await dialog.waitFor();
   await page.frameLocator('dialog.page-dialog iframe').locator('#message[data-data="invented"]').waitFor();
   await dialog.getByRole('button', { name: 'Close' }).click();
   assert.deepEqual(await page.evaluate(() => window.pageClosed), { result: null });
   // navigateTo: an existing record closed in a dialog resolves with no value.
-  await page.evaluate(() => { window.saved = Xrm.Navigation.navigateTo({ pageType: 'entityrecord', entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { target: 2, position: 2, title: 'Side record' }).then(result => ({ result: result ?? null })); });
+  await page.evaluate(() => { window.saved = window.Xrm.Navigation.navigateTo({ pageType: 'entityrecord', entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { target: 2, position: 2, title: 'Side record' }).then(result => ({ result: result ?? null })); });
   await page.frameLocator('dialog.page-dialog.side iframe').getByRole('heading', { name: 'Silver', exact: true }).waitFor();
   await page.getByRole('dialog', { name: 'Side record' }).getByRole('button', { name: 'Close' }).first().click();
   assert.deepEqual(await page.evaluate(() => window.saved), { result: null });
   // A record opened in create mode resolves with savedEntityReference once it was saved.
-  await page.evaluate(() => { window.created = Xrm.Navigation.navigateTo({ pageType: 'entityrecord', entityName: 'x_item' }, { target: 2, title: 'New record' }); });
+  await page.evaluate(() => { window.created = window.Xrm.Navigation.navigateTo({ pageType: 'entityrecord', entityName: 'x_item' }, { target: 2, title: 'New record' }); });
   const created = page.frameLocator('dialog.page-dialog iframe');
   await created.getByLabel('Name', { exact: true }).fill('Bronze');
   await created.getByRole('toolbar', { name: 'Commands', exact: true }).getByRole('button', { name: 'Save', exact: true }).click();
@@ -113,13 +113,13 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
   const saved = await page.evaluate(() => window.created);
   assert.deepEqual(saved.savedEntityReference.map(reference => [reference.entityType, reference.name]), [['x_item', 'Bronze']]);
   assert.match(saved.savedEntityReference[0].id, /^\{[0-9a-f-]{36}\}$/);
-  assert.deepEqual(await page.evaluate(() => Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_missing_page' }).then(() => 'opened', error => [error.code, error.message])),
+  assert.deepEqual(await page.evaluate(() => window.Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_missing_page' }).then(() => 'opened', error => [error.code, error.message])),
     ['CustomPageNotFound', 'Custom page x_missing_page is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).']);
   // A canvas app the host holds is still not a page of this app unless the app includes it.
-  assert.deepEqual(await page.evaluate(() => Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_other_page' }).then(() => 'opened', error => [error.code, error.message])),
+  assert.deepEqual(await page.evaluate(() => window.Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_other_page' }).then(() => 'opened', error => [error.code, error.message])),
     ['CustomPageNotFound', 'Custom page x_other_page is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).']);
   // Inline with record context: the page's formulas read recordId and entityName through Param.
-  await page.evaluate(() => Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_invented_page', entityName: 'x_item', recordId: '{AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA}' }, { target: 1 }));
+  await page.evaluate(() => window.Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_invented_page', entityName: 'x_item', recordId: '{AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA}' }, { target: 1 }));
   await page.getByRole('status').filter({ hasText: 'This custom page is not rendered locally.' }).waitFor();
   assert.match(page.url(), /pagetype=custom&name=x_invented_page&entityName=x_item&recordId=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/);
   const screen = JSON.parse(await page.getByRole('region', { name: 'Current screen', exact: true }).locator('pre').textContent());
@@ -135,19 +135,19 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
 test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async t => {
   const { page, origin, errors } = await fixture(t);
   await openRecord(page, origin);
-  await page.evaluate(async () => { const pane = await Xrm.App.sidePanes.createPane({ title: 'Invented pane', paneId: 'invented' }); await pane.navigate({ pageType: 'entitylist', entityName: 'x_item' }); });
+  await page.evaluate(async () => { const pane = await window.Xrm.App.sidePanes.createPane({ title: 'Invented pane', paneId: 'invented' }); await pane.navigate({ pageType: 'entitylist', entityName: 'x_item' }); });
   const pane = page.getByRole('region', { name: 'Invented pane' });
   await page.frameLocator('.side-pane iframe').getByText('Silver', { exact: true }).waitFor();
   assert.equal(await pane.isVisible(), true);
-  assert.equal(await page.evaluate(() => Xrm.App.sidePanes.getAllPanes().getLength()), 1);
+  assert.equal(await page.evaluate(() => window.Xrm.App.sidePanes.getAllPanes().getLength()), 1);
   // sidePanes.state: 0 collapsed, 1 expanded; the value read is the value set.
   // formContext.getControl: a header column is the control header_<column>; it is not rendered locally, so changes refuse by name.
-  assert.deepEqual(await page.evaluate(() => { const control = Xrm.Page.getControl('header_x_quantity'); let refused; try { control.setVisible(false); } catch (error) { refused = error.message; }
-    return [control.getName(), control.getAttribute().getName(), Xrm.Page.getAttribute('x_quantity').controls.getLength(), /header control header_x_quantity/.test(refused)]; }), ['header_x_quantity', 'x_quantity', 2, true]);
-  assert.deepEqual(await page.evaluate(() => { const panes = Xrm.App.sidePanes, before = panes.state; panes.state = 0; const collapsed = panes.state; panes.state = 1; return [before, collapsed, panes.state]; }), [1, 0, 1]);
-  await page.evaluate(() => Xrm.App.sidePanes.getPane('invented').close());
+  assert.deepEqual(await page.evaluate(() => { const control = window.Xrm.Page.getControl('header_x_quantity'); let refused; try { control.setVisible(false); } catch (error) { refused = error.message; }
+    return [control.getName(), control.getAttribute().getName(), window.Xrm.Page.getAttribute('x_quantity').controls.getLength(), /header control header_x_quantity/.test(refused)]; }), ['header_x_quantity', 'x_quantity', 2, true]);
+  assert.deepEqual(await page.evaluate(() => { const panes = window.Xrm.App.sidePanes, before = panes.state; panes.state = 0; const collapsed = panes.state; panes.state = 1; return [before, collapsed, panes.state]; }), [1, 0, 1]);
+  await page.evaluate(() => window.Xrm.App.sidePanes.getPane('invented').close());
   assert.equal(await page.locator('.side-pane').count(), 0);
-  assert.equal(await page.evaluate(() => Xrm.App.sidePanes.getSelectedPane()), undefined);
+  assert.equal(await page.evaluate(() => window.Xrm.App.sidePanes.getSelectedPane()), undefined);
   assert.deepEqual(errors, []);
 });
 
@@ -156,8 +156,8 @@ test('a dataset component on a related subgrid receives the parent rows and the 
   await openRecord(page, origin);
   await page.getByRole('tab', { name: 'Related items' }).click();
   await page.getByText('Rows: Copper child', { exact: true }).waitFor();
-  const context = await page.evaluate(() => ({ entity: gridContext.parameters.records.getTargetEntityType(), total: gridContext.parameters.records.paging.totalResultCount,
-    roles: gridContext.userSettings.securityRoles.length, language: gridContext.userSettings.languageId, xrmRoles: Xrm.Utility.getGlobalContext().userSettings.securityRoles }));
+  const context = await page.evaluate(() => ({ entity: window.gridContext.parameters.records.getTargetEntityType(), total: window.gridContext.parameters.records.paging.totalResultCount,
+    roles: window.gridContext.userSettings.securityRoles.length, language: window.gridContext.userSettings.languageId, xrmRoles: window.Xrm.Utility.getGlobalContext().userSettings.securityRoles }));
   assert.equal(context.entity, 'x_child'); assert.equal(context.total, 1); assert.equal(context.language, 1033);
   assert.ok(context.roles > 0, 'the local administrator context carries its organization role ids');
   assert.equal(context.xrmRoles.length, context.roles);

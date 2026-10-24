@@ -183,7 +183,7 @@ function buildProviders({ store, packs = [], config = {}, stateDirectory, stateF
       message: `Storage provider '${id}' (${entry.kind}) has no pack storageProviders factory; its routes answer PROVIDER_NOT_READY.` });
   }
   const storage = createStorageRouter({ config: storageConfig, providers: instances, counters: () => store?.counters ?? null });
-  let annotations = null;
+  let annotations;
   try { annotations = storage.forRoute('annotations'); } catch { annotations = null; }
   const powerFxAdapter = collectPackExport(packs, 'powerFx').get('adapter')?.value;
   const localServices = config.localServices ? localServiceSettings(config.localServices) : null;
@@ -676,7 +676,7 @@ function hostLifecycle(c) {
     resume: () => c.backend?.resume(),
     /** One close order: backend (drains committed work, closes CLR hosts), flow run wait timers, organization, API, managed identity. */
     // A close that failed is not memoised: the next close() retries only the providers whose close failed.
-    close: () => c.closing ??= (async () => {
+    close: () => (c.closing ??= (async () => {
       const failures = [];
       const attempt = async fn => { try { await fn(); } catch (error) { failures.push(error); } };
       const steps = c.closedOnce ? [] : [() => c.backend?.close(), () => c.flowRuns.close(), () => c.organization?.close(), () => c.dataverse?.close(),
@@ -684,7 +684,7 @@ function hostLifecycle(c) {
       c.closedOnce = true;
       for (const step of [...steps, () => closeProviders(providers)]) await attempt(step);
       if (failures.length) throw new AggregateError(failures, 'Organization host cleanup failed.');
-    })().catch(error => { c.closing = null; throw error; }),
+    })().catch(error => { c.closing = null; throw error; })),
   };
   return lifecycle;
 }
@@ -916,7 +916,7 @@ const UNCALLED_FIXTURES = Object.freeze({ aiBuilder: 'Registered, but nothing ca
   powerBi: 'Called only by the powerbi Liquid tag of a Power Pages site.' });
 
 /** Organization core: the store, the fixed pipeline nodes and every installed organization module. */
-function orgNodes({ node, edge, nodes, rows, count, store, clock, organization, registry, pluginSteps, operations, dataverse }) {
+function orgNodes({ node, edge, nodes, rows, count, store, clock, organization, registry, pluginSteps, operations, dataverse: _dataverse }) {
   node('org:store', 'org', 'Organization store', organization ? 'ready' : 'declared', { revision: store.revision, tables: Object.keys(store.state?.tables ?? {}).length,
     clock: clock === systemClock ? 'system' : 'fixed' }, { link: '#capabilities' });
   const steps = pluginSteps.filter(item => item.kind === 'plugin-step');

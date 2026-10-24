@@ -18,11 +18,11 @@ async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');
     document.body.replaceChildren(); const form = document.createElement('form'); form.style.width = '900px'; form.style.margin = '80px 40px';
-    window.fields = {}; window.submits = 0; form.addEventListener('submit', event => { event.preventDefault(); submits++; });
+    window.fields = {}; window.submits = 0; form.addEventListener('submit', event => { event.preventDefault(); window.submits++; });
     for (const [name, label, behavior, value] of [['due', 'Due date', 'DateOnly', '2024-01-31'], ['independent', 'Independent', 'TimeZoneIndependent', '2026-06-15T14:30:00Z'], ['local', 'Local', 'UserLocal', '2026-06-15T14:30:00Z']]) {
       const field = { name, label, type: 'date', dateTimeBehavior: behavior, required: name === 'due' };
       const control = renderControl(field, value), wrapper = document.createElement('div'); wrapper.className = 'field'; wrapper.style.marginBottom = '20px';
-      const caption = document.createElement('label'); caption.htmlFor = `field-${name}`; caption.textContent = label; wrapper.append(caption, control.element); form.append(wrapper); fields[name] = control;
+      const caption = document.createElement('label'); caption.htmlFor = `field-${name}`; caption.textContent = label; wrapper.append(caption, control.element); form.append(wrapper); window.fields[name] = control;
     }
     const outside = document.createElement('button'); outside.type = 'button'; outside.textContent = 'Outside'; form.append(outside); document.body.append(form);
   });
@@ -41,21 +41,21 @@ test('calendar matches the observed two-pane geometry and selects leap days with
   assert.deepEqual(await leap.evaluate(node => [node.getBoundingClientRect().width, node.getBoundingClientRect().height, getComputedStyle(node).fontSize]), [24, 24, '12px']);
   await leap.click();
   assert.equal(await page.getByRole('combobox', { name: 'Due date', exact: true }).inputValue(), '2/29/2024');
-  assert.equal(await page.evaluate(() => fields.due.read()), '2024-02-29');
-  assert.equal(await page.evaluate(() => submits), 0);
+  assert.equal(await page.evaluate(() => window.fields.due.read()), '2024-02-29');
+  assert.equal(await page.evaluate(() => window.submits), 0);
   await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
   await calendar.getByRole('button', { name: 'Navigate to previous year 2023', exact: true }).click();
   await calendar.getByRole('button', { name: 'February', exact: true }).click();
   assert.equal(await calendar.getByRole('button', { name: '29, February, 2023', exact: true }).count(), 0);
   await calendar.getByRole('button', { name: '28, February, 2023', exact: true }).click();
-  assert.equal(await page.evaluate(() => fields.due.read()), '2023-02-28');
+  assert.equal(await page.evaluate(() => window.fields.due.read()), '2023-02-28');
   await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
   await calendar.getByRole('button', { name: 'Month picker for year 2023, select to switch to year picker', exact: true }).click();
   await calendar.getByRole('button', { name: 'Year picker 2023 - 2034, select to switch to month picker', exact: true }).waitFor();
   await calendar.getByRole('button', { name: 'Navigate to next year range 2035 - 2046', exact: true }).click();
   await calendar.getByRole('button', { name: '2036', exact: true }).click(); await calendar.getByRole('button', { name: 'February', exact: true }).click();
   await calendar.getByRole('button', { name: '29, February, 2036', exact: true }).click();
-  assert.equal(await page.evaluate(() => fields.due.read()), '2036-02-29');
+  assert.equal(await page.evaluate(() => window.fields.due.read()), '2036-02-29');
 });
 
 test('calendar keyboard month/year navigation clamps dates and Escape restores focus without changes', async t => {
@@ -70,8 +70,8 @@ test('calendar keyboard month/year navigation clamps dates and Escape restores f
   await page.keyboard.press('End'); assert.equal(await page.evaluate(() => document.activeElement.dataset.date), '2025-03-01');
   await page.keyboard.press('Escape');
   assert.equal(await input.evaluate(node => node === document.activeElement), true);
-  assert.equal(await input.getAttribute('aria-expanded'), 'false'); assert.equal(await page.evaluate(() => fields.due.read()), '2024-01-31');
-  await page.keyboard.press('Enter'); assert.equal(await page.evaluate(() => submits), 0);
+  assert.equal(await input.getAttribute('aria-expanded'), 'false'); assert.equal(await page.evaluate(() => window.fields.due.read()), '2024-01-31');
+  await page.keyboard.press('Enter'); assert.equal(await page.evaluate(() => window.submits), 0);
 });
 
 test('calendar validates typed dates, clears optional values and rejects disabled or disposed selections', async t => {
@@ -83,18 +83,18 @@ test('calendar validates typed dates, clears optional values and rejects disable
   await input.fill('2024-02-29'); await page.getByRole('button', { name: 'Outside', exact: true }).click();
   assert.equal(await input.inputValue(), '2/29/2024'); assert.equal(await input.evaluate(node => node.checkValidity()), true);
   await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
-  await page.evaluate(() => { window.retainedDate = document.querySelector('[data-date="2024-02-28"]'); fields.due.setDisabled(true); });
-  await page.evaluate(() => retainedDate.click()); assert.equal(await page.evaluate(() => fields.due.read()), '2024-02-29');
+  await page.evaluate(() => { window.retainedDate = document.querySelector('[data-date="2024-02-28"]'); window.fields.due.setDisabled(true); });
+  await page.evaluate(() => window.retainedDate.click()); assert.equal(await page.evaluate(() => window.fields.due.read()), '2024-02-29');
   assert.equal(await input.isDisabled(), true); assert.equal(await input.getAttribute('aria-expanded'), 'false');
   assert.equal(await page.locator('.date-input>button').first().isVisible(), false, 'disabled date fields omit the native calendar affordance');
-  await page.evaluate(() => { fields.due.setDisabled(false); fields.due.destroy(); });
+  await page.evaluate(() => { window.fields.due.setDisabled(false); window.fields.due.destroy(); });
   await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click(); assert.equal(await input.getAttribute('aria-expanded'), 'false');
-  await page.evaluate(() => fields.local.setDisabled(true));
+  await page.evaluate(() => window.fields.local.setDisabled(true));
   assert.equal(await page.locator('.date-time-host>button').last().isVisible(), false, 'disabled date/time fields omit the time affordance');
-  await page.evaluate(() => fields.local.setDisabled(false));
+  await page.evaluate(() => window.fields.local.setDisabled(false));
   assert.equal(await page.locator('.date-time-host>button').last().isVisible(), true, 'client unlock restores the supported affordance');
   const local = page.getByRole('combobox', { name: 'Local', exact: true }); await local.fill(''); await page.getByRole('button', { name: 'Outside', exact: true }).click();
-  assert.equal(await page.evaluate(() => fields.local.read()), null); assert.equal(await page.getByRole('combobox', { name: 'Local Time', exact: true }).isVisible(), false);
+  assert.equal(await page.evaluate(() => window.fields.local.read()), null); assert.equal(await page.getByRole('combobox', { name: 'Local Time', exact: true }).isVisible(), false);
 });
 
 test('calendar clamps its actual responsive width into the viewport in either form column', async t => {
@@ -113,15 +113,15 @@ test('date-time controls preserve independent wall time, convert user-local valu
   const page = await fixture(t);
   assert.equal(await page.getByRole('combobox', { name: 'Independent Time', exact: true }).inputValue(), '2:30 PM');
   assert.equal(await page.getByRole('combobox', { name: 'Local Time', exact: true }).inputValue(), '10:30 AM');
-  assert.deepEqual(await page.evaluate(() => [fields.independent.read(), fields.local.read()]), ['2026-06-15T14:30:00.000Z', '2026-06-15T14:30:00.000Z']);
+  assert.deepEqual(await page.evaluate(() => [window.fields.independent.read(), window.fields.local.read()]), ['2026-06-15T14:30:00.000Z', '2026-06-15T14:30:00.000Z']);
   const local = page.getByRole('combobox', { name: 'Local', exact: true }), time = page.getByRole('combobox', { name: 'Local Time', exact: true });
   await local.fill('2/29/2024'); await time.fill('23:45'); await time.press('Enter');
-  assert.equal(await time.inputValue(), '11:45 PM'); assert.equal(await page.evaluate(() => fields.local.read()), '2024-03-01T04:45:00.000Z');
+  assert.equal(await time.inputValue(), '11:45 PM'); assert.equal(await page.evaluate(() => window.fields.local.read()), '2024-03-01T04:45:00.000Z');
   await time.fill('24:00'); await time.press('Tab'); assert.equal(await time.evaluate(node => node.checkValidity()), false);
-  await time.fill('12:00 AM'); await time.press('Enter'); assert.equal(await page.evaluate(() => fields.local.read()), '2024-02-29T05:00:00.000Z');
-  await page.evaluate(() => fields.independent.setValue('2024-02-29T23:45:00Z'));
+  await time.fill('12:00 AM'); await time.press('Enter'); assert.equal(await page.evaluate(() => window.fields.local.read()), '2024-02-29T05:00:00.000Z');
+  await page.evaluate(() => window.fields.independent.setValue('2024-02-29T23:45:00Z'));
   assert.equal(await page.getByRole('combobox', { name: 'Independent', exact: true }).inputValue(), '2/29/2024');
-  assert.equal(await page.evaluate(() => fields.independent.read()), '2024-02-29T23:45:00.000Z'); assert.equal(await page.evaluate(() => submits), 0);
+  assert.equal(await page.evaluate(() => window.fields.independent.read()), '2024-02-29T23:45:00.000Z'); assert.equal(await page.evaluate(() => window.submits), 0);
   const dateOnly = await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');
     const control = renderControl({ name: 'x_date', type: 'date', dateTimeBehavior: 'DateOnly' }, '2026-06-15T14:30:00Z');
@@ -150,7 +150,7 @@ test('calendar stays inside a scrolled record body below its pinned header and d
 
 test('time choices use the observed half-hour list while retaining arbitrary typed times and calendar focus lifecycle', async t => {
   const page = await fixture(t), time = page.getByRole('combobox', { name: 'Local Time', exact: true });
-  const before = await page.evaluate(() => fields.local.read());
+  const before = await page.evaluate(() => window.fields.local.read());
   await page.getByRole('button', { name: 'Open time options for Local', exact: true }).click();
   const options = page.getByRole('listbox', { name: 'Time options for Local', exact: true });
   assert.equal(await options.getByRole('option').count(), 48);
@@ -159,18 +159,18 @@ test('time choices use the observed half-hour list while retaining arbitrary typ
   assert.ok(geometry.top >= 0 && geometry.bottom <= 900, JSON.stringify(geometry));
   assert.equal(geometry.width, geometry.host); assert.equal(geometry.row, 32); assert.equal(geometry.font, '14px');
   await time.press('End'); await time.press('Enter');
-  assert.equal(await time.inputValue(), '11:30 PM'); assert.equal(await page.evaluate(() => fields.local.read()), '2026-06-16T03:30:00.000Z');
+  assert.equal(await time.inputValue(), '11:30 PM'); assert.equal(await page.evaluate(() => window.fields.local.read()), '2026-06-16T03:30:00.000Z');
   assert.equal(await options.count(), 0); assert.equal(await time.evaluate(node => node === document.activeElement), true);
   await time.fill('11:47 PM'); await time.press('Enter');
-  assert.equal(await page.evaluate(() => fields.local.read()), '2026-06-16T03:47:00.000Z', 'typed minute precision is independent of the half-hour options');
-  await time.press('ArrowDown'); await time.press('Escape'); assert.equal(await page.evaluate(() => fields.local.read()), '2026-06-16T03:47:00.000Z');
+  assert.equal(await page.evaluate(() => window.fields.local.read()), '2026-06-16T03:47:00.000Z', 'typed minute precision is independent of the half-hour options');
+  await time.press('ArrowDown'); await time.press('Escape'); assert.equal(await page.evaluate(() => window.fields.local.read()), '2026-06-16T03:47:00.000Z');
   await time.press('ArrowDown'); await page.getByRole('button', { name: 'Open calendar for Local', exact: true }).click(); assert.equal(await options.count(), 0);
   await page.keyboard.press('Escape');
-  await time.press('ArrowDown'); await page.evaluate(() => fields.local.setDisabled(true)); assert.equal(await options.count(), 0);
-  await page.evaluate(() => { fields.local.setDisabled(false); fields.local.setValue('2026-06-15T14:30:00Z'); });
-  assert.equal(await page.evaluate(() => fields.local.read()), before);
-  await time.press('ArrowDown'); await page.evaluate(() => { window.oldTimeOption = document.querySelector('.date-time-options [role=option]'); fields.local.destroy(); oldTimeOption.click(); });
-  assert.equal(await options.count(), 0); assert.equal(await page.evaluate(() => fields.local.read()), before); assert.equal(await page.evaluate(() => submits), 0);
+  await time.press('ArrowDown'); await page.evaluate(() => window.fields.local.setDisabled(true)); assert.equal(await options.count(), 0);
+  await page.evaluate(() => { window.fields.local.setDisabled(false); window.fields.local.setValue('2026-06-15T14:30:00Z'); });
+  assert.equal(await page.evaluate(() => window.fields.local.read()), before);
+  await time.press('ArrowDown'); await page.evaluate(() => { window.oldTimeOption = document.querySelector('.date-time-options [role=option]'); window.fields.local.destroy(); window.oldTimeOption.click(); });
+  assert.equal(await options.count(), 0); assert.equal(await page.evaluate(() => window.fields.local.read()), before); assert.equal(await page.evaluate(() => window.submits), 0);
 });
 
 for (const kind of ['portal', 'model-driven']) test(`saved UserLocal controls honor an explicit organization offset independently of the PCF browser zone in ${kind}`, async t => {

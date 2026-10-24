@@ -15,7 +15,7 @@ const chrome = sharedBrowser();
 const CASES = [
   ['quotes', `A & B "quoted" O'Brien \\ / + = ? #`],
   ['entities', '&lt;img src=x onerror=alert(1)&gt; &amp; &#39;'],
-  ['json', '{"name":"A & B","items":[1,null],"quote":"\\\""}'],
+  ['json', '{"name":"A & B","items":[1,null],"quote":"\\""}'],
   ['unicode', 'Київ café cafe\u0301 😀 \u2028 \u2029'],
   ['html', '<b>bold</b><img data-input-probe src="/probe-missing" onerror="window.__inputInjected=1">'],
   ['xml', '<?xml version="1.0"?><record name="A &amp; B">text</record>'],
@@ -234,7 +234,7 @@ test('native format and range errors post to the server, preserve input and reje
   await page.locator('#count').fill('not a number');
   await page.locator('#score').fill('101');
   await page.locator('#day').evaluate((input) => { input.value = 'not a date'; });
-  assert.equal(await page.evaluate(() => Page_ClientValidate('')), true, 'native custom format/range validators are server-only');
+  assert.equal(await page.evaluate(() => window.Page_ClientValidate('')), true, 'native custom format/range validators are server-only');
   const submitted = page.waitForResponse((response) => response.url().includes('/__sim/forms/') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Submit', exact: true }).click();
   const response = await submitted;
@@ -251,7 +251,7 @@ test('native format and range errors post to the server, preserve input and reje
   await summary.waitFor({ state: 'visible' });
   // The server summary links end with a space, as the platform renders them.
   assert.deepEqual(await summary.locator('li a').allTextContents(), expected.map((message) => `${message} `));
-  assert.equal(await page.evaluate(() => Page_IsValid), false);
+  assert.equal(await page.evaluate(() => window.Page_IsValid), false);
   assert.equal(await page.locator('#email').inputValue(), 'not an email');
   assert.equal(await page.locator('#count').inputValue(), 'not a number');
   assert.equal(writes[0].count, 'not a number', 'invalid numeric input must not collapse to JSON null');

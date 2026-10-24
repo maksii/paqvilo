@@ -190,7 +190,7 @@ export async function createStandaloneRuntime(options = {}) {
   ];
   let offlineSessions = () => [];
   const HOST_API_ROUTES = HOST_API.map(([prefix]) => prefix);
-  const close = () => closing ??= (async () => {
+  const close = () => (closing ??= (async () => {
     const errors = [];
     const cleanup = async fn => { try { await fn(); } catch (error) { errors.push(error); } };
     await cleanup(() => watcher?.close());
@@ -202,7 +202,7 @@ export async function createStandaloneRuntime(options = {}) {
     await cleanup(() => organizationHost.close());
     server?.closeAllConnections(); await stopped;
     if (errors.length) throw new AggregateError(errors, 'Standalone runtime cleanup failed.');
-  })();
+  })());
   try {
     let stageAt = performance.now();
     startupPhase('state-restore');

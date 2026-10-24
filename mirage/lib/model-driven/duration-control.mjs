@@ -18,7 +18,7 @@ export function formatDuration(value) {
   const unit = value >= 1440 ? 'day' : value >= 60 ? 'hour' : 'minute', amount = Number((value / (unit === 'day' ? 1440 : unit === 'hour' ? 60 : 1)).toFixed(2));
   return `${amount} ${unit}${amount === 1 ? '' : 's'}`;
 }
-export function renderDuration(field, initialValue, context = {}) {
+export function renderDuration(field, initialValue, _context = {}) {
   const element = document.createElement('div'); element.className = 'duration-control';
   const primary = document.createElement('input'); primary.type = 'text'; primary.autocomplete = 'off'; primary.placeholder = '---'; primary.setAttribute('role', 'combobox'); primary.setAttribute('aria-haspopup', 'listbox'); primary.setAttribute('aria-expanded', 'false');
   const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'duration-trigger'; trigger.setAttribute('aria-label', `Open duration options for ${field.label ?? field.name}`); trigger.innerHTML = icon('chevron');

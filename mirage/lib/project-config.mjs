@@ -190,6 +190,7 @@ export function observedConfig(value, label = "observed") {
     observed.pluginSources = {};
     for (const [name, source] of Object.entries(value.pluginSources)) {
       const relative = typeof source?.path === 'string' ? source.path.replace(/\\/g, '/') : '';
+      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
       if (!/^[_a-z][\w.+`]{0,249}$/i.test(name) || !source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['path', 'evidence', 'root'].includes(key)) || !relative.endsWith('.cs') || path.isAbsolute(relative) || /[:\x00-\x1f]/.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part)) || typeof source.evidence !== 'string' || !source.evidence.trim() || source.evidence.length > 2000 || source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root))) throw new Error(`${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`);
       observed.pluginSources[name] = { path: relative, evidence: source.evidence, ...(source.root ? { root: source.root } : {}) };
     }

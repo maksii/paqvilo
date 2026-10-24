@@ -202,14 +202,14 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
     expect("[");
     const items = [];
     if (peek()?.value !== "]") {
-      do {
+      for (;;) {
         const token = take();
         const literal = token && (literalFromToken(token, true) ?? (token.kind === "ident" && ["true", "false", "null"].includes(token.value.toLowerCase()) ? { type: "literal", kind: "keyword", value: { true: true, false: false, null: null }[token.value.toLowerCase()] } : null));
         if (!literal) unsupported("OData array values must be literals");
         items.push(literal.value);
         if (peek()?.value !== ",") break;
         take();
-      } while (true);
+      }
     }
     expect("]");
     return { type: "array", values: items };
@@ -249,7 +249,7 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
       if (!definition) unsupported(`Unsupported Dataverse query function ${name}`);
       const params = {};
       if (peek()?.value !== ")") {
-        do {
+        for (;;) {
           const key = take();
           if (key?.kind !== "ident") unsupported(`Malformed parameters for ${name}`);
           expect("=");
@@ -264,7 +264,7 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
           params[key.value] = value;
           if (peek()?.value !== ",") break;
           take();
-        } while (true);
+        }
       }
       expect(")");
       conditions++;
@@ -272,11 +272,11 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
     }
     const args = [];
     if (peek()?.value !== ")") {
-      do {
+      for (;;) {
         args.push(or());
         if (peek()?.value !== ",") break;
         take();
-      } while (true);
+      }
     }
     expect(")");
     if (ODATA_STRING_FUNCTIONS.has(lower)) {
@@ -397,11 +397,11 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
       take();
       expect("(");
       const values = [];
-      do {
+      for (;;) {
         values.push(unary());
         if (peek()?.value !== ",") break;
         take();
-      } while (true);
+      }
       expect(")");
       conditions++;
       return { type: "in", left, values };

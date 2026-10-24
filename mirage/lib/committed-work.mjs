@@ -46,7 +46,7 @@ export function committedJobs(store){
  // Diagnostics go to each distinct sink the registered kinds were given.
  const report=note=>{for(const sink of new Set([...kinds.values()].map(kind=>kind.diagnostic).filter(Boolean)))sink(note);};
  const remember=(id,kind,error)=>{store.committedJobErrors??=[];store.committedJobErrors.push({id,kind,code:error.code??'CommittedJobError',message:error.message});if(store.committedJobErrors.length>50)store.committedJobErrors.shift();};
- const track=work=>{let write;write=work.catch(error=>remember(null,null,error)).finally(()=>enqueues.delete(write));enqueues.add(write);return write;};
+ const track=work=>{const write=work.catch(error=>remember(null,null,error)).finally(()=>enqueues.delete(write));enqueues.add(write);return write;};
  const readyJob=(rows,id)=>{const index=indexOf(store,rows,id),payload=payloadOf(rows[index]);return payload&&kinds.has(payload.kind)?{id,payload,index}:null;};
  // The queued ids not yet tried in this tick, in table order (FIFO).
  const scan=seen=>{const rows=store.state.tables?.asyncoperation??[],jobs=[];for(const id of queued){if(seen.has(id)||started.has(id))continue;const job=readyJob(rows,id);if(job)jobs.push(job);}return jobs.sort((a,b)=>a.index-b.index);};
@@ -76,7 +76,7 @@ export function committedJobs(store){
  };
  const readyRows=entries=>{const ids=store.ids??systemIds,stamp=now();return entries.map(({id,kind,columns={},event,...rest})=>({asyncoperationid:id??ids.uuid(),operationtype:SYSTEM_EVENT,statecode:READY,statuscode:0,...columns,createdon:stamp,data:JSON.stringify({kind,...rest,event:encodeEvent(event)})}));};
  const manual=()=>scheduler().status().manual;
- const tick=()=>ticking??=(async()=>{
+ const tick=()=>(ticking??=(async()=>{
   const seen=new Set();
   try{
    for(;;){
@@ -98,7 +98,7 @@ export function committedJobs(store){
    for(const id of retry)queued.add(id);retry.clear();
    ticking=null;if(queued.size)kick();
   }
- })();
+ })());
  const jobs=store.committedJobs={
   /** run({ id, payload, event }) executes one job; it finds its row by id and writes the row's final state itself. */
   register(kind,run,{concurrent=false,diagnostic=null}={}){kinds.set(kind,{run,concurrent,diagnostic});return()=>{if(kinds.get(kind)?.run===run)kinds.delete(kind);};},

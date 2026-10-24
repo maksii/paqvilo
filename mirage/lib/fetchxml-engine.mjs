@@ -1268,7 +1268,7 @@ export function executeFetch(plan, ctx) {
 
   // ---- paging
   let start = 0,
-    end = entities.length,
+    end,
     more = false,
     pagingCookie = null;
   if (plan.top != null) end = Math.min(plan.top, entities.length);

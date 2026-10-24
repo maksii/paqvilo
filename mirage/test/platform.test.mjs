@@ -149,7 +149,7 @@ test("readonly and hidden lookup bindings do not query inaccessible lookup choic
   );
   assert.deepEqual(lookedUp, []);
   // Native read-only lookup: disabled text box plus the hidden id/entityname pair, no modal.
-  assert.match(html, /id="createdby_name" class="text form-control lookup form-control  readonly" readonly="" aria-readonly="true"/);
+  assert.match(html, /id="createdby_name" class="text form-control lookup form-control {2}readonly" readonly="" aria-readonly="true"/);
   assert.match(html, /value="Local service actor"/);
   assert.doesNotMatch(html, /createdby_lookupmodal|launchentitylookup/);
   assert.deepEqual(formConfig(html).fields, []);

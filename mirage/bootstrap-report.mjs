@@ -224,7 +224,7 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
   for (const file of new Set(sources))
     try {
       texts.push(await fs.readFile(file, "utf8"));
-    } catch {}
+    } catch { /* Optional source text may be absent; retain the report entry. */ }
   const apiNames = new Map();
   for (const text of texts)
     for (const match of String(text ?? "").matchAll(/\/_api\/([A-Za-z_][A-Za-z0-9_]*)(\/?)/g)) {

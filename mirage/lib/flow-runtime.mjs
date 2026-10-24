@@ -5,7 +5,7 @@ import {createConnectorRuntime,connectorOf,referenceOf,parseRetryPolicy,duration
 import {FLOW_ACTIONS,CONTROL_ACTIONS} from './flow-actions.mjs';
 import {WINDOWS_TIME_ZONES} from './windows-time-zones.mjs';
 import {effectiveEnvironmentVariables} from './secret-resolver.mjs';
-import {isExactNumeric,parseNumericLiteral,parseExactJson,stringifyExactJson,decimalParts,compareNumeric,sumNumeric,multiplyNumeric,divideNumeric,exactNumeric} from './exact-numeric.mjs';
+import { isExactNumeric, parseExactJson, stringifyExactJson, decimalParts, compareNumeric, sumNumeric, multiplyNumeric, divideNumeric, exactNumeric } from './exact-numeric.mjs';
 const own=(o,k)=>o!=null&&Object.hasOwn(o,k), clone=v=>v===undefined?null:structuredClone(v);
 const fail=(message,status=501,code='LocalFlowUnsupported')=>{throw new DataError(message,status,code);};
 const unsafe=k=>['__proto__','constructor','prototype'].includes(k);
@@ -27,7 +27,7 @@ const connectorCall=action=>action?.type==='Http'?{connectorId:'http',operationI
 const paginationOk=value=>value&&typeof value==='object'&&Object.keys(value).length===1&&Number.isInteger(value.minimumItemCount)&&value.minimumItemCount>0&&value.minimumItemCount<=100000;
 const secureOk=value=>value&&typeof value==='object'&&Object.keys(value).length===1&&Array.isArray(value.properties)&&value.properties.every(p=>['inputs','outputs'].includes(p));
 // A connector action's runtimeConfiguration: paginationPolicy and secureData (outputs are then never journalled).
-const runtimeConfigurationOk=(value,dataverse)=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length>0&&Object.entries(value).every(([k,v])=>k==='paginationPolicy'?paginationOk(v):k==='secureData'&&secureOk(v));
+const runtimeConfigurationOk=(value,_dataverse)=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length>0&&Object.entries(value).every(([k,v])=>k==='paginationPolicy'?paginationOk(v):k==='secureData'&&secureOk(v));
 // A Foreach's runtimeConfiguration.concurrency.repetitions (1-50): the degree of parallelism of its iterations
 // (https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#change-for-each-concurrency).
 const foreachConcurrencyOk=value=>Boolean(value)&&typeof value==='object'&&Object.keys(value).length===1&&value.concurrency&&typeof value.concurrency==='object'&&Object.keys(value.concurrency).length===1&&Number.isInteger(value.concurrency.repetitions)&&value.concurrency.repetitions>=1&&value.concurrency.repetitions<=50;
@@ -249,7 +249,7 @@ function evaluate(node,state){
   case 'greater':case 'greaterorequals':case 'less':case 'lessorequals':arity(2);numeric();{const compared=compareNumeric(a[0],a[1]);return n==='greater'?compared>0:n==='greaterorequals'?compared>=0:n==='less'?compared<0:compared<=0;}
   case 'string':arity(1);return a[0]==null?'':isExactNumeric(a[0])?a[0].value:typeof a[0]==='string'?a[0]:stringifyExactJson(a[0]);
   case 'int':case 'float':arity(1);{const raw=isExactNumeric(a[0])?a[0].value:a[0];if(typeof raw!=='string'&&typeof raw!=='number'||typeof raw==='string'&&(!raw.trim()||n==='int'&&!/^[-+]?\d+$/.test(raw)))fail('Invalid numeric conversion.',400,'LocalFlowExpression');if(n==='int'){const exact=exactNumeric(typeof raw==='string'?raw.trim():raw,'Int64');if(decimalParts(exact).scale||compareNumeric(exact,'-9223372036854775808')<0||compareNumeric(exact,'9223372036854775807')>0)fail('Integer conversion exceeds Int64.',400,'LocalFlowExpression');return exact;}const value=Number(raw);if(!Number.isFinite(value))fail('Invalid numeric conversion.',400,'LocalFlowExpression');return value;}
-  case 'json':arity(1);try{return parseExactJson(a[0]);}catch{fail('Invalid JSON expression value.',400,'LocalFlowExpression');}
+  case 'json':arity(1);try{return parseExactJson(a[0]);}catch{return fail('Invalid JSON expression value.',400,'LocalFlowExpression');}
   case 'length':arity(1);if(typeof a[0]!=='string'&&!Array.isArray(a[0]))fail('length() requires a string or array.');return a[0].length;
   case 'empty':arity(1);return a[0]==null||a[0]===''||Array.isArray(a[0])&&a[0].length===0||typeof a[0]==='object'&&Object.keys(a[0]).length===0;
   // An array contains a value equal to it (exact numerics by value, objects member-wise), a string a substring, an object a key.
@@ -464,7 +464,7 @@ export function executeFlowDefinition({definition,input,store,serviceProfile,ste
  const diverged=key=>{throw new DataError('The flow run cannot resume: ReplayDiverged (action '+key+' would call its provider while journalled actions '+[...unconsumed].join(', ')+' are unreplayed).',409,'NotResumable');};
  const call=request=>{if(own(request,'wait'))return request.wait;if(own(request,'secret'))return resolveSecret(request);if(unconsumed.size)diverged(request.key);
   if(own(request,'packAction'))return request.packAction(structuredClone(request.request),{caller:'flow',initiatingUserId:context.initiatingUserId??null,correlationId,runId:context.runId??null,actionPath:request.key,principal:serviceProfile??null,timeoutMs:Math.max(1,deadline-Date.now()),...(signal?{signal}:{})});
-  const{action,key,at,inputs}=request;const target={...connectorCall(action),...(request.operationId?{operationId:request.operationId}:{})},connection=runtime.resolve({...target,connectionReferences,principal:serviceProfile}),minimum=action.runtimeConfiguration?.paginationPolicy?.minimumItemCount;
+  const { action, at, inputs }=request;const target={...connectorCall(action),...(request.operationId?{operationId:request.operationId}:{})},connection=runtime.resolve({...target,connectionReferences,principal:serviceProfile}),minimum=action.runtimeConfiguration?.paginationPolicy?.minimumItemCount;
   const {retryPolicy,...rest}=inputs??{},retry=retryPolicy===undefined?null:parseRetryPolicy(retryPolicy);
   const parameters=action.type==='Http'?rest:action.type==='Workflow'?{workflowReferenceName:rest.host?.workflowReferenceName??null,body:rest.body??{}}:rest.parameters??{};
   return runtime.invoke({connectorId:target.connectorId,operationId:target.operationId,parameters,connection,...(minimum?{pagination:{minimumItemCount:minimum}}:{}),...(retry?{retry}:{}),context:{caller:'flow',initiatingUserId:context.initiatingUserId??null,correlationId,runId:context.runId??null,actionPath:at,timeoutMs:Math.max(1,deadline-Date.now()),

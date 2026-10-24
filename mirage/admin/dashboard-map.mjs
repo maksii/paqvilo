@@ -30,7 +30,7 @@ export const BANDS = Object.freeze([
   { id: 'providers', title: 'Integration providers', description: 'Where side effects land: storage, queues, outbox, connectors, secrets, local services and fixtures.' },
   { id: 'externals', title: 'Declared externals', description: 'Services named in configuration that run outside Mirage; declared or probed, never contacted for data.' },
 ]);
-const BAND_INDEX = Object.fromEntries(BANDS.map((band, index) => [band.id, index]));
+
 
 // Capability groups of the organization and provider layers, in display order.
 export const GROUPS = Object.freeze({

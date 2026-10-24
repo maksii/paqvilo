@@ -409,7 +409,6 @@ function tableDisplayName(files = []) {
     const cached = displayNameCache.get(file);
     let value = cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size ? cached.value : undefined;
     if (value === undefined) {
-      value = null;
       try {
         const xml = fs.readFileSync(file, "utf8");
         const block = /<LocalizedNames>([\s\S]*?)<\/LocalizedNames>/.exec(xml)?.[1] ?? "";

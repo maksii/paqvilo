@@ -83,7 +83,7 @@ export function renderCalendarList({ list, calendar, websiteId, viewId, variant,
 export function calendarLanguageScript(culture = "en-US") {
   const month = (style) => Array.from({ length: 12 }, (_, i) => new Intl.DateTimeFormat(culture, { month: style, timeZone: "UTC" }).format(Date.UTC(2026, i, 1)));
   const day = Array.from({ length: 7 }, (_, i) => new Intl.DateTimeFormat(culture, { weekday: "long", timeZone: "UTC" }).format(Date.UTC(2026, 1, 1 + i)));
-  let firstDay = 7;
+  let firstDay;
   try {
     firstDay = new Intl.Locale(culture).getWeekInfo?.().firstDay ?? new Intl.Locale(culture).weekInfo?.firstDay ?? 7;
   } catch {

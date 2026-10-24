@@ -256,7 +256,7 @@ const localized = (value, lcid = 1033) => {
         (parsed.find((x) => Number(x.LCID) === Number(lcid)) ?? parsed[0])
           ?.Value ?? ""
       );
-  } catch {}
+  } catch { /* Optional metadata remains absent when its source cannot be parsed or read. */ }
   return value;
 };
 
@@ -1050,7 +1050,7 @@ export async function importPortal(
   let configEntries = [];
   try {
     configEntries = await fs.readdir(portalConfig, { withFileTypes: true });
-  } catch {}
+  } catch { /* Optional metadata remains absent when its source cannot be parsed or read. */ }
   // One record per file (short-key exports: *.portallanguage.yml) or a list of records (PAC YAML:
   // portallanguage.yml, whose enhanced-data-model website languages share their portal
   // language's ID).
@@ -1191,7 +1191,7 @@ export async function importPortal(
     let triggerPath = null;
     try {
       triggerPath = apiUrl ? new URL(String(apiUrl), "http://local.invalid").pathname : null;
-    } catch {}
+    } catch { /* Optional metadata remains absent when its source cannot be parsed or read. */ }
     return {
       id: record.id,
       name: record.name,

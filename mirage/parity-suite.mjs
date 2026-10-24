@@ -89,7 +89,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const trace = (...parts) => {
   if (process.env.PARITY_DEBUG) process.stderr.write(`[parity ${new Date().toISOString().slice(11, 19)}] ${parts.join(" ")}\n`);
 };
-const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+
 
 // ---- Read-only guards
 
@@ -495,7 +495,7 @@ export function semanticSnapshot(options) {
   };
   const result = [];
   for (const selector of roots) {
-    let nodes = [];
+    let nodes;
     try {
       nodes = [...document.querySelectorAll(selector)];
     } catch {
@@ -1269,7 +1269,7 @@ function pageFetch(options) {
     const body = response.type === "opaqueredirect" ? "" : await response.text();
     const out = {};
     for (const [name, value] of response.headers) out[name.toLowerCase()] = value;
-    let finalPath = null;
+    let finalPath;
     try {
       finalPath = new URL(response.url).pathname;
     } catch {
@@ -1805,7 +1805,7 @@ export function createHttpDriver({ origin, identity = "anonymous", cookie } = {}
       const body = raw ? Buffer.from(await response.arrayBuffer()) : await response.text();
       const headers = {};
       for (const [name, value] of response.headers) if (name.toLowerCase() !== "set-cookie") headers[name.toLowerCase()] = value;
-      let finalPath = null;
+      let finalPath;
       try {
         finalPath = new URL(response.url).pathname;
       } catch {
@@ -2733,7 +2733,7 @@ async function runScenario(scenario, context) {
     localPath = localDiscovery.path;
     result.discoveredPath = { live: redactUrl(livePath, { origins }), local: redactUrl(localPath, { origins }) };
   }
-  let deltas = [];
+  const deltas = [];
   const observations = {};
   const kind = scenario.kind;
   const pageOptions = {
@@ -3150,7 +3150,7 @@ export function withFetchXmlPage(target, page, cookie) {
   return url.pathname + url.search;
 }
 
-function summarizeProjection(projection, scenario, redactor) {
+function summarizeProjection(projection, scenario, _redactor) {
   if (!projection) return null;
   if (projection.kind === "error") {
     // Platform error messages describe the runner's own synthetic query (tables/columns), so they

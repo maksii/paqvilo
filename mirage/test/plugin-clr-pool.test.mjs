@@ -42,7 +42,7 @@ test('CLR workers reject non-object output and completion with pending SDK calls
   t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));
   const source=path.join(root,'Protocol.cs'),executable=path.join(root,'Protocol.exe');
   await fs.writeFile(source,`using System;public static class Protocol{public static void Main(){var line=Console.ReadLine();
-if(line.Contains("pending")){Console.WriteLine("{\\\"kind\\\":\\\"rpc\\\"}");Console.WriteLine("{\\\"kind\\\":\\\"result\\\"}");}
+if(line.Contains("pending")){Console.WriteLine("{\\"kind\\":\\"rpc\\"}");Console.WriteLine("{\\"kind\\":\\"result\\"}");}
 else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("null");System.Threading.Thread.Sleep(30000);}}`);
   const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe');
   const build=spawnSync(compiler,['/nologo','/target:exe','/out:'+executable,source],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000});
@@ -52,7 +52,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
     const worker=new Worker(new URL(pooled?'../lib/plugin-clr-pool-worker.mjs':'../lib/plugin-clr-worker.mjs',import.meta.url),
       {workerData:{port:port2,signal,executable,input,timeout:5000},transferList:[port2]});
     let pid;
-    sub.after(async()=>{if(pid)try{process.kill(pid);}catch{}port1.close();await worker.terminate();});
+    sub.after(async()=>{if(pid)try{process.kill(pid);}catch{ /* The owned child may already have exited. */ }port1.close();await worker.terminate();});
     const failure=await new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>reject(new Error('No protocol failure received')),10000);
       worker.once('error',error=>{clearTimeout(timer);reject(error);});
@@ -73,7 +73,7 @@ test('pooled process reuse, runtime isolation, snapshot tampering and throwing c
   t.after(()=>closeClrHostPool());
   t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));
   const source=path.join(root,'Protocol.cs'),executable=path.join(root,'Protocol.exe');
-  await fs.writeFile(source,'using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}while(Console.ReadLine()!=null)Console.WriteLine("{\\\"kind\\\":\\\"result\\\"}");}}');
+  await fs.writeFile(source,'using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}while(Console.ReadLine()!=null)Console.WriteLine("{\\"kind\\":\\"result\\"}");}}');
   const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe');
   const build=spawnSync(compiler,['/nologo','/target:exe','/out:'+executable,source],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000});
   assert.equal(build.status,0,build.stdout+build.stderr);
@@ -118,7 +118,7 @@ test('exact parent incarnation closes fresh and pooled CPU-hung CLR hosts after 
   try{await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error('Invented child did not enter its CLR loop: '+error)),7000);child.once('exit',code=>{clearTimeout(timeout);reject(new Error('Invented child exited early: '+code+' '+error));});child.stdout.on('data',chunk=>{buffer+=chunk;for(;;){const end=buffer.indexOf('\n');if(end<0)break;const row=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);if(row.port)port=row.port;if(row.code==='PLUGIN_CLR_HOST_STARTED')hostPid=row.pid;if(row.code==='PLUGIN_CLR_TRACE'&&row.message==='entered-cpu-loop'){clearTimeout(timeout);resolve();}}});});
    assert.ok(hostPid>0);const exited=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGKILL');await exited;
    let absent=false;for(let attempt=0;attempt<50;attempt++){try{process.kill(hostPid,0);}catch(cause){if(cause.code==='ESRCH'){absent=true;break;}throw cause;}await delay(40);}assert.equal(absent,true,'Only the recorded orphan host must terminate, even while plugin code never returns.');await assert.rejects(fetch('http://127.0.0.1:'+port));
-  }finally{child.kill();if(hostPid)try{process.kill(hostPid);}catch{}}
+  }finally{child.kill();if(hostPid)try{process.kill(hostPid);}catch{ /* The owned child may already have exited. */ }}
  });
 });
 

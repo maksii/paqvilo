@@ -11,7 +11,7 @@ allowlist and evidence in a separate project. Use ignored `.paqvilo/` for captur
 connection files. The public repository supplies reusable generators and invented fixtures;
 it supplies no tenant connection, browser identity or ready-made project hooks.
 
-You need Node.js 22 or later and the installed package. Use a toolkit checkout for the
+You need Node.js 24.22.1 or later in the 24.x LTS line and the installed package. Use a toolkit checkout for the
 optional fixture-generation scripts below. PAC and an authenticated profile are needed
 only when provisioning or deploying a fixture. Original plugin builds also need .NET.
 Install the Playwright MCP browser extension in the intended signed-in profile and configure

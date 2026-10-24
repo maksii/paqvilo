@@ -1,4 +1,4 @@
-import { indexPersonaCatalog, filterPersonaIndex, personaFilters, personaRowKey, foldPersonaText } from './persona-search.mjs';
+import { indexPersonaCatalog, filterPersonaIndex, personaFilters, foldPersonaText } from './persona-search.mjs';
 import { personaCard, personaDetailsView, personaHtml } from './persona-picker-view.mjs';
 
 const mounted = new WeakMap();

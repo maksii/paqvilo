@@ -196,7 +196,7 @@ test('a host without the runtime answers 501 CanvasRuntimeUnavailable on the dri
   assert.deepEqual([response.status, (await response.json()).error.code], [501, 'CanvasRuntimeUnavailable']);
 });
 
-test('an fx.yaml app runs its OnStart and screens the same way', async t => {
+test('an fx.yaml app runs its OnStart and screens the same way', async _t => {
   const files = { 'Src/App.fx.yaml': 'App As appinfo:\n    OnStart: =Set(fxGreeting, "Hello")\n',
     'Src/HomeScreen.fx.yaml': 'HomeScreen As screen:\n\n    GreetingLabel As label:\n        Text: =fxGreeting\n' };
   const instance = createCanvasApp({ app: await fixtureApp(files), evaluator: createPowerFxEvaluator() });

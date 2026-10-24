@@ -367,7 +367,7 @@ test("verifyBearer accepts a fresh token and reports each rejection reason", () 
 
   assert.deepEqual(auth.verifyBearer(undefined, opts), { ok: false, reason: "missing" });
 
-  const [head, body, signature] = access.split(".");
+  const [head, , signature] = access.split(".");
   const forged = b64({ ...claimsOf(access), tid: "forged" });
   assert.deepEqual(auth.verifyBearer(`Bearer ${head}.${forged}.${signature}`, opts), { ok: false, reason: "signature" });
 

@@ -141,7 +141,7 @@ async function createWidget(t, attributes) {
   return guidOf(res.body, "id");
 }
 
-const widgetId = (t) => t.store.state.tables.widget[0].widgetid;
+
 
 test("WhoAmI answers the caller's ids in the g contract namespace", async () => {
   const t = await setup();
@@ -407,7 +407,7 @@ test("RetrieveCurrentOrganization returns the organization detail", async () => 
   // OrganizationDetail is xrm/2014 (SDK docs): typed and prefixed x14, members in DataContract (alphabetical) order.
   assert.match(res.body, /<b:value i:type="x14:OrganizationDetail">/);
   assert.match(res.body, /<x14:UniqueName>testorg<\/x14:UniqueName>/);
-  const members = [...res.body.matchAll(/<x14:([A-Za-z]+)[ >\/]/g)].map((m) => m[1]);
+  const members = [...res.body.matchAll(/<x14:([A-Za-z]+)[ >/]/g)].map((m) => m[1]);
   assert.deepEqual(members, ["DatacenterId", "Endpoints", "EnvironmentId", "FriendlyName", "Geo", "OrganizationId", "OrganizationType", "OrganizationVersion", "SchemaType", "State", "TenantId", "UniqueName", "UrlName"]);
 });
 

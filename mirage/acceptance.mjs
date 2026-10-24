@@ -511,7 +511,7 @@ export async function runAcceptance({
         const record = requestRecords.get(request),
           requestKey = String(record?.order ?? "");
         if (!isLive) {
-          let target = null;
+          let target;
           try {
             target = new URL(request.url());
           } catch {
@@ -952,7 +952,7 @@ export async function runAcceptance({
             let current, matches;
             const deadline =
               Date.now() + (step.action === "waitRecord" ? timeout : 0);
-            do {
+            for (;;) {
               current = await readState(true);
               requireLocal(current);
               matches = (current.data?.[step.entity] ?? []).filter((record) =>
@@ -964,7 +964,7 @@ export async function runAcceptance({
               )
                 break;
               await new Promise((resolve) => setTimeout(resolve, 100));
-            } while (true);
+            }
             if (matches.length !== (step.count ?? 1))
               throw new Error(
                 `Expected ${step.count ?? 1} matching ${step.entity} records, observed ${matches.length}.`,

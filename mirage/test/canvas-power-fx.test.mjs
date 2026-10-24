@@ -67,7 +67,7 @@ test('validatePowerFxAdapter rejects missing or non-function members', () => {
 test('a synchronous adapter answers evaluateSync and checkSync, and the async evaluate delegates to it', async () => {
   const adapter = {
     evaluateSync: (expression, context) => ({ value: context.values.n * 2 }),
-    checkSync: (expression, context) => ({ ok: true, diagnostics: [], returnType: 'Number' }),
+    checkSync: (_expression, _context) => ({ ok: true, diagnostics: [], returnType: 'Number' }),
   };
   const evaluator = createPowerFxEvaluator({ adapter });
   assert.deepEqual(evaluator.evaluateSync('n', { values: { n: 4 } }), { value: 8 });

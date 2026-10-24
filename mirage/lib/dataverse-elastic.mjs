@@ -195,7 +195,7 @@ function installCosmosQuery(api) {
         .map((row) => {
           const props = { ...(api.fieldSecurity?.mask?.(ctx.user, mapping.logicalName, row, { view }) ?? row) };
           for (const [name, value] of Object.entries(props)) {
-            if (typeof value !== "string" || !/^[\s]*[\[{]/.test(value)) continue;
+            if (typeof value !== "string" || !/^[\s]*[[{]/.test(value)) continue;
             const definition = api.store.fieldDefinition(mapping.logicalName, name, api.metadataFields);
             const format = definition?.columnMetadata?.formatName ?? definition?.columnMetadata?.format ?? definition?.formatName ?? definition?.format;
             if (String(format?.Value ?? format).toLowerCase() !== "json") continue;

@@ -35,7 +35,7 @@ const rowKey = (value) => {
  * Create a formatter bound to one request.
  * options: { store, identity, metadata(logical) -> fields, formatting }
  */
-export function createWebApiFormatter({ store, identity = {}, metadata, formatting = {} }) {
+export function createWebApiFormatter({ store, identity: _identity = {}, metadata, formatting = {} }) {
   formatting = {...formatting, timeZoneOffsetAt: compileFormattedTimeZone(formatting.formattedValueTimeZone)};
   const definition = (logical, attribute) => store.fieldDefinition(logical, attribute, metadata);
   const storedRows = new Map();

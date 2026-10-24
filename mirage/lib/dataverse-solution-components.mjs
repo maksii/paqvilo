@@ -146,7 +146,7 @@ export function applySolutionPayloads(state, solutionId, components, { overwrite
     const mapping = ensureSolutionComponentMapping(state, component, definitionOf);
     const idColumn = mapping.idColumn;
     const rows = (state.tables[table] ??= []);
-    let row = rows.find(row => guid(row[idColumn]) === id);
+    const row = rows.find(row => guid(row[idColumn]) === id);
     const record = (bag[id] ??= { component: { ...component, row: undefined }, baseRow: row ? structuredClone(row) : null, layers: [] });
     record.layers = record.layers.filter(layer => lower(layer.solutionId) !== lower(solutionId));
     record.layers.push({ solutionId, row: { ...component.row, [idColumn]: id }, active: !row || overwrite || !record.baseRow });

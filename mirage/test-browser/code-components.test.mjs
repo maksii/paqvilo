@@ -110,17 +110,17 @@ test('PCF repeated controls have separate instances and state, typed parameters,
   await page.evaluate(async () => {
     window.contexts = []; window.states = []; window.destroyed = []; window.notifications = []; window.propertyUpdates = [];
     document.addEventListener('paqvilo:pcf-output', event => window.notifications.push(event.detail));
-    ComponentFramework.registerControl('Synthetic.Types', class {
+    window.ComponentFramework.registerControl('Synthetic.Types', class {
       init(context, notify, state, container) {
         this.container = container; this.context = context; this.notify = notify;
-        contexts.push(context); states.push(state); context.mode.trackContainerResize(true);
+        window.contexts.push(context); window.states.push(state); context.mode.trackContainerResize(true);
         context.mode.setControlState({ owner: container.id });
         container.style.width = '200px'; container.style.height = '40px';
         container.addEventListener('output', notify);
       }
-      updateView(context) { propertyUpdates.push({ id: this.container.id, properties: [...context.updatedProperties] }); this.container.dataset.updates = String(Number(this.container.dataset.updates || '0') + 1); this.container.dataset.updatedProperties = context.updatedProperties.join(','); }
+      updateView(context) { window.propertyUpdates.push({ id: this.container.id, properties: [...context.updatedProperties] }); this.container.dataset.updates = String(Number(this.container.dataset.updates || '0') + 1); this.container.dataset.updatedProperties = context.updatedProperties.join(','); }
       getOutputs() { return { choice: 4, inputOnly: 'must not propagate' }; }
-      destroy() { destroyed.push(this.container.id); }
+      destroy() { window.destroyed.push(this.container.id); }
     });
     const spec = { id: 'same', constructor: 'Synthetic.Types', resources: [{ kind: 'img', url: '/image.bin' }], properties: [
       { name: 'choice', 'of-type': 'OptionSet', usage: 'bound' },
@@ -135,22 +135,22 @@ test('PCF repeated controls have separate instances and state, typed parameters,
   });
   assert.equal(await page.locator('[data-pcf-ready]').count(), 2);
   assert.deepEqual(await page.evaluate(() => Array.from(document.querySelectorAll('[data-pcf-ready]'), node => node.id)), ['same-1', 'same-2']);
-  assert.deepEqual(await page.evaluate(() => ({ choice: contexts[0].parameters.choice.raw, flags: contexts[0].parameters.flags.raw, reference: contexts[0].parameters.reference.raw, enabled: contexts[0].parameters.enabled.raw, count: contexts[0].parameters.count.raw, grouped: contexts[0].parameters.grouped.raw, groupedType: contexts[0].parameters.grouped.type })), {
+  assert.deepEqual(await page.evaluate(() => ({ choice: window.contexts[0].parameters.choice.raw, flags: window.contexts[0].parameters.flags.raw, reference: window.contexts[0].parameters.reference.raw, enabled: window.contexts[0].parameters.enabled.raw, count: window.contexts[0].parameters.count.raw, grouped: window.contexts[0].parameters.grouped.raw, groupedType: window.contexts[0].parameters.grouped.type })), {
     choice: 3, flags: [1, 2], reference: [{ id: 'd0000000-0000-4000-8000-000000000002', entityType: 'tst_row', name: 'Selected' }], enabled: true, count: 7, grouped: 7.25, groupedType: 'Decimal',
   });
-  assert.deepEqual(await page.evaluate(() => states), [{}, {}]);
+  assert.deepEqual(await page.evaluate(() => window.states), [{}, {}]);
   assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('paqvilo-pcf:same-1')).owner), 'same-1');
   assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('paqvilo-pcf:same-2')).owner), 'same-2');
   await page.locator('#same-1').evaluate(node => node.dispatchEvent(new Event('output')));
   // A resize can legitimately follow the output callback before the browser is polled.
-  await page.waitForFunction(() => propertyUpdates.some(update => update.id === 'same-1' && update.properties.join(',') === 'choice'));
-  assert.deepEqual(await page.evaluate(() => notifications), [{ choice: 4 }]);
-  assert.equal(await page.evaluate(() => new Promise((resolve, reject) => contexts[0].resources.getResource('image.bin', value => resolve(atob(value).length), reject))), 512 * 1024);
+  await page.waitForFunction(() => window.propertyUpdates.some(update => update.id === 'same-1' && update.properties.join(',') === 'choice'));
+  assert.deepEqual(await page.evaluate(() => window.notifications), [{ choice: 4 }]);
+  assert.equal(await page.evaluate(() => new Promise((resolve, reject) => window.contexts[0].resources.getResource('image.bin', value => resolve(atob(value).length), reject))), 512 * 1024);
   await page.locator('#same-1').evaluate(node => { node.style.width = '250px'; });
-  await page.waitForFunction(() => contexts[0].mode.allocatedWidth === 250);
+  await page.waitForFunction(() => window.contexts[0].mode.allocatedWidth === 250);
   await page.locator('#same-1').evaluate(node => node.remove());
-  await page.waitForFunction(() => destroyed.length === 1);
-  assert.deepEqual(await page.evaluate(() => destroyed), ['same-1']);
+  await page.waitForFunction(() => window.destroyed.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.destroyed), ['same-1']);
   assert.equal(await page.locator('[data-pcf-ready]').count(), 1);
   assert.deepEqual(errors, []);
 });
@@ -159,37 +159,37 @@ test('PCF Web API honors entity mappings, CSRF, page size and native create IDs 
   const { page, requests } = await hostFixture(t);
   await page.evaluate(async () => {
     window.shell = { getTokenDeferred: () => ({ done(callback) { callback('fixture-token'); return this; }, fail() { return this; } }) };
-    ComponentFramework.registerControl('Synthetic.Api', class { init(context) { window.context = context; } updateView() {} });
+    window.ComponentFramework.registerControl('Synthetic.Api', class { init(context) { window.context = context; } updateView() {} });
     const target = document.createElement('div'); document.body.append(target);
-    await __paqviloPcf.mount({ id: 'api', constructor: 'Synthetic.Api', resources: [], properties: [], strings: {}, args: {}, identity: { roles: [] }, mappings: { tst_row: { entitySet: 'tst_rows' } } }, target);
+    await window.__paqviloPcf.mount({ id: 'api', constructor: 'Synthetic.Api', resources: [], properties: [], strings: {}, args: {}, identity: { roles: [] }, mappings: { tst_row: { entitySet: 'tst_rows' } } }, target);
   });
-  const result = await page.evaluate(() => context.webAPI.retrieveMultipleRecords('TST_ROW', '?$select=tst_title', 2));
+  const result = await page.evaluate(() => window.context.webAPI.retrieveMultipleRecords('TST_ROW', '?$select=tst_title', 2));
   assert.equal(result.entities[0].tst_title, 'Visible row');
   assert.equal(requests[0].url, '/_api/tst_rows?$select=tst_title');
   assert.equal(requests[0].headers.__requestverificationtoken, 'fixture-token');
   assert.equal(requests[0].headers.prefer, 'odata.maxpagesize=2');
-  assert.deepEqual(await page.evaluate(() => context.webAPI.createRecord('tst_row', { tst_title: 'New row' })), { id: 'd0000000-0000-4000-8000-000000000002', entityType: 'tst_row' });
+  assert.deepEqual(await page.evaluate(() => window.context.webAPI.createRecord('tst_row', { tst_title: 'New row' })), { id: 'd0000000-0000-4000-8000-000000000002', entityType: 'tst_row' });
   const before = requests.length;
   const rejected = await page.evaluate(async () => {
     const failures = [];
-    for (const operation of [() => context.webAPI.retrieveMultipleRecords('tst_row', 'https://example.invalid/data'), () => context.webAPI.retrieveRecord('tst_row', '../admin'), () => context.webAPI.retrieveMultipleRecords('missing', ''), () => context.webAPI.retrieveMultipleRecords('tst_row', '?x=1#fragment'), () => context.webAPI.retrieveMultipleRecords('tst_row', '', 0)]) {
+    for (const operation of [() => window.context.webAPI.retrieveMultipleRecords('tst_row', 'https://example.invalid/data'), () => window.context.webAPI.retrieveRecord('tst_row', '../admin'), () => window.context.webAPI.retrieveMultipleRecords('missing', ''), () => window.context.webAPI.retrieveMultipleRecords('tst_row', '?x=1#fragment'), () => window.context.webAPI.retrieveMultipleRecords('tst_row', '', 0)]) {
       try { await operation(); } catch (error) { failures.push(error.message); }
     }
     return failures;
   });
   assert.equal(rejected.length, 5); assert.equal(requests.length, before);
-  assert.deepEqual(await page.evaluate(async () => { try { await context.webAPI.retrieveMultipleRecords('tst_row', '?denied=true'); } catch (error) { return { message: error.message, code: error.errorCode }; } }), { message: 'Fixture permission denied', code: 'AccessDenied' });
+  assert.deepEqual(await page.evaluate(async () => { try { await window.context.webAPI.retrieveMultipleRecords('tst_row', '?denied=true'); } catch (error) { return { message: error.message, code: error.errorCode }; } }), { message: 'Fixture permission denied', code: 'AccessDenied' });
 });
 test('PCF native outputs update only the scoped native field and preserve read-only, lookup and choice form inputs', async t => {
   const { page } = await hostFixture(t);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.evaluate(async () => {
     window.nativeOutputs = {}; window.dirty = 0; window.nativeChanges = 0;
-    window.setIsDirty = () => dirty++;
-    ComponentFramework.registerControl('Synthetic.Native', class {
+    window.setIsDirty = () => window.dirty++;
+    window.ComponentFramework.registerControl('Synthetic.Native', class {
       init(context, notify, state, container) { this.container = container; window.nativeContext = context; container.addEventListener('output', notify); }
       updateView() {}
-      getOutputs() { return { value: nativeOutputs[this.container.dataset.test] }; }
+      getOutputs() { return { value: window.nativeOutputs[this.container.dataset.test] }; }
     });
     const cases = [
       ['text', '<input id="native" value="Before">', 'text', 'SingleLine.Text', 'After', false],
@@ -203,9 +203,9 @@ test('PCF native outputs update only the scoped native field and preserve read-o
     ];
     for (const [key, markup, control, type, output, disabled] of cases) {
       const wrapper = document.createElement('section'); wrapper.dataset.pcfNativeField = key; wrapper.innerHTML = markup;
-      wrapper.addEventListener('change', () => nativeChanges++); document.body.append(wrapper);
-      const target = document.createElement('div'); target.dataset.test = key; wrapper.append(target); nativeOutputs[key] = output;
-      await __paqviloPcf.mount({ id: key, constructor: 'Synthetic.Native', resources: [], properties: [{ name: 'value', 'of-type': type, usage: 'bound' }], strings: {}, args: { disabled }, identity: { roles: [] }, mappings: {}, nativeBinding: { id: 'native', control, properties: ['value'] }, language: { code: 'fr-FR', lcid: 1036, isRTL: false } }, target);
+      wrapper.addEventListener('change', () => window.nativeChanges++); document.body.append(wrapper);
+      const target = document.createElement('div'); target.dataset.test = key; wrapper.append(target); window.nativeOutputs[key] = output;
+      await window.__paqviloPcf.mount({ id: key, constructor: 'Synthetic.Native', resources: [], properties: [{ name: 'value', 'of-type': type, usage: 'bound' }], strings: {}, args: { disabled }, identity: { roles: [] }, mappings: {}, nativeBinding: { id: 'native', control, properties: ['value'] }, language: { code: 'fr-FR', lcid: 1036, isRTL: false } }, target);
       target.dispatchEvent(new Event('output'));
     }
   });
@@ -217,10 +217,10 @@ test('PCF native outputs update only the scoped native field and preserve read-o
   assert.deepEqual(await page.locator('[data-pcf-native-field="multi"] select').evaluate(node => Array.from(node.selectedOptions, option => option.value)), ['2']);
   assert.equal(await page.locator('[data-pcf-native-field="date"] input').inputValue(), '2026-01-02');
   assert.deepEqual(await page.locator('[data-pcf-native-field="lookup"] input').evaluateAll(nodes => nodes.map(node => node.value)), ['d0000000-0000-4000-8000-000000000004', 'Selected row', 'tst_row']);
-  assert.equal(await page.evaluate(() => dirty), 6);
-  assert.equal(await page.evaluate(() => nativeChanges), 9);
-  assert.equal(await page.evaluate(() => nativeContext.userSettings.languageId), 1036);
-  assert.match(await page.evaluate(() => nativeContext.formatting.formatDecimal(1234.5)), /,5$/);
+  assert.equal(await page.evaluate(() => window.dirty), 6);
+  assert.equal(await page.evaluate(() => window.nativeChanges), 9);
+  assert.equal(await page.evaluate(() => window.nativeContext.userSettings.languageId), 1036);
+  assert.match(await page.evaluate(() => window.nativeContext.formatting.formatDecimal(1234.5)), /,5$/);
   assert.deepEqual(errors, []);
 });
 test('native form scripts update PCF context without feedback recursion, removed controls detach and runtime failures restore native fallback', async t => {
@@ -228,11 +228,11 @@ test('native form scripts update PCF context without feedback recursion, removed
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.evaluate(async () => {
     window.syncContexts = {}; window.syncUpdates = {}; window.syncOutputs = 0;
-    document.addEventListener('paqvilo:pcf-output', () => syncOutputs++);
-    ComponentFramework.registerControl('Synthetic.Sync', class {
-      init(context, notify, state, container) { this.key = container.dataset.test; this.notify = notify; syncContexts[this.key] = context; }
-      updateView(context) { syncUpdates[this.key] = (syncUpdates[this.key] || 0) + 1; if (context.updatedProperties.length) this.notify(); }
-      getOutputs() { return { value: syncContexts[this.key].parameters.value.raw }; }
+    document.addEventListener('paqvilo:pcf-output', () => window.syncOutputs++);
+    window.ComponentFramework.registerControl('Synthetic.Sync', class {
+      init(context, notify, state, container) { this.key = container.dataset.test; this.notify = notify; window.syncContexts[this.key] = context; }
+      updateView(context) { window.syncUpdates[this.key] = (window.syncUpdates[this.key] || 0) + 1; if (context.updatedProperties.length) this.notify(); }
+      getOutputs() { return { value: window.syncContexts[this.key].parameters.value.raw }; }
     });
     for (const [key, type, markup, control, value, disabled] of [
       ['text', 'SingleLine.Text', '<input id="original" value="Initial">', 'text', 'Initial', false],
@@ -244,7 +244,7 @@ test('native form scripts update PCF context without feedback recursion, removed
       const wrapper = document.createElement('section'); wrapper.dataset.pcfNativeField = key;
       wrapper.innerHTML = '<div data-pcf-native-input>' + markup + '</div>'; document.body.append(wrapper);
       const target = document.createElement('div'); target.dataset.test = key; wrapper.append(target);
-      await __paqviloPcf.mount({ id: key, constructor: 'Synthetic.Sync', resources: [], properties: [{ name: 'value', 'of-type': type, usage: 'bound' }], strings: {}, args: { value, disabled }, identity: { roles: [] }, mappings: {}, nativeBinding: { id: 'original', control, properties: ['value'] } }, target);
+      await window.__paqviloPcf.mount({ id: key, constructor: 'Synthetic.Sync', resources: [], properties: [{ name: 'value', 'of-type': type, usage: 'bound' }], strings: {}, args: { value, disabled }, identity: { roles: [] }, mappings: {}, nativeBinding: { id: 'original', control, properties: ['value'] } }, target);
     }
   });
   assert.equal(await page.locator('[data-pcf-native-field="text"] [data-pcf-native-input]').isVisible(), false);
@@ -254,25 +254,25 @@ test('native form scripts update PCF context without feedback recursion, removed
     write('lookup', 'original', 'd0000000-0000-4000-8000-000000000004'); write('lookup', 'original_name', 'Lookup name'); write('lookup', 'original_entityname', 'tst_row');
     write('date', 'original', '2026-02-03'); write('multi', 'original', '2,3');
   });
-  await page.waitForFunction(() => syncContexts.text.parameters.value.raw === 'Changed by native script');
-  assert.deepEqual(await page.evaluate(() => syncContexts.lookup.parameters.value.raw), [{ id: 'd0000000-0000-4000-8000-000000000004', entityType: 'tst_row', name: 'Lookup name' }]);
-  assert.equal(await page.evaluate(() => syncContexts.date.parameters.value.raw.toISOString().slice(0, 10)), '2026-02-03');
-  assert.deepEqual(await page.evaluate(() => syncContexts.multi.parameters.value.raw), [2, 3]);
-  assert.deepEqual(await page.evaluate(() => syncContexts.text.updatedProperties), ['value']);
-  assert.equal(await page.evaluate(() => syncOutputs), 0);
-  assert.deepEqual(await page.evaluate(() => syncUpdates), { text: 2, readonly: 1, lookup: 2, date: 2, multi: 2 });
+  await page.waitForFunction(() => window.syncContexts.text.parameters.value.raw === 'Changed by native script');
+  assert.deepEqual(await page.evaluate(() => window.syncContexts.lookup.parameters.value.raw), [{ id: 'd0000000-0000-4000-8000-000000000004', entityType: 'tst_row', name: 'Lookup name' }]);
+  assert.equal(await page.evaluate(() => window.syncContexts.date.parameters.value.raw.toISOString().slice(0, 10)), '2026-02-03');
+  assert.deepEqual(await page.evaluate(() => window.syncContexts.multi.parameters.value.raw), [2, 3]);
+  assert.deepEqual(await page.evaluate(() => window.syncContexts.text.updatedProperties), ['value']);
+  assert.equal(await page.evaluate(() => window.syncOutputs), 0);
+  assert.deepEqual(await page.evaluate(() => window.syncUpdates), { text: 2, readonly: 1, lookup: 2, date: 2, multi: 2 });
   assert.equal(await page.locator('[data-pcf-native-field="readonly"] #original').inputValue(), 'Initial');
   await page.evaluate(() => {
     window.detachedNative = document.querySelector('[data-pcf-native-field="text"] #original');
     document.querySelector('[data-pcf-native-field="text"]').remove();
   });
-  await page.evaluate(() => { detachedNative.value = 'Detached value'; detachedNative.dispatchEvent(new Event('change', { bubbles: true })); });
-  assert.equal(await page.evaluate(() => syncContexts.text.parameters.value.raw), 'Changed by native script');
+  await page.evaluate(() => { window.detachedNative.value = 'Detached value'; window.detachedNative.dispatchEvent(new Event('change', { bubbles: true })); });
+  assert.equal(await page.evaluate(() => window.syncContexts.text.parameters.value.raw), 'Changed by native script');
   await page.evaluate(async () => {
-    ComponentFramework.registerControl('Synthetic.Broken', class { init() { throw new Error('Fixture runtime failure'); } });
+    window.ComponentFramework.registerControl('Synthetic.Broken', class { init() { throw new Error('Fixture runtime failure'); } });
     const wrapper = document.createElement('section'); wrapper.dataset.pcfNativeField = 'failed'; wrapper.innerHTML = '<div data-pcf-native-input hidden><input id="original" value="Fallback"></div>'; document.body.append(wrapper);
     const target = document.createElement('div'); wrapper.append(target);
-    await __paqviloPcf.mount({ id: 'failed', constructor: 'Synthetic.Broken', resources: [], properties: [{ name: 'value', 'of-type': 'SingleLine.Text', usage: 'bound' }], strings: {}, args: {}, identity: { roles: [] }, mappings: {}, nativeBinding: { id: 'original', control: 'text', properties: ['value'] } }, target);
+    await window.__paqviloPcf.mount({ id: 'failed', constructor: 'Synthetic.Broken', resources: [], properties: [{ name: 'value', 'of-type': 'SingleLine.Text', usage: 'bound' }], strings: {}, args: {}, identity: { roles: [] }, mappings: {}, nativeBinding: { id: 'original', control: 'text', properties: ['value'] } }, target);
   });
   assert.equal(await page.locator('[data-pcf-native-field="failed"] #original').isVisible(), true);
   assert.match(await page.locator('[data-pcf-native-field="failed"] [role=alert]').innerText(), /Fixture runtime failure/);
@@ -311,33 +311,33 @@ test('exported dataset PCF renders real local rows with paging, sorting, filteri
   await page.locator('[data-pcf-ready=true]').waitFor();
   assert.equal(await page.locator('.grid-title').textContent(), 'Visible Rows');
   assert.equal(await page.locator('.grid-rows').textContent(), 'Alpha,Beta');
-  assert.equal(await page.evaluate(() => dataset.paging.totalResultCount), 5);
-  await page.evaluate(() => dataset.paging.loadNextPage());
+  assert.equal(await page.evaluate(() => window.dataset.paging.totalResultCount), 5);
+  await page.evaluate(() => window.dataset.paging.loadNextPage());
   assert.equal(await page.locator('.grid-rows').textContent(), 'Delta,Gamma');
-  assert.equal(await page.evaluate(() => dataset.paging.hasPreviousPage), true);
-  await page.evaluate(() => dataset.paging.loadPreviousPage());
+  assert.equal(await page.evaluate(() => window.dataset.paging.hasPreviousPage), true);
+  await page.evaluate(() => window.dataset.paging.loadPreviousPage());
   assert.equal(await page.locator('.grid-rows').textContent(), 'Alpha,Beta');
-  await page.evaluate(() => { dataset.sorting = [{ name: 'tst_title', sortDirection: 1 }]; return dataset.refresh(); });
+  await page.evaluate(() => { window.dataset.sorting = [{ name: 'tst_title', sortDirection: 1 }]; return window.dataset.refresh(); });
   assert.equal(await page.locator('.grid-rows').textContent(), 'Omega,Gamma');
-  await page.evaluate(() => { dataset.filtering.setFilter({ filterOperator: 0, conditions: [{ attributeName: 'tst_title', conditionOperator: 6, value: 'B%' }], filters: [] }); return dataset.refresh(); });
+  await page.evaluate(() => { window.dataset.filtering.setFilter({ filterOperator: 0, conditions: [{ attributeName: 'tst_title', conditionOperator: 6, value: 'B%' }], filters: [] }); return window.dataset.refresh(); });
   assert.equal(await page.locator('.grid-rows').textContent(), 'Beta');
-  assert.equal(await page.evaluate(() => dataset.paging.hasNextPage), false);
-  const selected = await page.evaluate(() => { dataset.setSelectedRecordIds([dataset.sortedRecordIds[0]]); return { ids: dataset.getSelectedRecordIds(), value: dataset.records[dataset.sortedRecordIds[0]].getValue('tst_title'), reference: dataset.records[dataset.sortedRecordIds[0]].getNamedReference() }; });
+  assert.equal(await page.evaluate(() => window.dataset.paging.hasNextPage), false);
+  const selected = await page.evaluate(() => { window.dataset.setSelectedRecordIds([window.dataset.sortedRecordIds[0]]); return { ids: window.dataset.getSelectedRecordIds(), value: window.dataset.records[window.dataset.sortedRecordIds[0]].getValue('tst_title'), reference: window.dataset.records[window.dataset.sortedRecordIds[0]].getNamedReference() }; });
   assert.equal(selected.ids.length, 1); assert.equal(selected.value, 'Beta'); assert.equal(selected.reference.etn, 'tst_row'); assert.equal(selected.reference.id.guid, selected.ids[0]);
-  await page.evaluate(() => { dataset.filtering.setFilter({ filterOperator: 0, conditions: [{ attributeName: 'tst_title', conditionOperator: 999, value: 'unsupported' }], filters: [] }); return dataset.refresh(); });
+  await page.evaluate(() => { window.dataset.filtering.setFilter({ filterOperator: 0, conditions: [{ attributeName: 'tst_title', conditionOperator: 999, value: 'unsupported' }], filters: [] }); return window.dataset.refresh(); });
   assert.match(await page.locator('.grid-error').textContent(), /unsupported/);
-  assert.equal(await page.evaluate(() => dataset.error), true);
-  await page.evaluate(() => { dataset.filtering.clearFilter(); dataset.clearSelectedRecordIds(); return dataset.refresh(); });
+  assert.equal(await page.evaluate(() => window.dataset.error), true);
+  await page.evaluate(() => { window.dataset.filtering.clearFilter(); window.dataset.clearSelectedRecordIds(); return window.dataset.refresh(); });
   assert.equal(await page.locator('.grid-rows').textContent(), 'Omega,Gamma');
-  assert.equal(await page.evaluate(() => dataset.error), false);
-  assert.deepEqual(await page.evaluate(() => dataset.getSelectedRecordIds()), []);
-  await page.evaluate(() => { dataset.addColumn('tst_when'); return dataset.refresh(); });
-  assert.equal(await page.evaluate(() => dataset.columns.find(column => column.name === 'tst_when').dataType), 'DateAndTime.DateAndTime');
-  assert.equal(await page.evaluate(() => dataset.records[dataset.sortedRecordIds[0]].getValue('tst_when') instanceof Date), true);
+  assert.equal(await page.evaluate(() => window.dataset.error), false);
+  assert.deepEqual(await page.evaluate(() => window.dataset.getSelectedRecordIds()), []);
+  await page.evaluate(() => { window.dataset.addColumn('tst_when'); return window.dataset.refresh(); });
+  assert.equal(await page.evaluate(() => window.dataset.columns.find(column => column.name === 'tst_when').dataType), 'DateAndTime.DateAndTime');
+  assert.equal(await page.evaluate(() => window.dataset.records[window.dataset.sortedRecordIds[0]].getValue('tst_when') instanceof Date), true);
   const denied = app.store.snapshot(); denied.settings.permissionMode = 'enforce'; denied.permissions = [];
   await app.store.replaceState(denied);
-  await page.evaluate(() => dataset.refresh());
-  assert.equal(await page.evaluate(() => dataset.error), true);
+  await page.evaluate(() => window.dataset.refresh());
+  assert.equal(await page.evaluate(() => window.dataset.error), true);
   assert.match(await page.locator('.grid-error').textContent(), /permission|access/i);
   assert.equal(await page.locator('.grid-rows').textContent(), '');
   assert.deepEqual(errors, []); assert.deepEqual(external, []);

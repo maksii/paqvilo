@@ -277,7 +277,7 @@ export function createPortalAuthorization({ store, website, portal, principals, 
       const user = reader(identity);
       const view = { unmask: false, single: true };
       const mask = (name, value) => {
-        let out = fls.mask(user, name, value, { view });
+        const out = fls.mask(user, name, value, { view });
         const relationships = store.resolveMapping(name)?.relationships ?? {};
         for (const [navigation, rel] of Object.entries(relationships)) {
           const nested = out[navigation];

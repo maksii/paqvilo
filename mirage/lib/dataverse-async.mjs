@@ -412,7 +412,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
       return active.get(jobId) === token && current?.statecode === STATE.Locked && current.statuscode === STATUS.InProgress;
     };
     liveRuns.set(requestId, live);
-    let owned = true;
+    let owned;
     try {
       const user = api.principals.byId(submission.callerId);
       if (!user) throw new DataError("The user who submitted this bulk delete no longer exists.", 400, "InvalidRequest");

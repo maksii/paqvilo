@@ -51,6 +51,7 @@ function remoteOf(api, config) {
   return path.join(root, ...segments);
 }
 const refFile = (repo, branch) => {
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (typeof branch !== "string" || !branch || path.isAbsolute(branch) || /[\\\u0000-\u001f]/.test(branch)) throw noResource();
   const root = path.resolve(repo, "refs"), file = path.resolve(root, branch), relative = path.relative(root, file);
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw noResource();

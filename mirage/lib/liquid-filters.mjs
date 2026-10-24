@@ -384,15 +384,7 @@ async function orderBy(items, key, direction, context, previous) {
 
 // ---- URL helpers (Microsoft.Xrm.Portal UrlBuilder / QueryStringCollection)
 const PLACEHOLDER = "http://example.com";
-function parseUrl(url) {
-  const text = String(url);
-  try {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return { absolute: true, url: new URL(text) };
-    return { absolute: false, url: new URL(text, `${PLACEHOLDER}/`) };
-  } catch {
-    return null;
-  }
-}
+
 function queryPairs(search) {
   const pairs = [];
   const query = search.startsWith("?") ? search.slice(1) : search;

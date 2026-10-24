@@ -24,7 +24,7 @@ test("required boxes: validator order and the required markers per box type", as
   assert.match(html, /id="site" class="text form-control " [^>]*onchange="setIsDirty\(this\.id\);validateUrlInput\(this,200\);" required="" onkeypress/);
   assert.match(html, /id="count" class="text integer form-control " onchange="setIsDirty\(this\.id\);" required="" aria-invalid="false">/);
   // A read-only required box keeps its required markers on Bootstrap 5.
-  assert.match(html, /id="code" class="text form-control  readonly" onchange="setIsDirty\(this\.id\);" readonly="readonly" aria-required="true" title="Code is a required field\."/);
+  assert.match(html, /id="code" class="text form-control {2}readonly" onchange="setIsDirty\(this\.id\);" readonly="readonly" aria-required="true" title="Code is a required field\."/);
 });
 
 test("a money box shows the record currency's symbol only when it holds a value", async () => {

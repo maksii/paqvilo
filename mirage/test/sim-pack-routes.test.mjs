@@ -81,7 +81,7 @@ test('Power Pages /packs reports the portal match of every registered pack', asy
     'portal/page-templates/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
     'portal/web-templates/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/web-templates/Main.webtemplate.source.html': '<p>Invented</p>',
-    'packs/match/pack.mjs': PACK.replace(/\n  dataFiles:.*\n/, '\n'),
+    'packs/match/pack.mjs': PACK.replace(/\n {2}dataFiles:.*\n/, '\n'),
     'packs/other/pack.mjs': OTHER,
   });
   const sim = await createSimulator({ sourceDir: path.join(dir, 'portal'), stateFile: path.join(dir, 'state.json'), port: 0, watch: false, projectRoot: dir,

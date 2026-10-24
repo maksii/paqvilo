@@ -18,7 +18,7 @@ const attr=(node,name)=>node.attrs?.find(a=>a.name===name)?.value;
 
 test('bounded account facets retain a selected value when URL spelling differs in case',()=>{
   const {report}=identityChooserFixture(250);
-  report.personas.forEach((persona,index)=>persona.account={id:`account-${index}`,name:`Account ${index}`});
+  report.personas.forEach((persona,index)=>(persona.account={id:`account-${index}`,name:`Account ${index}`}));
   for(const account of ['ACCOUNT-249','ACCOUNT 249']){
     const html=chooserSearch(report,new URLSearchParams({account}),'/', '');
     const selected=nodes(html).find(node=>node.tagName==='option'&&attr(node,'value')==='account-249');

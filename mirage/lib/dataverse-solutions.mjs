@@ -49,7 +49,7 @@ const rowsOf = (store, table) => store.state.tables?.[table] ?? [];
 // Seeded Dataverse-only tables: solution, publisher and importjob. The writable columns named
 // here are the ones the simulator reads and writes; the rest of the documented columns are not modelled.
 const UUID = { dataverseType: "uniqueidentifier" }, TEXT = { dataverseType: "nvarchar" }, INT = { dataverseType: "int" };
-const DT = { dataverseType: "datetime" }, BIT = { dataverseType: "bit" }, LOOKUP = { dataverseType: "lookup" };
+const DT = { dataverseType: "datetime" }; const BIT = { dataverseType: "bit" };
 const SEEDS = {
   solution: {
     set: "solutions", id: "solutionid", name: "friendlyname",
@@ -386,7 +386,7 @@ function readArchive(base64) {
     const bytes = Buffer.from(base64, "base64");
     assetEntries = readSolutionAssetEntries(bytes);
     docs = readSolutionZip(bytes);
-  } catch (error) {
+  } catch (_error) {
     throw new DataError("The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.", 400, "0x80048060"); // ImportCustomizationsBadZipFileError
   }
   const archive = { manifest: null, entities: [], relationships: [], optionSets: [], assetEntries, payloadComponents: [], inventory: [] };

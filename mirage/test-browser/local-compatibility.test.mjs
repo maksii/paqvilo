@@ -124,8 +124,8 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   await page.addScriptTag({ url: `${app.url}/__sim-static/vendor/jquery.min.js` });
   for (const name of ["datetimepicker-compat.js", "bootstrap-plugins-compat.js", "jqueryui-dialog-compat.js"])
     await page.addScriptTag({ url: `${app.url}/__sim-static/vendor/${name}` });
-  assert.deepEqual(await page.evaluate(() => [typeof $.fn.datetimepicker, typeof $.fn.tooltip, typeof $.fn.popover, typeof $.fn.modal, typeof $.fn.dialog]), ["function", "function", "function", "function", "function"]);
-  await page.evaluate(() => $("#sourceDialog").dialog({ autoOpen: false }));
+  assert.deepEqual(await page.evaluate(() => [typeof window.$.fn.datetimepicker, typeof window.$.fn.tooltip, typeof window.$.fn.popover, typeof window.$.fn.modal, typeof window.$.fn.dialog]), ["function", "function", "function", "function", "function"]);
+  await page.evaluate(() => window.$("#sourceDialog").dialog({ autoOpen: false }));
   await page.locator("#sourceDropdown").click();
   assert.equal(await page.locator(".dropdown").evaluate((node) => node.classList.contains("open")), true);
   await page.locator("#sourceTab").click();

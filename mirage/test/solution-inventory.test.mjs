@@ -11,7 +11,7 @@ import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { INVENTORY_FOLDERS, inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 
-const APP_ID = '77777777-7777-4777-8777-777777777771';
+
 const CONNECTOR_ID = '77777777-7777-4777-8777-777777777772';
 const BPF_ID = '77777777-7777-4777-8777-777777777773';
 const VIEW_ID = '77777777-7777-4777-8777-777777777774';

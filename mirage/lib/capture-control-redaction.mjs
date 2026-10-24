@@ -595,7 +595,7 @@ export function redactLayoutAttributeValue(attribute, value) {
     return value;
   if (value.length > LIMIT)
     throw new Error("Capture layout exceeds the redaction size bound.");
-  if (/^\s*[\[{]/.test(value)) {
+  if (/^\s*[[{]/.test(value)) {
     if (!jsonObject(value))
       throw new Error("Capture layout is not a structured JSON value.");
     return redactSecureConfigurationTokens(value);

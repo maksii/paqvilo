@@ -282,7 +282,7 @@ function fetchFeatures(xml, features, origin, origins) {
     origins.get(key).add(origin);
   };
   const text = concreteFetch(xml);
-  let tree = null;
+  let tree;
   try {
     tree = parseXmlDocument(text, { root: "fetch" });
   } catch {

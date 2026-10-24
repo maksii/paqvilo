@@ -3,7 +3,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -15,7 +15,7 @@ const APP_ID = "77777777-7777-4777-8777-777777777777";
 const SOLUTION = "new_samplesolution";
 const PUBLISHER = "new_samplepublisher";
 const ORG = "contoso", PROJECT = "widgets", REPO = "sample", BRANCH = "main";
-const SOLUTION_HEADER = { "MSCRM.SolutionUniqueName": SOLUTION };
+
 
 let counter = 0;
 // One loopback server with a System Administrator application user. gitRemoteDirectory is optional.

@@ -147,7 +147,7 @@ export function decimalDivide(a, b) {
   const [n, d] = aligned(x, y);
   const extra = 30n;
   let quotient = (n * 10n ** extra) / d;
-  let remainder = (n * 10n ** extra) % d;
+  const remainder = (n * 10n ** extra) % d;
   let scale = 30;
   // Remove exact trailing zeros (System.Decimal keeps the smallest exact scale).
   if (remainder === 0n)

@@ -85,7 +85,7 @@ async function setup(t, options = {}) {
       ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
     });
     const text = await response.text();
-    let json = null;
+    let json;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
     return { status: response.status, json, text, headers: response.headers };
   };

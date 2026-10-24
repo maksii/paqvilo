@@ -1,5 +1,6 @@
 import { bindSiteSettings, effectiveEnvironmentVariables } from './secret-resolver.mjs';
 
+// eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
 const safeName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 512 && !['__proto__', 'prototype', 'constructor'].includes(name) && !/[\u0000-\u001f\u007f]/.test(name);
 const truth = value => value === true || value === 1 || (typeof value === 'string' && value.toLowerCase() === 'true');
 const invalid = message => Object.assign(new Error(message), { status: 400, code: 'InvalidPortalOverride' });

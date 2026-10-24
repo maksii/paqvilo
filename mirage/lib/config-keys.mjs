@@ -21,6 +21,7 @@ const PRESET_ID = /^[\w.-]+$/;
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 function text(value, label) {
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (typeof value !== 'string' || !value.trim() || /[\x00-\x1f\x7f]/.test(value)) throw new Error(`${label} must be a non-empty string without control characters`);
 }
 function choice(choices, message) {

@@ -112,15 +112,15 @@ test("platform chrome, lazy anti-forgery token, app-bundle accessibility and Dat
   assert.equal(await toggle.getAttribute("aria-label"), "Services");
   // postpreform equivalent at the platform position (after the footer): content scripts that
   // run while the page parses get the browser's Date.parse, ready handlers get Datejs.
-  assert.deepEqual(await page.evaluate(() => [typeof window.parseTimeDate, window.parsedDate instanceof Date, window.parsedDate.getMonth(), typeof Date.today, typeof jQuery.blockUI]), ["number", true, 7, "function", "function"]);
+  assert.deepEqual(await page.evaluate(() => [typeof window.parseTimeDate, window.parsedDate instanceof Date, window.parsedDate.getMonth(), typeof Date.today, typeof window.jQuery.blockUI]), ["number", true, 7, "function", "function"]);
   // The page links the platform bundles, not the local adapters.
   assert.equal(requests.filter((request) => request.includes("/__sim-static/")).length, 0);
   assert.ok(requests.includes("GET /resource/powerappsportal/dist/preform.moment_2_29_4.bundle-750b699ecd.js"));
   assert.ok(requests.includes("GET /resource/powerappsportal/dist/app.bundle-1e948af604.js"));
-  await page.evaluate(() => jQuery.blockUI({ message: "<p>Working</p>", fadeIn: 0 }));
+  await page.evaluate(() => window.jQuery.blockUI({ message: "<p>Working</p>", fadeIn: 0 }));
   assert.equal(await page.locator("body > div.blockUI.blockOverlay").count(), 1);
   assert.equal(await page.locator("body > div.blockUI.blockMsg.blockPage").innerText(), "Working");
-  await page.evaluate(() => jQuery.unblockUI({ fadeOut: 0 }));
+  await page.evaluate(() => window.jQuery.unblockUI({ fadeOut: 0 }));
   assert.equal(await page.locator("body > .blockUI").count(), 0);
   assert.deepEqual(errors, []);
 });
@@ -144,8 +144,8 @@ test("basic form pages run inside the WebForms form with the platform form scrip
     method: document.getElementsByClassName("control").length,
     words: document.getElementsByClassName("control").some((element) => element.classList.contains("form-control")),
     native: document.querySelectorAll(".control").length,
-    jquery: jQuery(".control").length,
-    compound: jQuery("table .control").length === document.querySelectorAll("table .control").length,
+    jquery: window.jQuery(".control").length,
+    compound: window.jQuery("table .control").length === document.querySelectorAll("table .control").length,
     forEach: (() => { let count = 0; document.getElementsByClassName("form-control").forEach(() => count++); return count; })(),
   }));
   assert.ok(selection.words && selection.method > selection.native, JSON.stringify(selection));
@@ -194,6 +194,6 @@ test("Site/BootstrapV5Enabled pages load the BootstrapV5 bundles, whose local eq
   assert.equal(await page.locator("#confirm").isVisible(), false);
   await page.locator("#collapseToggle").click();
   assert.equal(await page.locator("#details").isVisible(), true);
-  assert.equal(await page.evaluate(() => typeof jQuery.fn.modal), "function");
+  assert.equal(await page.evaluate(() => typeof window.jQuery.fn.modal), "function");
   assert.deepEqual(errors, []);
 });

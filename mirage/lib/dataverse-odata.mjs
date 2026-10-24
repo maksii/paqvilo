@@ -27,6 +27,7 @@ const HEAD_ANNOTATIONS = ["@odata.context", "@odata.count", "@odata.etag", "@oda
 const TAIL_ANNOTATIONS = ["@odata.nextLink", "@odata.deltaLink"];
 const MAX_PAGE_SIZE = 5000;
 const MAX_SEGMENT_LENGTH = 260;
+// eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
 const CONTROL_CHARACTER = /[\x00-\x1f\x7f]/;
 // Marks an error object whose key order is already final (orderAnnotations must not move its annotations).
 const KEEP_ORDER = Symbol("keepOrder");

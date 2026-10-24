@@ -198,7 +198,7 @@ test("Bootstrap 5 read-only rendering: no column validity read-only, kept requir
 
 test("edit mode keeps column validity read-only and the edit file control", async () => {
   const html = await render();
-  assert.match(element(html, /<input [^>]*id="frozen"[^>]*>/), / class="text form-control  readonly"/);
+  assert.match(element(html, /<input [^>]*id="frozen"[^>]*>/), / class="text form-control {2}readonly"/);
   assert.match(html, /<button id="photo_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage\(this, 'photo'\);">Choose File<\/button>/);
   assert.match(html, /<input type="hidden" name="[^"]*\$photohidden_record_id" id="photohidden_record_id" value="b0000000-0000-4000-8000-000000000001">/);
 });

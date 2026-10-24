@@ -15,7 +15,7 @@
   if (window.__ppWebFormsRuntime) return;
   window.__ppWebFormsRuntime = true;
   const w = window;
-  const jq = () => (typeof w.jQuery?.fn?.jquery === "string" ? w.jQuery : null);
+  
 
   // ---- WebUIValidation.js
   w.Page_ValidationVer = "125";

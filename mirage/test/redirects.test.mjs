@@ -418,7 +418,7 @@ test("language prefixes, the Knowledge Article route and repeated slashes resolv
 
 test("portal responses carry only HTTP/* site-setting headers; web files use the record disposition and platform caching", async (t) => {
   const css = "body { color: teal; }";
-  const { dir, get, signInAs, settings } = await simulator(t, {
+  const { get, signInAs, settings } = await simulator(t, {
     "sitesetting.yml": [
       "- adx_sitesettingid: s1\n  adx_name: HTTP/X-Frame-Options\n  adx_value: DENY",
       "- adx_sitesettingid: s2\n  adx_name: HTTP/Content-Security-Policy\n  adx_value: \"default-src 'self'; object-src 'none'; connect-src 'self' https://*.powerappsportals.com\"",

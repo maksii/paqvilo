@@ -208,7 +208,7 @@ const mapOf = (store, file) => {
     && row.targetentityname === file.targetentityname && Number(row.processcode ?? 1) === 1
     && (!row.sourceentityname || !file.sourceentityname || row.sourceentityname === file.sourceentityname));
 };
-const logFailure = (store, file, phase, line, message) => store.insertRow("importlog", store.state.tables.importlog ??= [], {
+const logFailure = (store, file, phase, line, message) => store.insertRow("importlog", (store.state.tables.importlog ??= []), {
   importlogid: randomUUID(), importfileid: file.importfileid, linenumber: line, logphasecode: phase,
   errordescription: message, errornumber: 0, createdon: nowIso(),
 });
@@ -486,7 +486,7 @@ function installRetentionMessages(api) {
     const workbook = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Retained data"><Table><Row>${columns.map((name) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(name)}</Data></Cell>`).join("")}</Row>${rows.map((row) => `<Row>${columns.map((name) => `<Cell><Data ss:Type="String">${xmlEscapeAttribute(String(row[name]?.value ?? row[name] ?? ""))}</Data></Cell>`).join("")}</Row>`).join("")}</Table></Worksheet></Workbook>`;
     authorize(api, c, "retaineddataexcel", "create");
     const id = randomUUID();
-    await api.change(() => api.store.transact(() => api.store.insertRow("retaineddataexcel", api.store.state.tables.retaineddataexcel ??= [], { retaineddataexcelid: id, name: "Retained data", excelcontent: Buffer.from(workbook).toString("base64") }), { isolated: true }));
+    await api.change(() => api.store.transact(() => api.store.insertRow("retaineddataexcel", (api.store.state.tables.retaineddataexcel ??= []), { retaineddataexcelid: id, name: "Retained data", excelcontent: Buffer.from(workbook).toString("base64") }), { isolated: true }));
     return reply(c, "ExportRetainedData", { ExportedExcelId: id });
   } });
 }

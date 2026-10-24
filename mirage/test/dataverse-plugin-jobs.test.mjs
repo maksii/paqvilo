@@ -36,7 +36,7 @@ function fixtureState() {
 
 // A store with the pipeline wired the way server.mjs wires it. With dataverse true the Dataverse API is started on it, which
 // seeds the asyncoperation and plugintracelog tables; the runner then writes system jobs.
-async function world({ dataverse, handlers, items = () => [], traceLevel = null, steps = [] }) {
+async function world({ dataverse, handlers, items: _items = () => [], traceLevel = null, steps = [] }) {
   const store = await new DataStore({ state: fixtureState() }).init();
   const diagnostics = [];
   const diagnostic = (entry) => diagnostics.push(entry);
@@ -98,7 +98,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
   it('asyncautodelete removes a succeeded job row only, and a failed one stays', async () => {
     const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: (args) => { if (args.record.contoso_name === 'fail') throw new Error('Invented'); } } }]);
     world_ = await world({ dataverse: true, handlers, steps: [step()] });
-    await world_.store.transact(() => world_.store.insertRow('sdkmessageprocessingstep', world_.store.state.tables.sdkmessageprocessingstep ??= [], { sdkmessageprocessingstepid: STEP, asyncautodelete: true }));
+    await world_.store.transact(() => world_.store.insertRow('sdkmessageprocessingstep', (world_.store.state.tables.sdkmessageprocessingstep ??= []), { sdkmessageprocessingstepid: STEP, asyncautodelete: true }));
     await world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'ok' }, { admin: true });
     await world_.runner.drain();
     assert.equal(world_.store.tableRows('asyncoperation').length, 0);

@@ -46,7 +46,7 @@ export async function importSolutionOperationSources(layers, website) {
         try {
           const url = new URL(String(field('flowapiurl') ?? ''), 'http://local.invalid');
           if (url.origin === 'http://local.invalid' && /^\/_api\/cloudflow\/v1\.0\/trigger\/[^/]+\/?$/.test(url.pathname)) route = url.pathname;
-        } catch {}
+        } catch { /* An invalid optional trigger URL has no callable local route. */ }
         result.cloudFlows.push({ ...record, path: route, processId: canonical(field('processid')) || null, roleIds: roleIds(field('adx_cloudflowconsumer_adx_webrole')) });
       }
     }

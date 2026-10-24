@@ -116,7 +116,7 @@ export async function createOrganizationRuntime(options) {
     // transaction. Otherwise each installer clones and checkpoints the complete
     // business dataset, even during an unchanged-state restart. No listener is
     // published until this commits; failed composition restores the old state.
-    return await options.store.transact(async () => organization = await composeOrganizationRuntime(options),
+    return await options.store.transact(async () => (organization = await composeOrganizationRuntime(options)),
       { isolated: true, cloneResult: false, skipSaveIfUnchanged: true });
   } catch (error) {
     if (organization) await organization.close().catch(() => {});
@@ -293,7 +293,7 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
 </Function>`);
   const installed = [];
   let closed;
-  const close = () => closed ??= (async () => {
+  const close = () => (closed ??= (async () => {
     const results = await Promise.allSettled(installed.map(extension => Promise.resolve().then(() => extension.close?.(api))));
     try { await recordHandlers.close?.(); } finally {
       changes.close();
@@ -301,7 +301,7 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     }
     const failures = results.filter(result => result.status === 'rejected').map(result => result.reason);
     if (failures.length) throw new AggregateError(failures, 'Organization extension cleanup failed.');
-  })();
+  })());
   try {
     api.diagnostic.hold();
     for (const extension of extensions) {

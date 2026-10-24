@@ -4,7 +4,7 @@ if(root){
   const form=root.querySelector('.chooser-search'),choice=root.querySelector('#idp-choose');
   const key=`paqvilo:idp-personas:${root.dataset.scope}`,read=()=>{try{const value=JSON.parse(localStorage.getItem(key)??'{}');return {pin:Array.isArray(value.pin)?value.pin.filter(v=>typeof v==='string').slice(0,100):[],recent:Array.isArray(value.recent)?value.recent.filter(v=>typeof v==='string').slice(0,5):[]};}catch{return {pin:[],recent:[]};}};
   const save=value=>{try{localStorage.setItem(key,JSON.stringify(value));}catch{/* optional preference */}};
-  let preferences=read(),controller,timer;
+  const preferences=read();let controller,timer;
   let dialog;
   const presentation=modal=>{
     if(modal&&!dialog){dialog=document.createElement('dialog');dialog.className='chooser-dialog-shell';root.before(dialog);dialog.append(root);dialog.addEventListener('cancel',event=>{event.preventDefault();presentation(false);});dialog.showModal();}

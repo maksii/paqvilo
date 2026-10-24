@@ -147,7 +147,7 @@ function localizedValues(value) {
     const parsed = JSON.parse(value);
     if (Array.isArray(parsed) && parsed.some((entry) => entry && "LCID" in entry))
       return parsed.map((entry) => ({ lcid: Number(entry.LCID), text: String(entry?.Value ?? "") }));
-  } catch {}
+  } catch { /* Keep the authored fallback when optional source evidence is unavailable. */ }
   return [{ lcid: null, text: value }];
 }
 
@@ -168,7 +168,7 @@ export async function collectSources(portal, { includeInactive = false } = {}) {
         const file = `${record._file.replace(/\.ya?ml$/i, "")}.${suffix}`;
         try {
           values = [{ lcid: null, text: await fs.readFile(file, "utf8"), file }];
-        } catch {}
+        } catch { /* Keep the authored fallback when optional source evidence is unavailable. */ }
       }
       if (!values.length) values = localizedValues(fieldOf(record, fieldName)).map((entry) => ({ ...entry, file: record._file }));
       for (const { lcid, text, file } of values) {
@@ -417,7 +417,7 @@ export async function inventoryPortal(portal, { includeInactive = false, include
   try {
     const page = portal.pages[0] ?? { id: "inventory", url: "/", title: "Inventory", name: "Inventory" };
     globals = Object.keys(renderer.contextForPage(page)).filter((key) => !key.startsWith("__"));
-  } catch {}
+  } catch { /* Keep the authored fallback when optional source evidence is unavailable. */ }
   const globalSet = new Set(globals.map((name) => name.toLowerCase()));
 
   const { sources, inactive } = await collectSources(portal, { includeInactive });

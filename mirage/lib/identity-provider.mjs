@@ -286,7 +286,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
     if (!jwt) return "The client assertion is not a JSON Web Token.";
     const key = (provider.clientKeys ?? []).find((item) => item.kid === jwt.header.kid);
     if (jwt.header.alg !== "RS256" || !key) return `The client assertion is not signed with a registered key (kid "${jwt.header.kid ?? ""}").`;
-    let signed = false;
+    let signed;
     try {
       signed = verify("sha256", Buffer.from(`${jwt.parts[0]}.${jwt.parts[1]}`), createPublicKey({ key, format: "jwk" }), Buffer.from(jwt.parts[2], "base64url"));
     } catch {

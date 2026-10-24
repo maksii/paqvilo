@@ -487,7 +487,7 @@ test("the provider's response is validated: state, nonce cookie, signature, repl
   await reject(await postBack(stranger, answer, idp.origin), /no matching OpenIdConnect\.nonce cookie/);
   // A token whose payload was changed fails its signature.
   const fields = hiddenFields(answer);
-  const [header, payload, signature] = fields.id_token.split(".");
+  const [header, , signature] = fields.id_token.split(".");
   const forged = Buffer.from(JSON.stringify({ ...claimsOf(fields.id_token), sub: "someone-else" })).toString("base64url");
   const tampered = answer.replace(fields.id_token, `${header}.${forged}.${signature}`);
   await reject(await postBack(browser, tampered, idp.origin), /The id_token signature is invalid\./);

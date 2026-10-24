@@ -62,7 +62,7 @@ export function startMcpServer({command, args = [], env = process.env, cwd, onSt
     },
     async listTools() { return (await request('tools/list', {}, 60000)).tools ?? []; },
     close() {
-      return closePromise ??= (async () => {
+      return (closePromise ??= (async () => {
         stop(new Error('MCP client closed.'));
         try { child.stdin.end(); } catch { /* already closed */ }
         let timer;
@@ -70,7 +70,7 @@ export function startMcpServer({command, args = [], env = process.env, cwd, onSt
           const exited = await Promise.race([exit.then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), 5000); })]);
           if (!exited) child.kill();
         } finally { clearTimeout(timer); }
-      })();
+      })());
     },
   };
 }

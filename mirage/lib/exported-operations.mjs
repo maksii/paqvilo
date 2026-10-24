@@ -121,7 +121,7 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
     },
     async http(message) {
       // The site's domain settings apply to the original host, before any local rewrite.
-      let original = null; try { original = new URL(message.url).hostname; } catch {}
+      let original = null; try { original = new URL(message.url).hostname; } catch { /* An invalid URL has no allowed original host and is rejected below. */ }
       if (!serverLogicDomainAllowed(portal, original)) {
         note({ code: 'SERVER_LOGIC_HTTP_DOMAIN_BLOCKED', severity: 'warning', host: original, message: 'HttpClient target is outside ServerLogic/AllowedDomains (or ServerLogic/AllowNetworkingToAllDomains is false).' });
         // A blocked outbound call answers 403 Forbidden (documented for disabled external calls, assumed for AllowedDomains).

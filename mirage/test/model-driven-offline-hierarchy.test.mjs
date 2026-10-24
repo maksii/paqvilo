@@ -23,7 +23,7 @@ test('a hierarchy operator is a gap only on a table without a hierarchical relat
 test('the download reads the organization metadata and runs the hierarchy filter on the hierarchical table only', async () => {
   const table = (name) => ({ entity: name, entitySet: `${name}s`, idColumn: `${name}id`, nameColumn: 'x_name', fields: { [`${name}id`]: { name: `${name}id`, isPrimaryId: true }, x_name: { name: 'x_name' } }, relationships: {} });
   const asked = [];
-  const webApi = async ({ method, path }) => {
+  const webApi = async ({ method: _method, path }) => {
     asked.push(decodeURIComponent(path));
     const meta = /EntityDefinitions\(LogicalName='(\w+)'\)\/OneToManyRelationships$/.exec(path);
     if (meta) return { status: 200, body: JSON.stringify({ value: meta[1] === 'x_node' ? selfHierarchy('x_node') : [] }) };

@@ -181,7 +181,7 @@ test("compareScenario verdicts, allowlist classification, second-live variance a
   const frameless = await compareScenario({ scenario, liveDir: dir("frame-live"), mirageDir: dir("frame-none"), allowlist: none });
   // An element entry applies inside a frame document too (its selector without the frame(<path>) prefix).
   const elementFile = dir("allow-element.json");
-  await fs.writeFile(elementFile, JSON.stringify({ version: 1, entries: [{ id: "cdn-link", scope: "element", pattern: "^body>link$", field: "^attributes\.href$", reason: "invented", proof: "platform-generated", evidence: "fixture" }] }));
+  await fs.writeFile(elementFile, JSON.stringify({ version: 1, entries: [{ id: "cdn-link", scope: "element", pattern: "^body>link$", field: "^attributes.href$", reason: "invented", proof: "platform-generated", evidence: "fixture" }] }));
   const elementAllow = await loadAllowlist(elementFile);
   const el = (selector, href) => ({ selector, tag: "link", classes: [], attributes: { href }, visible: false, disabled: false, readonly: false, required: false, value: "" });
   await writeFolder(dir("frame-el-live"));
@@ -298,7 +298,7 @@ test("evidence age: deltas a recorded live change explains are stale until its p
     return dir;
   };
   const file = path.join(root, "changes.json");
-  const change = { id: "admin-removed", since: "2026-10-15T18:48:00Z", affects: "^page/", signatures: [{ scope: "dom", field: "^attr\.data-editable-title$", location: "h1" }], proof: ["page/proof"], reason: "invented" };
+  const change = { id: "admin-removed", since: "2026-10-15T18:48:00Z", affects: "^page/", signatures: [{ scope: "dom", field: "^attr.data-editable-title$", location: "h1" }], proof: ["page/proof"], reason: "invented" };
   await fs.writeFile(file, JSON.stringify({ version: 1, changes: [change] }));
   const { changes } = await loadEvidenceChanges(file);
   const none = { entries: [] };

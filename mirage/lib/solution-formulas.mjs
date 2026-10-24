@@ -32,6 +32,7 @@ export function solutionFormulaResolver(documents, diagnostics) {
   return (entity, attribute, source, entityDir = entity) => {
     const reference = attribute.formulaDefinitionFileName;
     if (!reference || attribute.formulaDefinition) return attribute;
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
     const match = typeof reference === 'string' && !/[\x00-\x1f\x7f]/.test(reference)
       ? /^\/?Formulas\/([^/\\:]+\.ya?ml)$/i.exec(reference) : null;
     const scopedKey = match ? `${entityDir.toLowerCase()}/${match[1].toLowerCase()}` : null;

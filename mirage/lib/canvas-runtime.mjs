@@ -440,7 +440,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
       },
     };
   }
-  function submit(form, where) {
+  function submit(form, _where) {
     const mode = read(form, 'Mode');
     if (mode === 'View') return; // SubmitForm has no effect in FormMode.View
     if (!read(form, 'Valid')) {

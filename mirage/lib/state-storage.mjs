@@ -89,7 +89,7 @@ export class StateStorage {
     if (prefix === MAGIC) {
       this.journal = true;
       state = { tables: {} };
-      let hash = createHash('sha256'), bytes = 0, pending = null, committed = false, tail = false;
+      const hash = createHash('sha256'); let bytes = 0, pending = null, committed = false, tail = false;
       const size = Number((await stat(this.file)).size);
       const stream = createReadStream(this.file, { encoding: 'utf8' });
       const lines = createInterface({ input: stream, crlfDelay: Infinity });

@@ -184,11 +184,11 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     return fail('Unavailable', message, azure);
   }
 
-  const ensureContainer = () => containerReady ??= (async () => {
+  const ensureContainer = () => (containerReady ??= (async () => {
     const response = await send('PUT', `${endpoint()}/${container}?restype=container`);
     await response.body?.cancel().catch(() => {});
     if (response.status !== 201 && response.headers.get('x-ms-error-code') !== 'ContainerAlreadyExists') throw await failure(response, 'Create Container');
-  })().catch(error => { containerReady = null; throw error; });
+  })().catch(error => { containerReady = null; throw error; }));
 
   const conditions = ({ ifMatch, ifNoneMatch } = {}) => ({ ...(ifMatch !== undefined ? { 'if-match': ifMatch } : {}), ...(ifNoneMatch !== undefined ? { 'if-none-match': ifNoneMatch } : {}) });
   const metadataHeaders = (metadata = {}) => {

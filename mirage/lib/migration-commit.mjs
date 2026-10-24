@@ -71,7 +71,7 @@ export async function commitMigration({
         await fs.rename(rollback, manifestFile);
       } else await fs.rm(manifestFile, { force: true });
     } catch (rollbackError) {
-      throw new Error(`${cause.message}; asset manifest rollback failed: ${rollbackError.message}`, { cause });
+      throw new AggregateError([cause, rollbackError], `${cause.message}; asset manifest rollback failed: ${rollbackError.message}`, { cause: rollbackError });
     }
     throw cause;
   }

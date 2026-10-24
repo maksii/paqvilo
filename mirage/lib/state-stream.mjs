@@ -56,7 +56,7 @@ async function parseLargeJsonStream(chunks) {
         continue;
       }
       if (char === '"') { if (token) fail(); quoted = true; token = char; continue; }
-      if (!/[\s{}\[\],:]/.test(char)) { token += char; continue; }
+      if (!/[\s{}[\],:]/.test(char)) { token += char; continue; }
       scalar();
       if (/\s/.test(char)) continue;
       const frame = stack.at(-1);

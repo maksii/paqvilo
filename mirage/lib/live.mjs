@@ -10,6 +10,7 @@ export function validateLivePath(pathname) {
     typeof pathname !== "string" ||
     !pathname.startsWith("/") ||
     pathname.startsWith("//") ||
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
     /[\\\u0000-\u001f\u007f#]/.test(pathname)
   )
     throw fail(
@@ -27,6 +28,7 @@ export function validateLivePath(pathname) {
       decoded.includes("\\") ||
       decoded.startsWith("//") ||
       decoded.split("/").some((s) => s === ".." || s === ".") ||
+      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
       /[\u0000-\u001f\u007f?#]/.test(decoded)
     )
       throw fail(
@@ -121,6 +123,7 @@ function checkedContentType(value) {
   if (
     typeof value !== "string" ||
     value.length > 512 ||
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
     /[\u0000-\u001f\u007f]/.test(value) ||
     !/^[-\w!#$&^_.+]+\/[-\w!#$&^_.+]+(?:\s*;.*)?$/.test(value)
   )
@@ -252,9 +255,11 @@ function safeResponseHeaders(headers) {
   ])
     if (
       typeof headers[name] === "string" &&
+      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
       !/[\r\n\u0000]/.test(headers[name])
     )
       output[name] = headers[name];
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (/[\r\n\u0000]/.test(output["content-type"]))
     throw fail("Invalid live response Content-Type.");
   return output;
@@ -410,6 +415,7 @@ export class LiveBridge {
         if (
           typeof value !== "string" ||
           value.length > 512 ||
+          // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
           /[\u0000-\u001f\u007f]/.test(value)
         )
           throw fail("Invalid live conditional request header.", 400);
@@ -430,6 +436,7 @@ export class LiveBridge {
       if (
         typeof token !== "string" ||
         token.length > 16384 ||
+        // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
         /[\r\n\u0000]/.test(token)
       )
         throw fail("The live portal issued an invalid verification token.");

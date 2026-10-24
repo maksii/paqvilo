@@ -32,7 +32,7 @@ export function resolveLocalOverrides(options = {}, projectRoot = process.cwd())
   const assets = [], root = fs.realpathSync(projectRoot);
   for (const [kind, paths] of Object.entries(head)) for (const name of paths) {
     let file;
-    try { file = fs.realpathSync(path.resolve(root, name)); } catch (error) { throw new Error(`Local head asset ${name} cannot be read (${error.code ?? 'error'})`); }
+    try { file = fs.realpathSync(path.resolve(root, name)); } catch (error) { throw new Error(`Local head asset ${name} cannot be read (${error.code ?? 'error'})`, { cause: error }); }
     const relative = path.relative(root, file);
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.statSync(file).isFile())
       throw new Error('Local head assets must stay inside the project');

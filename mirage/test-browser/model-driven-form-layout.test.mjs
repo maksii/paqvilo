@@ -38,10 +38,10 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
   assert.equal(await page.getByRole('heading', { name: 'Ownership', exact: true }).count(), 0);
   assert.equal(await page.getByLabel('x_left', { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(), 1);
-  await page.evaluate(() => Xrm.Page.getControl('x_left').setDisabled(false));
+  await page.evaluate(() => window.Xrm.Page.getControl('x_left').setDisabled(false));
   assert.equal(await page.getByLabel('x_left', { exact: true }).isEnabled(), true);
   assert.equal(await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(), 0, 'unlocking a source presentation flag removes its native lock');
-  await page.evaluate(() => Xrm.Page.getControl('x_left').setDisabled(true));
+  await page.evaluate(() => window.Xrm.Page.getControl('x_left').setDisabled(true));
   assert.equal(await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(), 1);
   assert.equal(await page.getByLabel('x_hidden', { exact: true }).isVisible(), false);
   assert.equal(await page.getByLabel('x_right', { exact: true }).locator('..').locator('label').getAttribute('class'), 'sr-only');
@@ -101,10 +101,10 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
   assert.equal(wideMatrix.email.top, wideMatrix.phone.top); assert.ok(wideMatrix.phone.left > wideMatrix.email.left + wideMatrix.email.width * 1.9);
   assert.ok(Math.abs(wideMatrix.summary.top - wideMatrix.phone.top - 48) <= 1, 'empty source rows collapse instead of leaving an implicit grid gap');
   assert.equal(wideMatrix.spacerVisible, 1, 'only the mixed field/spacer row reserves a horizontal hole');
-  await page.evaluate(() => Xrm.Page.getControl('x_third').setVisible(false));
+  await page.evaluate(() => window.Xrm.Page.getControl('x_third').setVisible(false));
   const hiddenMatrix = await matrixShape();
   assert.ok(hiddenMatrix.email.top < wideMatrix.email.top, 'a script-hidden row collapses without discarding its live control');
-  await page.evaluate(() => Xrm.Page.getControl('x_third').setVisible(true));
+  await page.evaluate(() => window.Xrm.Page.getControl('x_third').setVisible(true));
   const restoredMatrix = await matrixShape();
   assert.equal(restoredMatrix.email.top, wideMatrix.email.top); assert.equal(restoredMatrix.measurement.top, wideMatrix.measurement.top);
   await page.setViewportSize({ width:1100, height:900 });

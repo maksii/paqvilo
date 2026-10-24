@@ -75,7 +75,7 @@ test(
       .waitFor();
     await page.waitForFunction(() =>
       ["script-src-elem", "connect-src", "frame-src"].every((d) =>
-        policyViolations.includes(d),
+        window.policyViolations.includes(d),
       ),
     );
     assert.deepEqual(remote, [

@@ -63,7 +63,7 @@ async function fixture(t) {
 }
 
 test('state actions post the page back without the editable values and re-render the other action', async t => {
-  const { app, page, errors, posts, postback } = await fixture(t);
+  const { app, page, errors, posts } = await fixture(t);
   await page.goto(`${app.url}/?row=${ID}`);
   await page.locator('#title').fill('Not saved by the action');
   // The action bar (entityform.js) posts the record reference as JSON to /_services/action-* and

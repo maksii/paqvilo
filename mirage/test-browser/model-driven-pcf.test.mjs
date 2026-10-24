@@ -52,29 +52,29 @@ async function fixture(t) {
 test('trusted standard PCF uses compiled exports, typed context, dirty outputs and deterministic cleanup', async t => {
   const { page, errors, scriptCount } = await fixture(t);
   await page.evaluate(() => { const style = document.createElement('style'); style.textContent = '.Input{width:20px}'; document.head.append(style); });
-  await page.evaluate(() => mount());
+  await page.evaluate(() => window.mount());
   assert.deepEqual(await page.locator('.model-driven-pcf').evaluate(element => ['customControl', 'Invented', 'Input', 'Invented.Input'].map(name => element.classList.contains(name))), [true, true, true, true]);
   assert.ok(await page.locator('.model-driven-pcf').evaluate(element => element.getBoundingClientRect().width > 100), 'native host width must fill the field when a constructor class has checkbox-sized CSS');
   await page.getByLabel('PCF value').fill('Changed');
-  assert.equal(await page.evaluate(() => control.read()), 'Changed');
-  assert.equal(await page.evaluate(() => changes > 0), true);
-  assert.equal(await page.evaluate(() => control.supported), true);
-  assert.equal(await page.evaluate(() => control.element.dataset.pcfState), 'ready');
-  assert.equal(await page.evaluate(() => pcfContext.parameters.prefix.raw), 3);
-  assert.equal(await page.evaluate(() => pcfContext.parameters.value.attributes.LogicalName), 'x_name');
-  await page.evaluate(() => control.setValue('Script value'));
+  assert.equal(await page.evaluate(() => window.control.read()), 'Changed');
+  assert.equal(await page.evaluate(() => window.changes > 0), true);
+  assert.equal(await page.evaluate(() => window.control.supported), true);
+  assert.equal(await page.evaluate(() => window.control.element.dataset.pcfState), 'ready');
+  assert.equal(await page.evaluate(() => window.pcfContext.parameters.prefix.raw), 3);
+  assert.equal(await page.evaluate(() => window.pcfContext.parameters.value.attributes.LogicalName), 'x_name');
+  await page.evaluate(() => window.control.setValue('Script value'));
   await page.waitForFunction(() => document.querySelector('input').value === 'Script value');
-  await page.evaluate(() => control.setDisabled(true));
+  await page.evaluate(() => window.control.setDisabled(true));
   await page.getByLabel('PCF value').isDisabled().then(value => assert.equal(value, true));
-  assert.equal(await page.evaluate(() => control.element.inert), true);
-  assert.equal(await page.evaluate(() => control.element.getAttribute('aria-disabled')), 'true');
+  assert.equal(await page.evaluate(() => window.control.element.inert), true);
+  assert.equal(await page.evaluate(() => window.control.element.getAttribute('aria-disabled')), 'true');
   // A component ignoring isControlDisabled cannot mutate the bound host value.
   await page.evaluate(() => { document.querySelector('input').value='Bypass'; document.querySelector('input').dispatchEvent(new Event('input')); });
-  assert.equal(await page.evaluate(() => control.read()), 'Script value');
-  await page.evaluate(() => { control.destroy();control.destroy(); });
-  assert.equal(await page.evaluate(() => lifecycle.filter(event=>event==='destroy').length), 1);
+  assert.equal(await page.evaluate(() => window.control.read()), 'Script value');
+  await page.evaluate(() => { window.control.destroy();window.control.destroy(); });
+  assert.equal(await page.evaluate(() => window.lifecycle.filter(event=>event==='destroy').length), 1);
   assert.equal(await page.locator('input').count(), 0);
-  await page.evaluate(() => mount());
+  await page.evaluate(() => window.mount());
   assert.equal(scriptCount(), 1); // Constructor resources load once; each form owns its instance.
   assert.deepEqual(errors, []);
 });
@@ -82,14 +82,14 @@ test('trusted standard PCF uses compiled exports, typed context, dirty outputs a
 test('PCF date-only raw values preserve local calendar dates and choices expose exported formatted labels', async t => {
   const { page, errors } = await fixture(t);
   const values = await page.evaluate(async () => {
-    const definition = structuredClone(extensions.pcf.controls[0]); definition.properties = [{ name: 'value', ofType: 'DateAndTime.DateOnly', usage: 'bound' }];
-    control = render({ ...field, type: 'date', format: 'dateonly', dateTimeBehavior: 'DateOnly' }, '2026-06-15', { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
-    document.querySelector('main').append(control.element); await control.ready;
-    const date = pcfContext.parameters.value.raw, calendar = [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours()]; control.destroy();
+    const definition = structuredClone(window.extensions.pcf.controls[0]); definition.properties = [{ name: 'value', ofType: 'DateAndTime.DateOnly', usage: 'bound' }];
+    window.control = window.render({ ...window.field, type: 'date', format: 'dateonly', dateTimeBehavior: 'DateOnly' }, '2026-06-15', { ...window.options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
+    document.querySelector('main').append(window.control.element); await window.control.ready;
+    const date = window.pcfContext.parameters.value.raw, calendar = [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours()]; window.control.destroy();
     definition.properties = [{ name: 'value', ofType: 'OptionSet', usage: 'bound' }];
-    control = render({ ...field, type: 'number', options: [{ value: 7, label: 'Exported label' }] }, 7, { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
-    document.querySelector('main').append(control.element); await control.ready;
-    return { calendar, formatted: pcfContext.parameters.value.formatted };
+    window.control = window.render({ ...window.field, type: 'number', options: [{ value: 7, label: 'Exported label' }] }, 7, { ...window.options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
+    document.querySelector('main').append(window.control.element); await window.control.ready;
+    return { calendar, formatted: window.pcfContext.parameters.value.formatted };
   });
   assert.deepEqual(values, { calendar: [2026, 6, 15, 0], formatted: 'Exported label' }); assert.deepEqual(errors, []);
 });
@@ -99,11 +99,11 @@ test('namespace and registerControl compiled exports use the same bounded standa
   for (const file of ['namespace', 'registered']) {
     await page.evaluate(async file => {
       document.querySelector('main').replaceChildren();
-      await mount({ ...options, clientExtensions: { trusted: true, pcf: { controls: [{ ...extensions.pcf.controls[0], resources: { code: [`/${file}.js`] } }] } } });
-      control.destroy(); delete window.Invented;
+      await window.mount({ ...window.options, clientExtensions: { trusted: true, pcf: { controls: [{ ...window.extensions.pcf.controls[0], resources: { code: [`/${file}.js`] } }] } } });
+      window.control.destroy(); delete window.Invented;
     }, file);
   }
-  assert.equal(await page.evaluate(() => lifecycle.filter(event=>event==='init').length), 2);
+  assert.equal(await page.evaluate(() => window.lifecycle.filter(event=>event==='init').length), 2);
   assert.equal(scriptCount(), 2); assert.deepEqual(errors, []);
 });
 
@@ -112,15 +112,15 @@ test('PCF unsupported features, property types, missing bindings and incompatibl
   for (const [kind, reason] of [['feature', /host features that are not implemented locally: Device\.captureImage/], ['type', /Lookup\.Simple/], ['required', /required PCF property missing has no exported binding/], ['column', /incompatible with column x_name/]]) {
     await page.evaluate(async kind => {
       document.querySelector('main').replaceChildren();
-      const definition = structuredClone(extensions.pcf.controls[0]);
+      const definition = structuredClone(window.extensions.pcf.controls[0]);
       if (kind === 'feature') definition.features = [{ name: 'Device.captureImage', required: 'true' }];
       if (kind === 'type') definition.properties[0].ofType = 'Lookup.Simple';
       if (kind === 'required') definition.properties.push({ name: 'missing', ofType: 'SingleLine.Text', usage: 'input', required: 'true' });
-      const currentField = kind === 'column' ? { ...field, type: 'number' } : field;
-      control = render(currentField, 'Initial', { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
-      document.querySelector('main').append(control.element); await control.ready;
+      const currentField = kind === 'column' ? { ...window.field, type: 'number' } : window.field;
+      window.control = window.render(currentField, 'Initial', { ...window.options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
+      document.querySelector('main').append(window.control.element); await window.control.ready;
     }, kind);
-    assert.equal(await page.evaluate(() => control.supported), false, kind);
+    assert.equal(await page.evaluate(() => window.control.supported), false, kind);
     assert.match(await page.locator('main').innerText(), reason);
   }
   assert.equal(scriptCount(), 0); assert.deepEqual(errors, []);
@@ -128,44 +128,44 @@ test('PCF unsupported features, property types, missing bindings and incompatibl
 
 test('PCF optional Web API uses the configured local staff adapter and unsupported helpers reject explicitly', async t => {
   const { page, errors } = await fixture(t);
-  await page.evaluate(() => mount({ ...options, webAPI: () => ({ retrieveRecord: async (entity, id) => ({ entity, id, value: 'local' }) }) }));
-  assert.deepEqual(await page.evaluate(() => pcfContext.webAPI.retrieveRecord('x_item', 'invented')), { entity: 'x_item', id: 'invented', value: 'local' });
-  assert.match(await page.evaluate(async () => { try { await pcfContext.webAPI.execute({}); } catch (error) { return error.message; } }), /not supported/);
-  assert.match(await page.evaluate(() => { try { pcfContext.utils.hasEntityPrivilege('x_item', 1); } catch (error) { return error.message; } }), /not supported/);
-  await page.evaluate(() => control.destroy());
-  assert.match(await page.evaluate(async () => { try { await pcfContext.webAPI.retrieveRecord('x_item', 'invented'); } catch (error) { return error.message; } }), /not supported/);
+  await page.evaluate(() => window.mount({ ...window.options, webAPI: () => ({ retrieveRecord: async (entity, id) => ({ entity, id, value: 'local' }) }) }));
+  assert.deepEqual(await page.evaluate(() => window.pcfContext.webAPI.retrieveRecord('x_item', 'invented')), { entity: 'x_item', id: 'invented', value: 'local' });
+  assert.match(await page.evaluate(async () => { try { await window.pcfContext.webAPI.execute({}); } catch (error) { return error.message; } }), /not supported/);
+  assert.match(await page.evaluate(() => { try { window.pcfContext.utils.hasEntityPrivilege('x_item', 1); } catch (error) { return error.message; } }), /not supported/);
+  await page.evaluate(() => window.control.destroy());
+  assert.match(await page.evaluate(async () => { try { await window.pcfContext.webAPI.retrieveRecord('x_item', 'invented'); } catch (error) { return error.message; } }), /not supported/);
   assert.deepEqual(errors, []);
 });
 
 test('required PCF WebAPI feature admits the configured staff adapter and rejects missing or unsupported host features', async t => {
   const { page, errors, scriptCount } = await fixture(t);
   await page.evaluate(async () => {
-    const definition = structuredClone(extensions.pcf.controls[0]); definition.features = [{ name: 'WebAPI', required: 'true' }];
-    window.requiredOptions = { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } };
-    await mount(requiredOptions);
+    const definition = structuredClone(window.extensions.pcf.controls[0]); definition.features = [{ name: 'WebAPI', required: 'true' }];
+    window.requiredOptions = { ...window.options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } };
+    await window.mount(window.requiredOptions);
   });
-  assert.equal(await page.evaluate(() => control.supported), false); assert.equal(scriptCount(), 0);
+  assert.equal(await page.evaluate(() => window.control.supported), false); assert.equal(scriptCount(), 0);
   await page.evaluate(async () => {
-    control.destroy(); window.webApiCalls = [];
-    await mount({ ...requiredOptions, webAPI: () => ({ retrieveMultipleRecords: async (...args) => { webApiCalls.push(args); return { entities: [{ x_name: 'Local only' }] }; } }) });
+    window.control.destroy(); window.webApiCalls = [];
+    await window.mount({ ...window.requiredOptions, webAPI: () => ({ retrieveMultipleRecords: async (...args) => { window.webApiCalls.push(args); return { entities: [{ x_name: 'Local only' }] }; } }) });
   });
-  assert.equal(await page.evaluate(() => control.supported), true);
-  assert.deepEqual(await page.evaluate(() => pcfContext.webAPI.retrieveMultipleRecords('x_item', '?$select=x_name&$filter=x_quantity gt 1')), { entities: [{ x_name: 'Local only' }] });
-  assert.deepEqual(await page.evaluate(() => webApiCalls), [['x_item', '?$select=x_name&$filter=x_quantity gt 1']]);
-  await page.evaluate(() => control.destroy());
-  assert.match(await page.evaluate(async () => { try { await pcfContext.webAPI.retrieveMultipleRecords('x_item'); } catch (error) { return error.message; } }), /not supported/);
+  assert.equal(await page.evaluate(() => window.control.supported), true);
+  assert.deepEqual(await page.evaluate(() => window.pcfContext.webAPI.retrieveMultipleRecords('x_item', '?$select=x_name&$filter=x_quantity gt 1')), { entities: [{ x_name: 'Local only' }] });
+  assert.deepEqual(await page.evaluate(() => window.webApiCalls), [['x_item', '?$select=x_name&$filter=x_quantity gt 1']]);
+  await page.evaluate(() => window.control.destroy());
+  assert.match(await page.evaluate(async () => { try { await window.pcfContext.webAPI.retrieveMultipleRecords('x_item'); } catch (error) { return error.message; } }), /not supported/);
   assert.deepEqual(errors, []);
 });
 
 test('PCF trust, unsupported contracts and remote URLs fail visibly without executing code', async t => {
   const { page, errors, scriptCount } = await fixture(t);
-  await page.evaluate(() => mount({ ...options, clientExtensions: { ...extensions, trusted: false } }));
+  await page.evaluate(() => window.mount({ ...window.options, clientExtensions: { ...window.extensions, trusted: false } }));
   assert.match(await page.locator('main').innerText(), /Trust local Solution code/);
-  assert.equal(await page.evaluate(() => control.supported), false);
+  assert.equal(await page.evaluate(() => window.control.supported), false);
   assert.equal(scriptCount(), 0);
-  await page.evaluate(() => { document.querySelector('main').replaceChildren(); return mount({ ...options, clientExtensions: { trusted: true, pcf: { controls: [{ ...extensions.pcf.controls[0], controlType: 'virtual' }] } } }); });
+  await page.evaluate(() => { document.querySelector('main').replaceChildren(); return window.mount({ ...window.options, clientExtensions: { trusted: true, pcf: { controls: [{ ...window.extensions.pcf.controls[0], controlType: 'virtual' }] } } }); });
   assert.match(await page.locator('main').innerText(), /requires platform libraries/);
-  await page.evaluate(() => { document.querySelector('main').replaceChildren(); return mount({ ...options, clientExtensions: { trusted: true, pcf: { controls: [{ ...extensions.pcf.controls[0], resources: { code: ['https://example.invalid/control.js'] } }] } } }); });
+  await page.evaluate(() => { document.querySelector('main').replaceChildren(); return window.mount({ ...window.options, clientExtensions: { trusted: true, pcf: { controls: [{ ...window.extensions.pcf.controls[0], resources: { code: ['https://example.invalid/control.js'] } }] } } }); });
   assert.match(await page.locator('main').innerText(), /local Mirage origin/);
   assert.equal(scriptCount(), 0);
   assert.deepEqual(errors, []);
@@ -173,22 +173,22 @@ test('PCF trust, unsupported contracts and remote URLs fail visibly without exec
 
 test('invalid PCF output preserves the column and destroys the failing component', async t => {
   const { page, errors } = await fixture(t);
-  await page.evaluate(() => mount());
+  await page.evaluate(() => window.mount());
   await page.getByLabel('PCF value').fill('This exceeds the maximum field length');
-  assert.equal(await page.evaluate(() => control.read()), 'Initial');
-  assert.equal(await page.evaluate(() => control.supported), false);
+  assert.equal(await page.evaluate(() => window.control.read()), 'Initial');
+  assert.equal(await page.evaluate(() => window.control.supported), false);
   assert.match(await page.locator('main').innerText(), /exceeds the column length/);
-  assert.equal(await page.evaluate(() => lifecycle.filter(event=>event==='destroy').length), 1);
+  assert.equal(await page.evaluate(() => window.lifecycle.filter(event=>event==='destroy').length), 1);
   assert.deepEqual(errors, []);
 });
 
 test('a disposed form cannot initialize a component after asynchronous resources finish', async t => {
   const { page, errors } = await fixture(t);
   await page.evaluate(async () => {
-    const delayed = { ...extensions, pcf: { controls: [{ ...extensions.pcf.controls[0], resources: { code: ['/slow.js'], exports: ['InventedExports'] } }] } };
-    control = render(field, 'Initial', { ...options, clientExtensions: delayed }); document.querySelector('main').append(control.element); control.destroy(); await control.ready;
+    const delayed = { ...window.extensions, pcf: { controls: [{ ...window.extensions.pcf.controls[0], resources: { code: ['/slow.js'], exports: ['InventedExports'] } }] } };
+    window.control = window.render(window.field, 'Initial', { ...window.options, clientExtensions: delayed }); document.querySelector('main').append(window.control.element); window.control.destroy(); await window.control.ready;
   });
-  assert.deepEqual(await page.evaluate(() => lifecycle), []);
+  assert.deepEqual(await page.evaluate(() => window.lifecycle), []);
   assert.equal(await page.locator('input').count(), 0);
   assert.deepEqual(errors, []);
 });
@@ -200,17 +200,17 @@ test('disposal stops later PCF resource loads and retained contexts cannot resta
   const resumed = new Promise(resolve => { release = resolve; });
   await page.route('**/slow.css', async route => { requested(); await resumed; await route.fulfill({ status: 200, contentType: 'text/css', body: '.invented{}' }); });
   await page.evaluate(() => {
-    const delayed = { ...extensions, pcf: { controls: [{ ...extensions.pcf.controls[0], resources: { css: ['/slow.css'], code: ['/bundle.js'], exports: ['InventedExports'] } }] } };
-    control = render(field, 'Initial', { ...options, clientExtensions: delayed }); document.querySelector('main').append(control.element);
+    const delayed = { ...window.extensions, pcf: { controls: [{ ...window.extensions.pcf.controls[0], resources: { css: ['/slow.css'], code: ['/bundle.js'], exports: ['InventedExports'] } }] } };
+    window.control = window.render(window.field, 'Initial', { ...window.options, clientExtensions: delayed }); document.querySelector('main').append(window.control.element);
   });
-  await started; await page.evaluate(() => control.destroy()); release(); await page.evaluate(() => control.ready);
+  await started; await page.evaluate(() => window.control.destroy()); release(); await page.evaluate(() => window.control.ready);
   assert.equal(scriptCount(), 0, 'leaving during CSS loading must not execute the next component script');
-  assert.deepEqual(await page.evaluate(() => lifecycle), []);
+  assert.deepEqual(await page.evaluate(() => window.lifecycle), []);
   const observers = await page.evaluate(async () => {
     window.observerCreates = 0; window.observerDisconnects = 0;
-    window.ResizeObserver = class { constructor() { observerCreates++; } observe() {} disconnect() { observerDisconnects++; } };
-    await mount(); control.destroy(); pcfContext.mode.trackContainerResize(true);
-    return { created: observerCreates, disconnected: observerDisconnects };
+    window.ResizeObserver = class { constructor() { window.observerCreates++; } observe() {} disconnect() { window.observerDisconnects++; } };
+    await window.mount(); window.control.destroy(); window.pcfContext.mode.trackContainerResize(true);
+    return { created: window.observerCreates, disconnected: window.observerDisconnects };
   });
   assert.deepEqual(observers, { created: 1, disconnected: 1 });
   assert.deepEqual(errors, []);
@@ -235,7 +235,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   await page.getByLabel('PCF checkbox').focus();
   assert.notEqual(await page.getByLabel('PCF checkbox').evaluate(element => getComputedStyle(element).outlineColor), 'rgb(0, 120, 212)', 'the shell focus rule must not restyle component inputs');
   const session = await (await page.request.get(origin + '/_sim/api/dataverse/session')).json();
-  assert.deepEqual(await page.evaluate(() => ({ id: pcfContext.userSettings.userId, name: pcfContext.userSettings.userName })), { id: session.current.principalId, name: session.current.name });
+  assert.deepEqual(await page.evaluate(() => ({ id: window.pcfContext.userSettings.userId, name: window.pcfContext.userSettings.userName })), { id: session.current.principalId, name: session.current.name });
   await page.getByLabel('PCF value').fill('PCF updated');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   try { await page.waitForFunction(() => document.querySelector('h1')?.textContent === 'PCF updated' || !document.querySelector('#notice')?.hidden, null, { timeout: 5000 }); }
@@ -250,7 +250,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   await page.getByLabel('Organization staff', { exact: true }).selectOption(staff.systemuserid);
   await page.getByRole('button', { name: 'Use identity', exact: true }).click();
   await page.waitForFunction(id => window.pcfContext?.userSettings.userId === id, staff.systemuserid);
-  assert.deepEqual(await page.evaluate(() => ({ id: pcfContext.userSettings.userId, name: pcfContext.userSettings.userName })), { id: staff.systemuserid, name: 'Invented component staff' });
+  assert.deepEqual(await page.evaluate(() => ({ id: window.pcfContext.userSettings.userId, name: window.pcfContext.userSettings.userName })), { id: staff.systemuserid, name: 'Invented component staff' });
   assert.deepEqual(errors, []);
 });
 
@@ -259,15 +259,15 @@ test('a virtual PCF mounts through project-supplied React platform libraries and
   const virtual = { name: 'publisher.InventedVirtual', constructor: 'Invented.Virtual', controlType: 'virtual', libraries: [{ name: 'React', version: '16.14.0' }],
     properties: [{ name: 'value', ofType: 'SingleLine.Text', usage: 'bound' }], resources: { code: ['/virtual.js'] } };
   const platformLibraries = [{ name: 'React', version: '16.14.0', url: '/react.js' }, { name: 'ReactDOM', version: '16.14.0', url: '/reactdom.js' }];
-  await page.evaluate(virtual => mount({ pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } }, clientExtensions: { trusted: true, pcf: { controls: [virtual] } } }), virtual);
+  await page.evaluate(virtual => window.mount({ pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } }, clientExtensions: { trusted: true, pcf: { controls: [virtual] } } }), virtual);
   assert.match(await page.locator('main').innerText(), /requires platform libraries \(React 16\.14\.0\)\. Supply React@16\.14\.0\.js, ReactDOM@16\.14\.0\.js/);
-  await page.evaluate(([virtual, platformLibraries]) => { document.querySelector('main').replaceChildren(); return mount({ pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } }, clientExtensions: { trusted: true, pcf: { controls: [virtual], platformLibraries } } }); }, [virtual, platformLibraries]);
+  await page.evaluate(([virtual, platformLibraries]) => { document.querySelector('main').replaceChildren(); return window.mount({ pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } }, clientExtensions: { trusted: true, pcf: { controls: [virtual], platformLibraries } } }); }, [virtual, platformLibraries]);
   assert.equal(await page.locator('.model-driven-pcf').textContent(), 'virtual:Initial');
   assert.equal(await page.evaluate(() => window.virtualInit), 3, 'a virtual component gets no container');
-  assert.deepEqual(await page.evaluate(() => [virtualSettings.languageId, virtualSettings.securityRoles]), [1033, []]);
-  await page.evaluate(() => control.setValue('Changed'));
+  assert.deepEqual(await page.evaluate(() => [window.virtualSettings.languageId, window.virtualSettings.securityRoles]), [1033, []]);
+  await page.evaluate(() => window.control.setValue('Changed'));
   await page.waitForFunction(() => document.querySelector('.model-driven-pcf').textContent === 'virtual:Changed');
-  await page.evaluate(() => control.destroy());
+  await page.evaluate(() => window.control.destroy());
   assert.equal(await page.evaluate(() => window.unmounts), 1);
   assert.deepEqual(errors, []);
 });

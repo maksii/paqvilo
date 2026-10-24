@@ -276,7 +276,7 @@ function metadataDocument(feeds, context) {
   const types = [];
   const sets = [];
   for (const feed of feeds.values()) {
-    let columns = [];
+    let columns;
     let idColumn = `${feed.entity}id`;
     try {
       const view = feedView(feed, context.metadata);

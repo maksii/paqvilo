@@ -188,7 +188,7 @@ test("entity grid service returns the native paging, search and layout-only sort
   assert.deepEqual(layout.Columns.map((column) => [column.LogicalName, column.Name]), [["name", "Account name"], ["city", "City"]]);
   const secure = layout.Base64SecureConfiguration;
   assert.equal((await post("entity-grid-data.json", gridRequest(secure), {})).status, 403);
-  let response = await post("entity-grid-data.json", gridRequest(secure));
+  const response = await post("entity-grid-data.json", gridRequest(secure));
   assert.equal(response.status, 200);
   // The service answers with the page no-cache policy and frame confinement.
   assert.deepEqual(["cache-control", "pragma", "expires", "x-frame-options"].map((name) => response.headers.get(name)), ["no-cache, no-store, must-revalidate", "no-cache", "-1", "SAMEORIGIN"]);

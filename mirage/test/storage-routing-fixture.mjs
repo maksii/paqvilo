@@ -61,14 +61,14 @@ export function localRouter(root, routes) {
 export async function routingApi(t, { storage = true, routes, root, file, state, before = () => {} } = {}) {
   root ??= await tempRoot(t);
   let provider, server, closing;
-  const close = () => closing ??= (async () => {
+  const close = () => (closing ??= (async () => {
     const failures = [];
     for (const resource of [server, provider]) {
       try { await resource?.close(); } catch (error) { failures.push(error); }
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Storage fixture API/provider cleanup failed.");
-  })().catch(error => { closing = null; throw error; });
+  })().catch(error => { closing = null; throw error; }));
   ownedFixture(t).add(close);
   process.env[SECRET_VAR] = "storage-routing-fixture-secret";
   const local = storage ? localRouter(root, routes) : { provider: null, router: null };

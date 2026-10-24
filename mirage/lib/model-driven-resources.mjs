@@ -69,7 +69,7 @@ async function layerEntries(layer, budget) {
         // Index physical names first. Binary images and unrelated WebResources do
         // not enter memory; only metadata and declared JS/CSS assets are read.
         const indexed = { name, file };
-        indexed.load = async () => indexed.data ??= await readBudgetedFile(file, root, budget);
+        indexed.load = async () => (indexed.data ??= await readBudgetedFile(file, root, budget));
         result.push(indexed);
       }
     }

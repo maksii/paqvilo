@@ -9,10 +9,7 @@ import {
   validateManagedControlDefinition,
 } from "./managed-controls.mjs";
 import { clientLocalSelfOriginRuntime } from "./local-self-origin.mjs";
-import {
-  clientDateControlsRuntime,
-  datePickerFormat,
-} from "./date-controls.mjs";
+import { clientDateControlsRuntime } from "./date-controls.mjs";
 import {
   buildLayout,
   actionLinks,
@@ -527,7 +524,7 @@ const fieldOf = (record, name) => portalField(record ?? {}, name);
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ""));
 const base64Json = (value) => Buffer.from(JSON.stringify(value)).toString("base64");
 
-const CHECKBOX_CLASS = "b0c6723a-8503-4fd7-bb28-c8a06ac933c2";
+
 const RADIO_CLASS = "67fac785-cd58-4f9f-abb3-4b7ddc6ed5ed";
 const DROPDOWN_CLASS = "3ef39988-22bb-4f0b-bbbe-64b5a3748aee";
 const FORM_MODE = { insert: 100000000, edit: 100000001, readOnly: 100000002 };
@@ -584,13 +581,11 @@ function formMetadataRows(portal, definition, stepId) {
 const metadataFor = (rows, type, predicate) =>
   rows.find((row) => Number(fieldOf(row, "type") ?? 100000000) === type && predicate(row));
 
-function renderLiquidText(renderLiquid, context, value) {
-  return renderLiquid ? renderLiquid(String(value ?? ""), context) : Promise.resolve(String(value ?? ""));
-}
+
 
 /** Locate the form record from the native record source settings. */
-export async function resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session }) {
-  let mode = Number(schema.mode ?? definition?.mode ?? FORM_MODE.insert);
+export async function resolveFormRecord({ kind, definition, schema, metadata: _metadata, context, readProvider, store, identity, modal, session }) {
+  const mode = Number(schema.mode ?? definition?.mode ?? FORM_MODE.insert);
   const params = context.request?.params ?? {};
   const component = schema.metadata ?? definition?.metadata ?? {};
   if (schema.recordId) return { mode, id: schema.recordId };
@@ -1193,7 +1188,7 @@ async function renderListFilter(model, context, options) {
   const items = [];
   for (const group of groups) {
     const elementId = `${String(group.selectionMode ?? "").toLowerCase()}_${group.id}`;
-    let markup = "";
+    let markup;
     if (group.type === "textfilter")
       markup = box(`${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><input class="form-control${bs.v5 ? " has-tooltip" : ""}" type="text" name="${attr(group.id)}" value="${attr(selected.get(group.id) ?? "")}" id="${attr(group.id)}"${bs.v5 ? ` title="${TEXT_FILTER_HINT}"` : ""}></div></li>`);
     // Dropdown groups (lookup or choice options) render one select box.
@@ -1499,7 +1494,7 @@ async function resolveEntityReference({ componentMetadata, mode, params, store, 
   const raw = parameter ? params[parameter] : null;
   const primaryKey = fieldOf(componentMetadata, "referencequerystringisprimarykey") !== false;
   if (!raw || !entity || !field || typeof readProvider?.[primaryKey ? "get" : "query"] !== "function") return null;
-  let row = null;
+  let row;
   try {
     if (primaryKey) {
       row = await readProvider.get(entity, String(raw), identity);
@@ -1598,7 +1593,7 @@ async function renderForm(kind, name, context, options) {
   let postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
   let progress = "";
   let stepIndex = 0;
-  let stepList = [];
+  const stepList = [];
   let advancedSteps = null;
   let session = null;
   let completedSuccessGet = false;

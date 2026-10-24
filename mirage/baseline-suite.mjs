@@ -253,8 +253,10 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
         await runMutatingHook('liveAdminRemove', matrix.hooks.liveAdminRemove, options);
       } catch (cleanupError) {
         if (failure) {
-          throw new AggregateError([failure, cleanupError], `Portal cache clear failed (${failure.message}); admin role cleanup also failed (${cleanupError.message}).`);
+          // eslint-disable-next-line no-unsafe-finally -- Cleanup failure is deliberately reported while preserving the primary failure.
+          throw new AggregateError([failure, cleanupError], `Portal cache clear failed (${failure.message}); admin role cleanup also failed (${cleanupError.message}).`, { cause: cleanupError });
         }
+        // eslint-disable-next-line no-unsafe-finally -- Cleanup failure is deliberately reported while preserving the primary failure.
         throw cleanupError;
       }
     }

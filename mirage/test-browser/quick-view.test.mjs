@@ -46,10 +46,10 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
   const frame = page.frameLocator('#ParentDetails');
   await frame.locator('#name').waitFor();
   assert.equal(await frame.locator('#name').inputValue(), 'Synthetic parent');
-  await page.evaluate(() => { document.getElementById('parentid').value = ''; jQuery('#parentid').trigger('change'); });
+  await page.evaluate(() => { document.getElementById('parentid').value = ''; window.jQuery('#parentid').trigger('change'); });
   await page.waitForFunction(() => document.getElementById('ParentDetails').getAttribute('src') === 'about:blank');
   assert.equal(await page.locator('#ParentDetails').getAttribute('tabindex'), '-1');
-  await page.evaluate(id => { document.getElementById('parentid').value = id; jQuery('#parentid').trigger('change'); }, parent);
+  await page.evaluate(id => { document.getElementById('parentid').value = id; window.jQuery('#parentid').trigger('change'); }, parent);
   await frame.locator('#name').waitFor();
   assert.equal(await page.locator('#ParentDetails').getAttribute('tabindex'), '0');
   const geometry = await frame.locator('#name').evaluate(input => ({ input: input.getBoundingClientRect().width, control: input.parentElement.getBoundingClientRect().width, height: input.getBoundingClientRect().height }));

@@ -139,7 +139,7 @@ for (const watch of [false, true]) test(`catalogue invalidates source, form and 
   await fs.writeFile(entityFile, (await fs.readFile(entityFile, 'utf8')).replace('<IsSecured>1</IsSecured>', '<IsSecured>0</IsSecured>').replace('</attributes>', '<attribute PhysicalName="x_added"><Name>x_added</Name><Type>nvarchar</Type></attribute></attributes>'));
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', '<row><cell><control datafieldname="x_added"/></cell></row></rows>'));
   if (!watch) await sim.reload();
-  let changed, deadline = performance.now() + 10000;
+  let changed; const deadline = performance.now() + 10000;
   do { changed = await catalogue(); if (changed.fields.x_added && changed.capabilities.fields.x_value1.read) break; await new Promise(resolve => setTimeout(resolve, 100)); } while (performance.now() < deadline);
   assert.ok(changed.fields.x_added); assert.equal(changed.capabilities.fields.x_value1.read, true);
   assert.equal((await read(recordRoute)).row.x_value1, 'Must stay masked', 'The next record read uses changed source security metadata.');

@@ -9,7 +9,7 @@ export function observeReadAborts() {
     let parsed;
     try {
       parsed = new URL(String(url), location.href);
-    } catch {}
+    } catch { /* A malformed URL is retained as unknown cancellation context. */ }
     records.set(this, {
       method: String(method).toUpperCase(),
       url: parsed?.href,

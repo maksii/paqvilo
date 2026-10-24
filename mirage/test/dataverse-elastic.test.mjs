@@ -15,7 +15,7 @@ import { expiresAt, sweepExpired } from "../lib/dataverse-elastic.mjs";
 import { randomUUID } from "node:crypto";
 import { DataError } from "../lib/data-error.mjs";
 
-const APP_ID = "22222222-2222-2222-2222-222222222222";
+
 const PUBLIC_APP_ID = "44444444-4444-4444-4444-444444444444";
 const REDIRECT = "http://localhost:1/cb";
 const PASSWORD = "Pass!23";

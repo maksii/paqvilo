@@ -77,7 +77,7 @@ test("jQuery-triggered clicks on grid view and sort links reach the grid", async
   assert.equal(posts.length, 1);
   assert.equal(posts[0].base64SecureConfiguration, "secure-2");
   await page.evaluate(() => window.jQuery(".view-grid table thead th a").first().trigger("click"));
-  await page.waitForFunction((count) => window.__gridPosts === undefined && document.querySelectorAll(".view-grid table").length > 0, posts.length);
+  await page.waitForFunction((_count) => window.__gridPosts === undefined && document.querySelectorAll(".view-grid table").length > 0, posts.length);
   await postsReach(2);
   assert.equal(posts.length, 2);
   assert.match(String(posts[1].sortExpression), /^name (ASC|DESC)$/);

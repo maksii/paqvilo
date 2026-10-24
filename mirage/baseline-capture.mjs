@@ -106,7 +106,7 @@ export function resolvePlaceholders(text, ids = {}) {
  * options: { origin, scenario, ids, allowWrites, allowPaths, allowEntitySets, readPosts, signInMarkers, settle, textTypes, maxBody }
  */
 export async function pageRunner(page, options) {
-  const { origin, scenario, ids = {}, allowWrites = false, allowPaths = [], allowEntitySets = [], signInMarkers = [], settle: settleDefaults = {}, maxBody = 2 * 1024 * 1024, readPosts = ["^/_services/entity-(?:grid|subgrid)-data\.json(?:/|$)", "^/_services/entity-notes/[^/]+$"] } = options;
+  const { origin, scenario, ids = {}, allowWrites = false, allowPaths = [], allowEntitySets = [], signInMarkers = [], settle: settleDefaults = {}, maxBody = 2 * 1024 * 1024, readPosts = ["^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)", "^/_services/entity-notes/[^/]+$"] } = options;
   const textTypes = new RegExp(options.textTypes ?? "^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\\+json)|.*\\+json|.*\\+xml)", "i");
   const sleep = (ms) => page.waitForTimeout(ms);
   const resolve = (text) => String(text ?? "").replace(/\{id:([\w.-]+)\}/g, (_, alias) => {

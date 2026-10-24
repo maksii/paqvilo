@@ -35,7 +35,7 @@ function tokensOf(text) {
     const rest = text.slice(at);
     const whitespace = /^\s+/.exec(rest);
     if (whitespace) { at += whitespace[0].length; continue; }
-    const match = /^(?:'((?:''|[^'])*)'|"((?:\\.|[^"\\])*)"|(@[a-zA-Z_][\w]*)|(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([a-zA-Z_][\w]*)|(!=|<>|<=|>=|[=<>+*/%(),.\[\]-]))/.exec(rest);
+    const match = /^(?:'((?:''|[^'])*)'|"((?:\\.|[^"\\])*)"|(@[a-zA-Z_][\w]*)|(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([a-zA-Z_][\w]*)|(!=|<>|<=|>=|[=<>+*/%(),.[\]-]))/.exec(rest);
     if (!match) throw invalid("Invalid Cosmos SQL syntax.");
     at += match[0].length;
     if (match[1] !== undefined) tokens.push({ type: "literal", value: match[1].replaceAll("''", "'") });

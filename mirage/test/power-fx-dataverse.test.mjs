@@ -37,7 +37,7 @@ const EXPRESSIONS = {
 };
 
 async function organization(t) {
-  const secrets = [ADMIN, LIMITED, BASIC].map((app) => {
+  const secrets = [ADMIN, LIMITED, BASIC].map((_app) => {
     const variable = `PAQVILO_PX1_${process.pid}_${Math.random().toString(36).slice(2).toUpperCase()}`;
     process.env[variable] = 'invented';
     t.after(() => { delete process.env[variable]; });

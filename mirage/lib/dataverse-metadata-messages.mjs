@@ -7,7 +7,6 @@ import { inflateRawSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
 import { isExactNumeric } from "./exact-numeric.mjs";
 import { contextUrl } from "./dataverse-odata.mjs";
-import { uuidV5 } from "./dataverse-security.mjs";
 import { requireMetadataPrivilege } from "./dataverse-metadata-relationships.mjs";
 import { createMetadataService } from "./dataverse-metadata.mjs";
 import { handleMetadataWrite, activateKey } from "./dataverse-metadata-tables.mjs";

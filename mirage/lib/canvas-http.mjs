@@ -142,7 +142,7 @@ export function createCanvasHandler({ apps, diagnostic, enabled = () => true, ru
       : { code: 'CANVAS_HOST_NOT_IMPLEMENTED', message: 'A canvas app inventory page was served; this host does not run canvas apps.', source: app.uniqueName });
     const diagnostics = source.diagnostics.length
       ? `<ul>${source.diagnostics.map(item => `<li><code>${escapeHtml(item.code)}</code> ${escapeHtml(item.message)}</li>`).join('')}</ul>` : '<p>None.</p>';
-    let hosted = '';
+    let hosted;
     if (!runtime) hosted = '<p>This host does not run canvas apps; the inventory below is all it shows.</p>';
     else if (!source.screens.length) hosted = '<p>The app has no readable screens; nothing runs.</p>';
     else {

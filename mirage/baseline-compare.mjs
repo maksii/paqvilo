@@ -5,7 +5,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { parse, parseFragment, defaultTreeAdapter as adapter } from "parse5";
+import { parse, defaultTreeAdapter as adapter } from "parse5";
 
 const sha = (value) => createHash("sha256").update(String(value)).digest("hex").slice(0, 12);
 const readJson = async (file, fallback = null) => {

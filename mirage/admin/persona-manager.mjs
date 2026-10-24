@@ -32,11 +32,11 @@ const fields={
 const rowId=(type,row)=>row[type==='personas'?'key':'id'];
 function maps(value={}) {return Object.entries(value).map(([name,value])=>`<div class="persona-map-row"><input data-map-name aria-label="Name" placeholder="Name" value="${h(name)}"><textarea data-map-value aria-label="JSON value" rows="2">${h(JSON.stringify(value))}</textarea><button type="button" class="button" data-remove-row aria-label="Remove value">Remove</button></div>`).join('');}
 
-export function mountPersonaAdministration(root, report, {request,refresh,notify,setButtonPending=(button,pending)=>{button.disabled=pending;},session,selectedKey,onSelected,onContact}={}) {
+export function mountPersonaAdministration(root, report, {request,refresh,notify,setButtonPending=(button,pending)=>{button.disabled=pending;},session: _session,selectedKey: _selectedKey,onSelected,onContact}={}) {
   administrations.get(root)?.abort();
   const controller = new AbortController(); administrations.set(root, controller);
   const picker=root.querySelector('#browser-persona-picker');
-  if(picker) mountPersonaPicker(picker,report,{filters:personaFilters(location.hash.split('?')[1]??''),onSelect:(persona,key)=>{selectedKey=key;onSelected?.(key);root.querySelector('[data-persona-launch-summary]').textContent='Selected: '+persona.label;const button=root.querySelector('[data-persona-launch]');button.dataset.personaLaunch=key;button.textContent=persona.context?'Open '+(report.contexts.find(c=>c.id===persona.context)?.label??persona.context):'Sign in as '+persona.label;},onFilterChange:filters=>{
+  if(picker) mountPersonaPicker(picker,report,{filters:personaFilters(location.hash.split('?')[1]??''),onSelect:(persona,key)=>{onSelected?.(key);root.querySelector('[data-persona-launch-summary]').textContent='Selected: '+persona.label;const button=root.querySelector('[data-persona-launch]');button.dataset.personaLaunch=key;button.textContent=persona.context?'Open '+(report.contexts.find(c=>c.id===persona.context)?.label??persona.context):'Sign in as '+persona.label;},onFilterChange:filters=>{
     const params=new URLSearchParams();if(filters.q)params.set('q',filters.q);
     for(const [field,name]of [['roles','role'],['accounts','account'],['groups','group'],['tags','tag']])for(const value of filters[field]??[])params.append(name,value);
     if(filters.hideNoRoles)params.set('rolesOnly','1');history.replaceState(null,'','#identity'+(params.size?'?'+params:''));

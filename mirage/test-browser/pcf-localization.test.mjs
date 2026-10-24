@@ -53,7 +53,7 @@ test('PCF localized instances keep languages, missing keys and empty labels acro
   assert.equal(state.unresolved.caption, 'Caption'); assert.equal(state.unresolved.empty, 'Empty');
   assert.ok(Object.values(state).every(entry => entry.unknown === 'Unknown'));
   assert.equal(new Set(Object.values(state).map(entry => entry.id)).size, 4);
-  const updated = await page.evaluate(id => { __paqviloPcf.updateParameters(id, { value: 'Changed β' }); return window.views[id]; }, state.french.id);
+  const updated = await page.evaluate(id => { window.__paqviloPcf.updateParameters(id, { value: 'Changed β' }); return window.views[id]; }, state.french.id);
   assert.equal(updated.raw, 'Changed β'); assert.equal(updated.caption, ' Bonjour β '); assert.equal(updated.displayName, '');
   await page.locator('#french').evaluate(node => node.remove());
   await page.waitForFunction(id => window.destroyed.includes(id), state.french.id);

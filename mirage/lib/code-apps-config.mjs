@@ -63,7 +63,7 @@ export function readCodeAppConfig(dir, file = 'power.config.json', { bindings = 
     return result;
   }
   let raw;
-  try { raw = JSON.parse(text.replace(/^﻿/, '')); } catch (error) {
+  try { raw = JSON.parse(text.replace(/^\uFEFF/, '')); } catch (error) {
     diagnostic('CODEAPP_CONFIG_INVALID', `${file} is not valid JSON: ${error.message}`);
     return result;
   }

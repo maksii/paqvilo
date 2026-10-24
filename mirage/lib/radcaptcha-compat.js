@@ -117,7 +117,7 @@
     const browser = /Chrome\/(\d+)/.exec(navigator.userAgent);
     if (browser) document.documentElement.classList.add("t-chrome", `t-chrome${browser[1]}`);
     const postBack = window.__doPostBack;
-    window.__doPostBack = function (eventTarget, eventArgument) {
+    window.__doPostBack = function (eventTarget, _eventArgument) {
       const captcha = REFRESH.exec(String(eventTarget));
       const form = captcha && document.getElementById(`${captcha[1].replace(/\$/g, "_")}_ctl01`)?.closest("form");
       if (form) return void refreshCaptcha(form, eventTarget, `${captcha[1]}$ctl01`);

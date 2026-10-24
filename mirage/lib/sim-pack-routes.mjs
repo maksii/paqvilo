@@ -26,7 +26,7 @@ export function createPackRoutes({ packs = [], registration = {}, projectRoot = 
   // Registered modules (built-in, project, explicit) loaded again: the module cache returns the same validated pack objects,
   // so each pack finds its module, and packs the portal filtered out are listed too (matched false).
   let registered = null;
-  const modules = async () => registered ??= (async () => {
+  const modules = async () => (registered ??= (async () => {
     const entries = [];
     const projectModules = new Set((await packModules({ project: registration.project })).map(item => item.module));
     // Packs supplied to the API by module path (createSimulator({ packs })) count as 'api'; supplied objects have no module.
@@ -38,7 +38,7 @@ export function createPackRoutes({ packs = [], registration = {}, projectRoot = 
       catch (error) { entries.push({ pack: null, module: entry.module, source, error: error.message.split(entry.module).join(relative(entry.module)) }); }
     }
     return entries;
-  })();
+  })());
 
   const describe = (pack, entry, presets, targets, currentPortal) => {
     let matched = null, matchReason = 'no portal context';

@@ -39,18 +39,18 @@ test('preform guards jQuery class fast paths across form iframe documents and th
   const {app,page}=await fixture(t,'<html><head><script src="/resource/powerappsportal/dist/preform.BootstrapV5.moment_2_29_4.bundle-abcdef.js"></script><script src="/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js"></script></head><body><abbr class="timeago" title="2020-01-01T00:00:00Z">Date</abbr><div class="form-control"></div><script>jQuery.timeago.settings.strings.suffixAgo="earlier";</script></body></html>');
   const errors=[];page.on('pageerror',error=>errors.push(error.message));await page.goto(app.url);
   const result=await page.evaluate(async()=>{
-    const iframe=document.createElement('iframe');iframe.srcdoc='<div class="actions"></div><div class="view-toolbar grid-actions"><input class="query"></div><div class="toolbar-actions"></div><div class="a b actions"></div>';document.body.append(iframe);await new Promise(resolve=>iframe.onload=resolve);
+    const iframe=document.createElement('iframe');iframe.srcdoc='<div class="actions"></div><div class="view-toolbar grid-actions"><input class="query"></div><div class="toolbar-actions"></div><div class="a b actions"></div>';document.body.append(iframe);await new Promise(resolve=>(iframe.onload=resolve));
     const doc=iframe.contentDocument;doc.getElementsByClassName=function(name){const pattern=new RegExp('\\b'+name+'\\b');return [...this.querySelectorAll('*')].filter(element=>pattern.test(element.className));};
-    const selected=jQuery(iframe).contents().find('.actions');selected.hide();
-    return {count:selected.length,toolbar:doc.querySelector('.view-toolbar').style.display,fillable:getComputedStyle(doc.querySelector('input')).display!=='none',elementCount:jQuery(doc.body).find('.actions').length,compound:jQuery(doc).find('div.actions').length,multiple:jQuery(doc).find('.a.b').length,expr:jQuery.expr.find.CLASS('actions',doc).length,timeago:typeof jQuery.timeago,relative:document.querySelector('abbr').textContent,strings:jQuery.timeago.settings.strings.suffixAgo};
+    const selected=window.jQuery(iframe).contents().find('.actions');selected.hide();
+    return {count:selected.length,toolbar:doc.querySelector('.view-toolbar').style.display,fillable:getComputedStyle(doc.querySelector('input')).display!=='none',elementCount:window.jQuery(doc.body).find('.actions').length,compound:window.jQuery(doc).find('div.actions').length,multiple:window.jQuery(doc).find('.a.b').length,expr:window.jQuery.expr.find.CLASS('actions',doc).length,timeago:typeof window.jQuery.timeago,relative:document.querySelector('abbr').textContent,strings:window.jQuery.timeago.settings.strings.suffixAgo};
   });
   assert.deepEqual({...result,relative:null},{count:2,toolbar:'',fillable:true,elementCount:2,compound:2,multiple:1,expr:2,timeago:'function',relative:null,strings:'earlier'});assert.match(result.relative,/earlier/);assert.deepEqual(errors,[]);
   await page.addScriptTag({url:app.url+'/xrm-adx/js/crmentityformview.js'});
-  const direct=await page.evaluate(()=>({array:Array.isArray(document.getElementsByClassName('control')),found:document.getElementsByClassName('control').some(element=>element.classList.contains('form-control')),iframeCount:jQuery(document.querySelector('iframe')).contents().find('.actions').length}));
+  const direct=await page.evaluate(()=>({array:Array.isArray(document.getElementsByClassName('control')),found:document.getElementsByClassName('control').some(element=>element.classList.contains('form-control')),iframeCount:window.jQuery(document.querySelector('iframe')).contents().find('.actions').length}));
   assert.deepEqual(direct,{array:true,found:true,iframeCount:2});
   assert.deepEqual(await page.evaluate(()=>{
     const element=document.createElement('div');element.className='123';document.body.append(element);
-    return {numeric:jQuery(document).find('.123').length,invalidContext:jQuery.find('.actions',window).length};
+    return {numeric:window.jQuery(document).find('.123').length,invalidContext:window.jQuery.find('.actions',window).length};
   }),{numeric:1,invalidContext:0});
 });
 
@@ -112,7 +112,7 @@ test('timeago updates time elements, retains dates across title changes, and hon
   const {app,page}=await fixture(t,'<html><head><script src="/resource/powerappsportal/dist/preform.BootstrapV5.moment_2_29_4.bundle-abcdef.js"></script><script src="/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js"></script></head><body></body></html>');
   await page.goto(app.url);
   const result=await page.evaluate(()=>{
-    const $=jQuery,ago=$.timeago;ago.settings.refreshMillis=0;
+    const $=window.jQuery,ago=$.timeago;ago.settings.refreshMillis=0;
     const date=new Date(Date.now()-5*60000),time=document.createElement('time');time.dateTime=new Date(Date.now()-86400000).toISOString();time.textContent='Original date';document.body.append(time);
     $(time).timeago().timeago('update',date);const updated=time.textContent;
     time.dateTime=new Date(Date.now()-2*86400000).toISOString();$(time).timeago('updateFromDOM');const fromDOM=time.textContent;

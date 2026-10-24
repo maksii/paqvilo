@@ -24,7 +24,7 @@ async function start(t, state, users = []) {
     const r = await fetch(`${server.origin}/api/data/v9.2${path}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
       body: typeof body === 'string' ? body : body && JSON.stringify(body) });
     const text = await r.text();
-    let json = null; try { json = JSON.parse(text); } catch {}
+    let json = null; try { json = JSON.parse(text); } catch { /* Non-JSON responses retain their raw body for assertions. */ }
     return { status: r.status, headers: r.headers, text, json };
   };
   return { store, server, call };

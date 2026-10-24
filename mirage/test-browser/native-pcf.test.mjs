@@ -42,7 +42,7 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
   await page.goto(app.url);
   assert.match(await page.content(), /data-pcf-schema=/, JSON.stringify(app.state().diagnostics));
   await page.locator('[data-pcf-ready=true]').waitFor();
-  assert.equal(await page.evaluate(() => __paqviloPcf.inspect()[0].parameters.value.type), 'SingleLine.Text');
+  assert.equal(await page.evaluate(() => window.__paqviloPcf.inspect()[0].parameters.value.type), 'SingleLine.Text');
   // The control observes actual exported column metadata rather than its property name.
   assert.deepEqual(await page.evaluate(() => window.nativePcfAttributes), { DisplayName: 'Title', LogicalName: 'tst_title', RequiredLevel: 2, MaxLength: 72, Format: 'text' });
   assert.equal(await page.locator('#tst_title').isVisible(), false);

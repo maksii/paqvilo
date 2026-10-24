@@ -16,7 +16,7 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');
     window.control = renderControl({ name: 'x_tags', label: 'Tags', type: 'multiselect', options: [{ value: 1, label: 'Red' }, { value: 2, label: 'Blue' }, { value: 3, label: 'Black' }] }, [1]);
-    document.body.replaceChildren(control.element);
+    document.body.replaceChildren(window.control.element);
   });
   const input = page.getByRole('combobox', { name: 'Tags', exact: true });
   await input.focus(); await page.keyboard.press('Control+A'); await page.keyboard.type('B');
@@ -28,19 +28,19 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
   await input.press('ArrowDown');
   assert.equal(await input.inputValue(), 'Blue');
   await input.press('Enter');
-  assert.deepEqual(await page.evaluate(() => control.read()), [1, 2], 'keyboard selection must select the visible match while preserving Red');
+  assert.deepEqual(await page.evaluate(() => window.control.read()), [1, 2], 'keyboard selection must select the visible match while preserving Red');
   assert.equal(await input.inputValue(), 'Blue');
   await input.fill('no matches');
   assert.equal(await input.getAttribute('aria-activedescendant'), null);
   await input.press('Enter');
-  assert.deepEqual(await page.evaluate(() => control.read()), [1, 2]);
+  assert.deepEqual(await page.evaluate(() => window.control.read()), [1, 2]);
   await input.press('Escape');
   assert.equal(await input.inputValue(), 'Red; Blue');
   assert.equal(await input.getAttribute('aria-activedescendant'), null);
   await input.click(); await input.fill('Black');
   await page.getByRole('option', { name: 'Black', exact: true }).click();
-  assert.deepEqual(await page.evaluate(() => control.read()), [1, 2, 3]);
-  await page.evaluate(() => control.setDisabled(true));
+  assert.deepEqual(await page.evaluate(() => window.control.read()), [1, 2, 3]);
+  await page.evaluate(() => window.control.setDisabled(true));
   assert.equal(await input.getAttribute('aria-expanded'), 'false');
   assert.equal(await input.getAttribute('aria-activedescendant'), null);
   assert.equal(await input.isDisabled(), true);
@@ -58,13 +58,13 @@ test('choice lists stay inside the form viewport and keyboard navigation scrolls
     const filler = document.createElement('div'); filler.style.height = '370px';
     const field = document.createElement('div'); field.className = 'field'; field.style.cssText = 'display:block;margin:0;height:32px';
     window.control = renderControl({ name: 'x_rank', label: 'Rank', type: 'number', options: Array.from({ length: 40 }, (_, index) => ({ value: index, label: `Choice ${index}` })) }, 0);
-    field.append(control.element); root.append(header, filler, field); document.body.append(root);
+    field.append(window.control.element); root.append(header, filler, field); document.body.append(root);
   });
   const input = page.getByRole('combobox', { name: 'Rank', exact: true });
   await input.click();
   const geometry = () => page.evaluate(() => {
     const root = document.querySelector('.record-content'), list = document.querySelector('.choice-options'), rect = list.getBoundingClientRect();
-    return { top: rect.top, bottom: rect.bottom, headerBottom: root.querySelector('.record-card').getBoundingClientRect().bottom, boundary: root.getBoundingClientRect().bottom, fieldTop: control.element.getBoundingClientRect().top, scrollTop: root.scrollTop, listScroll: list.scrollTop };
+    return { top: rect.top, bottom: rect.bottom, headerBottom: root.querySelector('.record-card').getBoundingClientRect().bottom, boundary: root.getBoundingClientRect().bottom, fieldTop: window.control.element.getBoundingClientRect().top, scrollTop: root.scrollTop, listScroll: list.scrollTop };
   });
   const before = await geometry();
   assert.ok(before.top >= before.headerBottom && before.bottom <= before.boundary, 'popup must avoid the pinned header and remain inside the form');
@@ -74,15 +74,15 @@ test('choice lists stay inside the form viewport and keyboard navigation scrolls
   assert.equal(after.scrollTop, before.scrollTop); assert.equal(after.fieldTop, before.fieldTop);
   assert.ok(after.listScroll > before.listScroll, 'End must reveal the final option inside the bounded list');
   await input.press('Enter');
-  assert.equal(await page.evaluate(() => control.read()), 39);
+  assert.equal(await page.evaluate(() => window.control.read()), 39);
   assert.equal(await input.inputValue(), 'Choice 39');
   await input.click(); await input.press('Home'); await input.press('Enter');
-  assert.equal(await page.evaluate(() => control.read()), null, 'the empty choice remains keyboard selectable after reopening');
+  assert.equal(await page.evaluate(() => window.control.read()), null, 'the empty choice remains keyboard selectable after reopening');
   await input.click();
   await page.setViewportSize({ width: 980, height: 680 });
-  await page.waitForFunction(() => control.primary.getAttribute('aria-expanded') === 'false');
+  await page.waitForFunction(() => window.control.primary.getAttribute('aria-expanded') === 'false');
   assert.equal(await input.getAttribute('aria-expanded'), 'false', 'viewport changes dismiss the obsolete popup position');
   await input.click();
   await page.locator('.record-content').evaluate(root => { const trailing = document.createElement('div'); trailing.style.height = '1000px'; root.append(trailing); root.scrollTop = 30; });
-  await page.waitForFunction(() => control.primary.getAttribute('aria-expanded') === 'false');
+  await page.waitForFunction(() => window.control.primary.getAttribute('aria-expanded') === 'false');
 });

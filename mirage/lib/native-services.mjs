@@ -576,7 +576,7 @@ function schemaView(schema, list, store) {
 }
 
 /** Resolve a list by id/name with its selected solution views and settings. */
-export function listModel({ portal, metadata, store, list, schemas = {} }) {
+export function listModel({ portal: _portal, metadata, store, list, schemas = {} }) {
   const explicit = schemas[list.id] ?? schemas[list.name];
   // Imported savedquery schemas describe the default view (adx_view); the list's
   // adx_views may add more. A manual schema intentionally defines the only view.
@@ -1214,7 +1214,7 @@ export function userLocalDate(date, { timeZone, timezoneOffset = 0 } = {}) {
 const CULTURE_DATE = "M/d/yyyy";
 const CULTURE_DATETIME = "M/d/yyyy h:mm tt";
 
-function attributeEntry(name, value, { field, settings, entity, primaryName, timezoneOffset = 0, timeZone = null, currency = () => null }) {
+function attributeEntry(name, value, { field, settings: _settings, entity, primaryName, timezoneOffset = 0, timeZone = null, currency = () => null }) {
   const dataverseType = String(field?.dataverseType ?? "").toLowerCase();
   let type = NET_TYPES[dataverseType];
   const inner = scalar(value);
@@ -1398,7 +1398,7 @@ function recordCurrency(context, entity, row, id) {
 export function readDenied(context, entity) {
   const { store, identity } = context;
   if (context.config?.mode === "live" || typeof store?.rules !== "function" || identity?.admin) return false;
-  let permissive = false;
+  let permissive;
   try {
     permissive = store.snapshot({ sections: ["settings"] })?.settings?.permissionMode === "permissive";
   } catch {

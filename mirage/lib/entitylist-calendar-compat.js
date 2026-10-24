@@ -172,8 +172,8 @@
     var search = this.element.querySelector(".entitylist-search .query");
     if (search && search.value) url += "&search=" + encodeURIComponent(search.value);
     get(url, "application/json, text/javascript, */*; q=0.01", function (text) {
-      var json = null;
-      try { json = JSON.parse(text); } catch (e) { json = null; }
+      var json;
+      try { json = JSON.parse(text); } catch (_e) { json = null; }
       self.events = json && json.success ? json.result || [] : [];
       self.error = !json ? "Error completing request." : json.success ? null : json.error || "";
       self.templatesFor((self._small_ ? ["view-event-list"] : []).concat(VIEW_TEMPLATES[self.view]), function () { self.draw(); });

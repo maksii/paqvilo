@@ -34,7 +34,7 @@ test('render sweep exposes permission row counts and paths in each persona summa
 test('native scoped reads deduplicate while unqualified raw reads retain multiplicity diagnostics',async()=>{
   const data=state();
   // Separate column paths retain both grant alternatives rather than compiling a duplicate path.
-  data.tables.child.forEach(row=>row.secondorganizationid='org');data.permissions[2].relationship.from='secondorganizationid';
+  data.tables.child.forEach(row=>(row.secondorganizationid='org'));data.permissions[2].relationship.from='secondorganizationid';
   const s=store(data),diagnostics=[];
   const native=s.fetchXml(query(false),visitor,{portalRequest:true});
   assert.equal(native.entities.length,2);

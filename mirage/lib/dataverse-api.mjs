@@ -92,7 +92,7 @@ const envelope = (status, code, message, requestId) => ({
 });
 const methodNotAllowed = (c) => envelope(405, "", `The requested resource does not support http method '${c.req.method}'.`, c.requestId);
 const notFound = (c) => envelope(404, "", `No HTTP resource was found that matches the request URI '${c.url.href}'.`, c.requestId);
-const notImplementedFeature = (feature) => new DataError(`${feature} has not yet been implemented.`, 501, "NotImplemented");
+
 const unauthorized = (verdict) => new DataError("", 401, "Unauthorized", { reason: verdict.reason === "missing" ? "missing" : "invalid_token" });
 
 function originOf(req, fallbackHost) {
@@ -1149,7 +1149,7 @@ export async function startDataverseApi({
   host = "127.0.0.1",
   schema = () => null,
   metadataFields = () => undefined,
-  observed = null,
+  observed: _observed = null,
   clock = () => Date.now(),
   tls = null,
   records = null,
@@ -1167,7 +1167,7 @@ export async function startDataverseApi({
   metadataFields = api.metadataFields;
   const servers = [];
   let tds, closing;
-  const close = () => closing ??= (async () => {
+  const close = () => (closing ??= (async () => {
     const results = await Promise.allSettled([
       Promise.resolve().then(() => tds?.close()),
       ...servers.map(server => new Promise(resolve => {
@@ -1178,7 +1178,7 @@ export async function startDataverseApi({
     if (ownsOrganization) await organization.close();
     const failures = results.filter(result => result.status === 'rejected').map(result => result.reason);
     if (failures.length) throw new AggregateError(failures, 'Dataverse transport cleanup failed.');
-  })();
+  })());
   try {
   const authority = createAuthority({
     tenantId,

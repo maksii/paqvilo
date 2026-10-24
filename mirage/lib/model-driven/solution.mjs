@@ -303,6 +303,7 @@ export function parseAppActionCommand(root, { webresourcesById = new Map(), lcid
   // mapped; other locations remain available by canonical ID without guessing.
   const nativeName = childText(root, 'name');
   const nativeControlIds = childText(root, 'context') === '1' && location === 0 && /^[a-z][a-z0-9_]*$/i.test(entity ?? '')
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
     && nativeName && nativeName.length <= 1024 && !/[|\x00-\x1f]/.test(nativeName)
     ? [`${entity.toLowerCase()}|NoRelationship|Form|${nativeName}`] : [];
   const supported = Boolean(entity && library && childText(root, 'onclickeventjavascriptfunctionname') && childText(root, 'context') === '1' && childText(root, 'statecode') !== '1' && childText(root, 'onclickeventtype') === '2' && childText(root, 'type') === '0' && !parameterError && parameters.every(parameter => parameter.kind !== 'unsupported') && [0, 1].includes(location) && childText(root, 'isdisabled') !== '1');

@@ -40,6 +40,7 @@ export const crc32 = (bytes) => {
 
 /** Normalize ZIP separators only; reject ambiguous/traversing names even though this module never writes paths. */
 export function solutionAssetName(input) {
+  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (typeof input !== "string" || !input || /[\x00-\x1f\x7f:]/.test(input)) fail("Invalid solution asset path.", "EntryPath");
   const name = input.replaceAll("\\", "/");
   if (name.startsWith("/") || name.length > 4096) fail("Invalid solution asset path.", "EntryPath");

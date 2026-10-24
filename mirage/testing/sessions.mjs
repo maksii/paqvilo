@@ -5,9 +5,11 @@ const failure=(message,code,status)=>Object.assign(new Error(message),{code,...(
 const methods=new Set(['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS']);
 const publicSession=value=>Object.fromEntries(Object.entries(value??{}).filter(([key])=>!['cookie','csrf'].includes(key)));
 function portalRoute(origin,route) {
+ // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
  if(typeof route!=='string'||!route.startsWith('/')||route.startsWith('//')||/[\\\u0000-\u001f\u007f]/.test(route))throw failure('Portal request requires a site-relative path.','InvalidPortalRoute');
  const url=new URL(route,origin);let pathname;
  try{pathname=decodeURIComponent(url.pathname);}catch{throw failure('Portal path has invalid encoding.','InvalidPortalRoute');}
+ // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
  if(url.origin!==origin||url.hash||/[\\\u0000-\u001f\u007f]/.test(pathname)||/^\/(?:_sim|__sim|_setup)(?:\/|$)/i.test(pathname))throw failure('Portal clients cannot request administration or external routes.','InvalidPortalRoute');
  return url.href;
 }

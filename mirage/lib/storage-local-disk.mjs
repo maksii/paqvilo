@@ -31,7 +31,7 @@ export function createLocalDiskStorage({ root, id = 'local', clock = systemClock
   let closed = false;
   const writingTemps = new Set();
   let ready;
-  const load = () => ready ??= (async () => {
+  const load = () => (ready ??= (async () => {
     for (const dir of ['objects', 'staging', 'tmp']) await fs.mkdir(within(dir), { recursive: true });
     let text = null;
     try { text = await fs.readFile(within('index.json'), 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -42,7 +42,7 @@ export function createLocalDiskStorage({ root, id = 'local', clock = systemClock
     }
     index = new Map(Object.entries(parsed.entries));
     sequence = Number(parsed.sequence) || 0;
-  })();
+  })());
 
   // One writer at a time for the index; reads see the in-memory map.
   let queue = Promise.resolve();

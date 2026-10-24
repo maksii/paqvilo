@@ -23,7 +23,7 @@ function clrParentIdentity(executable){
  return {parentProcessId:process.pid,parentStartTicks};
 }
 const pooledHosts=new Map();
-process.once('exit',()=>{for(const session of pooledHosts.values())if(session.pid)try{process.kill(session.pid);}catch{}});
+process.once('exit',()=>{for(const session of pooledHosts.values())if(session.pid)try{process.kill(session.pid);}catch{ /* Best-effort diagnostics and teardown must not mask the primary plugin result. */ }});
 // One Depth per synchronous execution chain, shared by CLR steps and JavaScript handlers (exported-plugins.mjs), so an
 // alternating JS/CLR chain is capped at eight in total and each side reports the same contiguous Depth. Both paths run
 // synchronously (CLR waits with Atomics.wait), so the counter is balanced within one call stack.
@@ -57,7 +57,7 @@ function pathParts(file) {
   const absolute = path.resolve(file), anchor = path.parse(absolute).root;
   let current = anchor;
   return absolute.slice(anchor.length).split(path.sep).filter(Boolean)
-    .map(part => current = path.join(current, part));
+    .map(part => (current = path.join(current, part)));
 }
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const CLR_FILE_LIMIT = 32 * 1024 * 1024;
@@ -258,7 +258,7 @@ function dispatchSdkCallAuthorized({store,profile,message,diagnostic}){
    if(Object.hasOwn(parameters,'tag')&&(typeof parameters.tag!=='string'||Buffer.byteLength(parameters.tag)>8192))fail('SDK tag requires a bounded string.','LocalPluginSdkUnsupported',501);
    const inherited=message.parentContext?.values?.SharedVariables?.values;
    if(Object.hasOwn(parameters,'tag')&&inherited&&Object.hasOwn(inherited,'tag'))fail('A descendant SDK request cannot replace an inherited immutable tag.','LocalPluginTagImmutable',409);
-   let method=request.requestName,arguments_=shape.map(key=>parameters[key]);
+   const method=request.requestName;let arguments_=shape.map(key=>parameters[key]);
    if(['Associate','Disassociate'].includes(method)){const target=parameters.Target;if(target?.$type!=='EntityReference')fail('SDK relationship request requires an EntityReference Target.');arguments_=[target.logicalName,typed('Guid',target.id),parameters.Relationship,parameters.RelatedEntities];}
    if(['CreateMultiple','UpdateMultiple'].includes(method)){const targets=parameters.Targets;if(targets?.$type!=='EntityCollection'||!Array.isArray(targets.entities))fail('Bulk SDK request requires a typed Targets EntityCollection.');arguments_=[targets];}
    if(['Delete','Retrieve'].includes(method)){const target=parameters.Target;if(target?.$type!=='EntityReference')fail('SDK '+method+'Request requires an EntityReference.');arguments_=[target.logicalName,target,...(method==='Retrieve'?[parameters.ColumnSet]:[])];}
@@ -336,13 +336,13 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
     catch (cause) {
       // Cleanup diagnostics must not replace an original plugin exception.
       try { diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'Owned CLR snapshot cleanup failed: ' + cause.code + ' (' + cause.syscall + ')' }); }
-      catch {}
+      catch { /* Best-effort diagnostics and teardown must not mask the primary plugin result. */ }
     }
   }
 }
 function stopClrHost(session,diagnostic=()=>{}){
  if(session.active)fail('An active CLR host cannot be closed.','LocalPluginHostBusy',409);
- const report=note=>{try{diagnostic(note);}catch{}};
+ const report=note=>{try{diagnostic(note);}catch{ /* Best-effort diagnostics and teardown must not mask the primary plugin result. */ }};
  pooledHosts.delete(session.key);
  if(session.pid)try{process.kill(session.pid);}catch(cause){if(cause.code!=='ESRCH')report({code:'PLUGIN_CLR_CLEANUP',message:'Owned CLR process cleanup failed: '+cause.code});}
  session.port1.postMessage({kind:'cancel'});session.port1.close();void session.worker.terminate();
@@ -381,7 +381,7 @@ function executePooledClr(runtime,input,options,verified){
  // The opened execution copy remains immutable and gets checked independently
  // of the source/compiled runtime checks above on every reused invocation.
  let intact=false;
- try{intact=syncFs.readdirSync(session.snapshot.directory).length===verified.length&&verified.every(file=>sha(readClrFileSync(path.join(session.snapshot.directory,file.name)))===file.sha256);}catch{}
+ try{intact=syncFs.readdirSync(session.snapshot.directory).length===verified.length&&verified.every(file=>sha(readClrFileSync(path.join(session.snapshot.directory,file.name)))===file.sha256);}catch{ /* Best-effort diagnostics and teardown must not mask the primary plugin result. */ }
  if(!intact){stopClrHost(session,options.diagnostic);fail('Pooled CLR execution bytes changed.','LocalPluginSourceChanged',409);}
  return executeClrSnapshot(runtime,input,options,session.snapshot,session);
 }
@@ -456,5 +456,5 @@ export function clrContext({runtime,store,step,entity,operation,stage,target,rec
   const values=operation==='create'?{id:typed('Guid',record[primary])}:operation==='createmultiple'?{Ids:{$type:'GuidArray',values:record.bulkIds.map(value=>typed('Guid',value))}}:operation==='retrieve'?{BusinessEntity:frame.entity}:operation==='retrievemultiple'?{BusinessEntityCollection:frame.collection}:{};
   frame.outputParameters={$type:'ParameterCollection',values:{...frame.outputParameters.values,...values}};frame.systemOutputsPopulated=true;
  }
- return {expectedAssemblyName:step.assemblyName??null,context:{InterfaceVersion:context.interfaceVersion??4,...(context.interfaceVersion===7?{InitiatingUserAgent:context.initiatingUserAgentPresent?'Mirage observed user-agent presence; value withheld':null,EnvironmentId:context.environmentId,TenantId:typed('Guid',context.tenantId),IsApplicationUser:context.isApplicationUser}:{}),IsPortalsClientCall:portalRequest,PortalsContactId:typed('Guid',portalContactId),RequestId:typed('Guid',frame.requestId??=randomUUID()),SecondaryEntityName:context.secondaryEntityName??'',Stage:stage,Mode:step.contract?.mode??0,Depth:Math.max(depth,parent?Number(parent.values.Depth)+1:0),MessageName:messageName,PrimaryEntityName:entity,PrimaryEntityId:typed('Guid',record[primary]),UserId:typed('Guid',context.executionUserId??store.pluginExecutionUserId??descriptor.serviceProfile.userId),InitiatingUserId:parent?.values.InitiatingUserId??typed('Guid',context.initiatingUserId),OrganizationId:typed('Guid',context.organizationId),OrganizationName:context.organizationName??'',BusinessUnitId:typed('Guid',context.businessUnitId),CorrelationId:typed('Guid',frame.correlationId??=parent?.values.CorrelationId?.value??randomUUID()),OperationId:typed('Guid',frame.operationId??=randomUUID()),OperationCreatedOn:typed('DateTime',frame.createdOn??=new Date().toISOString()),IsInTransaction:store.pluginInTransaction===true,IsExecutingOffline:false,IsOfflinePlayback:false,IsolationMode:step.isolationMode??2,OwningExtension:{$type:'EntityReference',logicalName:'sdkmessageprocessingstep',id:step.id,name:step.name},ParentContext:preValidationParent||parent||null,...(bulk?{PreEntityImagesCollection:bulkImages(frame.previousRecords??[],false),PostEntityImagesCollection:bulkImages(stage===40?frame.records??[]:[],true)}:{PreEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(preImages).length?[{$type:'EntityImageCollection',values:preImages}]:[]},PostEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(postImages).length?[{$type:'EntityImageCollection',values:postImages}]:[]}})},inputParameters:{$type:'ParameterCollection',values:{...(portalRequest?context.portalInputParameters??{}:{}),...(frame.associationParameters??(bulk?{Targets:{$type:'EntityCollection',entities:frame.targets,moreRecords:false,totalRecordCount:-1,pagingCookie:null}}:operation==='retrievemultiple'?{Query:frame.query}:operation==='retrieve'?{Target:{$type:'EntityReference',logicalName:entity,id:record[primary]},ColumnSet:{$type:'ColumnSet',...frame.columns}}:{Target:operation==='delete'?{$type:'EntityReference',logicalName:entity,id:record[primary]}:recordToSdkEntity(store,entity,{...target,[primary]:record[primary]})})),...externalParameters}},outputParameters:frame.outputParameters,sharedVariables:frame.sharedVariables??{$type:'ParameterCollection',values:{}},preImages,postImages};
+ return {expectedAssemblyName:step.assemblyName??null,context:{InterfaceVersion:context.interfaceVersion??4,...(context.interfaceVersion===7?{InitiatingUserAgent:context.initiatingUserAgentPresent?'Mirage observed user-agent presence; value withheld':null,EnvironmentId:context.environmentId,TenantId:typed('Guid',context.tenantId),IsApplicationUser:context.isApplicationUser}:{}),IsPortalsClientCall:portalRequest,PortalsContactId:typed('Guid',portalContactId),RequestId:typed('Guid',(frame.requestId??=randomUUID())),SecondaryEntityName:context.secondaryEntityName??'',Stage:stage,Mode:step.contract?.mode??0,Depth:Math.max(depth,parent?Number(parent.values.Depth)+1:0),MessageName:messageName,PrimaryEntityName:entity,PrimaryEntityId:typed('Guid',record[primary]),UserId:typed('Guid',context.executionUserId??store.pluginExecutionUserId??descriptor.serviceProfile.userId),InitiatingUserId:parent?.values.InitiatingUserId??typed('Guid',context.initiatingUserId),OrganizationId:typed('Guid',context.organizationId),OrganizationName:context.organizationName??'',BusinessUnitId:typed('Guid',context.businessUnitId),CorrelationId:typed('Guid',(frame.correlationId??=parent?.values.CorrelationId?.value??randomUUID())),OperationId:typed('Guid',(frame.operationId??=randomUUID())),OperationCreatedOn:typed('DateTime',(frame.createdOn??=new Date().toISOString())),IsInTransaction:store.pluginInTransaction===true,IsExecutingOffline:false,IsOfflinePlayback:false,IsolationMode:step.isolationMode??2,OwningExtension:{$type:'EntityReference',logicalName:'sdkmessageprocessingstep',id:step.id,name:step.name},ParentContext:preValidationParent||parent||null,...(bulk?{PreEntityImagesCollection:bulkImages(frame.previousRecords??[],false),PostEntityImagesCollection:bulkImages(stage===40?frame.records??[]:[],true)}:{PreEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(preImages).length?[{$type:'EntityImageCollection',values:preImages}]:[]},PostEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(postImages).length?[{$type:'EntityImageCollection',values:postImages}]:[]}})},inputParameters:{$type:'ParameterCollection',values:{...(portalRequest?context.portalInputParameters??{}:{}),...(frame.associationParameters??(bulk?{Targets:{$type:'EntityCollection',entities:frame.targets,moreRecords:false,totalRecordCount:-1,pagingCookie:null}}:operation==='retrievemultiple'?{Query:frame.query}:operation==='retrieve'?{Target:{$type:'EntityReference',logicalName:entity,id:record[primary]},ColumnSet:{$type:'ColumnSet',...frame.columns}}:{Target:operation==='delete'?{$type:'EntityReference',logicalName:entity,id:record[primary]}:recordToSdkEntity(store,entity,{...target,[primary]:record[primary]})})),...externalParameters}},outputParameters:frame.outputParameters,sharedVariables:frame.sharedVariables??{$type:'ParameterCollection',values:{}},preImages,postImages};
 }
