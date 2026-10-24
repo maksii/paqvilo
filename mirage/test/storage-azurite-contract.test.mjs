@@ -8,6 +8,13 @@ const fake = await startAzuriteFake();
 test.after(() => fake.close());
 let containers = 0;
 
-runStorageContract(test, async () => createAzuriteStorage({ id: 'fxblob',
-  settings: { connectionString: 'env:FX_AZURITE', container: `fx-contract-${++containers}` }, env: { FX_AZURITE: fake.connectionString() } }),
-{ label: 'azurite storage contract' });
+runStorageContract(
+  test,
+  async () =>
+    createAzuriteStorage({
+      id: 'fxblob',
+      settings: { connectionString: 'env:FX_AZURITE', container: `fx-contract-${++containers}` },
+      env: { FX_AZURITE: fake.connectionString() },
+    }),
+  { label: 'azurite storage contract' },
+);

@@ -11,12 +11,25 @@ const START = Date.parse('2026-03-01T08:00:00.000Z');
 
 async function organization(t) {
   const state = emptyState();
-  state.mappings.x_item = { logicalName: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name', ownership: 'UserOwned', fields: { x_name: { dataverseType: 'nvarchar' } } };
+  state.mappings.x_item = {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    nameColumn: 'x_name',
+    ownership: 'UserOwned',
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+  };
   state.tables.x_item = [];
-  const clock = fixedClock(START), ids = sequentialIds(NAMESPACE);
+  const clock = fixedClock(START),
+    ids = sequentialIds(NAMESPACE);
   const store = await new DataStore({ state, clock, ids }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  const core = await createOrganizationRuntime({ store, scheduler, settings: dataverseSettings({ enabled: false, auditing: true }), extensions: await sourceOrganizationExtensions() });
+  const core = await createOrganizationRuntime({
+    store,
+    scheduler,
+    settings: dataverseSettings({ enabled: false, auditing: true }),
+    extensions: await sourceOrganizationExtensions(),
+  });
   t.after(() => core.close());
   return { store, core, clock, scheduler };
 }
@@ -34,8 +47,9 @@ async function scriptedRun(t) {
   return JSON.stringify(store.snapshot());
 }
 
-test('a fixed clock and sequential ids make two identical runs produce byte-identical state', async t => {
-  const one = await scriptedRun(t), two = await scriptedRun(t);
+test('a fixed clock and sequential ids make two identical runs produce byte-identical state', async (t) => {
+  const one = await scriptedRun(t),
+    two = await scriptedRun(t);
   assert.equal(one, two);
   const items = JSON.parse(one).tables.x_item;
   assert.equal(items[0].createdon, '2026-03-01T08:00:00Z');
@@ -44,7 +58,8 @@ test('a fixed clock and sequential ids make two identical runs produce byte-iden
 });
 
 test('sequential ids are valid, distinct version 5 GUIDs and refuse an invalid namespace', () => {
-  const ids = sequentialIds(NAMESPACE), again = sequentialIds(NAMESPACE);
+  const ids = sequentialIds(NAMESPACE),
+    again = sequentialIds(NAMESPACE);
   const values = [ids.uuid(), ids.uuid(), ids.uuid()];
   assert.equal(new Set(values).size, 3);
   assert.deepEqual([again.uuid(), again.uuid(), again.uuid()], values);
@@ -52,7 +67,9 @@ test('sequential ids are valid, distinct version 5 GUIDs and refuse an invalid n
 });
 
 test('a manual scheduler runs due tasks in due order on runDue and advance', async () => {
-  const clock = fixedClock(START), scheduler = createScheduler({ clock, manual: true }), order = [];
+  const clock = fixedClock(START),
+    scheduler = createScheduler({ clock, manual: true }),
+    order = [];
   scheduler.schedule(() => order.push('late'), 5000);
   scheduler.schedule(() => order.push('first'), 0);
   scheduler.schedule(() => order.push('second'), 0);
@@ -65,24 +82,35 @@ test('a manual scheduler runs due tasks in due order on runDue and advance', asy
   await scheduler.advance(1);
   assert.deepEqual(order, ['first', 'second', 'middle']);
   // A task that queues a due follow-up runs it in the same runDue.
-  scheduler.schedule(() => { order.push('parent'); scheduler.schedule(() => order.push('child'), 0); }, 0);
+  scheduler.schedule(() => {
+    order.push('parent');
+    scheduler.schedule(() => order.push('child'), 0);
+  }, 0);
   await scheduler.advance(4000);
   assert.deepEqual(order, ['first', 'second', 'middle', 'parent', 'late', 'child']);
   assert.deepEqual(scheduler.pending(), []);
   assert.equal(scheduler.status().pending, 0);
 });
 
-test('a real scheduler clamps long delays to the timer limit and re-arms the remainder', async t => {
+test('a real scheduler clamps long delays to the timer limit and re-arms the remainder', async (t) => {
   const created = [];
   t.mock.method(globalThis, 'setTimeout', (task, delay) => {
-    const handle = { task, delay, unref() { return this; } };
+    const handle = {
+      task,
+      delay,
+      unref() {
+        return this;
+      },
+    };
     created.push(handle);
     return handle;
   });
   t.mock.method(globalThis, 'clearTimeout', () => {});
   const scheduler = createScheduler();
   let ran = false;
-  scheduler.schedule(() => { ran = true; }, MAX_TIMER_DELAY + 1000);
+  scheduler.schedule(() => {
+    ran = true;
+  }, MAX_TIMER_DELAY + 1000);
   assert.equal(created[0].delay, MAX_TIMER_DELAY);
   created[0].task();
   assert.equal(ran, false);
@@ -95,16 +123,27 @@ test('a real scheduler clamps long delays to the timer limit and re-arms the rem
 test('close cancels every task and refuses new ones', async () => {
   const scheduler = createScheduler();
   let ran = 0;
-  scheduler.schedule(() => { ran += 1; }, 0);
-  scheduler.schedule(() => { ran += 1; }, 60_000);
+  scheduler.schedule(() => {
+    ran += 1;
+  }, 0);
+  scheduler.schedule(() => {
+    ran += 1;
+  }, 60_000);
   scheduler.close();
-  assert.equal(scheduler.schedule(() => { ran += 1; }, 0), null);
-  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(
+    scheduler.schedule(() => {
+      ran += 1;
+    }, 0),
+    null,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(ran, 0);
   assert.deepEqual(scheduler.pending(), []);
   assert.equal(scheduler.status().closed, true);
   const manual = createScheduler({ clock: fixedClock(START), manual: true });
-  manual.schedule(() => { ran += 1; }, 0);
+  manual.schedule(() => {
+    ran += 1;
+  }, 0);
   manual.close();
   assert.equal(await manual.runDue(), 0);
   assert.equal(ran, 0);
@@ -112,27 +151,51 @@ test('close cancels every task and refuses new ones', async () => {
 
 test('the faults hook fails chosen attempts and the task runs on a later attempt', async () => {
   const attempts = [];
-  const scheduler = createScheduler({ clock: fixedClock(START), manual: true,
-    faults: ({ name, attempt }) => { attempts.push([name, attempt]); return attempt < 3 ? new Error('Invented transient fault') : null; } });
+  const scheduler = createScheduler({
+    clock: fixedClock(START),
+    manual: true,
+    faults: ({ name, attempt }) => {
+      attempts.push([name, attempt]);
+      return attempt < 3 ? new Error('Invented transient fault') : null;
+    },
+  });
   let ran = 0;
-  scheduler.schedule(() => { ran += 1; }, 0, { name: 'invented' });
+  scheduler.schedule(
+    () => {
+      ran += 1;
+    },
+    0,
+    { name: 'invented' },
+  );
   await scheduler.runDue();
   assert.equal(ran, 1);
-  assert.deepEqual(attempts, [['invented', 1], ['invented', 2], ['invented', 3]]);
+  assert.deepEqual(attempts, [
+    ['invented', 1],
+    ['invented', 2],
+    ['invented', 3],
+  ]);
   assert.equal(scheduler.status().faults, 2);
   assert.equal(scheduler.status().executed, 1);
 });
 
 test('drain waits for running tasks and tasks queued for the next turn', async () => {
-  const scheduler = createScheduler(), done = [];
-  scheduler.schedule(async () => { await new Promise(resolve => setTimeout(resolve, 20)); done.push('slow'); }, 0);
-  scheduler.schedule(() => { done.push('quick'); }, 0);
+  const scheduler = createScheduler(),
+    done = [];
+  scheduler.schedule(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    done.push('slow');
+  }, 0);
+  scheduler.schedule(() => {
+    done.push('quick');
+  }, 0);
   assert.equal(scheduler.status().pending, 2);
   await scheduler.drain();
   assert.deepEqual(done.sort(), ['quick', 'slow']);
   assert.equal(scheduler.status().pending, 0);
   // A failing task is counted, never thrown into the caller.
-  scheduler.schedule(() => { throw new Error('Invented task failure'); }, 0);
+  scheduler.schedule(() => {
+    throw new Error('Invented task failure');
+  }, 0);
   await scheduler.drain();
   assert.equal(scheduler.status().failures, 1);
 });

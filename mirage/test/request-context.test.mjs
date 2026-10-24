@@ -13,11 +13,16 @@ import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import { pluginCatalogue, pluginPhaseRequiresCheckpoint, pluginStepMatchesEntity, runPluginPhase } from '../lib/exported-plugins.mjs';
+import {
+  pluginCatalogue,
+  pluginPhaseRequiresCheckpoint,
+  pluginStepMatchesEntity,
+  runPluginPhase,
+} from '../lib/exported-plugins.mjs';
 import { createRequestContext, currentRequest, runWithRequest } from '../lib/request-context.mjs';
 import { ownsChange, runOwned } from '../lib/dataverse-transaction-context.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
-import { ownedFixture } from "../testing/owned-fixture.mjs";
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777771';
 const ENDPOINT = '77777777-7777-4777-8777-777777777772';
@@ -43,19 +48,32 @@ async function receiver(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'request-context-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'receiver.mjs'), RECEIVER);
-  const child = childProcess.spawn(process.execPath, [path.join(dir, 'receiver.mjs')], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = childProcess.spawn(process.execPath, [path.join(dir, 'receiver.mjs')], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
   ownedFixture(t).add(() => child.kill());
   const port = await new Promise((resolve, reject) => {
     let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk; const match = /PORT (\d+)/.exec(output); if (match) resolve(Number(match[1])); });
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+      const match = /PORT (\d+)/.exec(output);
+      if (match) resolve(Number(match[1]));
+    });
     child.on('exit', (code) => reject(new Error(`receiver exited with ${code}`)));
   });
-  return { origin: `http://127.0.0.1:${port}`, log: async () => (await fetch(`http://127.0.0.1:${port}/__log`)).json() };
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    log: async () => (await fetch(`http://127.0.0.1:${port}/__log`)).json(),
+  };
 }
 
 test('a child context keeps the correlation, records its parent and goes one level deeper', () => {
   const ids = sequentialIds();
-  const root = createRequestContext({ ids, clock: fixedClock(Date.parse('2026-02-01T00:00:00Z')), correlationId: CORRELATION });
+  const root = createRequestContext({
+    ids,
+    clock: fixedClock(Date.parse('2026-02-01T00:00:00Z')),
+    correlationId: CORRELATION,
+  });
   const child = root.child({ mode: 'async' });
   assert.equal(child.correlationId, CORRELATION);
   assert.equal(child.parentId, CORRELATION);
@@ -80,33 +98,129 @@ test('x-ms-correlation-request-id reaches the committed event and the asynchrono
   const hook = await receiver(t);
   const secretVar = `PAQVILO_REQUEST_CONTEXT_SECRET_${process.pid}`;
   process.env[secretVar] = 'request-context-secret';
-  t.after(() => { delete process.env[secretVar]; });
+  t.after(() => {
+    delete process.env[secretVar];
+  });
   const state = emptyState();
-  state.mappings.x_item = { logicalName: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name', userConfigured: true, fields: { x_name: { dataverseType: 'nvarchar' } }, relationships: {} };
+  state.mappings.x_item = {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    nameColumn: 'x_name',
+    userConfigured: true,
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+    relationships: {},
+  };
   state.tables.x_item = [];
   const store = await new DataStore({ state }).init();
-  const server = await startDataverseApi({ store, log: () => {}, extensions: [...EXTENSIONS],
-    settings: dataverseSettings({ enabled: true, applications: [{ appId: APP_ID, displayName: 'Invented caller', secretEnvironmentVariable: secretVar, roles: ['System Administrator'] }] }) });
+  const server = await startDataverseApi({
+    store,
+    log: () => {},
+    extensions: [...EXTENSIONS],
+    settings: dataverseSettings({
+      enabled: true,
+      applications: [
+        {
+          appId: APP_ID,
+          displayName: 'Invented caller',
+          secretEnvironmentVariable: secretVar,
+          roles: ['System Administrator'],
+        },
+      ],
+    }),
+  });
   const messageId = store.tableRows('sdkmessage').find((row) => row.name === 'Create').sdkmessageid;
-  const filterId = store.tableRows('sdkmessagefilter').find((row) => row.sdkmessageid === messageId && row.primaryobjecttypecode === 'x_item').sdkmessagefilterid;
-  await store.create('serviceendpoint', { serviceendpointid: ENDPOINT, name: 'Invented hook', url: `${hook.origin}/hook`, authtype: 5, contract: 8, authvalue: '' }, { admin: true });
-  await store.create('sdkmessageprocessingstep', { sdkmessageprocessingstepid: STEP, name: 'Invented async hook', sdkmessageid: messageId, sdkmessagefilterid: filterId,
-    eventhandler: { id: ENDPOINT, logical_name: 'serviceendpoint' }, stage: 40, mode: 1, rank: 1, statecode: 0, supporteddeployment: 0 }, { admin: true });
-  const webhooks = webhookDelivery(store), diagnostics = [];
-  const steps = () => pluginCatalogue({ plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store), handlers: new Map() });
-  store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks, diagnostic: (entry) => diagnostics.push(entry) }),
-    ({ entity, operation }) => steps().some((item) => item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context));
-  const runner = createAsyncPluginRunner({ store, items: steps, handlers: new Map(), runtimes: new Map(), webhooks, diagnostic: (entry) => diagnostics.push(entry), systemJobs: () => true });
-  t.after(async () => { await runner.close(); await server.close(); });
+  const filterId = store
+    .tableRows('sdkmessagefilter')
+    .find((row) => row.sdkmessageid === messageId && row.primaryobjecttypecode === 'x_item').sdkmessagefilterid;
+  await store.create(
+    'serviceendpoint',
+    {
+      serviceendpointid: ENDPOINT,
+      name: 'Invented hook',
+      url: `${hook.origin}/hook`,
+      authtype: 5,
+      contract: 8,
+      authvalue: '',
+    },
+    { admin: true },
+  );
+  await store.create(
+    'sdkmessageprocessingstep',
+    {
+      sdkmessageprocessingstepid: STEP,
+      name: 'Invented async hook',
+      sdkmessageid: messageId,
+      sdkmessagefilterid: filterId,
+      eventhandler: { id: ENDPOINT, logical_name: 'serviceendpoint' },
+      stage: 40,
+      mode: 1,
+      rank: 1,
+      statecode: 0,
+      supporteddeployment: 0,
+    },
+    { admin: true },
+  );
+  const webhooks = webhookDelivery(store),
+    diagnostics = [];
+  const steps = () =>
+    pluginCatalogue({
+      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
+      handlers: new Map(),
+    });
+  store.setPluginPipeline(
+    (context) =>
+      runPluginPhase({
+        ...context,
+        store,
+        items: steps(),
+        handlers: new Map(),
+        webhooks,
+        diagnostic: (entry) => diagnostics.push(entry),
+      }),
+    ({ entity, operation }) =>
+      steps().some(
+        (item) =>
+          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
+      ),
+    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
+  );
+  const runner = createAsyncPluginRunner({
+    store,
+    items: steps,
+    handlers: new Map(),
+    runtimes: new Map(),
+    webhooks,
+    diagnostic: (entry) => diagnostics.push(entry),
+    systemJobs: () => true,
+  });
+  t.after(async () => {
+    await runner.close();
+    await server.close();
+  });
   const events = [];
   store.addCommittedEvents((batch) => events.push(...batch));
 
-  const token = await (await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, { method: 'POST',
-    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: APP_ID, client_secret: process.env[secretVar], scope: `${server.origin}/.default` }) })).json();
-  const created = await fetch(`${server.origin}/api/data/v9.2/x_items`, { method: 'POST',
-    headers: { authorization: `Bearer ${token.access_token}`, 'content-type': 'application/json', 'x-ms-correlation-request-id': CORRELATION },
-    body: JSON.stringify({ x_name: 'Invented correlated row' }) });
+  const token = await (
+    await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
+      method: 'POST',
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: APP_ID,
+        client_secret: process.env[secretVar],
+        scope: `${server.origin}/.default`,
+      }),
+    })
+  ).json();
+  const created = await fetch(`${server.origin}/api/data/v9.2/x_items`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token.access_token}`,
+      'content-type': 'application/json',
+      'x-ms-correlation-request-id': CORRELATION,
+    },
+    body: JSON.stringify({ x_name: 'Invented correlated row' }),
+  });
   assert.equal(created.status, 204, await created.text());
   await store.flushCommittedEvents();
   await runner.drain();

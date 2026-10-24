@@ -18,17 +18,43 @@ import { businessRuleClientData } from '../../examples/project/baseline/business
 
 test('generated business rule strings survive script embedding without becoming HTML or code', () => {
   const hostile = '</script><img src=x onerror="globalThis.injected=true">\\\'\n]]>';
-  const rule = { id: '00000000-0000-0000-0000-000000000001', when: { field: hostile, equals: hostile },
-    actions: [{ type: 'setValue', field: 'target', value: hostile }, { type: 'error', field: 'target', message: hostile }] };
+  const rule = {
+    id: '00000000-0000-0000-0000-000000000001',
+    when: { field: hostile, equals: hostile },
+    actions: [
+      { type: 'setValue', field: 'target', value: hostile },
+      { type: 'error', field: 'target', message: hostile },
+    ],
+  };
   const code = businessRuleClientData(rule).match(/CDATA\[([\s\S]*)\]\]>/)[1];
   const fragment = parseFragment(`<script>${code}</script>`);
-  assert.deepEqual(fragment.childNodes.map(node => node.tagName), ['script']);
+  assert.deepEqual(
+    fragment.childNodes.map((node) => node.tagName),
+    ['script'],
+  );
   const calls = [];
-  const attribute = { getValue: () => hostile, setValue: value => calls.push(value), controls: [{ setNotification: value => calls.push(value) }] };
-  const sandbox = { Mscrm: { BusinessRules: { Utility: { isNull: value => value == null } } },
-    context: { getFormContext: () => ({ data: { entity: { attributes: { get: field => {
-      assert.ok([hostile, 'target'].includes(field)); return attribute;
-    } } } } }) } };
+  const attribute = {
+    getValue: () => hostile,
+    setValue: (value) => calls.push(value),
+    controls: [{ setNotification: (value) => calls.push(value) }],
+  };
+  const sandbox = {
+    Mscrm: { BusinessRules: { Utility: { isNull: (value) => value == null } } },
+    context: {
+      getFormContext: () => ({
+        data: {
+          entity: {
+            attributes: {
+              get: (field) => {
+                assert.ok([hostile, 'target'].includes(field));
+                return attribute;
+              },
+            },
+          },
+        },
+      }),
+    },
+  };
   vm.runInNewContext(`${code};pbl_00000000000000000000000000000001(context);`, sandbox);
   assert.deepEqual(calls, [hostile, hostile]);
   assert.equal(sandbox.injected, undefined);
@@ -50,34 +76,56 @@ test('HTML safe escape preserves formatting and removes malformed, encoded, and 
   for (const payload of payloads) {
     const output = sanitize(payload);
     const visit = (node) => {
-      assert.ok(!['script', 'style', 'svg', 'math', 'iframe', 'object', 'embed', 'base', 'meta'].includes(node.tagName), output);
+      assert.ok(
+        !['script', 'style', 'svg', 'math', 'iframe', 'object', 'embed', 'base', 'meta'].includes(node.tagName),
+        output,
+      );
       for (const attr of node.attrs ?? []) {
         assert.ok(!attr.name.startsWith('on') && !['srcdoc', 'xlink:href'].includes(attr.name), output);
-        if (['href', 'src'].includes(attr.name)) assert.ok(allowed.has(new URL(attr.value, 'https://fixture.invalid').protocol), output);
+        if (['href', 'src'].includes(attr.name))
+          assert.ok(allowed.has(new URL(attr.value, 'https://fixture.invalid').protocol), output);
       }
       for (const child of node.childNodes ?? []) visit(child);
     };
     visit(parseFragment(output));
     assert.equal(sanitize(output), output, 'sanitizing twice must be stable');
   }
-  assert.equal(sanitize('<p class="note">Hello <b>world</b> &amp; <a href="/details" title="Read">details</a><img src="/photo.png" alt="Photo"></p>'),
-    '<p class="note">Hello <b>world</b> &amp; <a href="/details" title="Read">details</a><img src="/photo.png" alt="Photo" /></p>');
-  assert.equal(sanitize('<p style="color: red; font-weight: bold; text-align: center; background: url(javascript:alert(1)); font-size: expression(alert(1))">Styled</p>'),
-    '<p style="color:red;font-weight:bold;text-align:center">Styled</p>');
+  assert.equal(
+    sanitize(
+      '<p class="note">Hello <b>world</b> &amp; <a href="/details" title="Read">details</a><img src="/photo.png" alt="Photo"></p>',
+    ),
+    '<p class="note">Hello <b>world</b> &amp; <a href="/details" title="Read">details</a><img src="/photo.png" alt="Photo" /></p>',
+  );
+  assert.equal(
+    sanitize(
+      '<p style="color: red; font-weight: bold; text-align: center; background: url(javascript:alert(1)); font-size: expression(alert(1))">Styled</p>',
+    ),
+    '<p style="color:red;font-weight:bold;text-align:center">Styled</p>',
+  );
 });
 
 test('FetchXML scanner keeps quoted brackets, namespaces, instructions and decoded attributes, and rejects truncated input', () => {
-  const xml = '<?xml version="1.0"?><!-- comment --><fetch xmlns:x="urn:test"><entity name="account"><filter><condition attribute="name" value="a &gt; b"/><condition attribute="name" value=\'quoted "value"\'/></filter></entity></fetch>';
+  const xml =
+    '<?xml version="1.0"?><!-- comment --><fetch xmlns:x="urn:test"><entity name="account"><filter><condition attribute="name" value="a &gt; b"/><condition attribute="name" value=\'quoted "value"\'/></filter></entity></fetch>';
   const parsed = parseXmlDocument(xml, { root: 'fetch' });
   assert.equal(parsed.attrs['xmlns:x'], 'urn:test');
   assert.equal(parsed.children[0].children[0].children[0].attrs.value, 'a > b');
   assert.equal(parsed.children[0].children[0].children[1].attrs.value, 'quoted "value"');
-  for (const source of ['<!--', '<?xml', '<fetch a="unterminated>', '<fetch><entity</fetch>', '<fetch a=noquotes/>', '<fetch>'])
+  for (const source of [
+    '<!--',
+    '<?xml',
+    '<fetch a="unterminated>',
+    '<fetch><entity</fetch>',
+    '<fetch a=noquotes/>',
+    '<fetch>',
+  ])
     assert.throws(() => parseXmlDocument(source), /Malformed|Unterminated|complete/);
 });
 
 test('dependency filename scanners preserve short legacy version/hash/modifier combinations', async () => {
-  const { cases } = JSON.parse(await fs.readFile(new URL('./fixtures/dependency-filenames.json', import.meta.url), 'utf8'));
+  const { cases } = JSON.parse(
+    await fs.readFile(new URL('./fixtures/dependency-filenames.json', import.meta.url), 'utf8'),
+  );
   assert.equal(cases.length, 338);
   for (const { library, input, expected } of cases) {
     const matcher = library === 'jquery' ? JQUERY_CORE_SCRIPT : BOOTSTRAP_CORE_SCRIPT;
@@ -88,8 +136,21 @@ test('dependency filename scanners preserve short legacy version/hash/modifier c
 
 test('hosted-resource classification parses actual hosts rather than hostname text in paths or credentials', () => {
   const hosted = (value) => HOSTED_RESOURCES.some((pattern) => pattern.test(value));
-  for (const value of ['https://app.powerbi.com/embed', '//sub.powerbi.com/embed', 'https://js.monitor.azure.com/scripts/b/ai.3.min.js', '/js/powerbi-client.min.js']) assert.equal(hosted(value), true, value);
-  for (const value of ['https://evil.invalid//powerbi.com/embed', 'https://evilpowerbi.com/embed', 'https://app.powerbi.com.evil.invalid/embed', 'https://powerbi.com@evil.invalid/embed', 'https://evil.invalid//js.monitor.azure.com/ai.3.min.js']) assert.equal(hosted(value), false, value);
+  for (const value of [
+    'https://app.powerbi.com/embed',
+    '//sub.powerbi.com/embed',
+    'https://js.monitor.azure.com/scripts/b/ai.3.min.js',
+    '/js/powerbi-client.min.js',
+  ])
+    assert.equal(hosted(value), true, value);
+  for (const value of [
+    'https://evil.invalid//powerbi.com/embed',
+    'https://evilpowerbi.com/embed',
+    'https://app.powerbi.com.evil.invalid/embed',
+    'https://powerbi.com@evil.invalid/embed',
+    'https://evil.invalid//js.monitor.azure.com/ai.3.min.js',
+  ])
+    assert.equal(hosted(value), false, value);
 });
 
 test('adversarial XML and dependency filenames complete within a bounded worker process', () => {
@@ -104,7 +165,11 @@ test('adversarial XML and dependency filenames complete within a bounded worker 
       if(matcher.test('/'+prefix+'-0'+'.0'.repeat(50000)+'!'))throw Error('Invalid filename accepted');
       if(matcher.test('/'+prefix+'.min'.repeat(50000)+'!'))throw Error('Invalid filename accepted');
     }`;
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { timeout: 5000, encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    timeout: 5000,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, result.stderr);
 });
@@ -116,7 +181,13 @@ test('cookie and selected-column names cannot change object prototypes', () => {
   assert.equal(cookies.__proto__, 'bad');
   assert.equal(cookies.a, 'first');
   const row = JSON.parse('{"itemid":"one","name":"Safe","__proto__":{"polluted":true}}');
-  const store = new DataStore({ state: { mappings: { item: { idColumn: 'itemid' } }, tables: { item: [row] }, settings: { permissionMode: 'permissive' } } });
+  const store = new DataStore({
+    state: {
+      mappings: { item: { idColumn: 'itemid' } },
+      tables: { item: [row] },
+      settings: { permissionMode: 'permissive' },
+    },
+  });
   const result = store.query('item', { $select: '__proto__,name' }).value[0];
   assert.equal(Object.getPrototypeOf(result), Object.prototype);
   assert.equal(result.polluted, undefined);
@@ -127,11 +198,14 @@ test('cookie and selected-column names cannot change object prototypes', () => {
 test('native CSV exports neutralize spreadsheet formulas while preserving signed numbers and CSV quoting', () => {
   for (const text of ['=1+1', '+SUM(A1:A2)', '-cmd|payload', '@SUM(A1)', '\t=1+1', '  =1+1'])
     assert.ok(csvCell(text).startsWith("'"), text);
-  assert.equal(csvCell(-12.5), '-12.5'); assert.equal(csvCell('-12.50'), '-12.50');
+  assert.equal(csvCell(-12.5), '-12.5');
+  assert.equal(csvCell('-12.50'), '-12.50');
   for (const number of [-1e-7, '-1e+7', '+.5', '-.25', '-12.', '-1.25E-7'])
     assert.equal(csvCell(number), String(number), 'signed numeric notation stays numeric');
-  assert.equal(csvCell('+12'), '+12'); assert.equal(csvCell('a,b'), '"a,b"');
-  assert.equal(csvCell('a"b'), '"a""b"'); assert.equal(csvCell('Name'), 'Name');
+  assert.equal(csvCell('+12'), '+12');
+  assert.equal(csvCell('a,b'), '"a,b"');
+  assert.equal(csvCell('a"b'), '"a""b"');
+  assert.equal(csvCell('Name'), 'Name');
 });
 
 test('source-corpus entity decoding never promotes double-encoded markup into source-derived reveal matches', async (t) => {
@@ -153,23 +227,51 @@ test('browser code construction keeps hostile JSON values as data', async () => 
   vm.runInContext(script, context);
   assert.equal(context.injected, undefined);
   assert.equal(context.Microsoft.Dynamic365.Portal.User.userName, hostile);
-  const live = { async page(_path, options) {
-    let received;
-    const sandbox = { document: { querySelector(selector) { received = selector; return { value: 'Reader' }; } } };
-    const value = vm.runInNewContext(options.probeExpression, sandbox);
-    assert.equal(sandbox.injected, undefined);
-    assert.equal(received, hostile);
-    return { probeValue: value };
-  } };
-  assert.deepEqual((await derivePersona({ live, roleNames: ['Reader'], probe: { selector: hostile }, delayMs: 0 })).roles, ['Reader']);
+  const live = {
+    async page(_path, options) {
+      let received;
+      const sandbox = {
+        document: {
+          querySelector(selector) {
+            received = selector;
+            return { value: 'Reader' };
+          },
+        },
+      };
+      const value = vm.runInNewContext(options.probeExpression, sandbox);
+      assert.equal(sandbox.injected, undefined);
+      assert.equal(received, hostile);
+      return { probeValue: value };
+    },
+  };
+  assert.deepEqual(
+    (await derivePersona({ live, roleNames: ['Reader'], probe: { selector: hostile }, delayMs: 0 })).roles,
+    ['Reader'],
+  );
   const driver = { ...live, origin: 'https://fixture.invalid' };
   driver.page = async (_path, options) => {
     let selector, attribute;
-    const sandbox = { document: { querySelector(value) { selector = value; return { getAttribute(value) { attribute = value; return '/record?id=one'; } }; } } };
+    const sandbox = {
+      document: {
+        querySelector(value) {
+          selector = value;
+          return {
+            getAttribute(value) {
+              attribute = value;
+              return '/record?id=one';
+            },
+          };
+        },
+      },
+    };
     const probeValue = vm.runInNewContext(options.probeExpression, sandbox);
-    assert.equal(sandbox.injected, undefined); assert.equal(selector, hostile); assert.equal(attribute, hostile);
+    assert.equal(sandbox.injected, undefined);
+    assert.equal(selector, hostile);
+    assert.equal(attribute, hostile);
     return { probeValue };
   };
-  const found = await __testing.discoverTarget(driver, { discover: { from: 'page', selector: hostile, attribute: hostile, path: '/' } });
+  const found = await __testing.discoverTarget(driver, {
+    discover: { from: 'page', selector: hostile, attribute: hostile, path: '/' },
+  });
   assert.deepEqual(found, { path: '/record?id=one' }, 'discovery executes the quoted selector and attribute as data');
 });

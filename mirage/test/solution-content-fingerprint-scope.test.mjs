@@ -9,8 +9,10 @@ import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs'
 
 const FLOW = '77777777-7777-4777-8777-777777777777';
 const files = {
-  'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedFingerprint</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
-  'Entities/x_item/Entity.xml': '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute></attributes></entity></EntityInfo></Entity>',
+  'Other/Solution.xml':
+    '<ImportExportXml><SolutionManifest><UniqueName>InventedFingerprint</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+  'Entities/x_item/Entity.xml':
+    '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute></attributes></entity></EntityInfo></Entity>',
   [`Workflows/Flow-${FLOW}.json.data.xml`]: `<Workflow WorkflowId="{${FLOW}}" Name="Invented flow"><StateCode>1</StateCode></Workflow>`,
   [`Workflows/Flow-${FLOW}.json`]: '{"properties":{"definition":{"actions":{"a":1}}}}',
   'WebResources/x_/script.js': 'console.log(1)',
@@ -34,7 +36,7 @@ async function solution(t) {
   return { root, dir, write, fingerprint };
 }
 
-test('changing a flow definition or a web resource changes the content fingerprint; an unrelated file does not', async t => {
+test('changing a flow definition or a web resource changes the content fingerprint; an unrelated file does not', async (t) => {
   const { write, fingerprint } = await solution(t);
   const original = await fingerprint();
   await write('Notes/readme.txt', 'still not imported');
@@ -49,14 +51,20 @@ test('changing a flow definition or a web resource changes the content fingerpri
   assert.notEqual(resource.metadata, flow.metadata);
 });
 
-test('side files keep the content fingerprint relocatable, and a ZIP layer covers them too', async t => {
+test('side files keep the content fingerprint relocatable, and a ZIP layer covers them too', async (t) => {
   const { root, dir, fingerprint } = await solution(t);
   const original = await fingerprint();
   const moved = path.join(root, 'relocated');
   await fs.cp(dir, moved, { recursive: true });
   assert.equal((await importSolutionData([moved])).contentFingerprint, original.data);
 
-  const zip = name => writeSolutionAssetEntries(Object.entries({ ...files, 'WebResources/x_/script.js': name }).map(([entry, text]) => ({ name: entry, data: Buffer.from(text) })));
+  const zip = (name) =>
+    writeSolutionAssetEntries(
+      Object.entries({ ...files, 'WebResources/x_/script.js': name }).map(([entry, text]) => ({
+        name: entry,
+        data: Buffer.from(text),
+      })),
+    );
   const archive = path.join(root, 'InventedFingerprint.zip');
   await fs.writeFile(archive, zip('console.log(1)'));
   const before = (await importSolutionData([archive])).contentFingerprint;

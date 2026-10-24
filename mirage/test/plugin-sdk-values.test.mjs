@@ -1,28 +1,154 @@
 import test from 'node:test';
-import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
-import {DataStore} from '../lib/data.mjs';
-import {prepareClrRuntime} from '../lib/plugin-clr.mjs';
-import {pluginCatalogue,runPluginPhase} from '../lib/exported-plugins.mjs';
+import { spawnSync } from 'node:child_process';
+import { DataStore } from '../lib/data.mjs';
+import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
-const user='10000000-0000-0000-0000-000000000001';
-const existing='20000000-0000-0000-0000-000000000001';
-const storeFixture=()=>new DataStore({state:{version:1,mappings:{widget:{entitySet:'widgets',idColumn:'widgetid'},child:{entitySet:'children',idColumn:'childid'}},tables:{widget:[{widgetid:existing,title:'Existing'}],child:[]},permissions:[],plugins:[],settings:{permissionMode:'permissive'}}});
+const user = '10000000-0000-0000-0000-000000000001';
+const existing = '20000000-0000-0000-0000-000000000001';
+const storeFixture = () =>
+  new DataStore({
+    state: {
+      version: 1,
+      mappings: {
+        widget: { entitySet: 'widgets', idColumn: 'widgetid' },
+        child: { entitySet: 'children', idColumn: 'childid' },
+      },
+      tables: { widget: [{ widgetid: existing, title: 'Existing' }], child: [] },
+      permissions: [],
+      plugins: [],
+      settings: { permissionMode: 'permissive' },
+    },
+  });
 
+test(
+  'Original SDK serializable values retain typed SharedVariables across plugin stages',
+  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-values-'));
+    t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
+    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      source = path.join(dir, 'SdkCodec.cs'),
+      assembly = path.join(dir, 'SdkCodec.dll');
+    await fs.writeFile(
+      source,
+      'using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {public sealed class SdkCodec:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var e=(Entity)c.InputParameters["Target"];var m=(string)e["title"];if(c.Stage==20){if(m=="bytes")c.SharedVariables["v"]=new byte[]{0,128,255};else if(m=="ints")c.SharedVariables["v"]=new int[]{1,2};else if(m=="strings")c.SharedVariables["v"]=new string[]{"alpha","beta"};else if(m=="stringnulls")c.SharedVariables["v"]=new string[]{"alpha",null,""};else if(m=="emptyarrays"){c.SharedVariables["b"]=new byte[0];c.SharedVariables["i"]=new int[0];c.SharedVariables["s"]=new string[0];}else if(m=="bools")c.SharedVariables["v"]=new bool[]{true,false};else if(m=="longs")c.SharedVariables["v"]=new long[]{9007199254740993L,-9007199254740993L};else if(m=="decimals")c.SharedVariables["v"]=new decimal[]{0.1m,79228162514264337593543950335m};else if(m=="doubles")c.SharedVariables["v"]=new double[]{2d,0.1d};else if(m=="dates")c.SharedVariables["v"]=new DateTime[]{new DateTime(2025,1,2,3,4,5,DateTimeKind.Utc)};else if(m=="entities")c.SharedVariables["v"]=new Entity[]{new Entity("widget",new Guid("20000000-0000-0000-0000-000000000001")),null};else if(m=="references")c.SharedVariables["v"]=new EntityReference[]{new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001")),null};else if(m=="options")c.SharedVariables["v"]=new OptionSetValue[]{new OptionSetValue(2),null};else if(m=="moneys")c.SharedVariables["v"]=new Money[]{new Money(0.1m),null};else if(m=="collections")c.SharedVariables["v"]=new EntityCollection[]{new EntityCollection(),null};else if(m=="queries")c.SharedVariables["v"]=new QueryExpression[]{new QueryExpression("widget"),null};else if(m=="jagged")c.SharedVariables["v"]=new string[][]{new string[]{"alpha",null},new string[0],null};else if(m=="objects")c.SharedVariables["v"]=new object[]{2,new Money(0.1m),new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001")),null};else if(m=="unknownarray")c.SharedVariables["v"]=new ushort[]{1};else if(m=="matrix")c.SharedVariables["v"]=new int[,]{{1,2}};else if(m=="reference"){var r=new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001"));r.KeyAttributes["title"]="Alternate";r.RowVersion="123456789";c.SharedVariables["v"]=r;}else if(m=="collection"){var rows=new EntityCollection(new Entity[]{new Entity("widget",new Guid("20000000-0000-0000-0000-000000000001"))});rows.EntityName="widget";rows.MinActiveRowVersion="1234";rows.TotalRecordCountLimitExceeded=true;c.SharedVariables["v"]=rows;}return;}if(m=="bytes"){var b=(byte[])c.SharedVariables["v"];if(b.Length!=3||b[1]!=128||b[2]!=255)throw new InvalidPluginExecutionException("Bytes values lost");}else if(m=="ints"){var b=(int[])c.SharedVariables["v"];if(b.Length!=2||b[1]!=2)throw new InvalidPluginExecutionException("Int array values lost");}else if(m=="strings"){var b=(string[])c.SharedVariables["v"];if(b.Length!=2||b[1]!="beta")throw new InvalidPluginExecutionException("String array values lost");}else if(m=="stringnulls"){var b=(string[])c.SharedVariables["v"];if(b.Length!=3||b[1]!=null||b[2]!="")throw new Exception("String null/empty changed");}else if(m=="emptyarrays"){if(((byte[])c.SharedVariables["b"]).Length!=0||((int[])c.SharedVariables["i"]).Length!=0||((string[])c.SharedVariables["s"]).Length!=0)throw new Exception("Empty array typing changed");}else if(m=="bools"){var b=(bool[])c.SharedVariables["v"];if(b.Length!=2||!b[0]||b[1])throw new Exception("Boolean array lost");}else if(m=="longs"){var b=(long[])c.SharedVariables["v"];if(b[0]!=9007199254740993L||b[1]!=-9007199254740993L)throw new Exception("Int64 array lost");}else if(m=="decimals"){var b=(decimal[])c.SharedVariables["v"];if(b[0]!=0.1m||b[1]!=79228162514264337593543950335m)throw new Exception("Decimal array lost");}else if(m=="doubles"){var b=(double[])c.SharedVariables["v"];if(b[0]!=2d||b[1]!=0.1d)throw new Exception("Double array lost");}else if(m=="dates"){var b=(DateTime[])c.SharedVariables["v"];if(b[0].Kind!=DateTimeKind.Utc||b[0]!=new DateTime(2025,1,2,3,4,5,DateTimeKind.Utc))throw new Exception("DateTime array lost");}else if(m=="entities"){var v=(Entity[])c.SharedVariables["v"];if(v.Length!=2||v[0].LogicalName!="widget"||v[1]!=null)throw new Exception("Entity array changed");}else if(m=="references"){var v=(EntityReference[])c.SharedVariables["v"];if(v.Length!=2||v[0].LogicalName!="widget"||v[1]!=null)throw new Exception("Reference array changed");}else if(m=="options"){var v=(OptionSetValue[])c.SharedVariables["v"];if(v.Length!=2||v[0].Value!=2||v[1]!=null)throw new Exception("Options array changed");}else if(m=="moneys"){var v=(Money[])c.SharedVariables["v"];if(v.Length!=2||v[0].Value!=0.1m||v[1]!=null)throw new Exception("Money array changed");}else if(m=="collections"){var v=(EntityCollection[])c.SharedVariables["v"];if(v.Length!=2||v[0].Entities.Count!=0||v[1]!=null)throw new Exception("Collection array changed");}else if(m=="queries"){var v=(QueryExpression[])c.SharedVariables["v"];if(v.Length!=2||v[0].EntityName!="widget"||v[1]!=null)throw new Exception("Query array changed");}else if(m=="jagged"){var v=(string[][])c.SharedVariables["v"];if(v.Length!=3||v[0][0]!="alpha"||v[0][1]!=null||v[1].Length!=0||v[2]!=null)throw new Exception("Jagged array changed");}else if(m=="objects"){var v=(object[])c.SharedVariables["v"];if(v.Length!=4||(int)v[0]!=2||((Money)v[1]).Value!=0.1m||((EntityReference)v[2]).LogicalName!="widget"||v[3]!=null)throw new Exception("Object array changed");}else if(m=="reference"){var r=(EntityReference)c.SharedVariables["v"];if(!r.KeyAttributes.Contains("title")||(string)r.KeyAttributes["title"]!="Alternate"||r.RowVersion!="123456789")throw new InvalidPluginExecutionException("Reference metadata lost");}else if(m=="collection"){var rows=(EntityCollection)c.SharedVariables["v"];if(rows.EntityName!="widget"||rows.MinActiveRowVersion!="1234"||!rows.TotalRecordCountLimitExceeded)throw new InvalidPluginExecutionException("Collection metadata lost");}}}}',
+    );
+    const build = spawnSync(
+      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
+      [
+        '/nologo',
+        '/target:library',
+        '/out:' + assembly,
+        '/reference:' + sdk,
+        '/reference:System.Runtime.Serialization.dll',
+        source,
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    assert.equal(build.status, 0, build.stdout + build.stderr);
 
-
-test('Original SDK serializable values retain typed SharedVariables across plugin stages',{skip:process.platform!=='win32'||!process.env.PAQ_TEST_XRM_SDK},async t=>{
- const dir=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-sdk-values-'));t.after(()=>fs.rm(dir,{recursive:true,force:true,maxRetries:5}));
- const sdk=path.resolve(process.env.PAQ_TEST_XRM_SDK),source=path.join(dir,'SdkCodec.cs'),assembly=path.join(dir,'SdkCodec.dll');
- await fs.writeFile(source,'using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {public sealed class SdkCodec:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var e=(Entity)c.InputParameters["Target"];var m=(string)e["title"];if(c.Stage==20){if(m=="bytes")c.SharedVariables["v"]=new byte[]{0,128,255};else if(m=="ints")c.SharedVariables["v"]=new int[]{1,2};else if(m=="strings")c.SharedVariables["v"]=new string[]{"alpha","beta"};else if(m=="stringnulls")c.SharedVariables["v"]=new string[]{"alpha",null,""};else if(m=="emptyarrays"){c.SharedVariables["b"]=new byte[0];c.SharedVariables["i"]=new int[0];c.SharedVariables["s"]=new string[0];}else if(m=="bools")c.SharedVariables["v"]=new bool[]{true,false};else if(m=="longs")c.SharedVariables["v"]=new long[]{9007199254740993L,-9007199254740993L};else if(m=="decimals")c.SharedVariables["v"]=new decimal[]{0.1m,79228162514264337593543950335m};else if(m=="doubles")c.SharedVariables["v"]=new double[]{2d,0.1d};else if(m=="dates")c.SharedVariables["v"]=new DateTime[]{new DateTime(2025,1,2,3,4,5,DateTimeKind.Utc)};else if(m=="entities")c.SharedVariables["v"]=new Entity[]{new Entity("widget",new Guid("20000000-0000-0000-0000-000000000001")),null};else if(m=="references")c.SharedVariables["v"]=new EntityReference[]{new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001")),null};else if(m=="options")c.SharedVariables["v"]=new OptionSetValue[]{new OptionSetValue(2),null};else if(m=="moneys")c.SharedVariables["v"]=new Money[]{new Money(0.1m),null};else if(m=="collections")c.SharedVariables["v"]=new EntityCollection[]{new EntityCollection(),null};else if(m=="queries")c.SharedVariables["v"]=new QueryExpression[]{new QueryExpression("widget"),null};else if(m=="jagged")c.SharedVariables["v"]=new string[][]{new string[]{"alpha",null},new string[0],null};else if(m=="objects")c.SharedVariables["v"]=new object[]{2,new Money(0.1m),new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001")),null};else if(m=="unknownarray")c.SharedVariables["v"]=new ushort[]{1};else if(m=="matrix")c.SharedVariables["v"]=new int[,]{{1,2}};else if(m=="reference"){var r=new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001"));r.KeyAttributes["title"]="Alternate";r.RowVersion="123456789";c.SharedVariables["v"]=r;}else if(m=="collection"){var rows=new EntityCollection(new Entity[]{new Entity("widget",new Guid("20000000-0000-0000-0000-000000000001"))});rows.EntityName="widget";rows.MinActiveRowVersion="1234";rows.TotalRecordCountLimitExceeded=true;c.SharedVariables["v"]=rows;}return;}if(m=="bytes"){var b=(byte[])c.SharedVariables["v"];if(b.Length!=3||b[1]!=128||b[2]!=255)throw new InvalidPluginExecutionException("Bytes values lost");}else if(m=="ints"){var b=(int[])c.SharedVariables["v"];if(b.Length!=2||b[1]!=2)throw new InvalidPluginExecutionException("Int array values lost");}else if(m=="strings"){var b=(string[])c.SharedVariables["v"];if(b.Length!=2||b[1]!="beta")throw new InvalidPluginExecutionException("String array values lost");}else if(m=="stringnulls"){var b=(string[])c.SharedVariables["v"];if(b.Length!=3||b[1]!=null||b[2]!="")throw new Exception("String null/empty changed");}else if(m=="emptyarrays"){if(((byte[])c.SharedVariables["b"]).Length!=0||((int[])c.SharedVariables["i"]).Length!=0||((string[])c.SharedVariables["s"]).Length!=0)throw new Exception("Empty array typing changed");}else if(m=="bools"){var b=(bool[])c.SharedVariables["v"];if(b.Length!=2||!b[0]||b[1])throw new Exception("Boolean array lost");}else if(m=="longs"){var b=(long[])c.SharedVariables["v"];if(b[0]!=9007199254740993L||b[1]!=-9007199254740993L)throw new Exception("Int64 array lost");}else if(m=="decimals"){var b=(decimal[])c.SharedVariables["v"];if(b[0]!=0.1m||b[1]!=79228162514264337593543950335m)throw new Exception("Decimal array lost");}else if(m=="doubles"){var b=(double[])c.SharedVariables["v"];if(b[0]!=2d||b[1]!=0.1d)throw new Exception("Double array lost");}else if(m=="dates"){var b=(DateTime[])c.SharedVariables["v"];if(b[0].Kind!=DateTimeKind.Utc||b[0]!=new DateTime(2025,1,2,3,4,5,DateTimeKind.Utc))throw new Exception("DateTime array lost");}else if(m=="entities"){var v=(Entity[])c.SharedVariables["v"];if(v.Length!=2||v[0].LogicalName!="widget"||v[1]!=null)throw new Exception("Entity array changed");}else if(m=="references"){var v=(EntityReference[])c.SharedVariables["v"];if(v.Length!=2||v[0].LogicalName!="widget"||v[1]!=null)throw new Exception("Reference array changed");}else if(m=="options"){var v=(OptionSetValue[])c.SharedVariables["v"];if(v.Length!=2||v[0].Value!=2||v[1]!=null)throw new Exception("Options array changed");}else if(m=="moneys"){var v=(Money[])c.SharedVariables["v"];if(v.Length!=2||v[0].Value!=0.1m||v[1]!=null)throw new Exception("Money array changed");}else if(m=="collections"){var v=(EntityCollection[])c.SharedVariables["v"];if(v.Length!=2||v[0].Entities.Count!=0||v[1]!=null)throw new Exception("Collection array changed");}else if(m=="queries"){var v=(QueryExpression[])c.SharedVariables["v"];if(v.Length!=2||v[0].EntityName!="widget"||v[1]!=null)throw new Exception("Query array changed");}else if(m=="jagged"){var v=(string[][])c.SharedVariables["v"];if(v.Length!=3||v[0][0]!="alpha"||v[0][1]!=null||v[1].Length!=0||v[2]!=null)throw new Exception("Jagged array changed");}else if(m=="objects"){var v=(object[])c.SharedVariables["v"];if(v.Length!=4||(int)v[0]!=2||((Money)v[1]).Value!=0.1m||((EntityReference)v[2]).LogicalName!="widget"||v[3]!=null)throw new Exception("Object array changed");}else if(m=="reference"){var r=(EntityReference)c.SharedVariables["v"];if(!r.KeyAttributes.Contains("title")||(string)r.KeyAttributes["title"]!="Alternate"||r.RowVersion!="123456789")throw new InvalidPluginExecutionException("Reference metadata lost");}else if(m=="collection"){var rows=(EntityCollection)c.SharedVariables["v"];if(rows.EntityName!="widget"||rows.MinActiveRowVersion!="1234"||!rows.TotalRecordCountLimitExceeded)throw new InvalidPluginExecutionException("Collection metadata lost");}}}}');
- const build=spawnSync(path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,'/reference:System.Runtime.Serialization.dll',source],{encoding:'utf8',windowsHide:true});assert.equal(build.status,0,build.stdout+build.stderr);
-
- const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root:dir,assembly:path.basename(assembly),typeName:'Invented.SdkCodec',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(dir,'cache'),serviceProfile:{userId:user,evidence:'Invented documented SDK serializable value regression',grants:[]},context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
- const steps=[20,40].map((stage,index)=>({id:'30000000-0000-0000-0000-'+String(index+1).padStart(12,'0'),enabled:true,entity:'widget',message:'Create',stage,rank:1,mode:0,supportedDeployment:0,filteringAttributes:[],images:[],typeName:'Invented.SdkCodec',assemblyId:'invented',assemblyName:'SdkCodec'})),runtimes=new Map(steps.map(step=>[step.id,runtime])),items=pluginCatalogue({plugins:{steps},runtimes,overrides:Object.fromEntries(steps.map(step=>['plugin-step:'+step.id,{mode:'clr'}]))}),results=[];
- for(const mode of ['bytes','ints','strings','stringnulls','emptyarrays','bools','longs','decimals','doubles','dates','reference','collection','entities','references','options','moneys','collections','queries','jagged','objects','unknownarray','matrix']){const store=storeFixture(),notes=[];store.setPluginPipeline(context=>runPluginPhase({...context,store,items,handlers:new Map(),runtimes,diagnostic:note=>notes.push(note)}));let outcome;try{await store.create('widgets',{title:mode});outcome={passed:true};}catch(e){outcome={passed:false,code:e.code,message:e.message,sourceException:e.details?.sourceException};}const started=notes.filter(n=>n.code==='PLUGIN_CLR_HOST_STARTED'),stopped=notes.filter(n=>n.code==='PLUGIN_CLR_HOST_STOPPED');assert.equal(started.length,stopped.length);assert.ok(stopped.every(n=>n.absenceVerified));if(['unknownarray','matrix'].includes(mode)){assert.equal(outcome.passed,false);assert.equal(outcome.code,'LocalPluginSdkUnsupported');assert.match(outcome.message,/Unsupported SDK array type/);assert.equal(started.length,1);assert.equal(store.snapshot().tables.widget.length,1);}else{assert.equal(started.length,2);assert.equal(store.snapshot().tables.widget.length,outcome.passed?2:1);results.push({mode,...outcome,hosts:started.length,hostsAbsent:true});}}
- assert.ok(results.every(r=>r.passed),'All documented typed SDK value roundtrips should retain their supported types and metadata');
-});
+    const runtime = await prepareClrRuntime({
+      trust: 'execute-local-assembly',
+      root: dir,
+      assembly: path.basename(assembly),
+      typeName: 'Invented.SdkCodec',
+      sdkRoot: path.dirname(sdk),
+      sdkAssembly: path.basename(sdk),
+      cacheRoot: path.join(dir, 'cache'),
+      serviceProfile: { userId: user, evidence: 'Invented documented SDK serializable value regression', grants: [] },
+      context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+    });
+    const steps = [20, 40].map((stage, index) => ({
+        id: '30000000-0000-0000-0000-' + String(index + 1).padStart(12, '0'),
+        enabled: true,
+        entity: 'widget',
+        message: 'Create',
+        stage,
+        rank: 1,
+        mode: 0,
+        supportedDeployment: 0,
+        filteringAttributes: [],
+        images: [],
+        typeName: 'Invented.SdkCodec',
+        assemblyId: 'invented',
+        assemblyName: 'SdkCodec',
+      })),
+      runtimes = new Map(steps.map((step) => [step.id, runtime])),
+      items = pluginCatalogue({
+        plugins: { steps },
+        runtimes,
+        overrides: Object.fromEntries(steps.map((step) => ['plugin-step:' + step.id, { mode: 'clr' }])),
+      }),
+      results = [];
+    for (const mode of [
+      'bytes',
+      'ints',
+      'strings',
+      'stringnulls',
+      'emptyarrays',
+      'bools',
+      'longs',
+      'decimals',
+      'doubles',
+      'dates',
+      'reference',
+      'collection',
+      'entities',
+      'references',
+      'options',
+      'moneys',
+      'collections',
+      'queries',
+      'jagged',
+      'objects',
+      'unknownarray',
+      'matrix',
+    ]) {
+      const store = storeFixture(),
+        notes = [];
+      store.setPluginPipeline((context) =>
+        runPluginPhase({
+          ...context,
+          store,
+          items,
+          handlers: new Map(),
+          runtimes,
+          diagnostic: (note) => notes.push(note),
+        }),
+      );
+      let outcome;
+      try {
+        await store.create('widgets', { title: mode });
+        outcome = { passed: true };
+      } catch (e) {
+        outcome = { passed: false, code: e.code, message: e.message, sourceException: e.details?.sourceException };
+      }
+      const started = notes.filter((n) => n.code === 'PLUGIN_CLR_HOST_STARTED'),
+        stopped = notes.filter((n) => n.code === 'PLUGIN_CLR_HOST_STOPPED');
+      assert.equal(started.length, stopped.length);
+      assert.ok(stopped.every((n) => n.absenceVerified));
+      if (['unknownarray', 'matrix'].includes(mode)) {
+        assert.equal(outcome.passed, false);
+        assert.equal(outcome.code, 'LocalPluginSdkUnsupported');
+        assert.match(outcome.message, /Unsupported SDK array type/);
+        assert.equal(started.length, 1);
+        assert.equal(store.snapshot().tables.widget.length, 1);
+      } else {
+        assert.equal(started.length, 2);
+        assert.equal(store.snapshot().tables.widget.length, outcome.passed ? 2 : 1);
+        results.push({ mode, ...outcome, hosts: started.length, hostsAbsent: true });
+      }
+    }
+    assert.ok(
+      results.every((r) => r.passed),
+      'All documented typed SDK value roundtrips should retain their supported types and metadata',
+    );
+  },
+);

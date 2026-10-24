@@ -1,9 +1,9 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { createSimulator } from "../server.mjs";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createSimulator } from '../server.mjs';
 import {
   PAGE_KINDS,
   PLATFORM_BUNDLES,
@@ -14,17 +14,22 @@ import {
   platformShell,
   pageKind,
   webFormsForm,
-} from "../lib/platform-manifest.mjs";
-import { signInHeaders } from "../testing/session.mjs";
-import { injectRuntime } from "../lib/platform.mjs";
-import { ownedFixture } from "../testing/owned-fixture.mjs";
+} from '../lib/platform-manifest.mjs';
+import { signInHeaders } from '../testing/session.mjs';
+import { injectRuntime } from '../lib/platform.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
-const SITE = "5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
-const CONTACT = "c0000000-0000-4000-8000-000000000011";
-const VALIDATED = 'var Page_Validators = (window.Page_Validators || []).concat([document.getElementById("RequiredFieldValidatorname")].filter(Boolean));';
+const SITE = '5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
+const CONTACT = 'c0000000-0000-4000-8000-000000000011';
+const VALIDATED =
+  'var Page_Validators = (window.Page_Validators || []).concat([document.getElementById("RequiredFieldValidatorname")].filter(Boolean));';
 
 test('runtime ViewState keys preserve authored markup and entity-like text inside the saved form state', () => {
-  const state = { v: 1, form: 'synthetic', values: { title: '<span class="label">A &amp;quot; B</span>', nested: '&amp;amp;&quot;' } };
+  const state = {
+    v: 1,
+    form: 'synthetic',
+    values: { title: '<span class="label">A &amp;quot; B</span>', nested: '&amp;amp;&quot;' },
+  };
   const encoded = '/wE' + Buffer.from(JSON.stringify(state)).toString('base64');
   const content = `<html><head></head><body><input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="${encoded}"><p><strong>Authored &amp; copy</strong></p></body></html>`;
   const token = 'synthetic-&quot;-<token>';
@@ -34,46 +39,69 @@ test('runtime ViewState keys preserve authored markup and entity-like text insid
   assert.ok(rendered.includes('<p><strong>Authored &amp; copy</strong></p>'));
 });
 
-test("page kinds follow the rendered native controls", () => {
-  assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "code-component", "modal-form"]);
-  assert.equal(pageKind('<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>'), "basic-form");
-  assert.equal(pageKind('<!--pp-native-form--><div id="WebFormControl_0123456789abcdef0123456789abcdef"></div>'), "multistep-form");
-  assert.equal(pageKind('<div data-mirage-component="codecomponent" data-pcf-schema="Sample.Widget"></div>'), "code-component");
-  assert.equal(pageKind('<div class="entity-grid entitylist" data-view-layouts=""></div>'), "list");
-  assert.equal(pageKind("<p>Welcome</p>", { authenticated: true }), "authenticated");
-  assert.equal(pageKind("<p>Welcome</p>"), "anonymous");
+test('page kinds follow the rendered native controls', () => {
+  assert.deepEqual(Object.keys(PAGE_KINDS), [
+    'anonymous',
+    'authenticated',
+    'list',
+    'basic-form',
+    'multistep-form',
+    'code-component',
+    'modal-form',
+  ]);
+  assert.equal(
+    pageKind('<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>'),
+    'basic-form',
+  );
+  assert.equal(
+    pageKind('<!--pp-native-form--><div id="WebFormControl_0123456789abcdef0123456789abcdef"></div>'),
+    'multistep-form',
+  );
+  assert.equal(
+    pageKind('<div data-mirage-component="codecomponent" data-pcf-schema="Sample.Widget"></div>'),
+    'code-component',
+  );
+  assert.equal(pageKind('<div class="entity-grid entitylist" data-view-layouts=""></div>'), 'list');
+  assert.equal(pageKind('<p>Welcome</p>', { authenticated: true }), 'authenticated');
+  assert.equal(pageKind('<p>Welcome</p>'), 'anonymous');
   // Every resource is attributed to page kinds and has a native and local counterpart.
   for (const resource of PLATFORM_RESOURCES) {
     assert.ok(resource.kinds.length && resource.kinds.every((kind) => kind in PAGE_KINDS), resource.id);
     assert.ok(resource.native, resource.id);
-    assert.ok("local" in resource, resource.id);
+    assert.ok('local' in resource, resource.id);
   }
 });
 
-test("standalone code components require a server form without native basic form scripts", () => {
+test('standalone code components require a server form without native basic form scripts', () => {
   const content = '<div data-pcf-schema="Sample.Widget"></div><form data-authored-form><input name="subject"></form>';
-  const regions = nativePageRegions({ content, action: "/components/" });
-  assert.equal(regions.kind, "code-component");
+  const regions = nativePageRegions({ content, action: '/components/' });
+  assert.equal(regions.kind, 'code-component');
   assert.match(regions.content, /^<form method="post" action="\/components\/" id="liquid_form">/);
   assert.ok(regions.content.includes(content));
   assert.match(regions.content, /__VIEWSTATE/);
   assert.doesNotMatch(regions.content, /xrm-adx\/js\/webform\.js/);
 });
 
-test("the WebForms server form carries the native hidden fields, postback stub and form scripts in order", () => {
-  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div><script>${VALIDATED}</script>` });
+test('the WebForms server form carries the native hidden fields, postback stub and form scripts in order', () => {
+  const html = webFormsForm({
+    action: '/contact-us/?a=1&b="x"',
+    content: `<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div><script>${VALIDATED}</script>`,
+  });
   // Without a form control only the ScriptManager's blockUI reference loads.
-  const bare = webFormsForm({ id: "content_form", content: "<p>Copy</p>" });
+  const bare = webFormsForm({ id: 'content_form', content: '<p>Copy</p>' });
   assert.match(bare, /<script src="\/js\/jquery\.blockUI\.js" type="text\/javascript"><\/script>/);
   assert.doesNotMatch(bare, /xrm-adx|WebForm_OnSubmit\(\)/);
-  assert.match(html, /^<form method="post" action="\/contact-us\/\?a=1&amp;b=&quot;x&quot;" onsubmit="javascript:return WebForm_OnSubmit\(\);" id="liquid_form">/);
+  assert.match(
+    html,
+    /^<form method="post" action="\/contact-us\/\?a=1&amp;b=&quot;x&quot;" onsubmit="javascript:return WebForm_OnSubmit\(\);" id="liquid_form">/,
+  );
   const order = [
     '<div class="aspNetHidden">',
     'name="__EVENTTARGET"',
     'name="__EVENTARGUMENT"',
     'name="__VIEWSTATE"',
     "var theForm = document.forms['liquid_form'];",
-    "function __doPostBack(eventTarget, eventArgument)",
+    'function __doPostBack(eventTarget, eventArgument)',
     // The WebForms script resources at their native paths (local equivalents without a capture).
     '<script src="/WebResource.axd?d=paqvilo-webforms&amp;t=0"',
     '<script src="/ScriptResource.axd?d=paqvilo-webuivalidation&amp;t=0"',
@@ -83,13 +111,13 @@ test("the WebForms server form carries the native hidden fields, postback stub a
     '<script src="/xrm-adx/js/webform.js"',
     '<script src="/xrm-adx/js/radcaptcha.js"',
     '<script src="/xrm-adx/js/crmentityformview.js"',
-    "function WebForm_OnSubmit()",
+    'function WebForm_OnSubmit()',
     '<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div>',
     // ASP.NET renders the generator and event validation fields last in the server form.
     'name="__VIEWSTATEGENERATOR"',
     'name="__VIEWSTATEENCRYPTED"',
     'name="__EVENTVALIDATION"',
-    "</div></form>",
+    '</div></form>',
   ];
   let at = -1;
   for (const marker of order) {
@@ -101,7 +129,13 @@ test("the WebForms server form carries the native hidden fields, postback stub a
   assert.doesNotMatch(html, /crmentityformview-datetime\.js/);
   // Read-only forms register no validators, so the form has no onsubmit handler; date
   // controls add the date-time form script; captured AXD paths replace the local runtime.
-  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<!--pp-native-form--><div id="EntityFormControl"><input id="effective" data-ui="datetimepicker" data-type="date"></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
+  const readOnly = webFormsForm({
+    id: 'content_form',
+    action: '/_portal/modal',
+    content:
+      '<!--pp-native-form--><div id="EntityFormControl"><input id="effective" data-ui="datetimepicker" data-type="date"></div>',
+    aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>',
+  });
   assert.match(readOnly, /^<form method="post" action="\/_portal\/modal" id="content_form">/);
   assert.match(readOnly, /var theForm = document\.forms\['content_form'\];/);
   assert.match(readOnly, /<script src="\/WebResource\.axd\?d=a&amp;t=1"><\/script>/);
@@ -109,81 +143,131 @@ test("the WebForms server form carries the native hidden fields, postback stub a
   assert.match(readOnly, /<script src="\/xrm-adx\/js\/crmentityformview-datetime\.js"/);
 });
 
-test("AXD scripts load inside the form on form pages and nowhere else; captured bundles replace local equivalents", () => {
-  const scripts = ["/WebResource.axd?d=w&t=1", { src: "/ScriptResource.axd?d=s&t=2", type: "text/javascript" }, "/scripts/extra.js"];
-  const render = (paths) => paths.map((entry) => `<script src="${typeof entry === "string" ? entry : entry.src}"></script>`).join("");
-  const form = nativePageRegions({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>', action: "/form/", bodyScripts: scripts, renderScripts: render });
-  assert.equal(form.kind, "basic-form");
+test('AXD scripts load inside the form on form pages and nowhere else; captured bundles replace local equivalents', () => {
+  const scripts = [
+    '/WebResource.axd?d=w&t=1',
+    { src: '/ScriptResource.axd?d=s&t=2', type: 'text/javascript' },
+    '/scripts/extra.js',
+  ];
+  const render = (paths) =>
+    paths.map((entry) => `<script src="${typeof entry === 'string' ? entry : entry.src}"></script>`).join('');
+  const form = nativePageRegions({
+    content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>',
+    action: '/form/',
+    bodyScripts: scripts,
+    renderScripts: render,
+  });
+  assert.equal(form.kind, 'basic-form');
   assert.match(form.content, /^<form method="post" action="\/form\/" id="liquid_form">/);
-  assert.ok(form.content.indexOf("/WebResource.axd?d=w&t=1") < form.content.indexOf("/ScriptResource.axd?d=s&t=2"));
-  assert.ok(form.content.indexOf("/ScriptResource.axd") < form.content.indexOf("<!--pp-native-form-->"));
+  assert.ok(form.content.indexOf('/WebResource.axd?d=w&t=1') < form.content.indexOf('/ScriptResource.axd?d=s&t=2'));
+  assert.ok(form.content.indexOf('/ScriptResource.axd') < form.content.indexOf('<!--pp-native-form-->'));
   assert.doesNotMatch(form.content, /webforms-compat\.js/);
   assert.equal(form.bodyScripts, '<script src="/scripts/extra.js"></script>');
-  const plain = nativePageRegions({ content: "<p>Guidance</p>", action: "/guidance/", bodyScripts: scripts, renderScripts: render, authenticated: true });
-  assert.equal(plain.kind, "authenticated");
-  assert.equal(plain.content, "<p>Guidance</p>");
+  const plain = nativePageRegions({
+    content: '<p>Guidance</p>',
+    action: '/guidance/',
+    bodyScripts: scripts,
+    renderScripts: render,
+    authenticated: true,
+  });
+  assert.equal(plain.kind, 'authenticated');
+  assert.equal(plain.content, '<p>Guidance</p>');
   assert.equal(plain.bodyScripts, '<script src="/scripts/extra.js"></script>');
 });
 
 async function shellFixture(t, { shellProfile, settings = [], observed = null } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-shell-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-shell-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
-    "website.yml": `adx_websiteid: ${SITE}\nadx_name: Shell\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
-    "Home.webpage.yml": "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: plain",
-    "Form.webpage.yml": "adx_webpageid: form\nadx_name: Form\nadx_partialurl: form\nadx_parentpageid: home\nadx_pagetemplateid: form",
-    "List.webpage.yml": "adx_webpageid: list\nadx_name: List\nadx_partialurl: list\nadx_parentpageid: home\nadx_pagetemplateid: list",
-    "Plain.pagetemplate.yml": "adx_pagetemplateid: plain\nadx_webtemplateid: plaincontent\nadx_usewebsiteheaderandfooter: true",
-    "FormPage.pagetemplate.yml": "adx_pagetemplateid: form\nadx_webtemplateid: formcontent\nadx_usewebsiteheaderandfooter: true",
-    "ListPage.pagetemplate.yml": "adx_pagetemplateid: list\nadx_webtemplateid: listcontent\nadx_usewebsiteheaderandfooter: true",
-    "Header.webtemplate.yml": "adx_webtemplateid: header\nadx_name: Header",
-    "Header.webtemplate.source.html": '<header class="site-header"><input type="hidden" id="userroles"></header>',
-    "Footer.webtemplate.yml": "adx_webtemplateid: footer\nadx_name: Footer",
-    "Footer.webtemplate.source.html": '<footer class="site-footer">Footer</footer><div id="cookie-banner">Cookies</div>',
-    "PlainContent.webtemplate.yml": "adx_webtemplateid: plaincontent\nadx_name: Plain content",
-    "PlainContent.webtemplate.source.html": '<div class="page-header"><h1>Welcome</h1></div><p>Home</p>',
-    "FormContent.webtemplate.yml": "adx_webtemplateid: formcontent\nadx_name: Form content",
-    "FormContent.webtemplate.source.html": '<div class="page-header"><h1>Contact us</h1></div>{% entityform name: "Contact" %}',
-    "ListContent.webtemplate.yml": "adx_webtemplateid: listcontent\nadx_name: List content",
-    "ListContent.webtemplate.source.html": "{% include 'entity_list' key: 'Accounts' %}",
-    "Contact.basicform.yml": "adx_entityformid: 2c000000-0000-4000-8000-000000000001\nadx_name: Contact\nadx_entityname: contact\nadx_mode: 100000000",
-    "Accounts.list.yml": "adx_entitylistid: 1c000000-0000-4000-8000-000000000001\nadx_name: Accounts\nadx_entityname: account\nadx_pagesize: 5",
+    'website.yml': `adx_websiteid: ${SITE}\nadx_name: Shell\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
+    'Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: plain',
+    'Form.webpage.yml':
+      'adx_webpageid: form\nadx_name: Form\nadx_partialurl: form\nadx_parentpageid: home\nadx_pagetemplateid: form',
+    'List.webpage.yml':
+      'adx_webpageid: list\nadx_name: List\nadx_partialurl: list\nadx_parentpageid: home\nadx_pagetemplateid: list',
+    'Plain.pagetemplate.yml':
+      'adx_pagetemplateid: plain\nadx_webtemplateid: plaincontent\nadx_usewebsiteheaderandfooter: true',
+    'FormPage.pagetemplate.yml':
+      'adx_pagetemplateid: form\nadx_webtemplateid: formcontent\nadx_usewebsiteheaderandfooter: true',
+    'ListPage.pagetemplate.yml':
+      'adx_pagetemplateid: list\nadx_webtemplateid: listcontent\nadx_usewebsiteheaderandfooter: true',
+    'Header.webtemplate.yml': 'adx_webtemplateid: header\nadx_name: Header',
+    'Header.webtemplate.source.html': '<header class="site-header"><input type="hidden" id="userroles"></header>',
+    'Footer.webtemplate.yml': 'adx_webtemplateid: footer\nadx_name: Footer',
+    'Footer.webtemplate.source.html':
+      '<footer class="site-footer">Footer</footer><div id="cookie-banner">Cookies</div>',
+    'PlainContent.webtemplate.yml': 'adx_webtemplateid: plaincontent\nadx_name: Plain content',
+    'PlainContent.webtemplate.source.html': '<div class="page-header"><h1>Welcome</h1></div><p>Home</p>',
+    'FormContent.webtemplate.yml': 'adx_webtemplateid: formcontent\nadx_name: Form content',
+    'FormContent.webtemplate.source.html':
+      '<div class="page-header"><h1>Contact us</h1></div>{% entityform name: "Contact" %}',
+    'ListContent.webtemplate.yml': 'adx_webtemplateid: listcontent\nadx_name: List content',
+    'ListContent.webtemplate.source.html': "{% include 'entity_list' key: 'Accounts' %}",
+    'Contact.basicform.yml':
+      'adx_entityformid: 2c000000-0000-4000-8000-000000000001\nadx_name: Contact\nadx_entityname: contact\nadx_mode: 100000000',
+    'Accounts.list.yml':
+      'adx_entitylistid: 1c000000-0000-4000-8000-000000000001\nadx_name: Accounts\nadx_entityname: account\nadx_pagesize: 5',
   };
-  if (settings.length) files["sitesetting.yml"] = settings.map(([name, value], index) => `- adx_sitesettingid: 5e100000-0000-4000-8000-00000000000${index}\n  adx_name: ${name}\n  adx_value: "${value}"`).join("\n");
+  if (settings.length)
+    files['sitesetting.yml'] = settings
+      .map(
+        ([name, value], index) =>
+          `- adx_sitesettingid: 5e100000-0000-4000-8000-00000000000${index}\n  adx_name: ${name}\n  adx_value: "${value}"`,
+      )
+      .join('\n');
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(dir, name), body);
   const initial = {
     version: 1,
-    mappings: { contact: { entitySet: "contacts", idColumn: "contactid", nameColumn: "fullname" }, account: { entitySet: "accounts", idColumn: "accountid", nameColumn: "name" } },
-    tables: { contact: [{ contactid: CONTACT, fullname: "Grace" }], account: [{ accountid: "a0000000-0000-4000-8000-000000000011", name: "Alpha" }] },
+    mappings: {
+      contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' },
+      account: { entitySet: 'accounts', idColumn: 'accountid', nameColumn: 'name' },
+    },
+    tables: {
+      contact: [{ contactid: CONTACT, fullname: 'Grace' }],
+      account: [{ accountid: 'a0000000-0000-4000-8000-000000000011', name: 'Alpha' }],
+    },
     permissions: [
-      { id: "contact", entity: "contact", scope: "global", roles: ["Member"], operations: ["read", "create"] },
-      { id: "account", entity: "account", scope: "global", roles: ["Member"], operations: ["read"] },
+      { id: 'contact', entity: 'contact', scope: 'global', roles: ['Member'], operations: ['read', 'create'] },
+      { id: 'account', entity: 'account', scope: 'global', roles: ['Member'], operations: ['read'] },
     ],
-    settings: { permissionMode: "enforce" },
+    settings: { permissionMode: 'enforce' },
     simulator: {
-      mode: "local",
-      pageMode: "local",
-      identity: { id: CONTACT, contactId: CONTACT, roles: ["Member"] },
+      mode: 'local',
+      pageMode: 'local',
+      identity: { id: CONTACT, contactId: CONTACT, roles: ['Member'] },
       live: { origin: null },
       endpoints: [],
       ...(shellProfile ? { shellProfile } : {}),
       componentSchemas: {
-        Contact: { entity: "contact", mode: 100000000, fields: [{ name: "fullname", label: "Full name", required: true }] },
-        Accounts: { entity: "account", fields: [{ name: "name", label: "Name" }] },
+        Contact: {
+          entity: 'contact',
+          mode: 100000000,
+          fields: [{ name: 'fullname', label: 'Full name', required: true }],
+        },
+        Accounts: { entity: 'account', fields: [{ name: 'name', label: 'Name' }] },
       },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, ...(observed ? { observed } : {}) });
+  const app = await createSimulator({
+    sourceDir: dir,
+    stateFile: path.join(dir, 'state.json'),
+    initial,
+    watch: false,
+    ...(observed ? { observed } : {}),
+  });
   ownedFixture(t).add(() => app.close());
-  const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
+  const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
   return { app, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
 }
 
-const bodyOf = (html) => html.slice(html.indexOf("<body"), html.lastIndexOf("</body>"));
+const bodyOf = (html) => html.slice(html.indexOf('<body'), html.lastIndexOf('</body>'));
 
-test("layout pages carry the native chrome around the header, content and footer; only form pages wrap the content", async (t) => {
-  const { get } = await shellFixture(t, { shellProfile: { bodyScripts: ["/WebResource.axd?d=w&t=1", "/ScriptResource.axd?d=s&t=2"] } });
-  const home = bodyOf(await (await get("/")).text());
+test('layout pages carry the native chrome around the header, content and footer; only form pages wrap the content', async (t) => {
+  const { get } = await shellFixture(t, {
+    shellProfile: { bodyScripts: ['/WebResource.axd?d=w&t=1', '/ScriptResource.axd?d=s&t=2'] },
+  });
+  const home = bodyOf(await (await get('/')).text());
   const order = (html, markers) => {
     let at = -1;
     for (const marker of markers) {
@@ -195,142 +279,226 @@ test("layout pages carry the native chrome around the header, content and footer
   // Local shell contract: offline bar, header, empty anti-forgery holder, the body-start
   // platform bundles, content, pcf-loader, native-controls root, controls host, footer (before
   // the authored cookie banner), then the after-footer bundles.
-  order(home, ['<div id="offlineNotificationBar" class="displayNone">', '<header class="site-header">', '<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', "/client-telemetry.bundle-", "/preform.moment_2_29_4.bundle-", "/pcf-extended.bundle-", "<p>Home</p>", "/pcf-loader.bundle-", '<div id="pp-native-controls-react-root"></div>', "/controls/host/main.", '<footer class="site-footer">', '<div id="cookie-banner">', "/bootstrap.bundle-", "/postpreform.bundle-", "/app.bundle-", "/default-1033.moment_2_29_4.bundle-"]);
+  order(home, [
+    '<div id="offlineNotificationBar" class="displayNone">',
+    '<header class="site-header">',
+    '<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>',
+    '/client-telemetry.bundle-',
+    '/preform.moment_2_29_4.bundle-',
+    '/pcf-extended.bundle-',
+    '<p>Home</p>',
+    '/pcf-loader.bundle-',
+    '<div id="pp-native-controls-react-root"></div>',
+    '/controls/host/main.',
+    '<footer class="site-footer">',
+    '<div id="cookie-banner">',
+    '/bootstrap.bundle-',
+    '/postpreform.bundle-',
+    '/app.bundle-',
+    '/default-1033.moment_2_29_4.bundle-',
+  ]);
   assert.doesNotMatch(home, /__sim-static/);
   assert.doesNotMatch(home, /<form\b|\.axd/);
-  const list = bodyOf(await (await get("/list/")).text());
+  const list = bodyOf(await (await get('/list/')).text());
   assert.match(list, /class="entity-grid entitylist/);
   assert.doesNotMatch(list, /id="liquid_form"|\.axd/);
-  const form = bodyOf(await (await get("/form/?source=1")).text());
-  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', '<div class="page-header"><h1>Contact us</h1></div>', "<!--pp-native-form-->", 'name="__EVENTVALIDATION"', "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
+  const form = bodyOf(await (await get('/form/?source=1')).text());
+  order(form, [
+    '<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>',
+    '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">',
+    '<script src="/WebResource.axd?d=w&amp;t=1"',
+    '<script src="/ScriptResource.axd?d=s&amp;t=2"',
+    '<script src="/xrm-adx/js/crmentityformview.js"',
+    '<div class="page-header"><h1>Contact us</h1></div>',
+    '<!--pp-native-form-->',
+    'name="__EVENTVALIDATION"',
+    '</form>',
+    '<div id="pp-native-controls-react-root"></div>',
+    '<footer class="site-footer">',
+  ]);
   assert.equal(form.match(/WebResource\.axd/g).length, 1);
   assert.equal(form.match(/id="antiforgerytoken"/g).length, 1);
   assert.doesNotMatch(form, /<input name="__RequestVerificationToken"/);
 });
 
-test("anti-forgery endpoints return the native self-closing input with the cookie token", async (t) => {
+test('anti-forgery endpoints return the native self-closing input with the cookie token', async (t) => {
   const { app, get } = await shellFixture(t);
-  for (const pathname of ["/_layout/tokenhtml?_=1", `/_portal/${SITE}/Layout/GetAntiForgeryToken?_=2`]) {
+  for (const pathname of ['/_layout/tokenhtml?_=1', `/_portal/${SITE}/Layout/GetAntiForgeryToken?_=2`]) {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
-    assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
-    assert.equal(await response.text(), `<input name="__RequestVerificationToken" type="hidden" value="${app.csrf}" />`);
-    assert.match(response.headers.get("set-cookie"), /^__RequestVerificationToken=[\w-]+; path=\/; secure; HttpOnly; SameSite=None$/);
+    assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(
+      await response.text(),
+      `<input name="__RequestVerificationToken" type="hidden" value="${app.csrf}" />`,
+    );
+    assert.match(
+      response.headers.get('set-cookie'),
+      /^__RequestVerificationToken=[\w-]+; path=\/; secure; HttpOnly; SameSite=None$/,
+    );
   }
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Layout/GetAntiForgeryToken`)).status, 404);
 });
 
-test("native platform paths are served from local equivalents unless the export provides them", async (t) => {
+test('native platform paths are served from local equivalents unless the export provides them', async (t) => {
   const { get } = await shellFixture(t);
   const expectations = [
-    ["/js/jquery.blockUI.js", /application\/javascript/, /\$\.blockUI = function/],
-    ["/JS/JQUERY.BLOCKUI.JS", /application\/javascript/, /\$\.unblockUI = function/],
-    ["/xrm-adx/js/webform.js", /application\/javascript/, /window\.__ppXrmWebForm/],
-    ["/xrm-adx/js/radcaptcha.js", /application\/javascript/, /onClientLoad/],
-    ["/xrm-adx/js/crmentityformview.js", /application\/javascript/, /validateRequiredField/],
-    ["/xrm-adx/js/crmentityformview-datetime.js", /application\/javascript/, /initializeDateControls/],
-    [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, /text\/javascript/, /^window\.ResourceManager = \{[\s\S]*"Home_DefaultText": "Home"/],
-    ["/__sim-static/native/platform-app-compat.js", /application\/javascript/, /aria-roledescription/],
-    ["/__sim-static/native/jquery-blockui-compat.js", /application\/javascript/, /blockOverlay/],
-    ["/__sim-static/native/platform-chrome.css", /text\/css/, /\.displayNone\{display:none!important\}/],
+    ['/js/jquery.blockUI.js', /application\/javascript/, /\$\.blockUI = function/],
+    ['/JS/JQUERY.BLOCKUI.JS', /application\/javascript/, /\$\.unblockUI = function/],
+    ['/xrm-adx/js/webform.js', /application\/javascript/, /window\.__ppXrmWebForm/],
+    ['/xrm-adx/js/radcaptcha.js', /application\/javascript/, /onClientLoad/],
+    ['/xrm-adx/js/crmentityformview.js', /application\/javascript/, /validateRequiredField/],
+    ['/xrm-adx/js/crmentityformview-datetime.js', /application\/javascript/, /initializeDateControls/],
+    [
+      `/_portal/${SITE}/Resources/ResourceManager?lang=en-US`,
+      /text\/javascript/,
+      /^window\.ResourceManager = \{[\s\S]*"Home_DefaultText": "Home"/,
+    ],
+    ['/__sim-static/native/platform-app-compat.js', /application\/javascript/, /aria-roledescription/],
+    ['/__sim-static/native/jquery-blockui-compat.js', /application\/javascript/, /blockOverlay/],
+    ['/__sim-static/native/platform-chrome.css', /text\/css/, /\.displayNone\{display:none!important\}/],
   ];
   for (const [pathname, type, body] of expectations) {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
-    assert.match(response.headers.get("content-type"), type, pathname);
+    assert.match(response.headers.get('content-type'), type, pathname);
     assert.match(await response.text(), body, pathname);
   }
-  for (const pathname of ["/css/images/web.png", "/resource/powerappsportal/img/close.png"]) {
+  for (const pathname of ['/css/images/web.png', '/resource/powerappsportal/img/close.png']) {
     const response = await get(pathname);
-    assert.equal(response.headers.get("content-type"), "image/png");
+    assert.equal(response.headers.get('content-type'), 'image/png');
     assert.deepEqual([...new Uint8Array(await response.arrayBuffer()).slice(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
   }
-  assert.equal((await get("/js/jquery.blockUI.js")).headers.get("x-sim-resource-provider"), "local-platform-equivalent");
+  assert.equal(
+    (await get('/js/jquery.blockUI.js')).headers.get('x-sim-resource-provider'),
+    'local-platform-equivalent',
+  );
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Resources/ResourceManager`)).status, 404);
 });
 
-test("local platform files are dated by their file and answer conditional requests with 304", async (t) => {
+test('local platform files are dated by their file and answer conditional requests with 304', async (t) => {
   const { app, get } = await shellFixture(t);
   const cases = [
-    ["/xrm-adx/js/crmentityformview.js", "lib/crmentityformview-compat.js"],
-    ["/xrm-adx/js/jquery.stackranking.js", "lib/stackranking-compat.js"],
-    ["/Areas/Account/css/account.css", "lib/account-compat.css"],
+    ['/xrm-adx/js/crmentityformview.js', 'lib/crmentityformview-compat.js'],
+    ['/xrm-adx/js/jquery.stackranking.js', 'lib/stackranking-compat.js'],
+    ['/Areas/Account/css/account.css', 'lib/account-compat.css'],
   ];
   for (const [pathname, file] of cases) {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
     const { mtimeMs } = await fs.stat(new URL(`../${file}`, import.meta.url));
-    assert.equal(response.headers.get("last-modified"), new Date(Math.floor(mtimeMs / 1000) * 1000).toUTCString(), pathname);
-    const again = await fetch(app.url + pathname, { headers: { "if-none-match": response.headers.get("etag") } });
+    assert.equal(
+      response.headers.get('last-modified'),
+      new Date(Math.floor(mtimeMs / 1000) * 1000).toUTCString(),
+      pathname,
+    );
+    const again = await fetch(app.url + pathname, { headers: { 'if-none-match': response.headers.get('etag') } });
     assert.equal(again.status, 304, pathname);
-    assert.equal(await again.text(), "", pathname);
+    assert.equal(await again.text(), '', pathname);
   }
 });
 
-test("an exported web file at a native platform path wins over the local equivalent", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-webfile-"));
+test('an exported web file at a native platform path wins over the local equivalent', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-webfile-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  await fs.mkdir(path.join(dir, "web-files"), { recursive: true });
-  await fs.writeFile(path.join(dir, "website.yml"), `adx_websiteid: ${SITE}\nadx_name: Files`);
-  await fs.writeFile(path.join(dir, "Home.webpage.yml"), "adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true");
-  await fs.writeFile(path.join(dir, "JsFolder.webpage.yml"), "adx_webpageid: jsfolder\nadx_name: js\nadx_partialurl: js\nadx_parentpageid: home");
-  await fs.writeFile(path.join(dir, "web-files", "jquery.blockUI.js.webfile.yml"), "adx_webfileid: blockui\nadx_name: jquery.blockUI.js\nadx_partialurl: jquery.blockUI.js\nadx_parentpageid: jsfolder\nfilename: jquery.blockUI.js\nmimetype: application/javascript");
-  await fs.writeFile(path.join(dir, "web-files", "jquery.blockUI.js"), "window.exportedBlockUI = true;");
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial: { version: 1, simulator: { mode: "local", pageMode: "local", identity: { roles: [] }, live: { origin: null }, endpoints: [] } }, watch: false });
+  await fs.mkdir(path.join(dir, 'web-files'), { recursive: true });
+  await fs.writeFile(path.join(dir, 'website.yml'), `adx_websiteid: ${SITE}\nadx_name: Files`);
+  await fs.writeFile(
+    path.join(dir, 'Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true',
+  );
+  await fs.writeFile(
+    path.join(dir, 'JsFolder.webpage.yml'),
+    'adx_webpageid: jsfolder\nadx_name: js\nadx_partialurl: js\nadx_parentpageid: home',
+  );
+  await fs.writeFile(
+    path.join(dir, 'web-files', 'jquery.blockUI.js.webfile.yml'),
+    'adx_webfileid: blockui\nadx_name: jquery.blockUI.js\nadx_partialurl: jquery.blockUI.js\nadx_parentpageid: jsfolder\nfilename: jquery.blockUI.js\nmimetype: application/javascript',
+  );
+  await fs.writeFile(path.join(dir, 'web-files', 'jquery.blockUI.js'), 'window.exportedBlockUI = true;');
+  const app = await createSimulator({
+    sourceDir: dir,
+    stateFile: path.join(dir, 'state.json'),
+    initial: {
+      version: 1,
+      simulator: { mode: 'local', pageMode: 'local', identity: { roles: [] }, live: { origin: null }, endpoints: [] },
+    },
+    watch: false,
+  });
   ownedFixture(t).add(() => app.close());
   const response = await fetch(`${app.url}/js/jquery.blockUI.js`);
   assert.equal(response.status, 200);
-  assert.equal((await response.text()).split("\n//# sourceMappingURL=")[0], "window.exportedBlockUI = true;");
-  assert.notEqual(response.headers.get("x-sim-resource-provider"), "local-platform-equivalent");
+  assert.equal((await response.text()).split('\n//# sourceMappingURL=')[0], 'window.exportedBlockUI = true;');
+  assert.notEqual(response.headers.get('x-sim-resource-provider'), 'local-platform-equivalent');
 });
 
 test("legacy ASPX page templates render their WebForms layout with the page's attached form and list", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-rewrite-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-rewrite-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
-    "website.yml": `adx_websiteid: ${SITE}\nadx_name: Rewrite\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
-    "Header.webtemplate.yml": "adx_webtemplateid: header\nadx_name: Header",
-    "Header.webtemplate.source.html": "<header>Header</header>",
-    "Footer.webtemplate.yml": "adx_webtemplateid: footer\nadx_name: Footer",
-    "Footer.webtemplate.source.html": "<footer>Footer</footer>",
-    "Home.webpage.yml": "adx_webpageid: 0e000000-0000-4000-8000-000000000001\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000003",
-    "Cases.webpage.yml": "adx_webpageid: 0e000000-0000-4000-8000-000000000002\nadx_name: Cases\nadx_title: Case list\nadx_partialurl: cases\nadx_parentpageid: 0e000000-0000-4000-8000-000000000001\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000001\nadx_entitylist: 1c000000-0000-4000-8000-000000000001",
-    "Cases.webpage.copy.html": "<p>Open cases</p>",
-    "Profile.webpage.yml": "adx_webpageid: 0e000000-0000-4000-8000-000000000003\nadx_name: Profile\nadx_partialurl: profile\nadx_parentpageid: 0e000000-0000-4000-8000-000000000001\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000002\nadx_entityform: 2c000000-0000-4000-8000-000000000001",
-    "Missing.webpage.yml": "adx_webpageid: 0e000000-0000-4000-8000-000000000004\nadx_name: Missing\nadx_partialurl: missing\nadx_parentpageid: 0e000000-0000-4000-8000-000000000001\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000001\nadx_entityform: 2c000000-0000-4000-8000-0000000000ff",
-    "WebForm.pagetemplate.yml": "adx_pagetemplateid: 0f000000-0000-4000-8000-000000000001\nadx_name: Web Form\nadx_rewriteurl: ~/Pages/WebForm.aspx",
-    "Page.pagetemplate.yml": "adx_pagetemplateid: 0f000000-0000-4000-8000-000000000002\nadx_name: Page\nadx_rewriteurl: ~/Pages/Page.aspx",
-    "Blank.pagetemplate.yml": "adx_pagetemplateid: 0f000000-0000-4000-8000-000000000003\nadx_name: Blank\nadx_rewriteurl: ~/Pages/Blank.aspx",
-    "Cases.list.yml": "adx_entitylistid: 1c000000-0000-4000-8000-000000000001\nadx_name: Cases\nadx_entityname: account\nadx_pagesize: 5",
-    "Profile.basicform.yml": "adx_entityformid: 2c000000-0000-4000-8000-000000000001\nadx_name: Profile form\nadx_entityname: contact\nadx_mode: 100000000",
+    'website.yml': `adx_websiteid: ${SITE}\nadx_name: Rewrite\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
+    'Header.webtemplate.yml': 'adx_webtemplateid: header\nadx_name: Header',
+    'Header.webtemplate.source.html': '<header>Header</header>',
+    'Footer.webtemplate.yml': 'adx_webtemplateid: footer\nadx_name: Footer',
+    'Footer.webtemplate.source.html': '<footer>Footer</footer>',
+    'Home.webpage.yml':
+      'adx_webpageid: 0e000000-0000-4000-8000-000000000001\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000003',
+    'Cases.webpage.yml':
+      'adx_webpageid: 0e000000-0000-4000-8000-000000000002\nadx_name: Cases\nadx_title: Case list\nadx_partialurl: cases\nadx_parentpageid: 0e000000-0000-4000-8000-000000000001\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000001\nadx_entitylist: 1c000000-0000-4000-8000-000000000001',
+    'Cases.webpage.copy.html': '<p>Open cases</p>',
+    'Profile.webpage.yml':
+      'adx_webpageid: 0e000000-0000-4000-8000-000000000003\nadx_name: Profile\nadx_partialurl: profile\nadx_parentpageid: 0e000000-0000-4000-8000-000000000001\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000002\nadx_entityform: 2c000000-0000-4000-8000-000000000001',
+    'Missing.webpage.yml':
+      'adx_webpageid: 0e000000-0000-4000-8000-000000000004\nadx_name: Missing\nadx_partialurl: missing\nadx_parentpageid: 0e000000-0000-4000-8000-000000000001\nadx_pagetemplateid: 0f000000-0000-4000-8000-000000000001\nadx_entityform: 2c000000-0000-4000-8000-0000000000ff',
+    'WebForm.pagetemplate.yml':
+      'adx_pagetemplateid: 0f000000-0000-4000-8000-000000000001\nadx_name: Web Form\nadx_rewriteurl: ~/Pages/WebForm.aspx',
+    'Page.pagetemplate.yml':
+      'adx_pagetemplateid: 0f000000-0000-4000-8000-000000000002\nadx_name: Page\nadx_rewriteurl: ~/Pages/Page.aspx',
+    'Blank.pagetemplate.yml':
+      'adx_pagetemplateid: 0f000000-0000-4000-8000-000000000003\nadx_name: Blank\nadx_rewriteurl: ~/Pages/Blank.aspx',
+    'Cases.list.yml':
+      'adx_entitylistid: 1c000000-0000-4000-8000-000000000001\nadx_name: Cases\nadx_entityname: account\nadx_pagesize: 5',
+    'Profile.basicform.yml':
+      'adx_entityformid: 2c000000-0000-4000-8000-000000000001\nadx_name: Profile form\nadx_entityname: contact\nadx_mode: 100000000',
   };
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(dir, name), body);
   const initial = {
     version: 1,
-    mappings: { contact: { entitySet: "contacts", idColumn: "contactid", nameColumn: "fullname" }, account: { entitySet: "accounts", idColumn: "accountid", nameColumn: "name" } },
-    tables: { contact: [{ contactid: CONTACT, fullname: "Grace" }], account: [{ accountid: "a0000000-0000-4000-8000-000000000021", name: "Alpha" }] },
+    mappings: {
+      contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' },
+      account: { entitySet: 'accounts', idColumn: 'accountid', nameColumn: 'name' },
+    },
+    tables: {
+      contact: [{ contactid: CONTACT, fullname: 'Grace' }],
+      account: [{ accountid: 'a0000000-0000-4000-8000-000000000021', name: 'Alpha' }],
+    },
     permissions: [
-      { id: "contact", entity: "contact", scope: "global", roles: ["Member"], operations: ["read", "create"] },
-      { id: "account", entity: "account", scope: "global", roles: ["Member"], operations: ["read"] },
+      { id: 'contact', entity: 'contact', scope: 'global', roles: ['Member'], operations: ['read', 'create'] },
+      { id: 'account', entity: 'account', scope: 'global', roles: ['Member'], operations: ['read'] },
     ],
-    settings: { permissionMode: "enforce" },
+    settings: { permissionMode: 'enforce' },
     simulator: {
-      mode: "local",
-      pageMode: "local",
+      mode: 'local',
+      pageMode: 'local',
       identity: { roles: [] },
       live: { origin: null },
       endpoints: [],
-      componentSchemas: { "2c000000-0000-4000-8000-000000000001": { entity: "contact", mode: 100000000, fields: [{ name: "fullname", label: "Full name", required: true }] } },
+      componentSchemas: {
+        '2c000000-0000-4000-8000-000000000001': {
+          entity: 'contact',
+          mode: 100000000,
+          fields: [{ name: 'fullname', label: 'Full name', required: true }],
+        },
+      },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
   ownedFixture(t).add(() => app.close());
-  const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
+  const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
   const body = async (pathname) => bodyOf(await (await fetch(app.url + pathname, { headers: session })).text());
   // WebForm.aspx (WebForms.master): content_form, page heading, page copy, default
   // validation hooks and the attached list as the static EntityListControl. The list's view is
   // absent from the (empty) solution sources, so the grid uses the primary name column.
-  const cases = await body("/cases/");
+  const cases = await body('/cases/');
   const order = (html, markers) => {
     let at = -1;
     for (const marker of markers) {
@@ -339,210 +507,374 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
       at = next;
     }
   };
-  order(cases, ['<form method="post" action="/cases/" id="content_form">', '<script src="/js/jquery.blockUI.js"', '<div class="page-heading"><div class="container">', '<ul class="breadcrumb">', '<div class="page-header"><h1>Case list</h1></div><div class="notifications"></div>', '<div class="container">', "<p>Open cases</p>", "function entityFormClientValidate()", "function webFormClientValidate()", '<div id="EntityListControl" class="entitylist">', 'class="entity-grid entitylist', "</form>"]);
+  order(cases, [
+    '<form method="post" action="/cases/" id="content_form">',
+    '<script src="/js/jquery.blockUI.js"',
+    '<div class="page-heading"><div class="container">',
+    '<ul class="breadcrumb">',
+    '<div class="page-header"><h1>Case list</h1></div><div class="notifications"></div>',
+    '<div class="container">',
+    '<p>Open cases</p>',
+    'function entityFormClientValidate()',
+    'function webFormClientValidate()',
+    '<div id="EntityListControl" class="entitylist">',
+    'class="entity-grid entitylist',
+    '</form>',
+  ]);
   assert.doesNotMatch(cases, /xrm-adx\/js\/crmentityformview\.js/);
-  const layout = JSON.parse(Buffer.from(/data-view-layouts="([^"]*)"/.exec(cases)[1], "base64").toString("utf8"))[0];
-  assert.deepEqual(layout.Columns.map((column) => column.LogicalName), ["name"]);
+  const layout = JSON.parse(Buffer.from(/data-view-layouts="([^"]*)"/.exec(cases)[1], 'base64').toString('utf8'))[0];
+  assert.deepEqual(
+    layout.Columns.map((column) => column.LogicalName),
+    ['name'],
+  );
   // Page.aspx (WebFormsContent.master): two columns, the static EntityFormControl, sidebar.
-  const profile = await body("/profile/");
-  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<!--pp-native-form--><div id="EntityFormControl">', 'name="ctl00$ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
+  const profile = await body('/profile/');
+  order(profile, [
+    'id="content_form"',
+    '<div class="row"><div class="col-md-8">',
+    '<!--pp-native-form--><div id="EntityFormControl">',
+    'name="ctl00$ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$',
+    '<div class="page-metadata clearfix">',
+    '<div class="col-md-4"><div class="sidebar">',
+  ]);
   assert.match(profile, /<script src="\/xrm-adx\/js\/crmentityformview\.js"/);
   // A page whose attached basic form is not in the export renders without it.
-  const missing = await (await fetch(app.url + "/missing/", { headers: session })).text();
+  const missing = await (await fetch(app.url + '/missing/', { headers: session })).text();
   assert.match(missing, /<div class="page-copy">/);
   assert.doesNotMatch(missing, /pp-native-form|Liquid error/);
   // Blank.aspx (Default.master) has no server form.
-  const home = await body("/");
+  const home = await body('/');
   assert.doesNotMatch(home, /content_form|liquid_form/);
-  const diagnostics = (await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.csrf } })).json());
-  const entries = Array.isArray(diagnostics) ? diagnostics : diagnostics.diagnostics ?? [];
-  assert.ok(entries.some((entry) => entry.code === "SYSTEMVIEW_UNRESOLVED" && entry.path === "/cases/"));
-  assert.ok(entries.some((entry) => entry.code === "COMPONENT_NOT_EXPORTED" && entry.path === "/missing/"));
+  const diagnostics = await (
+    await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { 'x-sim-csrf': app.csrf } })
+  ).json();
+  const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
+  assert.ok(entries.some((entry) => entry.code === 'SYSTEMVIEW_UNRESOLVED' && entry.path === '/cases/'));
+  assert.ok(entries.some((entry) => entry.code === 'COMPONENT_NOT_EXPORTED' && entry.path === '/missing/'));
 });
 
-test("classic workflow execution reports its local limitation and Bootstrap glyph fonts are served", async (t) => {
+test('classic workflow execution reports its local limitation and Bootstrap glyph fonts are served', async (t) => {
   const { app, get } = await shellFixture(t);
-  const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
+  const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
   const workflow = await fetch(`${app.url}/_services/execute-workflow/${SITE}`, {
-    method: "POST",
-    headers: { ...session, "content-type": "application/json", __RequestVerificationToken: app.csrf },
-    body: JSON.stringify({ workflow: { LogicalName: "workflow", Id: "0a000000-0000-4000-8000-000000000099" }, entity: { LogicalName: "contact", Id: CONTACT } }),
+    method: 'POST',
+    headers: { ...session, 'content-type': 'application/json', __RequestVerificationToken: app.csrf },
+    body: JSON.stringify({
+      workflow: { LogicalName: 'workflow', Id: '0a000000-0000-4000-8000-000000000099' },
+      entity: { LogicalName: 'contact', Id: CONTACT },
+    }),
   });
   assert.equal(workflow.status, 501);
   assert.match(JSON.stringify(await workflow.json()), /WorkflowUnsupported/);
-  for (const [name, type] of [["glyphicons-halflings-regular.woff2", "font/woff2"], ["glyphicons-halflings-regular.ttf", "font/ttf"]]) {
+  for (const [name, type] of [
+    ['glyphicons-halflings-regular.woff2', 'font/woff2'],
+    ['glyphicons-halflings-regular.ttf', 'font/ttf'],
+  ]) {
     const font = await get(`/fonts/${name}`);
     assert.equal(font.status, 200, name);
-    assert.equal(font.headers.get("content-type"), type);
+    assert.equal(font.headers.get('content-type'), type);
   }
 });
 
 // The 18 platform bundles in the default shell order (the control stylesheet last, outside the page slots).
 const BOOTSTRAP3_BUNDLES = [
-  "dist/font-awesome.bundle-3d8a58a48f.css",
-  "dist/preform.bundle-b72a6ea21d.css",
-  "dist/privatemode.bundle-049b12b66e.css",
-  "dist/pwa-style.bundle-55718a4c0d.css",
-  "dist/pcf-style.bundle-373a0f4982.css",
-  "dist/client-telemetry.bundle-d490766e4f.js",
-  "dist/client-telemetry-wrapper.bundle-633e70f51b.js",
-  "dist/preform.moment_2_29_4.bundle-750b699ecd.js",
-  "dist/pcf-dependency.bundle-805a1661b7.js",
-  "dist/pcf.bundle-60440c37cb.js",
-  "dist/pcf-extended.bundle-b0e01b5622.js",
-  "dist/pcf-loader.bundle-f4a0e619b8.js",
-  "controls/host/main.3ee2491f78.chunk.js",
-  "dist/bootstrap.bundle-105a4995b8.js",
-  "dist/postpreform.bundle-4687dda8df.js",
-  "dist/app.bundle-1e948af604.js",
-  "dist/default-1033.moment_2_29_4.bundle-eda4e638fd.js",
-  "1.4.772-master/controlsAssets/msos.4774A53.css",
+  'dist/font-awesome.bundle-3d8a58a48f.css',
+  'dist/preform.bundle-b72a6ea21d.css',
+  'dist/privatemode.bundle-049b12b66e.css',
+  'dist/pwa-style.bundle-55718a4c0d.css',
+  'dist/pcf-style.bundle-373a0f4982.css',
+  'dist/client-telemetry.bundle-d490766e4f.js',
+  'dist/client-telemetry-wrapper.bundle-633e70f51b.js',
+  'dist/preform.moment_2_29_4.bundle-750b699ecd.js',
+  'dist/pcf-dependency.bundle-805a1661b7.js',
+  'dist/pcf.bundle-60440c37cb.js',
+  'dist/pcf-extended.bundle-b0e01b5622.js',
+  'dist/pcf-loader.bundle-f4a0e619b8.js',
+  'controls/host/main.3ee2491f78.chunk.js',
+  'dist/bootstrap.bundle-105a4995b8.js',
+  'dist/postpreform.bundle-4687dda8df.js',
+  'dist/app.bundle-1e948af604.js',
+  'dist/default-1033.moment_2_29_4.bundle-eda4e638fd.js',
+  '1.4.772-master/controlsAssets/msos.4774A53.css',
 ].map((name) => `/resource/powerappsportal/${name}`);
 
-test("platform bundles follow the live order per Bootstrap build; a captured shell supplies the deployed names", () => {
+test('platform bundles follow the live order per Bootstrap build; a captured shell supplies the deployed names', () => {
   const sources = (html) => [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
-  const shell = platformShell({ websiteId: `{${SITE.toUpperCase()}}`, bootstrap: '<link rel="stylesheet" href="/bootstrap.min.css">' });
+  const shell = platformShell({
+    websiteId: `{${SITE.toUpperCase()}}`,
+    bootstrap: '<link rel="stylesheet" href="/bootstrap.min.css">',
+  });
   assert.equal(PLATFORM_BUNDLES.length, 18);
   // The MultiSelectPicklist stylesheet has its own slot: pages link it only with a multi-select column.
-  assert.match(shell.controlsStyle, /^<link href="\/resource\/powerappsportal\/[^/"]+\/controlsAssets\/msos\.[0-9a-f]+\.css" rel="stylesheet">$/i);
-  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyOpen, shell.bodyStart, shell.afterContent, shell.afterFooter, shell.controlsStyle].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
+  assert.match(
+    shell.controlsStyle,
+    /^<link href="\/resource\/powerappsportal\/[^/"]+\/controlsAssets\/msos\.[0-9a-f]+\.css" rel="stylesheet">$/i,
+  );
+  assert.deepEqual(
+    [
+      shell.headStart,
+      shell.headEnd,
+      shell.bodyOpen,
+      shell.bodyStart,
+      shell.afterContent,
+      shell.afterFooter,
+      shell.controlsStyle,
+    ].flatMap(sources),
+    [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, '/bootstrap.min.css', ...BOOTSTRAP3_BUNDLES],
+  );
   // pcf-style opens the body; the other stylesheets stay in the head.
-  assert.match(shell.bodyOpen, /^<link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]+" rel="stylesheet">$/);
+  assert.match(
+    shell.bodyOpen,
+    /^<link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]+" rel="stylesheet">$/,
+  );
   assert.doesNotMatch(shell.headEnd, /pcf-style/);
   // Every dist/ bundle carries the platform's onerror fallback to /dist/<name> on the portal origin.
-  assert.ok(shell.headStart.includes(`<link href="/resource/powerappsportal/dist/font-awesome.bundle-3d8a58a48f.css" onerror="javascript: var target = event.target; var link = document.createElement('link'); link.crossOrigin = target.crossOrigin; link.href = '/dist/font-awesome.bundle-3d8a58a48f.css'; link.rel = 'stylesheet'; target.insertAdjacentElement('afterend',link);" rel="stylesheet">`));
-  assert.ok(shell.afterFooter.includes(`<script onerror="javascript: var target = event.target; var script = document.createElement('script'); script.crossOrigin = target.crossOrigin; script.src = '/dist/app.bundle-1e948af604.js'; script.type = 'text/javascript'; target.insertAdjacentElement('afterend',script);" src="/resource/powerappsportal/dist/app.bundle-1e948af604.js" type="text/javascript"></script>`));
+  assert.ok(
+    shell.headStart.includes(
+      `<link href="/resource/powerappsportal/dist/font-awesome.bundle-3d8a58a48f.css" onerror="javascript: var target = event.target; var link = document.createElement('link'); link.crossOrigin = target.crossOrigin; link.href = '/dist/font-awesome.bundle-3d8a58a48f.css'; link.rel = 'stylesheet'; target.insertAdjacentElement('afterend',link);" rel="stylesheet">`,
+    ),
+  );
+  assert.ok(
+    shell.afterFooter.includes(
+      `<script onerror="javascript: var target = event.target; var script = document.createElement('script'); script.crossOrigin = target.crossOrigin; script.src = '/dist/app.bundle-1e948af604.js'; script.type = 'text/javascript'; target.insertAdjacentElement('afterend',script);" src="/resource/powerappsportal/dist/app.bundle-1e948af604.js" type="text/javascript"></script>`,
+    ),
+  );
   // The controls host chunk (not under dist/) has no fallback and is deferred.
-  assert.match(shell.afterContent, /pcf-loader\.bundle-f4a0e619b8\.js" type="text\/javascript"><\/script><div id="pp-native-controls-react-root"><\/div><script defer="defer" src="[^"]+main\.3ee2491f78\.chunk\.js"><\/script>$/);
-  assert.equal(platformShell({ controlsRoot: false }).afterContent.includes("pp-native-controls-react-root"), false);
+  assert.match(
+    shell.afterContent,
+    /pcf-loader\.bundle-f4a0e619b8\.js" type="text\/javascript"><\/script><div id="pp-native-controls-react-root"><\/div><script defer="defer" src="[^"]+main\.3ee2491f78\.chunk\.js"><\/script>$/,
+  );
+  assert.equal(platformShell({ controlsRoot: false }).afterContent.includes('pp-native-controls-react-root'), false);
   // Site/BootstrapV5Enabled = true (Example commondev) selects the BootstrapV5 builds.
-  assert.equal(bootstrapVariant({ "Site/BootstrapV5Enabled": "True" }), "BootstrapV5");
-  assert.equal(bootstrapVariant({ "site/bootstrapv5enabled": "false" }), "BootstrapV3");
-  assert.equal(bootstrapVariant({}), "BootstrapV3");
-  const v5 = platformShell({ variant: "BootstrapV5" }).bundles.map((bundle) => bundle.path);
-  assert.deepEqual(v5.filter((pathname, index) => pathname !== BOOTSTRAP3_BUNDLES[index]).map((pathname) => pathname.replace("/resource/powerappsportal/dist/", "")), [
-    "font-awesome.BootstrapV5.bundle-2ce6efb497.css",
-    "preform.BootstrapV5.bundle-e3e84e09a3.css",
-    "preform.BootstrapV5.moment_2_29_4.bundle-e6db58f462.js",
-    "bootstrap.BootstrapV5.bundle-be8391e97d.js",
-    "postpreform.BootstrapV5.bundle-1e48131190.js",
-    "app.BootstrapV5.bundle-4299f393fc.js",
-  ]);
+  assert.equal(bootstrapVariant({ 'Site/BootstrapV5Enabled': 'True' }), 'BootstrapV5');
+  assert.equal(bootstrapVariant({ 'site/bootstrapv5enabled': 'false' }), 'BootstrapV3');
+  assert.equal(bootstrapVariant({}), 'BootstrapV3');
+  const v5 = platformShell({ variant: 'BootstrapV5' }).bundles.map((bundle) => bundle.path);
+  assert.deepEqual(
+    v5
+      .filter((pathname, index) => pathname !== BOOTSTRAP3_BUNDLES[index])
+      .map((pathname) => pathname.replace('/resource/powerappsportal/dist/', '')),
+    [
+      'font-awesome.BootstrapV5.bundle-2ce6efb497.css',
+      'preform.BootstrapV5.bundle-e3e84e09a3.css',
+      'preform.BootstrapV5.moment_2_29_4.bundle-e6db58f462.js',
+      'bootstrap.BootstrapV5.bundle-be8391e97d.js',
+      'postpreform.BootstrapV5.bundle-1e48131190.js',
+      'app.BootstrapV5.bundle-4299f393fc.js',
+    ],
+  );
   const captured = platformShell({
     websiteId: SITE,
     profile: {
-      stylesheets: ["/css/bootstrap.min.css", "/resource/powerappsportal/dist/font-awesome.bundle-3d8a58a48f.css", "/theme.css"],
+      stylesheets: [
+        '/css/bootstrap.min.css',
+        '/resource/powerappsportal/dist/font-awesome.bundle-3d8a58a48f.css',
+        '/theme.css',
+      ],
       headScripts: [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`],
-      beforeContentScripts: ["/resource/powerappsportal/dist/preform.moment_2_29_4.bundle-750b699ecd.js"],
-      bodyScripts: ["/WebResource.axd?d=a&t=1", "/resource/powerappsportal/dist/client-telemetry.bundle-2bb0ef927d.js"],
-      afterFooterScripts: [{ src: "/resource/powerappsportal/dist/app.bundle-79acd4df74.js" }],
+      beforeContentScripts: ['/resource/powerappsportal/dist/preform.moment_2_29_4.bundle-750b699ecd.js'],
+      bodyScripts: ['/WebResource.axd?d=a&t=1', '/resource/powerappsportal/dist/client-telemetry.bundle-2bb0ef927d.js'],
+      afterFooterScripts: [{ src: '/resource/powerappsportal/dist/app.bundle-79acd4df74.js' }],
     },
   });
-  assert.deepEqual(captured.bundles.filter((bundle) => bundle.captured).map((bundle) => bundle.id), ["font-awesome", "client-telemetry", "preform", "app"]);
+  assert.deepEqual(
+    captured.bundles.filter((bundle) => bundle.captured).map((bundle) => bundle.id),
+    ['font-awesome', 'client-telemetry', 'preform', 'app'],
+  );
   assert.match(captured.bodyStart, /\/dist\/client-telemetry\.bundle-2bb0ef927d\.js"/);
   assert.match(captured.afterFooter, /\/dist\/app\.bundle-79acd4df74\.js"/);
-  assert.match(captured.headStart, /^<script src="\/_portal\/[^"]+\/Resources\/ResourceManager\?lang=en-US"><\/script><link rel="stylesheet" href="\/css\/bootstrap\.min\.css">/);
-  assert.deepEqual(captured.remaining, { stylesheets: ["/theme.css"], headScripts: [], beforeContentScripts: [], bodyScripts: ["/WebResource.axd?d=a&t=1"], afterFooterScripts: [] });
+  assert.match(
+    captured.headStart,
+    /^<script src="\/_portal\/[^"]+\/Resources\/ResourceManager\?lang=en-US"><\/script><link rel="stylesheet" href="\/css\/bootstrap\.min\.css">/,
+  );
+  assert.deepEqual(captured.remaining, {
+    stylesheets: ['/theme.css'],
+    headScripts: [],
+    beforeContentScripts: [],
+    bodyScripts: ['/WebResource.axd?d=a&t=1'],
+    afterFooterScripts: [],
+  });
   // Any build of a bundle is recognised; other paths are not platform bundles.
-  assert.equal(platformBundleFor("/resource/powerappsportal/dist/default-1036.moment_2_29_4.bundle-0123456789.js")?.id, "moment-locale");
-  assert.equal(platformBundleFor("/resource/powerappsportal/dist/app.BootstrapV5.bundle-4299f393fc.js?v=1")?.id, "app");
-  assert.equal(platformBundleFor("/resource/powerappsportal/dist/unknown.bundle-0123456789.js"), null);
+  assert.equal(
+    platformBundleFor('/resource/powerappsportal/dist/default-1036.moment_2_29_4.bundle-0123456789.js')?.id,
+    'moment-locale',
+  );
+  assert.equal(platformBundleFor('/resource/powerappsportal/dist/app.BootstrapV5.bundle-4299f393fc.js?v=1')?.id, 'app');
+  assert.equal(platformBundleFor('/resource/powerappsportal/dist/unknown.bundle-0123456789.js'), null);
   // The onerror fallback path /dist/<name> names the same bundle.
-  assert.equal(platformBundleFor("/dist/app.bundle-1e948af604.js")?.id, "app");
-  assert.equal(platformBundleFor("/distribution/app.bundle-1e948af604.js"), null);
+  assert.equal(platformBundleFor('/dist/app.bundle-1e948af604.js')?.id, 'app');
+  assert.equal(platformBundleFor('/distribution/app.bundle-1e948af604.js'), null);
 });
 
-test("pages load the platform bundles in live order per Bootstrap build; bundle paths serve local equivalents or placeholders", async (t) => {
+test('pages load the platform bundles in live order per Bootstrap build; bundle paths serve local equivalents or placeholders', async (t) => {
   const markers = {
     preform: [/jQuery v3/, /moment/, /datetimepicker/, /dialog/],
-    "preform-style": [/offlineNotificationBar/],
+    'preform-style': [/offlineNotificationBar/],
     bootstrap: [/data-bs-toggle/, /data-toggle/],
     postpreform: [/__ppSimDatejs/, /blockUI/],
     app: [/entity-grid/, /footerSpacing/, /aria-roledescription/],
-    "moment-locale": [/\.locale\(/],
+    'moment-locale': [/\.locale\(/],
   };
-  for (const variant of ["BootstrapV3", "BootstrapV5"]) {
-    const { app, get } = await shellFixture(t, variant === "BootstrapV5" ? { settings: [["Site/BootstrapV5Enabled", "true"]] } : {});
-    const html = await (await get("/")).text();
+  for (const variant of ['BootstrapV3', 'BootstrapV5']) {
+    const { app, get } = await shellFixture(
+      t,
+      variant === 'BootstrapV5' ? { settings: [['Site/BootstrapV5Enabled', 'true']] } : {},
+    );
+    const html = await (await get('/')).text();
     const expected = platformShell({ variant }).bundles;
-    const resources = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map((match) => match[1].split("?")[0]);
+    const resources = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map(
+      (match) => match[1].split('?')[0],
+    );
     // The site has no bootstrap.min.css content style, so the platform's default is linked.
-    assert.deepEqual(resources, [`/_portal/${SITE}/Resources/ResourceManager`, "/css/bootstrap.min.css", ...expected.filter((bundle) => bundle.slot !== "controls-style").map((bundle) => bundle.path)], variant);
+    assert.deepEqual(
+      resources,
+      [
+        `/_portal/${SITE}/Resources/ResourceManager`,
+        '/css/bootstrap.min.css',
+        ...expected.filter((bundle) => bundle.slot !== 'controls-style').map((bundle) => bundle.path),
+      ],
+      variant,
+    );
     assert.doesNotMatch(html, /__sim-static/);
     for (const bundle of PLATFORM_BUNDLES) {
       const pathname = expected.find((entry) => entry.id === bundle.id).path;
       const response = await get(pathname);
       assert.equal(response.status, 200, pathname);
-      assert.equal(response.headers.get("content-type"), bundle.kind === "stylesheet" ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8", pathname);
-      assert.equal(response.headers.get("x-sim-resource-provider"), bundle.partial ? "local-platform-partial" : bundle.local.length ? "local-platform-equivalent" : "local-platform-placeholder", pathname);
+      assert.equal(
+        response.headers.get('content-type'),
+        bundle.kind === 'stylesheet' ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8',
+        pathname,
+      );
+      assert.equal(
+        response.headers.get('x-sim-resource-provider'),
+        bundle.partial
+          ? 'local-platform-partial'
+          : bundle.local.length
+            ? 'local-platform-equivalent'
+            : 'local-platform-placeholder',
+        pathname,
+      );
       const body = await response.text();
       assert.equal(body.length > 0, bundle.local.length > 0, pathname);
       for (const marker of markers[bundle.id] ?? []) assert.match(body, marker, `${bundle.id} ${marker}`);
       assert.doesNotMatch(body, /sourceMappingURL/, pathname);
     }
-    const bootstrapCss = await get("/css/bootstrap.min.css");
-    assert.equal(bootstrapCss.headers.get("x-sim-resource-provider"), "local-platform-placeholder");
-    await get(expected.find((bundle) => bundle.id === "pcf").path);
+    const bootstrapCss = await get('/css/bootstrap.min.css');
+    assert.equal(bootstrapCss.headers.get('x-sim-resource-provider'), 'local-platform-placeholder');
+    await get(expected.find((bundle) => bundle.id === 'pcf').path);
     // One diagnostic per runtime and resource without a local equivalent.
-    const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.csrf } })).json();
+    const diagnostics = await (
+      await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { 'x-sim-csrf': app.csrf } })
+    ).json();
     const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
     assert.deepEqual(
-      entries.filter((entry) => entry.code === "PLATFORM_BUNDLE_PLACEHOLDER").map((entry) => entry.bundle).sort(),
-      [...PLATFORM_BUNDLES.filter((bundle) => !bundle.local.length).map((bundle) => bundle.id), "platform-bootstrap"].sort(),
+      entries
+        .filter((entry) => entry.code === 'PLATFORM_BUNDLE_PLACEHOLDER')
+        .map((entry) => entry.bundle)
+        .sort(),
+      [
+        ...PLATFORM_BUNDLES.filter((bundle) => !bundle.local.length).map((bundle) => bundle.id),
+        'platform-bootstrap',
+      ].sort(),
     );
   }
 });
 
-test("form pages load the WebForms script resources at their native paths, served by local equivalents", async (t) => {
+test('form pages load the WebForms script resources at their native paths, served by local equivalents', async (t) => {
   const { app, get } = await shellFixture(t);
-  const form = await (await get("/form/")).text();
-  const axd = [...form.matchAll(/<script src="(\/(?:Web|Script)Resource\.axd\?[^"]+)"/g)].map((match) => match[1].replace(/&amp;/g, "&"));
-  assert.deepEqual(axd, ["/WebResource.axd?d=paqvilo-webforms&t=0", "/ScriptResource.axd?d=paqvilo-webuivalidation&t=0", "/ScriptResource.axd?d=paqvilo-microsoftajax&t=0", "/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0"]);
+  const form = await (await get('/form/')).text();
+  const axd = [...form.matchAll(/<script src="(\/(?:Web|Script)Resource\.axd\?[^"]+)"/g)].map((match) =>
+    match[1].replace(/&amp;/g, '&'),
+  );
+  assert.deepEqual(axd, [
+    '/WebResource.axd?d=paqvilo-webforms&t=0',
+    '/ScriptResource.axd?d=paqvilo-webuivalidation&t=0',
+    '/ScriptResource.axd?d=paqvilo-microsoftajax&t=0',
+    '/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0',
+  ]);
   // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   assert.doesNotMatch(form, /<(?:script|link)[^>]*(?:src|href)="[^"]*__sim-static/);
   const body = async (pathname) => {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
-    assert.equal(response.headers.get("content-type"), pathname.includes(".axd") ? "application/x-javascript" : "application/javascript; charset=utf-8", pathname);
-    return { provider: response.headers.get("x-sim-resource-provider"), text: await response.text() };
+    assert.equal(
+      response.headers.get('content-type'),
+      pathname.includes('.axd') ? 'application/x-javascript' : 'application/javascript; charset=utf-8',
+      pathname,
+    );
+    return { provider: response.headers.get('x-sim-resource-provider'), text: await response.text() };
   };
   const webForms = await body(axd[0]);
-  assert.equal(webForms.provider, "local-platform-equivalent");
+  assert.equal(webForms.provider, 'local-platform-equivalent');
   assert.match(webForms.text, /WebForm_DoPostBackWithOptions/);
   // MicrosoftAjax contributes Date.prototype.format on form pages; Datejs belongs to postpreform.
   const ajax = await body(axd[2]);
   assert.match(ajax.text, /Date\.prototype, "format"/);
   assert.doesNotMatch(ajax.text, /__ppSimDatejs/);
-  const postpreform = await body(platformShell().bundles.find((bundle) => bundle.id === "postpreform").path);
+  const postpreform = await body(platformShell().bundles.find((bundle) => bundle.id === 'postpreform').path);
   assert.match(postpreform.text, /__ppSimDatejs/);
   assert.doesNotMatch(postpreform.text, /Date\.prototype, "format"/);
-  assert.equal((await body(axd[3])).provider, "local-platform-placeholder");
+  assert.equal((await body(axd[3])).provider, 'local-platform-placeholder');
   // A d value that is not a local equivalent is not served by them.
-  assert.equal((await get("/ScriptResource.axd?d=unknown&t=0")).headers.get("x-sim-resource-provider"), null);
-  const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.csrf } })).json();
+  assert.equal((await get('/ScriptResource.axd?d=unknown&t=0')).headers.get('x-sim-resource-provider'), null);
+  const diagnostics = await (
+    await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { 'x-sim-csrf': app.csrf } })
+  ).json();
   const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
-  assert.ok(entries.some((entry) => entry.code === "PLATFORM_BUNDLE_PLACEHOLDER" && entry.bundle === "paqvilo-microsoftajaxwebforms"));
+  assert.ok(
+    entries.some(
+      (entry) => entry.code === 'PLATFORM_BUNDLE_PLACEHOLDER' && entry.bundle === 'paqvilo-microsoftajaxwebforms',
+    ),
+  );
 });
 
-test("the layout shell matches the platform skeleton: head metas, bare content style links, pcf-style and the private banner opening the body", async (t) => {
-  const { get } = await shellFixture(t, { settings: [["Site/BootstrapV5Enabled", "true"], ["HTTP/SameSite/Default", "Lax"]] });
-  const html = await (await get("/form/")).text();
+test('the layout shell matches the platform skeleton: head metas, bare content style links, pcf-style and the private banner opening the body', async (t) => {
+  const { get } = await shellFixture(t, {
+    settings: [
+      ['Site/BootstrapV5Enabled', 'true'],
+      ['HTTP/SameSite/Default', 'Lax'],
+    ],
+  });
+  const html = await (await get('/form/')).text();
   assert.match(html, /<html [^>]*same-site-mode="Lax"/);
-  assert.match(html, /<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>/);
-  assert.doesNotMatch(html.slice(0, html.indexOf("</head>")), /pcf-style/);
-  assert.match(html, /<body[^>]*><link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]*link\.href = '\/dist\/pcf-style\.bundle-[0-9a-f]+\.css'[^"]*" rel="stylesheet"><div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web"/);
+  assert.match(
+    html,
+    /<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>/,
+  );
+  assert.doesNotMatch(html.slice(0, html.indexOf('</head>')), /pcf-style/);
+  assert.match(
+    html,
+    /<body[^>]*><link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]*link\.href = '\/dist\/pcf-style\.bundle-[0-9a-f]+\.css'[^"]*" rel="stylesheet"><div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web"/,
+  );
   assert.doesNotMatch(html, /privateModeText/);
   // BootstrapV5 sites load the date control script from its BootstrapV5 folder, only for forms
   // with date controls (live: forms without date controls load none).
-  const v5 = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input id="when" data-ui="datetimepicker" data-type="date"></div>', variant: "BootstrapV5" });
-  assert.match(v5, /<script src="\/xrm-adx\/js\/BootstrapV5\/crmentityformview-datetime\.js" type="text\/javascript"><\/script>/);
-  assert.doesNotMatch(webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="input-group datetimepicker"></div></div>', variant: "BootstrapV5" }), /crmentityformview-datetime/);
-  assert.equal((await get("/xrm-adx/js/BootstrapV5/crmentityformview-datetime.js")).status, 200);
+  const v5 = webFormsForm({
+    content:
+      '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input id="when" data-ui="datetimepicker" data-type="date"></div>',
+    variant: 'BootstrapV5',
+  });
+  assert.match(
+    v5,
+    /<script src="\/xrm-adx\/js\/BootstrapV5\/crmentityformview-datetime\.js" type="text\/javascript"><\/script>/,
+  );
+  assert.doesNotMatch(
+    webFormsForm({
+      content:
+        '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="input-group datetimepicker"></div></div>',
+      variant: 'BootstrapV5',
+    }),
+    /crmentityformview-datetime/,
+  );
+  assert.equal((await get('/xrm-adx/js/BootstrapV5/crmentityformview-datetime.js')).status, 200);
   // Site visibility is not exported: observed.siteVisibility "private" adds the private-site banner.
-  const { get: getPrivate } = await shellFixture(t, { observed: { siteVisibility: "private", evidence: "synthetic" } });
-  const privateHome = await (await getPrivate("/")).text();
-  assert.match(privateHome, /<body[^>]*><link href="[^"]*pcf-style[^"]*"[^>]*><div id="privateModeText" class="private-mode-banner"> <div class="private-mode-text"> <img alt="lock" class="col-3" [^>]*src="\/resource\/powerappsportal\/img\/Lock\.png"> <b>This site is private:<\/b>[\s\S]*?<\/div> <\/div><div id="offlineNotificationBar"/);
-  assert.equal((await getPrivate("/resource/powerappsportal/img/Lock.png")).status, 200);
+  const { get: getPrivate } = await shellFixture(t, { observed: { siteVisibility: 'private', evidence: 'synthetic' } });
+  const privateHome = await (await getPrivate('/')).text();
+  assert.match(
+    privateHome,
+    /<body[^>]*><link href="[^"]*pcf-style[^"]*"[^>]*><div id="privateModeText" class="private-mode-banner"> <div class="private-mode-text"> <img alt="lock" class="col-3" [^>]*src="\/resource\/powerappsportal\/img\/Lock\.png"> <b>This site is private:<\/b>[\s\S]*?<\/div> <\/div><div id="offlineNotificationBar"/,
+  );
+  assert.equal((await getPrivate('/resource/powerappsportal/img/Lock.png')).status, 200);
 });
 
 test("platform resources on the portal origin carry the platform's headers; /dist/ fallbacks serve the bundles", async (t) => {
@@ -551,147 +883,253 @@ test("platform resources on the portal origin carry the platform's headers; /dis
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
     await response.arrayBuffer();
-    return Object.fromEntries([...response.headers].filter(([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*)$/.test(name)));
+    return Object.fromEntries(
+      [...response.headers].filter(
+        ([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*)$/.test(name),
+      ),
+    );
   };
-  const axd = await headers("/WebResource.axd?d=paqvilo-webforms&t=0");
-  assert.deepEqual(Object.keys(axd).sort(), ["cache-control", "content-type", "expires", "last-modified", "x-frame-options"]);
-  assert.equal(axd["content-type"], "application/x-javascript");
-  assert.equal(axd["cache-control"], "public");
+  const axd = await headers('/WebResource.axd?d=paqvilo-webforms&t=0');
+  assert.deepEqual(Object.keys(axd).sort(), [
+    'cache-control',
+    'content-type',
+    'expires',
+    'last-modified',
+    'x-frame-options',
+  ]);
+  assert.equal(axd['content-type'], 'application/x-javascript');
+  assert.equal(axd['cache-control'], 'public');
   assert.ok(Date.parse(axd.expires) - Date.now() > 300 * 86400 * 1000);
-  assert.equal((await headers("/ScriptResource.axd?d=paqvilo-microsoftajax&t=0")).vary, undefined);
+  assert.equal((await headers('/ScriptResource.axd?d=paqvilo-microsoftajax&t=0')).vary, undefined);
   const manager = await headers(`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`);
-  assert.equal(manager["cache-control"], "public, max-age=86400");
-  assert.equal(manager["content-type"], "text/javascript; charset=utf-8");
-  assert.equal(manager["x-frame-options"], "SAMEORIGIN");
-  const blockUi = await headers("/js/jquery.blockUI.js");
-  assert.equal(blockUi["cache-control"], "public,max-age=604800");
-  assert.equal(blockUi["accept-ranges"], "bytes");
+  assert.equal(manager['cache-control'], 'public, max-age=86400');
+  assert.equal(manager['content-type'], 'text/javascript; charset=utf-8');
+  assert.equal(manager['x-frame-options'], 'SAMEORIGIN');
+  const blockUi = await headers('/js/jquery.blockUI.js');
+  assert.equal(blockUi['cache-control'], 'public,max-age=604800');
+  assert.equal(blockUi['accept-ranges'], 'bytes');
   assert.match(blockUi.etag, /^"[0-9a-f]{13}:0"$/);
-  assert.equal(blockUi.vary, "Accept-Encoding");
-  const webform = await headers("/xrm-adx/js/webform.js");
-  assert.equal(webform["cache-control"], undefined);
-  assert.ok(webform["last-modified"]);
+  assert.equal(blockUi.vary, 'Accept-Encoding');
+  const webform = await headers('/xrm-adx/js/webform.js');
+  assert.equal(webform['cache-control'], undefined);
+  assert.ok(webform['last-modified']);
   // The token fragment uses the page policy: no-store with Pragma and Expires.
-  const token = await headers("/_layout/tokenhtml?_=1");
-  assert.equal(token.pragma, "no-cache");
-  assert.equal(token.expires, "-1");
+  const token = await headers('/_layout/tokenhtml?_=1');
+  assert.equal(token.pragma, 'no-cache');
+  assert.equal(token.expires, '-1');
   // The platform's onerror fallback path serves the same local equivalent as the CDN path.
-  const app = platformShell().bundles.find((bundle) => bundle.id === "app").path;
-  const [cdn, fallback] = await Promise.all([get(app), get(app.replace("/resource/powerappsportal", ""))]);
+  const app = platformShell().bundles.find((bundle) => bundle.id === 'app').path;
+  const [cdn, fallback] = await Promise.all([get(app), get(app.replace('/resource/powerappsportal', ''))]);
   assert.equal(fallback.status, 200);
   assert.equal(await fallback.text(), await cdn.text());
 });
 
 test("an aborted form control writes the closing tags that follow it after the form's closing fields", () => {
-  const html = webFormsForm({ content: '<div class="page"><div id="control">partial</div><!--paqvilo-mirage-render-aborted--></div>\n</div><p>dropped</p>' });
+  const html = webFormsForm({
+    content:
+      '<div class="page"><div id="control">partial</div><!--paqvilo-mirage-render-aborted--></div>\n</div><p>dropped</p>',
+  });
   assert.doesNotMatch(html, /dropped|render-aborted/);
   assert.match(html, /partial<\/div><div class="aspNetHidden">[\s\S]*?<\/div><\/div>\n<\/div><\/form>$/);
 });
 
-test("a form showing a captcha registers the RadCaptcha script resources after the form scripts", () => {
-  const captcha = webFormsForm({ content: '<!--pp-native-form--><!--pp-captcha--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>' });
-  assert.match(captcha, /crmentityformview\.js" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-telerik-support&amp;t=0" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-radcaptcha&amp;t=0" type="text\/javascript"><\/script>/);
-  const plain = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>' });
+test('a form showing a captcha registers the RadCaptcha script resources after the form scripts', () => {
+  const captcha = webFormsForm({
+    content:
+      '<!--pp-native-form--><!--pp-captcha--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>',
+  });
+  assert.match(
+    captcha,
+    /crmentityformview\.js" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-telerik-support&amp;t=0" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-radcaptcha&amp;t=0" type="text\/javascript"><\/script>/,
+  );
+  const plain = webFormsForm({
+    content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>',
+  });
   assert.doesNotMatch(plain, /paqvilo-radcaptcha|paqvilo-telerik-support/);
 });
 
-test("the RadCaptcha script resources answer as text/javascript", async (t) => {
+test('the RadCaptcha script resources answer as text/javascript', async (t) => {
   const { get } = await shellFixture(t);
-  for (const d of ["paqvilo-telerik-support", "paqvilo-radcaptcha"]) {
+  for (const d of ['paqvilo-telerik-support', 'paqvilo-radcaptcha']) {
     const response = await get(`/ScriptResource.axd?d=${d}&t=0`);
     assert.equal(response.status, 200, d);
-    assert.equal(response.headers.get("content-type"), "text/javascript", d);
+    assert.equal(response.headers.get('content-type'), 'text/javascript', d);
     assert.match(await response.text(), /radcaptcha-compat\.js/, d);
   }
 });
 
 test("event validation is written for input controls only, and never on a legacy page template's form", () => {
-  const message = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="alert">No access.</div></div>' });
+  const message = webFormsForm({
+    content:
+      '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="alert">No access.</div></div>',
+  });
   assert.doesNotMatch(message, /__EVENTVALIDATION/);
-  const inputs = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>' });
+  const inputs = webFormsForm({
+    content:
+      '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>',
+  });
   assert.match(inputs, /name="__EVENTVALIDATION"/);
-  const legacy = nativePageRegions({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>', serverFormId: "content_form" });
+  const legacy = nativePageRegions({
+    content:
+      '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>',
+    serverFormId: 'content_form',
+  });
   assert.doesNotMatch(legacy.content, /__EVENTVALIDATION/);
 });
 
 test("a missing file under the platform's static areas is a plain 404 without Vary", async (t) => {
   const { get } = await shellFixture(t);
-  const response = await get("/Areas/EntityList/css/img/loading-bar.gif");
+  const response = await get('/Areas/EntityList/css/img/loading-bar.gif');
   assert.equal(response.status, 404);
-  assert.equal(response.headers.get("vary"), null);
-  assert.equal(response.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
-  assert.equal(await response.text(), "");
-  assert.equal((await get("/Areas/EntityList/js/entitylist-calendar.js")).status, 200);
+  assert.equal(response.headers.get('vary'), null);
+  assert.equal(response.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(await response.text(), '');
+  assert.equal((await get('/Areas/EntityList/js/entitylist-calendar.js')).status, 200);
 });
 
-test("FullPage.aspx lays out div#mainContent with the page copy and the entity control holders, without a main landmark", async () => {
-  const { rewritePageLayout } = await import("../lib/platform-manifest.mjs");
-  const list = "11111111-1111-4111-8111-111111111111";
-  const layout = rewritePageLayout({ listId: list }, { rewriteUrl: "~/Pages/FullPage.aspx" });
+test('FullPage.aspx lays out div#mainContent with the page copy and the entity control holders, without a main landmark', async () => {
+  const { rewritePageLayout } = await import('../lib/platform-manifest.mjs');
+  const list = '11111111-1111-4111-8111-111111111111';
+  const layout = rewritePageLayout({ listId: list }, { rewriteUrl: '~/Pages/FullPage.aspx' });
   assert.equal(layout.contentRegion, true);
-  assert.equal(layout.serverFormId, "content_form");
-  assert.match(layout.source, /<div class="container"><div id="mainContent">\{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %\}/);
-  assert.ok(layout.source.includes(`<div id="WebFormControl"></div><div id="EntityFormControl"></div>{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}</div><div class="page-metadata clearfix">`));
-  assert.equal(rewritePageLayout({}, { rewriteUrl: "~/Pages/WebForm.aspx" }).contentRegion, undefined);
+  assert.equal(layout.serverFormId, 'content_form');
+  assert.match(
+    layout.source,
+    /<div class="container"><div id="mainContent">\{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %\}/,
+  );
+  assert.ok(
+    layout.source.includes(
+      `<div id="WebFormControl"></div><div id="EntityFormControl"></div>{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}</div><div class="page-metadata clearfix">`,
+    ),
+  );
+  assert.equal(rewritePageLayout({}, { rewriteUrl: '~/Pages/WebForm.aspx' }).contentRegion, undefined);
 });
 
-test("a map list with credentials renders the legacy map control and loads the map scripts; application-relative paths redirect", async (t) => {
-  const { renderComponent } = await import("../lib/platform.mjs");
-  const list = { id: "11111111-1111-4111-8111-111111111111", name: "Places", entityName: "place", metadata: { adx_map_enabled: true, adx_map_credentials: "invented-key", adx_map_type: 756150000, adx_map_distanceunits: 756150001, adx_map_distancevalues: "5,10", adx_map_zoom: 12, adx_map_pushpinheight: 39, adx_map_pushpinwidth: 32, adx_map_resturl: "https://maps.example.test/Locations", adx_view: "view" } };
-  const portal = { website: { id: "site" }, lists: [list], forms: [], pages: [], records: [], settings: { "Site/BootstrapV5Enabled": "true" }, websiteLanguages: [{ lcid: 1033, isDefault: true }] };
-  const metadata = { entities: { place: { fields: { name: { label: "Name" } } } }, views: [{ id: "view", entity: "place", name: "Places", fields: [{ name: "name" }], fetchXml: '<fetch><entity name="place"><attribute name="name"/></entity></fetch>' }] };
-  const { html } = await renderComponent("entitylist", "Places", { user: { id: "u" }, request: { url: "http://localhost/places/" }, key: "Places" }, { portal, metadata, store: { resolveMapping: () => ({ entitySet: "places", idColumn: "placeid", nameColumn: "name" }) }, schemas: {}, args: { key: "Places" } });
-  assert.match(html, /<!--pp-server-list--><!--pp-map-list:bing--><div id="EntityListControl_11111111111141118111111111111111"><div class="entitylist"><div class="row clearfix"><div id="entity-list-map-options"/);
+test('a map list with credentials renders the legacy map control and loads the map scripts; application-relative paths redirect', async (t) => {
+  const { renderComponent } = await import('../lib/platform.mjs');
+  const list = {
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Places',
+    entityName: 'place',
+    metadata: {
+      adx_map_enabled: true,
+      adx_map_credentials: 'invented-key',
+      adx_map_type: 756150000,
+      adx_map_distanceunits: 756150001,
+      adx_map_distancevalues: '5,10',
+      adx_map_zoom: 12,
+      adx_map_pushpinheight: 39,
+      adx_map_pushpinwidth: 32,
+      adx_map_resturl: 'https://maps.example.test/Locations',
+      adx_view: 'view',
+    },
+  };
+  const portal = {
+    website: { id: 'site' },
+    lists: [list],
+    forms: [],
+    pages: [],
+    records: [],
+    settings: { 'Site/BootstrapV5Enabled': 'true' },
+    websiteLanguages: [{ lcid: 1033, isDefault: true }],
+  };
+  const metadata = {
+    entities: { place: { fields: { name: { label: 'Name' } } } },
+    views: [
+      {
+        id: 'view',
+        entity: 'place',
+        name: 'Places',
+        fields: [{ name: 'name' }],
+        fetchXml: '<fetch><entity name="place"><attribute name="name"/></entity></fetch>',
+      },
+    ],
+  };
+  const { html } = await renderComponent(
+    'entitylist',
+    'Places',
+    { user: { id: 'u' }, request: { url: 'http://localhost/places/' }, key: 'Places' },
+    {
+      portal,
+      metadata,
+      store: { resolveMapping: () => ({ entitySet: 'places', idColumn: 'placeid', nameColumn: 'name' }) },
+      schemas: {},
+      args: { key: 'Places' },
+    },
+  );
+  assert.match(
+    html,
+    /<!--pp-server-list--><!--pp-map-list:bing--><div id="EntityListControl_11111111111141118111111111111111"><div class="entitylist"><div class="row clearfix"><div id="entity-list-map-options"/,
+  );
   assert.match(html, /<option value="5">5 miles<\/option><option value="10">10 miles<\/option>/);
   assert.match(html, /data-distance-units="miles"[^>]* data-credentials="invented-key"/);
   const form = webFormsForm({ content: html });
-  assert.match(form, /jquery\.blockUI\.js" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/json2\.min\.js" type="text\/javascript"><\/script>\n<script src="https:\/\/www\.bing\.com\/api\/maps\/mapcontrol" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/entitylist-map\.js"/);
+  assert.match(
+    form,
+    /jquery\.blockUI\.js" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/json2\.min\.js" type="text\/javascript"><\/script>\n<script src="https:\/\/www\.bing\.com\/api\/maps\/mapcontrol" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/entitylist-map\.js"/,
+  );
   assert.match(form, /name="__EVENTVALIDATION"/);
   const { get } = await shellFixture(t);
-  const moved = await get("/form/~/xrm-adx/samples/images/loader.gif");
+  const moved = await get('/form/~/xrm-adx/samples/images/loader.gif');
   assert.equal(moved.status, 200);
-  assert.equal(moved.headers.get("content-type"), "image/gif");
-  assert.ok(moved.headers.get("etag"));
+  assert.equal(moved.headers.get('content-type'), 'image/gif');
+  assert.ok(moved.headers.get('etag'));
 });
 
 test("the captcha challenge image and audio answer as the platform's resource handler does", async (t) => {
   const { get } = await shellFixture(t);
-  const image = await get("/Telerik.Web.UI.WebResource.axd?type=rca&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000");
+  const image = await get(
+    '/Telerik.Web.UI.WebResource.axd?type=rca&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000',
+  );
   assert.equal(image.status, 200);
-  assert.equal(image.headers.get("content-type"), "image/jpeg");
-  assert.equal(image.headers.get("cache-control"), "private");
-  const audio = await get("/Telerik.Web.UI.WebResource.axd?type=cah&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000", { range: "bytes=0-" });
+  assert.equal(image.headers.get('content-type'), 'image/jpeg');
+  assert.equal(image.headers.get('cache-control'), 'private');
+  const audio = await get(
+    '/Telerik.Web.UI.WebResource.axd?type=cah&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000',
+    { range: 'bytes=0-' },
+  );
   assert.equal(audio.status, 206);
-  assert.equal(audio.headers.get("content-type"), "audio/wav");
-  assert.equal(audio.headers.get("content-disposition"), "attachment; filename=RadCaptcha_Audio_0f0f0f0f.wav");
-  assert.match(audio.headers.get("content-range"), /^bytes 0-\d+\/\d+$/);
-  assert.equal((await audio.arrayBuffer()).byteLength, Number(audio.headers.get("content-length")));
+  assert.equal(audio.headers.get('content-type'), 'audio/wav');
+  assert.equal(audio.headers.get('content-disposition'), 'attachment; filename=RadCaptcha_Audio_0f0f0f0f.wav');
+  assert.match(audio.headers.get('content-range'), /^bytes 0-\d+\/\d+$/);
+  assert.equal((await audio.arrayBuffer()).byteLength, Number(audio.headers.get('content-length')));
 });
 
-test("an HTML web resource is served as a page; other web resources keep their private caching", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-webresource-"));
+test('an HTML web resource is served as a page; other web resources keep their private caching', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-webresource-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  const portal = path.join(dir, "portal"), solution = path.join(dir, "solution");
+  const portal = path.join(dir, 'portal'),
+    solution = path.join(dir, 'solution');
   await fs.mkdir(portal, { recursive: true });
-  await fs.writeFile(path.join(portal, "website.yml"), "adx_websiteid: site\nadx_name: Resources");
-  await fs.mkdir(path.join(solution, "WebResources"), { recursive: true });
-  await fs.writeFile(path.join(solution, "WebResources", "banner.html"), "<!DOCTYPE html><html><body><p>Banner</p></body></html>");
-  await fs.writeFile(path.join(solution, "WebResources", "icon.svg"), "<svg/>");
-  const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state.json"), watch: false, solutionRoots: [solution] });
+  await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: site\nadx_name: Resources');
+  await fs.mkdir(path.join(solution, 'WebResources'), { recursive: true });
+  await fs.writeFile(
+    path.join(solution, 'WebResources', 'banner.html'),
+    '<!DOCTYPE html><html><body><p>Banner</p></body></html>',
+  );
+  await fs.writeFile(path.join(solution, 'WebResources', 'icon.svg'), '<svg/>');
+  const app = await createSimulator({
+    sourceDir: portal,
+    stateFile: path.join(dir, 'state.json'),
+    watch: false,
+    solutionRoots: [solution],
+  });
   ownedFixture(t).add(() => app.close());
   const html = await fetch(`${app.url}/_webresource/banner.html`);
-  assert.equal(html.headers.get("content-type"), "text/html; charset=utf-8");
-  assert.equal(html.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
-  assert.equal(html.headers.get("pragma"), "no-cache");
+  assert.equal(html.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(html.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(html.headers.get('pragma'), 'no-cache');
   const svg = await fetch(`${app.url}/_webresource/icon.svg`);
-  assert.equal(svg.headers.get("content-type"), "text/plain; charset=utf-8");
-  assert.equal(svg.headers.get("cache-control"), "private");
+  assert.equal(svg.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(svg.headers.get('cache-control'), 'private');
 });
 
-test("the narrow-form stacking rule leaves the empty zero cell hidden (quick view frame)", async () => {
-  const css = await fs.readFile(new URL("../lib/platform-chrome.css", import.meta.url), "utf8");
+test('the narrow-form stacking rule leaves the empty zero cell hidden (quick view frame)', async () => {
+  const css = await fs.readFile(new URL('../lib/platform-chrome.css', import.meta.url), 'utf8');
   assert.match(css, /\.crmEntityFormView \.cell\.zero-cell\{display:none\}/);
-  const cells = [...css.matchAll(/@media\(max-width:\d+px\)\{[^@]*?([^{}]*td\.cell[^{}]*)\{display:block/g)].flatMap((match) => match[1].split(",")).filter((selector) => /td\.cell/.test(selector));
-  assert.ok(cells.length > 0, "the narrow rule stacks table cells");
+  const cells = [...css.matchAll(/@media\(max-width:\d+px\)\{[^@]*?([^{}]*td\.cell[^{}]*)\{display:block/g)]
+    .flatMap((match) => match[1].split(','))
+    .filter((selector) => /td\.cell/.test(selector));
+  assert.ok(cells.length > 0, 'the narrow rule stacks table cells');
   for (const selector of cells) assert.match(selector, /:not\(\.zero-cell\)/);
 });

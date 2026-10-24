@@ -2,40 +2,96 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from "../testing/owned-fixture.mjs";
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 export async function modelDrivenFixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-  const sourceDir = path.join(root, 'portal'), solutionDir = path.join(root, 'solution');
+  const sourceDir = path.join(root, 'portal'),
+    solutionDir = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: 11111111-1111-4111-8111-111111111111\nadx_name: Invented portal',
-    'portal/web-pages/Home.webpage.yml': 'adx_webpageid: 22222222-2222-4222-8222-222222222222\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: 33333333-3333-4333-8333-333333333333',
-    'portal/page-templates/Main.pagetemplate.yml': 'adx_pagetemplateid: 33333333-3333-4333-8333-333333333333\nadx_name: Main\nadx_webtemplateid: 44444444-4444-4444-8444-444444444444',
-    'portal/web-templates/Main.webtemplate.yml': 'adx_webtemplateid: 44444444-4444-4444-8444-444444444444\nadx_name: Main',
-    'portal/web-templates/Main.webtemplate.source.html': '<h1>{{ snippets["Welcome"] }}</h1><p>{{ settings["Example/Mode"] }}</p>',
-    'portal/content-snippets/Welcome.contentsnippet.yml': 'adx_contentsnippetid: 55555555-5555-4555-8555-555555555555\nadx_name: Welcome',
+    'portal/web-pages/Home.webpage.yml':
+      'adx_webpageid: 22222222-2222-4222-8222-222222222222\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: 33333333-3333-4333-8333-333333333333',
+    'portal/page-templates/Main.pagetemplate.yml':
+      'adx_pagetemplateid: 33333333-3333-4333-8333-333333333333\nadx_name: Main\nadx_webtemplateid: 44444444-4444-4444-8444-444444444444',
+    'portal/web-templates/Main.webtemplate.yml':
+      'adx_webtemplateid: 44444444-4444-4444-8444-444444444444\nadx_name: Main',
+    'portal/web-templates/Main.webtemplate.source.html':
+      '<h1>{{ snippets["Welcome"] }}</h1><p>{{ settings["Example/Mode"] }}</p>',
+    'portal/content-snippets/Welcome.contentsnippet.yml':
+      'adx_contentsnippetid: 55555555-5555-4555-8555-555555555555\nadx_name: Welcome',
     'portal/content-snippets/Welcome.contentsnippet.value.html': 'Hello from the export',
-    'portal/site-settings/Mode.sitesetting.yml': 'adx_sitesettingid: 66666666-6666-4666-8666-666666666666\nadx_name: Example/Mode\nadx_value: Export mode',
-    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedApps</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
-    'solution/AppModules/x_example/AppModule.xml': '<AppModule><UniqueName>x_example</UniqueName><AppModuleId>{77777777-7777-4777-8777-777777777777}</AppModuleId><LocalizedNames><LocalizedName description="Example workspace" languagecode="1033"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_item"/></AppModuleComponents></AppModule>',
-    'solution/AppModuleSiteMaps/x_example/AppModuleSiteMap.xml': '<AppModuleSiteMap><AppModuleUniqueName>x_example</AppModuleUniqueName><SiteMap><Area Id="main"><Group Id="work"><Titles><Title LCID="1033" Title="Work"/></Titles><SubArea Id="items" Entity="x_item"><Titles><Title LCID="1033" Title="Items"/></Titles></SubArea><SubArea Id="external" Url="https://example.invalid/"/></Group></Area></SiteMap></AppModuleSiteMap>',
-    'solution/Entities/x_item/Entity.xml': '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><LocalizedNames><LocalizedName description="Item" languagecode="1033"/></LocalizedNames><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><LogicalName>x_itemid</LogicalName><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><LogicalName>x_name</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><displaynames><displayname description="Name" languagecode="1033"/></displaynames></attribute><attribute PhysicalName="x_quantity"><Name>x_quantity</Name><LogicalName>x_quantity</LogicalName><Type>int</Type><displaynames><displayname description="Quantity" languagecode="1033"/></displaynames></attribute></attributes></entity></EntityInfo></Entity>',
-    'solution/Entities/x_item/FormXml/main/item.xml': '<systemform><formid>{item-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Information" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><labels><label description="General" languagecode="1033"/></labels><columns><column><sections><section name="details"><labels><label description="Item details" languagecode="1033"/></labels><rows><row><cell><labels><label description="Name" languagecode="1033"/></labels><control datafieldname="x_name"/></cell></row><row><cell><labels><label description="Quantity" languagecode="1033"/></labels><control datafieldname="x_quantity"/></cell></row><row><cell><control id="unimplemented"/></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform>',
-    'solution/Entities/x_item/SavedQueries/items.xml': '<savedquery><savedqueryid>{items-view}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName description="Stocked items" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="x_item"><attribute name="x_name"/><attribute name="x_quantity"/><filter><condition attribute="x_quantity" operator="ge" value="1"/></filter></entity></fetch></fetchxml><layoutxml><grid><row><cell name="x_name" width="200"/><cell name="x_quantity" width="100"/></row></grid></layoutxml></savedquery>',
+    'portal/site-settings/Mode.sitesetting.yml':
+      'adx_sitesettingid: 66666666-6666-4666-8666-666666666666\nadx_name: Example/Mode\nadx_value: Export mode',
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>InventedApps</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/AppModules/x_example/AppModule.xml':
+      '<AppModule><UniqueName>x_example</UniqueName><AppModuleId>{77777777-7777-4777-8777-777777777777}</AppModuleId><LocalizedNames><LocalizedName description="Example workspace" languagecode="1033"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_item"/></AppModuleComponents></AppModule>',
+    'solution/AppModuleSiteMaps/x_example/AppModuleSiteMap.xml':
+      '<AppModuleSiteMap><AppModuleUniqueName>x_example</AppModuleUniqueName><SiteMap><Area Id="main"><Group Id="work"><Titles><Title LCID="1033" Title="Work"/></Titles><SubArea Id="items" Entity="x_item"><Titles><Title LCID="1033" Title="Items"/></Titles></SubArea><SubArea Id="external" Url="https://example.invalid/"/></Group></Area></SiteMap></AppModuleSiteMap>',
+    'solution/Entities/x_item/Entity.xml':
+      '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><LocalizedNames><LocalizedName description="Item" languagecode="1033"/></LocalizedNames><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><LogicalName>x_itemid</LogicalName><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><LogicalName>x_name</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><displaynames><displayname description="Name" languagecode="1033"/></displaynames></attribute><attribute PhysicalName="x_quantity"><Name>x_quantity</Name><LogicalName>x_quantity</LogicalName><Type>int</Type><displaynames><displayname description="Quantity" languagecode="1033"/></displaynames></attribute></attributes></entity></EntityInfo></Entity>',
+    'solution/Entities/x_item/FormXml/main/item.xml':
+      '<systemform><formid>{item-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Information" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><labels><label description="General" languagecode="1033"/></labels><columns><column><sections><section name="details"><labels><label description="Item details" languagecode="1033"/></labels><rows><row><cell><labels><label description="Name" languagecode="1033"/></labels><control datafieldname="x_name"/></cell></row><row><cell><labels><label description="Quantity" languagecode="1033"/></labels><control datafieldname="x_quantity"/></cell></row><row><cell><control id="unimplemented"/></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform>',
+    'solution/Entities/x_item/SavedQueries/items.xml':
+      '<savedquery><savedqueryid>{items-view}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName description="Stocked items" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="x_item"><attribute name="x_name"/><attribute name="x_quantity"/><filter><condition attribute="x_quantity" operator="ge" value="1"/></filter></entity></fetch></fetchxml><layoutxml><grid><row><cell name="x_name" width="200"/><cell name="x_quantity" width="100"/></row></grid></layoutxml></savedquery>',
   };
-  files['solution/Entities/x_item/FormXml/main/item.xml'] = files['solution/Entities/x_item/FormXml/main/item.xml'].replace('</tabs>', '<tab name="related"><labels><label description="Related items" languagecode="1033"/></labels><columns><column><sections><section name="children"><rows><row><cell><labels><label description="Related children" languagecode="1033"/></labels><control id="children" classid="{E7A81278-8635-4d9e-8D4D-59480B391C5B}"><parameters><TargetEntityType>x_child</TargetEntityType><ViewId>{children-view}</ViewId><RecordsPerPage>10</RecordsPerPage></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs>');
-  files['solution/Entities/x_child/Entity.xml'] = '<Entity><Name>x_child</Name><EntityInfo><entity Name="x_child"><EntitySetName>x_children</EntitySetName><PrimaryIdAttribute>x_childid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_childid"><Name>x_childid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><displaynames><displayname description="Name" languagecode="1033"/></displaynames></attribute><attribute PhysicalName="x_parentid"><Name>x_parentid</Name><Type>lookup</Type><displaynames><displayname description="Parent" languagecode="1033"/></displaynames></attribute></attributes></entity></EntityInfo></Entity>';
-  files['solution/Other/Relationships.xml'] = '<EntityRelationships><EntityRelationship Name="x_item_children"><EntityRelationshipType>OneToMany</EntityRelationshipType><ReferencingEntityName>x_child</ReferencingEntityName><ReferencedEntityName>x_item</ReferencedEntityName><ReferencingAttributeName>x_parentid</ReferencingAttributeName><ReferencedAttributeName>x_itemid</ReferencedAttributeName></EntityRelationship></EntityRelationships>';
-  files['solution/Entities/x_child/SavedQueries/children.xml'] = '<savedquery><savedqueryid>{children-view}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName description="Children" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="x_child"><attribute name="x_name"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="x_name" width="200"/></row></grid></layoutxml></savedquery>';
-  for (const [relative, content] of Object.entries(files)) { const file = path.join(root, relative); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); }
+  files['solution/Entities/x_item/FormXml/main/item.xml'] = files[
+    'solution/Entities/x_item/FormXml/main/item.xml'
+  ].replace(
+    '</tabs>',
+    '<tab name="related"><labels><label description="Related items" languagecode="1033"/></labels><columns><column><sections><section name="children"><rows><row><cell><labels><label description="Related children" languagecode="1033"/></labels><control id="children" classid="{E7A81278-8635-4d9e-8D4D-59480B391C5B}"><parameters><TargetEntityType>x_child</TargetEntityType><ViewId>{children-view}</ViewId><RecordsPerPage>10</RecordsPerPage></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs>',
+  );
+  files['solution/Entities/x_child/Entity.xml'] =
+    '<Entity><Name>x_child</Name><EntityInfo><entity Name="x_child"><EntitySetName>x_children</EntitySetName><PrimaryIdAttribute>x_childid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_childid"><Name>x_childid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><displaynames><displayname description="Name" languagecode="1033"/></displaynames></attribute><attribute PhysicalName="x_parentid"><Name>x_parentid</Name><Type>lookup</Type><displaynames><displayname description="Parent" languagecode="1033"/></displaynames></attribute></attributes></entity></EntityInfo></Entity>';
+  files['solution/Other/Relationships.xml'] =
+    '<EntityRelationships><EntityRelationship Name="x_item_children"><EntityRelationshipType>OneToMany</EntityRelationshipType><ReferencingEntityName>x_child</ReferencingEntityName><ReferencedEntityName>x_item</ReferencedEntityName><ReferencingAttributeName>x_parentid</ReferencingAttributeName><ReferencedAttributeName>x_itemid</ReferencedAttributeName></EntityRelationship></EntityRelationships>';
+  files['solution/Entities/x_child/SavedQueries/children.xml'] =
+    '<savedquery><savedqueryid>{children-view}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName description="Children" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="x_child"><attribute name="x_name"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="x_name" width="200"/></row></grid></layoutxml></savedquery>';
+  for (const [relative, content] of Object.entries(files)) {
+    const file = path.join(root, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, content);
+  }
   const stateFile = path.join(root, 'state.json');
-  const start = extra => createSimulator({ sourceDir, solutionRoots: [solutionDir], stateFile, watch: false, initial: {
-    version: 1, mappings: { x_item: { entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name', inferred: false }, x_child: { entitySet: 'x_children', idColumn: 'x_childid', nameColumn: 'x_name', inferred: false } },
-    tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Copper', x_quantity: 2 }, { x_itemid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', x_name: 'Silver', x_quantity: 8 }, { x_itemid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', x_name: 'Empty', x_quantity: 0 }],
-      x_child: [{ x_childid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', x_name: 'Copper child', x_parentid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }, { x_childid: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', x_name: 'Silver child', x_parentid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }] },
-  }, ...options, ...extra });
-  const sim = await start(); ownedFixture(t).add(() => sim.close());
+  const start = (extra) =>
+    createSimulator({
+      sourceDir,
+      solutionRoots: [solutionDir],
+      stateFile,
+      watch: false,
+      initial: {
+        version: 1,
+        mappings: {
+          x_item: { entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name', inferred: false },
+          x_child: { entitySet: 'x_children', idColumn: 'x_childid', nameColumn: 'x_name', inferred: false },
+        },
+        tables: {
+          x_item: [
+            { x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Copper', x_quantity: 2 },
+            { x_itemid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', x_name: 'Silver', x_quantity: 8 },
+            { x_itemid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', x_name: 'Empty', x_quantity: 0 },
+          ],
+          x_child: [
+            {
+              x_childid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+              x_name: 'Copper child',
+              x_parentid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            },
+            {
+              x_childid: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+              x_name: 'Silver child',
+              x_parentid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            },
+          ],
+        },
+      },
+      ...options,
+      ...extra,
+    });
+  const sim = await start();
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   return { sim, origin, root, sourceDir, solutionDir, stateFile, start };
 }

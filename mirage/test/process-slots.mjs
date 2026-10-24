@@ -9,12 +9,13 @@ const waiting = [];
 /** Runs `start` (which spawns a process and resolves when it exits) once a slot is free. */
 export async function withProcessSlot(start, limit = PROCESS_SLOTS) {
   if (active < limit) active++;
-  else await new Promise(resolve => waiting.push(resolve));
+  else await new Promise((resolve) => waiting.push(resolve));
   try {
     return await start();
   } finally {
     // A waiting call takes this slot over directly, so a new caller cannot slip in between.
     const next = waiting.shift();
-    if (next) next(); else active--;
+    if (next) next();
+    else active--;
   }
 }

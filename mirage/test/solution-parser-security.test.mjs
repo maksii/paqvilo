@@ -8,7 +8,9 @@ import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadat
 import { decodeXml } from '../lib/importer.mjs';
 
 test('solution XML scans delimiters and attributes while preserving quoted markup, CDATA and recovery', () => {
-  const root = parseSolutionXml('<?xml version="1.0"?><root><!-- omitted --><item label="a > b" other=\'&quot;x&quot;\'/><text><![CDATA[<raw>&amp;]]></text></root>');
+  const root = parseSolutionXml(
+    '<?xml version="1.0"?><root><!-- omitted --><item label="a > b" other=\'&quot;x&quot;\'/><text><![CDATA[<raw>&amp;]]></text></root>',
+  );
   assert.deepEqual(root.children[0].attrs, { label: 'a > b', other: '"x"' });
   assert.equal(root.children[1].text, '<raw>&amp;');
   assert.equal(parseSolutionXml('<root><child></root>', { recover: true }).recovered, 1);
@@ -46,8 +48,14 @@ test('solution path segment classification preserves nested precedence, case and
     ['root/Other/Solution.xml', { kind: 'solution' }],
     ['solution.xml', { kind: 'solution' }],
     ['root/solution.xml', null],
-    ['environmentvariabledefinitions/Sample_Url/environmentvariablevalue.json', { kind: 'envvalue', envDir: 'Sample_Url' }],
-    ['environmentvariabledefinitions/Sample_Url/environmentvariabledefinition.xml', { kind: 'envdef', envDir: 'Sample_Url' }],
+    [
+      'environmentvariabledefinitions/Sample_Url/environmentvariablevalue.json',
+      { kind: 'envvalue', envDir: 'Sample_Url' },
+    ],
+    [
+      'environmentvariabledefinitions/Sample_Url/environmentvariabledefinition.xml',
+      { kind: 'envdef', envDir: 'Sample_Url' },
+    ],
     ['AppModules/.xml', null],
     ['Other/OptionSets/.xml', null],
     ['Entities//Entity.xml', null],
@@ -57,13 +65,28 @@ test('solution path segment classification preserves nested precedence, case and
 
 test('imported solution metadata scans nested XML entries and excludes non-metadata assets', () => {
   const visited = [];
-  const overlay = createSolutionMetadataOverlay({ parseDocument(_text, info) { visited.push(info.name); return {}; } });
-  const names = ['wrapper/Entities/sample/Privileges.xml', 'wrapper/AppModules/app.xml', 'wrapper/AppModuleSiteMaps/app.xml',
-    'wrapper/OptionSets/sample.xml', 'wrapper/Relationships/sample.xml', 'wrapper/solution.xml',
-    'wrapper/customizations.xml', 'Other/Solution.xml'];
+  const overlay = createSolutionMetadataOverlay({
+    parseDocument(_text, info) {
+      visited.push(info.name);
+      return {};
+    },
+  });
+  const names = [
+    'wrapper/Entities/sample/Privileges.xml',
+    'wrapper/AppModules/app.xml',
+    'wrapper/AppModuleSiteMaps/app.xml',
+    'wrapper/OptionSets/sample.xml',
+    'wrapper/Relationships/sample.xml',
+    'wrapper/solution.xml',
+    'wrapper/customizations.xml',
+    'Other/Solution.xml',
+  ];
   const bytes = Buffer.from('<root/>');
-  const entries = [...names, 'WebResources/app.xml', 'Entities/sample/app.js'].map(name => ({
-    name, content: bytes.toString('base64'), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+  const entries = [...names, 'WebResources/app.xml', 'Entities/sample/app.js'].map((name) => ({
+    name,
+    content: bytes.toString('base64'),
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
   }));
   overlay({}, { dataverse: { solutionAssets: { layers: [{ id: 'sample-layer', uniqueName: 'sample', entries }] } } });
   assert.deepEqual(visited, names);
@@ -91,7 +114,9 @@ test('long malformed XML and repeated solution path segments finish within a bou
     overlay({}, {dataverse: {solutionAssets: {layers: [{id: 'sample', entries: [{name}]}]}}});
   `;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-    encoding: 'utf8', timeout: 10000, windowsHide: true,
+    encoding: 'utf8',
+    timeout: 10000,
+    windowsHide: true,
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);

@@ -5,29 +5,56 @@ import { createOutbox } from '../lib/outbox.mjs';
 import { createMemoryStorage } from '../lib/storage-memory.mjs';
 
 const attachment = [{ name: 'a.txt', content: Buffer.from('invented attachment') }];
-const message = subject => ({ channel: 'email', to: ['x@example.test'], subject, attachments: attachment });
+const message = (subject) => ({ channel: 'email', to: ['x@example.test'], subject, attachments: attachment });
 
 // A memory provider whose next list() waits until released, then runs `afterList` before answering.
 function gated() {
   const storage = createMemoryStorage({ id: 'outbox-test' });
-  let gate = null, afterList = null;
+  let gate = null,
+    afterList = null;
   const list = storage.list.bind(storage);
   storage.list = async (prefix, options) => {
-    if (gate) { const wait = gate; gate = null; await wait; }
+    if (gate) {
+      const wait = gate;
+      gate = null;
+      await wait;
+    }
     const page = await list(prefix, options);
-    if (afterList) { const run = afterList; afterList = null; await run(); }
+    if (afterList) {
+      const run = afterList;
+      afterList = null;
+      await run();
+    }
     return page;
   };
-  return { storage, hold() { let release; gate = new Promise(resolve => { release = resolve; }); return release; }, after(fn) { afterList = fn; } };
+  return {
+    storage,
+    hold() {
+      let release;
+      gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
+    after(fn) {
+      afterList = fn;
+    },
+  };
 }
-const bytes = async (storage, key) => { const object = await storage.get(key).catch(() => null); if (!object) return null; const parts = []; for await (const part of object.body) parts.push(part); return Buffer.concat(parts).toString(); };
+const bytes = async (storage, key) => {
+  const object = await storage.get(key).catch(() => null);
+  if (!object) return null;
+  const parts = [];
+  for await (const part of object.body) parts.push(part);
+  return Buffer.concat(parts).toString();
+};
 
 test('a capture committed while sweep lists keeps its bytes', async () => {
   const { storage, hold } = gated();
   const outbox = createOutbox({ store: await new DataStore({ state: emptyState() }).init(), storage });
   const release = hold();
   const sweeping = outbox.sweep();
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   const entry = await outbox.capture(message('Invented'));
   release();
   assert.deepEqual(await sweeping, { deleted: 0, pending: 0 });

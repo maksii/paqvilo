@@ -17,7 +17,7 @@ test('offline state checks discover the owning project outside the installed too
   }
 });
 
-test('offline import refuses active matching single/project state and detects file edits', async t => {
+test('offline import refuses active matching single/project state and detects file edits', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-offline-state-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const state = path.join(directory, 'state.json');
