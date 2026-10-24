@@ -127,7 +127,7 @@ const LOGIC = `async function get(){ const out = {};
   out.bound = JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_items(${ITEM})/Microsoft.Dynamics.CRM.x_Bound', ''));
   out.cloud = JSON.parse(await Server.Connector.HttpClient.GetAsync('https://api.example.test/x', {}));
   return JSON.stringify(out); }`;
-async function serverLogicHost(t, { settings = [], itemRead = false } = {}) {
+async function serverLogicHost(t, { settings = [], itemRead = false, expectedStatus = 200 } = {}) {
   const sim = await host(t, {
     settings,
     files: {
@@ -154,17 +154,24 @@ async function serverLogicHost(t, { settings = [], itemRead = false } = {}) {
     headers: { ...member, __RequestVerificationToken: await token(sim, member) },
   });
   const body = await response.json();
+  const codes = (sim.state().diagnostics ?? []).map((entry) => entry.code);
+  const details = JSON.stringify({ body, codes });
+  assert.equal(response.status, expectedStatus, details);
+  if (expectedStatus === 200) assert.equal(typeof body.data, 'string', details);
   return {
     sim,
     status: response.status,
     body,
     data: body.data ? JSON.parse(body.data) : null,
-    codes: (sim.state().diagnostics ?? []).map((entry) => entry.code),
+    codes,
   };
 }
 
 test('ServerLogic/Enabled false refuses server logic by name with SERVER_LOGIC_DISABLED', async (t) => {
-  const { status, body, codes } = await serverLogicHost(t, { settings: [['ServerLogic/Enabled', 'false']] });
+  const { status, body, codes } = await serverLogicHost(t, {
+    settings: [['ServerLogic/Enabled', 'false']],
+    expectedStatus: 403,
+  });
   assert.equal(status, 403);
   assert.equal(body.error.code, 'ServerLogicDisabled');
   assert.ok(codes.includes('SERVER_LOGIC_DISABLED'));

@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { DataStore } from '../lib/data.mjs';
 import {
   runExportedServerLogic,
@@ -156,6 +158,34 @@ test('server-logic exported code uses invocation context, local role-scoped read
   assert.throws(() => assertOperationRole(record, { roleIds: [] }), /web roles/);
   assert.doesNotThrow(() => assertOperationRole(record, { roleIds: [role.toUpperCase()] }));
   assert.throws(() => assertOperationRole({ roleIds: [] }, { roleIds: [role] }), /web roles/);
+});
+
+test('cold server-logic worker startup does not consume the exported-code execution budget', async (t) => {
+  const { dir, record } = await source(t, 'function get(){return "Invented ready result";}');
+  const preload = path.join(dir, 'preload.mjs');
+  await fs.writeFile(
+    preload,
+    "import {isMainThread} from 'node:worker_threads'; if(!isMainThread) await new Promise(resolve=>setTimeout(resolve,1500));",
+  );
+  const program = path.join(dir, 'invoke.mjs');
+  await fs.writeFile(
+    program,
+    `import {runExportedServerLogic} from ${JSON.stringify(new URL('../lib/exported-operations.mjs', import.meta.url).href)};
+const started=Date.now();
+const value=await runExportedServerLogic({record:${JSON.stringify(record)},portal:{},store:{state:{}},timeout:1000});
+console.log(JSON.stringify({value,elapsed:Date.now()-started}));`,
+  );
+  // The preload is inherited by the real Worker. No retry or fake runtime hook:
+  // its bootstrap alone exceeds the old execution watchdog of 1000 + 300 ms.
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, program], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+  const answer = JSON.parse(result.stdout);
+  assert.equal(answer.value, 'Invented ready result');
+  assert.ok(answer.elapsed >= 1500, 'the execution completed after the delayed worker bootstrap');
 });
 
 test('exported server code is bounded and read requests cannot change local records', async (t) => {

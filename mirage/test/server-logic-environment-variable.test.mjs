@@ -68,6 +68,7 @@ test('a Secret variable answers null with a SECRET_NOT_EXPOSED_TO_SERVER_LOGIC d
     environmentVariablePayload(state),
   );
   assert.deepEqual(messages, [
+    { kind: 'ready' },
     {
       kind: 'diagnostic',
       code: 'SECRET_NOT_EXPOSED_TO_SERVER_LOGIC',

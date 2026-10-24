@@ -314,15 +314,33 @@ export async function runExportedServerLogic({
       Atomics.store(flags, 0, 1);
       Atomics.notify(flags, 0);
     };
-    const timer = setTimeout(
-      () => finish(failure('Server-logic execution exceeded its local time limit.', 504, 'LocalOperationTimeout')),
-      bound + 300,
+    // Cold worker bootstrap is host scheduling, not exported-code execution. Keep it
+    // bounded separately so a loaded machine cannot consume the VM/RPC budget first.
+    let timer = setTimeout(
+      () =>
+        finish(
+          failure(
+            'Server-logic worker did not become ready before its startup limit.',
+            504,
+            'LocalOperationStartupTimeout',
+          ),
+        ),
+      30_000,
     );
     worker.on('error', (error) => finish(failure(error.message)));
     worker.on('exit', (code) => {
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
     worker.on('message', async (message) => {
+      if (complete) return;
+      if (message.kind === 'ready') {
+        clearTimeout(timer);
+        timer = setTimeout(
+          () => finish(failure('Server-logic execution exceeded its local time limit.', 504, 'LocalOperationTimeout')),
+          bound + 300,
+        );
+        return;
+      }
       if (message.kind === 'result') return finish(null, message.raw);
       if (message.kind === 'failure') return finish(failure(message.message));
       if (message.kind === 'log')

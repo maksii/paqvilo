@@ -93,6 +93,7 @@ const Server = {
   Connector: { Dataverse: connector, HttpClient, CloudFlow },
   Logger: { Log: log('Log'), Info: log('Log'), Warn: log('Warn'), Error: log('Error') },
 };
+parentPort.postMessage({ kind: 'ready' });
 try {
   const context = vm.createContext(
     { Server, console: { log() {}, warn() {}, error() {} } },
