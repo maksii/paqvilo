@@ -6,6 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { startAgentServer, redactText, redactUrl } from '../lense/agent-server.mjs';
+import { readDiscovery } from '../lense/commands/agent.mjs';
 
 async function fixture(t, options = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-agent-api-'));
@@ -86,13 +87,15 @@ async function fixture(t, options = {}) {
     options,
     runtime: { watching: true, debugPort: null },
   });
-  const discovery = JSON.parse(fs.readFileSync(server.discoveryFile, 'utf8'));
+  const discovery = await readDiscovery(server.discoveryFile);
+  assert.equal(discovery.endpoint, server.endpoint);
   t.after(async () => {
     await server.close();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
   const call = (url, body, headers = {}) =>
     fetch(server.endpoint + url, {
+      redirect: 'error',
       method: body === undefined ? 'GET' : 'POST',
       headers: {
         authorization: `Bearer ${discovery.token}`,
@@ -238,6 +241,7 @@ test('oversized and malformed requests fail without retaining browser work; oper
   const fx = await fixture(t);
   assert.equal((await fx.call('/v1/pages/1/dom', { selector: 'x'.repeat(33 * 1024) })).status, 413);
   const malformed = await fetch(fx.endpoint + '/v1/pages/1/dom', {
+    redirect: 'error',
     method: 'POST',
     headers: { authorization: `Bearer ${fx.discovery.token}`, 'content-type': 'application/json' },
     body: '{bad',

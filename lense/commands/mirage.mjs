@@ -14,6 +14,7 @@ import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
 import { readStartupPhases } from '../startup-progress.mjs';
+import { readLocalFile } from '../local-file.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -1173,7 +1174,7 @@ async function startRuntime(cfg, args, paths, startup) {
       }
       if (!isAlive(child.pid)) {
         await abandon();
-        const output = await fs.readFile(log, 'utf8').catch(() => '');
+        const output = await readLocalFile(log, { root: paths.logRoot, encoding: 'utf8' }).catch(() => '');
         throw new Error(
           `Mirage exited before it became ready. See startup log: ${log}${output.trim() ? `\n${output.trim().slice(-3000)}` : ''}`,
         );

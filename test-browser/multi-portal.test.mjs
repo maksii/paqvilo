@@ -13,6 +13,7 @@ import { chromium } from 'playwright-core';
 import { loadDevTargets } from '../lense/config.mjs';
 import { openBrowser } from '../lense/browser.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
+import { readDiscovery } from '../lense/commands/agent.mjs';
 import { createFixture, HOME_ID } from '../test/fixture.mjs';
 
 const APP = 'web-files/app.js';
@@ -404,10 +405,14 @@ test(
     const discoveries = [];
     for (const [origin, record] of runtime.active) {
       assert.ok(record.agent, 'each initialized portal exposes its own bounded agent API');
-      const discovery = JSON.parse(fs.readFileSync(record.agent.discoveryFile, 'utf8'));
+      const discovery = await readDiscovery(record.agent.discoveryFile);
+      assert.equal(discovery.endpoint, record.agent.endpoint);
       discoveries.push({ file: record.agent.discoveryFile, ...discovery });
       const pages = await (
-        await fetch(discovery.endpoint + '/v1/pages', { headers: { authorization: `Bearer ${discovery.token}` } })
+        await fetch(discovery.endpoint + '/v1/pages', {
+          redirect: 'error',
+          headers: { authorization: `Bearer ${discovery.token}` },
+        })
       ).json();
       assert.ok(pages.pages.length > 0);
       assert.ok(
@@ -415,7 +420,10 @@ test(
         'agent discovery sees only its configured origin',
       );
       const status = await (
-        await fetch(discovery.endpoint + '/v1/session', { headers: { authorization: `Bearer ${discovery.token}` } })
+        await fetch(discovery.endpoint + '/v1/session', {
+          redirect: 'error',
+          headers: { authorization: `Bearer ${discovery.token}` },
+        })
       ).json();
       assert.equal(status.browserScope.mode, 'all');
       assert.equal(status.browserScope.stopScope, 'browser');
@@ -425,6 +433,7 @@ test(
       );
     }
     const refusedAgent = await fetch(discoveries[1].endpoint + '/v1/session', {
+      redirect: 'error',
       headers: { authorization: `Bearer ${discoveries[0].token}` },
     });
     assert.equal(refusedAgent.status, 401);
@@ -450,6 +459,7 @@ test(
     for (const discovery of discoveries)
       await assert.rejects(
         fetch(discovery.endpoint + '/v1/session', {
+          redirect: 'error',
           headers: { authorization: `Bearer ${discovery.token}` },
           signal: AbortSignal.timeout(1000),
         }),
@@ -720,16 +730,18 @@ test(
       stream.on('data', (chunk) => {
         output = (output + chunk.toString()).slice(-64_000);
       });
-    const discoveries = await waitFor(() => {
+    const discoveries = await waitFor(async () => {
       if (!fs.existsSync(stateDir)) return null;
       try {
-        const entries = fs
-          .readdirSync(stateDir)
-          .filter((name) => name.endsWith('.json'))
-          .map((name) => ({
-            file: path.join(stateDir, name),
-            ...JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8')),
-          }));
+        const entries = await Promise.all(
+          fs
+            .readdirSync(stateDir)
+            .filter((name) => name.endsWith('.json'))
+            .map(async (name) => ({
+              file: path.join(stateDir, name),
+              ...(await readDiscovery(path.join(stateDir, name))),
+            })),
+        );
         lastDiscovery = entries[0];
         return entries.length === 2 ? entries : null;
       } catch {
@@ -739,15 +751,17 @@ test(
     const betaAgent = discoveries.find((entry) => entry.site === 'beta');
     const headers = { authorization: `Bearer ${betaAgent.token}` };
     const page = await waitFor(async () => {
-      const result = await (await fetch(betaAgent.endpoint + '/v1/pages', { headers })).json();
+      const result = await (await fetch(betaAgent.endpoint + '/v1/pages', { redirect: 'error', headers })).json();
       return result.pages[0];
     }, 'browser never reached the second configured origin');
     const pageState = await waitFor(async () => {
-      const result = await (await fetch(`${betaAgent.endpoint}/v1/pages/${page.id}/state`, { headers })).json();
+      const result = await (
+        await fetch(`${betaAgent.endpoint}/v1/pages/${page.id}/state`, { redirect: 'error', headers })
+      ).json();
       return result.resources?.some((resource) => resource.rel === APP) ? result : null;
     }, 'second portal did not use its local JavaScript');
     assert.equal(new URL(pageState.page.url).origin, beta.origin);
-    const status = await (await fetch(betaAgent.endpoint + '/v1/session', { headers })).json();
+    const status = await (await fetch(betaAgent.endpoint + '/v1/session', { redirect: 'error', headers })).json();
     assert.equal(status.browserScope.mode, 'all');
     assert.equal(status.browserScope.targets.length, 2);
     assert.equal(status.browserScope.stopScope, 'browser');

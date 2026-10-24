@@ -19,6 +19,7 @@ import {
  * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--evidence-changes FILE] [--only IDS|@FILE]
  */
 import fs from 'node:fs/promises';
+import { loopbackFetch } from './lib/dataverse-webhooks.mjs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -451,7 +452,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
     browserLaunchOptions({ headless: !headed, ignoreDefaultArgs: ['--hide-scrollbars'] }),
   );
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  const status = await (await fetch(owned.url + '/__sim/api/state?summary=1')).json();
+  const status = await (await loopbackFetch(owned.url + '/__sim/api/state?summary=1')).json();
   const csrf = () => owned.app.state().csrf;
   // The live portal shows the signed-in tester's own name, parent account and base roles; the project declares those
   // observed values (`matrix.mirage.identity.contact`) and they are written onto the mirrored contact after every reset.
@@ -472,7 +473,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       : matrix.mirage?.identity?.contact;
     const rekey = Boolean(liveContact && presetContact && liveContact.toLowerCase() !== presetContact.toLowerCase());
     if (!fields && !rekey) return;
-    const exported = await (await fetch(owned.url + '/__sim/api/state/export')).json();
+    const exported = await (await loopbackFetch(owned.url + '/__sim/api/state/export')).json();
     const state = rekey ? JSON.parse(JSON.stringify(exported).replaceAll(presetContact, liveContact)) : exported;
     const contactId = contactOf(presetContact);
     const row = (state.tables?.contact ?? []).find((record) => record.contactid === contactId);
@@ -494,7 +495,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
             if (value && typeof value === 'object' && value.logical_name === 'contact' && value.id === contactId)
               value.name = name;
     // Fixture fields go only to the disposable runtime started above, never matrix.origin.
-    const response = await fetch(owned.url + '/__sim/api/state/import', {
+    const response = await loopbackFetch(owned.url + '/__sim/api/state/import', {
       method: 'POST',
       redirect: 'error',
       headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf() },
@@ -525,14 +526,14 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       await identity.use('signed-in');
     },
     async reset() {
-      const response = await fetch(owned.url + '/__sim/api/reset', {
+      const response = await loopbackFetch(owned.url + '/__sim/api/reset', {
         method: 'POST',
         headers: { 'x-sim-csrf': csrf() },
       });
       if (!response.ok) throw new Error(`Mirage reset failed (${response.status})`);
       if (preset) await owned.app.applyPreset(preset);
       await mirrorIdentityFields();
-      const config = await fetch(owned.url + '/__sim/api/config', {
+      const config = await loopbackFetch(owned.url + '/__sim/api/config', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf() },
         body: JSON.stringify({ mode: 'local', pageMode: 'local', live: { allowWrites: false } }),

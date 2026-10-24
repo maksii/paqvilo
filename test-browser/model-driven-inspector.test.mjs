@@ -1,6 +1,7 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readDiscovery } from '../lense/commands/agent.mjs';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -125,12 +126,14 @@ test(
       imported: sources,
       runtime: { debugPort: 9222 },
     });
-    const discovery = JSON.parse(await fs.readFile(inspector.agent.discoveryFile, 'utf8'));
+    const discovery = await readDiscovery(inspector.agent.discoveryFile);
+    assert.equal(discovery.endpoint, inspector.agent.endpoint);
     const call = async (pathname, body) => {
       // The bearer belongs to this test's freshly started agent and is deliberately
       // read from discovery to exercise the real local client authentication flow.
       // The endpoint comes from the owned server, never the discovery file.
       const response = await fetch(inspector.agent.endpoint + pathname, {
+        redirect: 'error',
         method: body ? 'POST' : 'GET',
         headers: {
           authorization: `Bearer ${discovery.token}`,

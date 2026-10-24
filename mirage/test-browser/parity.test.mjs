@@ -367,7 +367,8 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
     );
     const userPage = context.pages()[0];
     await userPage.goto(`${origin}/user-page`);
-    const port = (await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')[0];
+    const port = Number((await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n')[0]);
+    assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'owned browser reports a valid loopback port');
     const fulfil = [
       {
         method: 'PATCH',
@@ -480,7 +481,7 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
     await anonymous.close();
     let pageTargets = [];
     for (let attempt = 0; attempt < 50; attempt++) {
-      pageTargets = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter(
+      pageTargets = (await (await fetch(`http://127.0.0.1:${port}/json/list`, { redirect: 'error' })).json()).filter(
         (target) => target.type === 'page',
       );
       if (pageTargets.length === 1) break;

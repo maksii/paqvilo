@@ -1,6 +1,7 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readDiscovery } from '../lense/commands/agent.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -129,10 +130,12 @@ test(
       rel: (file) => path.relative(work, file),
     });
     agent = await startAgentServer({ session, context });
-    const discovery = JSON.parse(fs.readFileSync(agent.discoveryFile, 'utf8'));
+    const discovery = await readDiscovery(agent.discoveryFile);
+    assert.equal(discovery.endpoint, agent.endpoint);
     const call = (url, body) =>
       step(`${body === undefined ? 'GET' : 'POST'} ${url}${body?.url ? ` ${body.url}` : ''}`, () =>
         fetch(agent.endpoint + url, {
+          redirect: 'error',
           method: body === undefined ? 'GET' : 'POST',
           headers: {
             authorization: `Bearer ${discovery.token}`,
