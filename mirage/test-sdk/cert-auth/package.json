@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "description": "SDK verification gate: certificate client assertions from @azure/msal-node and MSAL.NET against the Mirage Dataverse API simulator",
-  "scripts": { "test": "node --test --test-timeout=600000 gate.test.mjs" },
-  "dependencies": { "@azure/msal-node": "7.1.0" }
+  "scripts": {
+    "test": "node --test --test-timeout=600000 gate.test.mjs"
+  },
+  "dependencies": {
+    "@azure/msal-node": "7.1.1"
+  }
 }

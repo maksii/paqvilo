@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "description": "SDK verification gate: dynamics-web-api + @azure/msal-node against the Mirage Dataverse API simulator",
-  "scripts": { "test": "node --test gate.test.mjs" },
-  "dependencies": { "dynamics-web-api": "2.5.1", "@azure/msal-node": "7.1.0" }
+  "scripts": {
+    "test": "node --test gate.test.mjs"
+  },
+  "dependencies": {
+    "dynamics-web-api": "2.5.1",
+    "@azure/msal-node": "7.1.1"
+  },
+  "overrides": {
+    "@tootallnate/once": "2.0.1"
+  }
 }

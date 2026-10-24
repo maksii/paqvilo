@@ -22,7 +22,9 @@ const typeOf = (facts, fullName) => facts.types.find((type) => type.fullName ===
 describe('signing certificate inspection', () => {
   it('selects the CMS signer by issuer/serial and reads PE and NuGet signatures without executing code', () => {
     const signer = new X509Certificate(createSelfSignedCertificate({ commonName: 'Invented signer' }).cert);
-    const unrelated = new X509Certificate(createSelfSignedCertificate({ commonName: 'Unrelated chain certificate' }).cert);
+    const unrelated = new X509Certificate(
+      createSelfSignedCertificate({ commonName: 'Unrelated chain certificate' }).cert,
+    );
     const fixture = certificateInspectionFixture(signer.raw, { precedingCertificates: [unrelated.raw] });
     const facts = inspectSigningCertificate(fixture.image);
     assert.equal(facts.subject, signer.subject);
@@ -33,8 +35,15 @@ describe('signing certificate inspection', () => {
     assert.equal(facts.encodedSubject, fixture.encodedIssuer);
     const packageBytes = zipOf([{ name: '.signature.p7s', data: fixture.cms }]);
     assert.deepEqual(inspectSigningCertificate(packageBytes, { package: true }), facts);
-    assert.equal(inspectSigningCertificate(buildAssembly({ publicKey: fakePublicKey })), null, 'strong naming is independent of Authenticode');
-    assert.equal(inspectSigningCertificate(zipOf([{ name: 'probe.nuspec', data: Buffer.from('<package/>') }]), { package: true }), null);
+    assert.equal(
+      inspectSigningCertificate(buildAssembly({ publicKey: fakePublicKey })),
+      null,
+      'strong naming is independent of Authenticode',
+    );
+    assert.equal(
+      inspectSigningCertificate(zipOf([{ name: 'probe.nuspec', data: Buffer.from('<package/>') }]), { package: true }),
+      null,
+    );
   });
 
   it('refuses malformed PE, certificate and compressed package bounds', () => {
@@ -42,7 +51,8 @@ describe('signing certificate inspection', () => {
     assert.throws(() => inspectSigningCertificate(Buffer.alloc(17 * 1024 * 1024)), InvalidAssembly);
     const cert = new X509Certificate(createSelfSignedCertificate().cert);
     const { image } = certificateInspectionFixture(cert.raw);
-    const optional = image.readUInt32LE(0x3c) + 24, entry = optional + (image.readUInt16LE(optional) === 0x20b ? 144 : 128);
+    const optional = image.readUInt32LE(0x3c) + 24,
+      entry = optional + (image.readUInt16LE(optional) === 0x20b ? 144 : 128);
     image.writeUInt32LE(image.length + 1, entry + 4);
     assert.throws(() => inspectSigningCertificate(image), /truncated certificate table/);
     const badCms = zipOf([{ name: '.signature.p7s', data: Buffer.from([0x30, 0x80]) }]);
@@ -69,7 +79,15 @@ const TYPES = {
 
 describe('CLR assembly reader', () => {
   it('reads the identity of a strong-named assembly and the plug-in types it declares', () => {
-    const facts = inspectAssembly(buildAssembly({ name: 'Contoso.Plugins', version: '2.1.0.0', culture: 'en-US', publicKey: fakePublicKey, ...TYPES }));
+    const facts = inspectAssembly(
+      buildAssembly({
+        name: 'Contoso.Plugins',
+        version: '2.1.0.0',
+        culture: 'en-US',
+        publicKey: fakePublicKey,
+        ...TYPES,
+      }),
+    );
     assert.equal(facts.name, 'Contoso.Plugins');
     assert.equal(facts.version, '2.1.0.0');
     assert.equal(facts.major, 2);
@@ -83,21 +101,43 @@ describe('CLR assembly reader', () => {
     const facts = inspectAssembly(buildAssembly({ publicKey: fakePublicKey, ...TYPES }));
     assert.deepEqual(typeOf(facts, WIDGET), { fullName: WIDGET, isPlugin: true, isWorkflowActivity: false });
     assert.equal(typeOf(facts, 'Contoso.Plugins.WidgetBase').isPlugin, true);
-    assert.equal(typeOf(facts, 'Contoso.Plugins.LocalActivity').isWorkflowActivity, true, 'a CodeActivity declared in the assembly');
-    assert.equal(typeOf(facts, 'Contoso.Plugins.RemoteActivity').isWorkflowActivity, true, 'a CodeActivity referenced from outside');
+    assert.equal(
+      typeOf(facts, 'Contoso.Plugins.LocalActivity').isWorkflowActivity,
+      true,
+      'a CodeActivity declared in the assembly',
+    );
+    assert.equal(
+      typeOf(facts, 'Contoso.Plugins.RemoteActivity').isWorkflowActivity,
+      true,
+      'a CodeActivity referenced from outside',
+    );
     assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true, 'the nested name is outer+inner');
     assert.equal(typeOf(facts, 'Contoso.Plugins.Outer').isPlugin, false);
   });
 
   it('does not follow an external base class, and lists the helper types without flags', () => {
     const facts = inspectAssembly(buildAssembly({ publicKey: fakePublicKey, ...TYPES }));
-    assert.deepEqual(typeOf(facts, 'Contoso.Plugins.External'), { fullName: 'Contoso.Plugins.External', isPlugin: false, isWorkflowActivity: false }, 'ceiling: external bases are not resolved');
-    assert.deepEqual(typeOf(facts, 'Contoso.Plugins.Helper'), { fullName: 'Contoso.Plugins.Helper', isPlugin: false, isWorkflowActivity: false });
-    assert.equal(facts.types.some((type) => type.fullName === '<Module>'), false, 'the module type is not listed');
+    assert.deepEqual(
+      typeOf(facts, 'Contoso.Plugins.External'),
+      { fullName: 'Contoso.Plugins.External', isPlugin: false, isWorkflowActivity: false },
+      'ceiling: external bases are not resolved',
+    );
+    assert.deepEqual(typeOf(facts, 'Contoso.Plugins.Helper'), {
+      fullName: 'Contoso.Plugins.Helper',
+      isPlugin: false,
+      isWorkflowActivity: false,
+    });
+    assert.equal(
+      facts.types.some((type) => type.fullName === '<Module>'),
+      false,
+      'the module type is not listed',
+    );
   });
 
   it('an unsigned assembly has the neutral culture, no token and is not strong-named', () => {
-    const facts = inspectAssembly(buildAssembly({ typeRefs: [IPLUGIN], typeDefs: [{ full: WIDGET, interfaces: [IPLUGIN] }] }));
+    const facts = inspectAssembly(
+      buildAssembly({ typeRefs: [IPLUGIN], typeDefs: [{ full: WIDGET, interfaces: [IPLUGIN] }] }),
+    );
     assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'the SDK interface named as a TypeRef');
     assert.equal(facts.culture, 'neutral');
     assert.equal(facts.publicKeyToken, null);
@@ -105,27 +145,52 @@ describe('CLR assembly reader', () => {
   });
 
   it('the strong-name flag without a public key is not strong-named', () => {
-    const facts = inspectAssembly(buildAssembly({ publicKey: null, strongName: true, typeRefs: [IPLUGIN], typeDefs: [{ full: WIDGET, interfaces: [IPLUGIN] }] }));
+    const facts = inspectAssembly(
+      buildAssembly({
+        publicKey: null,
+        strongName: true,
+        typeRefs: [IPLUGIN],
+        typeDefs: [{ full: WIDGET, interfaces: [IPLUGIN] }],
+      }),
+    );
     assert.equal(facts.strongNamed, false);
   });
 
   it('a PE32 image reads the same facts as a PE32+ image', () => {
-    const options = { name: 'Contoso.Plugins', version: '3.0.0.1', culture: 'fr-FR', publicKey: fakePublicKey, ...TYPES };
-    assert.deepEqual(inspectAssembly(buildAssembly({ ...options, pe32: true })), inspectAssembly(buildAssembly(options)));
+    const options = {
+      name: 'Contoso.Plugins',
+      version: '3.0.0.1',
+      culture: 'fr-FR',
+      publicKey: fakePublicKey,
+      ...TYPES,
+    };
+    assert.deepEqual(
+      inspectAssembly(buildAssembly({ ...options, pe32: true })),
+      inspectAssembly(buildAssembly(options)),
+    );
   });
 
   it('refuses an image without the MZ header (InvalidAssembly)', () => {
     const image = buildAssembly({ typeDefs: [{ full: WIDGET }] });
     image[0] = 0;
-    assert.throws(() => inspectAssembly(image), (error) => error instanceof InvalidAssembly && /MZ/.test(error.message));
+    assert.throws(
+      () => inspectAssembly(image),
+      (error) => error instanceof InvalidAssembly && /MZ/.test(error.message),
+    );
   });
 
   it('refuses a native image without a CLI header (InvalidAssembly)', () => {
-    assert.throws(() => inspectAssembly(buildAssembly({ noCli: true, typeDefs: [{ full: WIDGET }] })), (error) => error instanceof InvalidAssembly && /no CLI header/.test(error.message));
+    assert.throws(
+      () => inspectAssembly(buildAssembly({ noCli: true, typeDefs: [{ full: WIDGET }] })),
+      (error) => error instanceof InvalidAssembly && /no CLI header/.test(error.message),
+    );
   });
 
   it('refuses a metadata root without the BSJB signature (InvalidAssembly)', () => {
-    assert.throws(() => inspectAssembly(buildAssembly({ metadataSignature: 0x12345678, typeDefs: [{ full: WIDGET }] })), (error) => error instanceof InvalidAssembly && /metadata signature/.test(error.message));
+    assert.throws(
+      () => inspectAssembly(buildAssembly({ metadataSignature: 0x12345678, typeDefs: [{ full: WIDGET }] })),
+      (error) => error instanceof InvalidAssembly && /metadata signature/.test(error.message),
+    );
   });
 
   it('refuses a truncated image with InvalidAssembly, never a range error', () => {
@@ -163,27 +228,55 @@ namespace Contoso.Plugins
 `;
 
 describe('CLR assembly reader against a compiled assembly (dotnet)', () => {
-  it('reads a real compiled plug-in assembly', { skip: dotnet.status !== 0 && 'dotnet is not installed', timeout: 240000 }, async () => {
-    const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
-    const dir = await mkdtemp(path.join(tmpdir(), 'paqvilo-clr-'));
-    try {
-      await writeFile(path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`);
-      await writeFile(path.join(dir, 'Types.cs'), SOURCE);
-      const build = spawnSync('dotnet', ['build', '-o', path.join(dir, 'out'), '--nologo', '-v', 'q', '-nodeReuse:false', '-p:UseSharedCompilation=false'], {
-        cwd: dir, encoding: 'utf8', timeout: 220000, env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
-      });
-      assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-      const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
-      assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
-      assert.equal(facts.culture, 'neutral');
-      assert.equal(facts.strongNamed, false);
-      assert.equal(facts.publicKeyToken, null);
-      assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'derives from a plug-in base in the same assembly');
-      assert.equal(typeOf(facts, 'Contoso.Plugins.Activity').isWorkflowActivity, true);
-      assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true);
-      assert.equal(typeOf(facts, 'Contoso.Plugins.Helper').isPlugin, false);
-    } finally {
-      await rm(dir, { recursive: true, force: true, maxRetries: 3 });
-    }
-  });
+  it(
+    'reads a real compiled plug-in assembly',
+    { skip: dotnet.status !== 0 && 'dotnet is not installed', timeout: 240000 },
+    async () => {
+      const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
+      const dir = await mkdtemp(path.join(tmpdir(), 'paqvilo-clr-'));
+      try {
+        await writeFile(
+          path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),
+          `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`,
+        );
+        await writeFile(path.join(dir, 'Types.cs'), SOURCE);
+        // The temporary build directory is outside the checkout's global.json ancestry.
+        await writeFile(
+          path.join(dir, 'global.json'),
+          JSON.stringify({ sdk: { version: dotnet.stdout.trim(), rollForward: 'disable', allowPrerelease: false } }),
+        );
+        const build = spawnSync(
+          'dotnet',
+          [
+            'build',
+            '-o',
+            path.join(dir, 'out'),
+            '--nologo',
+            '-v',
+            'q',
+            '-nodeReuse:false',
+            '-p:UseSharedCompilation=false',
+          ],
+          {
+            cwd: dir,
+            encoding: 'utf8',
+            timeout: 220000,
+            env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+          },
+        );
+        assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
+        const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
+        assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
+        assert.equal(facts.culture, 'neutral');
+        assert.equal(facts.strongNamed, false);
+        assert.equal(facts.publicKeyToken, null);
+        assert.equal(typeOf(facts, WIDGET).isPlugin, true, 'derives from a plug-in base in the same assembly');
+        assert.equal(typeOf(facts, 'Contoso.Plugins.Activity').isWorkflowActivity, true);
+        assert.equal(typeOf(facts, 'Contoso.Plugins.Outer+Inner').isPlugin, true);
+        assert.equal(typeOf(facts, 'Contoso.Plugins.Helper').isPlugin, false);
+      } finally {
+        await rm(dir, { recursive: true, force: true, maxRetries: 3 });
+      }
+    },
+  );
 });
