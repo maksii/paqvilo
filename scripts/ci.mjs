@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { availableParallelism, totalmem } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -445,7 +446,7 @@ async function main() {
   }
   const suites = suitesForScope(scope);
   console.log(
-    `CI selection: ${JSON.stringify({ ...scope, suites, node: process.version, platform: process.platform })}`,
+    `CI selection: ${JSON.stringify({ ...scope, suites, node: process.version, platform: process.platform, availableParallelism: availableParallelism(), totalMemoryMiB: Math.floor(totalmem() / 1024 / 1024) })}`,
   );
   const startingTree = validationTree({ allowStaged: Boolean(full) });
   if (!suite && !startingTree)
