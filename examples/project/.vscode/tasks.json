@@ -15,7 +15,17 @@
       "label": "demo: Start Mirage",
       "type": "process",
       "command": "node",
-      "args": ["${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs", "mirage", "dev", "--config", "./paqvilo.config.yml", "--site", "example", "--port", "0"],
+      "args": [
+        "${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs",
+        "mirage",
+        "dev",
+        "--config",
+        "./paqvilo.config.yml",
+        "--site",
+        "example",
+        "--port",
+        "0"
+      ],
       "options": { "cwd": "${workspaceFolder}" },
       "dependsOn": "demo: Install dependencies",
       "group": { "kind": "build", "isDefault": true },
@@ -26,7 +36,19 @@
       "label": "demo: Mirage + browser debugger",
       "type": "process",
       "command": "node",
-      "args": ["${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs", "mirage", "dev", "--config", "./paqvilo.config.yml", "--site", "example", "--port", "0", "--debug-port", "9222"],
+      "args": [
+        "${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs",
+        "mirage",
+        "dev",
+        "--config",
+        "./paqvilo.config.yml",
+        "--site",
+        "example",
+        "--port",
+        "0",
+        "--debug-port",
+        "9222"
+      ],
       "options": { "cwd": "${workspaceFolder}" },
       "dependsOn": "demo: Install dependencies",
       "isBackground": true,
@@ -34,14 +56,30 @@
       "problemMatcher": {
         "owner": "paqvilo",
         "pattern": { "regexp": "^(?!)()()()$", "file": 1, "location": 2, "message": 3 },
-        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s+", "endsPattern": "^edit a file under the sources and the browser follows\\." }
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^browser\\s+",
+          "endsPattern": "^edit a file under the sources and the browser follows\\."
+        }
       }
     },
     {
       "label": "demo: Lense + browser debugger",
       "type": "process",
       "command": "node",
-      "args": ["${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs", "lense", "dev", "--config", "./paqvilo.config.yml", "--site", "example", "--env", "${input:liveEnvironment}", "--debug-port", "9222"],
+      "args": [
+        "${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs",
+        "lense",
+        "dev",
+        "--config",
+        "./paqvilo.config.yml",
+        "--site",
+        "example",
+        "--env",
+        "${input:liveEnvironment}",
+        "--debug-port",
+        "9222"
+      ],
       "options": { "cwd": "${workspaceFolder}" },
       "dependsOn": "demo: Install dependencies",
       "isBackground": true,
@@ -49,14 +87,24 @@
       "problemMatcher": {
         "owner": "paqvilo",
         "pattern": { "regexp": "^(?!)()()()$", "file": 1, "location": 2, "message": 3 },
-        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s+", "endsPattern": "^edit a file under the sources and the browser follows\\." }
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^browser\\s+",
+          "endsPattern": "^edit a file under the sources and the browser follows\\."
+        }
       }
     },
     {
       "label": "demo: Build Dataverse plugins",
       "type": "process",
       "command": "dotnet",
-      "args": ["build", "components/DataversePlugins/DataversePlugins.csproj", "--configuration", "Release", "-p:RestoreLockedMode=true"],
+      "args": [
+        "build",
+        "components/DataversePlugins/DataversePlugins.csproj",
+        "--configuration",
+        "Release",
+        "-p:RestoreLockedMode=true"
+      ],
       "options": { "cwd": "${workspaceFolder}" },
       "presentation": { "reveal": "always", "panel": "dedicated" },
       "problemMatcher": "$msCompile"
@@ -74,5 +122,12 @@
       "problemMatcher": []
     }
   ],
-  "inputs": [{ "id": "liveEnvironment", "type": "promptString", "description": "Environment name added to paqvilo.config.yml with your live portal URL", "default": "online" }]
+  "inputs": [
+    {
+      "id": "liveEnvironment",
+      "type": "promptString",
+      "description": "Environment name added to paqvilo.config.yml with your live portal URL",
+      "default": "online"
+    }
+  ]
 }

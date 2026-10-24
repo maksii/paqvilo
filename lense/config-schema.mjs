@@ -1,19 +1,23 @@
-import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
-import {identityProviderSettings} from '../mirage/lib/identity-provider-settings.mjs';
 // Validate configuration before it can become a browser URL, path, or routing rule.
-import { validateLocalOverrides } from '../mirage/lib/local-overrides.mjs';
-import { renderSettings } from '../mirage/lib/render-settings.mjs';
-import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
-import { platformConfig } from '../mirage/lib/platform-config.mjs';
-import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
+import { catalogueKeys, parseSetting } from '../mirage/lib/config-keys.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
-const SITE_KEYS = ['source', 'defaultEnv', 'environments', 'startPath', 'webFiles', 'inline', 'markup', 'scope', 'routes', 'mirage'];
-const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'presetConfiguration', 'confinePortalPages', 'externalAssets', 'externalFrameOrigins', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider'];
-const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
-const PRESET_ID = /^[\w.-]+$/;
+const SITE_KEYS = [
+  'source',
+  'defaultEnv',
+  'environments',
+  'startPath',
+  'webFiles',
+  'inline',
+  'markup',
+  'scope',
+  'routes',
+  'mirage',
+];
+// Every catalogue mirage key is a row of mirage/lib/config-keys.mjs (the one registration point).
+const MIRAGE_KEYS = catalogueKeys();
 
-export function object(value, name) {
+function object(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} must be a mapping`);
 }
 
@@ -23,7 +27,9 @@ function keys(value, allowed, name) {
 }
 
 function string(value, name) {
-  if (typeof value !== 'string' || !value.trim() || /[\x00-\x1f\x7f]/.test(value)) throw new Error(`${name} must be a non-empty string without control characters`);
+  // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+  if (typeof value !== 'string' || !value.trim() || /[\x00-\x1f\x7f]/.test(value))
+    throw new Error(`${name} must be a non-empty string without control characters`);
 }
 
 function boolean(value, name) {
@@ -31,8 +37,14 @@ function boolean(value, name) {
 }
 
 export function identifier(value, name) {
-  if (typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(value) || /^(?:constructor|prototype|__proto__)$/i.test(value)) {
-    throw new Error(`${name} must contain only letters, numbers, underscores or hyphens, starting with a letter or number`);
+  if (
+    typeof value !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(value) ||
+    /^(?:constructor|prototype|__proto__)$/i.test(value)
+  ) {
+    throw new Error(
+      `${name} must contain only letters, numbers, underscores or hyphens, starting with a letter or number`,
+    );
   }
 }
 
@@ -40,14 +52,25 @@ const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|
 
 export function browserProfile(value, name = 'browser.profile') {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(value) || WINDOWS_DEVICE.test(value)) {
-    throw new Error(`${name} must contain 1 to 64 letters, numbers, underscores or hyphens and cannot be a Windows device name`);
+    throw new Error(
+      `${name} must contain 1 to 64 letters, numbers, underscores or hyphens and cannot be a Windows device name`,
+    );
   }
 }
 
 export function browserProfileDirectory(value, name = 'browser.profileDirectory') {
   string(value, name);
-  if (value.length > 255 || /[\\/<>:"|?*]/.test(value) || /[. ]$/.test(value) || value === '.' || value === '..' || WINDOWS_DEVICE.test(value)) {
-    throw new Error(`${name} must be one safe directory name, such as Default or Profile 1, without paths or Windows device names`);
+  if (
+    value.length > 255 ||
+    /[\\/<>:"|?*]/.test(value) ||
+    /[. ]$/.test(value) ||
+    value === '.' ||
+    value === '..' ||
+    WINDOWS_DEVICE.test(value)
+  ) {
+    throw new Error(
+      `${name} must be one safe directory name, such as Default or Profile 1, without paths or Windows device names`,
+    );
   }
 }
 
@@ -57,7 +80,11 @@ export function browserUserDataDir(value, name = 'browser.userDataDir') {
 
 export function httpUrl(value, name, protocols = ['http:', 'https:']) {
   let url;
-  try { url = new URL(value); } catch { throw new Error(`${name} is not a URL`); }
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} is not a URL`);
+  }
   if (!protocols.includes(url.protocol) || !url.hostname || url.username || url.password || /[\s\\]/.test(value)) {
     throw new Error(`${name} must be an ${protocols.join('/')} URL without credentials or whitespace`);
   }
@@ -66,12 +93,14 @@ export function httpUrl(value, name, protocols = ['http:', 'https:']) {
 
 export function startPath(value, name = 'startPath') {
   string(value, name);
-  if (!value.startsWith('/') || value.startsWith('//') || /[\\\r\n]/.test(value)) throw new Error(`${name} must be a same-origin path starting with a single /`);
+  if (!value.startsWith('/') || value.startsWith('//') || /[\\\r\n]/.test(value))
+    throw new Error(`${name} must be a same-origin path starting with a single /`);
 }
 
 export function debugPort(value) {
   if (value === null || value === 0) return null;
-  if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error('browser.debugPort must be an integer from 0 to 65535 (0 or null = off)');
+  if (!Number.isInteger(value) || value < 1 || value > 65535)
+    throw new Error('browser.debugPort must be an integer from 0 to 65535 (0 or null = off)');
   return value;
 }
 
@@ -85,58 +114,44 @@ function array(value, name, allowed) {
  * Local Mirage runtime settings of a site (or of `defaults`). Paths stay strings here; config.mjs
  * resolves `project` and `dataPacks` modules from the catalogue folder and `solutionRoots` from the
  * portal checkout root. `null` clears an inherited project, port or preset in a personal override.
+ * Each key is validated by its row in mirage/lib/config-keys.mjs; observed values are validated in full
+ * by the Mirage's observedConfig (mirage/lib/project-config.mjs).
  */
 export function mirageSettings(value, name) {
   keys(value, MIRAGE_KEYS, name);
-  if (value.deploymentProfiles !== undefined) resolveDeploymentProfiles(value.deploymentProfiles);
-  validateLocalOverrides(value);
-  if (value.project != null) string(value.project, `${name}.project`);
-  if (value.solutionRoots !== undefined) {
-    if (!Array.isArray(value.solutionRoots)) throw new Error(`${name}.solutionRoots must be an array of folders`);
-    value.solutionRoots.forEach((root, index) => string(root, `${name}.solutionRoots[${index}]`));
-  }
-  if (value.dataPacks !== undefined) {
-    if (!Array.isArray(value.dataPacks)) throw new Error(`${name}.dataPacks must be an array of module paths or {id, module} objects`);
-    value.dataPacks.forEach((entry, index) => {
-      const at = `${name}.dataPacks[${index}]`;
-      if (typeof entry === 'string') return string(entry, at);
-      keys(entry, ['id', 'module'], at);
-      string(entry.module, `${at}.module`);
-      if (entry.id !== undefined && (typeof entry.id !== 'string' || !PACK_ID.test(entry.id))) throw new Error(`${at}.id must match ${PACK_ID}`);
-    });
-  }
-  // Observed platform behaviour of this portal's environment, with its evidence; the keys and
-  // values are validated by the Mirage's observedConfig (mirage/lib/project-config.mjs).
-  if (value.observed != null && (typeof value.observed !== 'object' || Array.isArray(value.observed))) throw new Error(`${name}.observed must be an object such as { loginPath: /SignIn, evidence: <where it was observed> }`);
-  if (value.solutionOrder != null && !['derived', 'explicit'].includes(value.solutionOrder)) throw new Error(`${name}.solutionOrder must be derived (Solution dependency order, the default) or explicit (the listed solutionRoots order)`);
-  if (value.port != null && (!Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) throw new Error(`${name}.port must be an integer from 0 to 65535 (0 chooses a free port)`);
-  if (value.preset != null && (typeof value.preset !== 'string' || !PRESET_ID.test(value.preset))) throw new Error(`${name}.preset must be a preset ID (letters, numbers, underscores, dots or hyphens)`);
-  if (value.presetConfiguration != null && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error(`${name}.presetConfiguration must be data-only or apply`);
-  if (value.presetMode != null && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error(`${name}.presetMode must be bootstrap or always`);
-  contentPolicyDefaults(value);
-  if (value.render !== undefined) renderSettings(value.render);
-  if (value.identityProvider !== undefined) identityProviderSettings(value.identityProvider);
-  if (value.personaContexts !== undefined) personaContextSettings(value.personaContexts);
-  if (value.platform !== undefined) platformConfig(value.platform, `${name}.platform`);
-  // The site's data model when the source does not record it (a .powerpages-site export defaults to enhanced).
-  if (value.dataModel != null && !['standard', 'enhanced'].includes(value.dataModel)) throw new Error(`${name}.dataModel must be standard or enhanced`);
+  for (const key of MIRAGE_KEYS)
+    if (value[key] !== undefined) parseSetting(key, value[key], { label: `${name}.${key}` });
 }
 
 function siteSettings(site, name) {
   if (site.startPath !== undefined) startPath(site.startPath, `${name}.startPath`);
   if (site.mirage != null) mirageSettings(site.mirage, `${name}.mirage`);
-  if (site.scope !== undefined && !['all', 'changed'].includes(site.scope)) throw new Error(`${name}.scope must be 'all' or 'changed'`);
+  if (site.scope !== undefined && !['all', 'changed'].includes(site.scope))
+    throw new Error(`${name}.scope must be 'all' or 'changed'`);
   for (const field of ['webFiles', 'inline', 'markup']) {
     if (site[field] === undefined) continue;
-    const allowed = field === 'webFiles' ? ['enabled', 'exclude'] : field === 'inline' ? ['enabled', 'kinds', 'minSimilarity', 'injectMissingPageBlocks'] : ['enabled', 'kinds', 'baseline'];
+    const allowed =
+      field === 'webFiles'
+        ? ['enabled', 'exclude']
+        : field === 'inline'
+          ? ['enabled', 'kinds', 'minSimilarity', 'injectMissingPageBlocks']
+          : ['enabled', 'kinds', 'baseline'];
     keys(site[field], allowed, `${name}.${field}`);
     if (site[field].enabled !== undefined) boolean(site[field].enabled, `${name}.${field}.enabled`);
   }
   if (site.webFiles?.exclude !== undefined) array(site.webFiles.exclude, `${name}.webFiles.exclude`);
   if (site.inline?.kinds !== undefined) array(site.inline.kinds, `${name}.inline.kinds`, BLOCK_KINDS);
   if (site.markup?.kinds !== undefined) array(site.markup.kinds, `${name}.markup.kinds`, MARKUP_KINDS);
-  if (site.inline?.minSimilarity !== undefined && (typeof site.inline.minSimilarity !== 'number' || !Number.isFinite(site.inline.minSimilarity) || site.inline.minSimilarity < 0 || site.inline.minSimilarity > 1)) throw new Error(`${name}.inline.minSimilarity must be between 0 and 1`);
-  if (site.inline?.injectMissingPageBlocks !== undefined) boolean(site.inline.injectMissingPageBlocks, `${name}.inline.injectMissingPageBlocks`);
+  if (
+    site.inline?.minSimilarity !== undefined &&
+    (typeof site.inline.minSimilarity !== 'number' ||
+      !Number.isFinite(site.inline.minSimilarity) ||
+      site.inline.minSimilarity < 0 ||
+      site.inline.minSimilarity > 1)
+  )
+    throw new Error(`${name}.inline.minSimilarity must be between 0 and 1`);
+  if (site.inline?.injectMissingPageBlocks !== undefined)
+    boolean(site.inline.injectMissingPageBlocks, `${name}.inline.injectMissingPageBlocks`);
   if (site.markup?.baseline !== undefined) string(site.markup.baseline, `${name}.markup.baseline`);
   if (site.routes !== undefined) {
     if (!Array.isArray(site.routes)) throw new Error(`${name}.routes must be an array`);
@@ -144,17 +159,36 @@ function siteSettings(site, name) {
       const at = `${name}.routes[${i}]`;
       keys(rule, ['url', 'file', 'dir', 'passthrough'], at);
       string(rule.url, `${at}.url`);
-      if (!rule.url.startsWith('/') || rule.url.startsWith('//') || rule.url.includes('\\')) throw new Error(`${at}.url must be a URL path starting with a single /`);
+      if (!rule.url.startsWith('/') || rule.url.startsWith('//') || rule.url.includes('\\'))
+        throw new Error(`${at}.url must be a URL path starting with a single /`);
       if (rule.passthrough !== undefined) boolean(rule.passthrough, `${at}.passthrough`);
-      if (Number(rule.file !== undefined) + Number(rule.dir !== undefined) + Number(rule.passthrough === true) !== 1) throw new Error(`${at} must select exactly one of file, dir or passthrough: true`);
+      if (Number(rule.file !== undefined) + Number(rule.dir !== undefined) + Number(rule.passthrough === true) !== 1)
+        throw new Error(`${at} must select exactly one of file, dir or passthrough: true`);
       for (const field of ['file', 'dir']) if (rule[field] !== undefined) string(rule[field], `${at}.${field}`);
     }
   }
 }
 
 export function validateCatalogue(root) {
-  keys(root, ['defaultSite', 'sourceRoot', 'portals', 'includeCaution', 'sites', 'defaults', 'browser', 'agent', 'liveReload', 'panel', 'editor', 'sourceMaps'], 'config');
-  if(root.includeCaution!==undefined)boolean(root.includeCaution,'includeCaution');
+  keys(
+    root,
+    [
+      'defaultSite',
+      'sourceRoot',
+      'portals',
+      'includeCaution',
+      'sites',
+      'defaults',
+      'browser',
+      'agent',
+      'liveReload',
+      'panel',
+      'editor',
+      'sourceMaps',
+    ],
+    'config',
+  );
+  if (root.includeCaution !== undefined) boolean(root.includeCaution, 'includeCaution');
   if (!['selected', 'all'].includes(root.portals)) throw new Error("portals must be 'selected' or 'all'");
   if (root.sourceRoot !== undefined) string(root.sourceRoot, 'sourceRoot');
   keys(root.agent, ['enabled'], 'agent');
@@ -162,7 +196,21 @@ export function validateCatalogue(root) {
   if (root.defaultSite !== undefined) identifier(root.defaultSite, 'defaultSite');
   for (const field of ['liveReload', 'panel', 'sourceMaps']) boolean(root[field], field);
   string(root.editor, 'editor');
-  keys(root.browser, ['channel', 'headless', 'profileDir', 'profile', 'userDataDir', 'profileDirectory', 'cdpUrl', 'debugPort', 'bypassCSP'], 'browser');
+  keys(
+    root.browser,
+    [
+      'channel',
+      'headless',
+      'profileDir',
+      'profile',
+      'userDataDir',
+      'profileDirectory',
+      'cdpUrl',
+      'debugPort',
+      'bypassCSP',
+    ],
+    'browser',
+  );
   string(root.browser.channel, 'browser.channel');
   boolean(root.browser.headless, 'browser.headless');
   boolean(root.browser.bypassCSP, 'browser.bypassCSP');
@@ -173,7 +221,11 @@ export function validateCatalogue(root) {
   debugPort(root.browser.debugPort);
   if (root.browser.cdpUrl !== null) httpUrl(root.browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
   if (root.defaults !== undefined) {
-    keys(root.defaults, SITE_KEYS.filter((x) => !['source', 'defaultEnv', 'environments'].includes(x)), 'defaults');
+    keys(
+      root.defaults,
+      SITE_KEYS.filter((x) => !['source', 'defaultEnv', 'environments'].includes(x)),
+      'defaults',
+    );
     siteSettings(root.defaults, 'defaults');
   }
   object(root.sites ?? {}, 'sites');

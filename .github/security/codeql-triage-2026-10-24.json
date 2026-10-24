@@ -1,0 +1,1061 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-24",
+  "repository": "maksii/paqvilo",
+  "baseCommit": "571dd95cbfa8179e5e5f34ca61a5282127435d57",
+  "analysisCommit": "aee9d8478b4a91a8fa6f063a0d911b83293108c0",
+  "analysisRef": "refs/pull/16/merge",
+  "querySuite": "security-extended",
+  "policy": "This is a per-alert review record, not an automatic suppression list. A prior rule/path match never authorizes dismissal without checking the current source, sink and caller boundaries. Compatibility behavior is preserved; genuine issues are fixed. GitHub dispositions require explicit evidence and do not disable queries.",
+  "context": "The formatting migration reopened 50 previously triaged rule/path pairs. All 62 current alerts were independently reviewed; fixes are kept separate from intentional-flow decisions.",
+  "reviewedNewSink": {
+    "path": "scripts/verified-download.mjs",
+    "rule": "js/http-to-file-access",
+    "evidence": "The intended public archive-to-cache flow has no credentials. Callers pin URLs and SHA-256; the helper enforces a 60-second deadline and 64 MiB cap, compares the digest before persisting, and atomically publishes an exclusive temporary file. Consumers rehash before extraction/execution. Any remaining analyzer result at this sink requires an exact current-flow review, not a blanket rule exclusion.",
+    "verification": "test/verified-download.test.mjs; cold actionlint/ShellCheck provisioning"
+  },
+  "entries": [
+    {
+      "number": 257,
+      "rule": "js/polynomial-redos",
+      "originalLocation": {
+        "path": "test/dataverse-data.test.mjs",
+        "start_line": 179,
+        "end_line": 179,
+        "start_column": 36,
+        "end_column": 70
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Anchored the fixture equality-filter grammar at both ends so repeated invalid field characters cannot cause quadratic retries. The loopback fixture accepts the same authored equality filters; existing data-loader, paging and mutation tests pass.",
+      "verification": "test/dataverse-data.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/257"
+    },
+    {
+      "number": 258,
+      "rule": "js/xss-through-dom",
+      "originalLocation": {
+        "path": "mirage/lib/platform-app-compat.js",
+        "start_line": 443,
+        "end_line": 443,
+        "start_column": 33,
+        "end_column": 36
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [169],
+      "evidence": "The create-related-record modal parses data-page as a URL, rejects non-HTTP(S), foreign origin, malformed percent encodings, and //-prefixed paths. It serializes existing options with URLSearchParams, removes action-owned keys and appends URI-encoded record/form/language. The hash remains a fragment; src is assigned through a DOM property, not parsed as markup. Fresh hostile query/fragment and executable/foreign/malformed URL browser regressions pass without injected elements or requests.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/258"
+    },
+    {
+      "number": 259,
+      "rule": "js/xss-through-dom",
+      "originalLocation": {
+        "path": "mirage/lib/richtext-actions.mjs",
+        "start_line": 88,
+        "end_line": 88,
+        "start_column": 50,
+        "end_column": 54
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [17],
+      "evidence": "editRichText parses the hidden JSON string into a detached DOMParser document and reads body.textContent.includes(text), a boolean wait assertion. It never attaches parsed nodes/markup into the live page. This is a text assertion, not a sanitizer, and the XSS disposition does not assume detached parsing is network-free.",
+      "verification": "mirage/lib/richtext-actions.mjs: waitForRichText; mirage/test-browser/richtext-form.test.mjs; DOMParser specification/MDN",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/259"
+    },
+    {
+      "number": 260,
+      "rule": "js/xss-through-dom",
+      "originalLocation": {
+        "path": "mirage/test-browser/local-compatibility.test.mjs",
+        "start_line": 261,
+        "end_line": 261,
+        "start_column": 41,
+        "end_column": 95
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [18],
+      "evidence": "The local-compatibility test parses its owned richtext hidden JSON value into a detached DOMParser document and reads body.textContent for equality. No node or markup from that detached document is adopted into the live DOM. This does not claim detached parsing is network-free.",
+      "verification": "mirage/test-browser/local-compatibility.test.mjs: rich-text assertion; DOMParser inert-document semantics",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/260"
+    },
+    {
+      "number": 261,
+      "rule": "js/bad-tag-filter",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 762,
+        "end_line": 762,
+        "start_column": 19,
+        "end_column": 84
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [21],
+      "evidence": "The end-tag regex is the required DotLiquid strip_html compatibility text transform. It does not promise safe HTML and is not substituted for html_safe_escape. The upstream StandardFilters.StripHtml contract also composes these regex replacements.",
+      "verification": "mirage/test/liquid-portal-parity.test.mjs: strip_html parity; mirage/docs/liquid-parity.md; DotLiquid StandardFilters.StripHtml",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/261"
+    },
+    {
+      "number": 262,
+      "rule": "js/bad-tag-filter",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 78,
+        "end_line": 78,
+        "start_column": 15,
+        "end_column": 51
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [22],
+      "evidence": "The imperfect script end-tag recognition exists only in signInDocument temporary title extraction, returning a boolean. The removed-range string is never rendered, so this cannot create an HTML execution sink.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/262"
+    },
+    {
+      "number": 263,
+      "rule": "js/bad-tag-filter",
+      "originalLocation": {
+        "path": "mirage/webapi-inventory.mjs",
+        "start_line": 706,
+        "end_line": 706,
+        "start_column": 49,
+        "end_column": 76
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [24],
+      "evidence": "The script-range regex records original source offsets for classification of literal FetchXML as Web API strings versus Liquid include or metadata. It does not sanitize/re-emit HTML, and query contents go to an XML planner instead of a browser sink.",
+      "verification": "mirage/webapi-inventory.mjs: collect fetchSources; mirage/test/webapi-inventory-wrappers.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/263"
+    },
+    {
+      "number": 264,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "lense/audit-json.mjs",
+        "start_line": 43,
+        "end_line": 43,
+        "start_column": 23,
+        "end_column": 83
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [26],
+      "evidence": "inspectComponentJson removes XML comment/CDATA spans only from a temporary string used to count paired content elements against componentContentSpan. That string is never emitted as HTML or executed; results are parsed JSON and inventory diagnostics. Existing fake-content, CDATA delimiter and malformed XML tests pass. Parser semantics intentionally unchanged.",
+      "verification": "test/audit-json.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/264"
+    },
+    {
+      "number": 265,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 761,
+        "end_line": 762,
+        "start_column": 14,
+        "end_column": 92
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [31],
+      "evidence": "strip_html deliberately implements DotLiquid StandardFilters.StripHtml text transformation, including its regex contract. It is distinct from the parser-based html_safe_escape security sanitizer; callers needing literal safe HTML use escape and formatted HTML use html_safe_escape. Changing this transform would break platform compatibility.",
+      "verification": "mirage/test/liquid-portal-parity.test.mjs: strip_html parity; mirage/docs/liquid-parity.md; DotLiquid StandardFilters.StripHtml",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/265"
+    },
+    {
+      "number": 266,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/lib/native-services.mjs",
+        "start_line": 2915,
+        "end_line": 2915,
+        "start_column": 34,
+        "end_column": 99
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [32],
+      "evidence": "The native download handler strips column-label markup before csvCell and emits the result in an explicit CSV download, not HTML. csvCell separately neutralizes spreadsheet-formula-like text while preserving ordinary signed numbers. The regex is not used as an HTML security sanitizer.",
+      "verification": "mirage/lib/native-services.mjs: download-as-csv/excel; mirage/lib/csv.mjs; mirage/test/security-regressions.test.mjs: spreadsheet formula regression",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/266"
+    },
+    {
+      "number": 267,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 75,
+        "end_line": 79,
+        "start_column": 16,
+        "end_column": 57
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [33],
+      "evidence": "signInDocument strips comment/script/style ranges only in a temporary head string to classify the title and return a boolean. No stripped HTML reaches an execution sink. Imperfect range recognition is not an HTML sanitizer bypass.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/267"
+    },
+    {
+      "number": 268,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 75,
+        "end_line": 78,
+        "start_column": 16,
+        "end_column": 59
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [34],
+      "evidence": "signInDocument strips comment/script/style ranges only in a temporary head string to classify the title and return a boolean. No stripped HTML reaches an execution sink. Imperfect range recognition is not an HTML sanitizer bypass.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/268"
+    },
+    {
+      "number": 269,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 75,
+        "end_line": 77,
+        "start_column": 16,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [35],
+      "evidence": "signInDocument strips comment/script/style ranges only in a temporary head string to classify the title and return a boolean. Neither this string nor removed-range output is served as HTML; capture rejects sign-in pages before asset capture.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/269"
+    },
+    {
+      "number": 270,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/lib/sign-in-flow.mjs",
+        "start_line": 1003,
+        "end_line": 1005,
+        "start_column": 11,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [37],
+      "evidence": "registrationDisabledMessage constructs plain error text from a configured snippet. SignInProblem passes it through renderSignIn to signInContent, whose error presentation HTML-escapes the string. This transform does not return trusted markup.",
+      "verification": "mirage/lib/sign-in-flow.mjs: registrationDisabledMessage/fail; mirage/server.mjs: renderSignIn; sign-in page error escaping and sign-in tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/270"
+    },
+    {
+      "number": 271,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/query-inventory.mjs",
+        "start_line": 18,
+        "end_line": 19,
+        "start_column": 18,
+        "end_column": 39
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [38],
+      "evidence": "inventoryBlock removes comment ranges from a temporary FetchXML block solely to inspect literal entity/link tags and unresolved syntax. The result is not served or evaluated as HTML.",
+      "verification": "mirage/query-inventory.mjs: inventoryBlock; mirage/test/query-inventory.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/271"
+    },
+    {
+      "number": 272,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/query-inventory.mjs",
+        "start_line": 73,
+        "end_line": 74,
+        "start_column": 20,
+        "end_column": 39
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [39],
+      "evidence": "inventoryPortalQueries strips comments into a temporary template string to count literal FetchXML blocks/entities/links. It outputs source fingerprints and numeric/query summaries, not the replacement HTML. It is not an HTML sanitizer.",
+      "verification": "mirage/query-inventory.mjs: inventoryPortalTemplates; query-inventory tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/272"
+    },
+    {
+      "number": 273,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "originalLocation": {
+        "path": "mirage/webapi-inventory.mjs",
+        "start_line": 254,
+        "end_line": 262,
+        "start_column": 5,
+        "end_column": 39
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [40],
+      "evidence": "concreteFetch strips Liquid/comment syntax only to approximate XML for static request-shape/feature inventory. Its result is parsed by the non-resolving FetchXML planner and contributes diagnostics/counts, not browser HTML. Dynamic substitutions are explicitly marked unresolved.",
+      "verification": "mirage/webapi-inventory.mjs: concreteFetch; mirage/test/webapi-inventory-wrappers.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/273"
+    },
+    {
+      "number": 274,
+      "rule": "js/incomplete-sanitization",
+      "originalLocation": {
+        "path": ".github/scripts/change-scope.mjs",
+        "start_line": 59,
+        "end_line": 59,
+        "start_column": 33,
+        "end_column": 47
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Package export target must replace every wildcard with the literal imported subpath; callback replacement prevents $ replacement syntax. Regression in test/contribution-gates.test.mjs.",
+      "verification": "test/contribution-gates.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/274"
+    },
+    {
+      "number": 275,
+      "rule": "js/bad-code-sanitization",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 4266,
+        "end_line": 4266,
+        "start_column": 70,
+        "end_column": 116
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [46, 47, 48],
+      "evidence": "derivePersona embeds probe.selector as a complete JSON.stringify string literal inside a DevTools browser evaluation expression. It is not placed in an HTML script element or concatenated as executable source. The existing hostile JSON regression includes quotes, backslashes, closing-script markup, and Unicode line separators; vm evaluation receives the exact selector and cannot set the injected global.",
+      "verification": "mirage/test/security-regressions.test.mjs: actual discoverTarget generated expression in VM with hostile selector; mirage/test/security-regressions.test.mjs: actual discoverTarget expression with hostile attribute; mirage/test/security-regressions.test.mjs: actual derivePersona generated expression executed with hostile selector",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/275"
+    },
+    {
+      "number": 276,
+      "rule": "js/weak-cryptographic-algorithm",
+      "originalLocation": {
+        "path": "examples/company-operations/prepare-data.mjs",
+        "start_line": 21,
+        "end_line": 21,
+        "start_column": 13,
+        "end_column": 60
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [],
+      "evidence": "SHA-1 derives stable public UUID-shaped identities from invented catalogue keys, not secrets/security decisions. Purpose comment retained; actual prepare-data --out temporary generation matches every committed key/id plus fixed currencyUSD vector 4423dab3-61bc-56f6-ba62-5c6135165abd. Test examples/company-operations/test/data.test.mjs.",
+      "verification": "examples/company-operations/test/data.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/276"
+    },
+    {
+      "number": 277,
+      "rule": "js/weak-cryptographic-algorithm",
+      "originalLocation": {
+        "path": "mirage/lib/dataverse-metadata.mjs",
+        "start_line": 312,
+        "end_line": 312,
+        "start_column": 33,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [],
+      "evidence": "uuidV5 derives stable metadata identifiers from the organization namespace and metadata component name. The flagged SHA1 is the historical non-GUID namespace fallback immediately before the RFC UUIDv5 SHA1 derivation; neither hash authenticates or encrypts data. RFC9562 section5.5 explicitly uses SHA1 for UUIDv5. A digest change would alter persisted/exported component identity.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/277"
+    },
+    {
+      "number": 278,
+      "rule": "js/weak-cryptographic-algorithm",
+      "originalLocation": {
+        "path": "mirage/lib/dataverse-metadata.mjs",
+        "start_line": 2108,
+        "end_line": 2108,
+        "start_column": 45,
+        "end_column": 49
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [],
+      "evidence": "objectTypeCode lowercases a logical table name and maps the first SHA1 word into an intentionally collision-capable 10000..59999 numeric compatibility identifier. This digest authenticates nothing and protects no sensitive data; standard codes stay fixed. Replacing it would renumber existing custom-table metadata and does not improve cryptographic security.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/278"
+    },
+    {
+      "number": 279,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "lense/commands/mirage.mjs",
+        "start_line": 1176,
+        "end_line": 1176,
+        "start_column": 30,
+        "end_column": 54
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [56],
+      "evidence": "The original check was opening the owned child startup log for append, followed by reading diagnostic text after exit; it was never a permission decision. Hardened the later diagnostic read using readLocalFile with the owned log root: descriptor identity, regular-file/read-size and resolved-root checks now reject replacement/escaping paths.",
+      "verification": "test/local-file.test.mjs; test/mirage-startup-cancellation.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/279"
+    },
+    {
+      "number": 280,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "mirage/lib/page-resources.mjs",
+        "start_line": 702,
+        "end_line": 702,
+        "start_column": 21,
+        "end_column": 50
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [69],
+      "evidence": "tableDisplayName uses stat exclusively as a display-name cache mtime/size key. Its selected Solution XML read supplies a label string; no permission, write, code execution, or security decision depends on stat. A concurrent edit can stale a display label until refresh, but does not cross a security boundary; rendered labels are escaped.",
+      "verification": "mirage/lib/page-resources.mjs: tableDisplayName; page-resource display metadata/render regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/280"
+    },
+    {
+      "number": 281,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "mirage/test/pack-configuration-presets.test.mjs",
+        "start_line": 222,
+        "end_line": 222,
+        "start_column": 24,
+        "end_column": 41
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "used in tests",
+      "previousAlertNumbers": [172],
+      "evidence": "An ENOENT assertion proves invalid preset startup did not create the owned fixture state file. A subsequent valid simulator intentionally creates it before this read, which snapshots bytes for a later non-mutation assertion. The earlier check is a test observation, not an access-control gate.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/281"
+    },
+    {
+      "number": 282,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "mirage/test/pack-configuration-presets.test.mjs",
+        "start_line": 235,
+        "end_line": 235,
+        "start_column": 26,
+        "end_column": 43
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "used in tests",
+      "previousAlertNumbers": [173],
+      "evidence": "An owned mkdtemp state file is intentionally created by a successful simulator after an earlier ENOENT assertion; this later read compares bytes after rejected preset startup to verify it did not modify that existing fixture. The old stat check neither authorizes nor establishes trust in the read.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/282"
+    },
+    {
+      "number": 283,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "mirage/test/state-storage-windows.test.mjs",
+        "start_line": 69,
+        "end_line": 69,
+        "start_column": 24,
+        "end_column": 49
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "used in tests",
+      "previousAlertNumbers": [174],
+      "evidence": "The owned Windows fixture deliberately modifies synthetic state bytes and restores their metadata via constant PowerShell. stat verifies the adversarial precondition, and readFile verifies the evil marker before asserting storage rejects or independently handles the edit. No stat result authorizes file access.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/283"
+    },
+    {
+      "number": 284,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "mirage/test/transactional-files-recovery.test.mjs",
+        "start_line": 213,
+        "end_line": 213,
+        "start_column": 13,
+        "end_column": 54
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "used in tests",
+      "previousAlertNumbers": [],
+      "evidence": "The regression publication refuses a replaced path deliberately opens an owned mkdtemp fixture, renames its pathname, then writes foreign replacement bytes through the same synthetic file path. It asserts publication rejects the replacement without consuming the validated descriptor and closes that descriptor. The flagged race is the adversarial condition under test, not a security check used to authorize access.",
+      "verification": "Current source review and the Mirage SDK/metadata/transaction recovery regression suites.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/284"
+    },
+    {
+      "number": 285,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "scripts/check-workflows.mjs",
+        "start_line": 56,
+        "end_line": 56,
+        "start_column": 5,
+        "end_column": 76
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Downloads now share a bounded, timed helper that verifies the pinned SHA-256 before writing any payload. An exclusive randomized temporary file is atomically renamed into the cache, so a competing final-path link is replaced rather than followed. Both consumers rehash their cached archive before extracting or executing it. No invalid response becomes a persistent cache artifact.",
+      "verification": "test/verified-download.test.mjs; scripts/check-workflows.mjs exercised with a fresh PAQVILO_TOOL_CACHE against actual upstream pinned assets.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/285"
+    },
+    {
+      "number": 286,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "scripts/ci.mjs",
+        "start_line": 63,
+        "end_line": 63,
+        "start_column": 5,
+        "end_column": 76
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Downloads now share a bounded, timed helper that verifies the pinned SHA-256 before writing any payload. An exclusive randomized temporary file is atomically renamed into the cache, so a competing final-path link is replaced rather than followed. Both consumers rehash their cached archive before extracting or executing it. No invalid response becomes a persistent cache artifact.",
+      "verification": "test/verified-download.test.mjs; scripts/check-workflows.mjs exercised with a fresh PAQVILO_TOOL_CACHE against actual upstream pinned assets.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/286"
+    },
+    {
+      "number": 287,
+      "rule": "js/file-system-race",
+      "originalLocation": {
+        "path": "scripts/format.mjs",
+        "start_line": 36,
+        "end_line": 36,
+        "start_column": 45,
+        "end_column": 76
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Formatter inputs now use the existing root-confined, bounded descriptor reader with file identity/version checks. Replacements use exclusive temporary creation and preserve the original mode; a second bounded comparison rejects a concurrent editor save before atomic replacement. No direct path-based input read follows the initial metadata check.",
+      "verification": "test/format.test.mjs; test/local-file.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/287"
+    },
+    {
+      "number": 288,
+      "rule": "js/remote-property-injection",
+      "originalLocation": {
+        "path": "mirage/admin/app.mjs",
+        "start_line": 786,
+        "end_line": 786,
+        "start_column": 63,
+        "end_column": 66
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [75],
+      "evidence": "applyRoute iterates Object.keys(auditFilters), whose eight own keys are defined by the module constant dictionary. URLSearchParams supplies only values, never the assignment property key. The independent DOM change handler guards Object.hasOwn(auditFilters, dataset.auditFilter), and rendered values use HTML escaping. Hostile audit deep-link browser regression passes.",
+      "verification": "mirage/admin/app.mjs: auditFilters/applyRoute; mirage/test-browser/admin-audit.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/288"
+    },
+    {
+      "number": 289,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "mirage/baseline-suite.mjs",
+        "start_line": 501,
+        "end_line": 501,
+        "start_column": 13,
+        "end_column": 34
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [],
+      "evidence": "File-derived fixture identity fields are deliberately mirrored into state of the disposable Mirage runtime created by startIsolatedMirage in this function. The POST destination uses only owned.url, never matrix.origin. All owned state/reset/config requests now use existing loopbackFetch, which restricts destinations to loopback, pins DNS addresses and refuses redirects; authored state cannot reach a remote portal.",
+      "verification": "test/loopback-transfer.test.mjs rejects remote and disguised hosts before sending, and proves a307 never forwards state body or credentials; baseline/reference tests; source review of mirageSide",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/289"
+    },
+    {
+      "number": 290,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "mirage/test-browser/parity.test.mjs",
+        "start_line": 483,
+        "end_line": 483,
+        "start_column": 41,
+        "end_column": 77
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [87],
+      "evidence": "The only file-derived value is the port in DevToolsActivePort from this test-owned Chromium profile. It is now converted to Number and checked as an integer 1..65535. Host and route remain literal http://127.0.0.1:<port>/json/list and redirects are refused; no arbitrary file body, bearer, remote host or private discovery is sent.",
+      "verification": "mirage/test-browser/parity.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/290"
+    },
+    {
+      "number": 291,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test/agent-server.test.mjs",
+        "start_line": 97,
+        "end_line": 101,
+        "start_column": 16,
+        "end_column": 8
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [88],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises local agent authentication and lifecycle. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test/agent-server.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/291"
+    },
+    {
+      "number": 292,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test/agent-server.test.mjs",
+        "start_line": 242,
+        "end_line": 242,
+        "start_column": 14,
+        "end_column": 99
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [89],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises malformed authenticated JSON request. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test/agent-server.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/292"
+    },
+    {
+      "number": 293,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/agent-lifecycle.test.mjs",
+        "start_line": 96,
+        "end_line": 99,
+        "start_column": 18,
+        "end_column": 10
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [90],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises local agent authentication and lifecycle. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/agent-lifecycle.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/293"
+    },
+    {
+      "number": 294,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/agent-server.test.mjs",
+        "start_line": 137,
+        "end_line": 140,
+        "start_column": 20,
+        "end_column": 12
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [91],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises local agent authentication and lifecycle. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/agent-server.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/294"
+    },
+    {
+      "number": 295,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/model-driven-inspector.test.mjs",
+        "start_line": 135,
+        "end_line": 138,
+        "start_column": 18,
+        "end_column": 10
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises model-driven inspector authentication/state/actions. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/model-driven-inspector.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/295"
+    },
+    {
+      "number": 296,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 410,
+        "end_line": 410,
+        "start_column": 21,
+        "end_column": 53
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [92],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/pages for the owned portal. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/296"
+    },
+    {
+      "number": 297,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 410,
+        "end_line": 410,
+        "start_column": 66,
+        "end_column": 112
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [93],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/pages for the owned portal. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/297"
+    },
+    {
+      "number": 298,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 418,
+        "end_line": 418,
+        "start_column": 21,
+        "end_column": 55
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [94],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/session browser-scope assertions. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/298"
+    },
+    {
+      "number": 299,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 418,
+        "end_line": 418,
+        "start_column": 68,
+        "end_column": 114
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [95],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/session browser-scope assertions. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/299"
+    },
+    {
+      "number": 300,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 427,
+        "end_line": 427,
+        "start_column": 38,
+        "end_column": 77
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [96],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises cross-session bearer rejection (401). Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/300"
+    },
+    {
+      "number": 301,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 428,
+        "end_line": 428,
+        "start_column": 16,
+        "end_column": 67
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [97],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises cross-session bearer rejection (401). Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/301"
+    },
+    {
+      "number": 302,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 452,
+        "end_line": 452,
+        "start_column": 15,
+        "end_column": 49
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [98],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises rejection after the owned listener closes. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/302"
+    },
+    {
+      "number": 303,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 453,
+        "end_line": 453,
+        "start_column": 20,
+        "end_column": 66
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [99],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises rejection after the owned listener closes. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/303"
+    },
+    {
+      "number": 304,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 742,
+        "end_line": 742,
+        "start_column": 41,
+        "end_column": 73
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [100],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/pages for the second child-owned portal. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/304"
+    },
+    {
+      "number": 305,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 742,
+        "end_line": 742,
+        "start_column": 77,
+        "end_column": 84
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [101],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/pages for the second child-owned portal. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/305"
+    },
+    {
+      "number": 306,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 746,
+        "end_line": 746,
+        "start_column": 41,
+        "end_column": 90
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [102],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/pages/<id>/state for local resource coverage. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/306"
+    },
+    {
+      "number": 307,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 746,
+        "end_line": 746,
+        "start_column": 94,
+        "end_column": 101
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [103],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/pages/<id>/state for local resource coverage. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/307"
+    },
+    {
+      "number": 308,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 750,
+        "end_line": 750,
+        "start_column": 39,
+        "end_column": 73
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [104],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/session for child catalogue-scope verification. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/308"
+    },
+    {
+      "number": 309,
+      "rule": "js/file-access-to-http",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 750,
+        "end_line": 750,
+        "start_column": 77,
+        "end_column": 84
+      },
+      "disposition": "false-positive",
+      "previousAlertNumbers": [105],
+      "evidence": "The discovery is created by this test's owned synthetic agent/runtime under its temporary directory. The intentional credential protocol exercises GET /v1/session for child catalogue-scope verification. Tests now use production readDiscovery: bounded descriptor reads, exact HTTP 127.0.0.1 endpoint with port, credential format validation, and no token output. In-process server endpoints are asserted equal to discovery; all credential requests refuse redirects. Multi-portal cases additionally prove origin isolation, cross-token refusal and owned cleanup. No private discovery or remote destination is used.",
+      "verification": "test-browser/multi-portal.test.mjs; test/agent-client.test.mjs validates malformed/external endpoints and redirect refusal",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/309"
+    },
+    {
+      "number": 310,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "mirage/acceptance.mjs",
+        "start_line": 961,
+        "end_line": 961,
+        "start_column": 57,
+        "end_column": 103
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [106],
+      "evidence": "The acceptance audit export is serialized to outputDir plus a loop-index-derived numbered request-audit.json filename. HTTP JSON controls evidence contents only, not its destination or execution.",
+      "verification": "mirage/acceptance.mjs: auditFile/writeFile; loopback acceptance regressions and redacted evidence contract",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/310"
+    },
+    {
+      "number": 311,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "mirage/acceptance.mjs",
+        "start_line": 992,
+        "end_line": 992,
+        "start_column": 39,
+        "end_column": 70
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [107],
+      "evidence": "The acceptance finally block writes JSON.stringify(result) to caller-selected outputDir plus fixed report.json after closing owned/attached browser connections and the blocking proxy. Observations do not choose destination paths or execute.",
+      "verification": "mirage/acceptance.mjs: outputDir/report/finally; acceptance report/cleanup tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/311"
+    },
+    {
+      "number": 312,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "mirage/cli.mjs",
+        "start_line": 824,
+        "end_line": 824,
+        "start_column": 42,
+        "end_column": 46
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [108],
+      "evidence": "The explicitly requested mirage render --output operation resolves args.output from CLI input. Its fetch is confined to target.origin === simulator.url and redirect:error. Remote/local response HTML controls output bytes only, not the path or code execution.",
+      "verification": "mirage/cli.mjs: render branch; CLI render/output regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/312"
+    },
+    {
+      "number": 313,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 4466,
+        "end_line": 4466,
+        "start_column": 37,
+        "end_column": 68
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [110],
+      "evidence": "runParitySuite writes JSON.stringify(report) to path.join(path.resolve(outDir), report.json). The destination derives only from the caller option plus a fixed filename, while HTTP observations are serialized data.",
+      "verification": "mirage/parity-suite.mjs: runParitySuite/localState/redaction/report path; parity suite and redactor regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/313"
+    },
+    {
+      "number": 314,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 4467,
+        "end_line": 4467,
+        "start_column": 55,
+        "end_column": 78
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [111],
+      "evidence": "runParitySuite writes summaryMarkdown(report) to path.join(outDir, summary.md). outDir is an explicit caller option; report observations only affect requested report text. No HTTP-derived filename/module is selected or executed.",
+      "verification": "mirage/parity-suite.mjs: runParitySuite/summaryMarkdown/redactor; parity report tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/314"
+    },
+    {
+      "number": 315,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "mirage/verify.mjs",
+        "start_line": 527,
+        "end_line": 527,
+        "start_column": 49,
+        "end_column": 80
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [112, 134],
+      "evidence": "verify.mjs fixes the report destination to pathModule.join(outputDir, report.json), where outputDir is caller-selected. HTTP observations affect JSON.stringify(result) bytes only. The finally block closes owned pages/browser before saving evidence; response data does not select a path or execute saved data.",
+      "verification": "mirage/verify.mjs: artifacts.report/writeFile; verification evidence and cleanup regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/315"
+    },
+    {
+      "number": 316,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "scripts/check-workflows.mjs",
+        "start_line": 56,
+        "end_line": 56,
+        "start_column": 31,
+        "end_column": 75
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Downloads now share a bounded, timed helper that verifies the pinned SHA-256 before writing any payload. An exclusive randomized temporary file is atomically renamed into the cache, so a competing final-path link is replaced rather than followed. Both consumers rehash their cached archive before extracting or executing it. No invalid response becomes a persistent cache artifact.",
+      "verification": "test/verified-download.test.mjs; scripts/check-workflows.mjs exercised with a fresh PAQVILO_TOOL_CACHE against actual upstream pinned assets.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/316"
+    },
+    {
+      "number": 317,
+      "rule": "js/http-to-file-access",
+      "originalLocation": {
+        "path": "scripts/ci.mjs",
+        "start_line": 63,
+        "end_line": 63,
+        "start_column": 31,
+        "end_column": 75
+      },
+      "disposition": "fix",
+      "previousAlertNumbers": [],
+      "evidence": "Downloads now share a bounded, timed helper that verifies the pinned SHA-256 before writing any payload. An exclusive randomized temporary file is atomically renamed into the cache, so a competing final-path link is replaced rather than followed. Both consumers rehash their cached archive before extracting or executing it. No invalid response becomes a persistent cache artifact.",
+      "verification": "test/verified-download.test.mjs; scripts/check-workflows.mjs exercised with a fresh PAQVILO_TOOL_CACHE against actual upstream pinned assets.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/317"
+    },
+    {
+      "number": 318,
+      "rule": "js/missing-origin-check",
+      "originalLocation": {
+        "path": "mirage/test-browser/solution-form.test.mjs",
+        "start_line": 253,
+        "end_line": 253,
+        "start_column": 41,
+        "end_column": 46
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "used in tests",
+      "previousAlertNumbers": [115],
+      "evidence": "The owned loopback browser regression records event.data into window.frameMessages for assertions. It neither evaluates message data nor inserts it into the live DOM. The actual production form completion handler in entity-grid-compat.js checks event.origin against location.origin and event.data against Success. Test interception is not a production message trust boundary.",
+      "verification": "mirage/test-browser/solution-form.test.mjs: passive message assertion; mirage/lib/entity-grid-compat.js: actual modal completion origin gate",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/318"
+    },
+    {
+      "number": 320,
+      "rule": "js/file-access-to-http",
+      "analysisCommit": "558cd787b4e47f6ad44cbfb75f325c185f4b1666",
+      "reviewedHead": "a539721933f89fd9642071dc38a0ac5e2c7193d3",
+      "originalLocation": {
+        "path": "test-browser/dev-session-close-errors.test.mjs",
+        "start_line": 157,
+        "end_line": 157,
+        "start_column": 20,
+        "end_column": 66
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [],
+      "evidence": "Individually reviewed this new source, sink and caller rather than inheriting an earlier rule/path decision. The fixture obtains runtime.active.get(its own loopback origin); startAgentServer binds literal 127.0.0.1 on an owned ephemeral port, generates the credential and exclusively writes its 0600 discovery file before returning the same in-memory endpoint. The test now uses production readDiscovery (bounded 64 KiB descriptor read, schema/token validation, exact HTTP 127.0.0.1 endpoint with explicit port and no userinfo/path/query/hash), asserts the parsed endpoint equals that in-memory owned endpoint, and sends the credential only as Authorization to /v1/session. Redirects are refused, the request has a five-second bound, HTTP 200 remains asserted, and the response body is always canceled. This is the intended owned-agent authentication protocol, not arbitrary file payload transfer to an unowned destination. No discovery contents or credential values are printed or committed; all CodeQL queries remain enabled.",
+      "verification": "Full dev-session-close-errors browser suite 6/6 and agent-client suite 8/8 passed, including malformed/external/credentialed endpoint and redirect credential-refusal cases; independent current-flow review confirmed producer, endpoint identity, request and cleanup boundaries.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/320"
+    }
+  ]
+}

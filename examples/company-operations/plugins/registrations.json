@@ -5,10 +5,7 @@
     {
       "name": "Paqvilo.Demo.QueryObservation",
       "project": "QueryObservation",
-      "types": [
-        "IncomingQueryObserver",
-        "QueryShapeMutator"
-      ]
+      "types": ["IncomingQueryObserver", "QueryShapeMutator"]
     },
     {
       "name": "Paqvilo.Demo.PipelineTests",
@@ -920,11 +917,7 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_runnercontactid",
-        "pqvd_operationid"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_runnercontactid", "pqvd_operationid"]
     },
     {
       "key": "OperationIntentGuard/pqvd_testoperation/Update/20/5/0",
@@ -935,14 +928,8 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_runnercontactid",
-        "pqvd_operationid"
-      ],
-      "images": [
-        "Before"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_runnercontactid", "pqvd_operationid"],
+      "images": ["Before"]
     },
     {
       "key": "OperationIntentGuard/pqvd_testoperation/Delete/20/5/0",
@@ -953,14 +940,8 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_runnercontactid",
-        "pqvd_operationid"
-      ],
-      "images": [
-        "Before"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_runnercontactid", "pqvd_operationid"],
+      "images": ["Before"]
     },
     {
       "key": "EvidenceWriteGuard/pqvd_pluginevent/Create/20/5/0",
@@ -971,11 +952,7 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_runnercontactid",
-        "pqvd_operationid"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_runnercontactid", "pqvd_operationid"]
     },
     {
       "key": "EvidenceWriteGuard/pqvd_pluginevent/Update/20/5/0",
@@ -986,14 +963,8 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_runnercontactid",
-        "pqvd_operationid"
-      ],
-      "images": [
-        "Before"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_runnercontactid", "pqvd_operationid"],
+      "images": ["Before"]
     },
     {
       "key": "EvidenceWriteGuard/pqvd_pluginevent/Delete/20/5/0",
@@ -1004,14 +975,8 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_runnercontactid",
-        "pqvd_operationid"
-      ],
-      "images": [
-        "Before"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_runnercontactid", "pqvd_operationid"],
+      "images": ["Before"]
     },
     {
       "key": "ChainNodeGuard/pqvd_chainnode/Create/20/5/0",
@@ -1084,9 +1049,7 @@
         "statuscode",
         "transactioncurrencyid"
       ],
-      "images": [
-        "Before"
-      ]
+      "images": ["Before"]
     },
     {
       "key": "ChainNodeGuard/pqvd_chainnode/Delete/20/5/0",
@@ -1123,9 +1086,7 @@
         "statuscode",
         "transactioncurrencyid"
       ],
-      "images": [
-        "Before"
-      ]
+      "images": ["Before"]
     },
     {
       "key": "RecordingBindingGuard/pqvd_testrun/Create/20/5/0",
@@ -1136,10 +1097,7 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runnercontactid",
-        "pqvd_runkey"
-      ]
+      "imageColumns": ["pqvd_runnercontactid", "pqvd_runkey"]
     },
     {
       "key": "RecordingBindingGuard/pqvd_testrun/Update/20/5/0",
@@ -1150,13 +1108,8 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
-      "imageColumns": [
-        "pqvd_runnercontactid",
-        "pqvd_runkey"
-      ]
+      "images": ["Before"],
+      "imageColumns": ["pqvd_runnercontactid", "pqvd_runkey"]
     },
     {
       "key": "RecordingBindingGuard/pqvd_testresult/Create/20/5/0",
@@ -1167,10 +1120,7 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_operationid"
-      ]
+      "imageColumns": ["pqvd_runid", "pqvd_operationid"]
     },
     {
       "key": "RecordingBindingGuard/pqvd_testresult/Update/20/5/0",
@@ -1181,13 +1131,8 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
-      "imageColumns": [
-        "pqvd_runid",
-        "pqvd_operationid"
-      ]
+      "images": ["Before"],
+      "imageColumns": ["pqvd_runid", "pqvd_operationid"]
     },
     {
       "key": "RecordingBindingGuard/pqvd_crudprobe/Create/20/5/0",
@@ -1218,9 +1163,7 @@
       "stage": 20,
       "order": 5,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -1885,9 +1828,7 @@
       "stage": 40,
       "order": 10,
       "mode": 0,
-      "images": [
-        "After"
-      ],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -1909,9 +1850,7 @@
       "stage": 40,
       "order": 9900,
       "mode": 0,
-      "images": [
-        "After"
-      ],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -1955,9 +1894,7 @@
       "stage": 20,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -1979,10 +1916,7 @@
       "stage": 40,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before",
-        "After"
-      ],
+      "images": ["Before", "After"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -2004,10 +1938,7 @@
       "stage": 40,
       "order": 9900,
       "mode": 0,
-      "images": [
-        "Before",
-        "After"
-      ],
+      "images": ["Before", "After"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -2051,9 +1982,7 @@
       "stage": 20,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -2075,9 +2004,7 @@
       "stage": 40,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -2099,9 +2026,7 @@
       "stage": 40,
       "order": 9900,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -2375,9 +2300,7 @@
       "stage": 40,
       "order": 10,
       "mode": 0,
-      "images": [
-        "After"
-      ],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2415,9 +2338,7 @@
       "stage": 40,
       "order": 9900,
       "mode": 0,
-      "images": [
-        "After"
-      ],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2493,9 +2414,7 @@
       "stage": 20,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2533,10 +2452,7 @@
       "stage": 40,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before",
-        "After"
-      ],
+      "images": ["Before", "After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2574,10 +2490,7 @@
       "stage": 40,
       "order": 9900,
       "mode": 0,
-      "images": [
-        "Before",
-        "After"
-      ],
+      "images": ["Before", "After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2653,9 +2566,7 @@
       "stage": 20,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2693,9 +2604,7 @@
       "stage": 40,
       "order": 10,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -2733,9 +2642,7 @@
       "stage": 40,
       "order": 9900,
       "mode": 0,
-      "images": [
-        "Before"
-      ],
+      "images": ["Before"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -3845,13 +3752,8 @@
       "stage": 40,
       "order": 100,
       "mode": 0,
-      "filteringAttributes": [
-        "pqvd_triggernonce"
-      ],
-      "images": [
-        "Before",
-        "After"
-      ],
+      "filteringAttributes": ["pqvd_triggernonce"],
+      "images": ["Before", "After"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",
@@ -3873,9 +3775,7 @@
       "stage": 40,
       "order": 100,
       "mode": 0,
-      "images": [
-        "After"
-      ],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -3912,15 +3812,8 @@
       "stage": 40,
       "order": 100,
       "mode": 0,
-      "filteringAttributes": [
-        "pqvd_hop",
-        "pqvd_requestnonce",
-        "pqvd_completionnonce"
-      ],
-      "images": [
-        "Before",
-        "After"
-      ],
+      "filteringAttributes": ["pqvd_hop", "pqvd_requestnonce", "pqvd_completionnonce"],
+      "images": ["Before", "After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -3957,9 +3850,7 @@
       "stage": 40,
       "order": 110,
       "mode": 0,
-      "images": [
-        "After"
-      ],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_operationid",
         "pqvd_nodecode",
@@ -3996,12 +3887,8 @@
       "stage": 40,
       "order": 100,
       "mode": 1,
-      "filteringAttributes": [
-        "pqvd_triggernonce"
-      ],
-      "images": [
-        "After"
-      ],
+      "filteringAttributes": ["pqvd_triggernonce"],
+      "images": ["After"],
       "imageColumns": [
         "pqvd_ownercontactid",
         "pqvd_runid",

@@ -1,0 +1,41 @@
+/* Toolkit-authored fallback for the private-site notice. Captured platform CSS
+   replaces this bundle; site-authored styles keep their normal cascade order. */
+.private-mode-banner {
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 4px 12px;
+  background: #252345;
+  color: #fff;
+  text-align: center;
+  font:
+    13px/22px Arial,
+    sans-serif;
+}
+.private-mode-banner .private-mode-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  min-height: 22px;
+}
+.private-mode-banner .private-mode-text img {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+.private-mode-banner .private-mode-text a {
+  color: inherit;
+}
+.private-mode-banner .private-mode-text b,
+.private-mode-banner .private-mode-text span {
+  width: auto;
+  max-width: 100%;
+}
+@media (max-width: 480px) {
+  .private-mode-banner {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+}

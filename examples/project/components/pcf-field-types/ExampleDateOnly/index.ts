@@ -1,7 +1,7 @@
-import { IInputs, IOutputs } from "./generated/ManifestTypes";
+import { IInputs, IOutputs } from './generated/ManifestTypes';
 
 function pad(value: number): string {
-  return String(value).padStart(2, "0");
+  return String(value).padStart(2, '0');
 }
 
 function formatDate(value: Date, withTime: boolean): string {
@@ -13,7 +13,7 @@ function formatDate(value: Date, withTime: boolean): string {
 function parseDate(value: string, withTime: boolean): Date | undefined {
   if (!value) return undefined;
   if (!withTime) {
-    const [year, month, day] = value.split("-").map(Number);
+    const [year, month, day] = value.split('-').map(Number);
     if (!year || !month || !day) return undefined;
     return new Date(year, month - 1, day);
   }
@@ -34,29 +34,34 @@ export class ExampleDateOnly implements ComponentFramework.StandardControl<IInpu
     context: ComponentFramework.Context<IInputs>,
     notifyOutputChanged: () => void,
     _state: ComponentFramework.Dictionary,
-    container: HTMLDivElement
+    container: HTMLDivElement,
   ): void {
     this._notifyOutputChanged = notifyOutputChanged;
     const initialRaw: unknown = context.parameters.controlValue.raw;
-    const raw = initialRaw instanceof Date ? initialRaw : typeof initialRaw === "string" && initialRaw ? new Date(initialRaw) : undefined;
+    const raw =
+      initialRaw instanceof Date
+        ? initialRaw
+        : typeof initialRaw === 'string' && initialRaw
+          ? new Date(initialRaw)
+          : undefined;
     this._value = raw && !Number.isNaN(raw.getTime()) ? raw : undefined;
-    this.input = document.createElement("input");
-    this.input.type = "date";
-    this.input.className = "ExampleDateOnly";
-    this.input.value = this._value ? formatDate(this._value, false) : "";
-    this.input.addEventListener("input", this.onInput);
+    this.input = document.createElement('input');
+    this.input.type = 'date';
+    this.input.className = 'ExampleDateOnly';
+    this.input.value = this._value ? formatDate(this._value, false) : '';
+    this.input.addEventListener('input', this.onInput);
     container.appendChild(this.input);
   }
 
   public updateView(context: ComponentFramework.Context<IInputs>): void {
     if (document.activeElement === this.input) return;
     const value: unknown = context.parameters.controlValue.raw;
-    const raw = value instanceof Date ? value : typeof value === "string" && value ? new Date(value) : undefined;
+    const raw = value instanceof Date ? value : typeof value === 'string' && value ? new Date(value) : undefined;
     const next = raw && !Number.isNaN(raw.getTime()) ? raw : undefined;
     const same = this._value?.getTime() === next?.getTime();
     if (same) return;
     this._value = next;
-    this.input.value = next ? formatDate(next, false) : "";
+    this.input.value = next ? formatDate(next, false) : '';
   }
 
   public getOutputs(): IOutputs {
@@ -64,6 +69,6 @@ export class ExampleDateOnly implements ComponentFramework.StandardControl<IInpu
   }
 
   public destroy(): void {
-    this.input.removeEventListener("input", this.onInput);
+    this.input.removeEventListener('input', this.onInput);
   }
 }

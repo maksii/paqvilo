@@ -1,0 +1,6 @@
+attribute:
+  '@PhysicalName': x_ItemId
+  Type: lookup
+  Name: x_itemid
+  LogicalName: x_itemid
+  RequiredLevel: none

@@ -1,9 +1,18 @@
 Paqvilo
-Original Paqvilo code: GNU Affero General Public License v3.0 only (see LICENSE).
+Licensed under the GNU Affero General Public License v3.0 only (see LICENSE).
 
-Third-party code and assets retain their upstream licenses:
-- Bootstrap glyphicons fonts under mirage/lib/bootstrap-fonts/: MIT; see LICENSE-bootstrap.txt.
-- npm dependencies: see each installed package's license and notices.
-- Test fixtures with upstream-derived assets: preserve the notices beside each fixture.
+Third-party material keeps its own license. License texts are in licenses/.
 
-Paqvilo is independent of Microsoft. Power Pages and Dataverse are Microsoft products.
+- Bootstrap 3 Glyphicons Halflings fonts, mirage/lib/bootstrap-fonts/: MIT, licenses/bootstrap.txt
+- xRM Portals Community Edition (Adxstudio) Liquid templates and resource strings,
+  mirage/lib/liquid-builtins.mjs and mirage/lib/liquid-resx.mjs: MIT, licenses/xrm-portals-community-edition.txt
+  https://github.com/amervitz/xRM-Portals-Community-Edition
+- SQL 4 CDS fiscal period arithmetic, ported in mirage/lib/fiscal-calendar.mjs: MIT, licenses/sql4cds.txt
+  https://github.com/MarkMpn/Sql4Cds
+- Example project copies of Bootstrap CSS and jQuery, examples/project/: MIT, licenses/bootstrap.txt and licenses/jquery.txt
+- Test fixture from the GCWeb Power Pages template, mirage/test/fixtures/wet-boew-bilingual/: MIT,
+  licenses/wet-boew-power-pages-template.txt
+  https://github.com/alfredofosu/wet-boew-power-pages-template
+- npm dependencies are installed separately and keep their own licenses.
+
+Paqvilo is independent of Microsoft. Power Pages, Power Apps and Dataverse are Microsoft products.

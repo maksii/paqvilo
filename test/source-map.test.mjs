@@ -18,7 +18,10 @@ test('identity source maps retain local paths and embed the debugger source', ()
 });
 
 test('existing large inline and block source maps are preserved', () => {
-  for (const directive of [`//# sourceMappingURL=data:application/json;base64,${'a'.repeat(5000)}`, '/*# sourceMappingURL=app.js.map */']) {
+  for (const directive of [
+    `//# sourceMappingURL=data:application/json;base64,${'a'.repeat(5000)}`,
+    '/*# sourceMappingURL=app.js.map */',
+  ]) {
     const body = Buffer.from(`console.log(1);\n${directive}\n`);
     assert.equal(withFileSourceMap(body, file), body);
   }
@@ -33,7 +36,9 @@ test('empty identity maps and invalid line counts are explicit', () => {
 test('large blank sources and unterminated map directives complete without quadratic scans', { timeout: 5000 }, () => {
   const blanks = '\n'.repeat(300_000);
   const blankBody = withFileSourceMap(Buffer.from(blanks), file).toString();
-  const blankMap = readMap(blankBody.slice(blankBody.lastIndexOf('sourceMappingURL=') + 'sourceMappingURL='.length).trim());
+  const blankMap = readMap(
+    blankBody.slice(blankBody.lastIndexOf('sourceMappingURL=') + 'sourceMappingURL='.length).trim(),
+  );
   assert.equal(blankMap.mappings.length, 4 + 300_000 * 5);
   assert.equal(blankMap.sourcesContent[0], blanks);
   const malformed = '/*# sourceMappingURL=missing\n'.repeat(4000);

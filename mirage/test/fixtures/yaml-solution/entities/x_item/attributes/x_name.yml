@@ -1,0 +1,12 @@
+attribute:
+  '@PhysicalName': x_Name
+  Type: nvarchar
+  Name: x_name
+  LogicalName: x_name
+  RequiredLevel: required
+  DisplayMask: PrimaryName|ValidForAdvancedFind|ValidForForm|ValidForGrid
+  MaxLength: '100'
+  displaynames:
+    displayname:
+      '@description': Name
+      '@languagecode': '1033'

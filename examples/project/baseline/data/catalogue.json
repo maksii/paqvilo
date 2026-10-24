@@ -8,11 +8,7 @@
       "name": "account",
       "entitySet": "accounts",
       "primaryId": "accountid",
-      "keys": [
-        [
-          "accountnumber"
-        ]
-      ]
+      "keys": [["accountnumber"]]
     },
     {
       "name": "contact",
@@ -24,21 +20,13 @@
       "name": "pqvd_baselineparent",
       "entitySet": "pqvd_baselineparents",
       "primaryId": "pqvd_baselineparentid",
-      "keys": [
-        [
-          "pqvd_code"
-        ]
-      ]
+      "keys": [["pqvd_code"]]
     },
     {
       "name": "pqvd_baselineitem",
       "entitySet": "pqvd_baselineitems",
       "primaryId": "pqvd_baselineitemid",
-      "keys": [
-        [
-          "pqvd_code"
-        ]
-      ]
+      "keys": [["pqvd_code"]]
     },
     {
       "name": "pqvd_baselinechild",

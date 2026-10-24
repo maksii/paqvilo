@@ -1,0 +1,37 @@
+import test from 'node:test';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { resolveCatalogue } from 'paqvilo/lense';
+import { createMirageContext } from 'paqvilo/mirage';
+import { connectRuntime } from 'paqvilo/mirage/testing';
+
+const catalogue = new URL('../paqvilo.config.yml', import.meta.url);
+
+// Unlike support/mirage.mjs, selecting a site imports its sources and applies its
+// configured runtime defaults. Hermetic tests must pass a synthetic fixture catalogue.
+export const siteMirage = (site, { config = catalogue } = {}) => createMirageContext({ config, site });
+
+// Attachment never owns/stops the runtime. Discovery resolves dynamic ports;
+// supply origin explicitly if several runtimes match this site.
+export async function attachSite(site, { config = catalogue, origin } = {}) {
+  config = config instanceof URL ? fileURLToPath(config) : config;
+  const selected = (await resolveCatalogue({ config, site })).sites.find(item => item.name === site);
+  if (!selected) throw new Error('Attachment requires a configured site');
+  const runtime = await connectRuntime({ config, site, origin });
+  const status = await runtime.status();
+  const canonical = async file => {
+    try { return await fs.realpath(file); }
+    catch (error) { if (error.code === 'ENOENT') return path.resolve(file); throw error; }
+  };
+  if (typeof status.sourceDir !== 'string' || path.relative(await canonical(selected.sourceDir), await canonical(status.sourceDir)) !== '') throw new Error('Runtime source does not match the selected catalogue site');
+  return runtime;
+}
+
+// A declaration that this project-owned test contains meaningful assertions for
+// this site. Strict browser validation counts only executed successful cases;
+// skipped/TODO cases and the starter HTTP smoke never establish acceptance.
+export function acceptanceTest(site, name, run, options = {}) {
+  if (typeof site !== 'string' || !site.trim() || site.length > 160 || typeof name !== 'string' || !name.trim() || typeof run !== 'function') throw new Error('acceptanceTest requires a site, descriptive name and assertion function');
+  return test(`[paqvilo-acceptance:${encodeURIComponent(site)}] ${name}`, options, run);
+}

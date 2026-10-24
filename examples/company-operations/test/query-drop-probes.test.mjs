@@ -1,2 +1,18 @@
-import test from'node:test';import assert from'node:assert/strict';import{queryDropProbeTemplate,buildQueryDropProbes}from'../portal-harness/query-drop-probes.mjs';
-test('QueryDrop probes never accidentally access unrequested properties',()=>{const plan={id:'invented',fetchXml:'<fetch><entity name="widget"/></fetch>',pageSize:10,fields:[{name:'widgetid',type:'guid'}]};for(const mode of['none','xml','results','both']){const source=queryDropProbeTemplate(plan,mode);assert.equal(source.includes('visibility_query.results'),['results','both'].includes(mode));assert.equal(source.includes('visibility_query.xml'),['xml','both'].includes(mode));}assert.equal(new Set(buildQueryDropProbes(plan,plan).map(p=>p.id)).size,8);assert.throws(()=>queryDropProbeTemplate(plan,'invalid'),/mode/);});
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { queryDropProbeTemplate, buildQueryDropProbes } from '../portal-harness/query-drop-probes.mjs';
+test('QueryDrop probes never accidentally access unrequested properties', () => {
+  const plan = {
+    id: 'invented',
+    fetchXml: '<fetch><entity name="widget"/></fetch>',
+    pageSize: 10,
+    fields: [{ name: 'widgetid', type: 'guid' }],
+  };
+  for (const mode of ['none', 'xml', 'results', 'both']) {
+    const source = queryDropProbeTemplate(plan, mode);
+    assert.equal(source.includes('visibility_query.results'), ['results', 'both'].includes(mode));
+    assert.equal(source.includes('visibility_query.xml'), ['xml', 'both'].includes(mode));
+  }
+  assert.equal(new Set(buildQueryDropProbes(plan, plan).map((p) => p.id)).size, 8);
+  assert.throws(() => queryDropProbeTemplate(plan, 'invalid'), /mode/);
+});

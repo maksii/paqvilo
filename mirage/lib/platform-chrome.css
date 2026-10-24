@@ -1,35 +1,306 @@
 /* Local equivalent of the platform PWA chrome styles (pwa-style.bundle-<hash>.css) for the
    offline notification bar, and of the screen-reader-only class used by the heading
    announcer, for pages without a captured platform stylesheet. */
-#offlineNotificationBar{padding-top:10px;padding-bottom:10px;background:#fff4ce}
-.displayNone{display:none!important}
-#offlineNotificationBar #message{position:relative;font-family:Segoe UI,sans-serif;font-style:normal;font-weight:600;font-size:12px;line-height:133%;color:#323130}
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+#offlineNotificationBar {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  background: #fff4ce;
+}
+.displayNone {
+  display: none !important;
+}
+#offlineNotificationBar #message {
+  position: relative;
+  font-family:
+    Segoe UI,
+    sans-serif;
+  font-style: normal;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 133%;
+  color: #323130;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+/* Utilities are retained here for the legacy standalone native/platform-chrome.css URL. */
 /* Toolkit-authored structural fallback. Captured styles replace this resource. */
-.crmEntityFormView{width:100%;box-sizing:border-box}
-.crmEntityFormView .tab,.crmEntityFormView table.section{width:100%;border-collapse:collapse}
-.crmEntityFormView table.section>tbody>tr>td.cell{vertical-align:top;padding:8px 12px;box-sizing:border-box}
-.crmEntityFormView .cell .info,.crmEntityFormView .cell .control{display:block;width:100%;box-sizing:border-box}
-.crmEntityFormView .cell .info{padding-bottom:4px}
+.crmEntityFormView {
+  box-sizing: border-box;
+}
+.entity-grid {
+  min-width: 0;
+  max-width: 100%;
+}
+.entity-grid .view-grid {
+  position: relative;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.crmEntityFormView .tab,
+.crmEntityFormView table.section {
+  width: 100%;
+  border-collapse: collapse;
+}
+.crmEntityFormView table.section > tbody > tr > td.cell {
+  vertical-align: top;
+  padding: 8px 12px;
+  box-sizing: border-box;
+}
+.crmEntityFormView .cell .info,
+.crmEntityFormView .cell .control {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+.crmEntityFormView .cell .info {
+  padding-bottom: 4px;
+}
 /* preform bundle: the empty width-less cell and a required cell's validator box are not laid out. */
-.crmEntityFormView .cell.zero-cell{display:none}
-.crmEntityFormView .actions:empty{display:none}
-.crmEntityFormView .cell div.table-info.required div.validators{display:none}
-.crmEntityFormView .cell.checkbox-cell div.table-info div.validators{display:none;clear:none}
-.crmEntityFormView .cell label{display:inline-block;margin-bottom:4px}
-.crmEntityFormView .form-control{display:block;width:100%;min-height:34px;box-sizing:border-box;padding:6px 12px;border:1px solid #ccc;border-radius:4px;background:#fff;color:#333}
-.crmEntityFormView textarea.form-control{min-height:80px}
-.modal-form .modal-body iframe{display:block;width:100%;border:0;height:700px}
-.crmEntityFormView iframe.quickform{display:block;width:100%;border:0;height:0}
-.crmEntityFormView .form-control[readonly]{background:#eee}
-.crmEntityFormView .input-group,.crmEntityFormView .cell .control.input-group{display:flex;width:100%;align-items:stretch}
-.crmEntityFormView .input-group .form-control{flex:1 1 auto;min-width:0;width:1%}
-.crmEntityFormView .input-group-btn,.crmEntityFormView .input-group-addon{flex:0 0 auto;display:flex;align-items:center}
-.crmEntityFormView .validation-summary{width:100%;box-sizing:border-box;padding:12px;margin:12px 0;border:1px solid #a94442;color:#a94442}
-/* Narrow forms (frames) stack the cells; the empty zero cell stays hidden (live quick view frame). */
-@media(max-width:600px){.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
-/* The lookup dialog's error block stays hidden until the grid reports an error (live: not rendered visible). */
-.modal-error.message{display:none}
+.crmEntityFormView .cell.zero-cell {
+  display: none;
+}
+.crmEntityFormView .actions:empty {
+  display: none;
+}
+.crmEntityFormView .cell div.table-info.required div.validators {
+  display: none;
+}
+.crmEntityFormView .cell.checkbox-cell div.table-info div.validators {
+  display: none;
+  clear: none;
+}
+.crmEntityFormView .cell label {
+  display: inline-block;
+  margin-bottom: 4px;
+}
+.crmEntityFormView .form-control {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+}
+.crmEntityFormView textarea.form-control {
+  min-height: 80px;
+}
+.modal-form .modal-body iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  height: 700px;
+}
+.crmEntityFormView iframe.quickform {
+  display: block;
+  width: 100%;
+  border: 0;
+  height: 0;
+}
+.crmEntityFormView .form-control[readonly] {
+  background: #eee;
+}
+.crmEntityFormView .input-group,
+.crmEntityFormView .cell .control.input-group {
+  display: flex;
+  width: 100%;
+  align-items: stretch;
+}
+.crmEntityFormView .input-group .form-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 1%;
+}
+.crmEntityFormView .input-group-btn,
+.crmEntityFormView .input-group-addon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+.crmEntityFormView .validation-summary {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin: 12px 0;
+  border: 1px solid #a94442;
+  color: #a94442;
+}
+/* Narrow forms (frames) stack the cells; the empty zero cell stays hidden. */
+@media (max-width: 767px) {
+  .crmEntityFormView fieldset {
+    min-width: 0;
+  }
+  .crmEntityFormView table.section {
+    display: block;
+    table-layout: fixed;
+  }
+  .crmEntityFormView table.section > tbody,
+  .crmEntityFormView table.section > tbody > tr,
+  .crmEntityFormView table.section > tbody > tr > td.cell:not(.zero-cell) {
+    display: block;
+    width: 100%;
+  }
+}
+/* The lookup dialog's error block stays hidden until the grid reports an error. */
+.modal-error.message {
+  display: none;
+}
 
-/* Map lists: the error box shows only when the map script reports an error (live). */
-#entity-list-map-error{display:none}
+/* Map lists: the error box shows only when the map script reports an error. */
+#entity-list-map-error {
+  display: none;
+}
+/* Structural preform affordances. These are replaced with captured preform CSS. */
+.crmEntityFormView .info.required label:after,
+.entity-form .table-info.required label:after {
+  content: ' *';
+  color: #a4262c;
+}
+.entity-form .form-control[readonly]:not(.lookup),
+.form-readonly .form-control[readonly] {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  padding-left: 0;
+  cursor: default;
+}
+.entity-grid td[data-th='Select'] [role='checkbox'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  min-width: 1em;
+  border: 1px solid currentColor;
+  box-sizing: border-box;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.entity-grid td[data-th='Select'] [role='checkbox']:focus-visible {
+  outline: 2px solid #005fcc;
+  outline-offset: 3px;
+}
+.entity-grid tr.selected > td {
+  background: #d6f0f7;
+}
+.modal-lookup .modal-header,
+.modal-associate .modal-header {
+  position: relative;
+  display: block;
+  padding: 16px;
+}
+.modal-lookup .modal-title,
+.modal-associate .modal-title {
+  font-size: 20px;
+  line-height: 1.4;
+  margin: 0;
+  padding-right: 32px;
+}
+.modal-lookup .modal-header .close,
+.modal-associate .modal-header .close,
+.modal-lookup .modal-header .form-close,
+.modal-associate .modal-header .form-close {
+  position: absolute;
+  right: 16px;
+  top: 12px;
+  font-size: 24px;
+  line-height: 1;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+}
+.modal-lookup .view-grid,
+.modal-associate .view-grid {
+  max-height: 300px;
+  overflow-y: auto;
+}
+@media (max-width: 600px) {
+  .modal-lookup .modal-dialog,
+  .modal-associate .modal-dialog {
+    margin: 8px;
+    max-height: calc(100dvh - 16px);
+  }
+  .modal-lookup .modal-content,
+  .modal-associate .modal-content {
+    max-height: calc(100dvh - 16px);
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-lookup .modal-body,
+  .modal-associate .modal-body {
+    min-height: 0;
+    overflow: auto;
+  }
+  .modal-lookup .modal-footer,
+  .modal-associate .modal-footer {
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .modal-lookup .view-grid,
+  .modal-associate .view-grid {
+    max-height: 40dvh;
+  }
+}
+
+/* Structural form labels and readonly controls also apply inside narrow modal frames. */
+.crmEntityFormView .info label,
+.crmEntityFormView .table-info label {
+  font-weight: 700;
+}
+.form-readonly .form-control {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+  cursor: default;
+}
+.form-readonly textarea.form-control {
+  resize: none;
+}
+.form-readonly select.form-control {
+  appearance: none;
+  pointer-events: none;
+  user-select: none;
+}
+/* Ordered step indicators are content lists, not the fixed-height Bootstrap progress bar. */
+ol.progress.list-group {
+  height: auto;
+  overflow: visible;
+  margin-bottom: 20px;
+}
+ol.progress.list-group .number {
+  padding-inline-end: 10px;
+}
+ol.progress.list-group.top,
+ol.progress.list-group.bottom {
+  display: flex;
+  flex-direction: row;
+}
+@media (max-width: 767px) {
+  ol.progress.list-group.top,
+  ol.progress.list-group.bottom {
+    flex-direction: column;
+  }
+}
+
+/* Map search controls retain inline layout when Bootstrap no longer defines form-inline. */
+#entity-list-map-options.form-inline .form-control {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  vertical-align: middle;
+}
+#entity-list-map-options {
+  margin-bottom: 10px;
+}

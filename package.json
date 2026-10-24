@@ -1,6 +1,6 @@
 {
   "name": "paqvilo",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Local-first, pro-code tools for Microsoft Power Pages: live source previews with Lense, Liquid and Dataverse simulation with Mirage.",
   "keywords": [
     "power-pages",
@@ -41,6 +41,7 @@
     "CONTRIBUTING.md",
     "LICENSE",
     "NOTICE",
+    "licenses/",
     "docs/",
     "examples/",
     "templates/",
@@ -52,7 +53,7 @@
   },
   "scripts": {
     "setup": "node scripts/ensure-dependencies.mjs",
-    "setup:repo": "npm run setup && npm run cache:package && npm run hooks:install",
+    "setup:repo": "npm run ci:prepare -- --quality && npm run cache:package && npm run hooks:install",
     "cache:package": "node scripts/prime-package-cache.mjs",
     "hooks:install": "node scripts/git-hooks.mjs install",
     "hooks:check": "node scripts/git-hooks.mjs pre-commit",
@@ -74,31 +75,45 @@
     "benchmark": "node scripts/benchmark.mjs",
     "test": "node --test --test-concurrency=4 test/*.test.mjs",
     "test:browser": "node --test --test-concurrency=2 test-browser/*.test.mjs",
-    "test:example": "npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false && node --test examples/project/test/baseline-*.test.mjs",
+    "test:example": "npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false && node --test examples/project/test/baseline-*.test.mjs examples/project/test/portal.test.mjs examples/project/test/plugins.test.mjs",
+    "test:example:browser": "node --test --test-concurrency=2 examples/project/test/*-browser.test.mjs",
     "test:company": "npm ci --prefix examples/company-operations --offline --ignore-scripts --no-audit --no-fund && npm --prefix examples/company-operations test",
     "test:company:browser": "npm --prefix examples/company-operations run test:browser",
     "check": "node scripts/check.mjs && npm run check:boundary",
-    "validate": "npm run check && npm test && npm run test:example && npm run test:company && npm run test:browser && npm run test:company:browser && npm --prefix mirage run validate && npm run release:check",
+    "validate": "node scripts/ci.mjs verify --full",
     "release:check": "node scripts/release-check.mjs",
+    "preview:cleanup": "node scripts/preview-retention.mjs",
     "release:smoke": "node scripts/package-smoke.mjs",
     "ci:evidence": "node scripts/collect-evidence.mjs",
     "demo": "node scripts/demo.mjs",
     "demo:evidence": "node scripts/demo.mjs --evidence",
     "lense": "node bin/paqvilo.mjs lense",
-    "check:boundary": "node scripts/project-boundary.mjs"
+    "check:boundary": "node scripts/project-boundary.mjs",
+    "test:sdk": "node --test --test-timeout=600000 mirage/test-sdk/toolkit-client/gate.test.mjs mirage/test-sdk/python-dataverse/gate.test.mjs mirage/test-sdk/webapi-samples/gate.test.mjs mirage/test-sdk/serviceclient/gate.test.mjs && npm --prefix mirage/test-sdk/dynamics-web-api test && npm --prefix mirage/test-sdk/cert-auth test && npm --prefix mirage/test-sdk/tds test",
+    "lint": "eslint --config eslint.config.mjs . --max-warnings=0",
+    "lint:fix": "eslint --config eslint.config.mjs . --fix --max-warnings=0",
+    "format": "node scripts/format.mjs",
+    "format:check": "prettier . --check",
+    "quality": "npm run format:check && npm run lint && npm run check:workflows && npm run review:code",
+    "ci:prepare": "node scripts/ci.mjs prepare",
+    "ci:verify": "node scripts/ci.mjs verify",
+    "check:workflows": "node scripts/check-workflows.mjs",
+    "audit:dependencies": "node scripts/audit-dependencies.mjs",
+    "hooks:push": "node scripts/git-hooks.mjs pre-push",
+    "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^24.22.1"
   },
   "dependencies": {
-    "chokidar": "5.0.0",
+    "chokidar": "6.0.0",
     "jquery": "3.7.1",
     "moment": "2.31.0",
     "parse5": "8.0.1",
     "pixelmatch": "8.0.0",
-    "playwright-core": "1.63.0",
+    "playwright-core": "1.64.1",
     "pngjs": "7.0.0",
-    "sanitize-html": "2.18.0",
+    "sanitize-html": "2.18.1",
     "yaml": "2.9.1"
   },
   "license": "AGPL-3.0-only",
@@ -113,5 +128,31 @@
     "./package.json": "./package.json",
     "./lense/*": "./lense/*",
     "./mirage/*": "./mirage/*"
+  },
+  "packageManager": "npm@11.19.1",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.13.0",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-import-x": "4.17.1",
+    "eslint-plugin-n": "18.5.0",
+    "globals": "17.13.0",
+    "jscpd": "5.4.2",
+    "knip": "6.43.0",
+    "prettier": "3.9.10",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.22.1",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "11.19.1",
+      "onFail": "error"
+    }
   }
 }

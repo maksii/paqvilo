@@ -5,7 +5,7 @@ adx_delete: true
 adx_entitylogicalname: pqvd_baselinechild
 adx_entityname: Baseline Account Scope items children
 adx_entitypermission_webrole:
-- dc6528da-1676-42da-8263-7c5a402fe418
+  - dc6528da-1676-42da-8263-7c5a402fe418
 adx_entitypermissionid: c2af0f41-db03-4b6c-87dc-54315d18ced0
 adx_parententitypermission: b093a5a3-308b-48f1-86f4-a70ca1a7c1cd
 adx_parentrelationship: pqvd_baselineitem_baselinechild

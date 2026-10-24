@@ -1,24 +1,53 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import {contentPolicyDefaults} from './content-policy-defaults.mjs';
-import { createHash } from "node:crypto";
-import YAML from "yaml";
-import { platformConfig } from './platform-config.mjs';
-import { importPortal } from "./importer.mjs";
-import { importSolutionMetadata } from "./solution-metadata.mjs";
-import { importSolutionData } from "./solution-data.mjs";
-import { scanSolutionSources, buildSolutionSchema } from "./solution-schema.mjs";
-import { SolutionFileCache } from "./solution-cache.mjs";
-import { applyObserved } from "./redirects.mjs";
-import { isTenantAuthority } from "./external-login.mjs";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { contentPolicyDefaults } from './content-policy-defaults.mjs';
+import { createHash } from 'node:crypto';
+import YAML from 'yaml';
+import { importPortal } from './importer.mjs';
+import { importSolutionMetadata } from './solution-metadata.mjs';
+import { importSolutionData } from './solution-data.mjs';
+import { scanSolutionSources, buildSolutionSchema } from './solution-schema.mjs';
+import { SolutionFileCache } from './solution-cache.mjs';
+import { applyObserved } from './redirects.mjs';
+import { isTenantAuthority } from './external-login.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
+import { loadOrganizationSources } from './solution-runtime-source.mjs';
+import { parseSetting, projectKeys } from './config-keys.mjs';
+import './provider-modules.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
-const KNOWN_KEYS = new Set([
-  "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins",
+// Structural project keys; every setting key is a row of config-keys.mjs (projectKeys()).
+const PROJECT_ONLY_KEYS = [
+  'version',
+  'defaultPortal',
+  'default_portal',
+  'portals',
+  'solutions',
+  'references',
+  'referenceEnvironments',
+  'presets',
+  'lcid',
+  'watch',
+  'stateDirectory',
+  'state_directory',
+];
+const KNOWN_KEYS = new Set([...PROJECT_ONLY_KEYS, ...projectKeys()]);
+// Setting rows resolved by dedicated code below (per portal, async or path-bearing); the loop parses the others.
+const RESOLVED_SEPARATELY = new Set([
+  'runtime',
+  'solutionOrder',
+  'dataPacks',
+  'deploymentProfiles',
+  'confinePortalPages',
+  'externalAssets',
+  'externalFrameOrigins',
+  'environmentVariables',
 ]);
+// A resolved project carries a setting only when the file sets it, so a default (simulation, modelDriven, platform,
+// dataverse) never masks a catalogue site's value in runtimeOptions(); readers take the default through defaultedSetting().
+/** A project setting: the file's value, else the row's default. */
+export const defaultedSetting = (project, key) => project?.[key] ?? parseSetting(key, undefined);
 
 function list(value, label) {
   if (value == null) return [];
@@ -26,80 +55,98 @@ function list(value, label) {
   return value;
 }
 
-function validateOrigin(value, label) {
+function validateOrigin(value, label, allowLoopback = false) {
   let url;
-  try { url = new URL(String(value)); }
-  catch { throw new Error(`${label} must be an HTTPS origin`); }
-  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+  try {
+    url = new URL(String(value));
+  } catch {
+    throw new Error(`${label} must be an HTTPS origin`);
+  }
+  if (
+    !(
+      url.protocol === 'https:' ||
+      (allowLoopback && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+    ) ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  )
     throw new Error(`${label} must be an HTTPS origin without credentials, path, query, or fragment`);
   return url.origin;
 }
 
-/** Observed values that are a choice between documented behaviours (B: Web API, data). */
+/** Observed values that are a choice between documented behaviours. */
 const OBSERVED_CHOICES = {
   formSubmissionErrorMarkup: ['inline', 'paragraph'],
-  webApiInnerError: ["all-errors", "dataverse-errors"],
-  webApiCdsErrorMessage: ["CDS error occurred.", "Common Data Service error occurred."],
-  webApiCdsErrorCode: ["innererror", "cdscode"],
-  webApiAntiForgery: ["cookie-mismatch-403", "decryption-401"],
-  webApiReferenceErrors: ["dataverse", "unexpected"],
-  webApiInvalidDate: ["invalid-format", "crm-minimum"],
+  webApiInnerError: ['all-errors', 'dataverse-errors'],
+  webApiUpdatePermissionQuery: ['native-classic'],
+  webApiMutationPermissionText: ['table'],
+  webApiCdsErrorMessage: ['CDS error occurred.', 'Common Data Service error occurred.'],
+  webApiCdsErrorCode: ['innererror', 'cdscode'],
+  webApiAntiForgery: ['cookie-mismatch-403', 'decryption-401'],
+  webApiReferenceErrors: ['dataverse', 'unexpected'],
+  webApiInvalidDate: ['invalid-format', 'crm-minimum'],
   webApiDateParsing: ['iso', 'month-first'],
   // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
-  webApiErrorDetails: ["diagnostic", "odata-wrapper"],
-  anonymousDataAccess: ["allowed", "blocked"],
-  // Replay a captured inactive-parent defect only for that evidenced site.
+  webApiErrorDetails: ['diagnostic', 'odata-wrapper'],
+  anonymousDataAccess: ['allowed', 'blocked'],
+  // Replay a recorded inactive-parent defect only for a site observed to have it.
   // Normal exported permission graphs keep incomplete parent chains closed.
-  tablePermissionOrphans: ["closed", "unrestricted"],
-  tablePermissionQueryPipeline: ["row-filtered", "native-classic"],
-  webApiFetchXmlLinkTypes: ["dataverse", "portal-classic"],
-  liquidFetchXmlLinkTypes: ["dataverse", "portal-classic"],
-  fetchAllWithoutFilter: ["modeled", "sql-error"],
-  fetchLinkBudgetError: ["documented", "reported-counts"],
-  odataPermissionQueryPipeline: ["modeled", "native-classic"],
-  odataSameTableParentAnchor: ["shared-root"],
-  liquidFetchExecution: ["eager", "lazy-query-drop"],
-  liquidFetchRights: ["read-only", "native-classic"],
-  liquidFetchErrorMessage: ["diagnostic", "target-invocation"],
+  tablePermissionOrphans: ['closed', 'unrestricted'],
+  tablePermissionQueryPipeline: ['row-filtered', 'native-classic'],
+  webApiFetchXmlLinkTypes: ['dataverse', 'portal-classic'],
+  liquidFetchXmlLinkTypes: ['dataverse', 'portal-classic'],
+  fetchAllWithoutFilter: ['modeled', 'sql-error'],
+  fetchLinkBudgetError: ['documented', 'reported-counts'],
+  odataPermissionQueryPipeline: ['modeled', 'native-classic'],
+  odataSameTableParentAnchor: ['shared-root'],
+  liquidFetchExecution: ['eager', 'lazy-query-drop'],
+  liquidFetchRights: ['read-only', 'native-classic'],
+  liquidFetchErrorMessage: ['diagnostic', 'target-invocation'],
   // Some deployments return 302 for an explicitly configured 301 redirect record.
   // Other status values are outside this observation and keep their source behavior.
-  redirect301: ["configured", "temporary"],
-  webTemplateResponseNewline: ["none", "crlf"],
-  webFileMimeCharset: ["utf8", "source"],
-  siteMarkerRedirect: ["resolve", "null-reference"],
-  nativeFormTransport: ["json", "postback"],
+  redirect301: ['configured', 'temporary'],
+  webTemplateResponseNewline: ['none', 'crlf'],
+  webFileMimeCharset: ['utf8', 'source'],
+  siteMarkerRedirect: ['resolve', 'null-reference'],
+  nativeFormTransport: ['json', 'postback'],
   // List OData feeds: "removed" (the platform default since June 2026, LIST_ODATA_FEED_REMOVED:
   // /_odata/<feed> answers the Page Not Found page) or "served" (a site observed still serving them).
-  listODataFeeds: ["removed", "served"],
-  modalLoadOrdering: ["ready", "immediate"],
-  subgridLabelMarkup: ["encoded", "sanitized"],
-  webApiErrorStacks: ["diagnostic", "response-template"],
+  listODataFeeds: ['removed', 'served'],
+  modalLoadOrdering: ['ready', 'immediate'],
+  subgridLabelMarkup: ['encoded', 'sanitized'],
+  webApiErrorStacks: ['diagnostic', 'response-template'],
   // Which Bootstrap stylesheet the layout links: the platform's /css/bootstrap.min.css or the
   // site's bootstrap.min.css web file (read by lib/liquid.mjs; default from the export).
-  bootstrapStylesheet: ["platform", "web-file"],
+  bootstrapStylesheet: ['platform', 'web-file'],
   // Site visibility (Power Platform admin, not exported): "private" renders the platform's
   // private-site banner first in the layout body (lib/liquid.mjs).
-  siteVisibility: ["public", "private"],
+  siteVisibility: ['public', 'private'],
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
-  webApiWildcard: ["enforced", "exempt"],
-  webApiLookupFields: ["logical-aliases", "explicit-wire"],
+  webApiWildcard: ['enforced', 'exempt'],
+  webApiLookupFields: ['logical-aliases', 'explicit-wire'],
   // A site's Liquid math adapter may convert string inputs before decimal multiplication.
   // The pinned DotLiquid contract remains the default; a different result needs site evidence.
-  liquidDecimalStringMultiply: ["dotliquid", "convert"],
-  liquidTimesDispatch: ["dotliquid", "observed"],
-  liquidFilterErrors: ["dotliquid", "observed"],
-  liquidServiceTags: ["dotliquid", "observed"],
-  liquidObjectCompatibility: ["dotliquid", "observed"],
-  liquidHtmlVoidSerialization: ["dotliquid", "html"],
-  liquidHtmlSafeInput: ["excluded", "observed"],
-  liquidPathAndQueryFragment: ["uri", "query"],
-  liquidRuntimeCompatibility: ["dotliquid", "observed"],
-  liquidFilterRegistration: ["dotliquid", "observed"],
-  liquidEditableMetadata: ["minimal", "observed"],
-  liquidMissingData: ["diagnostic", "empty"],
-  requestValidation: ["diagnostic", "aspnet-query"],
-  pageErrorPresentation: ["diagnostic", "generic-error"],
+  liquidDecimalStringMultiply: ['dotliquid', 'convert'],
+  liquidTimesDispatch: ['dotliquid', 'observed'],
+  liquidFilterErrors: ['dotliquid', 'observed'],
+  liquidServiceTags: ['dotliquid', 'observed'],
+  // Records output only; an empty response does not establish the native integration's admin state.
+  powerBiOutput: ['empty', 'placeholder'],
+  liquidObjectCompatibility: ['dotliquid', 'observed'],
+  liquidHtmlVoidSerialization: ['dotliquid', 'html'],
+  liquidHtmlSafeInput: ['excluded', 'observed'],
+  liquidPathAndQueryFragment: ['uri', 'query'],
+  liquidRuntimeCompatibility: ['dotliquid', 'observed'],
+  liquidFilterRegistration: ['dotliquid', 'observed'],
+  liquidEditableMetadata: ['minimal', 'observed'],
+  liquidMissingData: ['diagnostic', 'empty'],
+  requestValidation: ['diagnostic', 'aspnet-query'],
+  pageErrorPresentation: ['diagnostic', 'generic-error'],
 };
 
 /**
@@ -111,92 +158,214 @@ const OBSERVED_CHOICES = {
  * layers. Keys that are not given stay absent so each consumer applies its own default.
  * Any observation requires evidence naming where it was observed.
  */
-export function observedConfig(value, label = "observed") {
+export function observedConfig(value, label = 'observed') {
   if (value == null) return null;
-  if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder", "webApiTwoDigitYearMax", "webApiFetchXmlTransport"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (
+      ![
+        'evidence',
+        'loginPath',
+        'portalApplicationUser',
+        'portalApplicationUserId',
+        'headers',
+        'azureAdAuthority',
+        'codeComponents',
+        'sdkMessages',
+        'pluginSources',
+        'formSubmissionErrorMessage',
+        'fetchPreOperationSerialization',
+        'webApiGlobalMetadataVersion',
+        'tablePermissionGrantOrder',
+        'odataPermissionGrantOrder',
+        'webApiTwoDigitYearMax',
+        'webApiFetchXmlTransport',
+        'webApiSelfNnPermissionErrors',
+      ].includes(key) &&
+      !Object.hasOwn(OBSERVED_CHOICES, key)
+    )
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
-  if(value.webApiFetchXmlTransport!=null){
-    const transport=value.webApiFetchXmlTransport,limits=['maxHeaderXmlBytes','maxUrlXmlBytes','maxConstructedXmlBytes'];
-    if(!transport||typeof transport!=='object'||Array.isArray(transport)||transport.encoding!=='double-rfc3986'||
-      Object.keys(transport).some(key=>!['encoding',...limits].includes(key))||
-      limits.some(key=>!Number.isSafeInteger(transport[key])||transport[key]<1||transport[key]>4000000)||
-      transport.maxHeaderXmlBytes>transport.maxUrlXmlBytes||transport.maxUrlXmlBytes>transport.maxConstructedXmlBytes)
-      throw new Error(`${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`);
-    observed.webApiFetchXmlTransport={...transport};
+  if (value.webApiFetchXmlTransport != null) {
+    const transport = value.webApiFetchXmlTransport,
+      limits = ['maxHeaderXmlBytes', 'maxUrlXmlBytes', 'maxConstructedXmlBytes'];
+    if (
+      !transport ||
+      typeof transport !== 'object' ||
+      Array.isArray(transport) ||
+      transport.encoding !== 'double-rfc3986' ||
+      Object.keys(transport).some((key) => !['encoding', ...limits].includes(key)) ||
+      limits.some((key) => !Number.isSafeInteger(transport[key]) || transport[key] < 1 || transport[key] > 4000000) ||
+      transport.maxHeaderXmlBytes > transport.maxUrlXmlBytes ||
+      transport.maxUrlXmlBytes > transport.maxConstructedXmlBytes
+    )
+      throw new Error(
+        `${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`,
+      );
+    observed.webApiFetchXmlTransport = { ...transport };
   }
   if (value.webApiTwoDigitYearMax != null) {
-    if (!Number.isInteger(value.webApiTwoDigitYearMax) || value.webApiTwoDigitYearMax < 99 || value.webApiTwoDigitYearMax > 9999 || value.webApiDateParsing !== 'month-first')
-      throw new Error(`${label}.webApiTwoDigitYearMax requires month-first parsing and an integer from 99 through 9999`);
+    if (
+      !Number.isInteger(value.webApiTwoDigitYearMax) ||
+      value.webApiTwoDigitYearMax < 99 ||
+      value.webApiTwoDigitYearMax > 9999 ||
+      value.webApiDateParsing !== 'month-first'
+    )
+      throw new Error(
+        `${label}.webApiTwoDigitYearMax requires month-first parsing and an integer from 99 through 9999`,
+      );
     observed.webApiTwoDigitYearMax = value.webApiTwoDigitYearMax;
   }
-  for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder']) if (value[field] != null) {
-    const order = value[field];
-    const object = item => item && typeof item === 'object' && !Array.isArray(item);
-    if (!object(order) || Object.keys(order).some(key => !['normalizedGraphHash', 'tables'].includes(key)) ||
-      typeof order.normalizedGraphHash !== 'string' || !/^[a-f\d]{64}$/.test(order.normalizedGraphHash) ||
-      !object(order.tables) || Object.keys(order.tables).length > 100)
-      throw new Error(`${label}.${field} requires a normalized graph SHA256 and at most 100 logical tables`);
-    const tables = {}; let total = 0;
-    for (const [table, groups] of Object.entries(order.tables)) {
-      const seen = new Set();
-      if (!/^[_a-z][a-z\d_]{0,127}$/i.test(table) || !Array.isArray(groups) || groups.length > 5000)
-        throw new Error(`${label}.${field} requires bounded ordered GUID groups for each logical table`);
-      tables[table] = groups.map(group => {
-        if (!Array.isArray(group) || !group.length || group.length > 5000)
-          throw new Error(`${label}.${field} requires nonempty bounded GUID groups`);
-        return group.map(id => {
-          if (typeof id !== 'string' || !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(id) || seen.has(id.toLowerCase()) || ++total > 5000)
-            throw new Error(`${label}.${field} contains invalid, duplicate or excessive permission GUIDs`);
-          seen.add(id.toLowerCase()); return id.toLowerCase();
+  for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder'])
+    if (value[field] != null) {
+      const order = value[field];
+      const object = (item) => item && typeof item === 'object' && !Array.isArray(item);
+      if (
+        !object(order) ||
+        Object.keys(order).some((key) => !['normalizedGraphHash', 'tables'].includes(key)) ||
+        typeof order.normalizedGraphHash !== 'string' ||
+        !/^[a-f\d]{64}$/.test(order.normalizedGraphHash) ||
+        !object(order.tables) ||
+        Object.keys(order.tables).length > 100
+      )
+        throw new Error(`${label}.${field} requires a normalized graph SHA256 and at most 100 logical tables`);
+      const tables = {};
+      let total = 0;
+      for (const [table, groups] of Object.entries(order.tables)) {
+        const seen = new Set();
+        if (!/^[_a-z][a-z\d_]{0,127}$/i.test(table) || !Array.isArray(groups) || groups.length > 5000)
+          throw new Error(`${label}.${field} requires bounded ordered GUID groups for each logical table`);
+        tables[table] = groups.map((group) => {
+          if (!Array.isArray(group) || !group.length || group.length > 5000)
+            throw new Error(`${label}.${field} requires nonempty bounded GUID groups`);
+          return group.map((id) => {
+            if (
+              typeof id !== 'string' ||
+              !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(id) ||
+              seen.has(id.toLowerCase()) ||
+              ++total > 5000
+            )
+              throw new Error(`${label}.${field} contains invalid, duplicate or excessive permission GUIDs`);
+            seen.add(id.toLowerCase());
+            return id.toLowerCase();
+          });
         });
-      });
+      }
+      observed[field] = { normalizedGraphHash: order.normalizedGraphHash, tables };
     }
-    observed[field] = {normalizedGraphHash: order.normalizedGraphHash, tables};
-  }
-  if(value.webApiGlobalMetadataVersion!=null){
-    if(typeof value.webApiGlobalMetadataVersion!=='string'||!/^\d{1,20}$/.test(value.webApiGlobalMetadataVersion))
+  if (value.webApiGlobalMetadataVersion != null) {
+    if (typeof value.webApiGlobalMetadataVersion !== 'string' || !/^\d{1,20}$/.test(value.webApiGlobalMetadataVersion))
       throw new Error(`${label}.webApiGlobalMetadataVersion must be a bounded numeric string`);
-    observed.webApiGlobalMetadataVersion=value.webApiGlobalMetadataVersion;
+    observed.webApiGlobalMetadataVersion = value.webApiGlobalMetadataVersion;
   }
-  if(value.fetchPreOperationSerialization!=null){
-    const entries=value.fetchPreOperationSerialization;
-    if(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.keys(entries).length>100||Object.entries(entries).some(([entity,mode])=>!/^[_a-z][a-z\d_]{0,127}$/i.test(entity)||mode!=='compact'))
+  if (value.fetchPreOperationSerialization != null) {
+    const entries = value.fetchPreOperationSerialization;
+    if (
+      !entries ||
+      typeof entries !== 'object' ||
+      Array.isArray(entries) ||
+      Object.keys(entries).length > 100 ||
+      Object.entries(entries).some(([entity, mode]) => !/^[_a-z][a-z\d_]{0,127}$/i.test(entity) || mode !== 'compact')
+    )
       throw new Error(`${label}.fetchPreOperationSerialization must map at most 100 exact logical tables to compact`);
-    if(Object.keys(entries).length)observed.fetchPreOperationSerialization={...entries};
+    if (Object.keys(entries).length) observed.fetchPreOperationSerialization = { ...entries };
   }
   if (value.formSubmissionErrorMessage != null) {
-    if (typeof value.formSubmissionErrorMessage !== 'string' || !value.formSubmissionErrorMessage.trim() || value.formSubmissionErrorMessage.length > 2000) throw new Error(`${label}.formSubmissionErrorMessage must be bounded plain text`);
+    if (
+      typeof value.formSubmissionErrorMessage !== 'string' ||
+      !value.formSubmissionErrorMessage.trim() ||
+      value.formSubmissionErrorMessage.length > 2000
+    )
+      throw new Error(`${label}.formSubmissionErrorMessage must be bounded plain text`);
     observed.formSubmissionErrorMessage = value.formSubmissionErrorMessage;
   }
   if (value.pluginSources != null) {
-    if (!value.pluginSources || typeof value.pluginSources !== 'object' || Array.isArray(value.pluginSources) || Object.keys(value.pluginSources).length > 1000) throw new Error(`${label}.pluginSources must map at most 1000 exact plugin type names to source paths with evidence`);
+    if (
+      !value.pluginSources ||
+      typeof value.pluginSources !== 'object' ||
+      Array.isArray(value.pluginSources) ||
+      Object.keys(value.pluginSources).length > 1000
+    )
+      throw new Error(
+        `${label}.pluginSources must map at most 1000 exact plugin type names to source paths with evidence`,
+      );
     observed.pluginSources = {};
     for (const [name, source] of Object.entries(value.pluginSources)) {
       const relative = typeof source?.path === 'string' ? source.path.replace(/\\/g, '/') : '';
-      if (!/^[_a-z][\w.+`]{0,249}$/i.test(name) || !source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['path', 'evidence', 'root'].includes(key)) || !relative.endsWith('.cs') || path.isAbsolute(relative) || /[:\x00-\x1f]/.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part)) || typeof source.evidence !== 'string' || !source.evidence.trim() || source.evidence.length > 2000 || source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root))) throw new Error(`${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`);
-      observed.pluginSources[name] = { path: relative, evidence: source.evidence, ...(source.root ? { root: source.root } : {}) };
+      if (
+        !/^[_a-z][\w.+`]{0,249}$/i.test(name) ||
+        !source ||
+        typeof source !== 'object' ||
+        Array.isArray(source) ||
+        Object.keys(source).some((key) => !['path', 'evidence', 'root'].includes(key)) ||
+        !relative.endsWith('.cs') ||
+        path.isAbsolute(relative) ||
+        // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+        /[:\x00-\x1f]/.test(relative) ||
+        relative
+          .split('/')
+          .some(
+            (part) =>
+              !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part),
+          ) ||
+        typeof source.evidence !== 'string' ||
+        !source.evidence.trim() ||
+        source.evidence.length > 2000 ||
+        (source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root)))
+      )
+        throw new Error(
+          `${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`,
+        );
+      observed.pluginSources[name] = {
+        path: relative,
+        evidence: source.evidence,
+        ...(source.root ? { root: source.root } : {}),
+      };
     }
   }
   if (value.sdkMessages != null) {
-    if (!value.sdkMessages || typeof value.sdkMessages !== 'object' || Array.isArray(value.sdkMessages) || Object.keys(value.sdkMessages).length > 1000) throw new Error(`${label}.sdkMessages must map at most 1000 SDK message GUIDs to names with evidence`);
+    if (
+      !value.sdkMessages ||
+      typeof value.sdkMessages !== 'object' ||
+      Array.isArray(value.sdkMessages) ||
+      Object.keys(value.sdkMessages).length > 1000
+    )
+      throw new Error(`${label}.sdkMessages must map at most 1000 SDK message GUIDs to names with evidence`);
     observed.sdkMessages = {};
     for (const [raw, message] of Object.entries(value.sdkMessages)) {
       const id = raw.replace(/[{}]/g, '').toLowerCase();
-      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) || !message || typeof message !== 'object' || Array.isArray(message) || Object.keys(message).some(key => !['name', 'evidence'].includes(key)) || typeof message.name !== 'string' || !/^[a-z][a-z0-9_]{0,199}$/i.test(message.name) || typeof message.evidence !== 'string' || !message.evidence.trim() || message.evidence.length > 2000) throw new Error(`${label}.sdkMessages requires GUID keys, SDK names and evidence`);
-      if (Object.hasOwn(observed.sdkMessages, id)) throw new Error(`${label}.sdkMessages has a duplicate SDK message GUID`);
+      if (
+        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
+        !message ||
+        typeof message !== 'object' ||
+        Array.isArray(message) ||
+        Object.keys(message).some((key) => !['name', 'evidence'].includes(key)) ||
+        typeof message.name !== 'string' ||
+        !/^[a-z][a-z0-9_]{0,199}$/i.test(message.name) ||
+        typeof message.evidence !== 'string' ||
+        !message.evidence.trim() ||
+        message.evidence.length > 2000
+      )
+        throw new Error(`${label}.sdkMessages requires GUID keys, SDK names and evidence`);
+      if (Object.hasOwn(observed.sdkMessages, id))
+        throw new Error(`${label}.sdkMessages has a duplicate SDK message GUID`);
       observed.sdkMessages[id] = { name: message.name, evidence: message.evidence };
     }
   }
   if (value.codeComponents != null) {
-    if (!value.codeComponents || typeof value.codeComponents !== 'object' || Array.isArray(value.codeComponents)) throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
+    if (!value.codeComponents || typeof value.codeComponents !== 'object' || Array.isArray(value.codeComponents))
+      throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
     observed.codeComponents = {};
     for (const [raw, schema] of Object.entries(value.codeComponents)) {
       const id = raw.replace(/[{}]/g, '').toLowerCase();
-      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) || typeof schema !== 'string' || !/^[\w.]+$/.test(schema)) throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
-      if (Object.hasOwn(observed.codeComponents, id)) throw new Error(`${label}.codeComponents has a duplicate component GUID`);
+      if (
+        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
+        typeof schema !== 'string' ||
+        !/^[\w.]+$/.test(schema)
+      )
+        throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
+      if (Object.hasOwn(observed.codeComponents, id))
+        throw new Error(`${label}.codeComponents has a duplicate component GUID`);
       observed.codeComponents[id] = schema;
     }
   }
@@ -204,13 +373,15 @@ export function observedConfig(value, label = "observed") {
   // records as the creator of the notes and records the portal creates (no export holds it).
   if (value.portalApplicationUser != null) {
     const name = String(value.portalApplicationUser).trim();
-    if (!name || name.length > 200) throw new Error(`${label}.portalApplicationUser must be the application user's display name`);
+    if (!name || name.length > 200)
+      throw new Error(`${label}.portalApplicationUser must be the application user's display name`);
     observed.portalApplicationUser = name;
   }
-  // portalApplicationUserId: that application user's systemuser id (the createdby id live reports).
+  // portalApplicationUserId: that application user's systemuser id (the createdby id the platform reports).
   if (value.portalApplicationUserId != null) {
-    const id = String(value.portalApplicationUserId).trim().replace(/[{}]/g, "").toLowerCase();
-    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id)) throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
+    const id = String(value.portalApplicationUserId).trim().replace(/[{}]/g, '').toLowerCase();
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id))
+      throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
     observed.portalApplicationUserId = id;
   }
   if (value.loginPath != null) {
@@ -223,14 +394,17 @@ export function observedConfig(value, label = "observed") {
   // headers the platform sends on that kind of response although no exported site setting
   // defines them (lib/response-headers.mjs siteHeaders).
   if (value.headers != null) {
-    if (typeof value.headers !== "object" || Array.isArray(value.headers)) throw new Error(`${label}.headers must map page and webFile to headers`);
+    if (typeof value.headers !== 'object' || Array.isArray(value.headers))
+      throw new Error(`${label}.headers must map page and webFile to headers`);
     const headers = {};
     for (const [kind, entries] of Object.entries(value.headers)) {
-      if (!["page", "webFile", "webApi"].includes(kind)) throw new Error(`${label}.headers.${kind} must be page, webFile or webApi`);
-      if (!entries || typeof entries !== "object" || Array.isArray(entries)) throw new Error(`${label}.headers.${kind} must map header names to values`);
+      if (!['page', 'webFile', 'webApi'].includes(kind))
+        throw new Error(`${label}.headers.${kind} must be page, webFile or webApi`);
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries))
+        throw new Error(`${label}.headers.${kind} must map header names to values`);
       headers[kind] = {};
       for (const [name, raw] of Object.entries(entries)) {
-        const header = String(raw ?? "").trim();
+        const header = String(raw ?? '').trim();
         if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name) || !header || /[\r\n]/.test(header))
           throw new Error(`${label}.headers.${kind}.${name} must be a header name with a one-line value`);
         headers[kind][name.toLowerCase()] = header;
@@ -244,26 +418,53 @@ export function observedConfig(value, label = "observed") {
   if (value.azureAdAuthority != null) {
     const authority = String(value.azureAdAuthority).trim();
     if (!isTenantAuthority(authority))
-      throw new Error(`${label}.azureAdAuthority must be the observed Microsoft Entra authority of one tenant, https://login.windows.net/<tenant>/ with the tenant's directory ID or domain name (not a placeholder, common or organizations)`);
+      throw new Error(
+        `${label}.azureAdAuthority must be the observed Microsoft Entra authority of one tenant, https://login.windows.net/<tenant>/ with the tenant's directory ID or domain name (not a placeholder, common or organizations)`,
+      );
     observed.azureAdAuthority = authority;
+  }
+  if (value.webApiSelfNnPermissionErrors != null) {
+    const profiles = value.webApiSelfNnPermissionErrors;
+    if (
+      !profiles ||
+      typeof profiles !== 'object' ||
+      Array.isArray(profiles) ||
+      !Object.keys(profiles).length ||
+      Object.keys(profiles).length > 1000
+    )
+      throw new Error(
+        `${label}.webApiSelfNnPermissionErrors must map qualified relationship schema names to native-classic`,
+      );
+    observed.webApiSelfNnPermissionErrors = Object.create(null);
+    for (const [schema, mode] of Object.entries(profiles)) {
+      if (
+        !/^[a-z][a-z0-9_]{0,199}$/i.test(schema) ||
+        mode !== 'native-classic' ||
+        Object.hasOwn(observed.webApiSelfNnPermissionErrors, schema.toLowerCase())
+      )
+        throw new Error(
+          `${label}.webApiSelfNnPermissionErrors requires unique relationship schema names and native-classic values`,
+        );
+      observed.webApiSelfNnPermissionErrors[schema.toLowerCase()] = mode;
+    }
   }
   for (const [key, choices] of Object.entries(OBSERVED_CHOICES)) {
     if (value[key] == null) continue;
-    if (!choices.includes(value[key])) throw new Error(`${label}.${key} must be ${choices.join(" or ")}`);
+    if (!choices.includes(value[key])) throw new Error(`${label}.${key} must be ${choices.join(' or ')}`);
     observed[key] = value[key];
   }
   if (!Object.keys(observed).length) return null;
-  const evidence = typeof value.evidence === "string" ? value.evidence.trim() : "";
-  if (!evidence) throw new Error(`${label}.evidence must name the observation behind ${Object.keys(observed).join(", ")}`);
+  const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
+  if (!evidence)
+    throw new Error(`${label}.evidence must name the observation behind ${Object.keys(observed).join(', ')}`);
   return { ...observed, evidence };
 }
 function normalizePortal(entry, index) {
-  if (typeof entry === "string") entry = { path: entry };
-  if (!entry || typeof entry !== "object" || Array.isArray(entry))
+  if (typeof entry === 'string') entry = { path: entry };
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry))
     throw new Error(`portals[${index}] must be a path or object`);
   const sourcePath = entry.path ?? entry.source ?? entry.sourceDir;
-  if (typeof sourcePath !== "string" || !sourcePath.trim())
-    throw new Error(`portals[${index}].path is required`);
+  if (typeof sourcePath !== 'string' || !sourcePath.trim()) throw new Error(`portals[${index}].path is required`);
   const id = String(entry.id ?? `portal-${index + 1}`);
   if (!idPattern.test(id)) throw new Error(`Invalid portal id '${id}'`);
   const solutions = entry.solutions == null ? null : list(entry.solutions, `portals[${index}].solutions`).map(String);
@@ -284,34 +485,31 @@ function normalizePortal(entry, index) {
 }
 function dataModelOf(value, label) {
   if (value == null) return null;
-  if (!["standard", "enhanced"].includes(value)) throw new Error(`${label} must be standard or enhanced`);
+  if (!['standard', 'enhanced'].includes(value)) throw new Error(`${label} must be standard or enhanced`);
   return value;
 }
 
 function normalizeSolution(entry, index) {
-  if (typeof entry === "string") entry = { path: entry };
-  if (!entry || typeof entry !== "object" || Array.isArray(entry))
+  if (typeof entry === 'string') entry = { path: entry };
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry))
     throw new Error(`solutions[${index}] must be a path or object`);
   const sourcePath = entry.path ?? entry.source ?? entry.root;
-  if (typeof sourcePath !== "string" || !sourcePath.trim())
-    throw new Error(`solutions[${index}].path is required`);
+  if (typeof sourcePath !== 'string' || !sourcePath.trim()) throw new Error(`solutions[${index}].path is required`);
   const id = String(entry.id ?? `solution-${index + 1}`);
   if (!idPattern.test(id)) throw new Error(`Invalid solution id '${id}'`);
   return { id, sourcePath };
 }
 
-function normalizeReference(ref, index) {
-  if (!ref || typeof ref !== "object" || Array.isArray(ref))
-    throw new Error(`references[${index}] must be an object`);
+function normalizeReference(ref, index, allowLoopback = false) {
+  if (!ref || typeof ref !== 'object' || Array.isArray(ref)) throw new Error(`references[${index}] must be an object`);
   const id = String(ref.id ?? `reference-${index + 1}`);
   if (!idPattern.test(id)) throw new Error(`Invalid reference id '${id}'`);
-  if (typeof ref.origin !== "string")
-    throw new Error(`references[${index}].origin must be an HTTPS origin`);
-  if (ref.default !== undefined && typeof ref.default !== "boolean")
+  if (typeof ref.origin !== 'string') throw new Error(`references[${index}].origin must be an HTTPS origin`);
+  if (ref.default !== undefined && typeof ref.default !== 'boolean')
     throw new Error(`references[${index}].default must be a boolean`);
   return {
     id,
-    origin: validateOrigin(ref.origin, `references[${index}].origin`),
+    origin: validateOrigin(ref.origin, `references[${index}].origin`, allowLoopback),
     ...(ref.name ? { name: String(ref.name) } : {}),
     ...(ref.environment ? { environment: String(ref.environment) } : {}),
     default: ref.default === true,
@@ -319,10 +517,22 @@ function normalizeReference(ref, index) {
 }
 
 function normalizeDataPack(entry, index) {
-  if (typeof entry === "string") entry = { module: entry };
-  if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.module !== "string" || !entry.module.trim())
+  if (typeof entry === 'string') entry = { module: entry };
+  if (
+    !entry ||
+    typeof entry !== 'object' ||
+    Array.isArray(entry) ||
+    typeof entry.module !== 'string' ||
+    !entry.module.trim()
+  )
     throw new Error(`dataPacks[${index}] must be a module path or { id, module }`);
-  const id = String(entry.id ?? path.basename(entry.module).replace(/\.[cm]?js$/i, "").replace(/^index$/i, path.basename(path.dirname(entry.module))));
+  const id = String(
+    entry.id ??
+      path
+        .basename(entry.module)
+        .replace(/\.[cm]?js$/i, '')
+        .replace(/^index$/i, path.basename(path.dirname(entry.module))),
+  );
   if (!idPattern.test(id)) throw new Error(`Invalid data pack id '${id}'`);
   return { id, modulePath: entry.module };
 }
@@ -335,7 +545,7 @@ function normalizeDataPack(entry, index) {
  */
 export async function loadProjectConfig(configFile) {
   const absoluteConfig = path.resolve(configFile);
-  const source = await fs.readFile(absoluteConfig, "utf8");
+  const source = await fs.readFile(absoluteConfig, 'utf8');
   const raw = /\.json$/i.test(absoluteConfig) ? JSON.parse(source) : YAML.parse(source);
   return resolveProjectConfig(raw, absoluteConfig);
 }
@@ -343,16 +553,26 @@ export async function loadProjectConfig(configFile) {
 /** Setup validates structure separately from source readiness, without importing packs. */
 export async function resolveProjectConfig(raw, configFile, { checkSources = true } = {}) {
   const absoluteConfig = path.resolve(configFile);
-  if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    throw new Error("Project configuration must be an object");
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Project configuration must be an object');
   if (!VERSIONS.includes(raw.version))
-    throw new Error(`Project configuration version must be ${VERSIONS.join(" or ")}`);
-  if (raw.version >= 2)
-    for (const key of Object.keys(raw))
-      if (!KNOWN_KEYS.has(key)) throw new Error(`Unknown project configuration key '${key}'`);
-  const portalEntries = list(raw.portals, "portals").map(normalizePortal);
-  if (!portalEntries.length) throw new Error("At least one portal source is required");
-  const solutionEntries = list(raw.solutions, "solutions").map(normalizeSolution);
+    throw new Error(`Project configuration version must be ${VERSIONS.join(' or ')}`);
+  // Version 2 rejects unknown keys; version 1 stays lenient and reports them as diagnostics.
+  const diagnostics = [];
+  for (const key of Object.keys(raw)) {
+    if (KNOWN_KEYS.has(key)) continue;
+    if (raw.version >= 2) throw new Error(`Unknown project configuration key '${key}'`);
+    diagnostics.push({
+      code: 'PROJECT_CONFIG_KEY_UNKNOWN',
+      severity: 'warning',
+      key,
+      message: `Unknown project configuration key '${key}' is ignored.`,
+    });
+  }
+  const portalEntries = list(raw.portals, 'portals').map(normalizePortal);
+  const runtime = parseSetting('runtime', raw.runtime);
+  if (!portalEntries.length && runtime.kind === 'power-pages')
+    throw new Error('At least one portal source is required');
+  const solutionEntries = list(raw.solutions, 'solutions').map(normalizeSolution);
   const unique = (entries, kind) => {
     const seen = new Set();
     for (const entry of entries) {
@@ -360,79 +580,138 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
       seen.add(entry.id);
     }
   };
-  unique(portalEntries, "portal");
-  unique(solutionEntries, "solution");
+  unique(portalEntries, 'portal');
+  unique(solutionEntries, 'solution');
   const base = path.dirname(absoluteConfig);
   const resolveSource = async (sourcePath, kind, id) => {
     const resolved = path.resolve(base, sourcePath);
     if (!checkSources) return resolved;
     let stat;
-    try { stat = await fs.stat(resolved); }
-    catch { throw new Error(`${kind} '${id}' source directory does not exist: ${resolved}`); }
+    try {
+      stat = await fs.stat(resolved);
+    } catch {
+      throw new Error(`${kind} '${id}' source directory does not exist: ${resolved}`);
+    }
     if (!stat.isDirectory()) throw new Error(`${kind} '${id}' source is not a directory: ${resolved}`);
     return fs.realpath(resolved);
   };
-  const solutions = await Promise.all(solutionEntries.map(async (solution) => ({
-    ...solution,
-    root: await resolveSource(solution.sourcePath, "Solution", solution.id),
-  })));
+  const solutions = await Promise.all(
+    solutionEntries.map(async (solution) => ({
+      ...solution,
+      root: await resolveSource(solution.sourcePath, 'Solution', solution.id),
+    })),
+  );
   const byId = new Map(solutions.map((solution) => [solution.id, solution]));
-  const references = list(raw.references ?? raw.referenceEnvironments, "references").map(normalizeReference);
-  unique(references, "reference");
-  if (references.filter((ref) => ref.default).length > 1)
-    throw new Error("Only one reference can be the default");
+  const references = list(raw.references ?? raw.referenceEnvironments, 'references').map((ref, index) =>
+    normalizeReference(
+      ref,
+      index,
+      runtime.kind === 'model-driven' &&
+        Array.isArray(raw.modelDriven?.targets) &&
+        raw.modelDriven.targets.some((target) => target?.reference === ref?.id),
+    ),
+  );
+  unique(references, 'reference');
+  if (references.filter((ref) => ref.default).length > 1) throw new Error('Only one reference can be the default');
   const defaultReference = references.find((ref) => ref.default) ?? (references.length === 1 ? references[0] : null);
-  const portals = await Promise.all(portalEntries.map(async ({ solutionIds, ...portal }) => {
-    for (const solutionId of solutionIds ?? [])
-      if (!byId.has(solutionId)) throw new Error(`Portal '${portal.id}' selects unknown solution '${solutionId}'`);
-    if (portal.reference && !references.some((ref) => ref.id === portal.reference))
-      throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
-    const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) => byId.get(solutionId));
-    if (portal.observed?.pluginSources) portal.observed.pluginSources = Object.fromEntries(Object.entries(portal.observed.pluginSources).map(([name, source]) => [name, { ...source, root: source.root ?? base }]));
-    const sourceDir = await resolveSource(portal.sourcePath, "Portal", portal.id);
-    return {
-      ...portal,
-      ...contentPolicyDefaults(raw), ...contentPolicyDefaults(portal),
-      platform: platformConfig(portal.platform ?? raw.platform, `portals.${portal.id}.platform`),
-      deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {sourceDir,sourceRoot:base}),
-      sourceDir,
-      solutions: selected.map((solution) => solution.id),
-      solutionRoots: selected.map((solution) => solution.root),
-    };
-  }));
-  const defaultPortal = raw.defaultPortal ?? raw.default_portal ?? portals[0].id;
-  if (!portals.some((portal) => portal.id === defaultPortal))
+  const portals = await Promise.all(
+    portalEntries.map(async ({ solutionIds, ...portal }) => {
+      for (const solutionId of solutionIds ?? [])
+        if (!byId.has(solutionId)) throw new Error(`Portal '${portal.id}' selects unknown solution '${solutionId}'`);
+      if (portal.reference && !references.some((ref) => ref.id === portal.reference))
+        throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
+      const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) =>
+        byId.get(solutionId),
+      );
+      if (portal.observed?.pluginSources)
+        portal.observed.pluginSources = Object.fromEntries(
+          Object.entries(portal.observed.pluginSources).map(([name, source]) => [
+            name,
+            { ...source, root: source.root ?? base },
+          ]),
+        );
+      // Standalone profiles retain portal selections for later use, without
+      // requiring that unused export to be present on this machine.
+      const sourceDir =
+        runtime.kind === 'power-pages'
+          ? await resolveSource(portal.sourcePath, 'Portal', portal.id)
+          : path.resolve(base, portal.sourcePath);
+      return {
+        ...portal,
+        ...contentPolicyDefaults(raw),
+        ...contentPolicyDefaults(portal),
+        platform: parseSetting('platform', portal.platform ?? raw.platform, { label: `portals.${portal.id}.platform` }),
+        deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {
+          sourceDir,
+          sourceRoot: base,
+        }),
+        sourceDir,
+        solutions: selected.map((solution) => solution.id),
+        solutionRoots: selected.map((solution) => solution.root),
+      };
+    }),
+  );
+  const defaultPortal = raw.defaultPortal ?? raw.default_portal ?? portals[0]?.id ?? null;
+  if (defaultPortal !== null && !portals.some((portal) => portal.id === defaultPortal))
     throw new Error(`defaultPortal '${defaultPortal}' is not configured`);
-  const dataPacks = await Promise.all(list(raw.dataPacks ?? raw.presets, "dataPacks").map(normalizeDataPack).map(async (pack) => {
-    const module = path.resolve(base, pack.modulePath);
-    if (!checkSources) return { id: pack.id, module };
-    try {
-      if (!(await fs.stat(module)).isFile()) throw new Error();
-    } catch {
-      throw new Error(`Data pack '${pack.id}' module does not exist: ${module}`);
-    }
-    return { id: pack.id, module };
-  }));
-  unique(dataPacks, "data pack");
-  const lcid = raw.lcid ?? 1033;
-  if (!Number.isInteger(lcid) || lcid <= 0) throw new Error("lcid must be a positive integer");
-  if (raw.watch !== undefined && typeof raw.watch !== "boolean") throw new Error("watch must be a boolean");
+  const dataPacks = await Promise.all(
+    list(raw.dataPacks ?? raw.presets, 'dataPacks')
+      .map(normalizeDataPack)
+      .map(async (pack) => {
+        const module = path.resolve(base, pack.modulePath);
+        if (!checkSources) return { id: pack.id, module };
+        try {
+          if (!(await fs.stat(module)).isFile()) throw new Error();
+        } catch {
+          throw new Error(`Data pack '${pack.id}' module does not exist: ${module}`);
+        }
+        return { id: pack.id, module };
+      }),
+  );
+  unique(dataPacks, 'data pack');
+  const lcid = raw.lcid ?? raw.dataverse?.localeId ?? 1033;
+  if (!Number.isInteger(lcid) || lcid <= 0) throw new Error('lcid must be a positive integer');
+  if (raw.watch !== undefined && typeof raw.watch !== 'boolean') throw new Error('watch must be a boolean');
   // Solution roots are a set layered in dependency order; "explicit" keeps the listed order.
-  const solutionOrder = raw.solutionOrder ?? "derived";
-  if (!["explicit", "derived"].includes(solutionOrder)) throw new Error("solutionOrder must be explicit or derived");
+  const solutionOrder = raw.solutionOrder ?? 'derived';
+  if (!['explicit', 'derived'].includes(solutionOrder)) throw new Error('solutionOrder must be explicit or derived');
   const stateDirectoryValue = raw.stateDirectory ?? raw.state_directory;
-  if (stateDirectoryValue !== undefined && (typeof stateDirectoryValue !== "string" || !stateDirectoryValue.trim()))
-    throw new Error("stateDirectory must be a path");
+  if (stateDirectoryValue !== undefined && (typeof stateDirectoryValue !== 'string' || !stateDirectoryValue.trim()))
+    throw new Error('stateDirectory must be a path');
   const environmentVariables = raw.environmentVariables ?? {};
-  if (!environmentVariables || typeof environmentVariables !== "object" || Array.isArray(environmentVariables))
-    throw new Error("environmentVariables must map schema names to values");
+  if (!environmentVariables || typeof environmentVariables !== 'object' || Array.isArray(environmentVariables))
+    throw new Error('environmentVariables must map schema names to values');
   for (const [name, value] of Object.entries(environmentVariables))
-    if (!/^[a-z][\w.]*$/i.test(name) || !["string", "number", "boolean"].includes(typeof value))
+    if (!/^[a-z][\w.]*$/i.test(name) || !['string', 'number', 'boolean'].includes(typeof value))
       throw new Error(`environmentVariables.${name} must be a string, number or boolean value`);
+  const settings = {};
+  for (const key of projectKeys()) {
+    if (RESOLVED_SEPARATELY.has(key)) continue;
+    const value =
+      key === 'dataverse'
+        ? (raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined))
+        : raw[key];
+    if (value === undefined) continue;
+    settings[key] = parseSetting(key, value, { base, diagnostics });
+  }
+  const targetOrigins = new Set();
+  for (const target of settings.modelDriven?.targets ?? []) {
+    const reference = references.find((ref) => ref.id === target.reference);
+    if (!reference) throw new Error(`Model-driven target selects unknown reference '${target.reference}'`);
+    if (targetOrigins.has(reference.origin)) throw new Error('Model-driven targets must have distinct origins');
+    targetOrigins.add(reference.origin);
+  }
   return {
     configFile: absoluteConfig,
-    stateNamespace: createHash("sha256").update(absoluteConfig).update("\0").update(portals.map((p) => p.sourceDir).join("\0")).digest("hex").slice(0, 16),
+    stateNamespace: createHash('sha256')
+      .update(absoluteConfig)
+      .update('\0')
+      .update(portals.map((p) => p.sourceDir).join('\0'))
+      .digest('hex')
+      .slice(0, 16),
     version: raw.version,
+    runtime,
+    ...settings,
     defaultPortal,
     lcid,
     watch: raw.watch ?? null,
@@ -444,7 +723,10 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     references,
     defaultReference,
     dataPacks,
-    environmentVariables: Object.fromEntries(Object.entries(environmentVariables).map(([name, value]) => [name, String(value)])),
+    environmentVariables: Object.fromEntries(
+      Object.entries(environmentVariables).map(([name, value]) => [name, String(value)]),
+    ),
+    diagnostics,
   };
 }
 
@@ -459,7 +741,7 @@ export function projectOrigin(project, portal) {
 
 /** State file for a project portal (state directory override, else the project namespace). */
 export function projectStateFile(project, portalId, defaultRoot) {
-  return path.join(project.stateDirectory ?? path.join(defaultRoot, project.stateNamespace), portalId, "state.json");
+  return path.join(project.stateDirectory ?? path.join(defaultRoot, project.stateNamespace), portalId, 'state.json');
 }
 
 /** JSON-safe project summary exposed by the runtime status (status.project). */
@@ -467,16 +749,41 @@ export function projectSummary(project, portalId = null) {
   return {
     configFile: project.configFile,
     version: project.version,
+    runtime: project.runtime ?? { kind: 'power-pages' },
+    simulation: defaultedSetting(project, 'simulation'),
+    modelDriven: defaultedSetting(project, 'modelDriven'),
+    platform: defaultedSetting(project, 'platform'),
     portal: portalId,
     defaultPortal: project.defaultPortal,
     lcid: project.lcid,
     watch: project.watch,
     solutionOrder: project.solutionOrder,
     stateDirectory: project.stateDirectory,
-    portals: project.portals.map(({ id, sourceDir, origin, deploymentProfile, deploymentProfiles, platform, solutions, reference, observed, dataModel }) => ({
-      id, sourceDir, origin: origin ?? projectOrigin(project, { origin, reference }), deploymentProfile, deploymentProfiles, solutions, reference, observed: observed ?? null, dataModel: dataModel ?? null,
-      ...(platform?{platform}:{}),
-    })),
+    portals: project.portals.map(
+      ({
+        id,
+        sourceDir,
+        origin,
+        deploymentProfile,
+        deploymentProfiles,
+        platform,
+        solutions,
+        reference,
+        observed,
+        dataModel,
+      }) => ({
+        id,
+        sourceDir,
+        origin: origin ?? projectOrigin(project, { origin, reference }),
+        deploymentProfile,
+        deploymentProfiles,
+        solutions,
+        reference,
+        observed: observed ?? null,
+        dataModel: dataModel ?? null,
+        ...(platform ? { platform } : {}),
+      }),
+    ),
     solutions: project.solutions.map(({ id, root }) => ({ id, root })),
     references: project.references,
     defaultReference: project.defaultReference?.id ?? null,
@@ -487,29 +794,47 @@ export function projectSummary(project, portalId = null) {
 
 /** Import all configured sources locally and deterministically; this performs no network access. */
 export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, cacheFile } = {}) {
+  if (project.runtime?.kind && project.runtime.kind !== 'power-pages') {
+    const organization = await loadOrganizationSources({
+      solutionRoots: project.solutionRoots,
+      solutionOrder: project.solutionOrder,
+      modelDriven: defaultedSetting(project, 'modelDriven'),
+      lcid,
+      cacheFile,
+    });
+    return { project, portals: [], solutionData: organization.solutionData, organization };
+  }
   const cache = await SolutionFileCache.open(cacheFile ?? null);
   // Duplicate-copy commit lookups of the portal exports, cached beside the solution cache.
-  const portalCache = await SolutionFileCache.open(cacheFile ? path.join(path.dirname(cacheFile), "portal-sources.json") : null);
+  const portalCache = await SolutionFileCache.open(
+    cacheFile ? path.join(path.dirname(cacheFile), 'portal-sources.json') : null,
+  );
   const scans = new Map();
   const loadLayers = async (roots) => {
     const key = JSON.stringify(roots);
     if (!scans.has(key)) {
-      const scan = await scanSolutionSources(roots, { cache, order: project.solutionOrder ?? "derived" });
+      const scan = await scanSolutionSources(roots, { cache, order: project.solutionOrder ?? 'derived' });
       scans.set(key, { scan, schema: buildSolutionSchema(scan, { lcid }) });
     }
     return scans.get(key);
   };
   const portals = [];
   for (const source of project.portals) {
-    if (source.deploymentProfile && Object.keys(source.deploymentProfiles?.profiles ?? {}).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+    if (source.deploymentProfile && Object.keys(source.deploymentProfiles?.profiles ?? {}).length)
+      throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
     const activeProfiles = await loadDeploymentProfiles(source.deploymentProfiles ?? resolveDeploymentProfiles());
-    const portal = applyObserved(await importPortal(source.sourceDir, {
-      lcid,
-      cache: portalCache,
-      ...(source.deploymentProfile ? { deploymentProfile: source.deploymentProfile } : {}),
-      ...(activeProfiles.pagesFile ? { deploymentProfile: activeProfiles.profile, deploymentProfileFile: activeProfiles.pagesFile } : {}),
-      ...(source.dataModel ? { dataModel: source.dataModel } : {}),
-    }), source.observed);
+    const portal = applyObserved(
+      await importPortal(source.sourceDir, {
+        lcid,
+        cache: portalCache,
+        ...(source.deploymentProfile ? { deploymentProfile: source.deploymentProfile } : {}),
+        ...(activeProfiles.pagesFile
+          ? { deploymentProfile: activeProfiles.profile, deploymentProfileFile: activeProfiles.pagesFile }
+          : {}),
+        ...(source.dataModel ? { dataModel: source.dataModel } : {}),
+      }),
+      source.observed,
+    );
     const roots = source.solutionRoots ?? project.solutionRoots;
     const { scan, schema } = await loadLayers(roots);
     const metadata = await importSolutionMetadata(roots, { portal, lcid, scan, schema, observed: source.observed });

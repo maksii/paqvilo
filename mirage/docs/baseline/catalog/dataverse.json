@@ -1,3191 +1,2137 @@
 {
- "version": 1,
- "generatedAt": "2026-10-14T20:19:13.218Z",
- "sources": [
-  {
-   "id": "learn-formxml",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/form-xml-schema",
-   "title": "Form XML schema"
-  },
-  {
-   "id": "learn-customize-forms",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/customize-entity-forms",
-   "title": "Customize forms in model-driven apps"
-  },
-  {
-   "id": "learn-form-types",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/types-forms",
-   "title": "Types of model-driven app forms in Power Apps"
-  },
-  {
-   "id": "learn-form-designer-properties",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-properties",
-   "title": "Properties available in the form designer"
-  },
-  {
-   "id": "learn-subgrid",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-add-configure-subgrid",
-   "title": "Add and configure a subgrid component on a form"
-  },
-  {
-   "id": "learn-quickview",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/create-edit-quick-view-forms",
-   "title": "Create a quick view form to view information about a related table"
-  },
-  {
-   "id": "learn-quickview-component",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-add-configure-quickview",
-   "title": "Add and configure a quick view component on a form"
-  },
-  {
-   "id": "learn-main-form-presentations",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/main-form-presentations",
-   "title": "How model-driven app main forms appear on different devices"
-  },
-  {
-   "id": "learn-dashboard-formxml",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/understand-dashboards-dashboard-components-formxml",
-   "title": "Understand dashboards: Dashboard components and FormXML"
-  },
-  {
-   "id": "learn-types-of-columns",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/types-of-fields",
-   "title": "Types of columns"
-  },
-  {
-   "id": "learn-column-definitions",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/entity-attribute-metadata",
-   "title": "Column definitions"
-  },
-  {
-   "id": "learn-format-formatname",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/format-and-formatname-columns",
-   "title": "Format and FormatName columns"
-  },
-  {
-   "id": "learn-datetime-behavior",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/behavior-format-date-time-field",
-   "title": "Behavior and format of the date and time column"
-  },
-  {
-   "id": "learn-autonumber",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/create-auto-number-attributes",
-   "title": "Create autonumber columns"
-  },
-  {
-   "id": "learn-specialized-columns",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/specialized-columns",
-   "title": "Specialized columns using code"
-  },
-  {
-   "id": "learn-multiselect",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/multi-select-picklist",
-   "title": "Choices columns"
-  },
-  {
-   "id": "learn-br-table",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/data-platform-create-business-rule",
-   "title": "Create a business rule for a table"
-  },
-  {
-   "id": "learn-br-form",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/create-business-rules-recommendations-apply-logic-form",
-   "title": "Create business rules to apply logic in a model-driven app form"
-  },
-  {
-   "id": "learn-workflow-table",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/workflow",
-   "title": "Process (Workflow) table/entity reference"
-  },
-  {
-   "id": "learn-customize-views",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/customize-entity-views",
-   "title": "Customize views in model-driven apps"
-  },
-  {
-   "id": "learn-savedquery-querytype",
-   "url": "https://learn.microsoft.com/en-us/dotnet/api/microsoft.crm.sdk.savedqueryquerytype?view=dataverse-sdk-latest",
-   "title": "SavedQueryQueryType Class"
-  },
-  {
-   "id": "learn-savedquery-table",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/savedquery",
-   "title": "View (SavedQuery) table/entity reference"
-  },
-  {
-   "id": "learn-solution-schema",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/customization-solutions-file-schema",
-   "title": "Customization solutions file schema"
-  },
-  {
-   "id": "learn-event-framework",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/event-framework",
-   "title": "Event framework in Microsoft Dataverse"
-  },
-  {
-   "id": "learn-register-plugin",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in",
-   "title": "Register a plug-in"
-  },
-  {
-   "id": "learn-sdkstep-table",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/sdkmessageprocessingstep",
-   "title": "Sdk Message Processing Step (SdkMessageProcessingStep) table/entity reference"
-  },
-  {
-   "id": "learn-column-security",
-   "url": "https://learn.microsoft.com/en-us/power-platform/admin/field-level-security",
-   "title": "Column-level security to control access"
-  },
-  {
-   "id": "learn-alternate-keys",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/define-alternate-keys-entity",
-   "title": "Work with alternate keys"
-  },
-  {
-   "id": "pp-basic-forms",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/basic-forms",
-   "title": "About basic forms"
-  },
-  {
-   "id": "pp-data-workspace-forms",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/data-workspace-forms",
-   "title": "How to create and modify Dataverse forms by using the Data workspace"
-  },
-  {
-   "id": "pp-add-form",
-   "url": "https://learn.microsoft.com/en-us/power-pages/getting-started/add-form",
-   "title": "Add a form"
-  },
-  {
-   "id": "pp-basic-form-subgrid",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/configure-basic-form-subgrid",
-   "title": "Configure Basic form subgrids"
-  },
-  {
-   "id": "pp-basic-form-metadata",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/configure-basic-form-metadata",
-   "title": "Configure basic form metadata for portals"
-  },
-  {
-   "id": "pp-notes",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/configure-notes",
-   "title": "Configure notes as attachments for basic and multistep forms"
-  },
-  {
-   "id": "pp-multistep-properties",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/multistep-form-properties",
-   "title": "Define multistep form properties"
-  },
-  {
-   "id": "pp-lists",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/lists",
-   "title": "Lists overview"
-  },
-  {
-   "id": "pp-list-enhanced-filter",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/list-enhanced-view-filter",
-   "title": "Enhanced view filter for lists"
-  },
-  {
-   "id": "pp-data-workspace-views",
-   "url": "https://learn.microsoft.com/en-us/power-pages/configure/data-workspace-views",
-   "title": "Create and modify Dataverse views by using the Data workspace"
-  },
-  {
-   "id": "learn-dependency-tracking",
-   "url": "https://learn.microsoft.com/en-us/power-platform/alm/dependency-tracking-solution-components",
-   "title": "Dependency tracking for solution components"
-  },
-  {
-   "id": "learn-missing-dependencies",
-   "url": "https://learn.microsoft.com/en-us/troubleshoot/power-platform/dataverse/working-with-solutions/missing-dependency-on-solution-import",
-   "title": "Missing dependencies error during solution import"
-  },
-  {
-   "id": "learn-integerformat",
-   "url": "https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.metadata.integerformat?view=dataverse-sdk-latest",
-   "title": "IntegerFormat Enum"
-  },
-  {
-   "id": "learn-relationships",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-entity-relationships",
-   "title": "Microsoft Dataverse table relationships"
-  },
-  {
-   "id": "learn-relationship-metadata",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/entity-relationship-metadata",
-   "title": "Table relationship definitions"
-  },
-  {
-   "id": "learn-nn-relationships",
-   "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-nn-relationships",
-   "title": "Create many-to-many table relationships overview"
-  },
-  {
-   "id": "learn-cascading",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/configure-entity-relationship-cascading-behavior",
-   "title": "Configure table relationship cascading behavior"
-  },
-  {
-   "id": "learn-file-column-data",
-   "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/file-column-data",
-   "title": "Use file column data in Microsoft Dataverse"
-  },
-  {
-   "id": "learn-stateoption-defaultstatus",
-   "url": "https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.metadata.stateoptionmetadata.defaultstatus?view=dataverse-sdk-latest",
-   "title": "StateOptionMetadata.DefaultStatus Property"
-  }
- ],
- "items": [
-  {
-   "id": "dv.form-type.main",
-   "area": "form-type",
-   "name": "Main form",
-   "sources": [
-    "learn-customize-forms",
-    "learn-form-types",
-    "pp-data-workspace-forms",
-    "pp-basic-forms"
-   ],
-   "where": "SystemForm.Type=2; customizations.xml <forms type=\"main\">",
-   "states": [
-    "active",
-    "inactive",
-    "default"
-   ],
-   "notes": "Only main forms can be deactivated (FormActivationState 0/1). Power Pages basic and multistep forms render a Dataverse form by Table + Form Name; the Data workspace Forms tab only shows the main form type, described as the type supported in portals.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.form-type.quick-create",
-   "area": "form-type",
-   "name": "Quick create form",
-   "sources": [
-    "learn-customize-forms",
-    "learn-form-types",
-    "pp-data-workspace-forms"
-   ],
-   "where": "SystemForm.Type=7; <forms type=\"quickCreate\">",
-   "states": [],
-   "notes": "Optimized for creating new records in model-driven apps. Power Pages Data workspace lists only main forms; consumption by basic forms is not documented.",
-   "powerPages": "not-documented"
-  },
-  {
-   "id": "dv.form-type.quick-view",
-   "area": "form-type",
-   "name": "Quick view form",
-   "sources": [
-    "learn-customize-forms",
-    "learn-form-types",
-    "learn-quickview"
-   ],
-   "where": "SystemForm.Type=6; <forms type=\"quick\">; embedded via quick view control on a main form",
-   "states": [
-    "read-only",
-    "hidden-when-lookup-empty"
-   ],
-   "notes": "Read-only, no form scripts, no header/footer/navigation, no security roles or activation, no custom controls. Power Pages rendering of quick view controls is not documented on the cited pages.",
-   "powerPages": "not-documented"
-  },
-  {
-   "id": "dv.form-type.card",
-   "area": "form-type",
-   "name": "Card form",
-   "sources": [
-    "learn-form-types"
-   ],
-   "where": "SystemForm with card type (type code not listed on cited Learn page)",
-   "states": [],
-   "notes": "Compact presentation used in views for model-driven apps. Not consumed by Power Pages per Data workspace (main only).",
-   "powerPages": "not-documented"
-  },
-  {
-   "id": "dv.form-type.mobile",
-   "area": "form-type",
-   "name": "Mobile form",
-   "sources": [
-    "learn-customize-forms"
-   ],
-   "where": "SystemForm.Type=5; <forms type=\"mobile\">",
-   "states": [],
-   "notes": "Legacy mobile form type listed among SystemForm.Type values.",
-   "powerPages": "not-documented"
-  },
-  {
-   "id": "dv.form-type.dashboard",
-   "area": "form-type",
-   "name": "Dashboard",
-   "sources": [
-    "learn-dashboard-formxml"
-   ],
-   "where": "SystemForm.Type=0 (organization) or UserForm (user-owned)",
-   "states": [],
-   "notes": "Dashboards are a form type; only a subset of FormXML is supported. Not a Power Pages record form.",
-   "powerPages": "not-applicable"
-  },
-  {
-   "id": "dv.form-type.activation-state",
-   "area": "form-type",
-   "name": "Form activation state",
-   "sources": [
-    "learn-customize-forms"
-   ],
-   "where": "SystemForm.FormActivationState 0=Inactive 1=Active",
-   "states": [
-    "active",
-    "inactive"
-   ],
-   "notes": "Only main forms can be deactivated."
-  },
-  {
-   "id": "dv.form-type.powerpages-basic-form-mode",
-   "area": "form-type",
-   "name": "Power Pages basic form mode over a Dataverse form",
-   "sources": [
-    "pp-basic-forms"
-   ],
-   "where": "Basic form Mode = Insert | Edit | ReadOnly; Record Source Type = Query String | Current Portal User | Record Associated to Current Portal User",
-   "states": [
-    "insert",
-    "edit",
-    "read-only"
-   ],
-   "notes": "Edit/ReadOnly need a source record. Optional Tab Name renders a single tab; Auto Generate Steps From Tabs renders tabs as sequential steps. Business rules, duplicate fields and party list fields are not supported in basic forms; connection-table subgrids are not supported; hidden choice values are not supported.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.form-type.powerpages-multistep",
-   "area": "form-type",
-   "name": "Power Pages multistep form step over a Dataverse form",
-   "sources": [
-    "pp-multistep-properties",
-    "pp-basic-forms"
-   ],
-   "where": "Multistep form step (Load Form / Load Tab step types)",
-   "states": [],
-   "notes": "Each step behaves like a basic form; rollup columns may render editable unless the Dataverse form marks them read-only.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.formxml.form",
-   "area": "form-element",
-   "name": "<form> root",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties"
-   ],
-   "where": "FormXml <form shownavigationbar maxWidth>; children tabs, header, footer, events, formLibraries, Navigation, hiddencontrols, controlDescriptions, formparameters, DisplayConditions",
-   "states": [
-    "max-width",
-    "show-image"
-   ],
-   "notes": "Designer Max Width defaults to 1900 px. Show image displays the table primary image in the header."
-  },
-  {
-   "id": "dv.formxml.tab",
-   "area": "form-element",
-   "name": "Tab",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties",
-    "learn-dashboard-formxml"
-   ],
-   "where": "<tab id name expanded visible showlabel verticallayout locklevel availableforphone><labels/><columns/>",
-   "states": [
-    "expanded",
-    "collapsed",
-    "hidden",
-    "label",
-    "label-hidden",
-    "hidden-on-phone",
-    "locked"
-   ],
-   "notes": "Designer: \"Expand this tab by default\", \"Hide tab\" (shown via code), \"Hide on phone\", layout up to three columns."
-  },
-  {
-   "id": "dv.formxml.tab.column",
-   "area": "form-element",
-   "name": "Tab column",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties"
-   ],
-   "where": "<tab><columns><column width=\"NN%\"><sections/>",
-   "states": [
-    "width"
-   ],
-   "notes": "Tabs have up to three columns with percentage widths."
-  },
-  {
-   "id": "dv.formxml.section",
-   "area": "form-element",
-   "name": "Section",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties"
-   ],
-   "where": "<section id name showlabel showbar visible columns labelwidth celllabelalignment celllabelposition locklevel availableforphone height layout>",
-   "states": [
-    "label-visible",
-    "label-hidden",
-    "hidden",
-    "columns-1",
-    "columns-2",
-    "columns-3",
-    "columns-4",
-    "hidden-on-phone",
-    "locked",
-    "label-position-top",
-    "label-position-left",
-    "label-align-left",
-    "label-align-center",
-    "label-align-right"
-   ],
-   "notes": "Designer allows up to four columns. celllabelposition enum Top|Left; celllabelalignment enum Center|Left|Right."
-  },
-  {
-   "id": "dv.formxml.row",
-   "area": "form-element",
-   "name": "Row",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "<rows><row><cell/></row></rows>",
-   "states": [],
-   "notes": "Rows contain cells; header/footer use the same row/cell structure."
-  },
-  {
-   "id": "dv.formxml.cell",
-   "area": "form-element",
-   "name": "Cell",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties",
-    "learn-dashboard-formxml"
-   ],
-   "where": "<cell id auto showlabel colspan rowspan visible userspacer ispreviewcell locklevel availableforphone><labels/><control/><events/></cell>",
-   "states": [
-    "label-hidden",
-    "colspan",
-    "rowspan",
-    "hidden",
-    "hidden-on-phone",
-    "locked",
-    "read-only"
-   ],
-   "notes": "Designer column properties: Label, Hide label, Read-only, Lock, Hide, Hide on phone, Form field width (number of section columns occupied)."
-  },
-  {
-   "id": "dv.formxml.control",
-   "area": "form-element",
-   "name": "Control",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties"
-   ],
-   "where": "<control id classid datafieldname uniqueid labelid disabled isunbound isrequired relationship indicationOfSubgrid><parameters/></control>",
-   "states": [
-    "disabled",
-    "unbound",
-    "required-on-form"
-   ],
-   "notes": "datafieldname binds to a column logical name; disabled=\"true\" is the read-only/locked state on the form."
-  },
-  {
-   "id": "dv.formxml.label",
-   "area": "form-element",
-   "name": "Localized label",
-   "sources": [
-    "learn-formxml",
-    "learn-dashboard-formxml"
-   ],
-   "where": "<labels><label description languagecode/></labels>",
-   "states": [
-    "label"
-   ],
-   "notes": "Per-language label text for tabs, sections, cells."
-  },
-  {
-   "id": "dv.formxml.subgrid",
-   "area": "form-element",
-   "name": "Subgrid",
-   "sources": [
-    "learn-formxml",
-    "learn-subgrid",
-    "learn-dashboard-formxml",
-    "pp-basic-form-subgrid"
-   ],
-   "where": "<control indicationOfSubgrid=\"true\" relationship><parameters><TargetEntityType/><RelationshipName/><ViewId/><ViewIds/><IsUserView/><EnableViewPicker/><EnableQuickFind/><EnableJumpBar/><RecordsPerPage/><AutoExpand/><ChartGridMode/><VisualizationId/><EnableChartPicker/></parameters>",
-   "states": [
-    "related-only",
-    "default-view",
-    "view-picker",
-    "all-views",
-    "selected-views",
-    "search-box-hidden",
-    "chart-only",
-    "max-rows"
-   ],
-   "notes": "Designer: Show related records, Table, Default view, Allow users to change view, Show all views, Hide search box (quick find), Maximum number of rows 2-250. Power Pages renders an embedded subgrid read-only; create/associate/download/row actions need Basic Form Metadata type Subgrid keyed by subgrid Name, and table permissions.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.formxml.quick-view",
-   "area": "form-element",
-   "name": "Quick view control",
-   "sources": [
-    "learn-quickview",
-    "learn-quickview-component",
-    "learn-formxml"
-   ],
-   "where": "<control> with <parameters><QuickForms/></parameters> bound to a lookup on the main form",
-   "states": [
-    "read-only",
-    "hidden-when-lookup-empty",
-    "label-hidden"
-   ],
-   "notes": "Shows the related record selected in a lookup using that table's quick view form. Power Pages behavior not documented on cited pages.",
-   "powerPages": "not-documented"
-  },
-  {
-   "id": "dv.formxml.iframe",
-   "area": "form-element",
-   "name": "IFRAME",
-   "sources": [
-    "learn-main-form-presentations",
-    "learn-dashboard-formxml",
-    "learn-formxml"
-   ],
-   "where": "<control><parameters><Url/><PassParameters/><Security/><Scrolling/><Border/></parameters>",
-   "states": [
-    "url",
-    "pass-parameters",
-    "cross-frame-restricted"
-   ],
-   "notes": "Displaying a table form inside an IFRAME on another table form is not supported.",
-   "powerPages": "not-documented"
-  },
-  {
-   "id": "dv.formxml.web-resource",
-   "area": "form-element",
-   "name": "Web resource",
-   "sources": [
-    "learn-main-form-presentations",
-    "learn-formxml",
-    "pp-basic-forms"
-   ],
-   "where": "<control><parameters><Url/><Data/><PassParameters/></parameters>",
-   "states": [],
-   "notes": "Power Pages basic form option \"Render Web Resources Inline\" removes the wrapping iframe.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.formxml.spacer",
-   "area": "form-element",
-   "name": "Spacer",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "<cell userspacer=\"true\">",
-   "states": [],
-   "notes": "Only the userspacer cell attribute is in the schema; Learn has no prose description.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlCellCommon/@userspacer"
-  },
-  {
-   "id": "dv.formxml.timeline-notes",
-   "area": "form-element",
-   "name": "Timeline / notes control",
-   "sources": [
-    "pp-notes",
-    "pp-basic-form-metadata"
-   ],
-   "where": "Timeline control on the Dataverse form; Power Pages Basic Form Metadata Type=Notes/Timeline",
-   "states": [
-    "create-enabled",
-    "attachment-location",
-    "mime-restricted",
-    "max-file-size"
-   ],
-   "notes": "Notes appear in Power Pages only when the note text starts with *WEB* (KnowledgeManagement/NotesFilter site setting). Edit/delete limited to the note creator; annotation child table permissions required.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.formxml.header",
-   "area": "form-element",
-   "name": "Header",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "<header> FormXmlHeaderFooterType <rows><row><cell/></row></rows>",
-   "states": [],
-   "notes": "Header layout is rows/cells. Quick view forms have no header."
-  },
-  {
-   "id": "dv.formxml.footer",
-   "area": "form-element",
-   "name": "Footer",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "<footer> FormXmlHeaderFooterType",
-   "states": [],
-   "notes": "Same structure as header."
-  },
-  {
-   "id": "dv.formxml.hiddencontrols",
-   "area": "form-element",
-   "name": "Hidden controls",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "<hiddencontrols><data id datafieldname classid/></hiddencontrols>",
-   "states": [
-    "hidden"
-   ],
-   "notes": "Columns carried by the form without visible controls."
-  },
-  {
-   "id": "dv.formxml.events-libraries",
-   "area": "form-element",
-   "name": "Form events and libraries",
-   "sources": [
-    "learn-formxml",
-    "pp-basic-forms"
-   ],
-   "where": "<formLibraries><Library name libraryUniqueId/></formLibraries><events><event name application attribute><Handlers><Handler functionName libraryName passExecutionContext enabled/></Handlers></event></events>",
-   "states": [
-    "enabled"
-   ],
-   "notes": "Model-driven client script registration. Power Pages uses basic form Custom JavaScript; execution of model-driven handlers in Power Pages is not documented."
-  },
-  {
-   "id": "dv.formxml.navigation",
-   "area": "form-element",
-   "name": "Form navigation",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "<Navigation><NavBar><NavBarByRelationshipItem RelationshipName Show/></NavBar><NavBarAreas/></Navigation>",
-   "states": [
-    "shown",
-    "hidden"
-   ],
-   "notes": "Related-record navigation items."
-  },
-  {
-   "id": "dv.formxml.custom-control",
-   "area": "form-element",
-   "name": "Custom (code component) control binding",
-   "sources": [
-    "learn-formxml",
-    "pp-basic-forms"
-   ],
-   "where": "<controlDescriptions><controlDescription forControl><customControl formFactor name><parameters/></customControl></controlDescription></controlDescriptions>",
-   "states": [
-    "form-factor"
-   ],
-   "notes": "Field-level code components can be added to Power Pages forms.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.pp.metadata.tab-section-label",
-   "area": "form-element",
-   "name": "Power Pages tab/section label override",
-   "sources": [
-    "pp-basic-form-metadata"
-   ],
-   "where": "Basic Form Metadata Type=Tab|Section with Tab Name / Section Name + Label",
-   "states": [
-    "label"
-   ],
-   "notes": "Replaces the Dataverse tab or section label per language.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.pp.basic-form.attachments",
-   "area": "form-element",
-   "name": "Power Pages attach file control",
-   "sources": [
-    "pp-basic-forms"
-   ],
-   "where": "Basic form Additional Settings: Attach File, Storage Location, Allow Multiple, Accept, Required, Max size",
-   "states": [
-    "required",
-    "multiple",
-    "accept-types",
-    "max-size"
-   ],
-   "notes": "Rendered at the bottom of the basic form; stored as note attachments or Azure Blob.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.control.text",
-   "area": "form-control",
-   "name": "Single line text control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control classid datafieldname> bound to StringType; parameters MaxLength, IsPassword, Format",
-   "states": [
-    "max-length"
-   ],
-   "notes": "FormatName selects text, email, URL, phone, ticker, text area, rich text or JSON presentation. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.memo",
-   "area": "form-control",
-   "name": "Multiline text control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to MemoType; parameters MaxLength, Height",
-   "states": [
-    "max-length"
-   ],
-   "notes": "Rows configurable on the column. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.integer",
-   "area": "form-control",
-   "name": "Whole number control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to IntegerType; parameters MinValue, MaxValue, Format",
-   "states": [
-    "min",
-    "max"
-   ],
-   "notes": "Format None/Duration/TimeZone/Language/Locale changes the editor. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.decimal",
-   "area": "form-control",
-   "name": "Decimal control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to DecimalType; parameters MinValue, MaxValue, Precision",
-   "states": [
-    "min",
-    "max",
-    "precision"
-   ],
-   "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.double",
-   "area": "form-control",
-   "name": "Floating point control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to DoubleType; parameters MinValue, MaxValue, Precision",
-   "states": [
-    "min",
-    "max",
-    "precision"
-   ],
-   "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.money",
-   "area": "form-control",
-   "name": "Currency control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to MoneyType; parameters MinValue, MaxValue, Precision",
-   "states": [
-    "min",
-    "max",
-    "precision"
-   ],
-   "notes": "Precision source from column, organization pricing precision or record currency. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.datetime",
-   "area": "form-control",
-   "name": "Date and time control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to DateTimeType; Format DateOnly|DateAndTime",
-   "states": [
-    "date-only",
-    "date-and-time"
-   ],
-   "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.picklist",
-   "area": "form-control",
-   "name": "Choice control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to PicklistType/StateType/StatusType; parameters OptionSetId, DefaultValue",
-   "states": [
-    "default-value"
-   ],
-   "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.multiselect",
-   "area": "form-control",
-   "name": "Choices (multi-select) control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to MultiSelectPicklistType",
-   "states": [],
-   "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.boolean",
-   "area": "form-control",
-   "name": "Yes/No control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> bound to BooleanType",
-   "states": [
-    "default-value"
-   ],
-   "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.lookup",
-   "area": "form-control",
-   "name": "Lookup control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions",
-    "pp-basic-forms"
-   ],
-   "where": "<control> bound to LookupType/CustomerType/OwnerType; parameters DefaultViewId, AvailableViewIds, DisableMru, DisableQuickFind, DisableViewPicker, FilterRelationshipName, DependentAttributeName, DependentAttributeType, AllowFilterOff, TargetEntities, AutoResolve",
-   "states": [
-    "default-view",
-    "related-filter"
-   ],
-   "notes": "Power Pages: a lookup rendered as a dropdown ignores the related-records filter. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.image",
-   "area": "form-control",
-   "name": "Image control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions",
-    "pp-add-form"
-   ],
-   "where": "<control> bound to ImageType",
-   "states": [],
-   "notes": "Not supported on Power Pages GenAI forms. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.file",
-   "area": "form-control",
-   "name": "File control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions",
-    "learn-types-of-columns"
-   ],
-   "where": "<control> bound to FileType",
-   "states": [],
-   "notes": "Upload/delete happens immediately in model-driven apps. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.subgrid",
-   "area": "form-control",
-   "name": "Subgrid control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control indicationOfSubgrid=\"true\">",
-   "states": [],
-   "notes": "See dv.formxml.subgrid. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.control.quickview",
-   "area": "form-control",
-   "name": "Quick view control",
-   "sources": [
-    "learn-formxml",
-    "learn-column-definitions"
-   ],
-   "where": "<control> with QuickForms parameter",
-   "states": [],
-   "notes": "See dv.formxml.quick-view. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
-   "evidence": "schema-only",
-   "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
-  },
-  {
-   "id": "dv.column.string.text",
-   "area": "column-type",
-   "name": "Single line of text (Text format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "StringAttributeMetadata FormatName=Text (Format=Text)",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Default length 100, max 4,000 characters. Reducing max length does not truncate existing data."
-  },
-  {
-   "id": "dv.column.string.textarea",
-   "area": "column-type",
-   "name": "Single line of text (Text Area format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-format-formatname"
-   ],
-   "where": "StringAttributeMetadata FormatName=TextArea",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Multiple lines, default 100, max 4,000."
-  },
-  {
-   "id": "dv.column.string.email",
-   "area": "column-type",
-   "name": "Single line of text (Email format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "StringAttributeMetadata FormatName=Email",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Validated as an e-mail address; mailto link."
-  },
-  {
-   "id": "dv.column.string.url",
-   "area": "column-type",
-   "name": "Single line of text (URL format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "StringAttributeMetadata FormatName=Url",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Displayed as a link."
-  },
-  {
-   "id": "dv.column.string.phone",
-   "area": "column-type",
-   "name": "Single line of text (Phone format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "StringAttributeMetadata FormatName=Phone (API Format returns Text)",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Link to start a call."
-  },
-  {
-   "id": "dv.column.string.tickersymbol",
-   "area": "column-type",
-   "name": "Single line of text (Ticker Symbol format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname",
-    "pp-add-form"
-   ],
-   "where": "StringAttributeMetadata FormatName=TickerSymbol",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Not supported on Power Pages GenAI forms."
-  },
-  {
-   "id": "dv.column.string.richtext",
-   "area": "column-type",
-   "name": "Text (Rich text format)",
-   "sources": [
-    "learn-format-formatname",
-    "learn-column-security",
-    "pp-add-form"
-   ],
-   "where": "StringAttributeMetadata/MemoAttributeMetadata FormatName=RichText (Format returns Text)",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Rendered with the rich text control. Can be secured; embedded images cannot be masked."
-  },
-  {
-   "id": "dv.column.string.json",
-   "area": "column-type",
-   "name": "Text (JSON format)",
-   "sources": [
-    "learn-format-formatname"
-   ],
-   "where": "StringAttributeMetadata FormatName=Json; Memo Json only for non-SQL data provider",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.column.string.versionnumber",
-   "area": "column-type",
-   "name": "Single line of text (VersionNumber, internal)",
-   "sources": [
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "StringFormatName.VersionNumber",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Internal use only."
-  },
-  {
-   "id": "dv.column.string.autonumber",
-   "area": "column-type",
-   "name": "Autonumber (string with AutoNumberFormat)",
-   "sources": [
-    "learn-autonumber",
-    "learn-column-definitions"
-   ],
-   "where": "StringAttributeMetadata AutoNumberFormat e.g. \"PFX-{SEQNUM:5}-{RANDSTRING:6}-{DATETIMEUTC:yyyyMMdd}\", FormatName=Text",
-   "states": [
-    "read-only",
-    "max-length"
-   ],
-   "notes": "Value is assigned on save; Unified Interface controls bound to autonumber columns should be explicitly disabled. RANDSTRING length 1-6; SEQNUM is a minimum length, default seed 1000; SetAutoNumberSeed changes the next value; seeds are not carried by solutions; gaps possible."
-  },
-  {
-   "id": "dv.column.memo",
-   "area": "column-type",
-   "name": "Multiple lines of text",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "MemoAttributeMetadata (MemoType), FormatName Text|TextArea|Email|RichText|Json",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "max-length"
-   ],
-   "notes": "Default 150, max 1,048,576 characters."
-  },
-  {
-   "id": "dv.column.integer.none",
-   "area": "column-type",
-   "name": "Whole number (None format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-format-formatname"
-   ],
-   "where": "IntegerAttributeMetadata Format=None; MinValue/MaxValue",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max"
-   ],
-   "notes": "Text box."
-  },
-  {
-   "id": "dv.column.integer.duration",
-   "area": "column-type",
-   "name": "Whole number (Duration format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "IntegerAttributeMetadata Format=Duration",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max"
-   ],
-   "notes": "Dropdown of intervals; stores minutes."
-  },
-  {
-   "id": "dv.column.integer.timezone",
-   "area": "column-type",
-   "name": "Whole number (Time zone format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "IntegerAttributeMetadata Format=TimeZone",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max"
-   ],
-   "notes": "Dropdown of time zones."
-  },
-  {
-   "id": "dv.column.integer.language",
-   "area": "column-type",
-   "name": "Whole number (Language format)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-br-table"
-   ],
-   "where": "IntegerAttributeMetadata Format=Language",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max"
-   ],
-   "notes": "Dropdown of enabled languages; stores LCID. Business rules do not support Language columns."
-  },
-  {
-   "id": "dv.column.integer.locale",
-   "area": "column-type",
-   "name": "Whole number (Locale format)",
-   "sources": [
-    "learn-format-formatname",
-    "learn-integerformat"
-   ],
-   "where": "IntegerAttributeMetadata Format=Locale",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max"
-   ],
-   "notes": "Listed in the Format/FormatName table; IntegerFormat.Locale = 4 is a documented IntegerAttributeMetadata.Format value (learn-integerformat), so it is settable through the metadata API."
-  },
-  {
-   "id": "dv.column.decimal",
-   "area": "column-type",
-   "name": "Decimal number",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "DecimalAttributeMetadata (DecimalType) Precision, MinValue, MaxValue",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max",
-    "precision"
-   ],
-   "notes": "Stored exactly. Browser apps handle about 15 significant digits precisely."
-  },
-  {
-   "id": "dv.column.double",
-   "area": "column-type",
-   "name": "Floating point number",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "DoubleAttributeMetadata (DoubleType) Precision, MinValue, MaxValue",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max",
-    "precision"
-   ],
-   "notes": "Approximate storage."
-  },
-  {
-   "id": "dv.column.money",
-   "area": "column-type",
-   "name": "Currency",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "MoneyAttributeMetadata (MoneyType) PrecisionSource 0=Precision 1=Organization.PricingDecimalPrecision 2=TransactionCurrency.CurrencyPrecision",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value",
-    "min",
-    "max",
-    "precision"
-   ],
-   "notes": "First currency column adds a currency lookup and a read-only exchange rate; each currency column adds a read-only <name>_base column. Specific precision 0-4."
-  },
-  {
-   "id": "dv.column.bigint",
-   "area": "column-type",
-   "name": "Big integer",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "BigIntAttributeMetadata (BigIntType)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Max 9,223,372,036,854,775,807; not supported in canvas and model-driven apps; used for Time Stamp."
-  },
-  {
-   "id": "dv.column.datetime.userlocal",
-   "area": "column-type",
-   "name": "Date and time (User local behavior)",
-   "sources": [
-    "learn-datetime-behavior",
-    "learn-column-definitions"
-   ],
-   "where": "DateTimeAttributeMetadata DateTimeBehavior=UserLocal, Format=DateAndTime|DateOnly",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "Stored UTC, displayed in user time zone. Default for Date and time format. Can be changed once to DateOnly/TimeZoneIndependent unless CanChangeDateTimeBehavior=false. Avoid DateOnly format with UserLocal."
-  },
-  {
-   "id": "dv.column.datetime.dateonly",
-   "area": "column-type",
-   "name": "Date only behavior",
-   "sources": [
-    "learn-datetime-behavior",
-    "learn-column-definitions",
-    "learn-br-table"
-   ],
-   "where": "DateTimeAttributeMetadata DateTimeBehavior=DateOnly",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "No time stored; operators Older Than X Minutes/Hours and Last/Next X Hours are invalid. Business rules treat DateOnly values as UTC."
-  },
-  {
-   "id": "dv.column.datetime.tzindependent",
-   "area": "column-type",
-   "name": "Date and time (Time zone independent behavior)",
-   "sources": [
-    "learn-datetime-behavior",
-    "learn-column-definitions"
-   ],
-   "where": "DateTimeAttributeMetadata DateTimeBehavior=TimeZoneIndependent, Format=DateAndTime|DateOnly",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "No time-zone conversion; default behavior for the Date only format in the maker UI."
-  },
-  {
-   "id": "dv.column.datetime.format",
-   "area": "column-type",
-   "name": "Date and time display format",
-   "sources": [
-    "learn-datetime-behavior",
-    "learn-column-definitions"
-   ],
-   "where": "DateTimeAttributeMetadata Format=DateAndTime|DateOnly",
-   "states": [
-    "date-only",
-    "date-and-time"
-   ],
-   "notes": "Format affects display only; time can still be set through the API when behavior is not DateOnly. Values from 1/1/1753."
-  },
-  {
-   "id": "dv.column.choice.local",
-   "area": "column-type",
-   "name": "Choice (local option set)",
-   "sources": [
-    "learn-column-definitions",
-    "learn-types-of-columns"
-   ],
-   "where": "PicklistAttributeMetadata with OptionSet defined in the column",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "Options defined in the column."
-  },
-  {
-   "id": "dv.column.choice.global",
-   "area": "column-type",
-   "name": "Choice (global option set)",
-   "sources": [
-    "learn-column-definitions",
-    "pp-basic-forms"
-   ],
-   "where": "PicklistAttributeMetadata OptionSet referencing a global choice",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "Shared options. Power Pages does not support hidden choice values."
-  },
-  {
-   "id": "dv.column.choices.multiselect",
-   "area": "column-type",
-   "name": "Choices (multi-select)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-multiselect",
-    "learn-br-table"
-   ],
-   "where": "MultiSelectPicklistAttributeMetadata (MultiSelectPicklistType; AttributeType reports Virtual)",
-   "states": [
-    "optional",
-    "required",
-    "read-only",
-    "hidden"
-   ],
-   "notes": "Not usable in business rules, workflows, BPF, charts, rollup/calculated columns. Query with contain-values / not-contain-values. Not sortable."
-  },
-  {
-   "id": "dv.column.boolean",
-   "area": "column-type",
-   "name": "Yes/No (two options)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "BooleanAttributeMetadata (BooleanType) true/false options, DefaultValue",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.column.state",
-   "area": "column-type",
-   "name": "Status (statecode)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-column-security"
-   ],
-   "where": "StateAttributeMetadata (StateType)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Custom tables have Active/Inactive only. Cannot be column-secured."
-  },
-  {
-   "id": "dv.column.status",
-   "area": "column-type",
-   "name": "Status reason (statuscode)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "StatusAttributeMetadata (StatusType); each option maps to a state",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "Supports custom status reason transitions."
-  },
-  {
-   "id": "dv.column.lookup",
-   "area": "column-type",
-   "name": "Lookup (simple)",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-column-security"
-   ],
-   "where": "LookupAttributeMetadata (LookupType) Targets=[one table]",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "N:1 relationship; the target primary name is returned even without read access to it. Lookups cannot be column-secured."
-  },
-  {
-   "id": "dv.column.lookup.customer",
-   "area": "column-type",
-   "name": "Customer",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "LookupAttributeMetadata (CustomerType) Targets=[account, contact]",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "Always searchable; not sortable."
-  },
-  {
-   "id": "dv.column.lookup.owner",
-   "area": "column-type",
-   "name": "Owner",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions"
-   ],
-   "where": "LookupAttributeMetadata (OwnerType) Targets=[systemuser, team]",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "System lookup on user/team owned tables."
-  },
-  {
-   "id": "dv.column.lookup.polymorphic",
-   "area": "column-type",
-   "name": "Multi-table (polymorphic) lookup",
-   "sources": [
-    "learn-types-of-columns"
-   ],
-   "where": "LookupAttributeMetadata Targets=[several tables] (custom multi-table or Regarding)",
-   "states": [
-    "optional",
-    "required",
-    "recommended",
-    "read-only",
-    "hidden",
-    "default-value"
-   ],
-   "notes": "Custom multi-table lookups are created with code."
-  },
-  {
-   "id": "dv.column.partylist",
-   "area": "column-type",
-   "name": "Party list",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "pp-basic-forms"
-   ],
-   "where": "PartyListType (ActivityParty collection)",
-   "states": [],
-   "notes": "System-only; not supported in Power Pages basic forms; not searchable or sortable."
-  },
-  {
-   "id": "dv.column.image",
-   "area": "column-type",
-   "name": "Image",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-column-security"
-   ],
-   "where": "ImageAttributeMetadata (ImageType; AttributeType reports Virtual)",
-   "states": [
-    "optional",
-    "read-only",
-    "hidden",
-    "max-size"
-   ],
-   "notes": "Max size default 10,240 KB, range 1-30,720 KB; stored as jpg with a 144x144 thumbnail; one primary image per table. Not usable in business rules, BPF, charts, rollup/calculated (types-of-columns). Can be secured, not masked."
-  },
-  {
-   "id": "dv.column.file",
-   "area": "column-type",
-   "name": "File",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-column-security"
-   ],
-   "where": "FileAttributeMetadata (FileType)",
-   "states": [
-    "optional",
-    "read-only",
-    "hidden",
-    "max-size"
-   ],
-   "notes": "Default 32 MB, designer max 131,072 KB, fixed after save. Required validation does not work; not usable in business rules, BPF, charts, rollup/calculated."
-  },
-  {
-   "id": "dv.column.uniqueidentifier",
-   "area": "column-type",
-   "name": "Unique identifier",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-column-definitions",
-    "learn-br-form"
-   ],
-   "where": "UniqueIdentifierAttributeMetadata (UniqueidentifierType)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Primary key GUID; not supported in business rules."
-  },
-  {
-   "id": "dv.column.calculated",
-   "area": "column-type",
-   "name": "Calculated column",
-   "sources": [
-    "learn-specialized-columns",
-    "learn-column-security"
-   ],
-   "where": "AttributeMetadata.SourceType=1; FormulaDefinition (XAML)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Read-only; computed as system so secured inputs can leak; supported on Boolean, DateTime, Decimal, String, Integer, Money, Picklist."
-  },
-  {
-   "id": "dv.column.rollup",
-   "area": "column-type",
-   "name": "Rollup column",
-   "sources": [
-    "learn-specialized-columns",
-    "learn-br-form",
-    "pp-basic-forms"
-   ],
-   "where": "AttributeMetadata.SourceType=2; FormulaDefinition (XAML); companion <name>_Date and <name>_State",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Calculated asynchronously (hourly by default); CalculateRollupField on demand. Not supported in business rules. Power Pages may render rollups editable unless the form control is read-only."
-  },
-  {
-   "id": "dv.column.formula",
-   "area": "column-type",
-   "name": "Formula (Power Fx) column",
-   "sources": [
-    "learn-specialized-columns",
-    "learn-types-of-columns",
-    "learn-column-security"
-   ],
-   "where": "AttributeMetadata.SourceType=3; FormulaDefinition (YAML)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Evaluated on fetch; not searchable or sortable; cannot be column-secured."
-  },
-  {
-   "id": "dv.column.prompt",
-   "area": "column-type",
-   "name": "Prompt column",
-   "sources": [
-    "learn-specialized-columns"
-   ],
-   "where": "AttributeMetadata.SourceType=4 (string)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "AI prompt result stored in a string column."
-  },
-  {
-   "id": "dv.column.entityname",
-   "area": "column-type",
-   "name": "Entity name (internal)",
-   "sources": [
-    "learn-column-definitions"
-   ],
-   "where": "EntityNameAttributeMetadata (EntityNameType)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Internal use."
-  },
-  {
-   "id": "dv.column.virtual",
-   "area": "column-type",
-   "name": "Virtual",
-   "sources": [
-    "learn-column-definitions"
-   ],
-   "where": "VirtualType",
-   "states": [],
-   "notes": "Cannot be used in code."
-  },
-  {
-   "id": "dv.column.managedproperty",
-   "area": "column-type",
-   "name": "Managed property",
-   "sources": [
-    "learn-column-definitions"
-   ],
-   "where": "ManagedPropertyAttributeMetadata (ManagedPropertyType)",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Solution component customizability flags."
-  },
-  {
-   "id": "dv.state.required.none",
-   "area": "column-state",
-   "name": "Required level None (Optional)",
-   "sources": [
-    "learn-column-definitions"
-   ],
-   "where": "AttributeMetadata.RequiredLevel=None (0)",
-   "states": [
-    "optional"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.state.required.systemrequired",
-   "area": "column-state",
-   "name": "Required level SystemRequired",
-   "sources": [
-    "learn-column-definitions"
-   ],
-   "where": "RequiredLevel=SystemRequired (1)",
-   "states": [
-    "required"
-   ],
-   "notes": "Enforced by Dataverse only for system columns; custom columns cannot use it."
-  },
-  {
-   "id": "dv.state.required.applicationrequired",
-   "area": "column-state",
-   "name": "Required level ApplicationRequired (Business Required)",
-   "sources": [
-    "learn-column-definitions",
-    "pp-basic-forms"
-   ],
-   "where": "RequiredLevel=ApplicationRequired (2)",
-   "states": [
-    "required"
-   ],
-   "notes": "Enforced by model-driven apps, not by the Dataverse API. Power Pages basic forms can force all fields required (\"Make All Fields Required\")."
-  },
-  {
-   "id": "dv.state.required.recommended",
-   "area": "column-state",
-   "name": "Required level Recommended",
-   "sources": [
-    "learn-column-definitions",
-    "pp-basic-forms"
-   ],
-   "where": "RequiredLevel=Recommended (3)",
-   "states": [
-    "recommended"
-   ],
-   "notes": "Power Pages option \"Set Recommended Fields as Required\" upgrades these to required."
-  },
-  {
-   "id": "dv.state.valid-for",
-   "area": "column-state",
-   "name": "Operation validity flags",
-   "sources": [
-    "learn-column-definitions"
-   ],
-   "where": "AttributeMetadata IsValidForCreate, IsValidForUpdate, IsValidForRead, IsValidForForm, IsRequiredForForm",
-   "states": [
-    "read-only",
-    "create-only"
-   ],
-   "notes": "Values set on invalid operations are ignored; invalid reads return null. IsValidForUpdate=false makes the column read-only after create."
-  },
-  {
-   "id": "dv.state.form.disabled",
-   "area": "column-state",
-   "name": "Locked/read-only on form",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties",
-    "pp-basic-forms"
-   ],
-   "where": "FormXml <control disabled=\"true\">",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Business rules/client API can unlock locked fields even on a read-only form."
-  },
-  {
-   "id": "dv.state.form.hidden",
-   "area": "column-state",
-   "name": "Hidden on form",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties"
-   ],
-   "where": "FormXml <cell visible=\"false\"> (also tab/section visible=\"false\")",
-   "states": [
-    "hidden"
-   ],
-   "notes": "Hidden by default; can be shown with code or a business rule."
-  },
-  {
-   "id": "dv.state.form.label-hidden",
-   "area": "column-state",
-   "name": "Label hidden on form",
-   "sources": [
-    "learn-formxml",
-    "learn-form-designer-properties"
-   ],
-   "where": "FormXml <cell showlabel=\"false\">",
-   "states": [
-    "label-hidden"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.state.default-value",
-   "area": "column-state",
-   "name": "Default values",
-   "sources": [
-    "learn-column-definitions",
-    "learn-br-form",
-    "learn-formxml"
-   ],
-   "where": "Column mapping (InitializeFrom), business rule Set Default Value, control parameter DefaultValue",
-   "states": [
-    "default-value"
-   ],
-   "notes": "Mapped values from a parent record pre-fill new related records."
-  },
-  {
-   "id": "dv.state.max-length",
-   "area": "column-state",
-   "name": "Maximum length",
-   "sources": [
-    "learn-types-of-columns",
-    "learn-autonumber",
-    "learn-formxml"
-   ],
-   "where": "StringAttributeMetadata.MaxLength / MemoAttributeMetadata.MaxLength; control parameter MaxLength",
-   "states": [
-    "max-length"
-   ],
-   "notes": "Text 4,000 / memo 1,048,576 maxima."
-  },
-  {
-   "id": "dv.state.min-max",
-   "area": "column-state",
-   "name": "Minimum and maximum values",
-   "sources": [
-    "learn-formxml",
-    "learn-sdkstep-table"
-   ],
-   "where": "Integer/Decimal/Double/Money MinValue, MaxValue; control parameters MinValue, MaxValue",
-   "states": [
-    "min",
-    "max"
-   ],
-   "notes": "MinValue/MaxValue appear in Learn table reference metadata (e.g. Rank) and as FormXml parameters."
-  },
-  {
-   "id": "dv.state.precision",
-   "area": "column-state",
-   "name": "Precision",
-   "sources": [
-    "learn-column-definitions",
-    "learn-types-of-columns"
-   ],
-   "where": "Decimal/Double Precision; Money PrecisionSource + Precision",
-   "states": [
-    "precision"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.state.secured",
-   "area": "column-state",
-   "name": "Column security enabled",
-   "sources": [
-    "learn-column-security",
-    "learn-alternate-keys"
-   ],
-   "where": "AttributeMetadata.IsSecured=true; CanBeSecuredForCreate/Read/Update",
-   "states": [
-    "secured",
-    "masked"
-   ],
-   "notes": "Users without profile access see a lock and asterisks; secured columns cannot be part of an alternate key."
-  },
-  {
-   "id": "dv.state.searchable-sortable",
-   "area": "column-state",
-   "name": "Searchable / sortable flags",
-   "sources": [
-    "learn-types-of-columns"
-   ],
-   "where": "Column Searchable and Sortable properties",
-   "states": [
-    "searchable",
-    "sortable"
-   ],
-   "notes": "Formula, image and party list cannot be searchable; choices, customer, file, formula, image and party list cannot be sortable."
-  },
-  {
-   "id": "dv.br.scope.entity",
-   "area": "business-rule",
-   "name": "Scope Entity (table)",
-   "sources": [
-    "learn-br-table",
-    "learn-br-form"
-   ],
-   "where": "Designer scope \"Entity\" (no form)",
-   "states": [
-    "server-side",
-    "client-side"
-   ],
-   "notes": "Applies to all model-driven forms and the server. The table article FAQ also says rules run on clients and are not executed inside Dataverse; its limits note says server-side rules are XAML generated as synchronous plugins."
-  },
-  {
-   "id": "dv.br.scope.all-forms",
-   "area": "business-rule",
-   "name": "Scope All Forms",
-   "sources": [
-    "learn-br-table",
-    "learn-br-form"
-   ],
-   "where": "Designer scope \"All Forms\"",
-   "states": [
-    "client-side"
-   ],
-   "notes": "Model-driven forms only."
-  },
-  {
-   "id": "dv.br.scope.form",
-   "area": "business-rule",
-   "name": "Scope specific form",
-   "sources": [
-    "learn-br-table",
-    "learn-br-form",
-    "learn-workflow-table"
-   ],
-   "where": "workflow.FormId / ProcessTriggerFormId",
-   "states": [
-    "client-side"
-   ],
-   "notes": "Only that form; main and quick create forms."
-  },
-  {
-   "id": "dv.br.condition",
-   "area": "business-rule",
-   "name": "Condition",
-   "sources": [
-    "learn-br-table",
-    "learn-br-form"
-   ],
-   "where": "Condition component with rules combined AND/OR; source Entity field compared to value, field or formula",
-   "states": [],
-   "notes": "Every rule starts with a condition; actions attach to the true or false branch. Referenced fields must be on the form for form execution."
-  },
-  {
-   "id": "dv.br.action.set-value",
-   "area": "business-rule",
-   "name": "Set field value",
-   "sources": [
-    "learn-br-form",
-    "learn-br-table"
-   ],
-   "where": "Set Field Value action (value, other field, simple formula)",
-   "states": [
-    "server-side",
-    "client-side"
-   ],
-   "notes": "All scopes."
-  },
-  {
-   "id": "dv.br.action.clear-value",
-   "area": "business-rule",
-   "name": "Clear field value",
-   "sources": [
-    "learn-br-table",
-    "learn-br-form"
-   ],
-   "where": "Set Field Value action with clear",
-   "states": [
-    "server-side",
-    "client-side"
-   ],
-   "notes": "All scopes."
-  },
-  {
-   "id": "dv.br.action.set-default",
-   "area": "business-rule",
-   "name": "Set default value",
-   "sources": [
-    "learn-br-form"
-   ],
-   "where": "Set Default Value action",
-   "states": [
-    "server-side",
-    "client-side"
-   ],
-   "notes": "Only when the column is null. All scopes."
-  },
-  {
-   "id": "dv.br.action.show-error",
-   "area": "business-rule",
-   "name": "Show error message",
-   "sources": [
-    "learn-br-form",
-    "learn-br-table"
-   ],
-   "where": "Show Error Message action on a field",
-   "states": [
-    "server-side",
-    "client-side"
-   ],
-   "notes": "Prevents save; server-side the message is returned to the caller. Localizable labels."
-  },
-  {
-   "id": "dv.br.action.lock-unlock",
-   "area": "business-rule",
-   "name": "Lock / unlock",
-   "sources": [
-    "learn-br-form"
-   ],
-   "where": "Lock/Unlock action",
-   "states": [
-    "client-side"
-   ],
-   "notes": "Model-driven only; ignored server-side; can unlock fields on a read-only form."
-  },
-  {
-   "id": "dv.br.action.visibility",
-   "area": "business-rule",
-   "name": "Set visibility",
-   "sources": [
-    "learn-br-form",
-    "learn-br-table"
-   ],
-   "where": "Set Visibility action",
-   "states": [
-    "client-side"
-   ],
-   "notes": "Model-driven only; ignored server-side; not available in canvas apps."
-  },
-  {
-   "id": "dv.br.action.required",
-   "area": "business-rule",
-   "name": "Set business required",
-   "sources": [
-    "learn-br-form"
-   ],
-   "where": "Set Business Required action",
-   "states": [
-    "client-side"
-   ],
-   "notes": "Business Required or Not Business Required; model-driven only."
-  },
-  {
-   "id": "dv.br.action.recommendation",
-   "area": "business-rule",
-   "name": "Recommendation",
-   "sources": [
-    "learn-br-form",
-    "learn-br-table"
-   ],
-   "where": "Recommendation component containing actions",
-   "states": [
-    "client-side"
-   ],
-   "notes": "Light bulb next to the label; accepting applies set-value actions. Model-driven only."
-  },
-  {
-   "id": "dv.br.storage",
-   "area": "business-rule",
-   "name": "Business rule storage",
-   "sources": [
-    "learn-workflow-table",
-    "learn-br-table"
-   ],
-   "where": "workflow (process) record Category=2 (Business Rule); Xaml column; ClientData column (\"Business logic converted into client data\"); StateCode activation",
-   "states": [
-    "active",
-    "inactive"
-   ],
-   "notes": "Must be deactivated to edit. Up to 150 rules per table recommended (client JavaScript and server XAML)."
-  },
-  {
-   "id": "dv.br.unsupported-columns",
-   "area": "business-rule",
-   "name": "Unsupported column types",
-   "sources": [
-    "learn-br-table",
-    "learn-br-form"
-   ],
-   "where": "n/a",
-   "states": [],
-   "notes": "Not supported: multi-select choices, file, language, unique identifier, rollup, localizable-value columns, composite columns (fullname/address)."
-  },
-  {
-   "id": "dv.br.execution-order",
-   "area": "business-rule",
-   "name": "Execution timing",
-   "sources": [
-    "learn-br-table"
-   ],
-   "where": "n/a",
-   "states": [],
-   "notes": "Rules run before onLoad scripts and do not react to onLoad changes; run on form open and field change; not retroactive on existing records."
-  },
-  {
-   "id": "dv.br.powerpages",
-   "area": "business-rule",
-   "name": "Business rules in Power Pages basic forms",
-   "sources": [
-    "pp-basic-forms"
-   ],
-   "where": "n/a",
-   "states": [],
-   "notes": "Not supported in basic forms; locked fields may be enabled on read-only forms by business rules/client API.",
-   "powerPages": "not-supported"
-  },
-  {
-   "id": "dv.view.querytype.public",
-   "area": "view",
-   "name": "View query type 0: Public (MainApplicationView)",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=0",
-   "states": [],
-   "notes": "Many; set one default with IsDefault."
-  },
-  {
-   "id": "dv.view.querytype.advanced-find",
-   "area": "view",
-   "name": "View query type 1: Advanced Find (AdvancedSearch)",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=1",
-   "states": [],
-   "notes": "One; update only."
-  },
-  {
-   "id": "dv.view.querytype.associated",
-   "area": "view",
-   "name": "View query type 2: Associated (SubGrid)",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=2",
-   "states": [],
-   "notes": "One; default related-records grid."
-  },
-  {
-   "id": "dv.view.querytype.quick-find",
-   "area": "view",
-   "name": "View query type 4: Quick Find (QuickFindSearch)",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=4",
-   "states": [],
-   "notes": "One; defines searched columns."
-  },
-  {
-   "id": "dv.view.querytype.reporting",
-   "area": "view",
-   "name": "View query type 8: Reporting",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=8",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.offline-filters",
-   "area": "view",
-   "name": "View query type 16: Offline filters",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=16",
-   "states": [],
-   "notes": "Outlook offline."
-  },
-  {
-   "id": "dv.view.querytype.lookup",
-   "area": "view",
-   "name": "View query type 64: Lookup (LookupView)",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=64",
-   "states": [],
-   "notes": "One; default lookup view when none is configured."
-  },
-  {
-   "id": "dv.view.querytype.sm-appointment-book",
-   "area": "view",
-   "name": "View query type 128: Service management appointment book",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=128",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.outlook-filters",
-   "area": "view",
-   "name": "View query type 256: Outlook filters",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=256",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.address-book-filters",
-   "area": "view",
-   "name": "View query type 512: Address book filters",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=512",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.main-without-subject",
-   "area": "view",
-   "name": "View query type 1024: Main application view without subject",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=1024",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.other",
-   "area": "view",
-   "name": "View query type 2048: Saved query type other (workflow/email templates)",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=2048",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.interactive-workflow",
-   "area": "view",
-   "name": "View query type 4096: Interactive workflow (dialog) view",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=4096",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.offline-template",
-   "area": "view",
-   "name": "View query type 8192: Offline template",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=8192",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.custom-defined",
-   "area": "view",
-   "name": "View query type 16384: Custom defined view",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=16384",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.export-field-translations",
-   "area": "view",
-   "name": "View query type 65536: Export field translations view",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=65536",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.outlook-template",
-   "area": "view",
-   "name": "View query type 131072: Outlook template",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQuery.QueryType=131072",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.querytype.copilot",
-   "area": "view",
-   "name": "View query type: Copilot view",
-   "sources": [
-    "learn-savedquery-querytype"
-   ],
-   "where": "SavedQueryQueryType.CopilotView (value not shown on Learn)",
-   "states": [],
-   "notes": "Listed without a value."
-  },
-  {
-   "id": "dv.view.layoutxml.grid",
-   "area": "view",
-   "name": "layoutxml grid",
-   "sources": [
-    "learn-customize-views",
-    "learn-solution-schema"
-   ],
-   "where": "<grid name=\"resultset\" object jump select preview icon><row name=\"result\" id=\"<primary key>\">",
-   "states": [],
-   "notes": "jump names the primary/link column; select/preview/icon flags."
-  },
-  {
-   "id": "dv.view.layoutxml.cell",
-   "area": "view",
-   "name": "layoutxml cell (column)",
-   "sources": [
-    "learn-customize-views",
-    "learn-solution-schema"
-   ],
-   "where": "<cell name width disableSorting imageproviderwebresource imageproviderfunctionname/>",
-   "states": [
-    "width",
-    "sort-disabled",
-    "icon-provider"
-   ],
-   "notes": "Linked-entity columns use alias.attribute names. Icon provider only for read-only grids."
-  },
-  {
-   "id": "dv.view.fetchxml.columns",
-   "area": "view",
-   "name": "fetchxml attributes",
-   "sources": [
-    "learn-customize-views"
-   ],
-   "where": "<fetch><entity name><attribute name/>",
-   "states": [],
-   "notes": "Columns retrieved for the view."
-  },
-  {
-   "id": "dv.view.fetchxml.order",
-   "area": "view",
-   "name": "fetchxml sort",
-   "sources": [
-    "learn-customize-views"
-   ],
-   "where": "<order attribute descending/>",
-   "states": [
-    "ascending",
-    "descending"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.fetchxml.filter",
-   "area": "view",
-   "name": "fetchxml filter",
-   "sources": [
-    "learn-customize-views",
-    "pp-list-enhanced-filter"
-   ],
-   "where": "<filter type=\"and|or\"><condition attribute operator value uitype/></filter>",
-   "states": [],
-   "notes": "Power Pages enhanced view filter replaces condition values with the current contact (uitype=\"contact\"), parent account (uitype=\"account\") or website (uitype=\"adx_website\")."
-  },
-  {
-   "id": "dv.view.fetchxml.link-entity",
-   "area": "view",
-   "name": "fetchxml link-entity",
-   "sources": [
-    "learn-customize-views"
-   ],
-   "where": "<link-entity name from to alias link-type=\"outer|inner\" visible>",
-   "states": [],
-   "notes": "Related columns appear in layoutxml as alias.attribute."
-  },
-  {
-   "id": "dv.view.isdefault",
-   "area": "view",
-   "name": "Default public view",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-table"
-   ],
-   "where": "SavedQuery.IsDefault=true",
-   "states": [
-    "default"
-   ],
-   "notes": "Only one active public view can be default; the default view cannot be deactivated."
-  },
-  {
-   "id": "dv.view.isquickfindquery",
-   "area": "view",
-   "name": "Quick find flag",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-table"
-   ],
-   "where": "SavedQuery.IsQuickFindQuery",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.state",
-   "area": "view",
-   "name": "View active/inactive",
-   "sources": [
-    "learn-customize-views",
-    "learn-savedquery-table"
-   ],
-   "where": "SavedQuery.StateCode 0 Active / 1 Inactive; StatusCode 1/2",
-   "states": [
-    "active",
-    "inactive"
-   ],
-   "notes": "State is not exported with solutions; imported views are active. Deactivation is an Update of StateCode 1/StatusCode 2; a default public view cannot be deactivated (learn-customize-views)."
-  },
-  {
-   "id": "dv.view.other-columns",
-   "area": "view",
-   "name": "Other SavedQuery definition columns",
-   "sources": [
-    "learn-savedquery-table"
-   ],
-   "where": "ColumnSetXml, LayoutJson, ConditionalFormatting, AdvancedGroupBy, RoleDisplayConditionsXml, ReturnedTypeCode, IsCustomizable",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.view.powerpages.list",
-   "area": "view",
-   "name": "Power Pages list over views",
-   "sources": [
-    "pp-lists",
-    "pp-data-workspace-views"
-   ],
-   "where": "Power Pages list with one or more SavedQuery views",
-   "states": [
-    "multiple-views",
-    "sorting",
-    "paging",
-    "infinite-scroll"
-   ],
-   "notes": "Multiple views render a dropdown; Data workspace shows only view types supported in portals; filters by portal user / parent account attribute.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.view.powerpages.subgrid",
-   "area": "view",
-   "name": "Power Pages basic form subgrid view",
-   "sources": [
-    "pp-basic-form-subgrid"
-   ],
-   "where": "Form subgrid view + Basic Form Metadata Type=Subgrid",
-   "states": [
-    "read-only"
-   ],
-   "notes": "Read-only unless metadata actions are configured; the associate action needs a view.",
-   "powerPages": "consumed"
-  },
-  {
-   "id": "dv.plugin.stage.10",
-   "area": "plugin",
-   "name": "Stage 10 PreValidation",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.Stage=10",
-   "states": [
-    "synchronous"
-   ],
-   "notes": "Before the transaction and before security checks; best place to cancel."
-  },
-  {
-   "id": "dv.plugin.stage.20",
-   "area": "plugin",
-   "name": "Stage 20 PreOperation",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.Stage=20",
-   "states": [
-    "synchronous"
-   ],
-   "notes": "In transaction; change Target values here; cancelling rolls back."
-  },
-  {
-   "id": "dv.plugin.stage.40",
-   "area": "plugin",
-   "name": "Stage 40 PostOperation",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.Stage=40",
-   "states": [
-    "synchronous",
-    "asynchronous"
-   ],
-   "notes": "In transaction when synchronous; only stage allowing asynchronous mode."
-  },
-  {
-   "id": "dv.plugin.stage.internal",
-   "area": "plugin",
-   "name": "Internal stages",
-   "sources": [
-    "learn-sdkstep-table",
-    "learn-event-framework"
-   ],
-   "where": "Stage 5,15,25,30,35,45,50 (deprecated),55,80,90",
-   "states": [],
-   "notes": "Internal use; MainOperation (30) only for custom API / virtual table providers."
-  },
-  {
-   "id": "dv.plugin.mode",
-   "area": "plugin",
-   "name": "Execution mode",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.Mode 0=Synchronous 1=Asynchronous",
-   "states": [
-    "synchronous",
-    "asynchronous"
-   ],
-   "notes": "Async goes to the system job queue after the operation."
-  },
-  {
-   "id": "dv.plugin.message.create",
-   "area": "plugin",
-   "name": "Message Create",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin"
-   ],
-   "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Create; SdkMessageFilterId selects the primary entity",
-   "states": [],
-   "notes": "Supports entity images (Create: no pre image; Delete: no post image)."
-  },
-  {
-   "id": "dv.plugin.message.update",
-   "area": "plugin",
-   "name": "Message Update",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin"
-   ],
-   "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Update; SdkMessageFilterId selects the primary entity",
-   "states": [],
-   "notes": "Supports filtering attributes and pre/post images; may fire twice for specialized updates."
-  },
-  {
-   "id": "dv.plugin.message.delete",
-   "area": "plugin",
-   "name": "Message Delete",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin"
-   ],
-   "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Delete; SdkMessageFilterId selects the primary entity",
-   "states": [],
-   "notes": "Supports entity images (Create: no pre image; Delete: no post image)."
-  },
-  {
-   "id": "dv.plugin.message.retrieve",
-   "area": "plugin",
-   "name": "Message Retrieve",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin"
-   ],
-   "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Retrieve; SdkMessageFilterId selects the primary entity",
-   "states": [],
-   "notes": "Without a primary entity the step runs for all entities supporting the message. No entity images."
-  },
-  {
-   "id": "dv.plugin.message.retrievemultiple",
-   "area": "plugin",
-   "name": "Message RetrieveMultiple",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin"
-   ],
-   "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage RetrieveMultiple; SdkMessageFilterId selects the primary entity",
-   "states": [],
-   "notes": "Without a primary entity the step runs for all entities supporting the message. No entity images."
-  },
-  {
-   "id": "dv.plugin.filtering-attributes",
-   "area": "plugin",
-   "name": "Filtering attributes",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.FilteringAttributes",
-   "states": [],
-   "notes": "Fires when any listed column is in the request, changed or not; never include the primary key."
-  },
-  {
-   "id": "dv.plugin.images",
-   "area": "plugin",
-   "name": "Entity images",
-   "sources": [
-    "learn-register-plugin"
-   ],
-   "where": "SdkMessageProcessingStepImage pre/post with alias and attributes",
-   "states": [
-    "pre-image",
-    "post-image"
-   ],
-   "notes": "Post image only in PostOperation; Update in PostOperation can have both. Select only needed columns."
-  },
-  {
-   "id": "dv.plugin.rank",
-   "area": "plugin",
-   "name": "Execution order",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.Rank",
-   "states": [],
-   "notes": "Lowest first; equal ranks have undefined order."
-  },
-  {
-   "id": "dv.plugin.impersonation",
-   "area": "plugin",
-   "name": "Run in user context",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SdkMessageProcessingStep.ImpersonatingUserId (systemuser)",
-   "states": [],
-   "notes": "Default is the calling user."
-  },
-  {
-   "id": "dv.plugin.invalid-plugin-exception",
-   "area": "plugin",
-   "name": "InvalidPluginExecutionException",
-   "sources": [
-    "learn-event-framework"
-   ],
-   "where": "Microsoft.Xrm.Sdk.InvalidPluginExecutionException thrown from the plug-in",
-   "states": [
-    "error"
-   ],
-   "notes": "Any exception in a synchronous in-transaction stage rolls back the whole transaction; throw with a message (ideally in PreValidation) to cancel and return it to the caller."
-  },
-  {
-   "id": "dv.plugin.configuration",
-   "area": "plugin",
-   "name": "Step configuration",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "Configuration (unsecure) and SdkMessageProcessingStepSecureConfigId",
-   "states": [],
-   "notes": "Secure configuration is not exported in solutions."
-  },
-  {
-   "id": "dv.plugin.state",
-   "area": "plugin",
-   "name": "Step enabled/disabled",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "StateCode 0 Enabled / 1 Disabled",
-   "states": [
-    "enabled",
-    "disabled"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.plugin.deployment",
-   "area": "plugin",
-   "name": "Supported deployment",
-   "sources": [
-    "learn-register-plugin",
-    "learn-sdkstep-table"
-   ],
-   "where": "SupportedDeployment 0 Server / 1 Outlook client / 2 Both",
-   "states": [],
-   "notes": ""
-  },
-  {
-   "id": "dv.plugin.invocation-source",
-   "area": "plugin",
-   "name": "Invocation source",
-   "sources": [
-    "learn-sdkstep-table"
-   ],
-   "where": "InvocationSource -1 Internal / 0 Parent / 1 Child",
-   "states": [],
-   "notes": "Picklist, SystemRequired, DefaultFormValue 0 (learn-sdkstep-table). Read the effective value back from the step record or the exported step XML; it is not inferred from registration input."
-  },
-  {
-   "id": "dv.security.profile",
-   "area": "column-security",
-   "name": "Column security profile",
-   "sources": [
-    "learn-column-security"
-   ],
-   "where": "Column (field) security profile with users/teams and per-column permissions",
-   "states": [],
-   "notes": "Organization-wide; system administrators bypass. Changes need a client refresh."
-  },
-  {
-   "id": "dv.security.permission.read",
-   "area": "column-security",
-   "name": "Read permission",
-   "sources": [
-    "learn-column-security"
-   ],
-   "where": "Profile column permission Read: Allowed / Not Allowed",
-   "states": [
-    "read-denied"
-   ],
-   "notes": "Denied users see a lock icon and asterisks on forms and views."
-  },
-  {
-   "id": "dv.security.permission.read-unmasked",
-   "area": "column-security",
-   "name": "Read unmasked permission",
-   "sources": [
-    "learn-column-security"
-   ],
-   "where": "Profile column permission Read unmasked: All Records / One record / Not Allowed",
-   "states": [
-    "masked"
-   ],
-   "notes": "Applies when a masking rule is set."
-  },
-  {
-   "id": "dv.security.permission.update",
-   "area": "column-security",
-   "name": "Update permission",
-   "sources": [
-    "learn-column-security"
-   ],
-   "where": "Profile column permission Update: Allowed / Not Allowed",
-   "states": [
-    "update-denied"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.security.permission.create",
-   "area": "column-security",
-   "name": "Create permission",
-   "sources": [
-    "learn-column-security"
-   ],
-   "where": "Profile column permission Create: Allowed / Not Allowed",
-   "states": [
-    "create-denied"
-   ],
-   "notes": ""
-  },
-  {
-   "id": "dv.security.eligibility",
-   "area": "column-security",
-   "name": "Columns that cannot be secured",
-   "sources": [
-    "learn-column-security"
-   ],
-   "where": "CanBeSecuredForCreate/Read/Update",
-   "states": [],
-   "notes": "Not securable: virtual-table columns, lookups, formula columns, primary name columns, system columns (createdon, modifiedon, statecode, statuscode)."
-  },
-  {
-   "id": "dv.security.calculated-leak",
-   "area": "column-security",
-   "name": "Calculated/prompt column exposure",
-   "sources": [
-    "learn-column-security",
-    "learn-specialized-columns"
-   ],
-   "where": "n/a",
-   "states": [],
-   "notes": "Secure both the source and dependent calculated/prompt columns."
-  },
-  {
-   "id": "dv.relationship.one-to-many",
-   "area": "relationship",
-   "name": "One-to-many / many-to-one relationship (lookup)",
-   "sources": [
-    "learn-relationships",
-    "learn-relationship-metadata"
-   ],
-   "where": "OneToManyRelationshipMetadata (ReferencedEntity, ReferencingEntity, ReferencingAttribute); solution Other/Relationships/<table>.xml <EntityRelationship> with <EntityRelationshipType>OneToMany",
-   "states": [
-    "simple",
-    "multi-table",
-    "customer",
-    "self-referential"
-   ],
-   "notes": "Adding a lookup column creates a 1:N relationship; N:1 is the same relationship seen from the referencing table (learn-relationship-metadata). Rows can relate to rows of another table or the same table (learn-relationships). Subgrids and associated views name the relationship (RelationshipName)."
-  },
-  {
-   "id": "dv.relationship.many-to-many",
-   "area": "relationship",
-   "name": "Many-to-many relationship",
-   "sources": [
-    "learn-relationships",
-    "learn-nn-relationships",
-    "pp-basic-form-subgrid"
-   ],
-   "where": "ManyToManyRelationshipMetadata (IntersectEntityName, Entity1LogicalName, Entity2LogicalName); <EntityRelationshipType>ManyToMany",
-   "states": [
-    "native"
-   ],
-   "notes": "Uses an intersect table with no custom columns and no lookup columns or behaviours to configure (learn-nn-relationships)."
-  },
-  {
-   "id": "dv.relationship.cascade.delete",
-   "area": "relationship",
-   "name": "Cascade on delete of the referenced row",
-   "sources": [
-    "learn-cascading",
-    "learn-relationships"
-   ],
-   "where": "OneToManyRelationshipMetadata.CascadeConfiguration.Delete; <CascadeDelete>",
-   "states": [
-    "cascade",
-    "remove-link",
-    "restrict"
-   ],
-   "notes": "Valid options for Delete are Cascade, RemoveLink and Restrict (learn-cascading). RemoveLink clears the lookup on the related rows; Restrict prevents deleting the referenced row while related rows exist."
-  },
-  {
-   "id": "dv.relationship.cascade.ownership",
-   "area": "relationship",
-   "name": "Cascade on assign, share, unshare and reparent",
-   "sources": [
-    "learn-cascading"
-   ],
-   "where": "CascadeConfiguration.Assign/Share/Unshare/Reparent; <CascadeAssign>, <CascadeShare>, <CascadeUnshare>, <CascadeReparent>",
-   "states": [
-    "no-cascade",
-    "cascade",
-    "active",
-    "user-owned"
-   ],
-   "notes": "Valid options for each of these actions are Active, Cascade, NoCascade and UserOwned (learn-cascading)."
-  },
-  {
-   "id": "dv.key.alternate",
-   "area": "key",
-   "name": "Alternate key",
-   "sources": [
-    "learn-alternate-keys"
-   ],
-   "where": "EntityKeyMetadata KeyAttributes; CreateEntityKey; EntityMetadata.Keys",
-   "states": [
-    "pending",
-    "in-progress",
-    "active",
-    "failed"
-   ],
-   "notes": "Allowed column types: Decimal, Whole Number, Single line of text, Date Time, Lookup, Option Set. No field-level security; at most 900 bytes and 16 columns; max 10 keys per table; values containing / < > * % & : \\ ? + break retrieve/update/upsert by key; not supported on virtual tables; index built asynchronously (EntityKeyIndexStatus), ReactivateEntityKey after failure."
-  },
-  {
-   "id": "dv.plugin.mutation",
-   "area": "plugin",
-   "name": "Plug-in modifies the write (input parameter mutation before the operation)",
-   "sources": [
-    "learn-event-framework",
-    "learn-register-plugin"
-   ],
-   "where": "PreOperation (stage 20) step that changes attributes of the Target entity in InputParameters before the platform writes",
-   "states": [
-    "input mutation"
-   ],
-   "notes": "Learn: in the PreOperation stage a plug-in can modify the Target before the data is written; changes in PostOperation do not reach the record."
-  },
-  {
-   "id": "dv.control.email",
-   "area": "form-control",
-   "name": "Email text control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{ADA2203E-B4CD-49BE-9DDF-234642B43B52}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.url",
-   "area": "form-control",
-   "name": "URL text control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{71716B6C-711E-476C-8AB8-5D11542BFB47}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.phone",
-   "area": "form-control",
-   "name": "Phone text control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{8C10015A-B339-4982-9474-A95FE05631A5}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.ticker",
-   "area": "form-control",
-   "name": "Ticker symbol control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{1E1FC551-F7A8-43AF-AC34-A8DC35C7B6D4}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.status",
-   "area": "form-control",
-   "name": "Status reason control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{5D68B988-0661-4DB2-BC3E-17598AD3BE6C}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.checkbox",
-   "area": "form-control",
-   "name": "Two options as checkbox control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{B0C6723A-8503-4FD7-BB28-C8A06AC933C2}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.polymorphic",
-   "area": "form-control",
-   "name": "Polymorphic (regarding) lookup control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{F3015350-44A2-4AA0-97B5-00166532B5E9}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.duration",
-   "area": "form-control",
-   "name": "Duration whole number control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{AA987274-CE4E-4271-A803-66164311A958}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.timezone",
-   "area": "form-control",
-   "name": "Time zone whole number control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{7C624A0B-F59E-493D-9583-638D34759266}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.notes",
-   "area": "form-control",
-   "name": "Notes control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{06375649-C143-495E-A496-C962E5B4488E}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.webresource",
-   "area": "form-control",
-   "name": "Web resource control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{9FDF5F91-88B1-47F4-AD53-C11EFC01A01D}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.control.iframe",
-   "area": "form-control",
-   "name": "IFRAME control",
-   "sources": [
-    "learn-formxml"
-   ],
-   "where": "FormXml <control classid=\"{FD2A7985-3187-444E-908D-6624B21F69C0}\">",
-   "states": [
-    "classid"
-   ],
-   "evidence": "schema-only",
-   "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
-   "notes": "Harvested value; the generator cites it."
-  },
-  {
-   "id": "dv.solution.dependencies",
-   "area": "solution",
-   "name": "Solution component dependencies",
-   "sources": [
-    "learn-dependency-tracking",
-    "learn-missing-dependencies",
-    "learn-solution-schema"
-   ],
-   "where": "solution.xml <MissingDependencies>/<MissingDependency><Required/><Dependent/>; <RootComponent behavior> (0 = include all subcomponents)",
-   "states": [
-    "self-contained",
-    "missing-dependency"
-   ],
-   "notes": "Export warns about missing components; import fails when a required component is neither in the solution nor in the target environment; a managed solution can depend only on managed components (learn-dependency-tracking). The Missing dependencies page and solution.xml <MissingDependencies> list them (learn-missing-dependencies).",
-   "powerPages": "not-applicable"
-  }
- ]
+  "version": 1,
+  "generatedAt": "2026-10-14T20:19:13.218Z",
+  "sources": [
+    {
+      "id": "learn-formxml",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/form-xml-schema",
+      "title": "Form XML schema"
+    },
+    {
+      "id": "learn-customize-forms",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/customize-entity-forms",
+      "title": "Customize forms in model-driven apps"
+    },
+    {
+      "id": "learn-form-types",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/types-forms",
+      "title": "Types of model-driven app forms in Power Apps"
+    },
+    {
+      "id": "learn-form-designer-properties",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-properties",
+      "title": "Properties available in the form designer"
+    },
+    {
+      "id": "learn-subgrid",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-add-configure-subgrid",
+      "title": "Add and configure a subgrid component on a form"
+    },
+    {
+      "id": "learn-quickview",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/create-edit-quick-view-forms",
+      "title": "Create a quick view form to view information about a related table"
+    },
+    {
+      "id": "learn-quickview-component",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-add-configure-quickview",
+      "title": "Add and configure a quick view component on a form"
+    },
+    {
+      "id": "learn-main-form-presentations",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/main-form-presentations",
+      "title": "How model-driven app main forms appear on different devices"
+    },
+    {
+      "id": "learn-dashboard-formxml",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/understand-dashboards-dashboard-components-formxml",
+      "title": "Understand dashboards: Dashboard components and FormXML"
+    },
+    {
+      "id": "learn-types-of-columns",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/types-of-fields",
+      "title": "Types of columns"
+    },
+    {
+      "id": "learn-column-definitions",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/entity-attribute-metadata",
+      "title": "Column definitions"
+    },
+    {
+      "id": "learn-format-formatname",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/format-and-formatname-columns",
+      "title": "Format and FormatName columns"
+    },
+    {
+      "id": "learn-datetime-behavior",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/behavior-format-date-time-field",
+      "title": "Behavior and format of the date and time column"
+    },
+    {
+      "id": "learn-autonumber",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/create-auto-number-attributes",
+      "title": "Create autonumber columns"
+    },
+    {
+      "id": "learn-specialized-columns",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/specialized-columns",
+      "title": "Specialized columns using code"
+    },
+    {
+      "id": "learn-multiselect",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/multi-select-picklist",
+      "title": "Choices columns"
+    },
+    {
+      "id": "learn-br-table",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/data-platform-create-business-rule",
+      "title": "Create a business rule for a table"
+    },
+    {
+      "id": "learn-br-form",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/create-business-rules-recommendations-apply-logic-form",
+      "title": "Create business rules to apply logic in a model-driven app form"
+    },
+    {
+      "id": "learn-workflow-table",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/workflow",
+      "title": "Process (Workflow) table/entity reference"
+    },
+    {
+      "id": "learn-customize-views",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/customize-entity-views",
+      "title": "Customize views in model-driven apps"
+    },
+    {
+      "id": "learn-savedquery-querytype",
+      "url": "https://learn.microsoft.com/en-us/dotnet/api/microsoft.crm.sdk.savedqueryquerytype?view=dataverse-sdk-latest",
+      "title": "SavedQueryQueryType Class"
+    },
+    {
+      "id": "learn-savedquery-table",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/savedquery",
+      "title": "View (SavedQuery) table/entity reference"
+    },
+    {
+      "id": "learn-solution-schema",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/customization-solutions-file-schema",
+      "title": "Customization solutions file schema"
+    },
+    {
+      "id": "learn-event-framework",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/event-framework",
+      "title": "Event framework in Microsoft Dataverse"
+    },
+    {
+      "id": "learn-register-plugin",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in",
+      "title": "Register a plug-in"
+    },
+    {
+      "id": "learn-sdkstep-table",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/sdkmessageprocessingstep",
+      "title": "Sdk Message Processing Step (SdkMessageProcessingStep) table/entity reference"
+    },
+    {
+      "id": "learn-column-security",
+      "url": "https://learn.microsoft.com/en-us/power-platform/admin/field-level-security",
+      "title": "Column-level security to control access"
+    },
+    {
+      "id": "learn-alternate-keys",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/define-alternate-keys-entity",
+      "title": "Work with alternate keys"
+    },
+    {
+      "id": "pp-basic-forms",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/basic-forms",
+      "title": "About basic forms"
+    },
+    {
+      "id": "pp-data-workspace-forms",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/data-workspace-forms",
+      "title": "How to create and modify Dataverse forms by using the Data workspace"
+    },
+    {
+      "id": "pp-add-form",
+      "url": "https://learn.microsoft.com/en-us/power-pages/getting-started/add-form",
+      "title": "Add a form"
+    },
+    {
+      "id": "pp-basic-form-subgrid",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/configure-basic-form-subgrid",
+      "title": "Configure Basic form subgrids"
+    },
+    {
+      "id": "pp-basic-form-metadata",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/configure-basic-form-metadata",
+      "title": "Configure basic form metadata for portals"
+    },
+    {
+      "id": "pp-notes",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/configure-notes",
+      "title": "Configure notes as attachments for basic and multistep forms"
+    },
+    {
+      "id": "pp-multistep-properties",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/multistep-form-properties",
+      "title": "Define multistep form properties"
+    },
+    {
+      "id": "pp-lists",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/lists",
+      "title": "Lists overview"
+    },
+    {
+      "id": "pp-list-enhanced-filter",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/list-enhanced-view-filter",
+      "title": "Enhanced view filter for lists"
+    },
+    {
+      "id": "pp-data-workspace-views",
+      "url": "https://learn.microsoft.com/en-us/power-pages/configure/data-workspace-views",
+      "title": "Create and modify Dataverse views by using the Data workspace"
+    },
+    {
+      "id": "learn-dependency-tracking",
+      "url": "https://learn.microsoft.com/en-us/power-platform/alm/dependency-tracking-solution-components",
+      "title": "Dependency tracking for solution components"
+    },
+    {
+      "id": "learn-missing-dependencies",
+      "url": "https://learn.microsoft.com/en-us/troubleshoot/power-platform/dataverse/working-with-solutions/missing-dependency-on-solution-import",
+      "title": "Missing dependencies error during solution import"
+    },
+    {
+      "id": "learn-integerformat",
+      "url": "https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.metadata.integerformat?view=dataverse-sdk-latest",
+      "title": "IntegerFormat Enum"
+    },
+    {
+      "id": "learn-relationships",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-entity-relationships",
+      "title": "Microsoft Dataverse table relationships"
+    },
+    {
+      "id": "learn-relationship-metadata",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/entity-relationship-metadata",
+      "title": "Table relationship definitions"
+    },
+    {
+      "id": "learn-nn-relationships",
+      "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-nn-relationships",
+      "title": "Create many-to-many table relationships overview"
+    },
+    {
+      "id": "learn-cascading",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/configure-entity-relationship-cascading-behavior",
+      "title": "Configure table relationship cascading behavior"
+    },
+    {
+      "id": "learn-file-column-data",
+      "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/file-column-data",
+      "title": "Use file column data in Microsoft Dataverse"
+    },
+    {
+      "id": "learn-stateoption-defaultstatus",
+      "url": "https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.metadata.stateoptionmetadata.defaultstatus?view=dataverse-sdk-latest",
+      "title": "StateOptionMetadata.DefaultStatus Property"
+    }
+  ],
+  "items": [
+    {
+      "id": "dv.form-type.main",
+      "area": "form-type",
+      "name": "Main form",
+      "sources": ["learn-customize-forms", "learn-form-types", "pp-data-workspace-forms", "pp-basic-forms"],
+      "where": "SystemForm.Type=2; customizations.xml <forms type=\"main\">",
+      "states": ["active", "inactive", "default"],
+      "notes": "Only main forms can be deactivated (FormActivationState 0/1). Power Pages basic and multistep forms render a Dataverse form by Table + Form Name; the Data workspace Forms tab only shows the main form type, described as the type supported in portals.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.form-type.quick-create",
+      "area": "form-type",
+      "name": "Quick create form",
+      "sources": ["learn-customize-forms", "learn-form-types", "pp-data-workspace-forms"],
+      "where": "SystemForm.Type=7; <forms type=\"quickCreate\">",
+      "states": [],
+      "notes": "Optimized for creating new records in model-driven apps. Power Pages Data workspace lists only main forms; consumption by basic forms is not documented.",
+      "powerPages": "not-documented"
+    },
+    {
+      "id": "dv.form-type.quick-view",
+      "area": "form-type",
+      "name": "Quick view form",
+      "sources": ["learn-customize-forms", "learn-form-types", "learn-quickview"],
+      "where": "SystemForm.Type=6; <forms type=\"quick\">; embedded via quick view control on a main form",
+      "states": ["read-only", "hidden-when-lookup-empty"],
+      "notes": "Read-only, no form scripts, no header/footer/navigation, no security roles or activation, no custom controls. Power Pages rendering of quick view controls is not documented on the cited pages.",
+      "powerPages": "not-documented"
+    },
+    {
+      "id": "dv.form-type.card",
+      "area": "form-type",
+      "name": "Card form",
+      "sources": ["learn-form-types"],
+      "where": "SystemForm with card type (type code not listed on cited Learn page)",
+      "states": [],
+      "notes": "Compact presentation used in views for model-driven apps. Not consumed by Power Pages per Data workspace (main only).",
+      "powerPages": "not-documented"
+    },
+    {
+      "id": "dv.form-type.mobile",
+      "area": "form-type",
+      "name": "Mobile form",
+      "sources": ["learn-customize-forms"],
+      "where": "SystemForm.Type=5; <forms type=\"mobile\">",
+      "states": [],
+      "notes": "Legacy mobile form type listed among SystemForm.Type values.",
+      "powerPages": "not-documented"
+    },
+    {
+      "id": "dv.form-type.dashboard",
+      "area": "form-type",
+      "name": "Dashboard",
+      "sources": ["learn-dashboard-formxml"],
+      "where": "SystemForm.Type=0 (organization) or UserForm (user-owned)",
+      "states": [],
+      "notes": "Dashboards are a form type; only a subset of FormXML is supported. Not a Power Pages record form.",
+      "powerPages": "not-applicable"
+    },
+    {
+      "id": "dv.form-type.activation-state",
+      "area": "form-type",
+      "name": "Form activation state",
+      "sources": ["learn-customize-forms"],
+      "where": "SystemForm.FormActivationState 0=Inactive 1=Active",
+      "states": ["active", "inactive"],
+      "notes": "Only main forms can be deactivated."
+    },
+    {
+      "id": "dv.form-type.powerpages-basic-form-mode",
+      "area": "form-type",
+      "name": "Power Pages basic form mode over a Dataverse form",
+      "sources": ["pp-basic-forms"],
+      "where": "Basic form Mode = Insert | Edit | ReadOnly; Record Source Type = Query String | Current Portal User | Record Associated to Current Portal User",
+      "states": ["insert", "edit", "read-only"],
+      "notes": "Edit/ReadOnly need a source record. Optional Tab Name renders a single tab; Auto Generate Steps From Tabs renders tabs as sequential steps. Business rules, duplicate fields and party list fields are not supported in basic forms; connection-table subgrids are not supported; hidden choice values are not supported.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.form-type.powerpages-multistep",
+      "area": "form-type",
+      "name": "Power Pages multistep form step over a Dataverse form",
+      "sources": ["pp-multistep-properties", "pp-basic-forms"],
+      "where": "Multistep form step (Load Form / Load Tab step types)",
+      "states": [],
+      "notes": "Each step behaves like a basic form; rollup columns may render editable unless the Dataverse form marks them read-only.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.formxml.form",
+      "area": "form-element",
+      "name": "<form> root",
+      "sources": ["learn-formxml", "learn-form-designer-properties"],
+      "where": "FormXml <form shownavigationbar maxWidth>; children tabs, header, footer, events, formLibraries, Navigation, hiddencontrols, controlDescriptions, formparameters, DisplayConditions",
+      "states": ["max-width", "show-image"],
+      "notes": "Designer Max Width defaults to 1900 px. Show image displays the table primary image in the header."
+    },
+    {
+      "id": "dv.formxml.tab",
+      "area": "form-element",
+      "name": "Tab",
+      "sources": ["learn-formxml", "learn-form-designer-properties", "learn-dashboard-formxml"],
+      "where": "<tab id name expanded visible showlabel verticallayout locklevel availableforphone><labels/><columns/>",
+      "states": ["expanded", "collapsed", "hidden", "label", "label-hidden", "hidden-on-phone", "locked"],
+      "notes": "Designer: \"Expand this tab by default\", \"Hide tab\" (shown via code), \"Hide on phone\", layout up to three columns."
+    },
+    {
+      "id": "dv.formxml.tab.column",
+      "area": "form-element",
+      "name": "Tab column",
+      "sources": ["learn-formxml", "learn-form-designer-properties"],
+      "where": "<tab><columns><column width=\"NN%\"><sections/>",
+      "states": ["width"],
+      "notes": "Tabs have up to three columns with percentage widths."
+    },
+    {
+      "id": "dv.formxml.section",
+      "area": "form-element",
+      "name": "Section",
+      "sources": ["learn-formxml", "learn-form-designer-properties"],
+      "where": "<section id name showlabel showbar visible columns labelwidth celllabelalignment celllabelposition locklevel availableforphone height layout>",
+      "states": [
+        "label-visible",
+        "label-hidden",
+        "hidden",
+        "columns-1",
+        "columns-2",
+        "columns-3",
+        "columns-4",
+        "hidden-on-phone",
+        "locked",
+        "label-position-top",
+        "label-position-left",
+        "label-align-left",
+        "label-align-center",
+        "label-align-right"
+      ],
+      "notes": "Designer allows up to four columns. celllabelposition enum Top|Left; celllabelalignment enum Center|Left|Right."
+    },
+    {
+      "id": "dv.formxml.row",
+      "area": "form-element",
+      "name": "Row",
+      "sources": ["learn-formxml"],
+      "where": "<rows><row><cell/></row></rows>",
+      "states": [],
+      "notes": "Rows contain cells; header/footer use the same row/cell structure."
+    },
+    {
+      "id": "dv.formxml.cell",
+      "area": "form-element",
+      "name": "Cell",
+      "sources": ["learn-formxml", "learn-form-designer-properties", "learn-dashboard-formxml"],
+      "where": "<cell id auto showlabel colspan rowspan visible userspacer ispreviewcell locklevel availableforphone><labels/><control/><events/></cell>",
+      "states": ["label-hidden", "colspan", "rowspan", "hidden", "hidden-on-phone", "locked", "read-only"],
+      "notes": "Designer column properties: Label, Hide label, Read-only, Lock, Hide, Hide on phone, Form field width (number of section columns occupied)."
+    },
+    {
+      "id": "dv.formxml.control",
+      "area": "form-element",
+      "name": "Control",
+      "sources": ["learn-formxml", "learn-form-designer-properties"],
+      "where": "<control id classid datafieldname uniqueid labelid disabled isunbound isrequired relationship indicationOfSubgrid><parameters/></control>",
+      "states": ["disabled", "unbound", "required-on-form"],
+      "notes": "datafieldname binds to a column logical name; disabled=\"true\" is the read-only/locked state on the form."
+    },
+    {
+      "id": "dv.formxml.label",
+      "area": "form-element",
+      "name": "Localized label",
+      "sources": ["learn-formxml", "learn-dashboard-formxml"],
+      "where": "<labels><label description languagecode/></labels>",
+      "states": ["label"],
+      "notes": "Per-language label text for tabs, sections, cells."
+    },
+    {
+      "id": "dv.formxml.subgrid",
+      "area": "form-element",
+      "name": "Subgrid",
+      "sources": ["learn-formxml", "learn-subgrid", "learn-dashboard-formxml", "pp-basic-form-subgrid"],
+      "where": "<control indicationOfSubgrid=\"true\" relationship><parameters><TargetEntityType/><RelationshipName/><ViewId/><ViewIds/><IsUserView/><EnableViewPicker/><EnableQuickFind/><EnableJumpBar/><RecordsPerPage/><AutoExpand/><ChartGridMode/><VisualizationId/><EnableChartPicker/></parameters>",
+      "states": [
+        "related-only",
+        "default-view",
+        "view-picker",
+        "all-views",
+        "selected-views",
+        "search-box-hidden",
+        "chart-only",
+        "max-rows"
+      ],
+      "notes": "Designer: Show related records, Table, Default view, Allow users to change view, Show all views, Hide search box (quick find), Maximum number of rows 2-250. Power Pages renders an embedded subgrid read-only; create/associate/download/row actions need Basic Form Metadata type Subgrid keyed by subgrid Name, and table permissions.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.formxml.quick-view",
+      "area": "form-element",
+      "name": "Quick view control",
+      "sources": ["learn-quickview", "learn-quickview-component", "learn-formxml"],
+      "where": "<control> with <parameters><QuickForms/></parameters> bound to a lookup on the main form",
+      "states": ["read-only", "hidden-when-lookup-empty", "label-hidden"],
+      "notes": "Shows the related record selected in a lookup using that table's quick view form. Power Pages behavior not documented on cited pages.",
+      "powerPages": "not-documented"
+    },
+    {
+      "id": "dv.formxml.iframe",
+      "area": "form-element",
+      "name": "IFRAME",
+      "sources": ["learn-main-form-presentations", "learn-dashboard-formxml", "learn-formxml"],
+      "where": "<control><parameters><Url/><PassParameters/><Security/><Scrolling/><Border/></parameters>",
+      "states": ["url", "pass-parameters", "cross-frame-restricted"],
+      "notes": "Displaying a table form inside an IFRAME on another table form is not supported.",
+      "powerPages": "not-documented"
+    },
+    {
+      "id": "dv.formxml.web-resource",
+      "area": "form-element",
+      "name": "Web resource",
+      "sources": ["learn-main-form-presentations", "learn-formxml", "pp-basic-forms"],
+      "where": "<control><parameters><Url/><Data/><PassParameters/></parameters>",
+      "states": [],
+      "notes": "Power Pages basic form option \"Render Web Resources Inline\" removes the wrapping iframe.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.formxml.spacer",
+      "area": "form-element",
+      "name": "Spacer",
+      "sources": ["learn-formxml"],
+      "where": "<cell userspacer=\"true\">",
+      "states": [],
+      "notes": "Only the userspacer cell attribute is in the schema; Learn has no prose description.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlCellCommon/@userspacer"
+    },
+    {
+      "id": "dv.formxml.timeline-notes",
+      "area": "form-element",
+      "name": "Timeline / notes control",
+      "sources": ["pp-notes", "pp-basic-form-metadata"],
+      "where": "Timeline control on the Dataverse form; Power Pages Basic Form Metadata Type=Notes/Timeline",
+      "states": ["create-enabled", "attachment-location", "mime-restricted", "max-file-size"],
+      "notes": "Notes appear in Power Pages only when the note text starts with *WEB* (KnowledgeManagement/NotesFilter site setting). Edit/delete limited to the note creator; annotation child table permissions required.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.formxml.header",
+      "area": "form-element",
+      "name": "Header",
+      "sources": ["learn-formxml"],
+      "where": "<header> FormXmlHeaderFooterType <rows><row><cell/></row></rows>",
+      "states": [],
+      "notes": "Header layout is rows/cells. Quick view forms have no header."
+    },
+    {
+      "id": "dv.formxml.footer",
+      "area": "form-element",
+      "name": "Footer",
+      "sources": ["learn-formxml"],
+      "where": "<footer> FormXmlHeaderFooterType",
+      "states": [],
+      "notes": "Same structure as header."
+    },
+    {
+      "id": "dv.formxml.hiddencontrols",
+      "area": "form-element",
+      "name": "Hidden controls",
+      "sources": ["learn-formxml"],
+      "where": "<hiddencontrols><data id datafieldname classid/></hiddencontrols>",
+      "states": ["hidden"],
+      "notes": "Columns carried by the form without visible controls."
+    },
+    {
+      "id": "dv.formxml.events-libraries",
+      "area": "form-element",
+      "name": "Form events and libraries",
+      "sources": ["learn-formxml", "pp-basic-forms"],
+      "where": "<formLibraries><Library name libraryUniqueId/></formLibraries><events><event name application attribute><Handlers><Handler functionName libraryName passExecutionContext enabled/></Handlers></event></events>",
+      "states": ["enabled"],
+      "notes": "Model-driven client script registration. Power Pages uses basic form Custom JavaScript; execution of model-driven handlers in Power Pages is not documented."
+    },
+    {
+      "id": "dv.formxml.navigation",
+      "area": "form-element",
+      "name": "Form navigation",
+      "sources": ["learn-formxml"],
+      "where": "<Navigation><NavBar><NavBarByRelationshipItem RelationshipName Show/></NavBar><NavBarAreas/></Navigation>",
+      "states": ["shown", "hidden"],
+      "notes": "Related-record navigation items."
+    },
+    {
+      "id": "dv.formxml.custom-control",
+      "area": "form-element",
+      "name": "Custom (code component) control binding",
+      "sources": ["learn-formxml", "pp-basic-forms"],
+      "where": "<controlDescriptions><controlDescription forControl><customControl formFactor name><parameters/></customControl></controlDescription></controlDescriptions>",
+      "states": ["form-factor"],
+      "notes": "Field-level code components can be added to Power Pages forms.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.pp.metadata.tab-section-label",
+      "area": "form-element",
+      "name": "Power Pages tab/section label override",
+      "sources": ["pp-basic-form-metadata"],
+      "where": "Basic Form Metadata Type=Tab|Section with Tab Name / Section Name + Label",
+      "states": ["label"],
+      "notes": "Replaces the Dataverse tab or section label per language.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.pp.basic-form.attachments",
+      "area": "form-element",
+      "name": "Power Pages attach file control",
+      "sources": ["pp-basic-forms"],
+      "where": "Basic form Additional Settings: Attach File, Storage Location, Allow Multiple, Accept, Required, Max size",
+      "states": ["required", "multiple", "accept-types", "max-size"],
+      "notes": "Rendered at the bottom of the basic form; stored as note attachments or Azure Blob.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.control.text",
+      "area": "form-control",
+      "name": "Single line text control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control classid datafieldname> bound to StringType; parameters MaxLength, IsPassword, Format",
+      "states": ["max-length"],
+      "notes": "FormatName selects text, email, URL, phone, ticker, text area, rich text or JSON presentation. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.memo",
+      "area": "form-control",
+      "name": "Multiline text control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to MemoType; parameters MaxLength, Height",
+      "states": ["max-length"],
+      "notes": "Rows configurable on the column. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.integer",
+      "area": "form-control",
+      "name": "Whole number control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to IntegerType; parameters MinValue, MaxValue, Format",
+      "states": ["min", "max"],
+      "notes": "Format None/Duration/TimeZone/Language/Locale changes the editor. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.decimal",
+      "area": "form-control",
+      "name": "Decimal control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to DecimalType; parameters MinValue, MaxValue, Precision",
+      "states": ["min", "max", "precision"],
+      "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.double",
+      "area": "form-control",
+      "name": "Floating point control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to DoubleType; parameters MinValue, MaxValue, Precision",
+      "states": ["min", "max", "precision"],
+      "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.money",
+      "area": "form-control",
+      "name": "Currency control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to MoneyType; parameters MinValue, MaxValue, Precision",
+      "states": ["min", "max", "precision"],
+      "notes": "Precision source from column, organization pricing precision or record currency. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.datetime",
+      "area": "form-control",
+      "name": "Date and time control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to DateTimeType; Format DateOnly|DateAndTime",
+      "states": ["date-only", "date-and-time"],
+      "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.picklist",
+      "area": "form-control",
+      "name": "Choice control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to PicklistType/StateType/StatusType; parameters OptionSetId, DefaultValue",
+      "states": ["default-value"],
+      "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.multiselect",
+      "area": "form-control",
+      "name": "Choices (multi-select) control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to MultiSelectPicklistType",
+      "states": [],
+      "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.boolean",
+      "area": "form-control",
+      "name": "Yes/No control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> bound to BooleanType",
+      "states": ["default-value"],
+      "notes": "Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.lookup",
+      "area": "form-control",
+      "name": "Lookup control",
+      "sources": ["learn-formxml", "learn-column-definitions", "pp-basic-forms"],
+      "where": "<control> bound to LookupType/CustomerType/OwnerType; parameters DefaultViewId, AvailableViewIds, DisableMru, DisableQuickFind, DisableViewPicker, FilterRelationshipName, DependentAttributeName, DependentAttributeType, AllowFilterOff, TargetEntities, AutoResolve",
+      "states": ["default-view", "related-filter"],
+      "notes": "Power Pages: a lookup rendered as a dropdown ignores the related-records filter. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.image",
+      "area": "form-control",
+      "name": "Image control",
+      "sources": ["learn-formxml", "learn-column-definitions", "pp-add-form"],
+      "where": "<control> bound to ImageType",
+      "states": [],
+      "notes": "Not supported on Power Pages GenAI forms. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.file",
+      "area": "form-control",
+      "name": "File control",
+      "sources": ["learn-formxml", "learn-column-definitions", "learn-types-of-columns"],
+      "where": "<control> bound to FileType",
+      "states": [],
+      "notes": "Upload/delete happens immediately in model-driven apps. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.subgrid",
+      "area": "form-control",
+      "name": "Subgrid control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control indicationOfSubgrid=\"true\">",
+      "states": [],
+      "notes": "See dv.formxml.subgrid. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.control.quickview",
+      "area": "form-control",
+      "name": "Quick view control",
+      "sources": ["learn-formxml", "learn-column-definitions"],
+      "where": "<control> with QuickForms parameter",
+      "states": [],
+      "notes": "See dv.formxml.quick-view. Learn does not enumerate control classid GUIDs; read the classid from the exported FormXml control.",
+      "evidence": "schema-only",
+      "schemaRef": "FormXml.xsd FormXmlControlType/@classid (FormGuidType)"
+    },
+    {
+      "id": "dv.column.string.text",
+      "area": "column-type",
+      "name": "Single line of text (Text format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname"],
+      "where": "StringAttributeMetadata FormatName=Text (Format=Text)",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Default length 100, max 4,000 characters. Reducing max length does not truncate existing data."
+    },
+    {
+      "id": "dv.column.string.textarea",
+      "area": "column-type",
+      "name": "Single line of text (Text Area format)",
+      "sources": ["learn-types-of-columns", "learn-format-formatname"],
+      "where": "StringAttributeMetadata FormatName=TextArea",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Multiple lines, default 100, max 4,000."
+    },
+    {
+      "id": "dv.column.string.email",
+      "area": "column-type",
+      "name": "Single line of text (Email format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname"],
+      "where": "StringAttributeMetadata FormatName=Email",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Validated as an e-mail address; mailto link."
+    },
+    {
+      "id": "dv.column.string.url",
+      "area": "column-type",
+      "name": "Single line of text (URL format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname"],
+      "where": "StringAttributeMetadata FormatName=Url",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Displayed as a link."
+    },
+    {
+      "id": "dv.column.string.phone",
+      "area": "column-type",
+      "name": "Single line of text (Phone format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname"],
+      "where": "StringAttributeMetadata FormatName=Phone (API Format returns Text)",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Link to start a call."
+    },
+    {
+      "id": "dv.column.string.tickersymbol",
+      "area": "column-type",
+      "name": "Single line of text (Ticker Symbol format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname", "pp-add-form"],
+      "where": "StringAttributeMetadata FormatName=TickerSymbol",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Not supported on Power Pages GenAI forms."
+    },
+    {
+      "id": "dv.column.string.richtext",
+      "area": "column-type",
+      "name": "Text (Rich text format)",
+      "sources": ["learn-format-formatname", "learn-column-security", "pp-add-form"],
+      "where": "StringAttributeMetadata/MemoAttributeMetadata FormatName=RichText (Format returns Text)",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Rendered with the rich text control. Can be secured; embedded images cannot be masked."
+    },
+    {
+      "id": "dv.column.string.json",
+      "area": "column-type",
+      "name": "Text (JSON format)",
+      "sources": ["learn-format-formatname"],
+      "where": "StringAttributeMetadata FormatName=Json; Memo Json only for non-SQL data provider",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": ""
+    },
+    {
+      "id": "dv.column.string.versionnumber",
+      "area": "column-type",
+      "name": "Single line of text (VersionNumber, internal)",
+      "sources": ["learn-column-definitions", "learn-format-formatname"],
+      "where": "StringFormatName.VersionNumber",
+      "states": ["read-only"],
+      "notes": "Internal use only."
+    },
+    {
+      "id": "dv.column.string.autonumber",
+      "area": "column-type",
+      "name": "Autonumber (string with AutoNumberFormat)",
+      "sources": ["learn-autonumber", "learn-column-definitions"],
+      "where": "StringAttributeMetadata AutoNumberFormat e.g. \"PFX-{SEQNUM:5}-{RANDSTRING:6}-{DATETIMEUTC:yyyyMMdd}\", FormatName=Text",
+      "states": ["read-only", "max-length"],
+      "notes": "Value is assigned on save; Unified Interface controls bound to autonumber columns should be explicitly disabled. RANDSTRING length 1-6; SEQNUM is a minimum length, default seed 1000; SetAutoNumberSeed changes the next value; seeds are not carried by solutions; gaps possible."
+    },
+    {
+      "id": "dv.column.memo",
+      "area": "column-type",
+      "name": "Multiple lines of text",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname"],
+      "where": "MemoAttributeMetadata (MemoType), FormatName Text|TextArea|Email|RichText|Json",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "max-length"],
+      "notes": "Default 150, max 1,048,576 characters."
+    },
+    {
+      "id": "dv.column.integer.none",
+      "area": "column-type",
+      "name": "Whole number (None format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-format-formatname"],
+      "where": "IntegerAttributeMetadata Format=None; MinValue/MaxValue",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "min", "max"],
+      "notes": "Text box."
+    },
+    {
+      "id": "dv.column.integer.duration",
+      "area": "column-type",
+      "name": "Whole number (Duration format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "IntegerAttributeMetadata Format=Duration",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "min", "max"],
+      "notes": "Dropdown of intervals; stores minutes."
+    },
+    {
+      "id": "dv.column.integer.timezone",
+      "area": "column-type",
+      "name": "Whole number (Time zone format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "IntegerAttributeMetadata Format=TimeZone",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "min", "max"],
+      "notes": "Dropdown of time zones."
+    },
+    {
+      "id": "dv.column.integer.language",
+      "area": "column-type",
+      "name": "Whole number (Language format)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-br-table"],
+      "where": "IntegerAttributeMetadata Format=Language",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "min", "max"],
+      "notes": "Dropdown of enabled languages; stores LCID. Business rules do not support Language columns."
+    },
+    {
+      "id": "dv.column.integer.locale",
+      "area": "column-type",
+      "name": "Whole number (Locale format)",
+      "sources": ["learn-format-formatname", "learn-integerformat"],
+      "where": "IntegerAttributeMetadata Format=Locale",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value", "min", "max"],
+      "notes": "Listed in the Format/FormatName table; IntegerFormat.Locale = 4 is a documented IntegerAttributeMetadata.Format value (learn-integerformat), so it is settable through the metadata API."
+    },
+    {
+      "id": "dv.column.decimal",
+      "area": "column-type",
+      "name": "Decimal number",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "DecimalAttributeMetadata (DecimalType) Precision, MinValue, MaxValue",
+      "states": [
+        "optional",
+        "required",
+        "recommended",
+        "read-only",
+        "hidden",
+        "default-value",
+        "min",
+        "max",
+        "precision"
+      ],
+      "notes": "Stored exactly. Browser apps handle about 15 significant digits precisely."
+    },
+    {
+      "id": "dv.column.double",
+      "area": "column-type",
+      "name": "Floating point number",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "DoubleAttributeMetadata (DoubleType) Precision, MinValue, MaxValue",
+      "states": [
+        "optional",
+        "required",
+        "recommended",
+        "read-only",
+        "hidden",
+        "default-value",
+        "min",
+        "max",
+        "precision"
+      ],
+      "notes": "Approximate storage."
+    },
+    {
+      "id": "dv.column.money",
+      "area": "column-type",
+      "name": "Currency",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "MoneyAttributeMetadata (MoneyType) PrecisionSource 0=Precision 1=Organization.PricingDecimalPrecision 2=TransactionCurrency.CurrencyPrecision",
+      "states": [
+        "optional",
+        "required",
+        "recommended",
+        "read-only",
+        "hidden",
+        "default-value",
+        "min",
+        "max",
+        "precision"
+      ],
+      "notes": "First currency column adds a currency lookup and a read-only exchange rate; each currency column adds a read-only <name>_base column. Specific precision 0-4."
+    },
+    {
+      "id": "dv.column.bigint",
+      "area": "column-type",
+      "name": "Big integer",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "BigIntAttributeMetadata (BigIntType)",
+      "states": ["read-only"],
+      "notes": "Max 9,223,372,036,854,775,807; not supported in canvas and model-driven apps; used for Time Stamp."
+    },
+    {
+      "id": "dv.column.datetime.userlocal",
+      "area": "column-type",
+      "name": "Date and time (User local behavior)",
+      "sources": ["learn-datetime-behavior", "learn-column-definitions"],
+      "where": "DateTimeAttributeMetadata DateTimeBehavior=UserLocal, Format=DateAndTime|DateOnly",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "Stored UTC, displayed in user time zone. Default for Date and time format. Can be changed once to DateOnly/TimeZoneIndependent unless CanChangeDateTimeBehavior=false. Avoid DateOnly format with UserLocal."
+    },
+    {
+      "id": "dv.column.datetime.dateonly",
+      "area": "column-type",
+      "name": "Date only behavior",
+      "sources": ["learn-datetime-behavior", "learn-column-definitions", "learn-br-table"],
+      "where": "DateTimeAttributeMetadata DateTimeBehavior=DateOnly",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "No time stored; operators Older Than X Minutes/Hours and Last/Next X Hours are invalid. Business rules treat DateOnly values as UTC."
+    },
+    {
+      "id": "dv.column.datetime.tzindependent",
+      "area": "column-type",
+      "name": "Date and time (Time zone independent behavior)",
+      "sources": ["learn-datetime-behavior", "learn-column-definitions"],
+      "where": "DateTimeAttributeMetadata DateTimeBehavior=TimeZoneIndependent, Format=DateAndTime|DateOnly",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "No time-zone conversion; default behavior for the Date only format in the maker UI."
+    },
+    {
+      "id": "dv.column.datetime.format",
+      "area": "column-type",
+      "name": "Date and time display format",
+      "sources": ["learn-datetime-behavior", "learn-column-definitions"],
+      "where": "DateTimeAttributeMetadata Format=DateAndTime|DateOnly",
+      "states": ["date-only", "date-and-time"],
+      "notes": "Format affects display only; time can still be set through the API when behavior is not DateOnly. Values from 1/1/1753."
+    },
+    {
+      "id": "dv.column.choice.local",
+      "area": "column-type",
+      "name": "Choice (local option set)",
+      "sources": ["learn-column-definitions", "learn-types-of-columns"],
+      "where": "PicklistAttributeMetadata with OptionSet defined in the column",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "Options defined in the column."
+    },
+    {
+      "id": "dv.column.choice.global",
+      "area": "column-type",
+      "name": "Choice (global option set)",
+      "sources": ["learn-column-definitions", "pp-basic-forms"],
+      "where": "PicklistAttributeMetadata OptionSet referencing a global choice",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "Shared options. Power Pages does not support hidden choice values."
+    },
+    {
+      "id": "dv.column.choices.multiselect",
+      "area": "column-type",
+      "name": "Choices (multi-select)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-multiselect", "learn-br-table"],
+      "where": "MultiSelectPicklistAttributeMetadata (MultiSelectPicklistType; AttributeType reports Virtual)",
+      "states": ["optional", "required", "read-only", "hidden"],
+      "notes": "Not usable in business rules, workflows, BPF, charts, rollup/calculated columns. Query with contain-values / not-contain-values. Not sortable."
+    },
+    {
+      "id": "dv.column.boolean",
+      "area": "column-type",
+      "name": "Yes/No (two options)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "BooleanAttributeMetadata (BooleanType) true/false options, DefaultValue",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": ""
+    },
+    {
+      "id": "dv.column.state",
+      "area": "column-type",
+      "name": "Status (statecode)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-column-security"],
+      "where": "StateAttributeMetadata (StateType)",
+      "states": ["read-only"],
+      "notes": "Custom tables have Active/Inactive only. Cannot be column-secured."
+    },
+    {
+      "id": "dv.column.status",
+      "area": "column-type",
+      "name": "Status reason (statuscode)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "StatusAttributeMetadata (StatusType); each option maps to a state",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "Supports custom status reason transitions."
+    },
+    {
+      "id": "dv.column.lookup",
+      "area": "column-type",
+      "name": "Lookup (simple)",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-column-security"],
+      "where": "LookupAttributeMetadata (LookupType) Targets=[one table]",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "N:1 relationship; the target primary name is returned even without read access to it. Lookups cannot be column-secured."
+    },
+    {
+      "id": "dv.column.lookup.customer",
+      "area": "column-type",
+      "name": "Customer",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "LookupAttributeMetadata (CustomerType) Targets=[account, contact]",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "Always searchable; not sortable."
+    },
+    {
+      "id": "dv.column.lookup.owner",
+      "area": "column-type",
+      "name": "Owner",
+      "sources": ["learn-types-of-columns", "learn-column-definitions"],
+      "where": "LookupAttributeMetadata (OwnerType) Targets=[systemuser, team]",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "System lookup on user/team owned tables."
+    },
+    {
+      "id": "dv.column.lookup.polymorphic",
+      "area": "column-type",
+      "name": "Multi-table (polymorphic) lookup",
+      "sources": ["learn-types-of-columns"],
+      "where": "LookupAttributeMetadata Targets=[several tables] (custom multi-table or Regarding)",
+      "states": ["optional", "required", "recommended", "read-only", "hidden", "default-value"],
+      "notes": "Custom multi-table lookups are created with code."
+    },
+    {
+      "id": "dv.column.partylist",
+      "area": "column-type",
+      "name": "Party list",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "pp-basic-forms"],
+      "where": "PartyListType (ActivityParty collection)",
+      "states": [],
+      "notes": "System-only; not supported in Power Pages basic forms; not searchable or sortable."
+    },
+    {
+      "id": "dv.column.image",
+      "area": "column-type",
+      "name": "Image",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-column-security"],
+      "where": "ImageAttributeMetadata (ImageType; AttributeType reports Virtual)",
+      "states": ["optional", "read-only", "hidden", "max-size"],
+      "notes": "Max size default 10,240 KB, range 1-30,720 KB; stored as jpg with a 144x144 thumbnail; one primary image per table. Not usable in business rules, BPF, charts, rollup/calculated (types-of-columns). Can be secured, not masked."
+    },
+    {
+      "id": "dv.column.file",
+      "area": "column-type",
+      "name": "File",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-column-security"],
+      "where": "FileAttributeMetadata (FileType)",
+      "states": ["optional", "read-only", "hidden", "max-size"],
+      "notes": "Default 32 MB, designer max 131,072 KB, fixed after save. Required validation does not work; not usable in business rules, BPF, charts, rollup/calculated."
+    },
+    {
+      "id": "dv.column.uniqueidentifier",
+      "area": "column-type",
+      "name": "Unique identifier",
+      "sources": ["learn-types-of-columns", "learn-column-definitions", "learn-br-form"],
+      "where": "UniqueIdentifierAttributeMetadata (UniqueidentifierType)",
+      "states": ["read-only"],
+      "notes": "Primary key GUID; not supported in business rules."
+    },
+    {
+      "id": "dv.column.calculated",
+      "area": "column-type",
+      "name": "Calculated column",
+      "sources": ["learn-specialized-columns", "learn-column-security"],
+      "where": "AttributeMetadata.SourceType=1; FormulaDefinition (XAML)",
+      "states": ["read-only"],
+      "notes": "Read-only; computed as system so secured inputs can leak; supported on Boolean, DateTime, Decimal, String, Integer, Money, Picklist."
+    },
+    {
+      "id": "dv.column.rollup",
+      "area": "column-type",
+      "name": "Rollup column",
+      "sources": ["learn-specialized-columns", "learn-br-form", "pp-basic-forms"],
+      "where": "AttributeMetadata.SourceType=2; FormulaDefinition (XAML); companion <name>_Date and <name>_State",
+      "states": ["read-only"],
+      "notes": "Calculated asynchronously (hourly by default); CalculateRollupField on demand. Not supported in business rules. Power Pages may render rollups editable unless the form control is read-only."
+    },
+    {
+      "id": "dv.column.formula",
+      "area": "column-type",
+      "name": "Formula (Power Fx) column",
+      "sources": ["learn-specialized-columns", "learn-types-of-columns", "learn-column-security"],
+      "where": "AttributeMetadata.SourceType=3; FormulaDefinition (YAML)",
+      "states": ["read-only"],
+      "notes": "Evaluated on fetch; not searchable or sortable; cannot be column-secured."
+    },
+    {
+      "id": "dv.column.prompt",
+      "area": "column-type",
+      "name": "Prompt column",
+      "sources": ["learn-specialized-columns"],
+      "where": "AttributeMetadata.SourceType=4 (string)",
+      "states": ["read-only"],
+      "notes": "AI prompt result stored in a string column."
+    },
+    {
+      "id": "dv.column.entityname",
+      "area": "column-type",
+      "name": "Entity name (internal)",
+      "sources": ["learn-column-definitions"],
+      "where": "EntityNameAttributeMetadata (EntityNameType)",
+      "states": ["read-only"],
+      "notes": "Internal use."
+    },
+    {
+      "id": "dv.column.virtual",
+      "area": "column-type",
+      "name": "Virtual",
+      "sources": ["learn-column-definitions"],
+      "where": "VirtualType",
+      "states": [],
+      "notes": "Cannot be used in code."
+    },
+    {
+      "id": "dv.column.managedproperty",
+      "area": "column-type",
+      "name": "Managed property",
+      "sources": ["learn-column-definitions"],
+      "where": "ManagedPropertyAttributeMetadata (ManagedPropertyType)",
+      "states": ["read-only"],
+      "notes": "Solution component customizability flags."
+    },
+    {
+      "id": "dv.state.required.none",
+      "area": "column-state",
+      "name": "Required level None (Optional)",
+      "sources": ["learn-column-definitions"],
+      "where": "AttributeMetadata.RequiredLevel=None (0)",
+      "states": ["optional"],
+      "notes": ""
+    },
+    {
+      "id": "dv.state.required.systemrequired",
+      "area": "column-state",
+      "name": "Required level SystemRequired",
+      "sources": ["learn-column-definitions"],
+      "where": "RequiredLevel=SystemRequired (1)",
+      "states": ["required"],
+      "notes": "Enforced by Dataverse only for system columns; custom columns cannot use it."
+    },
+    {
+      "id": "dv.state.required.applicationrequired",
+      "area": "column-state",
+      "name": "Required level ApplicationRequired (Business Required)",
+      "sources": ["learn-column-definitions", "pp-basic-forms"],
+      "where": "RequiredLevel=ApplicationRequired (2)",
+      "states": ["required"],
+      "notes": "Enforced by model-driven apps, not by the Dataverse API. Power Pages basic forms can force all fields required (\"Make All Fields Required\")."
+    },
+    {
+      "id": "dv.state.required.recommended",
+      "area": "column-state",
+      "name": "Required level Recommended",
+      "sources": ["learn-column-definitions", "pp-basic-forms"],
+      "where": "RequiredLevel=Recommended (3)",
+      "states": ["recommended"],
+      "notes": "Power Pages option \"Set Recommended Fields as Required\" upgrades these to required."
+    },
+    {
+      "id": "dv.state.valid-for",
+      "area": "column-state",
+      "name": "Operation validity flags",
+      "sources": ["learn-column-definitions"],
+      "where": "AttributeMetadata IsValidForCreate, IsValidForUpdate, IsValidForRead, IsValidForForm, IsRequiredForForm",
+      "states": ["read-only", "create-only"],
+      "notes": "Values set on invalid operations are ignored; invalid reads return null. IsValidForUpdate=false makes the column read-only after create."
+    },
+    {
+      "id": "dv.state.form.disabled",
+      "area": "column-state",
+      "name": "Locked/read-only on form",
+      "sources": ["learn-formxml", "learn-form-designer-properties", "pp-basic-forms"],
+      "where": "FormXml <control disabled=\"true\">",
+      "states": ["read-only"],
+      "notes": "Business rules/client API can unlock locked fields even on a read-only form."
+    },
+    {
+      "id": "dv.state.form.hidden",
+      "area": "column-state",
+      "name": "Hidden on form",
+      "sources": ["learn-formxml", "learn-form-designer-properties"],
+      "where": "FormXml <cell visible=\"false\"> (also tab/section visible=\"false\")",
+      "states": ["hidden"],
+      "notes": "Hidden by default; can be shown with code or a business rule."
+    },
+    {
+      "id": "dv.state.form.label-hidden",
+      "area": "column-state",
+      "name": "Label hidden on form",
+      "sources": ["learn-formxml", "learn-form-designer-properties"],
+      "where": "FormXml <cell showlabel=\"false\">",
+      "states": ["label-hidden"],
+      "notes": ""
+    },
+    {
+      "id": "dv.state.default-value",
+      "area": "column-state",
+      "name": "Default values",
+      "sources": ["learn-column-definitions", "learn-br-form", "learn-formxml"],
+      "where": "Column mapping (InitializeFrom), business rule Set Default Value, control parameter DefaultValue",
+      "states": ["default-value"],
+      "notes": "Mapped values from a parent record pre-fill new related records."
+    },
+    {
+      "id": "dv.state.max-length",
+      "area": "column-state",
+      "name": "Maximum length",
+      "sources": ["learn-types-of-columns", "learn-autonumber", "learn-formxml"],
+      "where": "StringAttributeMetadata.MaxLength / MemoAttributeMetadata.MaxLength; control parameter MaxLength",
+      "states": ["max-length"],
+      "notes": "Text 4,000 / memo 1,048,576 maxima."
+    },
+    {
+      "id": "dv.state.min-max",
+      "area": "column-state",
+      "name": "Minimum and maximum values",
+      "sources": ["learn-formxml", "learn-sdkstep-table"],
+      "where": "Integer/Decimal/Double/Money MinValue, MaxValue; control parameters MinValue, MaxValue",
+      "states": ["min", "max"],
+      "notes": "MinValue/MaxValue appear in Learn table reference metadata (e.g. Rank) and as FormXml parameters."
+    },
+    {
+      "id": "dv.state.precision",
+      "area": "column-state",
+      "name": "Precision",
+      "sources": ["learn-column-definitions", "learn-types-of-columns"],
+      "where": "Decimal/Double Precision; Money PrecisionSource + Precision",
+      "states": ["precision"],
+      "notes": ""
+    },
+    {
+      "id": "dv.state.secured",
+      "area": "column-state",
+      "name": "Column security enabled",
+      "sources": ["learn-column-security", "learn-alternate-keys"],
+      "where": "AttributeMetadata.IsSecured=true; CanBeSecuredForCreate/Read/Update",
+      "states": ["secured", "masked"],
+      "notes": "Users without profile access see a lock and asterisks; secured columns cannot be part of an alternate key."
+    },
+    {
+      "id": "dv.state.searchable-sortable",
+      "area": "column-state",
+      "name": "Searchable / sortable flags",
+      "sources": ["learn-types-of-columns"],
+      "where": "Column Searchable and Sortable properties",
+      "states": ["searchable", "sortable"],
+      "notes": "Formula, image and party list cannot be searchable; choices, customer, file, formula, image and party list cannot be sortable."
+    },
+    {
+      "id": "dv.br.scope.entity",
+      "area": "business-rule",
+      "name": "Scope Entity (table)",
+      "sources": ["learn-br-table", "learn-br-form"],
+      "where": "Designer scope \"Entity\" (no form)",
+      "states": ["server-side", "client-side"],
+      "notes": "Applies to all model-driven forms and the server. The table article FAQ also says rules run on clients and are not executed inside Dataverse; its limits note says server-side rules are XAML generated as synchronous plugins."
+    },
+    {
+      "id": "dv.br.scope.all-forms",
+      "area": "business-rule",
+      "name": "Scope All Forms",
+      "sources": ["learn-br-table", "learn-br-form"],
+      "where": "Designer scope \"All Forms\"",
+      "states": ["client-side"],
+      "notes": "Model-driven forms only."
+    },
+    {
+      "id": "dv.br.scope.form",
+      "area": "business-rule",
+      "name": "Scope specific form",
+      "sources": ["learn-br-table", "learn-br-form", "learn-workflow-table"],
+      "where": "workflow.FormId / ProcessTriggerFormId",
+      "states": ["client-side"],
+      "notes": "Only that form; main and quick create forms."
+    },
+    {
+      "id": "dv.br.condition",
+      "area": "business-rule",
+      "name": "Condition",
+      "sources": ["learn-br-table", "learn-br-form"],
+      "where": "Condition component with rules combined AND/OR; source Entity field compared to value, field or formula",
+      "states": [],
+      "notes": "Every rule starts with a condition; actions attach to the true or false branch. Referenced fields must be on the form for form execution."
+    },
+    {
+      "id": "dv.br.action.set-value",
+      "area": "business-rule",
+      "name": "Set field value",
+      "sources": ["learn-br-form", "learn-br-table"],
+      "where": "Set Field Value action (value, other field, simple formula)",
+      "states": ["server-side", "client-side"],
+      "notes": "All scopes."
+    },
+    {
+      "id": "dv.br.action.clear-value",
+      "area": "business-rule",
+      "name": "Clear field value",
+      "sources": ["learn-br-table", "learn-br-form"],
+      "where": "Set Field Value action with clear",
+      "states": ["server-side", "client-side"],
+      "notes": "All scopes."
+    },
+    {
+      "id": "dv.br.action.set-default",
+      "area": "business-rule",
+      "name": "Set default value",
+      "sources": ["learn-br-form"],
+      "where": "Set Default Value action",
+      "states": ["server-side", "client-side"],
+      "notes": "Only when the column is null. All scopes."
+    },
+    {
+      "id": "dv.br.action.show-error",
+      "area": "business-rule",
+      "name": "Show error message",
+      "sources": ["learn-br-form", "learn-br-table"],
+      "where": "Show Error Message action on a field",
+      "states": ["server-side", "client-side"],
+      "notes": "Prevents save; server-side the message is returned to the caller. Localizable labels."
+    },
+    {
+      "id": "dv.br.action.lock-unlock",
+      "area": "business-rule",
+      "name": "Lock / unlock",
+      "sources": ["learn-br-form"],
+      "where": "Lock/Unlock action",
+      "states": ["client-side"],
+      "notes": "Model-driven only; ignored server-side; can unlock fields on a read-only form."
+    },
+    {
+      "id": "dv.br.action.visibility",
+      "area": "business-rule",
+      "name": "Set visibility",
+      "sources": ["learn-br-form", "learn-br-table"],
+      "where": "Set Visibility action",
+      "states": ["client-side"],
+      "notes": "Model-driven only; ignored server-side; not available in canvas apps."
+    },
+    {
+      "id": "dv.br.action.required",
+      "area": "business-rule",
+      "name": "Set business required",
+      "sources": ["learn-br-form"],
+      "where": "Set Business Required action",
+      "states": ["client-side"],
+      "notes": "Business Required or Not Business Required; model-driven only."
+    },
+    {
+      "id": "dv.br.action.recommendation",
+      "area": "business-rule",
+      "name": "Recommendation",
+      "sources": ["learn-br-form", "learn-br-table"],
+      "where": "Recommendation component containing actions",
+      "states": ["client-side"],
+      "notes": "Light bulb next to the label; accepting applies set-value actions. Model-driven only."
+    },
+    {
+      "id": "dv.br.storage",
+      "area": "business-rule",
+      "name": "Business rule storage",
+      "sources": ["learn-workflow-table", "learn-br-table"],
+      "where": "workflow (process) record Category=2 (Business Rule); Xaml column; ClientData column (\"Business logic converted into client data\"); StateCode activation",
+      "states": ["active", "inactive"],
+      "notes": "Must be deactivated to edit. Up to 150 rules per table recommended (client JavaScript and server XAML)."
+    },
+    {
+      "id": "dv.br.unsupported-columns",
+      "area": "business-rule",
+      "name": "Unsupported column types",
+      "sources": ["learn-br-table", "learn-br-form"],
+      "where": "n/a",
+      "states": [],
+      "notes": "Not supported: multi-select choices, file, language, unique identifier, rollup, localizable-value columns, composite columns (fullname/address)."
+    },
+    {
+      "id": "dv.br.execution-order",
+      "area": "business-rule",
+      "name": "Execution timing",
+      "sources": ["learn-br-table"],
+      "where": "n/a",
+      "states": [],
+      "notes": "Rules run before onLoad scripts and do not react to onLoad changes; run on form open and field change; not retroactive on existing records."
+    },
+    {
+      "id": "dv.br.powerpages",
+      "area": "business-rule",
+      "name": "Business rules in Power Pages basic forms",
+      "sources": ["pp-basic-forms"],
+      "where": "n/a",
+      "states": [],
+      "notes": "Not supported in basic forms; locked fields may be enabled on read-only forms by business rules/client API.",
+      "powerPages": "not-supported"
+    },
+    {
+      "id": "dv.view.querytype.public",
+      "area": "view",
+      "name": "View query type 0: Public (MainApplicationView)",
+      "sources": ["learn-customize-views", "learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=0",
+      "states": [],
+      "notes": "Many; set one default with IsDefault."
+    },
+    {
+      "id": "dv.view.querytype.advanced-find",
+      "area": "view",
+      "name": "View query type 1: Advanced Find (AdvancedSearch)",
+      "sources": ["learn-customize-views", "learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=1",
+      "states": [],
+      "notes": "One; update only."
+    },
+    {
+      "id": "dv.view.querytype.associated",
+      "area": "view",
+      "name": "View query type 2: Associated (SubGrid)",
+      "sources": ["learn-customize-views", "learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=2",
+      "states": [],
+      "notes": "One; default related-records grid."
+    },
+    {
+      "id": "dv.view.querytype.quick-find",
+      "area": "view",
+      "name": "View query type 4: Quick Find (QuickFindSearch)",
+      "sources": ["learn-customize-views", "learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=4",
+      "states": [],
+      "notes": "One; defines searched columns."
+    },
+    {
+      "id": "dv.view.querytype.reporting",
+      "area": "view",
+      "name": "View query type 8: Reporting",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=8",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.offline-filters",
+      "area": "view",
+      "name": "View query type 16: Offline filters",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=16",
+      "states": [],
+      "notes": "Outlook offline."
+    },
+    {
+      "id": "dv.view.querytype.lookup",
+      "area": "view",
+      "name": "View query type 64: Lookup (LookupView)",
+      "sources": ["learn-customize-views", "learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=64",
+      "states": [],
+      "notes": "One; default lookup view when none is configured."
+    },
+    {
+      "id": "dv.view.querytype.sm-appointment-book",
+      "area": "view",
+      "name": "View query type 128: Service management appointment book",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=128",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.outlook-filters",
+      "area": "view",
+      "name": "View query type 256: Outlook filters",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=256",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.address-book-filters",
+      "area": "view",
+      "name": "View query type 512: Address book filters",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=512",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.main-without-subject",
+      "area": "view",
+      "name": "View query type 1024: Main application view without subject",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=1024",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.other",
+      "area": "view",
+      "name": "View query type 2048: Saved query type other (workflow/email templates)",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=2048",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.interactive-workflow",
+      "area": "view",
+      "name": "View query type 4096: Interactive workflow (dialog) view",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=4096",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.offline-template",
+      "area": "view",
+      "name": "View query type 8192: Offline template",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=8192",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.custom-defined",
+      "area": "view",
+      "name": "View query type 16384: Custom defined view",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=16384",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.export-field-translations",
+      "area": "view",
+      "name": "View query type 65536: Export field translations view",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=65536",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.outlook-template",
+      "area": "view",
+      "name": "View query type 131072: Outlook template",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQuery.QueryType=131072",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.querytype.copilot",
+      "area": "view",
+      "name": "View query type: Copilot view",
+      "sources": ["learn-savedquery-querytype"],
+      "where": "SavedQueryQueryType.CopilotView (value not shown on Learn)",
+      "states": [],
+      "notes": "Listed without a value."
+    },
+    {
+      "id": "dv.view.layoutxml.grid",
+      "area": "view",
+      "name": "layoutxml grid",
+      "sources": ["learn-customize-views", "learn-solution-schema"],
+      "where": "<grid name=\"resultset\" object jump select preview icon><row name=\"result\" id=\"<primary key>\">",
+      "states": [],
+      "notes": "jump names the primary/link column; select/preview/icon flags."
+    },
+    {
+      "id": "dv.view.layoutxml.cell",
+      "area": "view",
+      "name": "layoutxml cell (column)",
+      "sources": ["learn-customize-views", "learn-solution-schema"],
+      "where": "<cell name width disableSorting imageproviderwebresource imageproviderfunctionname/>",
+      "states": ["width", "sort-disabled", "icon-provider"],
+      "notes": "Linked-entity columns use alias.attribute names. Icon provider only for read-only grids."
+    },
+    {
+      "id": "dv.view.fetchxml.columns",
+      "area": "view",
+      "name": "fetchxml attributes",
+      "sources": ["learn-customize-views"],
+      "where": "<fetch><entity name><attribute name/>",
+      "states": [],
+      "notes": "Columns retrieved for the view."
+    },
+    {
+      "id": "dv.view.fetchxml.order",
+      "area": "view",
+      "name": "fetchxml sort",
+      "sources": ["learn-customize-views"],
+      "where": "<order attribute descending/>",
+      "states": ["ascending", "descending"],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.fetchxml.filter",
+      "area": "view",
+      "name": "fetchxml filter",
+      "sources": ["learn-customize-views", "pp-list-enhanced-filter"],
+      "where": "<filter type=\"and|or\"><condition attribute operator value uitype/></filter>",
+      "states": [],
+      "notes": "Power Pages enhanced view filter replaces condition values with the current contact (uitype=\"contact\"), parent account (uitype=\"account\") or website (uitype=\"adx_website\")."
+    },
+    {
+      "id": "dv.view.fetchxml.link-entity",
+      "area": "view",
+      "name": "fetchxml link-entity",
+      "sources": ["learn-customize-views"],
+      "where": "<link-entity name from to alias link-type=\"outer|inner\" visible>",
+      "states": [],
+      "notes": "Related columns appear in layoutxml as alias.attribute."
+    },
+    {
+      "id": "dv.view.isdefault",
+      "area": "view",
+      "name": "Default public view",
+      "sources": ["learn-customize-views", "learn-savedquery-table"],
+      "where": "SavedQuery.IsDefault=true",
+      "states": ["default"],
+      "notes": "Only one active public view can be default; the default view cannot be deactivated."
+    },
+    {
+      "id": "dv.view.isquickfindquery",
+      "area": "view",
+      "name": "Quick find flag",
+      "sources": ["learn-customize-views", "learn-savedquery-table"],
+      "where": "SavedQuery.IsQuickFindQuery",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.state",
+      "area": "view",
+      "name": "View active/inactive",
+      "sources": ["learn-customize-views", "learn-savedquery-table"],
+      "where": "SavedQuery.StateCode 0 Active / 1 Inactive; StatusCode 1/2",
+      "states": ["active", "inactive"],
+      "notes": "State is not exported with solutions; imported views are active. Deactivation is an Update of StateCode 1/StatusCode 2; a default public view cannot be deactivated (learn-customize-views)."
+    },
+    {
+      "id": "dv.view.other-columns",
+      "area": "view",
+      "name": "Other SavedQuery definition columns",
+      "sources": ["learn-savedquery-table"],
+      "where": "ColumnSetXml, LayoutJson, ConditionalFormatting, AdvancedGroupBy, RoleDisplayConditionsXml, ReturnedTypeCode, IsCustomizable",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.view.powerpages.list",
+      "area": "view",
+      "name": "Power Pages list over views",
+      "sources": ["pp-lists", "pp-data-workspace-views"],
+      "where": "Power Pages list with one or more SavedQuery views",
+      "states": ["multiple-views", "sorting", "paging", "infinite-scroll"],
+      "notes": "Multiple views render a dropdown; Data workspace shows only view types supported in portals; filters by portal user / parent account attribute.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.view.powerpages.subgrid",
+      "area": "view",
+      "name": "Power Pages basic form subgrid view",
+      "sources": ["pp-basic-form-subgrid"],
+      "where": "Form subgrid view + Basic Form Metadata Type=Subgrid",
+      "states": ["read-only"],
+      "notes": "Read-only unless metadata actions are configured; the associate action needs a view.",
+      "powerPages": "consumed"
+    },
+    {
+      "id": "dv.plugin.stage.10",
+      "area": "plugin",
+      "name": "Stage 10 PreValidation",
+      "sources": ["learn-event-framework", "learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.Stage=10",
+      "states": ["synchronous"],
+      "notes": "Before the transaction and before security checks; best place to cancel."
+    },
+    {
+      "id": "dv.plugin.stage.20",
+      "area": "plugin",
+      "name": "Stage 20 PreOperation",
+      "sources": ["learn-event-framework", "learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.Stage=20",
+      "states": ["synchronous"],
+      "notes": "In transaction; change Target values here; cancelling rolls back."
+    },
+    {
+      "id": "dv.plugin.stage.40",
+      "area": "plugin",
+      "name": "Stage 40 PostOperation",
+      "sources": ["learn-event-framework", "learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.Stage=40",
+      "states": ["synchronous", "asynchronous"],
+      "notes": "In transaction when synchronous; only stage allowing asynchronous mode."
+    },
+    {
+      "id": "dv.plugin.stage.internal",
+      "area": "plugin",
+      "name": "Internal stages",
+      "sources": ["learn-sdkstep-table", "learn-event-framework"],
+      "where": "Stage 5,15,25,30,35,45,50 (deprecated),55,80,90",
+      "states": [],
+      "notes": "Internal use; MainOperation (30) only for custom API / virtual table providers."
+    },
+    {
+      "id": "dv.plugin.mode",
+      "area": "plugin",
+      "name": "Execution mode",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.Mode 0=Synchronous 1=Asynchronous",
+      "states": ["synchronous", "asynchronous"],
+      "notes": "Async goes to the system job queue after the operation."
+    },
+    {
+      "id": "dv.plugin.message.create",
+      "area": "plugin",
+      "name": "Message Create",
+      "sources": ["learn-event-framework", "learn-register-plugin"],
+      "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Create; SdkMessageFilterId selects the primary entity",
+      "states": [],
+      "notes": "Supports entity images (Create: no pre image; Delete: no post image)."
+    },
+    {
+      "id": "dv.plugin.message.update",
+      "area": "plugin",
+      "name": "Message Update",
+      "sources": ["learn-event-framework", "learn-register-plugin"],
+      "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Update; SdkMessageFilterId selects the primary entity",
+      "states": [],
+      "notes": "Supports filtering attributes and pre/post images; may fire twice for specialized updates."
+    },
+    {
+      "id": "dv.plugin.message.delete",
+      "area": "plugin",
+      "name": "Message Delete",
+      "sources": ["learn-event-framework", "learn-register-plugin"],
+      "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Delete; SdkMessageFilterId selects the primary entity",
+      "states": [],
+      "notes": "Supports entity images (Create: no pre image; Delete: no post image)."
+    },
+    {
+      "id": "dv.plugin.message.retrieve",
+      "area": "plugin",
+      "name": "Message Retrieve",
+      "sources": ["learn-event-framework", "learn-register-plugin"],
+      "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage Retrieve; SdkMessageFilterId selects the primary entity",
+      "states": [],
+      "notes": "Without a primary entity the step runs for all entities supporting the message. No entity images."
+    },
+    {
+      "id": "dv.plugin.message.retrievemultiple",
+      "area": "plugin",
+      "name": "Message RetrieveMultiple",
+      "sources": ["learn-event-framework", "learn-register-plugin"],
+      "where": "SdkMessageProcessingStep.SdkMessageId -> sdkmessage RetrieveMultiple; SdkMessageFilterId selects the primary entity",
+      "states": [],
+      "notes": "Without a primary entity the step runs for all entities supporting the message. No entity images."
+    },
+    {
+      "id": "dv.plugin.filtering-attributes",
+      "area": "plugin",
+      "name": "Filtering attributes",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.FilteringAttributes",
+      "states": [],
+      "notes": "Fires when any listed column is in the request, changed or not; never include the primary key."
+    },
+    {
+      "id": "dv.plugin.images",
+      "area": "plugin",
+      "name": "Entity images",
+      "sources": ["learn-register-plugin"],
+      "where": "SdkMessageProcessingStepImage pre/post with alias and attributes",
+      "states": ["pre-image", "post-image"],
+      "notes": "Post image only in PostOperation; Update in PostOperation can have both. Select only needed columns."
+    },
+    {
+      "id": "dv.plugin.rank",
+      "area": "plugin",
+      "name": "Execution order",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.Rank",
+      "states": [],
+      "notes": "Lowest first; equal ranks have undefined order."
+    },
+    {
+      "id": "dv.plugin.impersonation",
+      "area": "plugin",
+      "name": "Run in user context",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SdkMessageProcessingStep.ImpersonatingUserId (systemuser)",
+      "states": [],
+      "notes": "Default is the calling user."
+    },
+    {
+      "id": "dv.plugin.invalid-plugin-exception",
+      "area": "plugin",
+      "name": "InvalidPluginExecutionException",
+      "sources": ["learn-event-framework"],
+      "where": "Microsoft.Xrm.Sdk.InvalidPluginExecutionException thrown from the plug-in",
+      "states": ["error"],
+      "notes": "Any exception in a synchronous in-transaction stage rolls back the whole transaction; throw with a message (ideally in PreValidation) to cancel and return it to the caller."
+    },
+    {
+      "id": "dv.plugin.configuration",
+      "area": "plugin",
+      "name": "Step configuration",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "Configuration (unsecure) and SdkMessageProcessingStepSecureConfigId",
+      "states": [],
+      "notes": "Secure configuration is not exported in solutions."
+    },
+    {
+      "id": "dv.plugin.state",
+      "area": "plugin",
+      "name": "Step enabled/disabled",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "StateCode 0 Enabled / 1 Disabled",
+      "states": ["enabled", "disabled"],
+      "notes": ""
+    },
+    {
+      "id": "dv.plugin.deployment",
+      "area": "plugin",
+      "name": "Supported deployment",
+      "sources": ["learn-register-plugin", "learn-sdkstep-table"],
+      "where": "SupportedDeployment 0 Server / 1 Outlook client / 2 Both",
+      "states": [],
+      "notes": ""
+    },
+    {
+      "id": "dv.plugin.invocation-source",
+      "area": "plugin",
+      "name": "Invocation source",
+      "sources": ["learn-sdkstep-table"],
+      "where": "InvocationSource -1 Internal / 0 Parent / 1 Child",
+      "states": [],
+      "notes": "Picklist, SystemRequired, DefaultFormValue 0 (learn-sdkstep-table). Read the effective value back from the step record or the exported step XML; it is not inferred from registration input."
+    },
+    {
+      "id": "dv.security.profile",
+      "area": "column-security",
+      "name": "Column security profile",
+      "sources": ["learn-column-security"],
+      "where": "Column (field) security profile with users/teams and per-column permissions",
+      "states": [],
+      "notes": "Organization-wide; system administrators bypass. Changes need a client refresh."
+    },
+    {
+      "id": "dv.security.permission.read",
+      "area": "column-security",
+      "name": "Read permission",
+      "sources": ["learn-column-security"],
+      "where": "Profile column permission Read: Allowed / Not Allowed",
+      "states": ["read-denied"],
+      "notes": "Denied users see a lock icon and asterisks on forms and views."
+    },
+    {
+      "id": "dv.security.permission.read-unmasked",
+      "area": "column-security",
+      "name": "Read unmasked permission",
+      "sources": ["learn-column-security"],
+      "where": "Profile column permission Read unmasked: All Records / One record / Not Allowed",
+      "states": ["masked"],
+      "notes": "Applies when a masking rule is set."
+    },
+    {
+      "id": "dv.security.permission.update",
+      "area": "column-security",
+      "name": "Update permission",
+      "sources": ["learn-column-security"],
+      "where": "Profile column permission Update: Allowed / Not Allowed",
+      "states": ["update-denied"],
+      "notes": ""
+    },
+    {
+      "id": "dv.security.permission.create",
+      "area": "column-security",
+      "name": "Create permission",
+      "sources": ["learn-column-security"],
+      "where": "Profile column permission Create: Allowed / Not Allowed",
+      "states": ["create-denied"],
+      "notes": ""
+    },
+    {
+      "id": "dv.security.eligibility",
+      "area": "column-security",
+      "name": "Columns that cannot be secured",
+      "sources": ["learn-column-security"],
+      "where": "CanBeSecuredForCreate/Read/Update",
+      "states": [],
+      "notes": "Not securable: virtual-table columns, lookups, formula columns, primary name columns, system columns (createdon, modifiedon, statecode, statuscode)."
+    },
+    {
+      "id": "dv.security.calculated-leak",
+      "area": "column-security",
+      "name": "Calculated/prompt column exposure",
+      "sources": ["learn-column-security", "learn-specialized-columns"],
+      "where": "n/a",
+      "states": [],
+      "notes": "Secure both the source and dependent calculated/prompt columns."
+    },
+    {
+      "id": "dv.relationship.one-to-many",
+      "area": "relationship",
+      "name": "One-to-many / many-to-one relationship (lookup)",
+      "sources": ["learn-relationships", "learn-relationship-metadata"],
+      "where": "OneToManyRelationshipMetadata (ReferencedEntity, ReferencingEntity, ReferencingAttribute); solution Other/Relationships/<table>.xml <EntityRelationship> with <EntityRelationshipType>OneToMany",
+      "states": ["simple", "multi-table", "customer", "self-referential"],
+      "notes": "Adding a lookup column creates a 1:N relationship; N:1 is the same relationship seen from the referencing table (learn-relationship-metadata). Rows can relate to rows of another table or the same table (learn-relationships). Subgrids and associated views name the relationship (RelationshipName)."
+    },
+    {
+      "id": "dv.relationship.many-to-many",
+      "area": "relationship",
+      "name": "Many-to-many relationship",
+      "sources": ["learn-relationships", "learn-nn-relationships", "pp-basic-form-subgrid"],
+      "where": "ManyToManyRelationshipMetadata (IntersectEntityName, Entity1LogicalName, Entity2LogicalName); <EntityRelationshipType>ManyToMany",
+      "states": ["native"],
+      "notes": "Uses an intersect table with no custom columns and no lookup columns or behaviours to configure (learn-nn-relationships)."
+    },
+    {
+      "id": "dv.relationship.cascade.delete",
+      "area": "relationship",
+      "name": "Cascade on delete of the referenced row",
+      "sources": ["learn-cascading", "learn-relationships"],
+      "where": "OneToManyRelationshipMetadata.CascadeConfiguration.Delete; <CascadeDelete>",
+      "states": ["cascade", "remove-link", "restrict"],
+      "notes": "Valid options for Delete are Cascade, RemoveLink and Restrict (learn-cascading). RemoveLink clears the lookup on the related rows; Restrict prevents deleting the referenced row while related rows exist."
+    },
+    {
+      "id": "dv.relationship.cascade.ownership",
+      "area": "relationship",
+      "name": "Cascade on assign, share, unshare and reparent",
+      "sources": ["learn-cascading"],
+      "where": "CascadeConfiguration.Assign/Share/Unshare/Reparent; <CascadeAssign>, <CascadeShare>, <CascadeUnshare>, <CascadeReparent>",
+      "states": ["no-cascade", "cascade", "active", "user-owned"],
+      "notes": "Valid options for each of these actions are Active, Cascade, NoCascade and UserOwned (learn-cascading)."
+    },
+    {
+      "id": "dv.key.alternate",
+      "area": "key",
+      "name": "Alternate key",
+      "sources": ["learn-alternate-keys"],
+      "where": "EntityKeyMetadata KeyAttributes; CreateEntityKey; EntityMetadata.Keys",
+      "states": ["pending", "in-progress", "active", "failed"],
+      "notes": "Allowed column types: Decimal, Whole Number, Single line of text, Date Time, Lookup, Option Set. No field-level security; at most 900 bytes and 16 columns; max 10 keys per table; values containing / < > * % & : \\ ? + break retrieve/update/upsert by key; not supported on virtual tables; index built asynchronously (EntityKeyIndexStatus), ReactivateEntityKey after failure."
+    },
+    {
+      "id": "dv.plugin.mutation",
+      "area": "plugin",
+      "name": "Plug-in modifies the write (input parameter mutation before the operation)",
+      "sources": ["learn-event-framework", "learn-register-plugin"],
+      "where": "PreOperation (stage 20) step that changes attributes of the Target entity in InputParameters before the platform writes",
+      "states": ["input mutation"],
+      "notes": "Learn: in the PreOperation stage a plug-in can modify the Target before the data is written; changes in PostOperation do not reach the record."
+    },
+    {
+      "id": "dv.control.email",
+      "area": "form-control",
+      "name": "Email text control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{ADA2203E-B4CD-49BE-9DDF-234642B43B52}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.url",
+      "area": "form-control",
+      "name": "URL text control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{71716B6C-711E-476C-8AB8-5D11542BFB47}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.phone",
+      "area": "form-control",
+      "name": "Phone text control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{8C10015A-B339-4982-9474-A95FE05631A5}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.ticker",
+      "area": "form-control",
+      "name": "Ticker symbol control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{1E1FC551-F7A8-43AF-AC34-A8DC35C7B6D4}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.status",
+      "area": "form-control",
+      "name": "Status reason control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{5D68B988-0661-4DB2-BC3E-17598AD3BE6C}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.checkbox",
+      "area": "form-control",
+      "name": "Two options as checkbox control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{B0C6723A-8503-4FD7-BB28-C8A06AC933C2}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.polymorphic",
+      "area": "form-control",
+      "name": "Polymorphic (regarding) lookup control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{F3015350-44A2-4AA0-97B5-00166532B5E9}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.duration",
+      "area": "form-control",
+      "name": "Duration whole number control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{AA987274-CE4E-4271-A803-66164311A958}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.timezone",
+      "area": "form-control",
+      "name": "Time zone whole number control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{7C624A0B-F59E-493D-9583-638D34759266}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.notes",
+      "area": "form-control",
+      "name": "Notes control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{06375649-C143-495E-A496-C962E5B4488E}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.webresource",
+      "area": "form-control",
+      "name": "Web resource control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{9FDF5F91-88B1-47F4-AD53-C11EFC01A01D}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.control.iframe",
+      "area": "form-control",
+      "name": "IFRAME control",
+      "sources": ["learn-formxml"],
+      "where": "FormXml <control classid=\"{FD2A7985-3187-444E-908D-6624B21F69C0}\">",
+      "states": ["classid"],
+      "evidence": "schema-only",
+      "schemaRef": "classid harvested from exported main forms of the connected environment (the FormXml schema defines the attribute, Learn lists no GUIDs)",
+      "notes": "Harvested value; the generator cites it."
+    },
+    {
+      "id": "dv.solution.dependencies",
+      "area": "solution",
+      "name": "Solution component dependencies",
+      "sources": ["learn-dependency-tracking", "learn-missing-dependencies", "learn-solution-schema"],
+      "where": "solution.xml <MissingDependencies>/<MissingDependency><Required/><Dependent/>; <RootComponent behavior> (0 = include all subcomponents)",
+      "states": ["self-contained", "missing-dependency"],
+      "notes": "Export warns about missing components; import fails when a required component is neither in the solution nor in the target environment; a managed solution can depend only on managed components (learn-dependency-tracking). The Missing dependencies page and solution.xml <MissingDependencies> list them (learn-missing-dependencies).",
+      "powerPages": "not-applicable"
+    }
+  ]
 }

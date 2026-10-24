@@ -24,7 +24,7 @@ export function diffLines(a, b) {
   if (n === 0 || m === 0) return fallback();
   const trace = [];
   let comparisons = 0;
-  const get = (row, depth, diagonal) => diagonal < -depth || diagonal > depth ? -1 : row[diagonal + depth];
+  const get = (row, depth, diagonal) => (diagonal < -depth || diagonal > depth ? -1 : row[diagonal + depth]);
   for (let depth = 0; (depth + 1) * (depth + 1) <= MAX_TRACE_CELLS; depth++) {
     const row = new Int32Array(depth * 2 + 1);
     const previous = trace.at(-1);
@@ -52,7 +52,12 @@ export function diffLines(a, b) {
           const prevK = insert ? k + 1 : k - 1;
           const prevX = get(prev, d - 1, prevK);
           const prevY = prevX - prevK;
-          edits.push({ aStart: start + prevX, aEnd: start + prevX + (insert ? 0 : 1), bStart: start + prevY, bEnd: start + prevY + (insert ? 1 : 0) });
+          edits.push({
+            aStart: start + prevX,
+            aEnd: start + prevX + (insert ? 0 : 1),
+            bStart: start + prevY,
+            bEnd: start + prevY + (insert ? 1 : 0),
+          });
           x = prevX;
           y = prevY;
         }

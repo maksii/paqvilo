@@ -7,7 +7,7 @@ bilingual (English/French) portal export for the selected-language tests in
 - Source: https://github.com/alfredofosu/wet-boew-power-pages-template
 - Commit: `b568a615fa2c77a0f976170e41f3fc05f3ff551e` (2025-09-01)
 - Path: `enhanced-data-model/gcweb-power-pages-template`
-- Licence: MIT, see `LICENSE` in this folder (Copyright (c) 2024 Alfred Ofosu)
+- License: MIT, Copyright (c) 2024 Alfred Ofosu; see [licenses/wet-boew-power-pages-template.txt](../../../../licenses/wet-boew-power-pages-template.txt)
 
 Files copied without changes: `website.yml`, `websitelanguage.yml`, `publishingstate.yml`,
 `sitesetting.yml`, `.portalconfig/portallanguage.yml`, the `home` and `overview` web pages with

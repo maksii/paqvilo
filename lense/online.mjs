@@ -1,3 +1,4 @@
+import { orderedMap } from './async-map.mjs';
 // Plain (anonymous) HTTP access to the online site, used by `map --check`, `status` and the dev panel.
 import fs from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,31 +8,36 @@ const MAX_COMPARISON_BYTES = 32 * 1024 * 1024;
 /** Metadata stores URL paths, sometimes already percent-encoded. Never let them change authority. */
 export function portalResourceUrl(origin, urlPath) {
   const base = new URL(origin);
-  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) throw new Error('Expected an HTTP(S) portal origin');
-  if (typeof urlPath !== 'string' || !urlPath.startsWith('/') || urlPath.startsWith('//') || /[\\\x00-\x1f]/.test(urlPath)) throw new Error('Expected a same-origin resource path');
-  const encoded = urlPath.split('/').map((segment) => {
-    let decoded = segment;
-    try { decoded = decodeURIComponent(segment); } catch { /* literal percent */ }
-    if (decoded === '.' || decoded === '..' || /[\\\x00-\x1f]/.test(decoded)) throw new Error('Invalid resource path segment');
-    return encodeURIComponent(decoded);
-  }).join('/');
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password)
+    throw new Error('Expected an HTTP(S) portal origin');
+  if (
+    typeof urlPath !== 'string' ||
+    !urlPath.startsWith('/') ||
+    urlPath.startsWith('//') ||
+    // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+    /[\\\x00-\x1f]/.test(urlPath)
+  )
+    throw new Error('Expected a same-origin resource path');
+  const encoded = urlPath
+    .split('/')
+    .map((segment) => {
+      let decoded = segment;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        /* literal percent */
+      }
+      // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+      if (decoded === '.' || decoded === '..' || /[\\\x00-\x1f]/.test(decoded))
+        throw new Error('Invalid resource path segment');
+      return encodeURIComponent(decoded);
+    })
+    .join('/');
   return base.origin + encoded;
 }
 
 /** Runs `fn` over `items` with at most `limit` in flight. Results keep the order of `items`. */
-export async function mapLimit(items, limit, fn) {
-  if (!Number.isInteger(limit) || limit < 1) throw new Error('Concurrency limit must be a positive integer');
-  const results = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
+export const mapLimit = orderedMap;
 
 /** One attempt through a Playwright request context: the browser's own sign-in, no redirects followed. */
 async function fetchWithRequest(request, url, { timeout, readBody }) {
@@ -39,7 +45,8 @@ async function fetchWithRequest(request, url, { timeout, readBody }) {
   try {
     const status = res.status();
     if (!readBody || status !== 200) return { status, body: null };
-    if (Number(res.headers()['content-length']) > MAX_COMPARISON_BYTES) return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' };
+    if (Number(res.headers()['content-length']) > MAX_COMPARISON_BYTES)
+      return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' };
     const body = await res.body();
     if (body.length > MAX_COMPARISON_BYTES) return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' };
     return { status, body };
@@ -53,7 +60,12 @@ async function fetchWithRequest(request, url, { timeout, readBody }) {
  * browser's sign-in (a signed-in portal serves its web files only to that session).
  * @returns {Promise<{status: number, body: Buffer|null, error?: string}>} status 0 on network failure
  */
-export async function fetchOnline(origin, urlPath, attempts = 3, { signal, timeout = 15_000, readBody = true, request = null } = {}) {
+export async function fetchOnline(
+  origin,
+  urlPath,
+  attempts = 3,
+  { signal, timeout = 15_000, readBody = true, request = null } = {},
+) {
   if (!Number.isInteger(attempts) || attempts < 1) throw new Error('Attempts must be a positive integer');
   const url = portalResourceUrl(origin, urlPath);
   let error;
@@ -64,7 +76,10 @@ export async function fetchOnline(origin, urlPath, attempts = 3, { signal, timeo
       if (request) {
         const result = await fetchWithRequest(request, url, { timeout, readBody });
         if (signal?.aborted) break;
-        if ((result.status >= 500 || result.status === 429) && attempt < attempts - 1) { error = `HTTP ${result.status}`; continue; }
+        if ((result.status >= 500 || result.status === 429) && attempt < attempts - 1) {
+          error = `HTTP ${result.status}`;
+          continue;
+        }
         return result;
       }
       const timed = AbortSignal.timeout(timeout);
@@ -72,7 +87,10 @@ export async function fetchOnline(origin, urlPath, attempts = 3, { signal, timeo
       // the portal answers 5xx/429 under load; those are worth another try
       if (res.status >= 500 || res.status === 429) {
         error = `HTTP ${res.status}`;
-        if (attempt < attempts - 1) { await res.body?.cancel(); continue; }
+        if (attempt < attempts - 1) {
+          await res.body?.cancel();
+          continue;
+        }
       }
       if (!readBody || res.status !== 200) {
         await res.body?.cancel();
@@ -81,13 +99,19 @@ export async function fetchOnline(origin, urlPath, attempts = 3, { signal, timeo
       const parts = [];
       let size = 0;
       const limit = MAX_COMPARISON_BYTES;
-      if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' }; }
+      if (Number(res.headers.get('content-length')) > limit) {
+        await res.body?.cancel();
+        return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' };
+      }
       for await (const part of res.body ?? []) {
         size += part.length;
         if (size > limit) return { status: 0, body: null, error: 'Comparison exceeds 32 MiB' };
         parts.push(part);
       }
-      const body = parts.length === 1 ? Buffer.from(parts[0].buffer, parts[0].byteOffset, parts[0].byteLength) : Buffer.concat(parts, size);
+      const body =
+        parts.length === 1
+          ? Buffer.from(parts[0].buffer, parts[0].byteOffset, parts[0].byteLength)
+          : Buffer.concat(parts, size);
       return { status: res.status, body };
     } catch (err) {
       error = err.cause?.message ?? err.message;
@@ -102,7 +126,11 @@ function sameContent(file, local, online) {
   if (local.equals(online)) return true;
   if (!TEXT_EXT.test(file)) return false;
   // line endings change on checkout (core.autocrlf), that is not a real difference
-  const norm = (b) => b.toString('utf8').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const norm = (b) =>
+    b
+      .toString('utf8')
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n');
   return norm(local) === norm(online);
 }
 
@@ -131,7 +159,8 @@ export async function compareWebFile(origin, webFile, options = {}) {
       if (!bytesRead) break;
       size += bytesRead;
     }
-    if (size > info.size) return { state: 'unreadable', detail: 'Local file changed during comparison; save again to retry' };
+    if (size > info.size)
+      return { state: 'unreadable', detail: 'Local file changed during comparison; save again to retry' };
     local = buffer.subarray(0, size);
   } catch (err) {
     return { state: 'unreadable', detail: err.message };
@@ -139,7 +168,8 @@ export async function compareWebFile(origin, webFile, options = {}) {
     await handle?.close().catch(() => {});
   }
   const online = await fetchOnline(origin, webFile.url, 3, { ...options, readBody: true });
-  if (online.status !== 200) return { state: describeStatus(online.status), ...(online.error ? { detail: online.error } : {}) };
+  if (online.status !== 200)
+    return { state: describeStatus(online.status), ...(online.error ? { detail: online.error } : {}) };
   if (sameContent(webFile.file, local, online.body)) return { state: 'same' };
   return { state: 'different', detail: `local ${local.length} bytes, online ${online.body.length} bytes` };
 }

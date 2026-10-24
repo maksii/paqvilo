@@ -21,28 +21,26 @@ import {
   netTypeName,
   toInt32,
   htmlEncode,
-} from "./liquid-dotnet.mjs";
+} from './liquid-dotnet.mjs';
 
 export { LiquidError, LiquidSyntaxError };
 
-// ---------------------------------------------------------------------------
-// DotLiquid regular expressions (Liquid.cs), translated to JavaScript.
+// ---- DotLiquid regular expressions (Liquid.cs), translated to JavaScript.
 // .NET \w is Unicode-aware; the u-flag classes below reproduce it.
-// ---------------------------------------------------------------------------
-const WC = "\\p{L}\\p{Mn}\\p{Nd}\\p{Pc}";
+const WC = '\\p{L}\\p{Mn}\\p{Nd}\\p{Pc}';
 const QS = `"[^"]*"|'[^']*'`;
 const QF = `${QS}|(?:[^\\s,|'"]|${QS})+`;
 const QAF = `${QS}|(?:[^\\s|'"]|${QS})+`;
 const VARIABLE_SIGNATURE = `\\(?[${WC}\\-.[\\]]\\)?`;
-const re = (source, flags = "u") => new RegExp(source, flags);
-const TAG_ATTRIBUTES = re(`([${WC}]+)\\s*:\\s*(${QF})`, "gu");
-const VARIABLE_PARSER = re(`\\[[^\\]]+\\]|[${WC}\\-]+\\??`, "gu");
+const re = (source, flags = 'u') => new RegExp(source, flags);
+const TAG_ATTRIBUTES = re(`([${WC}]+)\\s*:\\s*(${QF})`, 'gu');
+const VARIABLE_PARSER = re(`\\[[^\\]]+\\]|[${WC}\\-]+\\??`, 'gu');
 const FULL_TOKEN = re(`^\\{%\\s*([${WC}]+)\\s*(.*)?%\\}$`);
 const CONTENT_OF_VARIABLE = /^\{\{(.*)\}\}$/u;
 const QUOTED_ASSIGN_FRAGMENT = re(`\\s*(${QAF})(.*)`);
 const FILTER_SEPARATOR = /\|\s*(.*)/u;
-const FILTER_PARSER = re(`(?:\\s+|${QF}|,)+`, "gu");
-const FILTER_ARG = re(`(?::|,)\\s*(${QF})`, "gu");
+const FILTER_PARSER = re(`(?:\\s+|${QF}|,)+`, 'gu');
+const FILTER_ARG = re(`(?::|,)\\s*(${QF})`, 'gu');
 const FILTER_NAME = re(`\\s*([${WC}]+)`);
 const SINGLE_QUOTED = /^'(.*)'$/;
 const DOUBLE_QUOTED = /^"(.*)"$/;
@@ -52,7 +50,7 @@ const NUMERIC = /^([+-]?\d[\d.|,]+)$/;
 const IF_SYNTAX = re(`(${QF})\\s*([=!<>a-zA-Z_]+)?\\s*(${QF})?`);
 const IF_EXPRESSIONS = re(
   `(?:\\b(?:\\s?and\\s?|\\s?or\\s?)\\b|(?:\\s*(?!\\b(?:\\s?and\\s?|\\s?or\\s?)\\b)(?:${QF}|\\S+)\\s*)+)`,
-  "gu",
+  'gu',
 );
 const scan = (text, regex) => {
   regex.lastIndex = 0;
@@ -61,21 +59,20 @@ const scan = (text, regex) => {
 /** Tokenizer.GetAttributes: `name: value` pairs anywhere in a tag's markup. */
 export function tagAttributes(markup) {
   const attributes = new Map();
-  for (const m of String(markup).matchAll(TAG_ATTRIBUTES)) attributes.set(m[1].toLowerCase(), { key: m[1], value: m[2] });
+  for (const m of String(markup).matchAll(TAG_ATTRIBUTES))
+    attributes.set(m[1].toLowerCase(), { key: m[1], value: m[2] });
   return attributes;
 }
-const TAG_END_TEXT = "(?-mix:\\%\\})";
-const VARIABLE_END_TEXT = "(?-mix:\\}\\})";
+const TAG_END_TEXT = '(?-mix:\\%\\})';
+const VARIABLE_END_TEXT = '(?-mix:\\}\\})';
 
-// ---------------------------------------------------------------------------
-// Runtime value model
-// ---------------------------------------------------------------------------
+// ---- Runtime value model
 /** DotLiquid Hash: ordered, case-insensitive (OrdinalIgnoreCase naming convention). */
 export class LiquidHash {
   constructor(entries, { numericPairLookup = true, namedPairLookup = true } = {}) {
     this.map = new Map();
-    Object.defineProperty(this, "numericPairLookup", { value: numericPairLookup });
-    Object.defineProperty(this, "namedPairLookup", { value: namedPairLookup });
+    Object.defineProperty(this, 'numericPairLookup', { value: numericPairLookup });
+    Object.defineProperty(this, 'namedPairLookup', { value: namedPairLookup });
     if (entries)
       for (const [key, value] of entries instanceof Map ? entries : Object.entries(entries)) this.set(key, value);
   }
@@ -103,15 +100,17 @@ export class LiquidHash {
     for (const [key, value] of this.map.values()) yield [key, value];
   }
   [Symbol.iterator]() {
-    return [...this.map.values()].map(([key, value]) => new KeyValuePair(key, value, this.numericPairLookup, this.namedPairLookup))[Symbol.iterator]();
+    return [...this.map.values()]
+      .map(([key, value]) => new KeyValuePair(key, value, this.numericPairLookup, this.namedPairLookup))
+      [Symbol.iterator]();
   }
 }
 export class KeyValuePair {
   constructor(key, value, numericLookup = true, namedLookup = true) {
     this.key = key;
     this.value = value;
-    Object.defineProperty(this, "numericLookup", { value: numericLookup });
-    Object.defineProperty(this, "namedLookup", { value: namedLookup });
+    Object.defineProperty(this, 'numericLookup', { value: numericLookup });
+    Object.defineProperty(this, 'namedLookup', { value: namedLookup });
   }
 }
 /** Base class for drops (DotLiquid Drop: property access, renders empty, not enumerable). */
@@ -122,19 +121,19 @@ export class LiquidDrop {
 }
 /** blank/empty literals resolve to DotLiquid.Util.Symbol instances (Context.Resolve). */
 class LiquidSymbol {
-  static netTypeName = "DotLiquid.Util.Symbol";
+  static netTypeName = 'DotLiquid.Util.Symbol';
   constructor(name, test) {
     this.name = name;
     this.test = test;
   }
 }
-export class BreakInterrupt extends Error {}
-export class ContinueInterrupt extends Error {}
+class BreakInterrupt extends Error {}
+class ContinueInterrupt extends Error {}
 
-const UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 export const isPlainObject = (value) =>
   value !== null &&
-  typeof value === "object" &&
+  typeof value === 'object' &&
   !Array.isArray(value) &&
   !isDate(value) &&
   !(value instanceof NetDecimal) &&
@@ -143,10 +142,10 @@ export const isPlainObject = (value) =>
   !(value instanceof LiquidSymbol);
 /** IEnumerable in .NET terms: strings, arrays, hashes. Drops/objects are not enumerable. */
 export function isEnumerable(value) {
-  return typeof value === "string" || Array.isArray(value) || value instanceof LiquidHash;
+  return typeof value === 'string' || Array.isArray(value) || value instanceof LiquidHash;
 }
 export function toList(value) {
-  if (typeof value === "string") return [...value];
+  if (typeof value === 'string') return [...value];
   if (Array.isArray(value)) return value;
   if (value instanceof LiquidHash) return [...value];
   return [];
@@ -171,15 +170,26 @@ export async function lookupMember(object, part, context) {
   if (Array.isArray(object)) {
     if (!isNumber(part) || !Number.isInteger(Number(part))) return { found: false };
     let index = Number(part);
-    if (context?.engine.runtimeCompatibility === "observed" && object.length && object.every((value) => typeof value === "string") && (index < 0 || index >= object.length))
-      throw new LiquidError("Index was outside the bounds of the array.", "System.IndexOutOfRangeException");
+    if (
+      context?.engine.runtimeCompatibility === 'observed' &&
+      object.length &&
+      object.every((value) => typeof value === 'string') &&
+      (index < 0 || index >= object.length)
+    )
+      throw new LiquidError('Index was outside the bounds of the array.', 'System.IndexOutOfRangeException');
     if (index < 0) index += object.length;
     return index >= 0 && index < object.length ? { found: true, value: object[index] } : { found: false };
   }
-  if (typeof object !== "object" || isDate(object) || object instanceof NetDecimal || object instanceof KeyValuePair || object instanceof LiquidSymbol)
+  if (
+    typeof object !== 'object' ||
+    isDate(object) ||
+    object instanceof NetDecimal ||
+    object instanceof KeyValuePair ||
+    object instanceof LiquidSymbol
+  )
     return { found: false };
   const key = part instanceof NetDecimal ? part.toString() : String(part);
-  if (typeof object.liquidGet === "function") return { found: true, value: await object.liquidGet(key, context) };
+  if (typeof object.liquidGet === 'function') return { found: true, value: await object.liquidGet(key, context) };
   const hidden = object[LIQUID_HIDDEN];
   const properties = object[LIQUID_PROPERTIES];
   let property;
@@ -195,64 +205,57 @@ export async function lookupMember(object, part, context) {
   }
   if (property === undefined) return { found: true, value: undefined };
   const value = object[property];
-  return { found: true, value: typeof value === "function" ? undefined : value };
+  return { found: true, value: typeof value === 'function' ? undefined : value };
 }
 /** Symbols marking drop property names (case-insensitive) and host-only keys. */
-export const LIQUID_PROPERTIES = Symbol.for("paqvilo.liquid.properties");
-export const LIQUID_HIDDEN = Symbol.for("paqvilo.liquid.hidden");
+export const LIQUID_PROPERTIES = Symbol.for('paqvilo.liquid.properties');
+export const LIQUID_HIDDEN = Symbol.for('paqvilo.liquid.hidden');
 
-// ---------------------------------------------------------------------------
-// Output formatting (DotLiquid Variable.Render on .NET Framework, en-US)
-// ---------------------------------------------------------------------------
+// ---- Output formatting (DotLiquid Variable.Render on .NET Framework, en-US)
 /** Item formatting inside IEnumerable output (IFormattable.ToString / object.ToString). */
 export function formatItem(value) {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "boolean") return value ? "True" : "False";
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
   if (isNumber(value)) return numberToOutput(value);
   if (isDate(value)) return dateToNetString(value);
   if (value instanceof KeyValuePair) return `[${value.key}, ${formatItem(value.value)}]`;
-  if (Array.isArray(value)) return "System.Object[]";
-  if (value instanceof LiquidHash) return "DotLiquid.Hash";
-  return value?.constructor?.netTypeName ?? "DotLiquid.Drop";
+  if (Array.isArray(value)) return 'System.Object[]';
+  if (value instanceof LiquidHash) return 'DotLiquid.Hash';
+  return value?.constructor?.netTypeName ?? 'DotLiquid.Drop';
 }
 /** Top-level output of a {{ }} expression. */
 export function formatOutput(value) {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "boolean") return value ? "true" : "false";
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (isNumber(value)) return numberToOutput(value);
   if (isDate(value)) return dateToNetString(value);
   // Symbol is not ILiquidizable: Variable.Render writes object.ToString(), the type name.
   if (value instanceof LiquidSymbol) return LiquidSymbol.netTypeName;
-  if (isEnumerable(value)) return toList(value).map(formatItem).join("");
+  if (isEnumerable(value)) return toList(value).map(formatItem).join('');
   if (value instanceof KeyValuePair) return formatItem(value);
-  return ""; // drops (ILiquidizable) render empty
+  return ''; // drops (ILiquidizable) render empty
 }
-/** DotLiquid condition truthiness: only nil and false are falsy. */
-export const truthy = (value) => value != null && value !== false;
-
-// ---------------------------------------------------------------------------
-// Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
-// ---------------------------------------------------------------------------
+// ---- Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
 // Scan the whole-template shorthands without overlapping dot/whitespace regex
 // repetitions. Preserve the optional single whitespace and final-newline rules.
 function shorthandBody(text, literal) {
   let start = literal ? 3 : 1;
   let end = text.length;
-  if (text.endsWith("\r\n")) end -= 2;
-  else if (/[\n\r\u2028\u2029]/.test(text[end - 1] ?? "")) end--;
-  const space = (index) => /\s/.test(text[index] ?? "");
+  if (text.endsWith('\r\n')) end -= 2;
+  else if (/[\n\r\u2028\u2029]/.test(text[end - 1] ?? '')) end--;
+  const space = (index) => /\s/.test(text[index] ?? '');
   if (literal) {
-    if (!text.startsWith("{{{") || text.slice(end - 3, end) !== "}}}") return null;
+    if (!text.startsWith('{{{') || text.slice(end - 3, end) !== '}}}') return null;
     end -= 3;
   } else {
-    if (text[0] !== "{" || text[end - 1] !== "}") return null;
+    if (text[0] !== '{' || text[end - 1] !== '}') return null;
     if (space(start)) start++;
-    if (text[start++] !== "#") return null;
+    if (text[start++] !== '#') return null;
     end--;
     if (space(end - 1)) end--;
-    if (text[--end] !== "#") return null;
+    if (text[--end] !== '#') return null;
   }
   if (space(start)) start++;
   if (start > end) return null;
@@ -260,7 +263,7 @@ function shorthandBody(text, literal) {
   return /[\n\r\u2028\u2029]/.test(body) ? null : body;
 }
 export function tokenize(source, rawTags = new Set()) {
-  if (source == null || source === "") return [];
+  if (source == null || source === '') return [];
   // Comment/literal shorthands only apply when they span the whole template.
   let text = String(source);
   const literal = shorthandBody(text, true);
@@ -268,7 +271,7 @@ export function tokenize(source, rawTags = new Set()) {
   const comment = shorthandBody(text, false);
   if (comment !== null) text = `{% comment %}${comment}{% endcomment %}`;
   // Trailing whitespace control: one newline or one run of spaces/tabs, never both.
-  text = text.replace(/-(\}\}|%\})(\n|\r\n|[ \t]+)?/g, "$1");
+  text = text.replace(/-(\}\}|%\})(\n|\r\n|[ \t]+)?/g, '$1');
   const tokens = [];
   const start = /(\{\{|\{%)(-)?/g;
   let position = 0;
@@ -280,10 +283,10 @@ export function tokenize(source, rawTags = new Set()) {
     if (match.index > position) {
       let literal = text.slice(position, match.index);
       // Leading whitespace control: spaces and tabs only (DotLiquid20).
-      if (match[2]) literal = literal.replace(/[\t ]+$/, "");
-      if (literal !== "") tokens.push(literal);
+      if (match[2]) literal = literal.replace(/[\t ]+$/, '');
+      if (literal !== '') tokens.push(literal);
     }
-    const isTag = match[1] === "{%";
+    const isTag = match[1] === '{%';
     let token = match[1];
     let i = match.index + match[0].length;
     let closed = false;
@@ -299,8 +302,8 @@ export function tokenize(source, rawTags = new Set()) {
         }
         token += text.slice(i, end + 1);
         i = end + 1;
-      } else if ((isTag ? ch === "%" : ch === "}") && text[i] === "}") {
-        token += "}";
+      } else if ((isTag ? ch === '%' : ch === '}') && text[i] === '}') {
+        token += '}';
         i++;
         closed = true;
         break;
@@ -317,7 +320,7 @@ export function tokenize(source, rawTags = new Set()) {
     if (isTag) {
       const name = re(`^\\{%\\s*([${WC}]+)`).exec(token)?.[1];
       if (name && rawTags.has(name)) {
-        const end = new RegExp(`\\{%-?\\s*end${name}\\s*-?%\\}`, "g");
+        const end = new RegExp(`\\{%-?\\s*end${name}\\s*-?%\\}`, 'g');
         end.lastIndex = position;
         const found = end.exec(text);
         if (!found) throw new LiquidSyntaxError(`${name} tag was never closed`);
@@ -330,10 +333,8 @@ export function tokenize(source, rawTags = new Set()) {
   return tokens;
 }
 
-// ---------------------------------------------------------------------------
-// Variables and filters
-// ---------------------------------------------------------------------------
-const ENCODING_FILTERS = new Set(["escape", "h", "escape_once", "xml_escape"]);
+// ---- Variables and filters
+const ENCODING_FILTERS = new Set(['escape', 'h', 'escape_once', 'xml_escape']);
 export class Variable {
   constructor(markup) {
     this.markup = markup;
@@ -379,40 +380,50 @@ export class Variable {
       const root = /^[^.[\s]+/.exec(this.name)?.[0]?.toLowerCase();
       const last = this.filters.at(-1)?.name.toLowerCase();
       // Power Pages 9.3.8.x+: user/request output is HTML encoded by default.
-      if ((roots.has(root) || (context.engine.runtimeCompatibility === "observed" && context.isEncodedVariable(this.name))) && !ENCODING_FILTERS.has(last)) text = htmlEncode(text);
+      if (
+        (roots.has(root) ||
+          (context.engine.runtimeCompatibility === 'observed' && context.isEncodedVariable(this.name))) &&
+        !ENCODING_FILTERS.has(last)
+      )
+        text = htmlEncode(text);
     }
     out.push(text);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Conditions (DotLiquid Condition.cs)
-// ---------------------------------------------------------------------------
+// ---- Conditions (DotLiquid Condition.cs)
 function equalVariables(left, right) {
   if (left instanceof LiquidSymbol) return left.test(right);
   if (right instanceof LiquidSymbol) return right.test(left);
   return safeTypeInsensitiveEqual(left, right);
 }
 export const OPERATORS = {
-  "==": (l, r) => equalVariables(l, r),
-  "!=": (l, r) => !equalVariables(l, r),
-  "<>": (l, r) => !equalVariables(l, r),
-  "<": (l, r) => l != null && r != null && netCompare(l, r) === -1,
-  ">": (l, r) => l != null && r != null && netCompare(l, r) === 1,
-  "<=": (l, r) => l != null && r != null && netCompare(l, r) <= 0,
-  ">=": (l, r) => l != null && r != null && netCompare(l, r) >= 0,
+  '==': (l, r) => equalVariables(l, r),
+  '!=': (l, r) => !equalVariables(l, r),
+  '<>': (l, r) => !equalVariables(l, r),
+  '<': (l, r) => l != null && r != null && netCompare(l, r) === -1,
+  '>': (l, r) => l != null && r != null && netCompare(l, r) === 1,
+  '<=': (l, r) => l != null && r != null && netCompare(l, r) <= 0,
+  '>=': (l, r) => l != null && r != null && netCompare(l, r) >= 0,
   contains: (l, r) => {
-    if (typeof l === "string" && r != null) {
-      if (typeof r !== "string")
-        throw new LiquidError(`Unable to cast object of type '${netTypeName(r)}' to type 'System.String'.`, "System.InvalidCastException");
+    if (typeof l === 'string' && r != null) {
+      if (typeof r !== 'string')
+        throw new LiquidError(
+          `Unable to cast object of type '${netTypeName(r)}' to type 'System.String'.`,
+          'System.InvalidCastException',
+        );
       return l.includes(r);
     }
     return isEnumerable(l) && toList(l).some((item) => backCompatEqual(item, r));
   },
   startswith: (l, r) =>
-    Array.isArray(l) ? equalVariables(l[0] ?? null, r) : typeof l === "string" && typeof r === "string" && l.startsWith(r),
+    Array.isArray(l)
+      ? equalVariables(l[0] ?? null, r)
+      : typeof l === 'string' && typeof r === 'string' && l.startsWith(r),
   endswith: (l, r) =>
-    Array.isArray(l) ? equalVariables(l.at(-1) ?? null, r) : typeof l === "string" && typeof r === "string" && l.endsWith(r),
+    Array.isArray(l)
+      ? equalVariables(l.at(-1) ?? null, r)
+      : typeof l === 'string' && typeof r === 'string' && l.endsWith(r),
   haskey: (l, r) => r != null && l instanceof LiquidHash && l.has(r),
   hasvalue: (l, r) => l instanceof LiquidHash && [...l.entries()].some(([, v]) => v === r),
 };
@@ -434,11 +445,11 @@ class Condition {
       const left = await context.resolve(this.left);
       const right = await context.resolve(this.right);
       const op = OPERATORS[this.operator] ?? OPERATORS[this.operator.toLowerCase()];
-      if (!op) throw new LiquidError(`Unknown operator ${this.operator}`, "DotLiquid.Exceptions.ArgumentException");
+      if (!op) throw new LiquidError(`Unknown operator ${this.operator}`, 'DotLiquid.Exceptions.ArgumentException');
       result = op(left, right);
     }
-    if (this.relation === "or") return result || (await this.child.evaluate(context));
-    if (this.relation === "and") return result && (await this.child.evaluate(context));
+    if (this.relation === 'or') return result || (await this.child.evaluate(context));
+    if (this.relation === 'and') return result && (await this.child.evaluate(context));
     return result;
   }
 }
@@ -452,9 +463,13 @@ class ElseCondition extends Condition {
   }
 }
 const conditionFrom = (match, preserveParentheses = false) =>
-  new Condition(preserveParentheses ? match[1] : match[1].replace(/^\(+/, ""), match[2] ?? "", preserveParentheses ? (match[3] ?? "") : (match[3] ?? "").replace(/\)+$/, ""));
+  new Condition(
+    preserveParentheses ? match[1] : match[1].replace(/^\(+/, ''),
+    match[2] ?? '',
+    preserveParentheses ? (match[3] ?? '') : (match[3] ?? '').replace(/\)+$/, ''),
+  );
 /** If.PushBlock: expressions are grouped right-to-left; there are no parentheses. */
-export function parseCondition(markup, preserveParentheses = false) {
+function parseCondition(markup, preserveParentheses = false) {
   const help = "Syntax Error in 'if' tag - Valid syntax: if [expression]";
   const expressions = scan(markup, IF_EXPRESSIONS);
   const syntax = expressions.at(-1);
@@ -465,11 +480,11 @@ export function parseCondition(markup, preserveParentheses = false) {
   let count = 1;
   for (let i = 1; i < expressions.length; i += 2) {
     const operator = expressions.at(-1 - i).trim();
-    const expression = IF_SYNTAX.exec(expressions.at(-2 - i) ?? "");
+    const expression = IF_SYNTAX.exec(expressions.at(-2 - i) ?? '');
     if (!expression) throw new LiquidSyntaxError(help);
     if (++count > 500) throw new LiquidSyntaxError("Syntax Error in 'if' tag - max 500 conditions are allowed");
     const next = conditionFrom(expression, preserveParentheses);
-    if (operator === "and" || operator === "or") {
+    if (operator === 'and' || operator === 'or') {
       next.relation = operator;
       next.child = condition;
     }
@@ -478,24 +493,26 @@ export function parseCondition(markup, preserveParentheses = false) {
   return condition;
 }
 
-// ---------------------------------------------------------------------------
-// Context (scopes, environments, registers, resolution, filters, errors)
-// ---------------------------------------------------------------------------
-const BLANK = new LiquidSymbol("blank", (value) =>
-  value == null ||
-  value === false ||
-  (typeof value === "string" && !value.trim()) ||
-  (isEnumerable(value) && toList(value).length === 0),
+// ---- Context (scopes, environments, registers, resolution, filters, errors)
+const BLANK = new LiquidSymbol(
+  'blank',
+  (value) =>
+    value == null ||
+    value === false ||
+    (typeof value === 'string' && !value.trim()) ||
+    (isEnumerable(value) && toList(value).length === 0),
 );
-const EMPTY = new LiquidSymbol("empty", (value) => isEnumerable(value) && toList(value).length === 0);
+const EMPTY = new LiquidSymbol('empty', (value) => isEnumerable(value) && toList(value).length === 0);
 const encodedAssignments = new WeakMap();
 /** One Strainer overload from its signature text ("@context, input, format?"). */
 function parseFilterSignature(text) {
   const names = String(text)
-    .split(",")
+    .split(',')
     .map((name) => name.trim())
     .filter(Boolean);
-  const params = names.filter((name) => name !== "@context").map((name) => ({ name: name.replace(/\?$/, ""), optional: name.endsWith("?") }));
+  const params = names
+    .filter((name) => name !== '@context')
+    .map((name) => ({ name: name.replace(/\?$/, ''), optional: name.endsWith('?') }));
   return { params, total: names.length };
 }
 /**
@@ -507,9 +524,13 @@ function parseFilterSignature(text) {
 function checkFilterArguments(name, overloads, count) {
   if (!overloads?.length || overloads.some((overload) => overload.params.length === count)) return;
   const widest = overloads.reduce((best, overload) => (overload.total > best.total ? overload : best));
-  if (count > widest.params.length) throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
+  if (count > widest.params.length)
+    throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
   const missing = widest.params.slice(count).find((param) => !param.optional);
-  if (missing) throw new LiquidSyntaxError(`Error - Filter '${name}' does not have a default value for '${missing.name}' and no value was supplied`);
+  if (missing)
+    throw new LiquidSyntaxError(
+      `Error - Filter '${name}' does not have a default value for '${missing.name}' and no value was supplied`,
+    );
 }
 export class LiquidContext {
   constructor(engine, { environment = {}, scope, registers, diagnostics, state } = {}) {
@@ -525,11 +546,11 @@ export class LiquidContext {
     return this.scopes.at(-1);
   }
   push(scope = new LiquidHash()) {
-    if (this.scopes.length > 80) throw new LiquidError("Nesting too deep", "DotLiquid.Exceptions.StackLevelException");
+    if (this.scopes.length > 80) throw new LiquidError('Nesting too deep', 'DotLiquid.Exceptions.StackLevelException');
     this.scopes.unshift(scope instanceof LiquidHash ? scope : new LiquidHash(scope));
   }
   pop() {
-    if (this.scopes.length === 1) throw new LiquidError("Context exception", "DotLiquid.Exceptions.ContextException");
+    if (this.scopes.length === 1) throw new LiquidError('Context exception', 'DotLiquid.Exceptions.ContextException');
     return this.scopes.shift();
   }
   async stack(callback, scope) {
@@ -550,7 +571,7 @@ export class LiquidContext {
     encodedAssignments.get(this.outerScope)?.delete(String(key).toLowerCase());
   }
   isEncodedVariable(markup) {
-    const root = /^[^.[\s]+/.exec(markup ?? "")?.[0]?.toLowerCase();
+    const root = /^[^.[\s]+/.exec(markup ?? '')?.[0]?.toLowerCase();
     if (!root) return false;
     for (const scope of this.scopes) if (scope.has(root)) return encodedAssignments.get(scope)?.has(root) ?? false;
     return Boolean(this.engine.autoEncodeRoots?.(this)?.has(root));
@@ -559,20 +580,20 @@ export class LiquidContext {
     if (!encodedAssignments.has(this.outerScope)) encodedAssignments.set(this.outerScope, new Set());
     encodedAssignments.get(this.outerScope).add(String(key).toLowerCase());
   }
-  /** Merged view of all variables (innermost wins) for host components. */
   /** Merged plain-object view of all variables (innermost wins) for host components. */
   snapshot() {
     const result = {};
     const plain = (value) => (value instanceof LiquidHash ? Object.fromEntries(value.entries()) : value);
     for (const hash of [...this.environments].reverse().concat([...this.scopes].reverse()))
       for (const [key, value] of hash.entries()) result[key] = plain(value);
-    if (result.request && typeof result.request === "object" && result.request.params instanceof LiquidHash)
+    if (result.request && typeof result.request === 'object' && result.request.params instanceof LiquidHash)
       result.request = { ...result.request, params: plain(result.request.params) };
     return result;
   }
   async findVariable(key) {
     for (const scope of this.scopes) if (scope.has(key)) return { found: true, value: scope.get(key) };
-    for (const environment of this.environments) if (environment.has(key)) return { found: true, value: environment.get(key) };
+    for (const environment of this.environments)
+      if (environment.has(key)) return { found: true, value: environment.get(key) };
     return { found: false, value: null };
   }
   /** Context.Resolve: literals, ranges, numbers and variable paths. */
@@ -580,17 +601,17 @@ export class LiquidContext {
     switch (key) {
       case undefined:
       case null:
-      case "nil":
-      case "null":
-      case "":
+      case 'nil':
+      case 'null':
+      case '':
         return null;
-      case "true":
+      case 'true':
         return true;
-      case "false":
+      case 'false':
         return false;
-      case "blank":
-        return this.engine.runtimeCompatibility === "observed" ? EMPTY : BLANK;
-      case "empty":
+      case 'blank':
+        return this.engine.runtimeCompatibility === 'observed' ? EMPTY : BLANK;
+      case 'empty':
         return EMPTY;
     }
     const first = key[0];
@@ -600,12 +621,16 @@ export class LiquidContext {
     } else if (first === '"') {
       const m = DOUBLE_QUOTED.exec(key);
       if (m) return m[1];
-    } else if (first === "(") {
+    } else if (first === '(') {
       const m = RANGE.exec(key);
       if (m) {
         const from = toInt32(await this.resolve(m[1]));
         const to = toInt32(await this.resolve(m[2]));
-        if (to - from > 1_000_000) throw new LiquidError("Range exceeds the local renderer limit of 1,000,000 items", "System.OverflowException");
+        if (to - from > 1_000_000)
+          throw new LiquidError(
+            'Range exceeds the local renderer limit of 1,000,000 items',
+            'System.OverflowException',
+          );
         const range = [];
         for (let i = from; i <= to; i++) range.push(i);
         return range;
@@ -620,10 +645,10 @@ export class LiquidContext {
       if (m) {
         const text = m[1];
         if (/^[+-]?\d+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text);
-        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replace(/,/g, ""));
-        const parsed = Number(text.replace(/,/g, ""));
+        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replace(/,/g, ''));
+        const parsed = Number(text.replace(/,/g, ''));
         if (Number.isFinite(parsed)) return parsed;
-        throw new LiquidError("Input string was not in a correct format.", "System.FormatException");
+        throw new LiquidError('Input string was not in a correct format.', 'System.FormatException');
       }
     }
     return this.variable(key, notifyNotFound);
@@ -632,10 +657,11 @@ export class LiquidContext {
     const parts = scan(markup, VARIABLE_PARSER);
     let first = parts[0];
     if (first === undefined) return null;
-    if (first[0] === "[") {
+    if (first[0] === '[') {
       // Context.TryGetVariable calls Resolve(...).ToString(): a root bracket that resolves to nil throws.
       const resolved = await this.resolve(first.slice(1, -1));
-      if (resolved == null) throw new LiquidError("Object reference not set to an instance of an object.", "System.NullReferenceException");
+      if (resolved == null)
+        throw new LiquidError('Object reference not set to an instance of an object.', 'System.NullReferenceException');
       first = formatItem(resolved);
     }
     const found = await this.findVariable(first);
@@ -646,15 +672,19 @@ export class LiquidContext {
     let object = found.value ?? null;
     for (let i = 1; i < parts.length; i++) {
       const raw = parts[i];
-      const bracketed = raw[0] === "[";
+      const bracketed = raw[0] === '[';
       const part = bracketed ? await this.resolve(raw.slice(1, -1)) : raw;
       if (object instanceof KeyValuePair) {
         const numeric = isNumber(part) ? Number(part) : null;
-        if ((object.numericLookup && numeric === 0) || (object.namedLookup && part === "Key")) {
+        if ((object.numericLookup && numeric === 0) || (object.namedLookup && part === 'Key')) {
           object = object.key;
           continue;
         }
-        if ((object.numericLookup && numeric === 1) || (object.namedLookup && part === "Value") || part === object.key) {
+        if (
+          (object.numericLookup && numeric === 1) ||
+          (object.namedLookup && part === 'Value') ||
+          part === object.key
+        ) {
           object = object.value ?? null;
           continue;
         }
@@ -664,17 +694,17 @@ export class LiquidContext {
         object = result.value ?? null;
         continue;
       }
-      if (!bracketed && isEnumerable(object) && typeof part === "string") {
+      if (!bracketed && isEnumerable(object) && typeof part === 'string') {
         const lower = part.toLowerCase();
-        if (lower === "size") {
-          object = typeof object === "string" ? object.length : toList(object).length;
+        if (lower === 'size') {
+          object = typeof object === 'string' ? object.length : toList(object).length;
           continue;
         }
-        if (lower === "first") {
+        if (lower === 'first') {
           object = toList(object)[0] ?? null;
           continue;
         }
-        if (lower === "last") {
+        if (lower === 'last') {
           object = toList(object).at(-1) ?? null;
           continue;
         }
@@ -688,9 +718,9 @@ export class LiquidContext {
     if (!filter) {
       // DotLiquid20 Context.Invoke: an unknown filter returns its input unchanged.
       this.diagnostic(
-        "liquid-unknown-filter",
+        'liquid-unknown-filter',
         `Unknown Liquid filter '${name}' returned its input unchanged, as DotLiquid does.`,
-        { filter: name, markup: String(markup ?? "").trim() },
+        { filter: name, markup: String(markup ?? '').trim() },
       );
       return input;
     }
@@ -711,15 +741,17 @@ export class LiquidContext {
     this.errors.push(error);
     const message = error?.message ?? String(error);
     if (error instanceof LiquidSyntaxError) {
-      this.diagnostic("liquid-syntax-error", message);
+      this.diagnostic('liquid-syntax-error', message);
       return `Liquid syntax error: ${message}`;
     }
-    this.diagnostic(error instanceof LiquidError ? "liquid-error" : "liquid-runtime-error", message);
+    this.diagnostic(error instanceof LiquidError ? 'liquid-error' : 'liquid-runtime-error', message);
     return `Liquid error: ${message}`;
   }
   checkLimits() {
     if (++this.state.iterations > this.engine.maxIterations) {
-      const error = new LiquidError(`Render Error - Maximum number of iterations ${this.engine.maxIterations} exceeded`);
+      const error = new LiquidError(
+        `Render Error - Maximum number of iterations ${this.engine.maxIterations} exceeded`,
+      );
       error.renderLimit = true;
       throw error;
     }
@@ -728,7 +760,7 @@ export class LiquidContext {
   async yieldIfNeeded() {
     const now = Date.now();
     if (now - (this.state.lastYield ?? this.state.started) < 8) return;
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     this.state.lastYield = Date.now();
     this.checkTimeLimit();
   }
@@ -741,14 +773,12 @@ export class LiquidContext {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing: Tag / Block / Document and the standard tags
-// ---------------------------------------------------------------------------
+// ---- Parsing: Tag / Block / Document and the standard tags
 export class Tag {
   initialize(engine, tagName, markup, tokens) {
     this.engine = engine;
     this.tagName = tagName;
-    this.markup = markup ?? "";
+    this.markup = markup ?? '';
     this.parse(tokens);
   }
   parse() {}
@@ -764,10 +794,13 @@ export class Block extends Tag {
     this.nodeList.length = 0;
     while (tokens.length) {
       const token = tokens.shift();
-      if (token.startsWith("{%")) {
+      if (token.startsWith('{%')) {
         const full = FULL_TOKEN.exec(token);
-        if (!full) throw new LiquidSyntaxError(`Tag '${this.engine.runtimeCompatibility === "observed" && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${TAG_END_TEXT}`);
-        const [, name, args = ""] = full;
+        if (!full)
+          throw new LiquidSyntaxError(
+            `Tag '${this.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${TAG_END_TEXT}`,
+          );
+        const [, name, args = ''] = full;
         if (name === this.blockDelimiter) {
           this.endTag();
           return;
@@ -778,18 +811,24 @@ export class Block extends Tag {
           this.nodeList.push(tag);
           tag.assertTagRules(this.nodeList);
         } else this.unknownTag(name, args, tokens);
-      } else if (token.startsWith("{{")) {
+      } else if (token.startsWith('{{')) {
         const content = CONTENT_OF_VARIABLE.exec(token);
-        if (!content) throw new LiquidSyntaxError(`Variable '${this.engine.runtimeCompatibility === "observed" && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`);
+        if (!content)
+          throw new LiquidSyntaxError(
+            `Variable '${this.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
+          );
         this.nodeList.push(new Variable(content[1]));
-      } else if (token !== "") this.nodeList.push(token);
+      } else if (token !== '') this.nodeList.push(token);
     }
     this.assertMissingDelimitation();
   }
   endTag() {}
   unknownTag(tag) {
-    if (tag === "else") throw new LiquidSyntaxError(`${this.tagName ?? ""} tag does not expect else tag`);
-    if (tag === "end") throw new LiquidSyntaxError(`'end' is not a valid delimiter for ${this.tagName} tags. Use ${this.blockDelimiter}`);
+    if (tag === 'else') throw new LiquidSyntaxError(`${this.tagName ?? ''} tag does not expect else tag`);
+    if (tag === 'end')
+      throw new LiquidSyntaxError(
+        `'end' is not a valid delimiter for ${this.tagName} tags. Use ${this.blockDelimiter}`,
+      );
     throw new LiquidSyntaxError(`Unknown tag '${tag}'`);
   }
   assertMissingDelimitation() {
@@ -807,9 +846,9 @@ export class Block extends Tag {
  * FetchXML faults (DataError) keep the inline "Liquid error: ..." rendering of Block.RenderAll.
  */
 export function isInfrastructureError(error) {
-  if (!error || typeof error !== "object" || error instanceof LiquidError) return false;
-  if (error.code === "LIVE_BRIDGE" || error.infrastructure === true) return true;
-  if (error.name === "DataError") return false;
+  if (!error || typeof error !== 'object' || error instanceof LiquidError) return false;
+  if (error.code === 'LIVE_BRIDGE' || error.infrastructure === true) return true;
+  if (error.name === 'DataError') return false;
   const status = Number(error.status ?? error.statusCode);
   return Number.isInteger(status) && status >= 400 && status <= 599;
 }
@@ -819,7 +858,7 @@ export async function renderAll(nodes, context, out) {
     context.checkLimits();
     await context.yieldIfNeeded();
     try {
-      if (typeof node === "string") out.push(node);
+      if (typeof node === 'string') out.push(node);
       else await node.render(context, out);
       context.checkTimeLimit();
     } catch (error) {
@@ -835,7 +874,7 @@ export class Document extends Block {
     this.parse(tokens);
   }
   get blockDelimiter() {
-    return "";
+    return '';
   }
   assertMissingDelimitation() {}
   async render(context, out) {
@@ -849,7 +888,8 @@ export class Document extends Block {
 /** Raw blocks keep their body as literal text (raw, comment, substitution). */
 export class RawBlock extends Block {
   initialize(engine, tagName, markup, tokens) {
-    if (String(markup ?? "").trim()) throw new LiquidSyntaxError(`Syntax Error in '${tagName}' tag - Valid syntax: ${tagName}`);
+    if (String(markup ?? '').trim())
+      throw new LiquidSyntaxError(`Syntax Error in '${tagName}' tag - Valid syntax: ${tagName}`);
     super.initialize(engine, tagName, markup, tokens);
   }
   parse(tokens) {
@@ -863,7 +903,7 @@ export class RawBlock extends Block {
     this.assertMissingDelimitation();
   }
   get source() {
-    return this.nodeList.join("");
+    return this.nodeList.join('');
   }
 }
 class RawTag extends RawBlock {
@@ -871,7 +911,7 @@ class RawTag extends RawBlock {
     out.push(...this.nodeList);
   }
 }
-export class CommentTag extends RawBlock {
+class CommentTag extends RawBlock {
   async render() {}
 }
 class LiteralTag extends Block {
@@ -898,7 +938,10 @@ class AssignTag extends Tag {
     this.from = new Variable(m[2]);
   }
   async render(context) {
-    const encoded = context.engine.runtimeCompatibility === "observed" && !this.from.filters.length && context.isEncodedVariable(this.from.name);
+    const encoded =
+      context.engine.runtimeCompatibility === 'observed' &&
+      !this.from.filters.length &&
+      context.isEncodedVariable(this.from.name);
     context.assignGlobal(this.to, await this.from.evaluate(context));
     if (encoded) context.markEncodedAssignment(this.to);
   }
@@ -916,23 +959,24 @@ class CaptureTag extends Block {
   async render(context) {
     const buffer = [];
     await renderAll(this.nodeList, context, buffer);
-    context.assignGlobal(this.to, buffer.join(""));
+    context.assignGlobal(this.to, buffer.join(''));
   }
 }
 class IfTag extends Block {
   parse(tokens) {
     this.blocks = [];
-    this.pushBlock("if", this.markup);
+    this.pushBlock('if', this.markup);
     super.parse(tokens);
   }
   pushBlock(tag, markup) {
-    const block = tag === "else" ? new ElseCondition() : parseCondition(markup, this.engine.runtimeCompatibility === "observed");
+    const block =
+      tag === 'else' ? new ElseCondition() : parseCondition(markup, this.engine.runtimeCompatibility === 'observed');
     this.blocks.push(block);
     this.nodeList = block.attachment;
   }
   unknownTag(tag, markup, tokens) {
     // DotLiquid accepts both elsif and the C#-friendly elseif.
-    if (tag === "elsif" || tag === "elseif" || tag === "else") this.pushBlock(tag, markup);
+    if (tag === 'elsif' || tag === 'elseif' || tag === 'else') this.pushBlock(tag, markup);
     else super.unknownTag(tag, markup, tokens);
   }
   async render(context, out) {
@@ -973,18 +1017,22 @@ class CaseTag extends Block {
   }
   unknownTag(tag, markup, tokens) {
     this.nodeList = [];
-    if (tag === "when") {
+    if (tag === 'when') {
       let rest = markup;
       while (rest != null) {
         const m = WHEN_SYNTAX.exec(rest);
-        if (!m) throw new LiquidSyntaxError("Syntax Error in 'case' tag - Valid when condition: {% when [condition] [or condition2...] %}");
+        if (!m)
+          throw new LiquidSyntaxError(
+            "Syntax Error in 'case' tag - Valid when condition: {% when [condition] [or condition2...] %}",
+          );
         rest = m[2] || null;
-        const block = new Condition(this.left, "==", m[1]);
+        const block = new Condition(this.left, '==', m[1]);
         block.attachment = this.nodeList;
         this.blocks.push(block);
       }
-    } else if (tag === "else") {
-      if (markup.trim()) throw new LiquidSyntaxError("Syntax Error in 'case' tag - Valid else condition: {% else %} (no parameters)");
+    } else if (tag === 'else') {
+      if (markup.trim())
+        throw new LiquidSyntaxError("Syntax Error in 'case' tag - Valid else condition: {% else %} (no parameters)");
       const block = new ElseCondition();
       block.attachment = this.nodeList;
       this.blocks.push(block);
@@ -1015,8 +1063,8 @@ class LegacyKeyValueDrop extends LiquidDrop {
     this.value = value;
   }
   liquidGet(name) {
-    if (name === "0" || name === "Key" || name === "itemName") return this.key;
-    if (name === "1" || name === "Value") return this.value;
+    if (name === '0' || name === 'Key' || name === 'itemName') return this.key;
+    if (name === '1' || name === 'Value') return this.value;
     if (this.value instanceof LiquidHash) return this.value.get(name);
     const key = ownKey(this.value, name);
     return key === undefined ? null : this.value[key];
@@ -1038,8 +1086,8 @@ class ForTag extends Block {
     super.parse(tokens);
   }
   unknownTag(tag, markup, tokens) {
-    if (tag === "else") {
-      if (this.engine.runtimeCompatibility === "observed") return super.unknownTag(tag, markup, tokens);
+    if (tag === 'else') {
+      if (this.engine.runtimeCompatibility === 'observed') return super.unknownTag(tag, markup, tokens);
       this.elseBlock = [];
       this.nodeList = this.elseBlock;
       return;
@@ -1052,14 +1100,14 @@ class ForTag extends Block {
       if (this.elseBlock) await context.stack(() => renderAll(this.elseBlock, context, out));
       return;
     }
-    const register = registerOf(context, "for");
-    const offset = this.attributes.get("offset");
+    const register = registerOf(context, 'for');
+    const offset = this.attributes.get('offset');
     const from = offset
-      ? offset.value === "continue"
+      ? offset.value === 'continue'
         ? toInt32(register.get(this.name) ?? 0)
         : toInt32(await context.resolve(offset.value))
       : 0;
-    const limitAttribute = this.attributes.get("limit");
+    const limitAttribute = this.attributes.get('limit');
     const limit = limitAttribute ? toInt32(await context.resolve(limitAttribute.value)) : null;
     const to = limit != null ? limit + from : null;
     const items = toList(collection);
@@ -1081,12 +1129,14 @@ class ForTag extends Block {
         const item = segment[index];
         context.set(
           this.variableName,
-          item instanceof KeyValuePair && item.numericLookup && (item.value instanceof LiquidHash || isPlainObject(item.value))
+          item instanceof KeyValuePair &&
+            item.numericLookup &&
+            (item.value instanceof LiquidHash || isPlainObject(item.value))
             ? new LegacyKeyValueDrop(item.key, item.value)
             : item,
         );
         context.set(
-          "forloop",
+          'forloop',
           new LiquidHash({
             name: this.name,
             length: segment.length,
@@ -1124,7 +1174,7 @@ const CYCLE_FRAGMENT = re(`\\s*(${QF})\\s*`);
 class CycleTag extends Tag {
   parse() {
     const fragments = (text) =>
-      text.split(",").map((part) => {
+      text.split(',').map((part) => {
         const m = CYCLE_FRAGMENT.exec(part);
         return m && m[1] ? m[1] : null;
       });
@@ -1134,13 +1184,14 @@ class CycleTag extends Tag {
       this.name = named[1];
     } else if (CYCLE_SIMPLE.test(this.markup)) {
       this.variables = fragments(this.markup);
-      this.name = `'${this.variables.join("")}'`;
-    } else throw new LiquidSyntaxError("Syntax Error in 'cycle' tag - Valid syntax: cycle [name :] var [, var2, var3 ...]");
+      this.name = `'${this.variables.join('')}'`;
+    } else
+      throw new LiquidSyntaxError("Syntax Error in 'cycle' tag - Valid syntax: cycle [name :] var [, var2, var3 ...]");
   }
   async render(context, out) {
     await context.stack(async () => {
       const key = formatItem(await context.resolve(this.name));
-      const register = registerOf(context, "cycle");
+      const register = registerOf(context, 'cycle');
       let iteration = register.get(key) ?? 0;
       out.push(formatItem(await context.resolve(this.variables[iteration])));
       iteration++;
@@ -1154,9 +1205,9 @@ class IfChangedTag extends Block {
     await context.stack(async () => {
       const buffer = [];
       await renderAll(this.nodeList, context, buffer);
-      const text = buffer.join("");
-      if (text !== context.registers.get("ifchanged")) {
-        context.registers.set("ifchanged", text);
+      const text = buffer.join('');
+      if (text !== context.registers.get('ifchanged')) {
+        context.registers.set('ifchanged', text);
         out.push(text);
       }
     });
@@ -1172,7 +1223,7 @@ class CounterTag extends Tag {
   async render(context, out) {
     const environment = context.environments[0];
     const counter = toInt32(environment.has(this.variable) ? environment.get(this.variable) : 0);
-    if (this.tagName === "increment") {
+    if (this.tagName === 'increment') {
       environment.set(this.variable, counter + 1);
       out.push(String(counter));
     } else {
@@ -1185,7 +1236,10 @@ const TABLEROW_SYNTAX = re(`([${WC}]+)\\s+in\\s+((?:${VARIABLE_SIGNATURE})+)`);
 class TableRowTag extends Block {
   parse(tokens) {
     const m = TABLEROW_SYNTAX.exec(this.markup);
-    if (!m) throw new LiquidSyntaxError("Syntax Error in 'tablerow' tag - Valid syntax: tablerow [item] in [collection] cols=[number]");
+    if (!m)
+      throw new LiquidSyntaxError(
+        "Syntax Error in 'tablerow' tag - Valid syntax: tablerow [item] in [collection] cols=[number]",
+      );
     this.variableName = m[1];
     this.collectionName = m[2];
     this.attributes = tagAttributes(this.markup);
@@ -1195,12 +1249,12 @@ class TableRowTag extends Block {
     const value = await context.resolve(this.collectionName);
     if (!isEnumerable(value)) return;
     let collection = toList(value);
-    const offset = this.attributes.get("offset");
+    const offset = this.attributes.get('offset');
     if (offset) collection = collection.slice(Math.max(0, toInt32(await context.resolve(offset.value))));
-    const limit = this.attributes.get("limit");
+    const limit = this.attributes.get('limit');
     if (limit) collection = collection.slice(0, Math.max(0, toInt32(await context.resolve(limit.value))));
     const length = collection.length;
-    const cols = this.attributes.get("cols");
+    const cols = this.attributes.get('cols');
     const columns = cols ? toInt32(await context.resolve(cols.value)) : length;
     let row = 1,
       column = 0;
@@ -1210,7 +1264,7 @@ class TableRowTag extends Block {
       for (let index = 0; index < collection.length; index++) {
         context.set(this.variableName, collection[index]);
         context.set(
-          "tablerowloop",
+          'tablerowloop',
           new LiquidHash({
             length,
             index: index + 1,
@@ -1228,15 +1282,15 @@ class TableRowTag extends Block {
         column++;
         const buffer = [];
         await renderAll(this.nodeList, context, buffer);
-        out.push(`<td class="col${column}">${buffer.join("")}</td>`);
+        out.push(`<td class="col${column}">${buffer.join('')}</td>`);
         if (column === columns && index !== length - 1) {
           column = 0;
           row++;
-          out.push("</tr>\r\n", `<tr class="row${row}">`);
+          out.push('</tr>\r\n', `<tr class="row${row}">`);
         }
       }
     });
-    out.push("</tr>\r\n");
+    out.push('</tr>\r\n');
   }
 }
 const INCLUDE_SYNTAX = re(`((?:${QF})+)(\\s+(?:with|for)\\s+((?:${QF})+))?`);
@@ -1266,7 +1320,7 @@ class IncludeTag extends Tag {
     });
   }
 }
-// ---- extends / block (DotLiquid Tags/Extends.cs, Tags/Block.cs) ----
+// ---- extends / block (DotLiquid Tags/Extends.cs, Tags/Block.cs)
 class BlockRenderState {
   constructor() {
     this.parents = new Map();
@@ -1276,7 +1330,7 @@ class BlockRenderState {
     return this.nodeLists.has(block) ? this.nodeLists.get(block) : block.nodeList;
   }
   static find(context) {
-    for (const scope of context.scopes) if (scope.has("blockstate")) return scope.get("blockstate");
+    for (const scope of context.scopes) if (scope.has('blockstate')) return scope.get('blockstate');
     return null;
   }
 }
@@ -1287,7 +1341,7 @@ class BlockDrop extends LiquidDrop {
     this.out = out;
   }
   async liquidGet(name, context) {
-    if (name.toLowerCase() === "super") {
+    if (name.toLowerCase() === 'super') {
       await this.block.callSuper(context, this.out);
       return null;
     }
@@ -1296,7 +1350,7 @@ class BlockDrop extends LiquidDrop {
 }
 class BlockTag extends Block {
   initialize(engine, tagName, markup, tokens) {
-    const m = WORD.exec(markup ?? "");
+    const m = WORD.exec(markup ?? '');
     if (!m) throw new LiquidSyntaxError("Syntax Error in 'block' tag - Valid syntax: block [name]");
     this.blockName = m[1];
     if (tokens) super.initialize(engine, tagName, markup, tokens);
@@ -1308,13 +1362,16 @@ class BlockTag extends Block {
   }
   assertTagRules(rootNodeList) {
     for (const node of rootNodeList)
-      if (node instanceof BlockTag && rootNodeList.filter((other) => other instanceof BlockTag && other.blockName === node.blockName).length > 1)
+      if (
+        node instanceof BlockTag &&
+        rootNodeList.filter((other) => other instanceof BlockTag && other.blockName === node.blockName).length > 1
+      )
         throw new LiquidSyntaxError(`Liquid Error - Block '${node.blockName}' already defined`);
   }
   async render(context, out) {
     const state = BlockRenderState.find(context);
     await context.stack(async () => {
-      context.set("block", new BlockDrop(this, out));
+      context.set('block', new BlockDrop(this, out));
       await renderAll(state ? state.nodeList(this) : this.nodeList, context, out);
     });
   }
@@ -1334,7 +1391,7 @@ class BlockTag extends Block {
   }
 }
 const EXTENDS_SYNTAX = re(`^(${QF})`);
-export class ExtendsTag extends Block {
+class ExtendsTag extends Block {
   parse(tokens) {
     const m = EXTENDS_SYNTAX.exec(this.markup);
     if (!m) throw new LiquidSyntaxError("Syntax Error in 'extends' tag - Valid syntax: extends [template]");
@@ -1343,27 +1400,37 @@ export class ExtendsTag extends Block {
   }
   assertMissingDelimitation() {}
   assertTagRules(rootNodeList) {
-    if (!(rootNodeList[0] instanceof ExtendsTag)) throw new LiquidSyntaxError("Liquid Error - 'extends' must be the first tag in an extending template");
+    if (!(rootNodeList[0] instanceof ExtendsTag))
+      throw new LiquidSyntaxError("Liquid Error - 'extends' must be the first tag in an extending template");
     for (const node of this.nodeList)
-      if (!((typeof node === "string" && !node.trim()) || node instanceof BlockTag || node instanceof CommentTag || node instanceof ExtendsTag))
-        throw new LiquidSyntaxError("Liquid Error - Only 'comment' and 'block' tags are allowed in an extending template");
-    if (this.nodeList.some((node) => node instanceof ExtendsTag)) throw new LiquidSyntaxError("Liquid Error - 'extends' tag can be used only once");
+      if (!(
+        (typeof node === 'string' && !node.trim()) ||
+        node instanceof BlockTag ||
+        node instanceof CommentTag ||
+        node instanceof ExtendsTag
+      ))
+        throw new LiquidSyntaxError(
+          "Liquid Error - Only 'comment' and 'block' tags are allowed in an extending template",
+        );
+    if (this.nodeList.some((node) => node instanceof ExtendsTag))
+      throw new LiquidSyntaxError("Liquid Error - 'extends' tag can be used only once");
   }
   async render(context, out) {
     const template = await this.engine.loadTemplate(context, this.templateName);
     const parentBlocks = findBlocks(template.root);
-    const orphaned = context.scopes[0].get("extends") ?? [];
+    const orphaned = context.scopes[0].get('extends') ?? [];
     const state = BlockRenderState.find(context) ?? new BlockRenderState();
     await context.stack(async () => {
-      context.set("blockstate", state);
-      context.set("extends", []);
+      context.set('blockstate', state);
+      context.set('extends', []);
       for (const block of [...this.nodeList.filter((node) => node instanceof BlockTag), ...orphaned]) {
         const parentBlock = parentBlocks.find((candidate) => candidate.blockName === block.blockName);
         if (parentBlock) {
           if (state.parents.has(block)) state.parents.set(parentBlock, state.parents.get(block));
           parentBlock.addParent(state.parents, state.nodeList(parentBlock));
           state.nodeLists.set(parentBlock, state.nodeList(block));
-        } else if (template.root.nodeList.some((node) => node instanceof ExtendsTag)) context.scopes[0].get("extends").push(block);
+        } else if (template.root.nodeList.some((node) => node instanceof ExtendsTag))
+          context.scopes[0].get('extends').push(block);
       }
       await template.renderInto(context, out);
     });
@@ -1372,14 +1439,12 @@ export class ExtendsTag extends Block {
 function findBlocks(node, blocks = []) {
   for (const child of node.nodeList ?? []) {
     if (child instanceof BlockTag && !blocks.some((block) => block.blockName === child.blockName)) blocks.push(child);
-    if (child && typeof child === "object" && Array.isArray(child.nodeList)) findBlocks(child, blocks);
+    if (child && typeof child === 'object' && Array.isArray(child.nodeList)) findBlocks(child, blocks);
   }
   return blocks;
 }
 
-// ---------------------------------------------------------------------------
-// Template and engine
-// ---------------------------------------------------------------------------
+// ---- Template and engine
 export class Template {
   constructor(engine, root, source) {
     this.engine = engine;
@@ -1392,10 +1457,10 @@ export class Template {
   async render(context) {
     const out = [];
     await this.renderInto(context, out);
-    return out.join("");
+    return out.join('');
   }
 }
-export const STANDARD_TAGS = {
+const STANDARD_TAGS = {
   assign: AssignTag,
   block: BlockTag,
   capture: CaptureTag,
@@ -1425,14 +1490,16 @@ export class LiquidEngine {
     maxIterations = 5_000_000,
     timeoutMs = 60_000,
     autoEncodeRoots = null,
-    runtimeCompatibility = "dotliquid",
+    runtimeCompatibility = 'dotliquid',
   } = {}) {
     this.tags = new Map(Object.entries({ ...STANDARD_TAGS, ...tags }));
-    if (runtimeCompatibility === "observed") {
-      for (const name of ["increment", "decrement"]) this.tags.delete(name);
+    if (runtimeCompatibility === 'observed') {
+      for (const name of ['increment', 'decrement']) this.tags.delete(name);
     }
     this.filters = new Map(Object.entries(filters));
-    this.filterSignatures = new Map(Object.entries(filterSignatures).map(([name, overloads]) => [name, overloads.map(parseFilterSignature)]));
+    this.filterSignatures = new Map(
+      Object.entries(filterSignatures).map(([name, overloads]) => [name, overloads.map(parseFilterSignature)]),
+    );
     this.loadTemplateSource = loadTemplateSource;
     this.maxIterations = maxIterations;
     this.timeoutMs = timeoutMs;
@@ -1459,7 +1526,7 @@ export class LiquidEngine {
   }
   /** Template.Parse (throws LiquidSyntaxError). Parsed templates are cached by source. */
   parse(source) {
-    const key = String(source ?? "");
+    const key = String(source ?? '');
     const cached = this.cache.get(key);
     if (cached) return cached;
     const template = new Template(this, new Document(this, tokenize(key, this.rawTags)), key);
@@ -1470,7 +1537,10 @@ export class LiquidEngine {
   /** Resolve an include/extends name expression and parse the referenced template. */
   async loadTemplate(context, nameMarkup) {
     const name = await context.resolve(nameMarkup);
-    const source = await this.loadTemplateSource(name == null ? null : typeof name === "string" ? name : formatItem(name), context);
+    const source = await this.loadTemplateSource(
+      name == null ? null : typeof name === 'string' ? name : formatItem(name),
+      context,
+    );
     return this.parse(source);
   }
 }

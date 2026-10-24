@@ -26,7 +26,7 @@
   adx_name: Bingmaps/credentials
   adx_sitesettingid: 43db54fa-8ebc-4603-88cf-0f3599e2c2da
   adx_value: baseline-fake-bing-key
-- adx_description: 'Baseline fixture: Bing Maps REST URL (Learn''s default).'
+- adx_description: "Baseline fixture: Bing Maps REST URL (Learn's default)."
   adx_name: Bingmaps/restURL
   adx_sitesettingid: 51b1783e-4bf1-4a95-817a-32043e350a66
   adx_value: https://dev.virtualearth.net/REST/v1/Locations

@@ -12,18 +12,21 @@ export const FILES = {
   'website.yml': 'adx_name: Test\nadx_websiteid: 11111111-1111-1111-1111-111111111111\n',
   'web-pages/home/Home.webpage.yml': `adx_webpageid: ${HOME_ID}\nadx_partialurl: /\nadx_name: Home\n`,
   'web-pages/home/content-pages/Home.en-US.webpage.yml': `adx_webpageid: 00000000-0000-0000-0000-0000000000a1\nadx_rootwebpageid: ${HOME_ID}\nadx_partialurl: /\n`,
-  'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css': '.hero {\n  color: red;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n',
+  'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css':
+    '.hero {\n  color: red;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n',
   'web-pages/home/content-pages/Home.en-US.webpage.custom_javascript.js': '',
   'web-pages/scripts/Scripts.webpage.yml': `adx_webpageid: ${SCRIPTS_ID}\nadx_partialurl: scripts\nadx_parentpageid: ${HOME_ID}\n`,
   'web-pages/about/About.webpage.yml': `adx_webpageid: ${ABOUT_ID}\nadx_partialurl: about-us\nadx_parentpageid: ${HOME_ID}\n`,
-  'web-pages/about/content-pages/About.en-US.webpage.custom_javascript.js': 'console.log("about one");\nconsole.log("about two");\nconsole.log("about three");\n',
+  'web-pages/about/content-pages/About.en-US.webpage.custom_javascript.js':
+    'console.log("about one");\nconsole.log("about two");\nconsole.log("about three");\n',
   'web-files/app.js': 'console.log("app");\n',
   'web-files/app.js.webfile.yml': `adx_name: app.js\nadx_partialurl: app.js\nadx_parentpageid: ${SCRIPTS_ID}\nfilename: app.js\nmimetype: text/javascript\n`,
   // served under another name than the file on disk, directly under home
   'web-files/Site-Logo': '<svg xmlns="http://www.w3.org/2000/svg"/>',
   'web-files/Site-Logo.webfile.yml': `adx_name: Site Logo\nadx_partialurl: Logo.svg\nadx_parentpageid: ${HOME_ID}\nfilename: logo-final.svg\nmimetype: image/svg+xml\n`,
   'web-files/orphan.png': 'x',
-  'web-files/orphan.png.webfile.yml': 'adx_name: orphan.png\nadx_partialurl: orphan.png\nadx_parentpageid: 99999999-9999-9999-9999-999999999999\n',
+  'web-files/orphan.png.webfile.yml':
+    'adx_name: orphan.png\nadx_partialurl: orphan.png\nadx_parentpageid: 99999999-9999-9999-9999-999999999999\n',
   'basic-forms/contact/Contact.basicform.yml': 'adx_name: Contact\n',
   'basic-forms/contact/Contact.basicform.custom_javascript.js':
     '$(document).ready(function () {\n  var price = "$1";\n  $("#name").attr("required", true);\n  $("#email").attr("required", true);\n  validate();\n});\n',
@@ -76,12 +79,30 @@ function git(cwd, ...args) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^GIT_/i.test(key)) delete env[key];
   // No detached auto-maintenance: it writes .git/objects/maintenance.lock while tests copy the repository.
-  execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'core.autocrlf=false',
+      '-c',
+      'core.hooksPath=',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'maintenance.auto=false',
+      '-c',
+      'gc.auto=0',
+      ...args,
+    ],
+    { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 },
+  );
 }
 
 export function createFixture() {
-  // realpath: os.tmpdir() can be an 8.3 short path on Windows
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-test-')));
+  // realpath: os.tmpdir() can be an 8.3 short path on Windows. The repository gets a parent folder of its own:
+  // Solution root discovery scans the repository's siblings, which would otherwise be every other folder in the temp folder.
+  const container = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-test-')));
+  const dir = path.join(container, path.basename(container));
   for (const [rel, content] of Object.entries(FILES)) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -103,7 +124,7 @@ export function createFixture() {
       git(dir, 'add', '-A');
       git(dir, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-q', '-m', 'more');
     },
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
+    cleanup: () => fs.rmSync(container, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
   };
 }
 

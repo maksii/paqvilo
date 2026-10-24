@@ -3,27 +3,49 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspectProjectBoundary } from '../scripts/project-boundary.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const cli = path.join(root, 'bin/paqvilo.mjs');
-const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
 
-test('public command namespaces select Lense and Mirage independently', () => {
-  for (const product of ['lense', 'mirage']) {
-    const result = run(product, '--help');
+test('public command namespaces select Lense and Mirage independently', async () => {
+  const portal = path.join(root, 'examples/project/portal');
+  // Independent processes: run them together.
+  const runAsync = (...args) =>
+    withProcessSlot(
+      () =>
+        new Promise((resolve) =>
+          execFile(
+            process.execPath,
+            [cli, ...args],
+            { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+            (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
+          ),
+        ),
+    );
+  const [lense, mirage, invalid, inventory, status] = await Promise.all([
+    runAsync('lense', '--help'),
+    runAsync('mirage', '--help'),
+    runAsync('dev', '--json'),
+    runAsync('mirage', 'liquid-inventory', '--portal', portal, '--json'),
+    runAsync('mirage', 'status', '--json'),
+  ]);
+  for (const [product, result] of [
+    ['lense', lense],
+    ['mirage', mirage],
+  ]) {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, new RegExp(product, 'i'));
   }
-  const invalid = run('dev', '--json');
   assert.equal(invalid.status, 1);
   assert.equal(JSON.parse(invalid.stdout).error.code, 'UNKNOWN_PRODUCT');
-  const inventory = run('mirage', 'liquid-inventory', '--portal', path.join(root, 'examples/project/portal'), '--json');
   assert.equal(inventory.status, 0, inventory.stderr);
-  assert.doesNotThrow(() => JSON.parse(inventory.stdout));
-  const status = run('mirage', 'status', '--json');
+  const report = JSON.parse(inventory.stdout);
+  assert.deepEqual([report.portal, report.format], [portal, 'standard']);
+  assert.ok(report.sources.total > 0 && report.tags.length > 0, 'the Mirage inventory read the example portal');
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).action, 'status');
 });
@@ -46,14 +68,27 @@ test('runtime dependencies reject embedded examples and outside imports in both 
   fs.mkdirSync(path.join(fixture, 'lense'), { recursive: true });
   fs.mkdirSync(path.join(fixture, 'mirage/lib'), { recursive: true });
   fs.writeFileSync(path.join(fixture, 'lense/runtime.mjs'), 'import pack from "../examples/project/pack.mjs";');
-  fs.writeFileSync(path.join(fixture, 'mirage/lib/runtime.mjs'), 'const pack = await import("../../../outside/pack.mjs");');
+  fs.writeFileSync(
+    path.join(fixture, 'mirage/lib/runtime.mjs'),
+    'const pack = await import("../../../outside/pack.mjs");',
+  );
   assert.deepEqual(inspectProjectBoundary(fixture), [
     'lense/runtime.mjs: project-owned dependency: ../examples/project/pack.mjs',
     'mirage/lib/runtime.mjs: project-owned dependency: ../../../outside/pack.mjs',
   ]);
-  fs.writeFileSync(path.join(fixture, 'lense/runtime.mjs'), 'import path from "node:path"; import registry from "../mirage/lib/preset-registry.mjs";');
-  fs.writeFileSync(path.join(fixture, 'mirage/lib/runtime.mjs'), 'export const module = "../../examples/project/pack.mjs";');
-  assert.deepEqual(inspectProjectBoundary(fixture), [], 'ordinary strings and generic internal modules are not project dependencies');
+  fs.writeFileSync(
+    path.join(fixture, 'lense/runtime.mjs'),
+    'import path from "node:path"; import registry from "../mirage/lib/preset-registry.mjs";',
+  );
+  fs.writeFileSync(
+    path.join(fixture, 'mirage/lib/runtime.mjs'),
+    'export const module = "../../examples/project/pack.mjs";',
+  );
+  assert.deepEqual(
+    inspectProjectBoundary(fixture),
+    [],
+    'ordinary strings and generic internal modules are not project dependencies',
+  );
 });
 
 test('default Mirage discovery has no project packs and embedded registration is explicit', async (t) => {
@@ -68,22 +103,33 @@ test('default Mirage discovery has no project packs and embedded registration is
   const packs = await discoverPacks({ explicit: [{ module }] });
   const store = new DataStore();
   await store.applyPreset('example-demo', { generatedPresets: presetLibrary({ packs }) });
-  const simulator = await createSimulator({ sourceDir: path.join(root, 'examples/project/portal'), initial: store.snapshot(), dataPacks: [{ module }], watch: false, port: 0 });
+  const simulator = await createSimulator({
+    sourceDir: path.join(root, 'examples/project/portal'),
+    initial: store.snapshot(),
+    dataPacks: [{ module }],
+    watch: false,
+    port: 0,
+  });
   t.after(() => simulator.close());
   const anonymous = await fetch(simulator.url);
   assert.equal(anonymous.status, 200);
   assert.match(await anonymous.text(), /Sign in/);
-  const response = await fetch(simulator.url, { headers: signInHeaders(simulator, store.snapshot().tables.contact[0].contactid) });
+  const response = await fetch(simulator.url, {
+    headers: signInHeaders(simulator, store.snapshot().tables.contact[0].contactid),
+  });
   assert.match(await response.text(), /Alex Example/);
   assert.deepEqual(await discoverPacks(), [], 'loading a project does not change global discovery');
 });
 
-test('empty templates reject deployed origins, literal project identities and observations', t => {
+test('empty templates reject deployed origins, literal project identities and observations', (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-template-boundary-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, 'templates/project'), { recursive: true });
   const file = path.join(fixture, 'templates/project/pack.mjs.template');
-  fs.writeFileSync(file, 'const url = "https://private.example.org"; const id = "11111111-1111-1111-1111-111111111111"; const settings = { observed: {} };');
+  fs.writeFileSync(
+    file,
+    'const url = "https://private.example.org"; const id = "11111111-1111-1111-1111-111111111111"; const settings = { observed: {} };',
+  );
   assert.deepEqual(inspectProjectBoundary(fixture), [
     'templates/project/pack.mjs.template: project identity in empty template',
     'templates/project/pack.mjs.template: non-placeholder origin in empty template',
@@ -102,7 +148,11 @@ test('an external preset library persists compactly and resolves after restart w
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-external-presets-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'state.json');
-  const store = await new DataStore({ file, presetLibrary: library, state: { presets: structuredClone(library) } }).init();
+  const store = await new DataStore({
+    file,
+    presetLibrary: library,
+    state: { presets: structuredClone(library) },
+  }).init();
   const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(saved.presets['example-demo'].builtin, true);
   assert.equal(saved.presets['example-demo'].tables, undefined);
@@ -123,11 +173,14 @@ test('project generators receive their own count names and invalid counts fail b
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-generator-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const module = path.join(directory, 'pack.mjs');
-  fs.writeFileSync(module, `export default {
+  fs.writeFileSync(
+    module,
+    `export default {
     id: 'counts-example', name: 'Counts example', description: 'Invented dimensions',
     matches: () => true, presets: () => ({}),
     dataset: ({ counts }) => ({ tables: {}, mappings: {}, provenance: { measures: counts } }),
-  };`);
+  };`,
+  );
   const state = path.join(directory, 'state.json');
   const args = { pack: 'counts-example', 'pack-module': [module], state, count: ['customers=3', 'orders=12'] };
   const result = await runDataCommand(['generate'], args);

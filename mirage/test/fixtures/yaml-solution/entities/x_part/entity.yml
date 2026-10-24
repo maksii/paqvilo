@@ -1,0 +1,6 @@
+Entity:
+  Name: x_part
+  EntityInfo:
+    entity:
+      '@Name': x_part
+      EntitySetName: x_parts

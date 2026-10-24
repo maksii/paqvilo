@@ -1,7 +1,21 @@
 # Liquid conformance
 
-`paqvilo mirage liquid-conformance --suite <golden_liquid.json> --markdown` evaluates a recorded golden suite and classifies differences using `lib/liquid-conformance-rules.json`. Cases distinguish platform-unsupported behavior, DotLiquid divergence and engine gaps.
+`paqvilo mirage liquid-conformance` runs a [golden-liquid](https://github.com/jg-rp/golden-liquid) suite file through the Mirage renderer and classifies every case that differs from the Shopify Liquid expectation. The suite is not bundled; download the version pinned in `mirage/lib/liquid-conformance-rules.json`.
 
-The default rules describe the public Shopify golden suite relative to DotLiquid references. They are not online Power Pages observations. The runner supplies case data and partial templates with empty portal settings and objects, and an invalid case passes when any Liquid error occurs. Use a project renderer or HTTP replay for portal context, and compare recorded error text, status and rendering separately when response fidelity matters.
+```sh
+paqvilo mirage liquid-conformance --suite <golden_liquid.json> --markdown --out .paqvilo/liquid-conformance.md
+```
 
-Maintain the golden suite and captured outputs in your portal project, retaining the tested engine/version, reference origin context, capture date and source provenance. Do not infer a platform engine version from local output alone. Keep missing reference observations visible and do not replace them with invented expected values. Generic regressions should reduce a discovered issue to a synthetic test in `mirage/test/`.
+Options: `--rules FILE` (default `mirage/lib/liquid-conformance-rules.json`), `--json` or `--markdown`, `--out FILE`, `--timeout MS`. The report is informational and does not fail a build.
+
+Each differing case falls into one category:
+
+| Category               | Meaning                                                                                                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `platform-unsupported` | A tag, filter or syntax that DotLiquid and Power Pages do not provide.                                                  |
+| `dotliquid-divergence` | Mirage renders what DotLiquid (or the filter Power Pages registers over it) renders, which differs from Shopify Liquid. |
+| `engine-gap`           | Mirage differs from DotLiquid. A differing case without a rule is reported here too.                                    |
+
+Rules for cases that now pass are listed as stale.
+
+The default rules compare the public Shopify suite with DotLiquid; they are not observations of a live Power Pages site. The runner supplies each case's data and partial templates with empty portal settings and objects, and an invalid case passes when any Liquid error occurs. For portal context or exact error text, use a project renderer test or a [reference comparison](parity-evidence.md). Reduce a discovered engine issue to a synthetic test in `mirage/test/`.

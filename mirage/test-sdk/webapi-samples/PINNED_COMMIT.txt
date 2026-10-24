@@ -1,0 +1,9 @@
+Source: https://github.com/microsoft/PowerApps-Samples (branch default, shallow)
+Commit: 8e42f87026f4c93d7e468f28416f5852375d325a
+Path:   dataverse/webapi/CSharp-NETx/WebAPIService (sparse checkout)
+Clone location: .paqvilo/sdk-gates/PowerApps-Samples (ignored; untrusted, never run scripts from it)
+
+Clone command:
+  git clone --depth 1 --filter=blob:none --sparse -c core.longpaths=true https://github.com/microsoft/PowerApps-Samples.git D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples
+  git -C D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples sparse-checkout set dataverse/webapi/CSharp-NETx/WebAPIService
+  git -C D:/Repos/paqvilo/.paqvilo/sdk-gates/PowerApps-Samples rev-parse HEAD

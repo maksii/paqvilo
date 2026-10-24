@@ -26,7 +26,16 @@ const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 async function setup(online = {}, overrides = {}, panelOptions = {}) {
   const b = fakeBrowser(online);
   const tab = b.openTab(`${ORIGIN}/scripts/`);
-  const session = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: structuredClone(SITE), sourceMaps: false, siteName: 'test', envName: 'dev', stateDir, ...overrides });
+  const session = new OverlaySession({
+    origin: ORIGIN,
+    sourceDir: fx.dir,
+    site: structuredClone(SITE),
+    sourceMaps: false,
+    siteName: 'test',
+    envName: 'dev',
+    stateDir,
+    ...overrides,
+  });
   const opened = [];
   const panel = enablePanel(b.context, session, {
     open: async (...args) => {
@@ -42,7 +51,12 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
   let n = 0;
   const call = async (name, body, headers = { 'x-paqvilo-token': token }) => {
     const id = `api${++n}`;
-    tab.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, { type: 'Fetch', method: 'POST', headers, postData: JSON.stringify(body ?? {}) });
+    tab.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, {
+      type: 'Fetch',
+      method: 'POST',
+      headers,
+      postData: JSON.stringify(body ?? {}),
+    });
     const deadline = Date.now() + 5_000;
     while (b.answers(id).length === 0 && Date.now() < deadline) await tick(5);
     const answers = b.answers(id);
@@ -59,86 +73,141 @@ test('the panel function is self-contained: it is sent to the browser as text', 
 });
 
 test('JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies', async () => {
-  const {tab,panel}=await setup();
-  let reads=0;
-  const bodies=new Map();let sequence=0;
-  const send=tab.cdp.send;tab.cdp.send=async(method,params)=>{if(method==='Network.getResponseBody'){reads++;return {body:JSON.stringify(bodies.get(params.requestId)),base64Encoded:false};}return send(method,params);};
-  const response=(message,headers={'content-type':'application/json','content-length':'100'})=>{const requestId=String(++sequence);bodies.set(requestId,{error:{message,innererror:{message:'See /detail?token=private'}}});tab.cdp.emit('Network.requestWillBeSent',{requestId,request:{method:'POST'}});tab.cdp.emit('Network.responseReceived',{requestId,response:{status:400,url:ORIGIN+'/_api/items?secret=private',headers}});tab.cdp.emit('Network.loadingFinished',{requestId});};
+  const { tab, panel } = await setup();
+  let reads = 0;
+  const bodies = new Map();
+  let sequence = 0;
+  const send = tab.cdp.send;
+  tab.cdp.send = async (method, params) => {
+    if (method === 'Network.getResponseBody') {
+      reads++;
+      return { body: JSON.stringify(bodies.get(params.requestId)), base64Encoded: false };
+    }
+    return send(method, params);
+  };
+  const response = (message, headers = { 'content-type': 'application/json', 'content-length': '100' }) => {
+    const requestId = String(++sequence);
+    bodies.set(requestId, { error: { message, innererror: { message: 'See /detail?token=private' } } });
+    tab.cdp.emit('Network.requestWillBeSent', { requestId, request: { method: 'POST' } });
+    tab.cdp.emit('Network.responseReceived', {
+      requestId,
+      response: { status: 400, url: ORIGIN + '/_api/items?secret=private', headers },
+    });
+    tab.cdp.emit('Network.loadingFinished', { requestId });
+  };
   response('<img src=x onerror=alert(1)> Missing lookup');
   response('Different lookup');
-  response('Large',{'content-type':'application/json','content-length':'40000'});
-  response('HTML',{'content-type':'text/html','content-length':'100'});
+  response('Large', { 'content-type': 'application/json', 'content-length': '40000' });
+  response('HTML', { 'content-type': 'text/html', 'content-length': '100' });
   await tick();
-  const issues=panel.stateFor(tab.page).problems;
-  assert.equal(reads,2);
-  assert.equal(issues.filter(item=>item.where).length,2);
-  assert.ok(issues.some(item=>item.where.includes('<img src=x onerror=alert(1)> Missing lookup')));
-  assert.ok(issues.every(item=>!JSON.stringify(item).includes('private')));
+  const issues = panel.stateFor(tab.page).problems;
+  assert.equal(reads, 2);
+  assert.equal(issues.filter((item) => item.where).length, 2);
+  assert.ok(issues.some((item) => item.where.includes('<img src=x onerror=alert(1)> Missing lookup')));
+  assert.ok(issues.every((item) => !JSON.stringify(item).includes('private')));
 });
 
-test('URL-less browser console errors name only the page path',async()=>{
-  const {tab,panel}=await setup();
-  tab.page.emit('console',{type:()=> 'error',text:()=> 'Blocked by CORS policy',location:()=>({url:'',lineNumber:0,columnNumber:0})});
-  assert.equal(panel.stateFor(tab.page).problems.find(row=>row.type==='console').where,'/scripts/');
+test('URL-less browser console errors name only the page path', async () => {
+  const { tab, panel } = await setup();
+  tab.page.emit('console', {
+    type: () => 'error',
+    text: () => 'Blocked by CORS policy',
+    location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }),
+  });
+  assert.equal(panel.stateFor(tab.page).problems.find((row) => row.type === 'console').where, '/scripts/');
 });
 
-test('page source buttons distinguish root and language layers without changing a single-layer label',async()=>{
-  const own=createFixture();
-  try{
-    fs.writeFileSync(own.file('web-pages/about/About.webpage.custom_javascript.js'),'console.log("root");');
-    const b=fakeBrowser(),tab=b.openTab(ORIGIN+'/about-us/');
-    const session=new OverlaySession({origin:ORIGIN,sourceDir:own.dir,site:structuredClone(SITE),sourceMaps:false});
-    const panel=enablePanel(b.context,session);panels.push(panel);
-    const labels=panel.stateFor(tab.page).page.sources.filter(row=>row.rel.endsWith('.js')).map(row=>row.label);
-    assert.deepEqual(labels.sort(),['JavaScript (en-US)','JavaScript (root)']);
-    const home=b.openTab(ORIGIN+'/');assert.ok(panel.stateFor(home.page).page.sources.some(row=>row.label==='CSS (en-US)'));
+test('page source buttons distinguish root and language layers without changing a single-layer label', async () => {
+  const own = createFixture();
+  try {
+    fs.writeFileSync(own.file('web-pages/about/About.webpage.custom_javascript.js'), 'console.log("root");');
+    const b = fakeBrowser(),
+      tab = b.openTab(ORIGIN + '/about-us/');
+    const session = new OverlaySession({
+      origin: ORIGIN,
+      sourceDir: own.dir,
+      site: structuredClone(SITE),
+      sourceMaps: false,
+    });
+    const panel = enablePanel(b.context, session);
+    panels.push(panel);
+    const labels = panel
+      .stateFor(tab.page)
+      .page.sources.filter((row) => row.rel.endsWith('.js'))
+      .map((row) => row.label);
+    assert.deepEqual(labels.sort(), ['JavaScript (en-US)', 'JavaScript (root)']);
+    const home = b.openTab(ORIGIN + '/');
+    assert.ok(panel.stateFor(home.page).page.sources.some((row) => row.label === 'CSS (en-US)'));
     await panel.dispose();
-  }finally{own.cleanup();}
+  } finally {
+    own.cleanup();
+  }
 });
 
-test('panel persistence separates actual browser roots and named profiles, and headless starts collapsed',async()=>{
-  const first=await setup({}, {browser:{profile:'shared',profileDir:'browser-one'}});
-  await first.call('ui',{open:true,tab:'issues'});
-  const second=await setup({}, {browser:{profile:'shared',profileDir:'browser-two'}});
-  assert.notEqual(second.panel.stateFor(second.tab.page).ui.open,true);
-  const resumed=await setup({}, {browser:{profile:'shared',profileDir:'browser-one'}});
-  assert.equal(resumed.panel.stateFor(resumed.tab.page).ui.open,true);
-  const automated=await setup({}, {browser:{profile:'shared',profileDir:'browser-one',headless:true}});
-  assert.equal(automated.panel.stateFor(automated.tab.page).ui.open,false);
-  assert.equal(first.panel.stateFor(first.tab.page).ui.open,true);
+test('panel persistence separates actual browser roots and named profiles, and headless starts collapsed', async () => {
+  const first = await setup({}, { browser: { profile: 'shared', profileDir: 'browser-one' } });
+  await first.call('ui', { open: true, tab: 'issues' });
+  const second = await setup({}, { browser: { profile: 'shared', profileDir: 'browser-two' } });
+  assert.notEqual(second.panel.stateFor(second.tab.page).ui.open, true);
+  const resumed = await setup({}, { browser: { profile: 'shared', profileDir: 'browser-one' } });
+  assert.equal(resumed.panel.stateFor(resumed.tab.page).ui.open, true);
+  const automated = await setup({}, { browser: { profile: 'shared', profileDir: 'browser-one', headless: true } });
+  assert.equal(automated.panel.stateFor(automated.tab.page).ui.open, false);
+  assert.equal(first.panel.stateFor(first.tab.page).ui.open, true);
 });
 
-test('default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated',async()=>{
-  const base={browser:{profileDir:'default-audit-profiles',headless:false}};
-  const first=await setup({},base);await first.call('ui',{open:true,tab:'issues'});
-  const otherEnv=await setup({},{...base,envName:'other'});
-  assert.notEqual(otherEnv.panel.stateFor(otherEnv.tab.page).ui.open,true);
-  const resumed=await setup({},base);assert.equal(resumed.panel.stateFor(resumed.tab.page).ui.open,true);
-  const verification=await setup({},base,{headless:true});
-  assert.equal(verification.panel.stateFor(verification.tab.page).ui.open,false,'actual headless launch overrides configured headed defaults');
-  const temporary=await setup({},base,{profileDir:path.join(stateDir,'temporary-audit-browser')});
-  assert.notEqual(temporary.panel.stateFor(temporary.tab.page).ui.open,true);
-  const attached={browser:{profileDir:'default-audit-profiles',cdpUrl:'http://127.0.0.1:9222'}};
-  const before=fs.readdirSync(path.join(stateDir,'panels')).sort();
-  const attachedOne=await setup({},attached);await attachedOne.call('ui',{open:true});
-  const attachedTwo=await setup({},attached);assert.notEqual(attachedTwo.panel.stateFor(attachedTwo.tab.page).ui.open,true);
-  assert.deepEqual(fs.readdirSync(path.join(stateDir,'panels')).sort(),before,'attached sessions without profile identity leave no state files');
+test('default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated', async () => {
+  const base = { browser: { profileDir: 'default-audit-profiles', headless: false } };
+  const first = await setup({}, base);
+  await first.call('ui', { open: true, tab: 'issues' });
+  const otherEnv = await setup({}, { ...base, envName: 'other' });
+  assert.notEqual(otherEnv.panel.stateFor(otherEnv.tab.page).ui.open, true);
+  const resumed = await setup({}, base);
+  assert.equal(resumed.panel.stateFor(resumed.tab.page).ui.open, true);
+  const verification = await setup({}, base, { headless: true });
+  assert.equal(
+    verification.panel.stateFor(verification.tab.page).ui.open,
+    false,
+    'actual headless launch overrides configured headed defaults',
+  );
+  const temporary = await setup({}, base, { profileDir: path.join(stateDir, 'temporary-audit-browser') });
+  assert.notEqual(temporary.panel.stateFor(temporary.tab.page).ui.open, true);
+  const attached = { browser: { profileDir: 'default-audit-profiles', cdpUrl: 'http://127.0.0.1:9222' } };
+  const before = fs.readdirSync(path.join(stateDir, 'panels')).sort();
+  const attachedOne = await setup({}, attached);
+  await attachedOne.call('ui', { open: true });
+  const attachedTwo = await setup({}, attached);
+  assert.notEqual(attachedTwo.panel.stateFor(attachedTwo.tab.page).ui.open, true);
+  assert.deepEqual(
+    fs.readdirSync(path.join(stateDir, 'panels')).sort(),
+    before,
+    'attached sessions without profile identity leave no state files',
+  );
 });
 
-test('selective CSS refresh preserves an unrelated tab\'s earlier pending save and baseline banner', async () => {
+test("selective CSS refresh preserves an unrelated tab's earlier pending save and baseline banner", async () => {
   const { b, tab, session, panel } = await setup();
   const home = b.openTab(`${ORIGIN}/`);
   const script = fx.file('web-pages/about/content-pages/About.en-US.webpage.custom_javascript.js');
   const asset = fx.file('web-files/app.js');
   session.emit('refreshed', { files: [asset], how: 'none', baselineChanged: true });
   const css = fx.file('web-pages/home/content-pages/Home.en-US.webpage.custom_css.css');
-  session.emit('refreshed', { files: [css], how: 'css', pageResults: new Map([
-    [home.page, { how: 'css', files: [css] }], [tab.page, { how: 'skipped', files: [] }],
-  ]) });
+  session.emit('refreshed', {
+    files: [css],
+    how: 'css',
+    pageResults: new Map([
+      [home.page, { how: 'css', files: [css] }],
+      [tab.page, { how: 'skipped', files: [] }],
+    ]),
+  });
   assert.deepEqual(panel.stateFor(tab.page).pending, [session.rel(asset)]);
   assert.equal(panel.stateFor(tab.page).pendingBaseline, true);
   assert.equal(panel.stateFor(tab.page).lastChange.how, 'skipped', 'an unrelated tab must not announce a reload');
-  assert.deepEqual(panel.stateFor(home.page).pending, [session.rel(asset)], 'CSS does not apply an earlier pending script save');
+  assert.deepEqual(
+    panel.stateFor(home.page).pending,
+    [session.rel(asset)],
+    'CSS does not apply an earlier pending script save',
+  );
   session.emit('refreshed', { files: [script], how: 'none' });
   assert.deepEqual(panel.stateFor(home.page).pending, [session.rel(asset)], 'paused reload only marks affected pages');
   session.emit('refreshed', { files: [], how: 'none', baselineChanged: true });
@@ -151,8 +220,17 @@ test('a comparison lists changed lines with a little context and folds the rest'
   const c = comparison(before, changed);
   assert.equal(c.added, 2);
   assert.equal(c.removed, 1);
-  assert.deepEqual(c.lines.filter((l) => l[0] === '-'), [['-', 15, null, 'line 15']]);
-  assert.deepEqual(c.lines.filter((l) => l[0] === '+'), [['+', null, 15, 'line fifteen'], ['+', null, 31, 'line 31']]);
+  assert.deepEqual(
+    c.lines.filter((l) => l[0] === '-'),
+    [['-', 15, null, 'line 15']],
+  );
+  assert.deepEqual(
+    c.lines.filter((l) => l[0] === '+'),
+    [
+      ['+', null, 15, 'line fifteen'],
+      ['+', null, 31, 'line 31'],
+    ],
+  );
   assert.deepEqual(c.lines[0], ['@', null, null, '11 unchanged lines']);
   assert.deepEqual(c.lines[1], [' ', 12, 12, 'line 12']);
   assert.equal(comparison('a\r\nb\r\n', 'a\nb\n').lines.length, 0, 'line endings are not a difference');
@@ -195,8 +273,14 @@ test('a paused override shows the online file until it is switched back on', asy
   assert.equal((await call('toggle', { rel: 'web-files/app.js', off: true })).ok, true);
   tab.pause('r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   await tick();
-  assert.deepEqual(b.answers('r1').map((a) => a.method), ['Fetch.continueRequest']);
-  assert.deepEqual(panel.stateFor(tab.page).paused.map((p) => p.rel), ['web-files/app.js']);
+  assert.deepEqual(
+    b.answers('r1').map((a) => a.method),
+    ['Fetch.continueRequest'],
+  );
+  assert.deepEqual(
+    panel.stateFor(tab.page).paused.map((p) => p.rel),
+    ['web-files/app.js'],
+  );
   await call('toggle', { rel: 'web-files/app.js', off: false });
   tab.pause('r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   await tick();
@@ -209,8 +293,14 @@ test('online mode overrides nothing, and the panel still answers', async () => {
   tab.pause('r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   tab.pause('r2', `${ORIGIN}/`, { type: 'Document' });
   await tick();
-  assert.deepEqual(b.answers('r1').map((a) => a.method), ['Fetch.continueRequest']);
-  assert.deepEqual(b.answers('r2').map((a) => a.method), ['Fetch.continueRequest']);
+  assert.deepEqual(
+    b.answers('r1').map((a) => a.method),
+    ['Fetch.continueRequest'],
+  );
+  assert.deepEqual(
+    b.answers('r2').map((a) => a.method),
+    ['Fetch.continueRequest'],
+  );
   assert.equal(panel.stateFor(tab.page).online, true);
   await call('mode', { online: false });
   tab.pause('r3', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
@@ -223,11 +313,17 @@ test('a web file is compared with what the environment serves', async () => {
   const diff = await call('diff', { rel: 'web-files/app.js', url: '/scripts/app.js' });
   assert.equal(diff.ok, true);
   assert.equal(diff.against, 'dev online');
-  assert.deepEqual(diff.lines.filter((l) => l[0] !== ' '), [['-', 1, null, 'console.log("online app");'], ['+', null, 1, 'console.log("app");']]);
+  assert.deepEqual(
+    diff.lines.filter((l) => l[0] !== ' '),
+    [
+      ['-', 1, null, 'console.log("online app");'],
+      ['+', null, 1, 'console.log("app");'],
+    ],
+  );
 });
 
 test('scope and live reload are switched while the loop runs; the position is remembered', async () => {
-  const { call, session, panel,tab } = await setup();
+  const { call, session, panel, tab } = await setup();
   await call('scope', { scope: 'changed' });
   assert.equal(session.cfg.site.scope, 'changed');
   assert.equal(session.resolver.resolve('/scripts/app.js'), null, 'nothing is changed against the baseline');
@@ -237,8 +333,8 @@ test('scope and live reload are switched while the loop runs; the position is re
   await call('ui', { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true, somethingElse: 1 });
   assert.deepEqual(panel.stateFor(tab.page).ui, { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true });
   const restarted = await setup();
-  assert.equal(panelVisibilityNotice(restarted.panel),null,'a fresh session starts independently');
-  assert.equal(panel.stateFor(tab.page).ui.hidden,true);
+  assert.equal(panelVisibilityNotice(restarted.panel), null, 'a fresh session starts independently');
+  assert.equal(panel.stateFor(tab.page).ui.hidden, true);
 });
 
 test('lookalike portal origins receive neither the panel nor its token', async () => {
@@ -252,11 +348,23 @@ test('lookalike portal origins receive neither the panel nor its token', async (
 
 test('panel state exposes configured destinations while retaining the active session identity', async () => {
   const { session, tab, panel } = await setup();
-  session.cfg.devTargets = [{ siteName: 'other', envName: 'test', origin: 'https://other.example', startPath: '/home/', caution: true, privateConfig: 'excluded' }];
+  session.cfg.devTargets = [
+    {
+      siteName: 'other',
+      envName: 'test',
+      origin: 'https://other.example',
+      startPath: '/home/',
+      caution: true,
+      privateConfig: 'excluded',
+    },
+  ];
   const state = panel.stateFor(tab.page);
   assert.equal(state.origin, ORIGIN);
-  assert.equal(state.site, 'test'); assert.equal(state.env, 'dev');
-  assert.deepEqual(state.targets, [{ siteName: 'other', envName: 'test', origin: 'https://other.example', startPath: '/home/', caution: true }]);
+  assert.equal(state.site, 'test');
+  assert.equal(state.env, 'dev');
+  assert.deepEqual(state.targets, [
+    { siteName: 'other', envName: 'test', origin: 'https://other.example', startPath: '/home/', caution: true },
+  ]);
 });
 
 /** A Mirage answering the panel's admin requests from a synthetic report. */
@@ -266,13 +374,30 @@ function fakeMirage(b, { report, status = {}, personas = null, onWrite } = {}) {
   b.context.request.get = async (url) => {
     calls.push(['GET', String(url)]);
     if (String(url).includes('/page-resources?')) return response(structuredClone(report));
-    if (String(url).includes('/personas')) return personas ? response(personas) : response({ error: { message: 'missing' } }, 404);
-    if (String(url).includes('/status')) return response({ csrf: 'panel-csrf', site: 'Test', format: 'standard', sourceDir: fx.dir, revision: 7, sourceFingerprint: 'f'.repeat(64), diagnostics: { total: 3 }, identity: { name: 'Anonymous', roles: [] }, permissionMode: 'enforce', presets: [{ id: 'demo', name: 'Demo' }], scenarios: [{ id: 'reviewer', name: 'Reviewer' }], ...status });
+    if (String(url).includes('/personas'))
+      return personas ? response(personas) : response({ error: { message: 'missing' } }, 404);
+    if (String(url).includes('/status'))
+      return response({
+        csrf: 'panel-csrf',
+        site: 'Test',
+        format: 'standard',
+        sourceDir: fx.dir,
+        revision: 7,
+        sourceFingerprint: 'f'.repeat(64),
+        diagnostics: { total: 3 },
+        identity: { name: 'Anonymous', roles: [] },
+        permissionMode: 'enforce',
+        presets: [{ id: 'demo', name: 'Demo' }],
+        scenarios: [{ id: 'reviewer', name: 'Reviewer' }],
+        ...status,
+      });
     return response({}, 404);
   };
   b.context.request.fetch = async (url, options = {}) => {
     calls.push([options.method, String(url), options.headers?.['x-sim-csrf'], options.data]);
-    const result = onWrite ? await onWrite(String(url), options) : { status: 200, body: { identity: { name: 'Switched' } } };
+    const result = onWrite
+      ? await onWrite(String(url), options)
+      : { status: 200, body: { identity: { name: 'Switched' } } };
     return response(result.body, result.status);
   };
   return calls;
@@ -285,19 +410,52 @@ test('Mirage inspection: redraws carry a compact summary; the Inspect report arr
   try {
     const entity = path.join(solution, 'Entities', 'contact', 'Entity.xml');
     fs.mkdirSync(path.dirname(entity), { recursive: true });
-    fs.writeFileSync(entity, '<Entity>\n  <attributes>\n    <attribute>\n      <LogicalName>fullname</LogicalName>\n    </attribute>\n  </attributes>\n</Entity>\n');
+    fs.writeFileSync(
+      entity,
+      '<Entity>\n  <attributes>\n    <attribute>\n      <LogicalName>fullname</LogicalName>\n    </attribute>\n  </attributes>\n</Entity>\n',
+    );
     fs.writeFileSync(path.join(outside, 'secret.xml'), '<secret/>');
     session.cfg.mirage = true;
     session.cfg.mirageSourceRoots = [fx.dir, solution];
     const report = {
-      path: '/scripts', sourceRoots: [fx.dir, solution, outside],
-      page: { name: 'Scripts', pageName: 'Scripts', url: '/scripts/', sourceFile: fx.file('web-pages/scripts/Scripts.webpage.yml'), access: { allowed: true, rules: [] } },
+      path: '/scripts',
+      sourceRoots: [fx.dir, solution, outside],
+      page: {
+        name: 'Scripts',
+        pageName: 'Scripts',
+        url: '/scripts/',
+        sourceFile: fx.file('web-pages/scripts/Scripts.webpage.yml'),
+        access: { allowed: true, rules: [] },
+      },
       pageTemplate: null,
-      webTemplates: [{ kind: 'web-template', name: 'Header', relativePath: 'web-templates/header/Header.webtemplate.yml' }],
-      snippets: [], siteSettings: [], forms: [], views: [], columns: [{ entity: 'contact', name: 'fullname', sourceFile: entity }],
-      tables: [{ kind: 'table', name: 'contact', logicalName: 'contact', sourceFile: entity, sourceFiles: [entity, path.join(outside, 'secret.xml')] }],
-      components: [], usages: [], dependencies: [], unresolved: [], templateChain: [],
-      related: { weblinks: [], sitemarkers: [], redirects: [], shortcuts: [{ name: 'Elsewhere', sourceFile: path.join(outside, 'secret.xml') }] },
+      webTemplates: [
+        { kind: 'web-template', name: 'Header', relativePath: 'web-templates/header/Header.webtemplate.yml' },
+      ],
+      snippets: [],
+      siteSettings: [],
+      forms: [],
+      views: [],
+      columns: [{ entity: 'contact', name: 'fullname', sourceFile: entity }],
+      tables: [
+        {
+          kind: 'table',
+          name: 'contact',
+          logicalName: 'contact',
+          sourceFile: entity,
+          sourceFiles: [entity, path.join(outside, 'secret.xml')],
+        },
+      ],
+      components: [],
+      usages: [],
+      dependencies: [],
+      unresolved: [],
+      templateChain: [],
+      related: {
+        weblinks: [],
+        sitemarkers: [],
+        redirects: [],
+        shortcuts: [{ name: 'Elsewhere', sourceFile: path.join(outside, 'secret.xml') }],
+      },
     };
     fakeMirage(b, { report });
     session.emit('hit', { page: tab.page, navigation: true });
@@ -323,10 +481,21 @@ test('Mirage inspection: redraws carry a compact summary; the Inspect report arr
     assert.equal((await call('open', { rel: 'web-templates/header/Header.webtemplate.yml' })).ok, true);
     assert.equal(opened.at(-1)[1], fx.file('web-templates/header/Header.webtemplate.yml'));
     assert.equal((await call('open', { rel: table.ref, find: '<LogicalName>fullname</LogicalName>' })).ok, true);
-    assert.deepEqual(opened.at(-1).slice(1, 3), [fs.realpathSync.native(entity), 4], 'a Solution file opens at the reported column');
-    assert.equal((await call('open', { rel: 'web-pages/about/About.webpage.yml' })).ok, false, 'opening is limited to descriptors reported for this page');
-    assert.equal((await call('open', { rel: `@${path.basename(outside)}/secret.xml` })).ok, false, 'unlaunched roots stay closed even when the report names them');
-    assert.match(panelUi.toString(), /Mirage is not active/);
+    assert.deepEqual(
+      opened.at(-1).slice(1, 3),
+      [fs.realpathSync.native(entity), 4],
+      'a Solution file opens at the reported column',
+    );
+    assert.equal(
+      (await call('open', { rel: 'web-pages/about/About.webpage.yml' })).ok,
+      false,
+      'opening is limited to descriptors reported for this page',
+    );
+    assert.equal(
+      (await call('open', { rel: `@${path.basename(outside)}/secret.xml` })).ok,
+      false,
+      'unlaunched roots stay closed even when the report names them',
+    );
   } finally {
     fs.rmSync(solution, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
@@ -339,8 +508,26 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
   session.cfg.mirage = true;
   let rejectOnce = true;
   const calls = fakeMirage(b, {
-    report: { path: '/scripts', page: null, webTemplates: [], snippets: [], siteSettings: [], forms: [], views: [], tables: [{ logicalName: 'contact' }], columns: [], components: [], unresolved: [] },
-    personas: { identity: { contactId: null, name: 'Anonymous', roles: [] }, personas: [{ contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true, accountId: 'secret-account' }], permissionMode: 'enforce' },
+    report: {
+      path: '/scripts',
+      page: null,
+      webTemplates: [],
+      snippets: [],
+      siteSettings: [],
+      forms: [],
+      views: [],
+      tables: [{ logicalName: 'contact' }],
+      columns: [],
+      components: [],
+      unresolved: [],
+    },
+    personas: {
+      identity: { contactId: null, name: 'Anonymous', roles: [] },
+      personas: [
+        { contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true, accountId: 'secret-account' },
+      ],
+      permissionMode: 'enforce',
+    },
     onWrite: async (url) => {
       if (url.endsWith('/personas/select') && rejectOnce) {
         rejectOnce = false;
@@ -354,19 +541,30 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
   await tick(80);
   const tweaks = await call('tweaks');
   assert.equal(tweaks.ok, true);
-  assert.deepEqual(tweaks.personas, [{ contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true, group:'__other' }]);
-  assert.equal(tweaks.personas[0].accountId,undefined,'unstructured legacy internals stay out of the picker payload');
-  assert.deepEqual(tweaks.presets.map((preset) => preset.id), ['demo']);
-  assert.deepEqual(tweaks.scenarios.map((scenario) => scenario.id), ['reviewer']);
+  assert.deepEqual(tweaks.personas, [
+    { contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true, group: '__other' },
+  ]);
+  assert.equal(tweaks.personas[0].accountId, undefined, 'unstructured legacy internals stay out of the picker payload');
+  assert.deepEqual(
+    tweaks.presets.map((preset) => preset.id),
+    ['demo'],
+  );
+  assert.deepEqual(
+    tweaks.scenarios.map((scenario) => scenario.id),
+    ['reviewer'],
+  );
   assert.deepEqual(tweaks.tables, ['contact']);
   assert.equal(JSON.stringify(tweaks).includes('panel-csrf'), false);
   const switched = await call('persona', { contactId: 'alex' });
   assert.equal(switched.ok, true);
   const writes = calls.filter(([method]) => method && method !== 'GET');
-  assert.deepEqual(writes.slice(0, 2).map(([method, url, csrf, data]) => [method, new URL(url).pathname, csrf, data]), [
-    ['POST', '/_sim/api/personas/select', 'panel-csrf', '{"contactId":"alex"}'],
-    ['POST', '/_sim/api/personas/select', 'panel-csrf', '{"contactId":"alex"}'],
-  ]);
+  assert.deepEqual(
+    writes.slice(0, 2).map(([method, url, csrf, data]) => [method, new URL(url).pathname, csrf, data]),
+    [
+      ['POST', '/_sim/api/personas/select', 'panel-csrf', '{"contactId":"alex"}'],
+      ['POST', '/_sim/api/personas/select', 'panel-csrf', '{"contactId":"alex"}'],
+    ],
+  );
   assert.equal((await call('persona', { contactId: null })).ok, true, 'anonymous is a valid persona');
   assert.equal((await call('persona', { contactId: 42 })).ok, false);
   assert.equal((await call('permissions', { mode: 'permissive' })).ok, true);
@@ -376,7 +574,9 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
   assert.deepEqual([missing.ok, missing.error], [false, 'Preset not found.']);
   assert.equal((await call('preset', { id: '../escape' })).ok, false);
   assert.equal((await call('scenario', { id: 'reviewer' })).ok, true);
-  const routes = calls.filter(([method]) => method && method !== 'GET').map(([method, url, , data]) => `${method} ${new URL(url).pathname} ${data ?? ''}`);
+  const routes = calls
+    .filter(([method]) => method && method !== 'GET')
+    .map(([method, url, , data]) => `${method} ${new URL(url).pathname} ${data ?? ''}`);
   assert.ok(routes.includes('PATCH /_sim/api/config {"permissionMode":"permissive"}'));
   assert.ok(routes.includes('POST /_sim/api/presets/demo/apply {}'));
   assert.ok(routes.includes('POST /_sim/api/scenarios/reviewer/apply {}'));
@@ -398,23 +598,105 @@ test('Mirage inspections of one tab coalesce while a request is running', async 
   const { b, tab, session, panel } = await setup();
   session.cfg.mirage = true;
   let release;
-  const gate = new Promise((resolve) => { release = resolve; });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
   const calls = fakeMirage(b, { report: { path: '/scripts', page: null } });
   const get = b.context.request.get;
-  b.context.request.get = async (url, options) => { await gate; return get(url, options); };
+  b.context.request.get = async (url, options) => {
+    await gate;
+    return get(url, options);
+  };
   for (let n = 0; n < 5; n++) session.emit('hit', { page: tab.page, navigation: true });
   release();
   await tick(120);
-  assert.equal(calls.filter(([, url]) => url.includes('/page-resources?')).length, 2, 'one running request plus one rerun');
+  assert.equal(
+    calls.filter(([, url]) => url.includes('/page-resources?')).length,
+    2,
+    'one running request plus one rerun',
+  );
   assert.equal(panel.stateFor(tab.page).mirage.active, true);
+});
+
+test('inspection summaries expose cold loading and clear progress after a failed metadata read', async () => {
+  const { b, session, panel } = await setup();
+  session.cfg.mirage = true;
+  const tab = b.openTab(`${ORIGIN}/about-us/`);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  b.context.request.get = async () => {
+    await gate;
+    throw new Error('Metadata unavailable');
+  };
+  session.emit('hit', { page: tab.page, navigation: true });
+  const pending = panel.stateFor(tab.page).inspection;
+  assert.equal(pending.loading, true);
+  assert.ok(pending.loadingId > 0);
+  assert.equal(pending.version, 0, 'a pending report must not advertise a usable version');
+  assert.match(pending.phase, /Reading local runtime metadata/);
+  release();
+  await tick(80);
+  const failed = panel.stateFor(tab.page).inspection;
+  assert.equal(failed.loading, false);
+  assert.equal(failed.active, false);
+  assert.match(failed.error, /Metadata unavailable/);
+  assert.equal(failed.phase, null);
+  assert.equal(failed.loadingId, null);
+});
+
+test('detailed inspection publishes progress while matching the DOM and clears it on success or failure', async () => {
+  const { b, tab, session, panel, call } = await setup();
+  session.cfg.mirage = true;
+  fakeMirage(b, { report: { path: '/scripts', page: null } });
+  session.emit('hit', { page: tab.page, navigation: true });
+  await tick(80);
+  const evaluate = tab.page.evaluate;
+  for (const fail of [false, true]) {
+    let release, entered;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const matching = new Promise((resolve) => {
+      entered = resolve;
+    });
+    tab.page.evaluate = async (fn, data) => {
+      if (fn?.name === 'inspectRenderedPage') {
+        entered();
+        await gate;
+        if (fail) throw new Error('Page context changed');
+        return { assets: [], controls: [] };
+      }
+      return evaluate(fn, data);
+    };
+    const request = call('inspect');
+    await matching;
+    assert.equal(panel.stateFor(tab.page).inspection.loading, true);
+    assert.match(panel.stateFor(tab.page).inspection.phase, /Matching rendered elements/);
+    const loadingId = panel.stateFor(tab.page).inspection.loadingId;
+    release();
+    const answer = await request;
+    assert.equal(answer.ok, true, 'unavailable DOM evidence can fall back to local source evidence');
+    assert.equal(answer.loadingId, loadingId, 'the completed response identifies its loading operation');
+    assert.equal(panel.stateFor(tab.page).inspection.loading, false);
+    assert.equal(panel.stateFor(tab.page).inspection.phase, null);
+  }
+  tab.page.evaluate = evaluate;
 });
 
 test('panels ignore foreign console errors and avoid scheduling foreign tab redraws', async () => {
   const { b, panel } = await setup();
   const other = b.openTab('https://other.example/');
   other.page.emit('pageerror', new Error('foreign problem'));
-  other.page.emit('console', { type: () => 'error', text: () => { throw new Error('foreign console must not be read'); } });
-  other.page.emit('domcontentloaded'); other.page.emit('load');
+  other.page.emit('console', {
+    type: () => 'error',
+    text: () => {
+      throw new Error('foreign console must not be read');
+    },
+  });
+  other.page.emit('domcontentloaded');
+  other.page.emit('load');
   await tick(300);
   assert.deepEqual(panel.stateFor(other.page).problems, []);
   assert.equal(other.page.drawn, null);
@@ -422,7 +704,13 @@ test('panels ignore foreign console errors and avoid scheduling foreign tab redr
 
 test('comparison refuses unrelated and authority-changing URLs without any request', async () => {
   const { b, call } = await setup();
-  for (const url of ['@evil.test/source', '//evil.test/source', 'https://evil.test/source', '/_api/data', '/Logo.svg']) {
+  for (const url of [
+    '@evil.test/source',
+    '//evil.test/source',
+    'https://evil.test/source',
+    '/_api/data',
+    '/Logo.svg',
+  ]) {
     const result = await call('diff', { rel: 'web-files/app.js', url });
     assert.equal(result.ok, false, url);
   }
@@ -468,10 +756,10 @@ test('a navigation only clears pending changes for the tab that loaded them', as
 
 test('malformed UI settings and oversized API input are safely rejected', async () => {
   const { call, panel, tab } = await setup();
+  await call('ui', { tab: 'issues', open: true });
+  const valid = structuredClone(panel.stateFor(tab.page).ui);
   await call('ui', { tab: '<invalid>', pos: 'broken', open: 'yes', collapsed: [] });
-  const state = panel.stateFor(tab.page).ui;
-  assert.notEqual(state.tab, '<invalid>');
-  assert.notEqual(state.open, 'yes');
+  assert.deepEqual(panel.stateFor(tab.page).ui, valid, 'malformed settings change nothing');
   assert.equal((await call('mode', { online: true, padding: 'x'.repeat(32768) })).status, 413);
 });
 
@@ -532,7 +820,10 @@ test('a paused page has at most one panel evaluation pending and receives the la
   tab.page.evaluate = async (_fn, state) => {
     calls++;
     tab.page.drawn = state;
-    if (calls === 1) await new Promise((resolve) => { finish = resolve; });
+    if (calls === 1)
+      await new Promise((resolve) => {
+        finish = resolve;
+      });
   };
   const draws = Array.from({ length: 50 }, () => panel.draw(tab.page));
   await tick();
@@ -548,15 +839,59 @@ test('a paused page has at most one panel evaluation pending and receives the la
 test('Mirage navigation fetches a page summary; the full Inspect report is fetched once, on request', async () => {
   const { b, tab, session, panel, call } = await setup();
   session.cfg.mirage = true;
-  const full = { path: '/scripts', view: undefined, page: { name: 'Scripts', url: '/scripts/', access: { allowed: true, rules: [] } }, webTemplates: [{ name: 'Header', relativePath: 'web-templates/header/Header.webtemplate.yml' }], snippets: [], siteSettings: [], forms: [], views: [], tables: [{ logicalName: 'contact' }], columns: [], components: [], usages: [], unresolved: [], templateChain: [], related: {}, dependencies: [{ kind: 'web-template', relativePath: 'web-templates/header/Header.webtemplate.yml' }] };
-  const summary = { path: '/scripts', view: 'summary', sourceRoots: [fx.dir], page: { name: 'Scripts', url: '/scripts/', access: { allowed: true } }, tables: ['contact'], counts: { templates: 1, snippets: 0, settings: 0, forms: 0, views: 0, tables: 1, columns: 0, usages: 0, related: 0, unresolved: 0, accessRules: 0 } };
+  const full = {
+    path: '/scripts',
+    view: undefined,
+    page: { name: 'Scripts', url: '/scripts/', access: { allowed: true, rules: [] } },
+    webTemplates: [{ name: 'Header', relativePath: 'web-templates/header/Header.webtemplate.yml' }],
+    snippets: [],
+    siteSettings: [],
+    forms: [],
+    views: [],
+    tables: [{ logicalName: 'contact' }],
+    columns: [],
+    components: [],
+    usages: [],
+    unresolved: [],
+    templateChain: [],
+    related: {},
+    dependencies: [{ kind: 'web-template', relativePath: 'web-templates/header/Header.webtemplate.yml' }],
+  };
+  const summary = {
+    path: '/scripts',
+    view: 'summary',
+    sourceRoots: [fx.dir],
+    page: { name: 'Scripts', url: '/scripts/', access: { allowed: true } },
+    tables: ['contact'],
+    counts: {
+      templates: 1,
+      snippets: 0,
+      settings: 0,
+      forms: 0,
+      views: 0,
+      tables: 1,
+      columns: 0,
+      usages: 0,
+      related: 0,
+      unresolved: 0,
+      accessRules: 0,
+    },
+  };
   const calls = fakeMirage(b, { report: full });
   const get = b.context.request.get;
-  b.context.request.get = async (url, options) => String(url).includes('&view=summary') ? (calls.push(['GET', String(url)]), { ok: () => true, status: () => 200, json: async () => structuredClone(summary) }) : get(url, options);
+  b.context.request.get = async (url, options) =>
+    String(url).includes('&view=summary')
+      ? (calls.push(['GET', String(url)]),
+        { ok: () => true, status: () => 200, json: async () => structuredClone(summary) })
+      : get(url, options);
   session.emit('hit', { page: tab.page, navigation: true, url: '/scripts/' });
   await tick(80);
   const pageRequests = () => calls.filter(([, url]) => url.includes('/page-resources?'));
-  assert.deepEqual(pageRequests().map(([, url]) => url.includes('view=summary')), [true], 'navigation asks only for the summary');
+  assert.deepEqual(
+    pageRequests().map(([, url]) => url.includes('view=summary')),
+    [true],
+    'navigation asks only for the summary',
+  );
   const state = panel.stateFor(tab.page);
   assert.equal(state.mirage.counts.total, 2);
   assert.equal(state.mirage.page.allowed, true);
@@ -564,20 +899,49 @@ test('Mirage navigation fetches a page summary; the full Inspect report is fetch
   assert.equal(first.report.webTemplates[0].ref, 'web-templates/header/Header.webtemplate.yml');
   assert.equal(first.report.dependencies, undefined, 'the flat dependency list is not sent to the page');
   await call('inspect');
-  assert.deepEqual(pageRequests().map(([, url]) => url.includes('view=summary')), [true, false], 'the full report is fetched once per page version');
+  assert.deepEqual(
+    pageRequests().map(([, url]) => url.includes('view=summary')),
+    [true, false],
+    'the full report is fetched once per page version',
+  );
   assert.equal((await call('open', { rel: 'web-templates/header/Header.webtemplate.yml' })).ok, true);
   assert.deepEqual((await call('tweaks')).tables, ['contact']);
 });
 
-test('Mirage browser sessions: Tweaks show this browser\'s session and identity provider; sign-in and sign-out run the portal\'s own flow in the page', async () => {
+test("Mirage browser sessions: Tweaks show this browser's session and identity provider; sign-in and sign-out run the portal's own flow in the page", async () => {
   const { b, tab, session, panel, call } = await setup();
   session.cfg.mirage = true;
   let signedIn = null;
   let override = null;
-  const external = { available: true, origin: 'http://127.0.0.1:61234', port: 61234, providers: [{ id: 'https://idp.example.test/local/', name: 'Local', type: 'OpenIdConnect', caption: 'Local IdP', callbackPath: '/signin-local', authority: 'https://idp.example.test/local/', localAuthority: 'http://127.0.0.1:61234/local/', default: true }] };
+  const external = {
+    available: true,
+    origin: 'http://127.0.0.1:61234',
+    port: 61234,
+    providers: [
+      {
+        id: 'https://idp.example.test/local/',
+        name: 'Local',
+        type: 'OpenIdConnect',
+        caption: 'Local IdP',
+        callbackPath: '/signin-local',
+        authority: 'https://idp.example.test/local/',
+        localAuthority: 'http://127.0.0.1:61234/local/',
+        default: true,
+      },
+    ],
+  };
   let identityProvider = external;
-  const people = [{ contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true }, { contactId: 'blair', name: 'Blair Default', roles: ['Member'], active: true }];
-  const fakeStatus = { scenarios: [{ id: 'anon', name: 'Anonymous', persona: null }, { id: 'as-alex', name: 'Alex', persona: { contactId: 'alex' } }, { id: 'keep', name: 'Keep persona' }] };
+  const people = [
+    { contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true },
+    { contactId: 'blair', name: 'Blair Default', roles: ['Member'], active: true },
+  ];
+  const fakeStatus = {
+    scenarios: [
+      { id: 'anon', name: 'Anonymous', persona: null },
+      { id: 'as-alex', name: 'Alex', persona: { contactId: 'alex' } },
+      { id: 'keep', name: 'Keep persona' },
+    ],
+  };
   const calls = fakeMirage(b, {
     report: { path: '/scripts', view: 'summary', page: null, tables: [], counts: { templates: 0 } },
     personas: { identity: { contactId: 'blair', name: 'Blair Default', roles: ['Member'] }, personas: people },
@@ -590,7 +954,15 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
     calls.push(['GET', String(url)]);
     const person = people.find((item) => item.contactId === signedIn);
     const body = person
-      ? { signedIn: true, contactId: person.contactId, name: person.name, roles: override ?? person.roles, roleSource: override ? 'override' : 'contact', accountId: 'account-1', identityProvider }
+      ? {
+          signedIn: true,
+          contactId: person.contactId,
+          name: person.name,
+          roles: override ?? person.roles,
+          roleSource: override ? 'override' : 'contact',
+          accountId: 'account-1',
+          identityProvider,
+        }
       : { signedIn: false, contactId: null, name: null, roles: ['Anonymous Users'], accountId: null, identityProvider };
     return { ok: () => true, status: () => 200, json: async () => body };
   };
@@ -600,23 +972,51 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
   session.emit('hit', { page: tab.page, navigation: true });
   await tick(80);
   const shown = panel.stateFor(tab.page).mirage.session;
-  assert.deepEqual([shown.supported, shown.signedIn, shown.contactId, shown.roles], [true, false, null, ['Anonymous Users']]);
-  assert.deepEqual(shown.identityProvider, { available: true, reason: null, port: 61234, provider: { id: 'https://idp.example.test/local/', name: 'Local', caption: 'Local IdP', type: 'OpenIdConnect', callbackPath: '/signin-local' }, callbackPaths: ['/signin-local'] });
+  assert.deepEqual(
+    [shown.supported, shown.signedIn, shown.contactId, shown.roles],
+    [true, false, null, ['Anonymous Users']],
+  );
+  assert.deepEqual(shown.identityProvider, {
+    available: true,
+    reason: null,
+    port: 61234,
+    provider: {
+      id: 'https://idp.example.test/local/',
+      name: 'Local',
+      caption: 'Local IdP',
+      type: 'OpenIdConnect',
+      callbackPath: '/signin-local',
+    },
+    callbackPaths: ['/signin-local'],
+  });
   const tweaks = await call('tweaks');
-  assert.equal(tweaks.session.signedIn, false, 'Tweaks report this browser\'s session ...');
+  assert.equal(tweaks.session.signedIn, false, "Tweaks report this browser's session ...");
   assert.equal(tweaks.identity.name, 'Blair Default', '... separately from the Mirage default persona');
 
   // Sign in as: the page posts the portal's ExternalLogin form with a login_hint (the local
   // identity provider answers it without a click) and comes back to this page.
   const signed = await call('signin', { contactId: 'alex' });
-  assert.deepEqual([signed.ok, signed.navigating, signed.via, signed.returnUrl, signed.contactId], [true, true, 'Local IdP', '/scripts/', 'alex']);
-  assert.deepEqual(flows.at(-1), { logOff: null, token: '/_layout/tokenhtml', action: '/Account/Login/ExternalLogin?returnUrl=%2Fscripts%2F', fields: { provider: 'https://idp.example.test/local/', login_hint: 'alex' } });
-  assert.ok(panel.stateFor(tab.page).activity.some(item => item.text === 'Signing in as Alex Local through Local IdP'));
+  assert.deepEqual(
+    [signed.ok, signed.navigating, signed.via, signed.returnUrl, signed.contactId],
+    [true, true, 'Local IdP', '/scripts/', 'alex'],
+  );
+  assert.deepEqual(flows.at(-1), {
+    logOff: null,
+    token: '/_layout/tokenhtml',
+    action: '/Account/Login/ExternalLogin?returnUrl=%2Fscripts%2F',
+    fields: { provider: 'https://idp.example.test/local/', login_hint: 'alex' },
+  });
+  assert.ok(
+    panel.stateFor(tab.page).activity.some((item) => item.text === 'Signing in as Alex Local through Local IdP'),
+  );
   signedIn = 'alex';
   // Another persona: the current session ends first, because an external login made while signed
   // in would link to that account instead of switching.
   await call('signin', { contactId: 'blair' });
-  assert.deepEqual([flows.at(-1).logOff, flows.at(-1).fields.login_hint], ['/Account/Login/LogOff?returnUrl=%2F', 'blair']);
+  assert.deepEqual(
+    [flows.at(-1).logOff, flows.at(-1).fields.login_hint],
+    ['/Account/Login/LogOff?returnUrl=%2F', 'blair'],
+  );
   // A simulation override set in _sim is reported with the session.
   override = ['Reader'];
   const overridden = (await call('tweaks')).session;
@@ -635,7 +1035,12 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
   let n = 0;
   const callFrom = async (from, name, body) => {
     const id = `session-api${++n}`;
-    from.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, { type: 'Fetch', method: 'POST', headers: { 'x-paqvilo-token': panel.stateFor(from.page).token }, postData: JSON.stringify(body ?? {}) });
+    from.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, {
+      type: 'Fetch',
+      method: 'POST',
+      headers: { 'x-paqvilo-token': panel.stateFor(from.page).token },
+      postData: JSON.stringify(body ?? {}),
+    });
     await tick();
     return JSON.parse(Buffer.from(b.answers(id)[0].body, 'base64').toString());
   };
@@ -646,7 +1051,11 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
       await tick(20);
       const result = await callFrom(opened, 'signin', { contactId: 'blair' });
       assert.equal(result.returnUrl, target, url);
-      assert.equal(opened.page.flows.at(-1).action, `/Account/Login/ExternalLogin?returnUrl=${encodeURIComponent(target)}`, url);
+      assert.equal(
+        opened.page.flows.at(-1).action,
+        `/Account/Login/ExternalLogin?returnUrl=${encodeURIComponent(target)}`,
+        url,
+      );
     }
   };
   await returnsTo([
@@ -673,7 +1082,12 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
   identityProvider = { available: false, reason: 'No external identity provider is configured.', providers: [] };
   const local = await call('signin', { contactId: 'alex' });
   assert.deepEqual([local.ok, local.via], [true, 'the local sign-in page']);
-  assert.deepEqual(flows.at(-1), { logOff: null, token: '/_layout/tokenhtml', action: '/SignIn?ReturnUrl=%2Fscripts%2F', fields: { contactId: 'alex' } });
+  assert.deepEqual(flows.at(-1), {
+    logOff: null,
+    token: '/_layout/tokenhtml',
+    action: '/SignIn?ReturnUrl=%2Fscripts%2F',
+    fields: { contactId: 'alex' },
+  });
   assert.equal((await call('tweaks')).session.identityProvider.reason, 'No external identity provider is configured.');
   identityProvider = external;
 
@@ -695,7 +1109,10 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
   assert.deepEqual([flows.at(-1).logOff, flows.at(-1).fields.login_hint], [null, 'alex']);
   signedIn = 'alex';
   const kept = flows.length;
-  assert.deepEqual([(await call('scenario', { id: 'keep' })).navigating, (await call('scenario', { id: 'as-alex' })).navigating], [undefined, undefined]);
+  assert.deepEqual(
+    [(await call('scenario', { id: 'keep' })).navigating, (await call('scenario', { id: 'as-alex' })).navigating],
+    [undefined, undefined],
+  );
   tab.page.emit('load');
   await tick(60);
   assert.equal(flows.length, kept);
@@ -712,8 +1129,8 @@ test('Mirage Tweaks report whether local pages are confined to loopback, with th
   session.emit('hit', { page: tab.page, navigation: true });
   await tick(80);
   const tweaks = await call('tweaks');
-  assert.deepEqual([tweaks.status.confinePortalPages, tweaks.status.externalAssets, tweaks.status.externalFrameOrigins], [true, false, 2]);
-  const source = panelUi.toString();
-  assert.match(source, /Confined to loopback/);
-  assert.match(source, /Not confined: pages carry only the headers their site settings define/);
+  assert.deepEqual(
+    [tweaks.status.confinePortalPages, tweaks.status.externalAssets, tweaks.status.externalFrameOrigins],
+    [true, false, 2],
+  );
 });

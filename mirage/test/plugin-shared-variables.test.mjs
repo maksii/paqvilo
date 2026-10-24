@@ -1,34 +1,77 @@
 import test from 'node:test';
-import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
-import {DataStore} from '../lib/data.mjs';
-import {prepareClrRuntime} from '../lib/plugin-clr.mjs';
-import {pluginCatalogue,runPluginPhase} from '../lib/exported-plugins.mjs';
+import { spawnSync } from 'node:child_process';
+import { DataStore } from '../lib/data.mjs';
+import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
-const user='10000000-0000-0000-0000-000000000001';
-const existing='20000000-0000-0000-0000-000000000001';
-const storeFixture=()=>new DataStore({state:{version:1,mappings:{widget:{entitySet:'widgets',idColumn:'widgetid'},child:{entitySet:'children',idColumn:'childid'}},tables:{widget:[{widgetid:existing,title:'Existing'}],child:[]},permissions:[],plugins:[],settings:{permissionMode:'permissive'}}});
+const user = '10000000-0000-0000-0000-000000000001';
+const existing = '20000000-0000-0000-0000-000000000001';
+const storeFixture = () =>
+  new DataStore({
+    state: {
+      version: 1,
+      mappings: {
+        widget: { entitySet: 'widgets', idColumn: 'widgetid' },
+        child: { entitySet: 'children', idColumn: 'childid' },
+      },
+      tables: { widget: [{ widgetid: existing, title: 'Existing' }], child: [] },
+      permissions: [],
+      plugins: [],
+      settings: { permissionMode: 'permissive' },
+    },
+  });
 
-test('Explicit error bodies reject unsupported plugin mocks just as supported mocks do',async()=>{
- for(const unsupported of [false,true]){
-  const store=storeFixture(),step={id:'30000000-0000-0000-0000-000000000001',enabled:true,entity:'widget',message:'Create',stage:10,rank:1,mode:0,supportedDeployment:0,filteringAttributes:[],images:[],typeName:'Invented.SharedAudit',assemblyId:'invented',...(unsupported?{impersonatingUserId:user}:{})};
-  const items=pluginCatalogue({plugins:{steps:[step]},overrides:{['plugin-step:'+step.id]:{mode:'mock',body:{error:{message:'Configured ordinary rejection'}}}}});
-  store.setPluginPipeline(context=>runPluginPhase({...context,store,items,handlers:new Map()}));
-  const before=store.snapshot();
-  await assert.rejects(store.create('widgets',{title:'Ordinary'}),error=>error.code==='PluginValidation'&&error.message==='Configured ordinary rejection');
-  assert.deepEqual(store.snapshot(),before);
- }
+test('Explicit error bodies reject unsupported plugin mocks just as supported mocks do', async () => {
+  for (const unsupported of [false, true]) {
+    const store = storeFixture(),
+      step = {
+        id: '30000000-0000-0000-0000-000000000001',
+        enabled: true,
+        entity: 'widget',
+        message: 'Create',
+        stage: 10,
+        rank: 1,
+        mode: 0,
+        supportedDeployment: 0,
+        filteringAttributes: [],
+        images: [],
+        typeName: 'Invented.SharedAudit',
+        assemblyId: 'invented',
+        ...(unsupported ? { impersonatingUserId: user } : {}),
+      };
+    const items = pluginCatalogue({
+      plugins: { steps: [step] },
+      overrides: {
+        ['plugin-step:' + step.id]: { mode: 'mock', body: { error: { message: 'Configured ordinary rejection' } } },
+      },
+    });
+    store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers: new Map() }));
+    const before = store.snapshot();
+    await assert.rejects(
+      store.create('widgets', { title: 'Ordinary' }),
+      (error) => error.code === 'PluginValidation' && error.message === 'Configured ordinary rejection',
+    );
+    assert.deepEqual(store.snapshot(), before);
+  }
 });
 
-test('Original DLL reads PreValidation variables through ParentContext across CRUD, ranks and nested SDK calls',{skip:process.platform!=='win32'||!process.env.PAQ_TEST_XRM_SDK},async t=>{
- const directory=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-plugin-shared-'));
- t.after(()=>fs.rm(directory,{recursive:true,force:true,maxRetries:5}));
- const sdk=path.resolve(process.env.PAQ_TEST_XRM_SDK),source=path.join(directory,'SharedAudit.cs'),assembly=path.join(directory,'SharedAudit.dll');
- await fs.writeFile(source,`using System;using Microsoft.Xrm.Sdk;
+test(
+  'Original DLL reads PreValidation variables through ParentContext across CRUD, ranks and nested SDK calls',
+  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugin-shared-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
+    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      source = path.join(directory, 'SharedAudit.cs'),
+      assembly = path.join(directory, 'SharedAudit.dll');
+    await fs.writeFile(
+      source,
+      `using System;using Microsoft.Xrm.Sdk;
  namespace Invented {public sealed class SharedAudit:IPlugin {
   public void Execute(IServiceProvider services){
    var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));
@@ -52,20 +95,87 @@ test('Original DLL reads PreValidation variables through ParentContext across CR
    }else if(c.Stage==40&&(string)c.SharedVariables["operation"]!=c.MessageName)throw new InvalidPluginExecutionException("PreOperation shared value did not survive PostOperation");
   }
  }}
- `);
- const build=spawnSync(path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,'/reference:System.Runtime.Serialization.dll',source],{encoding:'utf8',windowsHide:true});
- assert.equal(build.status,0,build.stdout+build.stderr);
- const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root:directory,assembly:path.basename(assembly),typeName:'Invented.SharedAudit',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(directory,'cache'),serviceProfile:{userId:user,evidence:'Invented documented SharedVariables contract',grants:[{entity:'child',operations:['create','read']}]},context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
- const steps=[];let index=0;
- for(const entity of ['widget','child'])for(const message of entity==='widget'?['Create','Update','Delete']:['Create'])for(const [stage,rank] of [[10,1],[10,2],[20,1],[40,1]])steps.push({id:'30000000-0000-0000-0000-'+String(++index).padStart(12,'0'),enabled:true,entity,message,stage,rank,mode:0,supportedDeployment:0,filteringAttributes:[],images:[],typeName:'Invented.SharedAudit',assemblyId:'invented',assemblyName:'SharedAudit'});
- const runtimes=new Map(steps.map(step=>[step.id,runtime])),overrides=Object.fromEntries(steps.map(step=>['plugin-step:'+step.id,{mode:'clr'}])),items=pluginCatalogue({plugins:{steps},runtimes,overrides}),notes=[];
- const store=storeFixture();store.setPluginPipeline(context=>runPluginPhase({...context,store,items,handlers:new Map(),runtimes,diagnostic:note=>notes.push(note)}));
- await store.create('widgets',{title:'Ordinary root'});
- await store.update('widgets',existing,{title:'Ordinary update'});
- await store.remove('widgets',existing);
- assert.equal(store.snapshot().tables.child.length,1);
- assert.equal(store.snapshot().tables.widget.length,1);
- assert.equal(notes.filter(note=>note.code==='PLUGIN_STEP_CLR_EXECUTED').length,16);
- const started=notes.filter(note=>note.code==='PLUGIN_CLR_HOST_STARTED'),stopped=notes.filter(note=>note.code==='PLUGIN_CLR_HOST_STOPPED');
- assert.equal(started.length,16);assert.equal(stopped.length,16);assert.ok(stopped.every(note=>note.absenceVerified));
-});
+ `,
+    );
+    const build = spawnSync(
+      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
+      [
+        '/nologo',
+        '/target:library',
+        '/out:' + assembly,
+        '/reference:' + sdk,
+        '/reference:System.Runtime.Serialization.dll',
+        source,
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    assert.equal(build.status, 0, build.stdout + build.stderr);
+    const runtime = await prepareClrRuntime({
+      trust: 'execute-local-assembly',
+      root: directory,
+      assembly: path.basename(assembly),
+      typeName: 'Invented.SharedAudit',
+      sdkRoot: path.dirname(sdk),
+      sdkAssembly: path.basename(sdk),
+      cacheRoot: path.join(directory, 'cache'),
+      serviceProfile: {
+        userId: user,
+        evidence: 'Invented documented SharedVariables contract',
+        grants: [{ entity: 'child', operations: ['create', 'read'] }],
+      },
+      context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+    });
+    const steps = [];
+    let index = 0;
+    for (const entity of ['widget', 'child'])
+      for (const message of entity === 'widget' ? ['Create', 'Update', 'Delete'] : ['Create'])
+        for (const [stage, rank] of [
+          [10, 1],
+          [10, 2],
+          [20, 1],
+          [40, 1],
+        ])
+          steps.push({
+            id: '30000000-0000-0000-0000-' + String(++index).padStart(12, '0'),
+            enabled: true,
+            entity,
+            message,
+            stage,
+            rank,
+            mode: 0,
+            supportedDeployment: 0,
+            filteringAttributes: [],
+            images: [],
+            typeName: 'Invented.SharedAudit',
+            assemblyId: 'invented',
+            assemblyName: 'SharedAudit',
+          });
+    const runtimes = new Map(steps.map((step) => [step.id, runtime])),
+      overrides = Object.fromEntries(steps.map((step) => ['plugin-step:' + step.id, { mode: 'clr' }])),
+      items = pluginCatalogue({ plugins: { steps }, runtimes, overrides }),
+      notes = [];
+    const store = storeFixture();
+    store.setPluginPipeline((context) =>
+      runPluginPhase({
+        ...context,
+        store,
+        items,
+        handlers: new Map(),
+        runtimes,
+        diagnostic: (note) => notes.push(note),
+      }),
+    );
+    await store.create('widgets', { title: 'Ordinary root' });
+    await store.update('widgets', existing, { title: 'Ordinary update' });
+    await store.remove('widgets', existing);
+    assert.equal(store.snapshot().tables.child.length, 1);
+    assert.equal(store.snapshot().tables.widget.length, 1);
+    assert.equal(notes.filter((note) => note.code === 'PLUGIN_STEP_CLR_EXECUTED').length, 16);
+    const started = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STARTED'),
+      stopped = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
+    assert.equal(started.length, 16);
+    assert.equal(stopped.length, 16);
+    assert.ok(stopped.every((note) => note.absenceVerified));
+  },
+);

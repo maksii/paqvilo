@@ -20,5 +20,7 @@ export function assertProjectOutput(file, root = packageRoot) {
   if (!file || !root.split(/[\\/]/).includes('node_modules')) return;
   const relative = path.relative(canonical(root), canonical(file));
   if (relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)))
-    throw new Error(`Project output cannot be written inside the installed package: ${file}. Select a consumer catalogue or project output path.`);
+    throw new Error(
+      `Project output cannot be written inside the installed package: ${file}. Select a consumer catalogue or project output path.`,
+    );
 }

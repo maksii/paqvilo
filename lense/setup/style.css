@@ -1,102 +1,943 @@
-:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#243047;background:#f4f6fa;line-height:1.5;font-size:15px;--accent:#3859cf;--border:#dce2ee}
-*{box-sizing:border-box}
-body{margin:0}
-a{color:var(--accent);text-underline-offset:3px}
-button,input,select,textarea{font:inherit}
-button,.button{border:1px solid transparent;border-radius:9px;background:var(--accent);color:white;font-weight:600;padding:10px 16px;cursor:pointer;text-decoration:none;display:inline-block}
-button:hover,.button:hover{filter:brightness(.96)}
-button:disabled{opacity:.55;cursor:wait}
-.secondary{background:white;border-color:var(--border);color:#35405b}
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #8ca3ff;outline-offset:3px}
-input,select,textarea{width:100%;border:1px solid #cbd4e3;border-radius:8px;padding:10px 12px;background:#fff;color:#243047}
-textarea{resize:vertical;min-height:90px}
-label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
-label small{display:block;font-weight:400;color:#66748c;margin:4px 0}
-.shell{display:grid;grid-template-columns:238px minmax(0,1fr);min-height:100vh}
-aside{background:#fff;border-right:1px solid var(--border);padding:30px 22px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column}
-.brand{display:flex;align-items:center;gap:12px;color:#253454;text-decoration:none;font-size:21px;font-weight:700}
-.mark{display:grid;place-items:center;width:40px;height:44px;border-radius:13px;background:#3859cf;color:white}
-.brand small{font-size:9px;letter-spacing:1.1px;display:block;color:#77829b}
-nav{display:grid;gap:8px;margin-top:44px}
-nav a{color:#596781;font-size:14px;text-decoration:none;padding:10px;border-radius:8px}
-nav a:hover{background:#f0f3ff;color:var(--accent)}
-.aside-foot{margin-top:auto;color:#596781;font-size:12px}
-.aside-foot small{display:block;margin-top:8px;color:#7a879c}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#198771;margin-right:7px}
-main{width:100%;max-width:1250px;padding:40px 44px 80px}
-header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:26px}
-h1{font-size:32px;letter-spacing:-1px;margin:7px 0 8px}
-h2{font-size:20px;letter-spacing:-.3px;margin:0}
-h3{font-size:17px;margin:0}
-p{margin:8px 0;color:#63718a}
-.eyebrow{font-size:10px;font-weight:700;letter-spacing:1.6px;color:#6d7e9f}
-.path{font:12px ui-monospace,Consolas,monospace;overflow-wrap:anywhere;color:#718099}
-.card,section{background:white;border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:20px;box-shadow:0 3px 14px #17274804}
-.section-head,.card-head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:18px}
-.section-head p{font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
-.field{margin-bottom:16px}
-.badge{display:inline-block;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:600;background:#edf7f2;color:#15745e;white-space:nowrap}
-.badge.warn{background:#fff4dd;color:#936019}
-.badge.neutral{background:#eef1f8;color:#60708d}
-.runtime,.intro{border-left:4px solid #5273dd;background:#f4f6ff;padding:14px 18px;border-radius:6px;margin-bottom:18px}
-.runtime.warn{background:#fff7e7;border-color:#d99a33}
-.findings{padding:0;list-style:none;margin:0}
-.findings li{border-top:1px solid #edf0f6;padding:12px 0;font-size:13px}
-.findings li:first-child{border-top:0}
-.findings strong{color:#4b5f96}
-.findings a{float:right;font-size:12px}
-.portals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
-.portals .card{margin:0}
-.source{background:#f6f8fc;border-radius:9px;padding:14px;margin:14px 0}
-.source p{font-size:12px}
-.env{display:flex;justify-content:space-between;gap:14px;align-items:center;font-size:13px;padding:10px 0;border-top:1px solid #edf0f6}
-.env .path{font-size:11px}
-.row{display:flex;gap:12px;align-items:center}
-.row>*{min-width:0}
-.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
-.hint{font-size:12px;color:#7b879e}
-.mono{font-family:ui-monospace,Consolas,monospace;font-size:13px}
-.yaml{min-height:310px;tab-size:2}
-.environment-editor{border:1px solid var(--border);border-radius:8px;padding:14px;margin:10px 0}
-.checkbox{display:flex;align-items:center;gap:8px;margin:0}
-.checkbox input{width:auto}
-.steps{padding-left:22px}
-.steps li{padding:7px 0;color:#576781}
-.steps strong{color:#243047}
-code{background:#f0f3fa;border-radius:4px;padding:2px 5px;font-size:12px}
-#notice{position:sticky;top:12px;z-index:2;background:#eaf5ef;border:1px solid #b5dac7;padding:14px;border-radius:10px;margin-bottom:20px;box-shadow:0 4px 20px #2430470c}
-#notice.error{background:#fff0ee;border-color:#efc2bb;color:#9b3827}
-.skip{position:absolute;top:-100px;left:20px;background:white;padding:10px;z-index:10}
-.skip:focus{top:10px}
-details>summary{cursor:pointer;font-weight:600;color:#3e558a;padding:10px 0}
-details[open]>summary{margin-bottom:12px}
-.links{display:flex;gap:18px;flex-wrap:wrap;font-size:13px}
-.empty{text-align:center;padding:24px}
-.hide{display:none!important}
-[hidden]{display:none!important}
-@media(max-width:1050px){main{padding:28px}
-.shell{grid-template-columns:200px 1fr}
-.portals{grid-template-columns:1fr}
+/* /_setup/-only extras. Tokens, base elements, the shell and every shared component come from ui-kit.css and
+   shell.css; this sheet adds the compact heading, stage rail, status strip, sections, forms, YAML editor and notice states.
+   Guidance lives in kit.info tooltips, so the page shows values and controls only. */
+
+/* Heading: the title and the configuration folder on one line. */
+.compact-heading {
+  align-items: baseline !important;
+  justify-content: flex-start !important;
+  flex-wrap: wrap;
+  gap: 4px 12px !important;
+  margin-bottom: 12px !important;
 }
-@media(max-width:700px){.shell{display:block}
-aside{height:auto;position:relative;padding:18px;border-right:0;border-bottom:1px solid var(--border)}
-nav{display:flex;overflow:auto;gap:2px;margin-top:16px;white-space:nowrap}
-.aside-foot{display:none}
-main{padding:24px 16px}
-.grid{grid-template-columns:1fr}
-header{align-items:flex-start}
-header>button{padding:8px;font-size:12px}
-h1{font-size:28px}
-.section-head{align-items:flex-start}
-.section-head .row{flex-wrap:wrap}
-.env{align-items:flex-start}
-.row{flex-wrap:wrap}
+.compact-heading h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.4px;
+}
+.compact-heading .code-text {
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
+/* View switch: Quick setup (plain-language steps) and All settings (every key). Quick setup hides the stage navigation. */
+.view-switch {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+}
+.view-option {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.view-option[aria-pressed='true'] {
+  background: var(--accent);
+  color: #fff;
+}
+body[data-setup-view='quick'] .all-only,
+body[data-setup-view='quick'] #stage-rail {
+  display: none !important;
+}
 
-header>div{min-width:0}
-#scope{overflow-wrap:anywhere}
-header>button{flex-shrink:0}
-.section-head>div{min-width:0}
-.section-head>select{width:auto;max-width:45%}
+/* Quick setup: one card of numbered steps; done steps collapse to a summary with Change. */
+.quick {
+  max-width: 920px;
+  padding: 20px 22px !important;
+}
+.quick-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 14px;
+}
+.quick-head h2 {
+  font-size: 19px;
+}
+.quick-head p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+.quick-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.quick-steps {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+.quick-step {
+  position: relative;
+  padding: 12px 0 14px 46px;
+  border-top: 1px solid var(--line);
+}
+.quick-step:first-child {
+  border-top: 0;
+}
+.quick-step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 30px;
+}
+.quick-num {
+  position: absolute;
+  left: 0;
+  top: 12px;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #eef1f7;
+  color: #5b6984;
+  font-size: 13px;
+  font-weight: 700;
+}
+.quick-step.is-done .quick-num {
+  background: var(--ui-ok-bg);
+  color: var(--ui-ok);
+}
+.quick-step.is-current .quick-num {
+  background: var(--accent);
+  color: #fff;
+}
+.quick-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.quick-title h3 {
+  margin: 4px 0 0;
+  font-size: 15px;
+}
+.quick-summary {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.quick-step.is-locked .quick-title h3 {
+  color: #98a3b8;
+}
+.quick-step-body {
+  margin-top: 10px;
+  font-size: 13.5px;
+}
+.quick-step-body > p {
+  margin: 0 0 10px;
+}
+.quick-form {
+  display: grid;
+  gap: 12px;
+}
+.quick-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.quick-group {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.quick-group legend {
+  margin-bottom: 6px;
+  color: #455773;
+  font-size: 12px;
+  font-weight: 650;
+}
+.quick-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.quick-choice.compact {
+  padding: 9px 12px;
+}
+.quick-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--ui-info-bg);
+}
+.quick-choice > input {
+  flex: none;
+  width: auto;
+  margin: 3px 0 0;
+}
+.quick-choice > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.quick-choice .muted {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.quick-inline {
+  margin-top: 4px;
+}
+.quick-field {
+  display: grid;
+  gap: 4px;
+  max-width: 420px;
+  margin: 0;
+}
+.quick-field textarea {
+  max-width: 100%;
+}
+.quick-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.quick-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fbf6ea;
+}
+.quick-warn {
+  color: #8a5300;
+  font-weight: 600;
+}
+.quick-error {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--ui-bad-bg);
+  color: var(--ui-bad);
+}
+.quick-error p {
+  margin: 0;
+}
+.quick-error details {
+  margin-top: 6px;
+  color: var(--ink, #1f2937);
+}
+.quick-error pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.quick-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--ui-info-bg);
+}
+/* Notices float, so a confirmation never moves the page under the pointer, and let clicks through to what they cover (they hold text only). */
+#notice {
+  position: fixed;
+  inset: auto 20px 20px auto;
+  z-index: 60;
+  pointer-events: none;
+  max-width: min(460px, calc(100vw - 40px));
+  margin: 0;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+}
+.quick-busy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-weight: 600;
+}
+.quick-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #c8d2e6;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: quick-spin 0.8s linear infinite;
+}
+@keyframes quick-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.quick-map {
+  margin: 6px 0 0;
+}
+.quick-choices legend {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.quick-field .muted {
+  font-weight: 400;
+}
+.quick-picked {
+  display: block;
+  margin: 2px 0 6px;
+  overflow-wrap: anywhere;
+}
+.quick-choice [data-pick-folder] {
+  justify-self: start;
+}
+.quick-folders {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.quick-folders:empty {
+  display: none;
+}
+.quick-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--ui-info-bg);
+  overflow-wrap: anywhere;
+}
+.quick-group > [data-pick-folder] {
+  justify-self: start;
+}
+/* All settings ends with room to spare, so the last section can scroll to the top and a shorter repaint never moves the page. */
+body[data-setup-view='all'] #content {
+  padding-bottom: 60vh;
+}
+/* All settings: a field with its Choose folder… action under it; the run controls of Start & check. */
+/* A simulator link wraps on narrow screens instead of widening the page. */
+.sim-link {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  text-align: left;
+}
+.pick-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+.pick-field > [data-pick-folder],
+.pick-field > [data-pick-file] {
+  justify-self: start;
+}
+.quick-run {
+  margin-bottom: 14px;
+}
+.form-grid .quick-choices {
+  margin-bottom: 4px;
+}
+.quick-opens {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.quick-opens li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.quick-opens a {
+  min-width: 168px;
+  justify-content: center;
+}
+.quick-locked {
+  margin: 2px 0 0;
+}
+.folder-picker {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3);
+}
+.folder-picker::backdrop {
+  background: rgba(15, 23, 42, 0.45);
+}
+.folder-picker-body {
+  display: grid;
+  gap: 10px;
+  padding: 18px 20px;
+}
+.folder-picker h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.folder-picker-body > p {
+  margin: 0;
+}
+.folder-picker-path {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.folder-picker-path label {
+  margin: 0;
+  font-weight: 600;
+}
+.folder-picker-here {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f3f5fa;
+  font-size: 13px;
+}
+.folder-picker-here.is-match {
+  background: var(--ui-ok-bg);
+  color: var(--ui-ok);
+  font-weight: 600;
+}
+.folder-picker-list {
+  display: grid;
+  gap: 2px;
+  max-height: 46vh;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  list-style: none;
+}
+.folder-picker-list .folder-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.folder-picker-list .folder-row:hover,
+.folder-picker-list .folder-row:focus-visible {
+  background: var(--ui-info-bg);
+}
+.folder-picker-list .folder-row.is-file .tag {
+  background: var(--ui-ok-bg);
+  color: var(--ui-ok);
+}
+.folder-picker-list .tag {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ui-ok-bg);
+  color: var(--ui-ok);
+  font-size: 12px;
+  font-weight: 600;
+}
+.folder-picker-list .empty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Stage rail: one line per stage; the step number turns green when done, open stages carry a small badge. */
+#stage-rail .nav-item {
+  flex-wrap: nowrap;
+  gap: 9px;
+  min-width: 0;
+  padding: 6px 10px;
+}
+.rail-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+/* A tooltip near the bottom of the window opens upwards (app.mjs sets is-up). */
+.ui-info.is-up .ui-info-pop {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+.ui-info.is-up .ui-info-pop::before {
+  top: auto;
+  bottom: -8px;
+}
+#stage-rail .ui-badge {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.nav-item .rail-step {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #202c44;
+  color: #9caee4;
+  font-size: 11px;
+  font-weight: 700;
+}
+.nav-item.is-done .rail-step {
+  background: var(--ui-ok-bg);
+  color: var(--ui-ok);
+}
+.nav-item.is-next .rail-step {
+  background: var(--accent);
+  color: #fff;
+}
+.nav-item.is-optional .rail-title {
+  color: #8a98b3;
+}
+
+/* Status strip (#overview): readiness, the running preview, the save target and findings. */
+.overview-strip {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px !important;
+}
+.status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  font-size: 13px;
+}
+.status-line .status-dot {
+  flex: none;
+}
+.save-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.save-target label {
+  margin: 0;
+}
+.compact-select {
+  width: auto;
+  padding: 3px 8px;
+}
+.status-line .command-text {
+  flex: 1 1 320px;
+}
+.command-text {
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #f3f5fa;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.button.small {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.findings {
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.findings .row {
+  font-size: 12px;
+}
+.small {
+  margin: 0;
+  font-size: 12px;
+}
+#scope,
+code {
+  overflow-wrap: anywhere;
+}
+
+/* Sections: a one-line title row with its (i) guidance and badge. */
+#content [id] {
+  scroll-margin-top: 72px;
+}
+.is-target {
+  animation: setup-target 2.2s ease-out;
+}
+@keyframes setup-target {
+  0%,
+  35% {
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+.stage {
+  margin-top: 10px;
+  padding: 0 !important; /* beats the wide-screen .panel padding in shell.css */
+}
+.stage > summary {
+  position: relative;
+  padding: 10px 16px 10px 36px;
+  list-style: none;
+  cursor: pointer;
+}
+.stage > summary::-webkit-details-marker {
+  display: none;
+}
+.stage > summary::before {
+  content: '';
+  position: absolute;
+  left: 16px;
+  top: 17px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--ui-muted);
+  border-bottom: 2px solid var(--ui-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+.stage[open] > summary::before {
+  transform: rotate(45deg);
+}
+.stage[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+.stage > summary .panel-heading {
+  margin: 0;
+}
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+.title-row h2,
+.title-row h3 {
+  margin: 0;
+}
+.panel-heading > div {
+  min-width: 0;
+}
+.stage-body {
+  padding: 14px 16px 16px;
+  min-width: 0;
+}
+.stage-body > :first-child {
+  margin-top: 0;
+}
+.stage-body h3,
+.stage-body .title-row {
+  margin: 14px 0 6px;
+}
+.stage-body .disclosure {
+  margin: 10px 0;
+}
+.stage .ui-table td {
+  white-space: normal;
+  max-width: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+.stage .ui-section {
+  margin: 10px 0;
+}
+#system .stage-body {
+  padding: 12px;
+}
+.stage .grid-two {
+  grid-template-columns: repeat(auto-fit, minmax(min(520px, 100%), 1fr));
+  gap: 12px;
+}
+.target-card {
+  padding: 14px 16px !important;
+}
+.target-card .panel-heading {
+  margin-bottom: 10px;
+}
+
+/* Forms: up to four fields per row with aligned labels; guidance sits in the label's (i). */
+.stage .form-grid {
+  gap: 12px;
+  max-width: 1180px;
+}
+.stage .inline-fields {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.field-label {
+  display: flex;
+  align-items: center;
+  min-height: 18px;
+}
+.form-grid label > input,
+.form-grid label > select,
+.form-grid label > textarea {
+  display: block;
+  margin-top: 4px;
+  font-weight: 400;
+}
+.form-grid textarea,
+.setting-form input,
+.setting-form select,
+.setting-form textarea {
+  width: 100%;
+}
+.stage textarea:not(.yaml) {
+  min-height: 64px;
+}
+.form-grid div:has(> .checkbox-line) {
+  display: flex;
+  align-items: center;
+}
+.form-grid div:has(> .checkbox-line) > .checkbox-line {
+  margin: 0;
+}
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 22px;
+}
+.api-fields {
+  display: grid;
+  gap: 6px;
+}
+.environment-editor,
+.profile-editor {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.profile-editor {
+  margin-bottom: 8px;
+}
+[data-profiles]:empty {
+  display: none;
+}
+.command {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.setting-form {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.setting-form .toolbar {
+  margin: 4px 0 0;
+}
+.setting-badges {
+  margin: 4px 0;
+}
+.list {
+  min-width: 0;
+  margin: 8px 0;
+}
+.references {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* Templates grid */
+.templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.template {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-weight: 400;
+  cursor: pointer;
+  margin: 0;
+}
+.template:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--ui-info-bg);
+}
+.template-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.template-head input {
+  width: auto;
+  margin: 0;
+}
+.template-text {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Start & verify: requirements check and commands. */
+.preflight-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  max-width: 920px;
+}
+.preflight-form input[type='text'] {
+  flex: 1 1 320px;
+}
+.preflight-form .checkbox-line {
+  margin: 0;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.command-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  margin: 0 0 10px;
+  font-size: 12.5px;
+}
+.command-list dt {
+  color: #455773;
+  font-weight: 600;
+}
+.command-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* YAML editor */
+.yaml {
+  min-height: 310px;
+  tab-size: 2;
+}
+
+/* #notice: the shared .activity-feedback banner; its spinner shows only while an operation is pending. */
+#notice.done::before,
+#notice.error::before {
+  display: none;
+}
+#notice.done {
+  background: var(--ui-ok-bg);
+  border-color: #cfe9da;
+  color: var(--ui-ok);
+}
+#notice.error {
+  background: var(--ui-bad-bg);
+  border-color: #f2cbd0;
+  color: var(--ui-bad);
+}
+#content[aria-busy='true'] button:disabled,
+#refresh:disabled {
+  cursor: wait;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage > summary::before {
+    transition: none;
+  }
+  .quick-spinner {
+    animation: none;
+  }
+  .is-target {
+    animation: none;
+  }
+}
+@media (max-width: 700px) {
+  .sidebar nav.nav-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .save-target {
+    margin-left: 0;
+  }
+  .stage > summary {
+    padding: 10px 12px 10px 32px;
+  }
+  .stage > summary::before {
+    left: 13px;
+  }
+  .stage > summary .panel-heading {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .stage-body {
+    padding: 12px;
+  }
+  .command-list {
+    grid-template-columns: 1fr;
+  }
+}
+/* Narrow screens: a grid child never grows past its column (the YAML example scrolls inside itself), a long badge wraps,
+   and a finding's Review link moves under its text. */
+.form-grid > * {
+  min-width: 0;
+}
+.form-grid .ui-example {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.target-card .panel-heading {
+  flex-wrap: wrap;
+}
+.target-card .panel-heading .ui-badge {
+  white-space: normal;
+}
+.findings .row {
+  flex-wrap: wrap;
+}

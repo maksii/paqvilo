@@ -1,0 +1,12 @@
+SolutionManifest:
+  UniqueName: FxCore
+  LocalizedNames:
+    LocalizedName:
+      '@description': Fx Core
+      '@languagecode': '1033'
+  Version: 1.0.0.0
+  Managed: '0'
+  Publisher:
+    UniqueName: fxpublisher
+    CustomizationPrefix: x
+    CustomizationOptionValuePrefix: '10000'

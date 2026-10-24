@@ -1,8 +1,192 @@
-/* Mirage local stand-in for the platform calendar styles (entitylist-calendar-compat.js markup). */
-.entitylist[data-view="calendar"] .calendar-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .75rem; }
-.entitylist[data-view="calendar"] .calendar { display: grid; gap: 1px; }
-.entitylist[data-view="calendar"] .calendar.cal-month, .entitylist[data-view="calendar"] .calendar.cal-week { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.entitylist[data-view="calendar"] .calendar.cal-year { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.entitylist[data-view="calendar"] .cal-day, .entitylist[data-view="calendar"] .cal-year-month { border: 1px solid #ddd; min-height: 4rem; padding: .25rem; }
-.entitylist[data-view="calendar"] .cal-day ul { list-style: none; margin: 0; padding: 0; }
-.entitylist[data-view="calendar"] .cal-day-number { font-weight: 600; }
+/* Toolkit-authored structural fallback for the platform calendar template DOM.
+   Captured platform styles retain precedence; these rules are not native font or pixel parity. */
+.entitylist[data-view='calendar'] {
+  min-width: 0;
+}
+.entitylist[data-view='calendar'] .calendar {
+  width: 100%;
+  min-width: 0;
+}
+.entitylist[data-view='calendar'] .cal-row-fluid {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+}
+.entitylist[data-view='calendar'] .cal-row-fluid > [class*='cal-cell'] {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.entitylist[data-view='calendar'] .cal-row-fluid > .cal-cell1 {
+  width: calc(100% / 7);
+}
+.entitylist[data-view='calendar'] .cal-row-head {
+  text-align: center;
+  font-weight: 600;
+}
+.entitylist[data-view='calendar'] .cal-row-head > .cal-cell1 {
+  padding: 8px 2px;
+  overflow-wrap: anywhere;
+}
+.entitylist[data-view='calendar'] .cal-month-box {
+  border-top: 1px solid #ddd;
+  border-left: 1px solid #ddd;
+}
+.entitylist[data-view='calendar'] .cal-month-box > .cal-row-fluid > .cal-cell {
+  border-right: 1px solid #ddd;
+  border-bottom: 1px solid #ddd;
+  min-height: 100px;
+}
+.entitylist[data-view='calendar'] .cal-month-day {
+  position: relative;
+  min-height: 100px;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.entitylist[data-view='calendar'] .cal-month-day > .float-end {
+  float: right;
+}
+.entitylist[data-view='calendar'] [data-cal-view] {
+  cursor: pointer;
+}
+.entitylist[data-view='calendar'] .cal-day-weekend {
+  color: #a4262c;
+}
+.entitylist[data-view='calendar'] .cal-day-outmonth {
+  color: #777;
+}
+.entitylist[data-view='calendar'] .cal-day-today {
+  background: #e6f8e6;
+}
+.entitylist[data-view='calendar'] .cal-month-day > .events-list {
+  clear: both;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+}
+.entitylist[data-view='calendar'] .events-list > a {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.entitylist[data-view='calendar'] .badge-important {
+  display: inline-block;
+  min-width: 1.5em;
+  line-height: 1.5em;
+  text-align: center;
+  background: #c63e3e;
+  color: #fff;
+  border-radius: 50%;
+  font-size: 12px;
+}
+.entitylist[data-view='calendar'] .cal-year-box > .row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+.entitylist[data-view='calendar'] .cal-year-box > .row > .cal-cell {
+  width: auto;
+  min-width: 0;
+  min-height: 100px;
+  border: 1px solid #ddd;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.entitylist[data-view='calendar'] .cal-year-box .float-end {
+  float: right;
+}
+.entitylist[data-view='calendar'] .cal-year-box .float-start {
+  float: left;
+}
+.entitylist[data-view='calendar'] .calendar-small .cal-year-box .cal-cell {
+  min-height: 30px;
+}
+.entitylist[data-view='calendar'] .cal-week-box {
+  position: relative;
+  border: 1px solid #ddd;
+}
+.entitylist[data-view='calendar'] .cal-week-box .cal-column {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--cal-offset) * 100% / 7);
+  border-left: 1px solid #ddd;
+  pointer-events: none;
+}
+.entitylist[data-view='calendar'] .cal-week-box .day-highlight {
+  margin-left: calc(var(--cal-offset, 0) * 100% / 7);
+  width: calc(var(--cal-span, 1) * 100% / 7);
+  padding: 6px;
+  background: #eef4fa;
+  overflow: hidden;
+}
+.entitylist[data-view='calendar'] .cal-offset0 {
+  --cal-offset: 0;
+}
+.entitylist[data-view='calendar'] .cal-offset1 {
+  --cal-offset: 1;
+}
+.entitylist[data-view='calendar'] .cal-offset2 {
+  --cal-offset: 2;
+}
+.entitylist[data-view='calendar'] .cal-offset3 {
+  --cal-offset: 3;
+}
+.entitylist[data-view='calendar'] .cal-offset4 {
+  --cal-offset: 4;
+}
+.entitylist[data-view='calendar'] .cal-offset5 {
+  --cal-offset: 5;
+}
+.entitylist[data-view='calendar'] .cal-offset6 {
+  --cal-offset: 6;
+}
+.entitylist[data-view='calendar'] .cal-cell1 {
+  --cal-span: 1;
+}
+.entitylist[data-view='calendar'] .cal-cell2 {
+  --cal-span: 2;
+}
+.entitylist[data-view='calendar'] .cal-cell3 {
+  --cal-span: 3;
+}
+.entitylist[data-view='calendar'] .cal-cell4 {
+  --cal-span: 4;
+}
+.entitylist[data-view='calendar'] .cal-cell5 {
+  --cal-span: 5;
+}
+.entitylist[data-view='calendar'] .cal-cell6 {
+  --cal-span: 6;
+}
+.entitylist[data-view='calendar'] .cal-cell7 {
+  --cal-span: 7;
+}
+.entitylist[data-view='calendar'] .cal-week-box hr {
+  margin: 0;
+}
+.entitylist[data-view='calendar'] .announce-calendar-title-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+@media (max-width: 600px) {
+  .entitylist[data-view='calendar'] .cal-month-box > .cal-row-fluid > .cal-cell,
+  .entitylist[data-view='calendar'] .cal-month-day {
+    min-height: 72px;
+  }
+  .entitylist[data-view='calendar'] .cal-month-day {
+    padding: 3px;
+  }
+  .entitylist[data-view='calendar'] .cal-row-head {
+    font-size: 11px;
+  }
+}

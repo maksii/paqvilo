@@ -1,0 +1,38 @@
+export const COMPONENT_KINDS = Object.freeze({
+  1: 'publishingstate',
+  2: 'webpage',
+  3: 'webfile',
+  4: 'weblinkset',
+  5: 'weblink',
+  6: 'pagetemplate',
+  7: 'contentsnippet',
+  8: 'webtemplate',
+  9: 'sitesetting',
+  10: 'webpageaccesscontrolrule',
+  11: 'webrole',
+  12: 'websiteaccess',
+  13: 'sitemarker',
+  15: 'basicform',
+  16: 'basicformmetadata',
+  17: 'list',
+  18: 'tablepermission',
+  19: 'advancedform',
+  20: 'advancedformstep',
+  21: 'advancedformmetadata',
+  24: 'pollplacement',
+  26: 'adplacement',
+  27: 'botconsumer',
+  28: 'columnpermissionprofile',
+  29: 'columnpermission',
+  30: 'redirect',
+  31: 'publishingstatetransitionrule',
+  32: 'shortcut',
+  33: 'cloudflowconsumer',
+  34: 'uxcomponent',
+  35: 'serverlogic',
+});
+
+// Canonical PAC record kinds; absent numeric values are not documented component choices.
+export const COMPONENT_TYPE_OF_KIND = Object.freeze(
+  Object.fromEntries(Object.entries(COMPONENT_KINDS).map(([type, kind]) => [kind, Number(type)])),
+);

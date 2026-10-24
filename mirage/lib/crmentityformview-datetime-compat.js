@@ -6,9 +6,9 @@
  * browser's native date inputs otherwise; it is idempotent per control.
  */
 (() => {
-  "use strict";
+  'use strict';
   const bind = () => window.__portalSimulation?.initializeDateControls?.();
-  if (typeof window.jQuery?.fn?.jquery === "string") window.jQuery(bind);
-  else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bind, { once: true });
+  if (typeof window.jQuery?.fn?.jquery === 'string') window.jQuery(bind);
+  else if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind, { once: true });
   else bind();
 })();

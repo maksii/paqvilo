@@ -16,6 +16,8 @@ main.container,.page-heading{max-width:1220px}.page-heading{display:none}.demo{m
 @media(max-width:560px){.demo-nav nav{gap:15px}.demo-nav nav>a,.demo-nav summary{font-size:12px}.demo-nav{padding:16px}.demo-wordmark{font-size:20px}.demo-panel{padding:18px}.demo h1{font-size:34px}.demo-hero h1{font-size:40px}.demo-lead{font-size:15px}.demo-form-grid{grid-template-columns:1fr}.demo-field.wide{grid-column:auto}.demo-record-heading,.demo-section-heading{flex-direction:column;align-items:start}.demo-toolbar,.demo-query{align-items:stretch;flex-direction:column;width:100%}.demo-query label{width:100%}.demo-query input{min-width:0}.demo-query .demo-button{align-self:start}.demo-footer>div{flex-direction:column;gap:6px}.demo-native .entity-grid .view-toolbar{display:flex;flex-wrap:wrap;gap:10px}.demo-native .crmEntityFormView table.section{border-spacing:0}.demo-native .crmEntityFormView table.section td.cell{display:block;width:100%!important}.demo-meta{gap:12px}.demo-pathways a{padding:7px 10px;font-size:12px}}
 
 /* Native controls keep their Bootstrap group geometry inside the demo layout. */
+.demo-native .entity-grid .view-grid{position:relative;overflow-x:auto}
+.demo-native .crmEntityFormView table.section{table-layout:fixed}
 .demo-native .entity-grid .view-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
 .demo-native .entity-grid-search,.demo-native .entity-lookup .view-search,.demo-native .entity-grid .view-search{max-width:100%;min-width:180px}
 .demo-native .entity-grid-search .input-group,.demo-native .entity-lookup .input-group,.demo-native .entity-grid .view-search .input-group{display:flex;align-items:stretch;width:100%}

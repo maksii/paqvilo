@@ -1,18 +1,57 @@
 # Public programmatic API
 
-Paqvilo 0.9.4 introduces supported package entry points. Exported names, documented options and behavior are covered by semantic versioning: patches fix defects compatibly, minors add exports or optional settings, and removing or incompatibly changing a supported contract requires a major version change, including from 0.x. Tests pin the export contract in `test/fixtures/public-api.json`.
+These package entry points are Paqvilo's supported programmatic API. Exported names, documented options and behavior are covered by semantic versioning: patches fix defects compatibly, minors add exports or optional settings, and removing or incompatibly changing a supported contract requires a major version change, including from 0.x. Tests pin the export contract in `test/fixtures/public-api.json`.
 
-| Import | Supported surface |
-| --- | --- |
-| `paqvilo/mirage` | `createSimulator`, `DataStore`, `DataError`, `readStateFile`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext` |
-| `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers |
-| `paqvilo/mirage/packs` | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation |
-| `paqvilo/mirage/fixtures` | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer` |
-| `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `createPersonaSession`, `createPersonaBrowserContext`, `runSessionMatrix` |
-| `paqvilo/lense` | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue` |
-| `paqvilo/dataverse` | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md) |
+| Import                      | Supported surface                                                                                                                                                                                                                                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `paqvilo/mirage`            | `createSimulator`, `DataStore`, `DataError`, `readStateFile`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext`, `loadSourceGraph`, `preflight`                          |
+| `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers                                                                                                                                  |
+| `paqvilo/mirage/packs`      | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation, persona catalogue validation/merging, and the pack-export registry (`PACK_EXPORTS`, `validatePackExports`, `collectPackExport`, `packProvides`; see [data packs](../mirage/docs/data-packs.md)) |
+| `paqvilo/mirage/fixtures`   | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer`                                                                                                                                                                               |
+| `paqvilo/mirage/testing`    | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `createPersonaSession`, `createPersonaBrowserContext`, `runSessionMatrix`, `runStorageContract`, `STORAGE_CONTRACT_CASES`, `fixedClock`, `sequentialIds`, `createScheduler`                                                                         |
+| `paqvilo/lense`             | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue`                                                                                                                                                                                                                                     |
+| `paqvilo/dataverse`         | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md)                                                                             |
 
 Wildcard paths such as `paqvilo/mirage/lib/data.mjs` resolve through the package's `./mirage/*` and `./lense/*` exports, but they are not supported entry points: modules outside the table are implementation details. Use the entry points in the table.
+
+## Clock, ids and scheduler
+
+The organization runtime (`createOrganizationRuntime`) accepts `clock` (epoch milliseconds, a function or `{ now() }`), `ids` (`{ uuid() }`) and `scheduler`, and shares them with its `DataStore` (which also takes `clock` and `ids` directly) and its asynchronous jobs. `mirage/lib/runtime-clock.mjs` provides `systemClock`, `systemIds`, `fixedClock(startMs)` (`now`, `advance(ms)`, `set(ms)`), `sequentialIds(namespace)` (valid version 5 GUIDs over a counter) and `createScheduler({ clock, manual, faults })` (`schedule`, `cancel`, `pending`, `runDue`, `advance`, `drain`, `close`, `status`). With a fixed clock and sequential ids, row ids, `createdon`/`modifiedon`, audit rows, plug-in trace logs and web hook payloads repeat byte for byte between runs; a manual scheduler runs the durable asynchronous jobs only when a test calls `runDue()` or `advance(ms)`. `runDue()` (and `advance(ms)`) runs every due task in order, each finishing before the next starts, and returns once the started tasks have settled or are blocked. A task is blocked when it waits on a task it queued on the same scheduler that is not due yet, such as a connector retry pause: `status().blocked` counts it, `status().pending` leaves it out, `drain()` returns without it, and the later `advance(ms)` that makes the queued task due lets it finish. A task that queues a due task and awaits it finishes in the same `runDue()`. The defaults keep wall time, random GUIDs and real timers.
+
+`createSimulator` accepts the same `clock`, `ids` and `scheduler` options for the Power Pages and the standalone host, and passes them to its state store, organization runtime and committed-work backend. `paqvilo/mirage/testing` exports `fixedClock`, `sequentialIds` and `createScheduler` for project acceptance tests.
+
+## Inspect Solution sources
+
+```js
+import { loadSourceGraph } from 'paqvilo/mirage';
+const graph = await loadSourceGraph({
+  solutionRoots: ['./solutions/Core', './solutions/Extension'],
+  solutionOrder: 'explicit',
+});
+graph.resolve('canvasapp', 'x_inventedapp'); // node from the later selected layer, or null
+graph.requirements(); // [{ id, kind, source, status: 'satisfied'|'missing'|'placeholder'|'unsupported'|'disabled', reason }]
+graph.summary(); // { nodes, levels, kinds: { kind: { level: count } } }
+```
+
+`loadSourceGraph({ solutionRoots, solutionOrder = 'derived', sourceDir, lcid = 1033, bindings })` reads the selected Solution roots once and returns a read-only graph. With `sourceDir`, it also reads that portal export. `bindings` takes deployment-profile values, `{ connectionReferences: [{ logicalName, connectionId }], environmentVariables: { name: value } }`, which settle requirements. Node ids are `<kind>:<lower-case key>`. `JSON.stringify(graph)` gives `{ fingerprint, summary, nodes }`, without environment variable values or connection ids. Inventory kinds and statuses are described in [Sources and bootstrap](../mirage/docs/bootstrap-and-sources.md#solution-inventory).
+
+## Preflight
+
+```js
+import { preflight } from 'paqvilo/mirage';
+const report = await preflight({
+  runtime: { kind: 'dataverse-api' },
+  solutionRoots: ['./solutions/Core'],
+  scenario: { id: 'approval', requires: ['cloud-flow:*', 'table:x_item'] },
+});
+report.summary.blocking; // 0 when nothing in the scenario's scope blocks
+```
+
+`preflight(options)` returns the same report as `paqvilo mirage preflight --json`, without exiting the process. It takes the `createSimulator` option names (`runtime`, `simulation`, `solutionRoots`, `solutionOrder`, `sourceDir`, `dataPacks`, `environmentVariables`, `deploymentProfiles`, `localServices`, `providers`), plus `scenario`, `strict` and `env`. `env` is where `env:NAME` references resolve, `process.env` by default. The report shape, the four fidelity levels, scenario patterns and exit codes are described in [Capabilities and preflight](../mirage/docs/capabilities-and-preflight.md).
+
+A running simulator answers the same report for its live state: `simulator.preflight({ scenario, strict })` on the handle `createSimulator` returns (Power Pages and standalone hosts alike), and `GET /_sim/api/preflight` over HTTP. It reads the host's own capability registry and operation catalogue, including the operation modes saved in `/_sim/`. The runtime status (`simulator.state()`, standalone `status()`) carries the same registry as `capabilities` (the legacy summary) and `capabilityReport`. `simulator.settle()` on either handle resolves once every committed-event job (asynchronous plug-in steps, web hooks, row-triggered flows and due scheduled jobs) has run; tests await it instead of the store queue, because durable jobs run on the runtime scheduler. It then settles the instantiated pack providers: pending outbox observer calls and each provider's own `settle()`.
+
+Both hosts also answer `GET /_sim/api/dashboard`, a read-only, redacted topology and activity document for monitoring tools (see [simulation administration](../mirage/docs/sim-administration.md#infrastructure-feed)). Its activity numbers come from the organization runtime's counters, `store.counters` (`createCounters()` in `mirage/lib/runtime-counters.mjs`): `snapshot()` returns the named counts and `tick` moves on every change. Counts start at zero with the runtime and are not persisted.
 
 ## Persona catalogues
 
@@ -47,7 +86,11 @@ const mirage = await createMirageContext({ config: './paqvilo.config.yml', site:
 const store = new mirage.DataStore();
 await store.applyPreset('my-project-preset');
 const simulator = await mirage.createSimulator({ initial: mirage.initialState(), port: 0, watch: false });
-try { /* exercise your local portal */ } finally { await simulator.close(); }
+try {
+  /* exercise your local portal */
+} finally {
+  await simulator.close();
+}
 ```
 
 The context reads catalogue and selected Mirage-project `dataPacks`, imports selected metadata, filters packs against the portal and binds one preset library. It supplies `DataStore`, `createSimulator`, `initialState`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `resolvePreset` and `activatePackDeniedRoutes`. Bound functions retain original argument order; ordinary runtime options can still be overridden. No adjacent project modules are discovered implicitly.
@@ -86,14 +129,22 @@ between completed matrix runs, or use separate runtime origins for simultaneous 
 ```js
 import { connectRuntime, runSessionMatrix } from 'paqvilo/mirage/testing';
 const runtime = await connectRuntime({ origin: 'http://127.0.0.1:8787' });
-const visitors = await Promise.all(contactIds.map(contactId =>
-  runtime.createSession({ id: contactId, contactId })));
+const visitors = await Promise.all(contactIds.map((contactId) => runtime.createSession({ id: contactId, contactId })));
 try {
-  const report = await runSessionMatrix({ sessions: visitors, concurrency: 10,
-    cases: [{ id: 'visible-records', run: async (visitor, { signal }) =>
-      visitor.json('/_api/widgets?$select=widgetid', { signal }) }] });
+  const report = await runSessionMatrix({
+    sessions: visitors,
+    concurrency: 10,
+    cases: [
+      {
+        id: 'visible-records',
+        run: async (visitor, { signal }) => visitor.json('/_api/widgets?$select=widgetid', { signal }),
+      },
+    ],
+  });
   // Check actual statuses and rows in report.results before qualifying access.
-} finally { visitors.forEach(visitor => visitor.close()); }
+} finally {
+  visitors.forEach((visitor) => visitor.close());
+}
 ```
 
 `createPortalSession({ origin, contactId?, roles?, id?, timeoutMs?, signal? })` and
@@ -132,13 +183,37 @@ For linked worktrees, keep the catalogue, ignored `paqvilo.config.local.yml` and
 
 ## Pack authors and project test runners
 
-`createMirageContext({ config })` accepts a catalogue path or file URL. Omitting `site` binds packs explicitly registered across every catalogue site and its Mirage project, deduplicating repeated modules without importing portal exports or Solution metadata. Supply `sourceDir` to `createSimulator` or an imported portal to `initialState` in this project-wide binding. Pass `site` to import that site's source/metadata and bind its runtime defaults. Runtime pack activation still requires `matches({ portal })`; registering a pack for tests does not activate it on unrelated exports. See [project scaffold](project-scaffold.md).
+`createMirageContext({ config })` accepts a catalogue path or file URL. Omitting `site` binds packs explicitly registered across every catalogue site and its Mirage project, deduplicating repeated modules without importing portal exports or Solution metadata. Supply `sourceDir` to `createSimulator` or an imported portal to `initialState` in this project-wide binding. Pass `site` to import that site's source/metadata and bind its runtime defaults. Optional `env` selects that site's catalogue environment and origin, taking precedence over an associated project's default reference. Without `env`, existing project-reference precedence is retained. Optional `repo` selects the portal checkout root using the same rules as CLI `--repo`. Runtime pack activation still requires `matches({ portal })`; registering a pack for tests does not activate it on unrelated exports. See [project scaffold](project-scaffold.md).
+
+`importSolutionData()` returns `contentFingerprint` alongside the existing location-bound `fingerprint`. Use the former for relocation-stable derived-fixture checks; its logical layer, relative path, byte and locale contract is described in [sources and bootstrap](../mirage/docs/bootstrap-and-sources.md). Neither fingerprint identifies deployed state.
 
 Use `paqvilo/mirage/packs` for `validatePack`, `presetDescriptor`, `defineLazyPreset`,
 `bootstrapPresetLibrary`, `compactBuiltinPresets`, `listPresets` and
 `resolvePreset(state, name, library)`. Pass your context's library to use the same explicitly
 registered packs as your runtime. `assertReadOnlyPath`, `DENIED_ROUTE_PATTERNS`, `validatePlan`
 and `activatePackDeniedRoutes` support project-owned parity plans.
+
+`compareReferenceContracts({ localUrl, origin, cdpUrl, contracts, outputDir })` compares
+explicit read contracts with the connected reference browser. Local reads are anonymous
+by default, using a temporary cookie-isolated visitor with an explicit anonymous
+session. This requires the local runtime's session controls even for anonymous reads;
+the visitor owns local-only enforcement and never follows portal redirects.
+Supply `localSession: visitor` from `createPortalSession()` to reuse an open
+visitor at exactly `localUrl`, or `localVisitor: { contactId, roles? }` to create a temporary
+authenticated visitor. Omit `roles` to resolve normal contact memberships; an explicit
+array overrides roles only for that visitor. `localVisitor: { configuredPersona: true }`
+uses the configured contact and preserves its membership/override choice, failing clearly
+when no contact is configured. These options are mutually exclusive. The CLI equivalents
+are `--local-contact ID`, optional repeatable `--local-role NAME`, and
+`--local-configured-persona`. To specify an empty override use the API's `roles: []`.
+Supplied sessions remain caller-owned; temporary visitors are closed after comparison.
+No option changes the configured runtime identity, creates grants or changes reference
+browser identity. Reports include only a local identity fingerprint and sign-in status;
+cookies/CSRF values are never persisted. A changed visitor identity makes comparison fail.
+Contract IDs are unique strings of 1–160 characters. `statusOnly` and `unordered`
+accept booleans; string values such as `"false"` fail validation before reads.
+`collection` and `fields` select own JSON properties; absent fields and inherited
+prototype properties cannot count as matching response data.
 
 `paqvilo/mirage/fixtures` exports `formatMockRecord`, `mergeDataset`, `findDanglingLookups`,
 `schemaViolations`, `fieldIndexFromMappings`, `schemaFieldIndex`, `formatViolations`,
@@ -215,4 +290,41 @@ The acceptance surface also exports three read-only observation building blocks:
 
 Project observation tools can use these public exports instead of deep imports. Browser reads still require an authorised session and a guard blocking all non-GET requests.
 
-`runAcceptance({ navigationCommitReserveMs })` reserves that many milliseconds of the triggering action for document/redirect commits. Without an override, the reserve uses the slowest document response measured earlier in the same flow (request send to response headers, excluding intercepted hold time), plus 1 s, with a 3 s minimum, capped at half the action's remaining time. This cap preserves the previous write-hold allowance for short actions. Before any document timing is available, the reserve is half the remaining action time. The write hold is bounded by the remaining action time minus this reserve. A slower document can still exceed the action timeout; use an explicit reserve when needed. Redirects share the first hop's hold budget and reserve. `navigationWaits` records `commitReserveMs`, `commitReservePolicy` (`measured-document-response`, `half-remaining-action`, or `explicit`) and `actionRemainingMs`. A document navigation answered 204 or 205 and ending with net::ERR_ABORTED is listed under noContentNavigations (method, sanitized URL, status); it preserves its document and is not a failed request. Pending reads/writes still have to settle; response-less aborts and other network failures remain failures.
+`runAcceptance({ navigationCommitReserveMs })` reserves that many milliseconds of the triggering action for document/redirect commits. Without an override, a navigation allows at most 5 s for pending writes, reserving the remainder for the document and redirect chain. Its minimum reserve is 3 s, capped at half the remaining action time for short actions. Earlier successful response-header timings for the same initial method and exact URL (including query) can increase the reserve to the measured chain duration plus 1 s. An unrelated fast initial page cannot shrink the fallback. Timing excludes intercepted hold time; redirects share the first hop's hold budget and reserve. An unexpectedly slow navigation can still exceed the action timeout. `navigationWaits` records `commitReserveMs`, `commitReservePolicy` (`bounded-write-fallback`, `comparable-navigation-chain`, or `explicit`), `comparableNavigationMs` (null without comparable evidence), `writeHoldAllowanceMs` and `actionRemainingMs`. A document navigation answered 204 or 205 and ending with net::ERR_ABORTED is listed under noContentNavigations (method, sanitized URL, status); it preserves its document and is not a failed request. Pending reads/writes still have to settle; response-less aborts and other network failures remain failures.
+
+`observePageLifecycle(page, { origin, maxRecords: 10000 })` and
+`observeContextLifecycle(context, options)` are public read-only Chromium observers for
+project-owned Playwright runners. Await attachment before navigation; for a new page in an
+observed context, await `observer.ready()` before navigating it. They do not intercept requests,
+change identities, sign in, or grant live-reference access. The supplied origin confines the
+owned-background exclusion; requests to other origins remain observed.
+
+A page observer exposes `snapshot()`, `settle({ timeout: 5000, quietMs: 100, pollMs: 25 })`
+and async `dispose()`. `settle()` returns `settled`, `passed`, `waitedMs`, `requests`,
+`pendingRequests`, `supersededReads`, `failures`, `overflow`, `disposed` and `closed`.
+`settled` means tracked portal work is no longer pending and the quiet period elapsed;
+`passed` additionally requires no failures. Context `settle()` returns per-page reports in
+`pages` with aggregate `settled` and `passed`, `waitedMs` and `pendingAttachments`.
+Pages created while settling join the same observation, and attachment and page work
+share the requested timeout. Page reports are refreshed after waiting so activity on
+an earlier quiet page cannot be hidden by its old result. Pending attachment prevents
+success. Context attachment errors are thrown by
+`ready()`/`settle()`. Dispose removes observer listeners and CDP sessions without closing pages
+or the context. Stop using a disposed observer; it cannot report successful settling.
+
+Only GET/HEAD reads pending when a frame detach or a committed document replacement is
+observed can become `superseded-read`; this reports document lifecycle and never claims
+browser consumption or server completion. An aborted read can also qualify if its frame is
+already detached at failure time. A failure observed before that lifecycle proof stays failed,
+even if a later navigation or detach follows. Chromium can emit an iframe abort before its
+detach event; that ordering deliberately remains a failure. Fragment/history changes do not
+replace documents. HTTP errors, failed writes and cancelled writes remain in `failures`.
+The observer has no server-side write reconciliation contract. Read requests to the exact
+owned background paths documented above remain recorded but do not hold settling or fail it;
+writes to those paths are ordinary tracked work. Other event streams remain pending.
+
+Reports contain method, resource type, sanitized origin/path URL, status, timing, outcome and
+available lifecycle evidence; they omit query values, headers, cookies and bodies. Reaching
+`maxRecords` sets `overflow` and prevents a successful settle rather than silently dropping
+coverage. This is a bounded observation report, not proof of Power Pages behavior or a saved
+record. Keep project-specific assertions and acceptance fixtures in the project package.

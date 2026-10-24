@@ -30,15 +30,9 @@
       ]
     },
     {
-      "catalog": [
-        "pp.list.modern"
-      ],
+      "catalog": ["pp.list.modern"],
       "reason": "The export does not show how a modern list is flagged (backing column not stated on Learn).",
-      "sources": [
-        "learn-add-list",
-        "learn-lists",
-        "learn-list-configuration"
-      ]
+      "sources": ["learn-add-list", "learn-lists", "learn-list-configuration"]
     },
     {
       "catalog": [
@@ -47,15 +41,10 @@
         "pp.msstep.autonumberattributelogicalname"
       ],
       "reason": "Needs an auto-number definition record that the fixture lacks; Learn lists the columns only (learn-ref-webformstep), so adx_createautonumber stays false (its default, which does not exercise the item).",
-      "sources": [
-        "learn-ref-webformstep"
-      ]
+      "sources": ["learn-ref-webformstep"]
     },
     {
-      "catalog": [
-        "pp.bfmeta.attribute.controlstyle.code-component",
-        "pp.msmeta.controlstyle.codecomponent"
-      ],
+      "catalog": ["pp.bfmeta.attribute.controlstyle.code-component", "pp.msmeta.controlstyle.codecomponent"],
       "reason": "Learn (Use code components in Power Pages): the code component must first be added to the field on the model-driven (Dataverse) form, then enabled with Control Style = Code Component. The fixture's Dataverse forms bind no code component to a column, and a site folder cannot add one to a Dataverse form.",
       "sources": [
         "learn-pcf",
@@ -88,25 +77,14 @@
       ]
     },
     {
-      "catalog": [
-        "pp.basicform.action.table-specific",
-        "pp.list.action.tablespecific"
-      ],
+      "catalog": ["pp.basicform.action.table-specific", "pp.list.action.tablespecific"],
       "reason": "Offered only for opportunity, incident, quote and sales order (D365 tables the fixture lacks).",
-      "sources": [
-        "learn-basic-forms",
-        "learn-list-configuration"
-      ]
+      "sources": ["learn-basic-forms", "learn-list-configuration"]
     },
     {
-      "catalog": [
-        "pp.msmeta.type.purchase",
-        "pp.msmeta.purchase"
-      ],
+      "catalog": ["pp.msmeta.type.purchase", "pp.msmeta.purchase"],
       "reason": "Purchase metadata needs D365 commerce tables (quote, order, invoice) the fixture lacks.",
-      "sources": [
-        "learn-ref-webformmetadata"
-      ]
+      "sources": ["learn-ref-webformmetadata"]
     },
     {
       "catalog": [
@@ -115,58 +93,30 @@
         "pp.msstep.storageaccountname"
       ],
       "reason": "Azure Blob Storage needs a storage account and container configured for the site; the fixture has none (note attachments are used).",
-      "sources": [
-        "learn-basic-forms",
-        "learn-ref-mspp-entityform",
-        "learn-ref-webformstep"
-      ]
+      "sources": ["learn-basic-forms", "learn-ref-mspp-entityform", "learn-ref-webformstep"]
     },
     {
-      "catalog": [
-        "pp.list.map.latitude",
-        "pp.list.map.longitude"
-      ],
+      "catalog": ["pp.list.map.latitude", "pp.list.map.longitude"],
       "reason": "The enhanced data model stores no map_latitude/map_longitude in list content (upload sent them; read-only Web API read of the stored content on 2026-10-15 shows neither key; export carries neither). The fixture therefore no longer sends them.",
-      "sources": [
-        "learn-ref-mspp-entitylist",
-        "learn-list-map-view"
-      ]
+      "sources": ["learn-ref-mspp-entitylist", "learn-list-map-view"]
     },
     {
-      "catalog": [
-        "pp.listfilter.dynamiclookup.filterlookuponrelationship"
-      ],
+      "catalog": ["pp.listfilter.dynamiclookup.filterlookuponrelationship"],
       "reason": "Filter Lookup On Relationship (adx.filterrelationship/adx.filterentity in the designer's JSON) needs a relationship between the related table and contact; pqvd_baselineparent has none, so the dynamic lookup sets it empty as the designer does.",
-      "sources": [
-        "learn-list-filter-configuration"
-      ]
+      "sources": ["learn-list-filter-configuration"]
     },
     {
-      "catalog": [
-        "pp.list.filterwebsite"
-      ],
+      "catalog": ["pp.list.filterwebsite"],
       "reason": "Needs a lookup to adx_website on the listed table; pqvd_baselineitem has none (and no second website exists).",
-      "sources": [
-        "learn-lists",
-        "learn-ref-mspp-entitylist",
-        "learn-liquid-objects"
-      ]
+      "sources": ["learn-lists", "learn-ref-mspp-entitylist", "learn-liquid-objects"]
     },
     {
-      "catalog": [
-        "pp.list.enhancedviewfilter"
-      ],
+      "catalog": ["pp.list.enhancedviewfilter"],
       "reason": "Learn (Enhanced view filter for lists): the filter is configured on the underlying model-driven view definition used by the list (condition elements with uitype=\"contact\"/\"account\"/\"adx_website\"). A view is a Dataverse solution component, not a site record, so a site folder cannot carry it; the fixture's views have no uitype condition.",
-      "sources": [
-        "learn-list-enhanced-view-filter"
-      ]
+      "sources": ["learn-list-enhanced-view-filter"]
     },
     {
-      "catalog": [
-        "pp.tableperm.website",
-        "pp.webrole.website",
-        "pp.sitesetting.table.websiteid"
-      ],
+      "catalog": ["pp.tableperm.website", "pp.webrole.website", "pp.sitesetting.table.websiteid"],
       "reason": "Observed: the PAC export's table permission, web role and site setting records carry no adx_websiteid (baseline export table-permissions/*.yml, webrole.yml, sitesetting.yml); the website is implied by the site folder.",
       "sources": [
         "learn-ref-entitypermission",
@@ -177,62 +127,32 @@
       ]
     },
     {
-      "catalog": [
-        "pp.tableperm.scope.custom",
-        "pp.tableperm.permissionfetchxml"
-      ],
+      "catalog": ["pp.tableperm.scope.custom", "pp.tableperm.permissionfetchxml"],
       "reason": "Learn (Table permissions, Custom access type): Custom Access is available only for sites enabled for enhanced authorization. The fixture keeps the website record unchanged (adx_enhancedauthorization 0), and enabling enhanced authorization is site-wide.",
-      "sources": [
-        "learn-tableperm",
-        "learn-ref-entitypermission"
-      ]
+      "sources": ["learn-tableperm", "learn-ref-entitypermission"]
     },
     {
-      "catalog": [
-        "pp.list.iscodecomponent"
-      ],
+      "catalog": ["pp.list.iscodecomponent"],
       "reason": "True needs a code component configured on the list's view (Learn tutorial: Use a configured code component = Yes after adding it to the views); no baseline view has one. False is the default and the export drops it.",
-      "sources": [
-        "learn-ref-mspp-entitylist"
-      ]
+      "sources": ["learn-ref-mspp-entitylist"]
     },
     {
-      "catalog": [
-        "pp.basicform.is-activity-party",
-        "pp.msstep.portaluserlookupattributeisactivityparty"
-      ],
+      "catalog": ["pp.basicform.is-activity-party", "pp.msstep.portaluserlookupattributeisactivityparty"],
       "reason": "True only when the portal user lookup column is an activity party (Learn basic forms: Is Activity Party); the baseline tables are not activity tables.",
-      "sources": [
-        "learn-basic-forms",
-        "learn-ref-mspp-entityform",
-        "learn-loadform-step",
-        "learn-ref-webformstep"
-      ]
+      "sources": ["learn-basic-forms", "learn-ref-mspp-entityform", "learn-loadform-step", "learn-ref-webformstep"]
     },
     {
-      "catalog": [
-        "pp.template.pagetemplate.isdefault"
-      ],
+      "catalog": ["pp.template.pagetemplate.isdefault"],
       "reason": "Site-wide setting: changing it changes the shared site outside /baseline/ (not safe on the shared fixture site). Is Default makes a template the default choice in the site's editing tools.",
-      "sources": [
-        "learn-tbl-pagetemplate",
-        "learn-page-templates"
-      ]
+      "sources": ["learn-tbl-pagetemplate", "learn-page-templates"]
     },
     {
-      "catalog": [
-        "pp.webapi.table.usefieldsfromview"
-      ],
+      "catalog": ["pp.webapi.table.usefieldsfromview"],
       "reason": "True needs the 'Power Pages Web API Columns' system view on the table (Learn Web API overview). A view is a Dataverse solution component a site folder cannot carry, and the fixture's views include none; false is the default and exercises nothing.",
-      "sources": [
-        "learn-webapi"
-      ]
+      "sources": ["learn-webapi"]
     },
     {
-      "catalog": [
-        "pp.webrole.contacts",
-        "pp.webrole.accounts"
-      ],
+      "catalog": ["pp.webrole.contacts", "pp.webrole.accounts"],
       "reason": "Not expressible in the site folder: contact and account membership are data associations (N:N powerpagecomponent_mspp_webrole_contact / powerpagecomponent_mspp_webrole_account in the powerpagecomponent and account references), not site records; personas are assigned by the project data.",
       "sources": [
         "learn-ref-powerpagecomponent",
@@ -244,16 +164,9 @@
       ]
     },
     {
-      "catalog": [
-        "pp.msstep.type.loadusercontrol",
-        "pp.msstep.usercontrolpath",
-        "pp.msstep.usercontroltitle"
-      ],
+      "catalog": ["pp.msstep.type.loadusercontrol", "pp.msstep.usercontrolpath", "pp.msstep.usercontroltitle"],
       "reason": "Needs an ASP.NET user control (.ascx) deployed with the portal host; a Power Pages site cannot add one.",
-      "sources": [
-        "learn-msform-steps",
-        "learn-ref-webformstep"
-      ]
+      "sources": ["learn-msform-steps", "learn-ref-webformstep"]
     },
     {
       "catalog": [
@@ -266,15 +179,10 @@
         "pp.msstep.settings"
       ],
       "reason": "Learn lists the column only (no behaviour or value format); there is no event handler, postback target or documented JSON to point it at.",
-      "sources": [
-        "learn-ref-webformstep"
-      ]
+      "sources": ["learn-ref-webformstep"]
     },
     {
-      "catalog": [
-        "pp.webrole.authenticatedusersrole",
-        "pp.webrole.anonymoususersrole"
-      ],
+      "catalog": ["pp.webrole.authenticatedusersrole", "pp.webrole.anonymoususersrole"],
       "reason": "State true is not set: it belongs to the site's existing Authenticated Users / Anonymous Users roles, and a second default role is not safe on the shared site (baseline roles set false).",
       "sources": [
         "learn-webroles",
@@ -293,12 +201,7 @@
         "pp.template.bootstrap.version"
       ],
       "reason": "Site-wide setting: changing it changes the shared site outside /baseline/ (not safe on the shared fixture site). Date/time formats and the Bootstrap version change every page.",
-      "sources": [
-        "learn-datetime",
-        "learn-migrate-bootstrap",
-        "learn-bootstrap5",
-        "learn-bootstrap-overview"
-      ]
+      "sources": ["learn-datetime", "learn-migrate-bootstrap", "learn-bootstrap5", "learn-bootstrap-overview"]
     },
     {
       "catalog": [
@@ -441,18 +344,10 @@
         "pp.msform.session.statecode"
       ],
       "reason": "Runtime session table written by the server while a user fills a multistep form; nothing to configure.",
-      "sources": [
-        "learn-ref-webformsession",
-        "learn-msform-steps",
-        "learn-msform-props",
-        "learn-msform-tutorial"
-      ]
+      "sources": ["learn-ref-webformsession", "learn-msform-steps", "learn-msform-props", "learn-msform-tutorial"]
     },
     {
-      "catalog": [
-        "pp.tableperm.enforcement",
-        "pp.colperm.scope"
-      ],
+      "catalog": ["pp.tableperm.enforcement", "pp.colperm.scope"],
       "reason": "Statement of how permissions are enforced; no configurable value.",
       "sources": [
         "learn-tableperm",
@@ -464,28 +359,16 @@
       ]
     },
     {
-      "catalog": [
-        "pp.tableperm.datamodel",
-        "pp.colperm.datamodel",
-        "pp.webrole.datamodel"
-      ],
+      "catalog": ["pp.tableperm.datamodel", "pp.colperm.datamodel", "pp.webrole.datamodel"],
       "reason": "Standard vs enhanced data model storage: a property of the environment, not of a record.",
-      "sources": [
-        "learn-edm",
-        "learn-ref-entitypermission"
-      ]
+      "sources": ["learn-edm", "learn-ref-entitypermission"]
     }
   ],
   "caveats": [
     {
-      "catalog": [
-        "pp.listfilter.definition"
-      ],
+      "catalog": ["pp.listfilter.definition"],
       "reason": "Learn does not name the filter definition JSON keys. The definition now follows the Portal Management app's filter designer (toFetchJSON in web resource mspp_jsoneditor/mspp.jsoneditor.filter.js, read-only from Dataverse 2026-10-15) and the building-permit/program-registration exports; the earlier adx.* shape without the xmlns.adx root rendered 'Liquid error: Value cannot be null. Parameter name: key' live. Rendering of the corrected definition is not yet observed live.",
-      "sources": [
-        "learn-ref-mspp-entitylist",
-        "learn-liquid-objects"
-      ]
+      "sources": ["learn-ref-mspp-entitylist", "learn-liquid-objects"]
     },
     {
       "catalog": [
@@ -494,39 +377,22 @@
         "pp.basicform.allow-create-if-null"
       ],
       "reason": "Baseline Item Edit Associated returned HTTP 500 for the editor persona. The record matches the only real export with this source (building-permit Acknowledgement: 756150003 over bp_defaultApplication_Contact, also a 1:N from contact). The test contact has two items through pqvd_contactid (item1, item8; read-only count 2026-10-15) while Learn describes a single related record; the 500 is attributed to that ambiguity, unverified. Fix is in the fixture data (one item per contact), outside this generator.",
-      "sources": [
-        "learn-basic-forms",
-        "learn-ref-mspp-entityform"
-      ]
+      "sources": ["learn-basic-forms", "learn-ref-mspp-entityform"]
     },
     {
-      "catalog": [
-        "pp.bfmeta.attribute.controlstyle.geolocation-lookup-validator"
-      ],
+      "catalog": ["pp.bfmeta.attribute.controlstyle.geolocation-lookup-validator"],
       "reason": "Baseline Item Edit Geolocation (Bing map type, no address columns, geolocation lookup validator on pqvd_wide) returned HTTP 500 while the Google/Esri geolocation forms without the validator render. Learn: the validator and the Bing map type require Bing Maps settings (Bingmaps/credentials, 'Required'); the fixture sets an invented key (O9), so the page is observed with a key the service rejects. Not separable without a real key; kept as configured.",
-      "sources": [
-        "learn-bfmeta",
-        "learn-tblref-efmeta"
-      ]
+      "sources": ["learn-bfmeta", "learn-tblref-efmeta"]
     },
     {
-      "catalog": [
-        "pp.basicform.settings"
-      ],
+      "catalog": ["pp.basicform.settings"],
       "reason": "Learn does not name the basic form settings JSON keys; actions use the {Actions:[{Type}]} shape Mirage reads, placement and dialog keys are unverified.",
-      "sources": [
-        "learn-basic-forms",
-        "learn-ref-mspp-entityform"
-      ]
+      "sources": ["learn-basic-forms", "learn-ref-mspp-entityform"]
     },
     {
-      "catalog": [
-        "pp.sitesetting.table.source"
-      ],
+      "catalog": ["pp.sitesetting.table.source"],
       "reason": "Only Source = Table (0) is set; Environment Variable (1) needs an environment variable definition the fixture lacks.",
-      "sources": [
-        "learn-tbl-sitesetting"
-      ]
+      "sources": ["learn-tbl-sitesetting"]
     },
     {
       "catalog": [
@@ -543,20 +409,12 @@
         "pp.msmeta.timeline_settings"
       ],
       "reason": "Learn names the timeline settings by display name only; the JSON keys follow the notes settings shape. Shape verified: the export stores adx_type 756150000 and adx_timeline_settings unchanged, and names the record '<form name> ' (empty target), as for notes. Rendering of these keys is not verified.",
-      "sources": [
-        "learn-bfmeta",
-        "learn-tblref-efmeta",
-        "learn-ref-webformmetadata"
-      ]
+      "sources": ["learn-bfmeta", "learn-tblref-efmeta", "learn-ref-webformmetadata"]
     },
     {
-      "catalog": [
-        "pp.template.builtin.layouts"
-      ],
+      "catalog": ["pp.template.builtin.layouts"],
       "reason": "Exercised through Layout 2 Column Wide Left (Learn: Built-in web templates), extended by name as the site's web template record is named; Layout 1 Column, Layout 2 Column Wide Right and Layout 3 Column Wide Middle are not web template records in the demo portal or the target site export, so they are not extended.",
-      "sources": [
-        "learn-web-templates"
-      ]
+      "sources": ["learn-web-templates"]
     },
     {
       "catalog": [
@@ -584,10 +442,7 @@
       "name": "Paqvilo demo",
       "path": "/baseline/",
       "variation": "existing website record, emitted unchanged (header and footer web templates)",
-      "catalog": [
-        "pp.template.website.footerwebtemplate",
-        "pp.template.website.headerwebtemplate"
-      ]
+      "catalog": ["pp.template.website.footerwebtemplate", "pp.template.website.headerwebtemplate"]
     },
     {
       "id": "33761c12-5bc1-4b58-82e8-6acf52631d92",
@@ -626,9 +481,7 @@
       "path": "/baseline/item-create/",
       "contentPageId": "09ef29b3-8b7b-46a4-8baa-de7eed88b6a6",
       "variation": "page for item-create",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "54fc8e2f-0f98-4338-8521-e61ba0a7a318",
@@ -1227,9 +1080,7 @@
       "path": "/baseline/item-edit/",
       "contentPageId": "11ad0c1e-406d-41df-838c-fd459b9197be",
       "variation": "page for item-edit",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "57774f0b-68ae-4ffa-831a-5728bafb6b60",
@@ -1258,9 +1109,7 @@
       "path": "/baseline/item-read/",
       "contentPageId": "e5dc5fec-619e-4a51-80f1-c3c827f621f4",
       "variation": "page for item-read",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "6252a787-8e51-42b1-87b9-22d58121dacf",
@@ -1290,9 +1139,7 @@
       "path": "/baseline/item-create-success/",
       "contentPageId": "fbbf95f9-271d-4273-8f57-34f73f7bfa76",
       "variation": "page for item-create-success",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "b202e756-f801-45ca-8620-9c57ae3d9b2d",
@@ -1325,9 +1172,7 @@
       "path": "/baseline/item-create-redirect/",
       "contentPageId": "30fdae44-72c8-4282-89e3-d48a16b7f3f7",
       "variation": "page for item-create-redirect",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "ee3c9ebe-cb67-4c1b-8ff7-9b8142963316",
@@ -1364,9 +1209,7 @@
       "path": "/baseline/item-create-redirect-url/",
       "contentPageId": "da34fd68-5915-451c-825f-ca6ceda4c5fe",
       "variation": "page for item-create-redirect-url",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "8ef0f34e-d2a6-47f9-8bbf-4b8cb1a78fe0",
@@ -1398,9 +1241,7 @@
       "path": "/baseline/item-edit-nolinks/",
       "contentPageId": "40bdb888-1c27-4607-8a27-a23a572dd763",
       "variation": "page for item-edit-nolinks",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "e8c1f36a-56dd-4f63-8656-af017781f7c6",
@@ -1430,9 +1271,7 @@
       "path": "/baseline/item-create-captcha/",
       "contentPageId": "35b9fdd6-c218-4270-8aff-fbf99ca83337",
       "variation": "page for item-create-captcha",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "d0335b6b-fa0c-4793-8c98-92d9fb637226",
@@ -1463,9 +1302,7 @@
       "path": "/baseline/item-create-captcha-all/",
       "contentPageId": "0628046f-dfe7-4a70-8cdb-23752228f300",
       "variation": "page for item-create-captcha-all",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "2e4059ff-339a-40b1-85e7-5181f5d75f2e",
@@ -1505,9 +1342,7 @@
       "path": "/baseline/item-create-attach/",
       "contentPageId": "05f4d873-866e-4015-86bc-8b7495c8d406",
       "variation": "page for item-create-attach",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "4ef8a9ed-9d48-4861-8b21-571f490d20f4",
@@ -1553,9 +1388,7 @@
       "path": "/baseline/item-create-attach-multiple/",
       "contentPageId": "5fa1ee79-9a76-4890-852b-3e0dbe4603ca",
       "variation": "page for item-create-attach-multiple",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "e3bf82e7-26b8-4936-8083-13897792a38f",
@@ -1609,9 +1442,7 @@
       "path": "/baseline/item-edit-geo/",
       "contentPageId": "7b95561a-7213-4105-8a13-4a641edecda3",
       "variation": "page for item-edit-geo",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "b3a57a48-f2cd-4ed2-8437-5c7c21b910e3",
@@ -1656,9 +1487,7 @@
       "path": "/baseline/item-edit-geo-google/",
       "contentPageId": "8521e08b-c80e-4601-8da2-de85383da594",
       "variation": "page for item-edit-geo-google",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "929522c7-0a38-4bc9-82a6-cefe6da7f796",
@@ -1702,9 +1531,7 @@
       "path": "/baseline/item-edit-geo-esri/",
       "contentPageId": "b48d529c-0c45-46a5-8404-2f9f1b94d704",
       "variation": "page for item-edit-geo-esri",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "7cfcb005-e8a7-48fa-8361-6861572a2fee",
@@ -1737,9 +1564,7 @@
       "path": "/baseline/item-edit-associated/",
       "contentPageId": "2918c1df-6e33-4cfd-8710-df3490a133f7",
       "variation": "page for item-edit-associated",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "859637e0-149a-4b46-824d-16f2fa08063c",
@@ -1767,9 +1592,7 @@
       "path": "/baseline/contact-read-current/",
       "contentPageId": "623fa504-14be-4c49-8a5a-9b29f6431e7f",
       "variation": "page for contact-read-current",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "ca9a5a7d-d0db-447f-831b-e187a20e07df",
@@ -1802,9 +1625,7 @@
       "path": "/baseline/item-edit-tab/",
       "contentPageId": "d3ee8546-1e43-4a03-8682-caa82826cc5a",
       "variation": "page for item-edit-tab",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "a2f14099-a579-4854-892c-d06cfc445d70",
@@ -1850,9 +1671,7 @@
       "path": "/baseline/item-edit-options/",
       "contentPageId": "76957a1c-a542-4127-862f-d33c06ad26da",
       "variation": "page for item-edit-options",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "1e170396-81f4-4376-8250-7a5c4922342f",
@@ -1883,9 +1702,7 @@
       "path": "/baseline/item-create-required/",
       "contentPageId": "96c0e088-a8b1-4549-8895-5e38ee42c54f",
       "variation": "page for item-create-required",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "8de5ac6a-682c-4076-850f-22ab95ce8e39",
@@ -1919,9 +1736,7 @@
       "path": "/baseline/item-create-steps/",
       "contentPageId": "357823cd-9ef3-46f4-81a0-850eeeaa4e64",
       "variation": "page for item-create-steps",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "41da8b9e-107d-471d-819e-b61ad339503e",
@@ -1952,9 +1767,7 @@
       "path": "/baseline/item-create-owner/",
       "contentPageId": "fa7e940d-1131-4979-85f8-5a7d18dea2a1",
       "variation": "page for item-create-owner",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "d945feeb-1e18-49b4-824b-bf670b878ada",
@@ -1993,9 +1806,7 @@
       "path": "/baseline/child-create-reference/",
       "contentPageId": "26511a8a-f02b-49eb-8cfa-cd8a6162e14d",
       "variation": "page for child-create-reference",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "dd095b5a-1e88-4787-83d0-9b857fd5e9f3",
@@ -2033,9 +1844,7 @@
       "path": "/baseline/child-create-reference-code/",
       "contentPageId": "96ae2b2b-d236-4faa-89ff-a8355cae20cd",
       "variation": "page for child-create-reference-code",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "afa6e3b5-2e66-4417-80f6-499646568f47",
@@ -2070,9 +1879,7 @@
       "path": "/baseline/item-create-contact-reference/",
       "contentPageId": "b4099eaa-c4b6-470f-8adb-299b3d3ce531",
       "variation": "page for item-create-contact-reference",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "27876f1e-5529-4588-8d0b-6d6fb8663c99",
@@ -2127,9 +1934,7 @@
       "path": "/baseline/item-edit-actions/",
       "contentPageId": "02d17946-025f-46d5-82c6-1eb0aa356140",
       "variation": "page for item-edit-actions",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "9c4ff08c-e2c2-499f-8f98-f1c5486eac28",
@@ -2183,9 +1988,7 @@
       "path": "/baseline/item-edit-actions-above/",
       "contentPageId": "47d612cb-242f-430a-8ea8-9254827fa1e0",
       "variation": "page for item-edit-actions-above",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "f844cd1c-91f6-4686-83e0-3e1f951ec452",
@@ -2238,9 +2041,7 @@
       "path": "/baseline/item-edit-actions-small/",
       "contentPageId": "83c0b593-0d13-4ca1-83df-32a50c609dc5",
       "variation": "page for item-edit-actions-small",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "e3e16411-3741-477d-83a1-891c50788e72",
@@ -2392,9 +2193,7 @@
       "path": "/baseline/child-edit-lookup/",
       "contentPageId": "ac2d99d9-220d-438e-8224-053ebd37407b",
       "variation": "page for child-edit-lookup",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "13d9dbd4-5ac9-4091-84ab-9e70afdafe69",
@@ -2471,9 +2270,7 @@
       "path": "/baseline/parent-edit/",
       "contentPageId": "83bcc545-9f0f-46d4-8d21-86a85664c4b6",
       "variation": "page for parent-edit",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "e538589e-00de-4595-88d1-5cd6659b3fd8",
@@ -2633,9 +2430,7 @@
       "path": "/baseline/item-edit-survey/",
       "contentPageId": "ca07853c-b0d4-499e-8704-f011865ddef2",
       "variation": "page for item-edit-survey",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "aaf9944e-975d-4210-8119-2040b47e279d",
@@ -2727,9 +2522,7 @@
       "path": "/baseline/item-edit-rank-no-ties/",
       "contentPageId": "c767634e-41ea-446e-81de-a4b4ba64cce1",
       "variation": "page for item-edit-rank-no-ties",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "2c25ccd5-fdf9-4567-8daa-7340b10ca9af",
@@ -2818,9 +2611,7 @@
       "path": "/baseline/item-edit-rank-allow-ties/",
       "contentPageId": "801561ed-729e-47d2-8ec0-16d538da62a7",
       "variation": "page for item-edit-rank-allow-ties",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "63196fab-acce-47c2-827d-48fdb1f807c2",
@@ -2909,9 +2700,7 @@
       "path": "/baseline/item-edit-stack-rank/",
       "contentPageId": "4ce94011-27c4-40ee-8448-6ce316bb8ec5",
       "variation": "page for item-edit-stack-rank",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "ea78ecf6-eb67-4a64-8a6c-3a4cb4d4758b",
@@ -2965,9 +2754,7 @@
       "path": "/baseline/item-edit-timeline/",
       "contentPageId": "f1c51478-9c28-4653-88a1-c9dac57f1f7b",
       "variation": "page for item-edit-timeline",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "e7967444-5be0-432b-8a41-5bacee42b250",
@@ -2997,9 +2784,7 @@
       "path": "/baseline/item-read-inactive/",
       "contentPageId": "1aca4b15-2935-4bf3-8fa7-34d13d1ca7f3",
       "variation": "page for item-read-inactive",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "20fa6034-9d07-4bae-84ef-8111a0c24623",
@@ -3048,9 +2833,7 @@
       "path": "/baseline/item-list/",
       "contentPageId": "b833401b-37f1-4695-8d57-ec0d65c4c958",
       "variation": "page for item-list",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "d55fd249-2a23-494b-85d5-f214e67a9d27",
@@ -3122,9 +2905,7 @@
       "path": "/baseline/item-list-modal/",
       "contentPageId": "05490cb3-192b-478b-8547-9999d564bf4c",
       "variation": "page for item-list-modal",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "0c725058-9611-4747-8349-c84eb1414bd3",
@@ -3196,9 +2977,7 @@
       "path": "/baseline/item-list-modal-large/",
       "contentPageId": "dda28229-7cb2-4be7-8d6a-3644261b1d34",
       "variation": "page for item-list-modal-large",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "ab2c6150-d5bc-410c-8e26-5c4c4a9bc855",
@@ -3270,9 +3049,7 @@
       "path": "/baseline/item-list-modal-small/",
       "contentPageId": "add23c64-5e91-4371-84c7-c2f41fc74ccb",
       "variation": "page for item-list-modal-small",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "965358d2-15a7-46df-8938-4b84df29216d",
@@ -3353,9 +3130,7 @@
       "path": "/baseline/item-list-options/",
       "contentPageId": "fbac3100-0dd3-443b-8b7c-874cb8db00f9",
       "variation": "page for item-list-options",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "0dfa3d63-7c99-44e3-8bcd-818ed2ddfc09",
@@ -3420,9 +3195,7 @@
       "path": "/baseline/item-list-filters/",
       "contentPageId": "6e10aa80-905c-40f3-822d-0c41a711e94a",
       "variation": "page for item-list-filters",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "1c75fe08-398d-4ee1-8c6b-5dd3f85008e1",
@@ -3454,9 +3227,7 @@
       "path": "/baseline/item-list-filters-horizontal/",
       "contentPageId": "f2f213a4-dc28-429a-8359-64dedfca991c",
       "variation": "page for item-list-filters-horizontal",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "1ad7114b-1e2e-426b-8dce-d36ccfa143b4",
@@ -3486,9 +3257,7 @@
       "path": "/baseline/item-list-odata/",
       "contentPageId": "bcd87d26-c302-4c4c-877d-97ef2fe9c6a9",
       "variation": "page for item-list-odata",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "4e43598a-a23e-418b-86d1-6f9e340dfd01",
@@ -3523,9 +3292,7 @@
       "path": "/baseline/item-list-calendar/",
       "contentPageId": "f0a936be-7504-4a67-8a4c-d58cb418796b",
       "variation": "page for item-list-calendar",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "5c895f16-8610-4229-837f-b7bacd6689a9",
@@ -3566,9 +3333,7 @@
       "path": "/baseline/item-list-calendar-year/",
       "contentPageId": "84f9a19e-0e8b-44b7-8834-722cdeaba021",
       "variation": "page for item-list-calendar-year",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "22cfe29f-523b-4006-83e0-787ae48efcc3",
@@ -3608,9 +3373,7 @@
       "path": "/baseline/item-list-calendar-week/",
       "contentPageId": "bddc27cd-b25a-4627-87c3-8b83a46e7efb",
       "variation": "page for item-list-calendar-week",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "8026dd0e-6e0f-44f1-8bb1-772111789f8d",
@@ -3650,9 +3413,7 @@
       "path": "/baseline/item-list-calendar-day/",
       "contentPageId": "b33d5ce3-1431-4600-8c79-9bdbe35337e0",
       "variation": "page for item-list-calendar-day",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "250c213f-bde9-45d9-849f-9431e99d1d3f",
@@ -3679,9 +3440,7 @@
       "path": "/baseline/item-list-mine/",
       "contentPageId": "352b2dee-ee10-41bc-81e0-429495db5150",
       "variation": "page for item-list-mine",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "9ea636e3-b28c-457d-8c16-d1b6d5e56678",
@@ -3724,9 +3483,7 @@
       "path": "/baseline/item-list-map/",
       "contentPageId": "df766cd9-d53e-4c33-87c4-f51fec3c25bb",
       "variation": "page for item-list-map",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "0484a18c-1fc8-4481-8222-92304e93b044",
@@ -3769,9 +3526,7 @@
       "path": "/baseline/item-list-map-google/",
       "contentPageId": "d0947c77-c5cc-4dbb-8ff2-c6c94c23e164",
       "variation": "page for item-list-map-google",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "52d91038-a39d-43be-8cb9-b040a9c65b40",
@@ -3814,9 +3569,7 @@
       "path": "/baseline/item-list-map-esri/",
       "contentPageId": "6ba642e5-92e9-401f-8840-c44d3f83590c",
       "variation": "page for item-list-map-esri",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "a4c72a3d-1747-4c9e-8721-8f0e9bcacf30",
@@ -3842,9 +3595,7 @@
       "path": "/baseline/item-list-inactive/",
       "contentPageId": "4168fa29-f06e-415d-8186-00296e2ff226",
       "variation": "page for item-list-inactive",
-      "catalog": [
-        "pp.template.liquid.include"
-      ]
+      "catalog": ["pp.template.liquid.include"]
     },
     {
       "id": "66333f6d-30ea-41fd-801f-2cbf5c235f17",
@@ -4075,10 +3826,7 @@
       "path": "/baseline/multistep/",
       "contentPageId": "a0e84727-c671-4f98-8dfe-63eb487ad6eb",
       "variation": "page for multistep",
-      "catalog": [
-        "pp.template.liquid.webform",
-        "pp.msform.liquid"
-      ]
+      "catalog": ["pp.template.liquid.webform", "pp.msform.liquid"]
     },
     {
       "id": "280f988a-4e25-4e29-86f8-433e30164057",
@@ -4949,12 +4697,7 @@
       "step": "Baseline Multistep Survey Attributes",
       "path": "/baseline/multistep-survey/",
       "variation": "metadata (server-named): step timeline: create enabled with attachments, MIME/extension restriction, size limit",
-      "catalog": [
-        "pp.msmeta.timeline_settings",
-        "pp.msmeta.webformstep",
-        "pp.msmeta.type",
-        "pp.msmeta.type.timeline"
-      ]
+      "catalog": ["pp.msmeta.timeline_settings", "pp.msmeta.webformstep", "pp.msmeta.type", "pp.msmeta.type.timeline"]
     },
     {
       "id": "632905f2-71cb-425e-86f8-69f07704ac46",
@@ -5001,10 +4744,7 @@
       "path": "/baseline/multistep-survey/",
       "contentPageId": "f7b074d8-85c8-4a56-8dd5-050f4e038c3f",
       "variation": "page for multistep-survey",
-      "catalog": [
-        "pp.template.liquid.webform",
-        "pp.msform.liquid"
-      ]
+      "catalog": ["pp.template.liquid.webform", "pp.msform.liquid"]
     },
     {
       "id": "7bb270b5-0c1b-466d-8230-2e3cbbc776b1",
@@ -5157,10 +4897,7 @@
       "path": "/baseline/multistep-insert/",
       "contentPageId": "73c591f1-0102-4990-85a9-975361b6bd92",
       "variation": "page for multistep-insert",
-      "catalog": [
-        "pp.template.liquid.webform",
-        "pp.msform.liquid"
-      ]
+      "catalog": ["pp.template.liquid.webform", "pp.msform.liquid"]
     },
     {
       "id": "33b4a554-bc6b-4ea3-8fec-ec3ffa3f4144",
@@ -5313,10 +5050,7 @@
       "path": "/baseline/multistep-insert-fixed/",
       "contentPageId": "5977aca9-847f-4204-8fd7-c21450c95d9a",
       "variation": "page for multistep-insert-fixed",
-      "catalog": [
-        "pp.template.liquid.webform",
-        "pp.msform.liquid"
-      ]
+      "catalog": ["pp.template.liquid.webform", "pp.msform.liquid"]
     },
     {
       "id": "ae2d0336-d8f2-4008-85ae-cfe81d5f3bdf",
@@ -5444,10 +5178,7 @@
       "path": "/baseline/multistep-user/",
       "contentPageId": "0bf7ae0d-62af-4f11-8e63-75757e311ce0",
       "variation": "page for multistep-user",
-      "catalog": [
-        "pp.template.liquid.webform",
-        "pp.msform.liquid"
-      ]
+      "catalog": ["pp.template.liquid.webform", "pp.msform.liquid"]
     },
     {
       "id": "c55b14a0-497b-4f94-8a8d-4473ac5c6b57",
@@ -6981,69 +6712,42 @@
       "kind": "webrole",
       "name": "Baseline Contact Scope",
       "variation": "baseline role, not a default role",
-      "catalog": [
-        "pp.webrole.tablepermissions",
-        "pp.webrole.description",
-        "pp.webrole.key",
-        "pp.webrole.name"
-      ]
+      "catalog": ["pp.webrole.tablepermissions", "pp.webrole.description", "pp.webrole.key", "pp.webrole.name"]
     },
     {
       "id": "dc6528da-1676-42da-8263-7c5a402fe418",
       "kind": "webrole",
       "name": "Baseline Account Scope",
       "variation": "baseline role, not a default role",
-      "catalog": [
-        "pp.webrole.tablepermissions",
-        "pp.webrole.description",
-        "pp.webrole.key",
-        "pp.webrole.name"
-      ]
+      "catalog": ["pp.webrole.tablepermissions", "pp.webrole.description", "pp.webrole.key", "pp.webrole.name"]
     },
     {
       "id": "83b55915-2899-484c-8d57-298482ed7d81",
       "kind": "webrole",
       "name": "Baseline Parent Scope",
       "variation": "baseline role, not a default role",
-      "catalog": [
-        "pp.webrole.tablepermissions",
-        "pp.webrole.description",
-        "pp.webrole.key",
-        "pp.webrole.name"
-      ]
+      "catalog": ["pp.webrole.tablepermissions", "pp.webrole.description", "pp.webrole.key", "pp.webrole.name"]
     },
     {
       "id": "5d031fb8-a8ea-4eae-8dd5-6baf1d414731",
       "kind": "webrole",
       "name": "Baseline Privilege Combinations",
       "variation": "baseline role, not a default role",
-      "catalog": [
-        "pp.webrole.tablepermissions",
-        "pp.webrole.description",
-        "pp.webrole.key",
-        "pp.webrole.name"
-      ]
+      "catalog": ["pp.webrole.tablepermissions", "pp.webrole.description", "pp.webrole.key", "pp.webrole.name"]
     },
     {
       "id": "53506b9a-ef3b-49cc-87f7-814fe445d49f",
       "kind": "webrole",
       "name": "Baseline Inactive Role",
       "variation": "baseline role, deactivated",
-      "catalog": [
-        "pp.webrole.description",
-        "pp.webrole.key",
-        "pp.webrole.name",
-        "pp.webrole.statecode"
-      ]
+      "catalog": ["pp.webrole.description", "pp.webrole.key", "pp.webrole.name", "pp.webrole.statecode"]
     },
     {
       "id": "674fd6ac-a51a-4ebe-8fc2-74bf8c781038",
       "kind": "webpagerule",
       "name": "Baseline Restricted Page Read",
       "path": "/baseline/restricted/",
-      "roles": [
-        "Baseline Readers"
-      ],
+      "roles": ["Baseline Readers"],
       "variation": "restrict read, all content, Baseline Readers",
       "catalog": [
         "pp.pagerule.description",
@@ -7059,9 +6763,7 @@
       "kind": "webpagerule",
       "name": "Baseline Editors Page Grant Change",
       "path": "/baseline/editors/",
-      "roles": [
-        "Baseline Editors"
-      ],
+      "roles": ["Baseline Editors"],
       "variation": "grant change, exclude direct child web files, Baseline Editors",
       "catalog": [
         "pp.pagerule.description",
@@ -7079,9 +6781,7 @@
       "path": "/baseline/restricted/",
       "contentPageId": "9a84ad94-aa78-46ab-8d19-0ba17664ebed",
       "variation": "page for restricted",
-      "catalog": [
-        "pp.pagerule.webpage"
-      ]
+      "catalog": ["pp.pagerule.webpage"]
     },
     {
       "id": "ab1fcf8f-d160-47fc-892b-01e20cae2a8a",
@@ -7090,9 +6790,7 @@
       "path": "/baseline/editors/",
       "contentPageId": "bc5a2eca-67d6-482c-8af9-4961aefe0c55",
       "variation": "page for editors",
-      "catalog": [
-        "pp.pagerule.webpage"
-      ]
+      "catalog": ["pp.pagerule.webpage"]
     },
     {
       "id": "f35963ec-898f-409c-85e1-c51fa0ae901c",
@@ -7175,22 +6873,14 @@
       "kind": "sitesetting",
       "name": "Webapi/pqvd_baselinechild/enabled",
       "variation": "Web API disabled for children",
-      "catalog": [
-        "pp.sitesetting.table.description",
-        "pp.sitesetting.table.name",
-        "pp.sitesetting.table.value"
-      ]
+      "catalog": ["pp.sitesetting.table.description", "pp.sitesetting.table.name", "pp.sitesetting.table.value"]
     },
     {
       "id": "73a5400b-d001-4025-8aac-e1bfbed60740",
       "kind": "sitesetting",
       "name": "Webapi/pqvd_baselinechild/UseFieldsFromView",
       "variation": "Web API fields not taken from a view",
-      "catalog": [
-        "pp.sitesetting.table.description",
-        "pp.sitesetting.table.name",
-        "pp.sitesetting.table.value"
-      ]
+      "catalog": ["pp.sitesetting.table.description", "pp.sitesetting.table.name", "pp.sitesetting.table.value"]
     },
     {
       "id": "43db54fa-8ebc-4603-88cf-0f3599e2c2da",
@@ -7245,22 +6935,14 @@
       "kind": "webtemplate",
       "name": "Baseline Page Template",
       "variation": "web template (text/html)",
-      "catalog": [
-        "pp.template.webtemplate.source",
-        "pp.template.webtemplate.mimetype",
-        "pp.template.webtemplate.name"
-      ]
+      "catalog": ["pp.template.webtemplate.source", "pp.template.webtemplate.mimetype", "pp.template.webtemplate.name"]
     },
     {
       "id": "43e70e38-8b45-4373-85cb-995aa7ef4188",
       "kind": "webtemplate",
       "name": "Baseline Json Template",
       "variation": "web template (application/json)",
-      "catalog": [
-        "pp.template.webtemplate.source",
-        "pp.template.webtemplate.mimetype",
-        "pp.template.webtemplate.name"
-      ]
+      "catalog": ["pp.template.webtemplate.source", "pp.template.webtemplate.mimetype", "pp.template.webtemplate.name"]
     },
     {
       "id": "d33c9bf8-9b7d-4b61-8e44-1fd20350acc0",
@@ -7279,11 +6961,7 @@
       "kind": "webtemplate",
       "name": "Baseline Include Part",
       "variation": "web template (text/html)",
-      "catalog": [
-        "pp.template.webtemplate.source",
-        "pp.template.webtemplate.mimetype",
-        "pp.template.webtemplate.name"
-      ]
+      "catalog": ["pp.template.webtemplate.source", "pp.template.webtemplate.mimetype", "pp.template.webtemplate.name"]
     },
     {
       "id": "c6e3aa94-2288-43cc-8430-0eb29a037d25",
@@ -7440,9 +7118,7 @@
       "path": "/baseline/liquid-entityform-id/",
       "contentPageId": "23f656fe-8ec9-4ea5-8174-530764cae293",
       "variation": "page for liquid-entityform-id, opened with ?id=<id> (the read form takes its record from the query string)",
-      "catalog": [
-        "pp.template.liquid.entityform"
-      ]
+      "catalog": ["pp.template.liquid.entityform"]
     },
     {
       "id": "450142c6-7bae-4d3a-828b-043cc320c661",
@@ -7451,10 +7127,7 @@
       "path": "/baseline/liquid-webform-id/",
       "contentPageId": "9e1f6a1b-ff59-419b-8fa2-948bd2cd8bda",
       "variation": "page for liquid-webform-id",
-      "catalog": [
-        "pp.template.liquid.webform",
-        "pp.msform.liquid"
-      ]
+      "catalog": ["pp.template.liquid.webform", "pp.msform.liquid"]
     },
     {
       "id": "0d66e001-b126-48d7-83a4-3f92553d93da",
@@ -7463,11 +7136,7 @@
       "path": "/baseline/liquid-entitylist/",
       "contentPageId": "abb8c80c-235a-49af-86a5-b63f1208daa9",
       "variation": "page for liquid-entitylist",
-      "catalog": [
-        "pp.template.liquid.entitylist",
-        "pp.template.liquid.entityview",
-        "pp.list.name"
-      ]
+      "catalog": ["pp.template.liquid.entitylist", "pp.template.liquid.entityview", "pp.list.name"]
     },
     {
       "id": "485844b7-ef18-42ff-8fec-d67b45632141",
@@ -7476,9 +7145,7 @@
       "path": "/baseline/liquid-fetchxml/",
       "contentPageId": "02f7780d-2153-47b5-828c-280f2b894066",
       "variation": "page for liquid-fetchxml",
-      "catalog": [
-        "pp.template.liquid.fetchxml"
-      ]
+      "catalog": ["pp.template.liquid.fetchxml"]
     },
     {
       "id": "b9678950-edf6-4e55-8c08-fae9015d6c6b",
@@ -7487,9 +7154,7 @@
       "path": "/baseline/bound-entityform/",
       "contentPageId": "fe7f1703-bcc6-44fa-8417-9e54fd94f2c0",
       "variation": "page for bound-entityform, opened with ?id=<id> (the read form takes its record from the query string)",
-      "catalog": [
-        "pp.basicform.rendering.full-page"
-      ]
+      "catalog": ["pp.basicform.rendering.full-page"]
     },
     {
       "id": "22a5013b-7ed1-45e7-8f06-e24af42694da",
@@ -7498,9 +7163,7 @@
       "path": "/baseline/bound-entitylist/",
       "contentPageId": "12a613de-6af0-4505-8df4-7c93101bd6df",
       "variation": "page for bound-entitylist",
-      "catalog": [
-        "pp.list.webpage"
-      ]
+      "catalog": ["pp.list.webpage"]
     },
     {
       "id": "7b963d64-3324-44ba-8284-ca3a16b025d0",
@@ -7509,9 +7172,7 @@
       "path": "/baseline/bound-webform/",
       "contentPageId": "4680c51e-b459-42ba-8bc9-60c098720e21",
       "variation": "page for bound-webform",
-      "catalog": [
-        "pp.msform.webpage"
-      ]
+      "catalog": ["pp.msform.webpage"]
     },
     {
       "id": "0eb3d782-449e-4a0c-86ea-7ae3690372f6",
@@ -7519,9 +7180,7 @@
       "name": "baseline-pushpin.png",
       "path": "/baseline/baseline-pushpin.png",
       "variation": "map pushpin image (1x1 PNG) referenced by adx_map_pushpinurl on the three map lists",
-      "catalog": [
-        "pp.webfile.record"
-      ]
+      "catalog": ["pp.webfile.record"]
     }
   ]
 }

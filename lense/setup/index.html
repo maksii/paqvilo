@@ -1,19 +1,108 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>Paqvilo · Project setup</title><link rel="stylesheet" href="/_setup/style.css"></head>
-<body>
-  <a class="skip" href="#main">Skip to project setup</a>
-  <div class="shell">
-    <aside><a class="brand" href="/_setup/"><span class="mark">P</span><span>Paqvilo<small>PROJECT WORKSPACE</small></span></a>
-      <nav id="runtime-navigation" aria-label="Preview navigation" hidden></nav>
-      <nav aria-label="Setup navigation"><a href="#overview">Overview</a><a href="#portals">Portals & sources</a><a href="#settings">Project settings</a><a href="#advanced">Configuration & rules</a><a href="#guidance">Next steps</a></nav>
-      <div class="aside-foot"><span class="dot"></span> Local configuration<small>Exports and live data stay in their own workflows.</small></div>
-    </aside>
-    <main id="main">
-      <header><div><span class="eyebrow">YOUR DEVELOPMENT WORKSPACE</span><h1>Project setup</h1><p id="scope">Connect sources. Choose environments. Start with confidence.</p></div><button id="refresh" class="secondary" type="button">Refresh status</button></header>
-      <div id="notice" role="status" aria-live="polite" hidden></div>
-      <div id="content"><p role="status">Loading project configuration…</p></div>
-    </main>
-  </div>
-  <script type="module" src="/_setup/app.mjs"></script>
-</body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Paqvilo · Project setup</title>
+    <link rel="stylesheet" href="/_setup/ui-kit.css" />
+    <link rel="stylesheet" href="/_setup/shell.css" />
+    <link rel="stylesheet" href="/_setup/dashboard.css" />
+    <link rel="stylesheet" href="/_setup/style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to project setup</a>
+    <div class="shell">
+      <aside class="sidebar" aria-label="Setup sidebar">
+        <a class="brand" href="/_setup/"
+          ><span class="brand-symbol" aria-hidden="true">P</span><span>Paqvilo<small>PROJECT SETUP</small></span></a
+        >
+        <div class="nav-label all-only">SETUP STAGES</div>
+        <nav id="stage-rail" class="nav-group" aria-label="Setup stages" hidden></nav>
+        <div class="nav-label all-only">SECTIONS</div>
+        <nav class="nav-group all-only" aria-label="Setup navigation">
+          <a class="nav-item" href="#system">Your system at a glance</a
+          ><a class="nav-item" href="#settings">Project settings</a
+          ><a class="nav-item" href="#advanced">Settings file</a>
+        </nav>
+        <nav id="runtime-navigation" class="nav-group" aria-label="Preview navigation" hidden></nav>
+        <div class="nav-label area-label">AREAS</div>
+        <nav id="areas" class="nav-group areas" aria-label="Areas">
+          <a
+            class="nav-item active"
+            href="/_setup/"
+            aria-current="page"
+            title="Administration and initial configuration: sources, runtime, packs and settings."
+            ><span class="nav-icon" aria-hidden="true">⚙</span>Project setup</a
+          >
+          <a
+            id="area-simulator"
+            class="nav-item"
+            aria-disabled="true"
+            title="Daily work: run, inspect and change the simulated portal and organization."
+            ><span class="nav-icon" aria-hidden="true">▣</span>Simulator workspace<span class="muted"
+              >Start the preview to open it</span
+            ></a
+          >
+        </nav>
+        <div class="sidebar-bottom">
+          <span id="setup-dot" class="status-dot ready"></span><span id="setup-state">Local configuration</span
+          ><small>Exports and live data stay in their own workflows.</small>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <span class="breadcrumb"
+            >Project setup <span aria-hidden="true">/</span> <strong id="breadcrumb">Overview</strong></span
+          >
+          <div class="top-actions">
+            <a id="open-simulator" class="button" href="/_sim/" hidden>Open simulator</a
+            ><a id="open-portal" class="button" href="/" target="_blank" rel="noopener" hidden
+              >Open website <span aria-hidden="true">↗</span></a
+            ><button id="refresh" class="button quiet" type="button">
+              <span aria-hidden="true">↻</span> Refresh status
+            </button>
+          </div>
+        </header>
+        <main id="main" tabindex="-1">
+          <div class="page-heading compact-heading">
+            <h1>Project setup</h1>
+            <span id="scope" class="code-text muted"></span>
+            <div class="view-switch" role="group" aria-label="Setup view">
+              <button type="button" class="view-option" data-view="quick" aria-pressed="true">Quick setup</button
+              ><button type="button" class="view-option" data-view="all" aria-pressed="false">All settings</button>
+            </div>
+          </div>
+          <div id="notice" class="activity-feedback" role="status" aria-live="polite" hidden></div>
+          <div id="content"><div class="loading" role="status">Loading project configuration…</div></div>
+        </main>
+        <footer>
+          Local configuration + project files<span>Setup never deploys, synchronizes or contacts a live portal.</span>
+        </footer>
+      </div>
+    </div>
+    <dialog id="folder-picker" class="folder-picker" aria-labelledby="folder-picker-title">
+      <form method="dialog" class="folder-picker-body">
+        <h2 id="folder-picker-title">Choose a folder</h2>
+        <p id="folder-picker-help" class="muted small"></p>
+        <div class="folder-picker-path">
+          <label for="folder-picker-input">Folder</label
+          ><input id="folder-picker-input" spellcheck="false" autocomplete="off" /><button
+            type="button"
+            class="button small"
+            data-folder-go
+          >
+            Open
+          </button>
+        </div>
+        <p id="folder-picker-here" class="folder-picker-here" role="status"></p>
+        <ul id="folder-picker-list" class="folder-picker-list" aria-label="Folders"></ul>
+        <div class="toolbar">
+          <button type="button" class="button primary" data-folder-use>Use this folder</button
+          ><button type="submit" class="button quiet" value="cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/_setup/app.mjs"></script>
+  </body>
+</html>

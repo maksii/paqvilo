@@ -8,3 +8,5 @@ export { importSolutionData, applySolutionData } from './lib/solution-data.mjs';
 export { migrateScenarioState } from './lib/state-migration.mjs';
 export { discoverPacks, loadPack, presetLibrary } from './lib/preset-registry.mjs';
 export { createMirageContext } from './lib/mirage-context.mjs';
+export { loadSourceGraph } from './lib/source-graph.mjs';
+export { preflight } from './lib/capability-report.mjs';

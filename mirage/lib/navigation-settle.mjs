@@ -11,15 +11,15 @@
 // synchronous XHR is answered with a redirect while a navigation of that frame waits to
 // commit; portal pages do issue such requests while they navigate themselves.
 
-const WRITE_TYPES = new Set(["XHR", "Fetch"]);
-const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const WRITE_TYPES = new Set(['XHR', 'Fetch']);
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const NO_FRAMES = Object.freeze({ loaders: new Map(), detached: new Set() });
 
 /** The CDP fetch pattern that pauses only document (navigation) requests. */
 export const DOCUMENT_REQUEST_PATTERN = Object.freeze({
-  urlPattern: "*",
-  resourceType: "Document",
-  requestStage: "Request",
+  urlPattern: '*',
+  resourceType: 'Document',
+  requestStage: 'Request',
 });
 
 /**
@@ -27,7 +27,7 @@ export const DOCUMENT_REQUEST_PATTERN = Object.freeze({
  * frame id (from CDP Page.frameAttached/frameNavigated events). The frame tree cannot be
  * queried while a document request of the page is paused.
  */
-export function withinFrame(frameId, ancestor, parents) {
+function withinFrame(frameId, ancestor, parents) {
   const seen = new Set();
   for (let current = frameId; current && !seen.has(current); current = parents.get(current)) {
     if (current === ancestor) return true;
@@ -47,14 +47,15 @@ export function frameState(frameEvents) {
   const parents = new Map();
   for (const row of frameEvents) {
     if (row.parentFrameId) parents.set(row.frameId, row.parentFrameId);
-    if (row.event === "frameNavigated" && row.loaderId) {
+    if (row.event === 'frameNavigated' && row.loaderId) {
       // A new document replaces the child frames of the one before it; Chromium does not
       // always report their removal.
       if (loaders.has(row.frameId) && loaders.get(row.frameId) !== row.loaderId)
-        for (const child of parents.keys()) if (child !== row.frameId && withinFrame(child, row.frameId, parents)) detached.add(child);
+        for (const child of parents.keys())
+          if (child !== row.frameId && withinFrame(child, row.frameId, parents)) detached.add(child);
       loaders.set(row.frameId, row.loaderId);
       detached.delete(row.frameId);
-    } else if (row.event === "frameDetached" && row.reason !== "swap") detached.add(row.frameId);
+    } else if (row.event === 'frameDetached' && row.reason !== 'swap') detached.add(row.frameId);
   }
   return { loaders, detached };
 }
@@ -92,7 +93,12 @@ export function inflightWrites(records, frameId, parents, frames = NO_FRAMES) {
  * Network records, `parents()` the frame parent map and `frames()` the frameState(). Returns
  * null when none were in flight, else { writes, waitedMs, settled }.
  */
-export async function awaitWritesBeforeDocument(frameId, records, parents, { timeout, poll = 50, frames = () => NO_FRAMES, deadline = () => Infinity }) {
+export async function awaitWritesBeforeDocument(
+  frameId,
+  records,
+  parents,
+  { timeout, poll = 50, frames = () => NO_FRAMES, deadline = () => Infinity },
+) {
   const pending = () => inflightWrites(records(), frameId, parents(), frames());
   const writes = pending();
   if (!writes.length) return null;
@@ -114,20 +120,23 @@ export async function awaitWritesBeforeDocument(frameId, records, parents, { tim
  * `ignore(row)` excludes further records. Bounded by `timeout`; never fails the caller.
  * Returns { waitedMs, settled, pending? }.
  */
-export async function awaitNetworkQuiet(records, { frames = () => NO_FRAMES, timeout, quietMs = 500, poll = 50, ignore = () => false }) {
+export async function awaitNetworkQuiet(
+  records,
+  { frames = () => NO_FRAMES, timeout, quietMs = 500, poll = 50, ignore = () => false },
+) {
   const started = Date.now();
-  let signature = "";
+  let signature = '';
   let changed = started;
   for (;;) {
     const rows = records();
     const state = frames();
     const open = rows.filter(
       (row) =>
-        row.type !== "EventSource" &&
+        row.type !== 'EventSource' &&
         row.finishedTimestamp === undefined &&
         !row.failure &&
         !ignore(row) &&
-        (row.type === "Document" ? !state.detached.has(row.frameId) : ofCurrentDocument(row, state)),
+        (row.type === 'Document' ? !state.detached.has(row.frameId) : ofCurrentDocument(row, state)),
     );
     const now = Date.now();
     const current = `${rows.length}:${rows.filter((row) => row.finishedTimestamp !== undefined || row.failure).length}`;

@@ -1,7 +1,5 @@
 # Paqvilo demo project
 
-The starter and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).
-
 One account workflow in three Power Pages approaches: native lists and forms, custom Web API, and PCF field editors. Includes 12 invented accounts, 24 contacts, notes, an attachment, access roles and deployable sources.
 
 From an empty working folder, run:
@@ -45,14 +43,14 @@ your machine. `mirage.identityProvider` in the catalogue controls the title, acc
 
 ## Compare the source patterns
 
-| Approach | Implementation |
-| --- | --- |
-| Out of the box | Native lists/forms with HTML, CSS and JavaScript in pages, templates and forms; contact modal CRUD and notes |
-| Web API | Liquid presentation template, `demo-workspace.js` and `demo.css` web files; account/contact CRUD, paging, search, lookups and notes |
-| PCF | The Web API workspace with an imported standard-control bundle containing 14 typed editors |
-| Extended | Exported server logic and a supported local location request/response flow |
-| Liquid | Include parameters, component manifest, custom entity lists/views, variables, loops and queries |
-| Plugins | Account/contact PreValidation and PreOperation on Create and Update; explicit local models |
+| Approach       | Implementation                                                                                                                      |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Out of the box | Native lists/forms with HTML, CSS and JavaScript in pages, templates and forms; contact modal CRUD and notes                        |
+| Web API        | Liquid presentation template, `demo-workspace.js` and `demo.css` web files; account/contact CRUD, paging, search, lookups and notes |
+| PCF            | The Web API workspace with an imported standard-control bundle containing 14 typed editors                                          |
+| Extended       | Exported server logic and a supported local location request/response flow                                                          |
+| Liquid         | Include parameters, component manifest, custom entity lists/views, variables, loops and queries                                     |
+| Plugins        | Account/contact PreValidation and PreOperation on Create and Update; explicit local models                                          |
 
 Content snippets supply shared home, access and native-workflow copy. Inspect connects those references, assets and controls to their source files.
 
@@ -62,15 +60,15 @@ The sample demonstrates selected scenarios. It does not include every platform c
 
 Change `paqvilo-example/portal/web-files/demo.css` and save to check a local style edit. Running the demo command again preserves source edits and restores sample data. Close its browser or press **Ctrl+C** to stop.
 
-| Source | Purpose |
-| --- | --- |
-| `portal/` | PAC portal export: pages, templates, web files, snippets, forms, lists and permissions |
-| `solution/` | Unpacked Solution sources for forms, views, fields, flow, plugin assembly/steps and site components |
-| `code-solution/` | Separate exported PCF manifests and resources |
-| `components/` | Editable TypeScript PCF and C# Dataverse plugin projects |
-| `deployment/` | PAC-built importable Solutions, cloned solution project, sample data and setup helper |
-| `metadata/` | Standard metadata absent from the sample's Solution export |
-| `pack/` | Invented data, personas, plugin models and populated/empty presets |
+| Source           | Purpose                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| `portal/`        | PAC portal export: pages, templates, web files, snippets, forms, lists and permissions              |
+| `solution/`      | Unpacked Solution sources for forms, views, fields, flow, plugin assembly/steps and site components |
+| `code-solution/` | Separate exported PCF manifests and resources                                                       |
+| `components/`    | Editable TypeScript PCF and C# Dataverse plugin projects                                            |
+| `deployment/`    | PAC-built importable Solutions, cloned solution project, sample data and setup helper               |
+| `metadata/`      | Standard metadata absent from the sample's Solution export                                          |
+| `pack/`          | Invented data, personas, plugin models and populated/empty presets                                  |
 
 Follow [deployment instructions](deployment/README.md) to import the portal, components and data into your own environment. Local personas are not online credentials. Add your portal address to the catalogue before using Lense; its form submissions use live data.
 
@@ -82,3 +80,7 @@ npm test
 ```
 
 Keep business data, observations and project tests in your own project. See [project extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md).
+
+## Use it as a starting point
+
+This project and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).

@@ -16,9 +16,13 @@ function fixture(t) {
   fs.copyFileSync(path.join(root, 'scripts/build-site.mjs'), path.join(checkout, 'scripts/build-site.mjs'));
   fs.cpSync(path.join(root, 'site'), path.join(checkout, 'site'), { recursive: true });
   fs.cpSync(path.join(root, 'docs/assets'), path.join(checkout, 'docs/assets'), { recursive: true });
-  const run = () => spawnSync(process.execPath, [path.join(checkout, 'scripts/build-site.mjs')], {
-    cwd: directory, encoding: 'utf8', windowsHide: true, timeout: 10_000,
-  });
+  const run = () =>
+    spawnSync(process.execPath, [path.join(checkout, 'scripts/build-site.mjs')], {
+      cwd: directory,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10_000,
+    });
   return { directory, checkout, run };
 }
 
@@ -30,15 +34,32 @@ test('site builds replace stale output and retain only deliberate public files',
   const result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.existsSync(path.join(output, 'obsolete')), false);
-  assert.deepEqual(fs.readdirSync(output).sort(), ['.nojekyll', 'assets', 'coverage.html', 'guide.html', 'guide.js', 'index.html', 'media', 'style.css']);
-  assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), ['lense-visual.png', 'mirage-visual.png', 'overview.svg']);
+  assert.deepEqual(fs.readdirSync(output).sort(), [
+    '.nojekyll',
+    'assets',
+    'coverage.html',
+    'guide.html',
+    'guide.js',
+    'index.html',
+    'media',
+    'style.css',
+  ]);
+  assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), [
+    'lense-visual.png',
+    'mirage-visual.png',
+    'overview.svg',
+  ]);
   const media = fs.readdirSync(path.join(root, 'site/media')).sort();
   assert.deepEqual(fs.readdirSync(path.join(output, 'media')).sort(), media);
   // The site lives in the toolkit repository: WebP stills and short MP4 clips within the media budget.
-  assert.ok(media.every((name) => /^[0-9]{2}[a-z]-[a-z0-9-]+\.(?:webp|mp4)$/.test(name)), 'media files are named <shot>-<name>.webp|mp4');
+  assert.ok(
+    media.every((name) => /^[0-9]{2}[a-z]-[a-z0-9-]+\.(?:webp|mp4)$/.test(name)),
+    'media files are named <shot>-<name>.webp|mp4',
+  );
   const size = (name) => fs.statSync(path.join(root, 'site/media', name)).size;
   assert.ok(media.reduce((total, name) => total + size(name), 0) <= 15 * 1024 * 1024, 'site/media stays within 15 MB');
-  for (const clip of media.filter((name) => name.endsWith('.mp4'))) assert.ok(size(clip) <= 1.2 * 1024 * 1024, `${clip} stays within 1.2 MB`);
+  for (const clip of media.filter((name) => name.endsWith('.mp4')))
+    assert.ok(size(clip) <= 1.2 * 1024 * 1024, `${clip} stays within 1.2 MB`);
 });
 
 test('site build rejects a broken in-page link', (t) => {

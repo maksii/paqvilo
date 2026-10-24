@@ -1,4 +1,4 @@
-const json = (value) => JSON.stringify(value).replace(/</g, "\\u003c");
+const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
 
 /** Load captured managed runtime resources and let the native PCF proxy bind controls. */
 export function clientManagedControlsRuntime(definitions) {
@@ -41,31 +41,24 @@ export function validateManagedControlDefinition(definition, name) {
     !Array.isArray(definition.manifest.Properties)
   )
     throw new Error(`Managed control ${name} requires its static manifest.`);
-  for (const path of [
-    ...(definition.scripts ?? []),
-    ...(definition.stylesheets ?? []),
-  ])
+  for (const path of [...(definition.scripts ?? []), ...(definition.stylesheets ?? [])])
     if (
-      typeof path !== "string" ||
-      !path.startsWith("/") ||
-      path.startsWith("//") ||
-      path.includes("\\") ||
+      typeof path !== 'string' ||
+      !path.startsWith('/') ||
+      path.startsWith('//') ||
+      path.includes('\\') ||
       /[\r\n]/.test(path)
     )
-      throw new Error(
-        `Managed control ${name} resource must be a local absolute path.`,
-      );
+      throw new Error(`Managed control ${name} resource must be a local absolute path.`);
   for (const [key, path] of Object.entries(definition.fabricConfig ?? {}))
     if (
-      !["fontBaseUrl", "iconBaseUrl"].includes(key) ||
-      typeof path !== "string" ||
-      !path.startsWith("/") ||
-      path.startsWith("//") ||
-      path.includes("\\") ||
+      !['fontBaseUrl', 'iconBaseUrl'].includes(key) ||
+      typeof path !== 'string' ||
+      !path.startsWith('/') ||
+      path.startsWith('//') ||
+      path.includes('\\') ||
       /[\r\n]/.test(path)
     )
-      throw new Error(
-        `Managed control ${name} Fabric setting must name a local font/icon base URL.`,
-      );
+      throw new Error(`Managed control ${name} Fabric setting must name a local font/icon base URL.`);
   return definition;
 }

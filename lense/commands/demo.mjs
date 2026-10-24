@@ -17,9 +17,15 @@ async function normalizeText(directory) {
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) await normalizeText(file);
-    else if (entry.isFile() && /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(entry.name)) {
+    else if (
+      entry.isFile() &&
+      /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
+        entry.name,
+      )
+    ) {
       const bytes = await fs.readFile(file);
-      if (!bytes.includes(0) && bytes.includes(13)) await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+      if (!bytes.includes(0) && bytes.includes(13))
+        await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
     }
   }
 }
@@ -29,37 +35,75 @@ async function prepareEditorFiles(target) {
   await assertScaffoldPath(folder, { directory: true });
   await fs.mkdir(folder, { recursive: true });
   const info = await fs.lstat(folder);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Demo editor folder must be a regular directory: ${folder}`);
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw new Error(`Demo editor folder must be a regular directory: ${folder}`);
   for (const file of ['.vscode/tasks.json', '.vscode/launch.json', 'paqvilo-demo.code-workspace']) {
     await assertScaffoldPath(path.join(target, file));
-    try { await fs.copyFile(path.join(STARTER, file), path.join(target, file), constants.COPYFILE_EXCL); }
-    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    try {
+      await fs.copyFile(path.join(STARTER, file), path.join(target, file), constants.COPYFILE_EXCL);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
   }
 }
 
 export async function prepareDemo(directory) {
   const target = await assertScaffoldPath(directory, { directory: true });
   let existing = null;
-  try { existing = await fs.lstat(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try {
+    existing = await fs.lstat(target);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   if (existing) {
-    if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error(`Demo folder must be a regular directory: ${target}`);
+    if (!existing.isDirectory() || existing.isSymbolicLink())
+      throw new Error(`Demo folder must be a regular directory: ${target}`);
     let marker;
-    try { marker = JSON.parse(await fs.readFile(path.join(target, MARKER), 'utf8')); } catch { /* not an owned demo */ }
+    try {
+      marker = JSON.parse(await fs.readFile(path.join(target, MARKER), 'utf8'));
+    } catch {
+      /* not an owned demo */
+    }
     if (marker?.kind === 'paqvilo-example' && marker.version === 2) {
-      for (const name of ['paqvilo.config.yml', 'portal/website.yml', 'pack/pack.mjs']) await fs.access(path.join(target, name));
+      for (const name of ['paqvilo.config.yml', 'portal/website.yml', 'pack/pack.mjs'])
+        await fs.access(path.join(target, name));
       await prepareEditorFiles(target);
       return { directory: target, created: false };
     }
     // Never replace the user's project, including an incomplete earlier copy.
-    if ((await fs.readdir(target)).length) throw new Error(`Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`);
+    if ((await fs.readdir(target)).length)
+      throw new Error(
+        `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`,
+      );
   }
   await prepareScaffoldDirectory(target);
 
-  for (const name of ['portal', 'solution', 'code-solution', 'metadata', 'pack', 'test', 'components', 'deployment', 'baseline', '.vscode', 'paqvilo-demo.code-workspace', 'paqvilo.config.yml', 'README.md']) {
+  for (const name of [
+    'portal',
+    'solution',
+    'code-solution',
+    'metadata',
+    'pack',
+    'test',
+    'components',
+    'deployment',
+    'baseline',
+    '.vscode',
+    'paqvilo-demo.code-workspace',
+    'paqvilo.config.yml',
+    'README.md',
+  ]) {
     await fs.cp(path.join(STARTER, name), path.join(target, name), {
-      recursive: true, errorOnExist: true, force: false,
+      recursive: true,
+      errorOnExist: true,
+      force: false,
       // A development checkout can contain build outputs absent from the npm archive.
-      filter: (source) => !path.relative(STARTER, source).split(path.sep).some((part) => ['node_modules', '.paqvilo', 'bin', 'obj', 'out', 'coverage'].includes(part)) && !source.endsWith('.log'),
+      filter: (source) =>
+        !path
+          .relative(STARTER, source)
+          .split(path.sep)
+          .some((part) => ['node_modules', '.paqvilo', 'bin', 'obj', 'out', 'coverage'].includes(part)) &&
+        !source.endsWith('.log'),
     });
   }
   await fs.copyFile(path.join(STARTER, 'gitignore.template'), path.join(target, '.gitignore'));
@@ -67,28 +111,49 @@ export async function prepareDemo(directory) {
   await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
   await normalizeText(target);
   const { version, dependencies } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
-  await fs.writeFile(path.join(target, 'package.json'), JSON.stringify({
-    name: 'paqvilo-example', private: true, type: 'module',
-    scripts: {
-      configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
-      dev: 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0',
-      'dev:debug': 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222',
-      lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',
-      test: 'node --test test/*.test.mjs',
-    },
-    devDependencies: { paqvilo: version, yaml: dependencies.yaml, 'playwright-core': dependencies['playwright-core'] },
-  }, null, 2) + '\n', { flag: 'wx' });
+  await fs.writeFile(
+    path.join(target, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'paqvilo-example',
+        private: true,
+        type: 'module',
+        scripts: {
+          configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
+          dev: 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0',
+          'dev:debug': 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222',
+          lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',
+          test: 'node --test test/*.test.mjs',
+        },
+        devDependencies: {
+          paqvilo: version,
+          yaml: dependencies.yaml,
+          'playwright-core': dependencies['playwright-core'],
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+    { flag: 'wx' },
+  );
   await fs.mkdir(path.join(target, '.paqvilo'), { recursive: true });
-  await fs.writeFile(path.join(target, MARKER), JSON.stringify({ kind: 'paqvilo-example', version: 2 }) + '\n', { flag: 'wx' });
+  await fs.writeFile(path.join(target, MARKER), JSON.stringify({ kind: 'paqvilo-example', version: 2 }) + '\n', {
+    flag: 'wx',
+  });
   return { directory: target, created: true };
 }
 
 async function runDemo() {
-  const { values, positionals } = parseArgs({ options: {
-    dir: { type: 'string', default: './paqvilo-example' }, browser: { type: 'string' },
-    headless: { type: 'boolean' }, 'debug-port': { type: 'string' }, scaffold: { type: 'boolean' },
-    help: { type: 'boolean', short: 'h' },
-  } });
+  const { values, positionals } = parseArgs({
+    options: {
+      dir: { type: 'string', default: './paqvilo-example' },
+      browser: { type: 'string' },
+      headless: { type: 'boolean' },
+      'debug-port': { type: 'string' },
+      scaffold: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
   if (positionals.length) throw new Error('demo accepts options only; use --dir <path> to choose its folder');
   if (values.help) {
     console.log(`Usage: paqvilo mirage demo [--dir ./paqvilo-example] [--browser msedge|chrome|chromium]
@@ -99,11 +164,14 @@ Close the browser or press Ctrl+C to stop. --headless and --debug-port are also 
 Use --scaffold to prepare the project and VS Code workspace without starting a browser.`);
     return;
   }
-  if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser)) throw new Error('--browser must be msedge, chrome or chromium');
+  if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
+    throw new Error('--browser must be msedge, chrome or chromium');
   if (values['debug-port'] && !/^\d+$/.test(values['debug-port'])) throw new Error('--debug-port must be an integer');
   const demo = await prepareDemo(values.dir);
   if (values.scaffold) {
-    console.log(`Mirage demo ${demo.created ? 'created' : 'reused'}: ${demo.directory}\nOpen ${path.join(demo.directory, 'paqvilo-demo.code-workspace')} in VS Code.\nSelect "Demo: Mirage and browser debugger" in Run and Debug, then press F5.\nNo runtime was started. Source edits stay in the demo folder.`);
+    console.log(
+      `Mirage demo ${demo.created ? 'created' : 'reused'}: ${demo.directory}\nOpen ${path.join(demo.directory, 'paqvilo-demo.code-workspace')} in VS Code.\nSelect "Demo: Mirage and browser debugger" in Run and Debug, then press F5.\nNo runtime was started. Source edits stay in the demo folder.`,
+    );
     return;
   }
   console.log(`\nMirage demo ${demo.created ? 'created' : 'reused'}: ${demo.directory}
@@ -122,7 +190,21 @@ Opening the development browser. Keep this terminal running.
 Each demo start restores the sample dataset. Source edits stay in the demo folder.
 Open paqvilo-demo.code-workspace in VS Code for prepared tasks and browser debugging.
 Close the browser or press Ctrl+C to stop.\n`);
-  const args = [path.join(ROOT, 'bin/paqvilo.mjs'), 'mirage', 'dev', '--config', path.join(demo.directory, 'paqvilo.config.yml'), '--site', 'example', '--portals', 'selected', '--port', '0', '--preset', 'example-demo'];
+  const args = [
+    path.join(ROOT, 'bin/paqvilo.mjs'),
+    'mirage',
+    'dev',
+    '--config',
+    path.join(demo.directory, 'paqvilo.config.yml'),
+    '--site',
+    'example',
+    '--portals',
+    'selected',
+    '--port',
+    '0',
+    '--preset',
+    'example-demo',
+  ];
   if (values.browser) args.push('--browser', values.browser);
   if (values.headless) args.push('--headless');
   if (values['debug-port']) args.push('--debug-port', values['debug-port']);
@@ -132,7 +214,10 @@ Close the browser or press Ctrl+C to stop.\n`);
   process.on('SIGINT', interrupt);
   process.on('SIGTERM', terminate);
   try {
-    process.exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code ?? 1)); });
+    process.exitCode = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code) => resolve(code ?? 1));
+    });
   } finally {
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', terminate);
@@ -140,5 +225,8 @@ Close the browser or press Ctrl+C to stop.\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runDemo().catch((error) => { console.error(`Mirage demo: ${error.message}`); process.exitCode = 1; });
+  runDemo().catch((error) => {
+    console.error(`Mirage demo: ${error.message}`);
+    process.exitCode = 1;
+  });
 }

@@ -8,7 +8,8 @@ const inside = (root, file) => {
   return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 };
 function checkSize(stat, maxBytes) {
-  if (!stat.isFile() || stat.size > maxBytes || !Number.isSafeInteger(Number(stat.size))) throw new Error('Local file is not regular or exceeds its read limit');
+  if (!stat.isFile() || stat.size > maxBytes || !Number.isSafeInteger(Number(stat.size)))
+    throw new Error('Local file is not regular or exceeds its read limit');
 }
 
 /** Read one validated file descriptor, bounded even if a writer grows the file.
@@ -25,7 +26,10 @@ export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, e
     const before = await handle.stat({ bigint: true });
     checkSize(before, maxBytes);
     const expectedSize = Number(before.size);
-    if (await fs.promises.realpath(file) !== real || identity(await fs.promises.stat(real, { bigint: true })) !== identity(before))
+    if (
+      (await fs.promises.realpath(file)) !== real ||
+      identity(await fs.promises.stat(real, { bigint: true })) !== identity(before)
+    )
       throw new Error('Local file changed before reading');
     const buffer = Buffer.allocUnsafe(expectedSize + 1);
     let size = 0;
@@ -34,16 +38,24 @@ export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, e
       if (!bytesRead) break;
       size += bytesRead;
     }
-    if (size !== expectedSize || version(await handle.stat({ bigint: true })) !== version(before) ||
-        await fs.promises.realpath(file) !== real || identity(await fs.promises.stat(real, { bigint: true })) !== identity(before))
+    if (
+      size !== expectedSize ||
+      version(await handle.stat({ bigint: true })) !== version(before) ||
+      (await fs.promises.realpath(file)) !== real ||
+      identity(await fs.promises.stat(real, { bigint: true })) !== identity(before)
+    )
       throw new Error('Local file changed during reading');
     const body = buffer.subarray(0, size);
     return encoding ? body.toString(encoding) : body;
-  } finally { await handle.close(); }
+  } finally {
+    await handle.close();
+  }
 }
 
-export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, encoding } = {}) {
+export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, encoding, expectedRealPath } = {}) {
   const real = fs.realpathSync(file);
+  // An opt-in caller validation boundary also refuses a link inserted before this reader's first realpath.
+  if (expectedRealPath !== undefined && real !== expectedRealPath) throw new Error('Local file changed before reading');
   if (root && !inside(fs.realpathSync(root), real)) throw new Error('Local file is outside its source root');
   const descriptor = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
@@ -59,10 +71,16 @@ export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, enc
       if (!bytesRead) break;
       size += bytesRead;
     }
-    if (size !== expectedSize || version(fs.fstatSync(descriptor, { bigint: true })) !== version(before) ||
-        fs.realpathSync(file) !== real || identity(fs.statSync(real, { bigint: true })) !== identity(before))
+    if (
+      size !== expectedSize ||
+      version(fs.fstatSync(descriptor, { bigint: true })) !== version(before) ||
+      fs.realpathSync(file) !== real ||
+      identity(fs.statSync(real, { bigint: true })) !== identity(before)
+    )
       throw new Error('Local file changed during reading');
     const body = buffer.subarray(0, size);
     return encoding ? body.toString(encoding) : body;
-  } finally { fs.closeSync(descriptor); }
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }

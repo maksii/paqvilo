@@ -1,0 +1,224 @@
+/* Native field calendars use a compact day pane beside the month/year pane. */
+.date-control {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.date-input {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+.date-with-time .date-input,
+.date-with-time .date-time-host {
+  flex: 0 1 calc(50% - 4px);
+}
+.date-time-host {
+  position: relative;
+  min-width: 0;
+}
+.date-time-host > input {
+  width: 100%;
+  padding-right: 32px;
+}
+.date-time-host > button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  color: #605e5c;
+}
+.date-time-host > button .icon {
+  width: 12px;
+  height: 12px;
+}
+.date-time-options {
+  position: fixed;
+  z-index: 1000;
+  overflow: auto;
+  background: #fff;
+  color: #323130;
+  border-radius: 4px;
+  padding: 4px 0;
+  box-shadow: 0 3px 8px #0003;
+  font:
+    14px 'Segoe UI',
+    sans-serif;
+}
+.date-time-options > [role='option'] {
+  position: relative;
+  height: 32px;
+  line-height: 20px;
+  padding: 6px 32px;
+  cursor: pointer;
+}
+.date-time-options > [role='option']:hover,
+.date-time-options > [role='option'].active {
+  background: #f3f2f1;
+}
+.date-time-options > [aria-selected='true']::before {
+  position: absolute;
+  left: 12px;
+  content: '✓';
+}
+.field .date-input > input {
+  width: 100%;
+  padding-right: 32px;
+}
+.date-input > button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  color: #605e5c;
+}
+.date-input > button .icon {
+  width: 14px;
+  height: 14px;
+}
+.date-input > button:disabled,
+.date-time-host > button:disabled {
+  display: none;
+}
+.date-calendar {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  display: flex;
+  width: 442px;
+  height: 254px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow:
+    0 0 2px #0000001f,
+    0 8px 16px #00000024;
+  overflow: auto;
+  color: #242424;
+}
+.date-calendar[hidden] {
+  display: none;
+}
+.date-calendar.above {
+  top: auto;
+  bottom: 100%;
+}
+.calendar-days,
+.calendar-months {
+  width: 220px;
+  flex: none;
+  padding: 12px;
+}
+.calendar-months {
+  border-left: 1px solid #e1dfdd;
+}
+.calendar-header {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  margin-bottom: 4px;
+}
+.date-calendar .calendar-heading {
+  display: flex;
+  justify-content: flex-start;
+  width: 140px;
+  min-width: 0;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+.date-calendar button {
+  border: 0;
+  border-radius: 2px;
+  padding: 0;
+  min-height: 0;
+  gap: 0;
+}
+.date-calendar .calendar-header > button:not(.calendar-heading) {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: #707070;
+}
+.date-calendar .calendar-header .icon {
+  width: 12px;
+  height: 12px;
+}
+.date-calendar table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 196px;
+  table-layout: fixed;
+}
+.date-calendar th,
+.date-calendar td {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  text-align: center;
+  border: 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 28px;
+}
+.date-calendar td > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 24px;
+}
+.date-calendar button.outside-month {
+  color: #707070;
+}
+.date-calendar td > button.today {
+  background: #0f6cbd;
+  color: #fff;
+  font-weight: 600;
+  border-radius: 50%;
+}
+.date-calendar td > button.selected:not(.today),
+.date-calendar td > button:focus {
+  background: #cfe4fa;
+  outline: 0;
+}
+.date-calendar td > button.today:focus {
+  background: #0f6cbd;
+  outline: 1px solid #0f6cbd;
+  outline-offset: 2px;
+}
+.date-calendar .calendar-month-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 40px);
+  column-gap: 12px;
+  row-gap: 16px;
+}
+.date-calendar .calendar-month-grid > button {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  font-size: 12px;
+  line-height: 40px;
+  font-weight: 400;
+}
+@media (max-width: 480px) {
+  .date-calendar {
+    width: 222px;
+  }
+  .calendar-months {
+    display: none;
+  }
+}

@@ -5,7 +5,7 @@ adx_delete: true
 adx_entitylogicalname: annotation
 adx_entityname: Baseline Contact Scope items notes
 adx_entitypermission_webrole:
-- 5d983ff1-320d-440d-8ac6-32d5a4d310ac
+  - 5d983ff1-320d-440d-8ac6-32d5a4d310ac
 adx_entitypermissionid: 78632be7-b72f-42b0-8f7c-5372d6397ae1
 adx_parententitypermission: ceea9fb7-d88e-4b6b-8c25-00560c27a8bd
 adx_parentrelationship: pqvd_baselineitem_Annotations

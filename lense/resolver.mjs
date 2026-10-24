@@ -30,7 +30,11 @@ export function globToRegExp(glob) {
 }
 
 function isFile(file) {
-  try { return fs.statSync(file).isFile(); } catch { return false; }
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function isInside(root, file) {
@@ -86,8 +90,11 @@ export class Resolver {
         file = path.resolve(root, rest);
         // Resolve junctions/symlinks as well as lexical traversal; a request cannot leave its route.
         try {
-          if (!isInside(root, file) || !isInside(fs.realpathSync.native(root), fs.realpathSync.native(file))) file = null;
-        } catch { file = null; }
+          if (!isInside(root, file) || !isInside(fs.realpathSync.native(root), fs.realpathSync.native(file)))
+            file = null;
+        } catch {
+          file = null;
+        }
       }
       if (file && isFile(file)) return this.inScope(file) ? { file, via: `route ${rule.url}` } : null;
       // rule matched but nothing on disk: fall through to the automatic mapping

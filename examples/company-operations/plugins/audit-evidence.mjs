@@ -1,3 +1,37 @@
-import{connectionPath}from'./registration.mjs';
-import{loadConnection,connectedClient}from'../../../lense/dataverse/index.mjs';import{readFile,writeFile}from'node:fs/promises';
-const connection=await loadConnection(connectionPath());const c=connectedClient(connection);await c.verify(connection.organisationId);const report=JSON.parse(await readFile('examples/company-operations/.paqvilo/plugins/qualification.json','utf8'));const op=report.outcomes.find(o=>o.caseId==='P02').operationId;const events=await c.list(`pqvd_pluginevents?$select=pqvd_payloadtext,pqvd_artifacttype,pqvd_payloadhash,pqvd_partnumber,pqvd_partcount&$filter=_pqvd_operationid_value eq ${op}`);const summaries=events.map(e=>{const p=JSON.parse(e.pqvd_payloadtext);return{artifact:e.pqvd_artifacttype,message:p.context.MessageName,stage:p.context.Stage,depth:p.context.Depth,requestId:p.context.RequestId,spanId:p.spanId,parentSpan:p.parentSpanId,userId:p.context.UserId,initiatingUserId:p.context.InitiatingUserId};});await writeFile('examples/company-operations/.paqvilo/plugins/evidence-audit.json',JSON.stringify(summaries,null,2));console.log(JSON.stringify({events:summaries.length,requestIDs:[...new Set(summaries.map(s=>s.requestId))],missingRequestIDs:summaries.filter(s=>!s.requestId).length},null,2));
+import { connectionPath } from './registration.mjs';
+import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
+import { readFile, writeFile } from 'node:fs/promises';
+const connection = await loadConnection(connectionPath());
+const c = connectedClient(connection);
+await c.verify(connection.organisationId);
+const report = JSON.parse(await readFile('examples/company-operations/.paqvilo/plugins/qualification.json', 'utf8'));
+const op = report.outcomes.find((o) => o.caseId === 'P02').operationId;
+const events = await c.list(
+  `pqvd_pluginevents?$select=pqvd_payloadtext,pqvd_artifacttype,pqvd_payloadhash,pqvd_partnumber,pqvd_partcount&$filter=_pqvd_operationid_value eq ${op}`,
+);
+const summaries = events.map((e) => {
+  const p = JSON.parse(e.pqvd_payloadtext);
+  return {
+    artifact: e.pqvd_artifacttype,
+    message: p.context.MessageName,
+    stage: p.context.Stage,
+    depth: p.context.Depth,
+    requestId: p.context.RequestId,
+    spanId: p.spanId,
+    parentSpan: p.parentSpanId,
+    userId: p.context.UserId,
+    initiatingUserId: p.context.InitiatingUserId,
+  };
+});
+await writeFile('examples/company-operations/.paqvilo/plugins/evidence-audit.json', JSON.stringify(summaries, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      events: summaries.length,
+      requestIDs: [...new Set(summaries.map((s) => s.requestId))],
+      missingRequestIDs: summaries.filter((s) => !s.requestId).length,
+    },
+    null,
+    2,
+  ),
+);

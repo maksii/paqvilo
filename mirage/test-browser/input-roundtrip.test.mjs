@@ -1,19 +1,21 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { chromium } from "playwright-core";
-import { browserLaunchOptions } from "../lib/browser-launch.mjs";
-import { createSimulator } from "../server.mjs";
-import { signInContext } from "../testing/session.mjs";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createSimulator } from '../server.mjs';
+import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
 
 // These are invented local records. Acceptance of an input by this fixture does
 // not establish that the hosted portal's request-validation policy accepts it.
 const CASES = [
   ['quotes', `A & B "quoted" O'Brien \\ / + = ? #`],
   ['entities', '&lt;img src=x onerror=alert(1)&gt; &amp; &#39;'],
-  ['json', '{"name":"A & B","items":[1,null],"quote":"\\\""}'],
+  ['json', '{"name":"A & B","items":[1,null],"quote":"\\""}'],
   ['unicode', 'Київ café cafe\u0301 😀 \u2028 \u2029'],
   ['html', '<b>bold</b><img data-input-probe src="/probe-missing" onerror="window.__inputInjected=1">'],
   ['xml', '<?xml version="1.0"?><record name="A &amp; B">text</record>'],
@@ -21,18 +23,24 @@ const CASES = [
 ];
 
 async function fixture(t, extraFields = [], contextOptions = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "input-roundtrip-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'input-roundtrip-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: input-site\nadx_name: Input fixture',
-    'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /\nadx_pagetemplateid: template',
+    'Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /\nadx_pagetemplateid: template',
     'Main.pagetemplate.yml': 'adx_pagetemplateid: template\nadx_webtemplateid: main',
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
-    'Main.webtemplate.source.html': '{% if request.params.readonly %}{% entityform name: "View input" %}{% elsif request.params.id %}{% entityform name: "Edit input" %}{% else %}{% entityform name: "Create input" %}{% endif %}{% include "entity_list" key: "Inputs" %}',
-    'Create.basicform.yml': 'adx_entityformid: input-create\nadx_name: Create input\nadx_entityname: sample\nadx_mode: 100000000',
-    'Edit.basicform.yml': 'adx_entityformid: input-edit\nadx_name: Edit input\nadx_entityname: sample\nadx_mode: 100000001',
-    'View.basicform.yml': 'adx_entityformid: input-view\nadx_name: View input\nadx_entityname: sample\nadx_mode: 100000002',
-    'Inputs.list.yml': 'adx_entitylistid: input-list\nadx_name: Inputs\nadx_entityname: sample\nadx_pagesize: 50\nadx_searchenabled: true',
+    'Main.webtemplate.source.html':
+      '{% if request.params.readonly %}{% entityform name: "View input" %}{% elsif request.params.id %}{% entityform name: "Edit input" %}{% else %}{% entityform name: "Create input" %}{% endif %}{% include "entity_list" key: "Inputs" %}',
+    'Create.basicform.yml':
+      'adx_entityformid: input-create\nadx_name: Create input\nadx_entityname: sample\nadx_mode: 100000000',
+    'Edit.basicform.yml':
+      'adx_entityformid: input-edit\nadx_name: Edit input\nadx_entityname: sample\nadx_mode: 100000001',
+    'View.basicform.yml':
+      'adx_entityformid: input-view\nadx_name: View input\nadx_entityname: sample\nadx_mode: 100000002',
+    'Inputs.list.yml':
+      'adx_entitylistid: input-list\nadx_name: Inputs\nadx_entityname: sample\nadx_pagesize: 50\nadx_searchenabled: true',
   };
   for (const [name, content] of Object.entries(files)) await fs.writeFile(path.join(root, name), content);
   const fields = [
@@ -43,14 +51,37 @@ async function fixture(t, extraFields = [], contextOptions = {}) {
   const initial = {
     mappings: {
       sample: {
-        entitySet: 'samples', idColumn: 'sampleid', nameColumn: 'title',
-        relationships: Object.fromEntries(fields.filter(field=>field.type==='lookup').map(field=>[field.name,{entity:'sample',from:field.name,to:'sampleid',many:false}])),
-        fieldMetadata: Object.fromEntries(fields.map((field) => [field.name, { dataverseType: field.dataverseType, maxLength: field.maxLength, minValue: field.minValue, maxValue: field.maxValue, precision: field.precision, dateTimeBehavior: field.dateTimeBehavior, format: field.format }])),
+        entitySet: 'samples',
+        idColumn: 'sampleid',
+        nameColumn: 'title',
+        relationships: Object.fromEntries(
+          fields
+            .filter((field) => field.type === 'lookup')
+            .map((field) => [field.name, { entity: 'sample', from: field.name, to: 'sampleid', many: false }]),
+        ),
+        fieldMetadata: Object.fromEntries(
+          fields.map((field) => [
+            field.name,
+            {
+              dataverseType: field.dataverseType,
+              maxLength: field.maxLength,
+              minValue: field.minValue,
+              maxValue: field.maxValue,
+              precision: field.precision,
+              dateTimeBehavior: field.dateTimeBehavior,
+              format: field.format,
+            },
+          ]),
+        ),
       },
     },
     tables: { sample: [] },
     permissions: [],
-    settings: { permissionMode: 'permissive', 'Webapi/sample/enabled': true, 'Webapi/sample/fields': fields.map((field) => field.name).join(',') },
+    settings: {
+      permissionMode: 'permissive',
+      'Webapi/sample/enabled': true,
+      'Webapi/sample/fields': fields.map((field) => field.name).join(','),
+    },
     simulator: {
       identity: { id: 'fixture-editor', roles: ['Editor'] },
       // This suite asserts the JSON form endpoint's responses; the core default is the postback.
@@ -64,13 +95,14 @@ async function fixture(t, extraFields = [], contextOptions = {}) {
     },
   };
   const app = await createSimulator({ sourceDir: root, initial, watch: false });
-  t.after(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const context = await browser.newContext(contextOptions);
+  ownedFixture(t).add(() => app.close());
+  const context = await chrome.browser.newContext(contextOptions);
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, 'fixture-editor', { roles: ['Editor'] });
   const page = await context.newPage();
-  const errors = [], external = [], writes = [];
+  const errors = [],
+    external = [],
+    writes = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
     if (new URL(request.url()).pathname.startsWith('/__sim/forms/') && request.method() === 'POST')
@@ -94,7 +126,9 @@ async function assertInert(page) {
 async function save(page, title, notes, status) {
   await page.locator('#title').fill(title);
   await page.locator('#notes').fill(notes);
-  const response = page.waitForResponse((result) => result.url().includes('/__sim/forms/') && result.request().method() === 'POST');
+  const response = page.waitForResponse(
+    (result) => result.url().includes('/__sim/forms/') && result.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: 'Submit', exact: true }).click();
   assert.equal((await response).status(), status);
   await page.locator('#MessageLabel').waitFor();
@@ -102,7 +136,10 @@ async function save(page, title, notes, status) {
 }
 
 async function search(page, value) {
-  const response = page.waitForResponse((result) => result.url().includes('/_services/entity-grid-data.json/') && result.request().postDataJSON()?.search === value);
+  const response = page.waitForResponse(
+    (result) =>
+      result.url().includes('/_services/entity-grid-data.json/') && result.request().postDataJSON()?.search === value,
+  );
   await page.locator('.entitylist .view-search input.query').fill(value);
   await page.locator('.entitylist .view-search input.query').press('Enter');
   const result = await response;
@@ -117,44 +154,87 @@ async function search(page, value) {
   return data;
 }
 
-test('native multiline edits use browser LF values while direct data writes retain CRLF', async t => {
-  const {app,page,writes,errors}=await fixture(t);
-  const identity={id:'fixture-editor',roles:['Editor']};
-  const prior='Original memo β',entered='Owned α<&>"\' \\ 😀 e\u0301\r\nline',saved=entered.replaceAll('\r\n','\n');
-  const row=await app.store.create('sample',{title:'Multiline fixture',notes:prior},identity);
+test('native multiline edits use browser LF values while direct data writes retain CRLF', async (t) => {
+  const { app, page, writes, errors } = await fixture(t);
+  const identity = { id: 'fixture-editor', roles: ['Editor'] };
+  const prior = 'Original memo β',
+    entered = 'Owned α<&>"\' \\ 😀 e\u0301\r\nline',
+    saved = entered.replaceAll('\r\n', '\n');
+  const row = await app.store.create('sample', { title: 'Multiline fixture', notes: prior }, identity);
   await page.goto(`${app.url}/?id=${row.sampleid}`);
-  await save(page,'Multiline fixture',entered,200);
-  assert.equal(writes.at(-1).notes,saved,'native textarea submission exposes LF text');
-  assert.equal(app.store.snapshot().tables.sample[0].notes,saved);
+  await save(page, 'Multiline fixture', entered, 200);
+  assert.equal(writes.at(-1).notes, saved, 'native textarea submission exposes LF text');
+  assert.equal(app.store.snapshot().tables.sample[0].notes, saved);
   await page.goto(`${app.url}/?id=${row.sampleid}&readonly=1`);
-  assert.equal(await page.locator('#notes').inputValue(),saved);
-  const found=await search(page,saved.split('\n')[0]);
-  assert.deepEqual(found.Records.map(record=>record.Id),[row.sampleid]);
-  await app.store.updateRecord('sample',row.sampleid,{notes:entered},identity);
-  assert.equal(app.store.snapshot().tables.sample[0].notes,entered,'data writes retain their separate raw string contract');
-  assert.deepEqual(errors,[]);
+  assert.equal(await page.locator('#notes').inputValue(), saved);
+  const found = await search(page, saved.split('\n')[0]);
+  assert.deepEqual(
+    found.Records.map((record) => record.Id),
+    [row.sampleid],
+  );
+  await app.store.updateRecord('sample', row.sampleid, { notes: entered }, identity);
+  assert.equal(
+    app.store.snapshot().tables.sample[0].notes,
+    entered,
+    'data writes retain their separate raw string contract',
+  );
+  assert.deepEqual(errors, []);
 });
 
-test('native hidden lookups require a record GUID and entity name, and malformed edits clear the reference', async t => {
-  const {app,page,writes}=await fixture(t,[{name:'related',label:'Related',type:'lookup',dataverseType:'lookup',targets:['sample']}]);
-  const parent='00000000-0000-4000-8000-000000000001';
-  await app.store.create('sample',{sampleid:parent,title:'Parent'}, {id:'fixture-editor',roles:['Editor']});
-  for(const [label,value,entity,bound]of [['missing entity',parent,'',false],['malformed GUID','not-guid','sample',false],['valid lookup',parent,'sample',true]]){
+test('native hidden lookups require a record GUID and entity name, and malformed edits clear the reference', async (t) => {
+  const { app, page, writes } = await fixture(t, [
+    { name: 'related', label: 'Related', type: 'lookup', dataverseType: 'lookup', targets: ['sample'] },
+  ]);
+  const parent = '00000000-0000-4000-8000-000000000001';
+  await app.store.create('sample', { sampleid: parent, title: 'Parent' }, { id: 'fixture-editor', roles: ['Editor'] });
+  for (const [label, value, entity, bound] of [
+    ['missing entity', parent, '', false],
+    ['malformed GUID', 'not-guid', 'sample', false],
+    ['valid lookup', parent, 'sample', true],
+  ]) {
     await page.goto(app.url);
-    assert.equal(await page.locator('#related_entityname').inputValue(),'','blank native lookups have no selected entity');
-    await page.evaluate(({value,entity})=>{document.getElementById('related').value=value;document.getElementById('related_entityname').value=entity;},{value,entity});
-    await save(page,label,'',201);
-    assert.equal(writes.at(-1)['related@odata.bind'],bound?`/samples(${parent})`:undefined);
+    assert.equal(
+      await page.locator('#related_entityname').inputValue(),
+      '',
+      'blank native lookups have no selected entity',
+    );
+    await page.evaluate(
+      ({ value, entity }) => {
+        document.getElementById('related').value = value;
+        document.getElementById('related_entityname').value = entity;
+      },
+      { value, entity },
+    );
+    await save(page, label, '', 201);
+    assert.equal(writes.at(-1)['related@odata.bind'], bound ? `/samples(${parent})` : undefined);
   }
-  const child=app.store.snapshot().tables.sample.find(row=>row.title==='valid lookup');
-  for(const [value,entity]of [['not-guid','sample'],[parent,'']]){
-    await app.store.updateRecord('sample',child.sampleid,{'related@odata.bind':`/samples(${parent})`},{id:'fixture-editor',roles:['Editor']});
+  const child = app.store.snapshot().tables.sample.find((row) => row.title === 'valid lookup');
+  for (const [value, entity] of [
+    ['not-guid', 'sample'],
+    [parent, ''],
+  ]) {
+    await app.store.updateRecord(
+      'sample',
+      child.sampleid,
+      { 'related@odata.bind': `/samples(${parent})` },
+      { id: 'fixture-editor', roles: ['Editor'] },
+    );
     await page.goto(`${app.url}/?id=${child.sampleid}`);
-    await page.evaluate(({value,entity})=>{document.getElementById('related').value=value;document.getElementById('related_entityname').value=entity;},{value,entity});
-    await save(page,'Cleared malformed lookup','',200);
-    assert.equal(writes.at(-1)['related@odata.bind'],null,'native edit clears a malformed reference instead of rejecting an API bind');
-    const row=app.store.snapshot().tables.sample.find(row=>row.sampleid===child.sampleid);
-    assert.equal(row.related??null,null);
+    await page.evaluate(
+      ({ value, entity }) => {
+        document.getElementById('related').value = value;
+        document.getElementById('related_entityname').value = entity;
+      },
+      { value, entity },
+    );
+    await save(page, 'Cleared malformed lookup', '', 200);
+    assert.equal(
+      writes.at(-1)['related@odata.bind'],
+      null,
+      'native edit clears a malformed reference instead of rejecting an API bind',
+    );
+    const row = app.store.snapshot().tables.sample.find((row) => row.sampleid === child.sampleid);
+    assert.equal(row.related ?? null, null);
   }
 });
 
@@ -232,9 +312,17 @@ test('native format and range errors post to the server, preserve input and reje
   await page.locator('#email').fill('not an email');
   await page.locator('#count').fill('not a number');
   await page.locator('#score').fill('101');
-  await page.locator('#day').evaluate((input) => { input.value = 'not a date'; });
-  assert.equal(await page.evaluate(() => Page_ClientValidate('')), true, 'native custom format/range validators are server-only');
-  const submitted = page.waitForResponse((response) => response.url().includes('/__sim/forms/') && response.request().method() === 'POST');
+  await page.locator('#day').evaluate((input) => {
+    input.value = 'not a date';
+  });
+  assert.equal(
+    await page.evaluate(() => window.Page_ClientValidate('')),
+    true,
+    'native custom format/range validators are server-only',
+  );
+  const submitted = page.waitForResponse(
+    (response) => response.url().includes('/__sim/forms/') && response.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: 'Submit', exact: true }).click();
   const response = await submitted;
   assert.equal(response.status(), 400, 'Mirage retains its JSON form-service transport');
@@ -245,12 +333,18 @@ test('native format and range errors post to the server, preserve input and reje
     'Score must have a value between 0.00 and 100.00.',
     'Day must have a valid date format.',
   ];
-  assert.deepEqual((await response.json()).error.validationErrors.map((entry) => entry.message), expected);
+  assert.deepEqual(
+    (await response.json()).error.validationErrors.map((entry) => entry.message),
+    expected,
+  );
   const summary = page.locator('#EntityFormPanel .validation-summary');
   await summary.waitFor({ state: 'visible' });
   // The server summary links end with a space, as the platform renders them.
-  assert.deepEqual(await summary.locator('li a').allTextContents(), expected.map((message) => `${message} `));
-  assert.equal(await page.evaluate(() => Page_IsValid), false);
+  assert.deepEqual(
+    await summary.locator('li a').allTextContents(),
+    expected.map((message) => `${message} `),
+  );
+  assert.equal(await page.evaluate(() => window.Page_IsValid), false);
   assert.equal(await page.locator('#email').inputValue(), 'not an email');
   assert.equal(await page.locator('#count').inputValue(), 'not a number');
   assert.equal(writes[0].count, 'not a number', 'invalid numeric input must not collapse to JSON null');
@@ -259,7 +353,9 @@ test('native format and range errors post to the server, preserve input and reje
   await page.locator('#email').fill("o'brien+probe@example.invalid");
   await page.locator('#count').fill('2');
   await page.locator('#score').fill('100');
-  await page.locator('#day').evaluate((input) => { input.value = '2026-10-10T00:00:00.0000000'; });
+  await page.locator('#day').evaluate((input) => {
+    input.value = '2026-10-10T00:00:00.0000000';
+  });
   await save(page, 'Valid title', 'Valid notes', 201);
   const row = app.store.snapshot().tables.sample[0];
   assert.equal(row.count, 2);
@@ -267,12 +363,19 @@ test('native format and range errors post to the server, preserve input and reje
 
   await page.goto(`${app.url}/?id=${row.sampleid}`);
   await page.locator('#email').fill('<img data-input-probe>@example.invalid');
-  await page.locator('#title').evaluate((input) => { input.value = 'x'.repeat(501); });
-  const rejected = page.waitForResponse((result) => result.url().includes('/__sim/forms/') && result.request().method() === 'POST');
+  await page.locator('#title').evaluate((input) => {
+    input.value = 'x'.repeat(501);
+  });
+  const rejected = page.waitForResponse(
+    (result) => result.url().includes('/__sim/forms/') && result.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: 'Submit', exact: true }).click();
   assert.equal((await rejected).status(), 400);
   await summary.waitFor({ state: 'visible' });
-  assert.deepEqual(await summary.locator('li a').allTextContents(), ['Title exceeds the maximum length of 500 characters. ', 'Email must be a valid email address. ']);
+  assert.deepEqual(await summary.locator('li a').allTextContents(), [
+    'Title exceeds the maximum length of 500 characters. ',
+    'Email must be a valid email address. ',
+  ]);
   assert.deepEqual(app.store.snapshot().tables.sample, [row], 'invalid update cannot partially change another field');
   await assertInert(page);
   assert.deepEqual(errors, []);
@@ -280,22 +383,56 @@ test('native format and range errors post to the server, preserve input and reje
 });
 
 test('native date companions parse AM/PM and submit UserLocal dates as UTC in the browser timezone', async (t) => {
-  for (const [timezoneId, offset] of [['Europe/Kiev', 3], ['America/New_York', -4]]) {
+  for (const [timezoneId, offset] of [
+    ['Europe/Kiev', 3],
+    ['America/New_York', -4],
+  ]) {
     await t.test(timezoneId, async (t) => {
-      const { app, page, errors, external } = await fixture(t, [
-        { name: 'date', label: 'Date', type: 'date', dataverseType: 'datetime', format: 'DateOnly', dateTimeBehavior: 'UserLocal' },
-        { name: 'instant', label: 'Instant', type: 'date', dataverseType: 'datetime', format: 'DateAndTime', dateTimeBehavior: 'UserLocal' },
-        { name: 'independent', label: 'Independent', dataverseType: 'datetime', format: 'datetime', dateTimeBehavior: 'TimeZoneIndependent' },
-      ], { timezoneId });
+      const { app, page, errors, external } = await fixture(
+        t,
+        [
+          {
+            name: 'date',
+            label: 'Date',
+            type: 'date',
+            dataverseType: 'datetime',
+            format: 'DateOnly',
+            dateTimeBehavior: 'UserLocal',
+          },
+          {
+            name: 'instant',
+            label: 'Instant',
+            type: 'date',
+            dataverseType: 'datetime',
+            format: 'DateAndTime',
+            dateTimeBehavior: 'UserLocal',
+          },
+          {
+            name: 'independent',
+            label: 'Independent',
+            dataverseType: 'datetime',
+            format: 'datetime',
+            dateTimeBehavior: 'TimeZoneIndependent',
+          },
+        ],
+        { timezoneId },
+      );
       const utc = (hour) => new Date(Date.UTC(2026, 9, 10, hour - offset)).toISOString().replace('.000Z', '.0000000Z');
       await page.goto(app.url);
       assert.equal(await page.locator('#date_datepicker_description').getAttribute('data-date-format'), 'M/D/YYYY');
-      assert.equal(await page.locator('#instant_datepicker_description').getAttribute('data-date-format'), 'M/D/YYYY h:mm A');
+      assert.equal(
+        await page.locator('#instant_datepicker_description').getAttribute('data-date-format'),
+        'M/D/YYYY h:mm A',
+      );
       await page.locator('#date_datepicker_description').fill('not a date');
       await page.locator('#date_datepicker_description').press('Tab');
       assert.equal(await page.locator('#date_datepicker_description').inputValue(), '');
       assert.equal(await page.locator('#date').inputValue(), '');
-      for (const [field, value] of [['date', '10/10/2026'], ['instant', '10/10/2026 12:00 PM'], ['independent', '10/10/2026 12:00 AM']]) {
+      for (const [field, value] of [
+        ['date', '10/10/2026'],
+        ['instant', '10/10/2026 12:00 PM'],
+        ['independent', '10/10/2026 12:00 AM'],
+      ]) {
         await page.locator(`#${field}_datepicker_description`).fill(value);
         await page.locator(`#${field}_datepicker_description`).press('Tab');
       }
@@ -325,25 +462,52 @@ test('native date companions parse AM/PM and submit UserLocal dates as UTC in th
 });
 
 test('native hidden dates require the native round-trip representation while Dataverse accepts ISO values', async (t) => {
-  const { app, page, errors, external } = await fixture(t, [
-    { name: 'at', label: 'Appointment', type: 'date', dataverseType: 'datetime', format: 'DateAndTime', dateTimeBehavior: 'UserLocal' },
-  ], { timezoneId: 'Europe/Kiev' });
+  const { app, page, errors, external } = await fixture(
+    t,
+    [
+      {
+        name: 'at',
+        label: 'Appointment',
+        type: 'date',
+        dataverseType: 'datetime',
+        format: 'DateAndTime',
+        dateTimeBehavior: 'UserLocal',
+      },
+    ],
+    { timezoneId: 'Europe/Kiev' },
+  );
   await page.goto(app.url);
   await page.locator('#title').fill('Date syntax');
-  for (const value of ['2026-10-10', '2026-10-10T12:00:00Z', '2026-10-10T12:00:00.000Z', '2026-10-10T12:00:00.0000000']) {
-    await page.locator('#at').evaluate((input, value) => { input.value = value; }, value);
-    const posted = page.waitForResponse((response) => response.url().includes('/__sim/forms/') && response.request().method() === 'POST');
+  for (const value of [
+    '2026-10-10',
+    '2026-10-10T12:00:00Z',
+    '2026-10-10T12:00:00.000Z',
+    '2026-10-10T12:00:00.0000000',
+  ]) {
+    await page.locator('#at').evaluate((input, value) => {
+      input.value = value;
+    }, value);
+    const posted = page.waitForResponse(
+      (response) => response.url().includes('/__sim/forms/') && response.request().method() === 'POST',
+    );
     await page.getByRole('button', { name: 'Submit', exact: true }).click();
     assert.equal((await posted).status(), 400, value);
     await page.locator('.validation-summary li a').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('.validation-summary li a').textContent(), 'Appointment must have a valid date format. ');
+    assert.equal(
+      await page.locator('.validation-summary li a').textContent(),
+      'Appointment must have a valid date format. ',
+    );
     assert.equal(app.store.snapshot().tables.sample.length, 0);
   }
   const identity = { id: 'fixture-editor', roles: ['Editor'] };
   const row = await app.store.create('sample', { title: 'API ISO date', at: '2026-10-10T12:00:00Z' }, identity);
   assert.ok(row, 'the underlying Dataverse store retains its ISO contract');
   await page.goto(`${app.url}/?id=${row.sampleid}`);
-  assert.equal(await page.locator('#at').inputValue(), '2026-10-10T12:00:00.0000000Z', 'rendered edits expose the native canonical value');
+  assert.equal(
+    await page.locator('#at').inputValue(),
+    '2026-10-10T12:00:00.0000000Z',
+    'rendered edits expose the native canonical value',
+  );
   assert.equal(await page.locator('#at_datepicker_description').inputValue(), '10/10/2026 3:00 PM');
   await save(page, 'Native unchanged date edit', '', 200);
   assert.equal(app.store.snapshot().tables.sample[0].at, '2026-10-10T12:00:00.0000000Z');

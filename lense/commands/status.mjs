@@ -7,11 +7,16 @@ import { compareWebFile, mapLimit } from '../online.mjs';
  * @param {(row: {url: string, local: string, state: string}) => void} [onRow] called as each result comes in
  */
 export function compareWebFiles(session, onRow) {
-  const files = [...session.model.webFileByUrl.values()].filter((w) => session.resolver.resolve(w.url)?.file === w.file);
+  const files = [...session.model.webFileByUrl.values()].filter(
+    (w) => session.resolver.resolve(w.url)?.file === w.file,
+  );
   return mapLimit(files, 6, async (w) => {
     let result;
-    try { result = await compareWebFile(session.cfg.origin, w); }
-    catch (err) { result = { state: 'comparison failed', detail: err.message }; }
+    try {
+      result = await compareWebFile(session.cfg.origin, w);
+    } catch (err) {
+      result = { state: 'comparison failed', detail: err.message };
+    }
     const row = { url: w.url, local: session.rel(w.file), ...result };
     onRow?.(row);
     return row;
@@ -29,7 +34,20 @@ export default async function status(cfg, args) {
   const exitCode = comparisonExitCode(results);
 
   if (args.json) {
-    console.log(JSON.stringify({ ok: exitCode === 0, offline: false, results, errors: results.filter(row => !['same', 'different', 'not online (local only)'].includes(row.state)).map(row => ({ code: 'COMPARISON_FAILED', message: row.detail ?? row.state, path: row.url })) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          ok: exitCode === 0,
+          offline: false,
+          results,
+          errors: results
+            .filter((row) => !['same', 'different', 'not online (local only)'].includes(row.state))
+            .map((row) => ({ code: 'COMPARISON_FAILED', message: row.detail ?? row.state, path: row.url })),
+        },
+        null,
+        2,
+      ),
+    );
     return exitCode;
   }
   const groups = Map.groupBy(results, (r) => r.state);
@@ -47,6 +65,7 @@ export default async function status(cfg, args) {
     console.log(`If you did not change those files, your branch and the environment are out of step:`);
     console.log(`use --scope changed (only your changes override) or download the site again.`);
   }
-  if (exitCode) console.log('\nComparison incomplete: some resources could not be read or returned no comparable online content.');
+  if (exitCode)
+    console.log('\nComparison incomplete: some resources could not be read or returned no comparable online content.');
   return exitCode;
 }

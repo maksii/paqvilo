@@ -1,0 +1,39 @@
+forms:
+  '@type': main
+  systemform:
+    formid: '{77777777-7777-4777-8777-777777777782}'
+    IntroducedVersion: 1.0.0.0
+    FormPresentation: '1'
+    FormActivationState: '1'
+    form:
+      tabs:
+        tab:
+          '@name': general
+          '@id': '{77777777-7777-4777-8777-777777777785}'
+          labels:
+            label:
+              '@description': General
+              '@languagecode': '1033'
+          columns:
+            column:
+              '@width': 100%
+              sections:
+                section:
+                  '@name': main
+                  '@id': '{77777777-7777-4777-8777-777777777786}'
+                  rows:
+                    row:
+                      cell:
+                        '@id': '{77777777-7777-4777-8777-777777777787}'
+                        labels:
+                          label:
+                            '@description': Name
+                            '@languagecode': '1033'
+                        control:
+                          '@id': x_name
+                          '@classid': '{4273EDBD-AC1D-40d3-9FB2-095C621B552D}'
+                          '@datafieldname': x_name
+    LocalizedNames:
+      LocalizedName:
+        '@description': Item main
+        '@languagecode': '1033'

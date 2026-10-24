@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 {{binding}}
 
@@ -9,11 +11,15 @@ for (const site of {{sites}}) {
   const sourceDir = fileURLToPath(new URL(`./fixtures/${site}/`, import.meta.url));
   // The importer decides the export format. Only truly empty fixture folders skip.
   const present = fs.existsSync(sourceDir) && fs.readdirSync(sourceDir).some(name => name !== '.gitkeep');
+  // A successful HTTP response is only a fixture smoke check. It deliberately
+  // has no acceptanceTest coverage tag; see docs/acceptance.md for meaningful cases.
   test(`${site}: local portal smoke`, { skip: present ? false : 'Add this site export fixture before claiming page coverage' }, async () => {
-    const simulator = await {{factory}}({ sourceDir, port: 0, watch: false });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-smoke-'));
+    let simulator;
     try {
-      const response = await fetch(simulator.url, { redirect: 'manual' });
+      simulator = await {{factory}}({ sourceDir, stateFile: path.join(directory, 'state.json'), port: 0, watch: false });
+      const response = await fetch(simulator.url, { redirect: 'manual', headers: { 'x-paqvilo-local-only': 'true' } });
       assert.equal(response.status, 200);
-    } finally { await simulator.close(); }
+    } finally { try { await simulator?.close(); } finally { fs.rmSync(directory, { recursive: true, force: true }); } }
   });
 }

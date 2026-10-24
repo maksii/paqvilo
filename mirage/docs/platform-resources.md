@@ -1,6 +1,6 @@
 # Platform resources
 
-Uncaptured platform styles are placeholders with toolkit-authored structural form rules. Doctor, Mirage status and administration report the provider; entity-form pages emit `PLATFORM_STYLES_PLACEHOLDER`. Capture the shell to reproduce deployed styles:
+Uncaptured platform styles use toolkit-authored structural form, icon, private-banner and offline-visibility rules. The icon symbols and banner layout are partial fallbacks, reported as `local-platform-partial`; they do not reproduce the native fonts or every platform style. PCF styles remain a placeholder. Doctor, Mirage status and administration report the provider; entity-form pages retain style diagnostics. Capture the shell to reproduce deployed styles:
 
 ```sh
 paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /
@@ -17,7 +17,7 @@ not guarantee server cancellation. The normal CLI prints waiting progress every 
 continuing other sites. Disconnect is attempted after success, timeout and failure; a
 failed cleanup is reported as `disconnectFailed` without replacing the capture's cause.
 
-Capture records date/origin and lists missing directly referenced head stylesheets. Confirmed native HTTP errors retain their status as `NATIVE_ASSET_HTTP`; a native stylesheet answered with a non-CSS content type is `NATIVE_ASSET_CONTENT_TYPE`. Both carry `nativeOriginFailed: true`, remain visible and do not block application or completeness. Unusable native head references are omitted from the applied profile, and their response bodies are not cached. Literal percent-encoded quotes in CSS URLs are requested unchanged, so a native 404 is distinguishable from a path-validation failure. Timeouts, unsafe resources and unverified failures remain failures. No credentials, inline page data or bearer tokens are saved.
+Capture records date/origin and lists missing directly referenced head stylesheets. Confirmed native HTTP errors retain their status as `NATIVE_ASSET_HTTP`; a native stylesheet answered with a non-CSS content type is `NATIVE_ASSET_CONTENT_TYPE`. Both carry `nativeOriginFailed: true`, remain visible and do not block application or completeness. Unusable native head references are omitted from the applied profile, and their response bodies are not cached. Literal percent-encoded quotes in CSS URLs are requested unchanged, so a native 404 is distinguishable from a path-validation failure. Timeouts, unsafe resources and other failures remain failures. No credentials, inline page data or bearer tokens are saved.
 
 Mirage serves local equivalents of required platform clients, styles and resources in their page-kind order. Compatibility modules cover form/grid controls, Bootstrap plugins, date formatting, accessibility, portal objects and service endpoints. Third-party packages and fonts retain their upstream licenses.
 
@@ -44,14 +44,32 @@ height, matching the structural rule in Microsoft's [public preform stylesheet](
 Quick view documents use the same platform styles, and their frames follow lookup changes.
 Captured styles replace these fallbacks.
 
+The form fallback stacks fields below 768px, keeps read-only values borderless,
+and supports top and side multistep progress layouts with Bootstrap 3 and 5.
+Exported column widths and styles continue to control the authored form layout.
+These structural rules do not establish complete visual parity with a deployed site.
+
+The calendar fallback lays out the platform client's month, week and year markup,
+including event spans, date badges and narrow viewports. A captured native calendar
+stylesheet takes precedence. Calendar navigation and authored event validation still
+run through the client; a layout fallback does not repair invalid event data.
+
+An explicit `AssetCache.capturePublicAlias()` operation can supply the observed
+CRM MDL2 font URLs from Microsoft's public CRM MDL2 WOFF asset. The cache verifies
+the font family, PostScript name and required glyph coverage. A `.woff2` target
+using this alias still serves the original WOFF bytes with `font/woff`, recorded
+source format and fallback headers. Existing captured native target bytes take
+precedence. This operation neither converts the font nor repairs a failing native
+gateway; ordinary font requests do not automatically fetch a fallback.
+
 Modal and quick-view documents also include exported root styles and native container wrappers.
 Captured stylesheet links take precedence over duplicate exported links. Local head additions
 apply to both document types. Clearing a quick view blanks its frame and removes it from the tab order.
 
-Authorized native observations confirmed presentation markup in authored field, section and
-subgrid labels. These labels preserve sanitized markup by default; scripts, event handlers
-and inline styles are removed. Record values remain encoded. An evidenced site may select
-`mirage.observed: { subgridLabelMarkup: encoded, evidence: "your observation receipt" }`.
+Power Pages renders presentation markup in authored field, section and subgrid labels.
+Mirage keeps sanitized markup in these labels by default; scripts, event handlers and inline
+styles are removed. Record values remain encoded. A site observed to encode subgrid labels
+can select `mirage.observed: { subgridLabelMarkup: encoded, evidence: "<where you observed it>" }`.
 
 Captured preform bundles for Bootstrap 3 and 5 that assign the global jQuery library satisfy
 the shell requirement. The profile records its provider path, origin and byte hash in `jquery`.

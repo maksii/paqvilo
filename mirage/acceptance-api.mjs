@@ -5,13 +5,20 @@ export { compareReferenceContracts } from './reference-parity.mjs';
 export * from './lib/browser-launch.mjs';
 export * from './lib/evidence.mjs';
 export * from './lib/request-evidence.mjs';
+export { observePageLifecycle, observeContextLifecycle } from './lib/page-lifecycle.mjs';
 export * from './lib/native-network-baseline.mjs';
 export * from './lib/navigation-observations.mjs';
 export { AssetCache } from './lib/asset-cache.mjs';
 export { validateLivePath, decodePagingCookie } from './lib/live.mjs';
 export { collectFetchXmlPages, escapeXmlAttribute } from './lib/paging-validation.mjs';
 export { auditQuery } from './lib/audit-log.mjs';
-export { richTextBody, resolveRichTextMode, settleHostModal, editRichText, assertRichText } from './lib/richtext-actions.mjs';
+export {
+  richTextBody,
+  resolveRichTextMode,
+  settleHostModal,
+  editRichText,
+  assertRichText,
+} from './lib/richtext-actions.mjs';
 
 // Read-only baseline building blocks for project-owned observation tools.
 export { extractManagedRichTextControls } from './lib/richtext-assets.mjs';

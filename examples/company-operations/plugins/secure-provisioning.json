@@ -2,8 +2,18 @@
   "schemaVersion": 1,
   "mode": "Installation-only",
   "steps": [
-    {"pluginType": "PipelineContextObserver", "profile": "A", "version": "synthetic-A", "secretReference": "installation-generated-in-memory syntheticSecret"},
-    {"pluginType": "PipelineContextObserver", "profile": "B", "version": "synthetic-B", "secretReference": "installation-generated-in-memory syntheticSecret"}
+    {
+      "pluginType": "PipelineContextObserver",
+      "profile": "A",
+      "version": "synthetic-A",
+      "secretReference": "installation-generated-in-memory syntheticSecret"
+    },
+    {
+      "pluginType": "PipelineContextObserver",
+      "profile": "B",
+      "version": "synthetic-B",
+      "secretReference": "installation-generated-in-memory syntheticSecret"
+    }
   ],
   "transport": "Dataverse secure step configuration; excluded from solution export",
   "recordable": ["presence", "parseValidity", "safeVersionLabel"],

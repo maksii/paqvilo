@@ -2,7 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { editableMetadataAttributes } from '../lib/liquid-editable-metadata.mjs';
 
-const source = { observed: { liquidEditableMetadata: 'observed' }, websiteId: '10000000-0000-4000-8000-000000000001', rootId: '20000000-0000-4000-8000-000000000001', contentId: '30000000-0000-4000-8000-000000000001', key: 'adx_title', requestPath: '/probe/', workingFlag: 'False' };
+const source = {
+  observed: { liquidEditableMetadata: 'observed' },
+  websiteId: '10000000-0000-4000-8000-000000000001',
+  rootId: '20000000-0000-4000-8000-000000000001',
+  contentId: '30000000-0000-4000-8000-000000000001',
+  key: 'adx_title',
+  requestPath: '/probe/',
+  workingFlag: 'False',
+};
 
 test('editable metadata needs explicit observation, source identities, and captured working flag', () => {
   assert.equal(editableMetadataAttributes({ ...source, observed: null }), '');
@@ -24,7 +32,14 @@ test('editable metadata distinguishes content authoring identity from root fileb
 });
 
 test('all editable metadata values are quoted and escaped; non-ASCII paths retain UTF8', () => {
-  const attrs = editableMetadataAttributes({ ...source, label: '"<&>', key: 'x" onerror="bad', requestPath: '/é/', encoded: true, liquid: false });
+  const attrs = editableMetadataAttributes({
+    ...source,
+    label: '"<&>',
+    key: 'x" onerror="bad',
+    requestPath: '/é/',
+    encoded: true,
+    liquid: false,
+  });
   assert.match(attrs, /data-label="&quot;&lt;&amp;&gt;"/);
   assert.match(attrs, /data-editable-title="x&quot; onerror=&quot;bad"/);
   assert.match(attrs, /data-encoded="true"/);

@@ -1,0 +1,18 @@
+Entity:
+  Name:
+    '@LocalizedName': Item
+    '@OriginalName': Item
+    '#text': x_item
+  EntityInfo:
+    entity:
+      '@Name': x_item
+      LocalizedNames:
+        LocalizedName:
+          '@description': Item
+          '@languagecode': '1033'
+      LocalizedCollectionNames:
+        LocalizedCollectionName:
+          '@description': Items
+          '@languagecode': '1033'
+      EntitySetName: x_items
+      OwnershipTypeMask: UserOwned

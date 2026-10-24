@@ -1,23 +1,27 @@
-# Configuration object parity
+# Configuration objects
 
-Keep object inventories, portal exports, populated test graphs and live observations in the separate portal project. The toolkit imports reusable structures; an inventory count or preserved source member does not establish hosted behavior.
+How Mirage treats exported Power Pages configuration records (redirects, page templates, web templates, web files and their children), and the `observed` settings that reproduce a deployment's response details the export cannot express.
 
-For each installed configuration family, track its full schema, writable fields, declared choices, relationships and nested source paths. Distinguish schema discovery, native write acceptance, source preservation, reference rendering and local comparison. Automatic language children, component envelopes, binary attachments and role associations need their own readbacks. A successful association request alone does not establish an effective relationship or permission.
+## Import rules
 
-Enhanced component XML keeps lifecycle `statuscode` in the internal component envelope. Content fields remain independent: a redirect's content `statuscode` can be an HTTP status, while its outer component status represents record lifecycle. Aggregate table projections use the captured envelope status, including explicit null. Legacy sources without that envelope keep their state-derived fallback.
+- **Record status.** Enhanced component XML keeps the record's lifecycle `statuscode` in the component envelope. Content fields stay independent: a redirect's content `statuscode` is its HTTP status, while the envelope status is the record lifecycle. Legacy sources without the envelope derive status from state.
+- **Page template type.** An explicit page-template Type selects Rewrite or Web Template even when both references are populated. Rewrite uses the ASP.NET layout and its page copy; the Web Template header/footer switch applies only to web-template responses. Resource inspection leaves an unselected web template out of the include chain.
+- **Rewrite targets.** A populated portal route is not a physical ASP.NET rewrite target and answers a route-handler error. Other `.aspx` layouts are not rendered.
+- **Children and associations.** Automatic language children, component envelopes, binary attachments and role associations are imported as their own records. A successful association request alone does not make an effective relationship or permission.
 
-Lense applies eligible local source patches in its dedicated live browser; configuration records can require deployment. Verify the applied resources, unmatched patches and deployment diagnostics after refresh. Mirage imports sources and runs a separate local identity and data context. Match the observed roles explicitly before comparing permission outcomes; a synthetic signed-in persona alone does not establish actor equivalence.
+## Response observations
 
-Record the first HTTP response of redirects separately from followed navigation. `observed.redirect301: "temporary"`, with `observed.evidence`, reproduces a deployment observed returning 302 for redirect records configured as 301. It leaves canonical slash redirects, source values and other configured status codes unchanged. Omission or `"configured"` retains the configured redirect status.
+These settings go in the site's `observed` block with `observed.evidence` naming where you observed the behaviour. Omitting a setting keeps the default.
 
-An explicit page-template Type selects Rewrite or Web Template even if both references are populated. Rewrite uses the ASP.NET layout and its page copy; the Web Template header/footer switch applies to web-template responses. Resource inspection excludes an unselected web-template source from the active include chain.
+| Setting                                | Default        | Observed behaviour                                                                                                                                                                       |
+| -------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redirect301: "temporary"`             | `"configured"` | Redirect records configured as 301 answer 302. Canonical slash redirects, source values and other status codes are unchanged.                                                            |
+| `webTemplateResponseNewline: "crlf"`   | `"none"`       | No-header web-template responses (including plain text and JSON) end with an appended CRLF; authored endings are not trimmed.                                                            |
+| `webFileMimeCharset: "source"`         | `"utf8"`       | Web files keep the attachment MIME type instead of gaining a UTF-8 charset.                                                                                                              |
+| `siteMarkerRedirect: "null-reference"` | `"resolve"`    | Marker-only redirect records answer 500 with the captured exception message. A populated URL or page target still wins. The body is a local diagnostic, not the hosted error-page shell. |
 
-A populated portal route is not a physical ASP.NET rewrite target and returns a route-handler error. Unsupported `.aspx` layouts remain a separate implementation limitation; the fallback does not establish their hosted rendering behavior.
+## Comparing with a live site
 
-`observed.webTemplateResponseNewline: "crlf"` appends CRLF to no-header web-template responses without trimming authored endings, including plain text and JSON. `observed.webFileMimeCharset: "source"` preserves the attachment MIME rather than adding a UTF-8 charset. Both require `observed.evidence`; omitted settings retain existing newline and charset behavior. These response observations do not imply full shell or error-page equality.
+Lense applies eligible local source patches in its dedicated live browser; configuration records can still require deployment, so check applied resources, unmatched patches and deployment diagnostics after refresh. Mirage runs its own identity and data, so match the observed roles before comparing permission outcomes.
 
-`observed.siteMarkerRedirect: "null-reference"` reproduces a deployment's captured 500 and exception message for marker-only redirect records. A populated URL or page target still takes precedence; omission or `"resolve"` keeps normal marker resolution. The local diagnostic body differs from the hosted error-page shell, correlation identifiers and timestamp, which remain explicit comparison gaps.
-
-Compare decoded response bytes, MIME, disposition, selected headers, sentinel content and error messages independently. Dynamic identifiers, timestamps, authentication redirects and unavailable dependencies need explicit limits. Include table permissions, column permissions and page/website permissions separately: their applicable transports and authorization modes differ. Preserve failed requests and recorder failures as distinct evidence, and retain original captures when replaying against a newer implementation.
-
-See [project extensions](../../docs/project-extensions.md), [parity evidence](parity-evidence.md), [Liquid](liquid-parity.md) and [Dataverse](dataverse-parity.md).
+When comparing responses, record a redirect's first HTTP response separately from the followed navigation, and compare decoded bytes, MIME type, disposition, selected headers and error messages independently. Table permissions, column permissions and page permissions use different transports and authorization modes, so compare each separately. See [reference parity evidence](parity-evidence.md), [Liquid](liquid-parity.md) and [Dataverse](dataverse-parity.md).

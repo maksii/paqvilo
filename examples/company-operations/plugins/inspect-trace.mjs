@@ -1,4 +1,25 @@
-import{connectionPath}from'./registration.mjs';
-import{loadConnection,connectedClient}from'../../../lense/dataverse/index.mjs';import{writeFile,mkdir}from'node:fs/promises';
-const connection=await loadConnection(connectionPath());const c=connectedClient(connection);await c.verify(connection.organisationId);if(process.argv.includes('--enable')){const orgs=await c.list('organizations?$select=organizationid,plugintracelogsetting');console.log(JSON.stringify(orgs));for(const o of orgs)if(o.plugintracelogsetting===0)await c.request(`organizations(${o.organizationid})`,{method:'PATCH',body:{plugintracelogsetting:1}});}
-const rows=await c.list("plugintracelogs?$select=createdon,typename,exceptiondetails,messageblock,correlationid&$filter=startswith(typename,'Paqvilo.Demo.') and exceptiondetails ne null&$orderby=createdon desc&$top=5");await mkdir('examples/company-operations/.paqvilo/plugins',{recursive:true});await writeFile('examples/company-operations/.paqvilo/plugins/trace-errors.json',JSON.stringify(rows,null,2));console.log(JSON.stringify(rows.map(r=>({type:r.typename,exception:r.exceptiondetails?.slice(-6500),trace:r.messageblock})),null,2));
+import { connectionPath } from './registration.mjs';
+import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
+import { writeFile, mkdir } from 'node:fs/promises';
+const connection = await loadConnection(connectionPath());
+const c = connectedClient(connection);
+await c.verify(connection.organisationId);
+if (process.argv.includes('--enable')) {
+  const orgs = await c.list('organizations?$select=organizationid,plugintracelogsetting');
+  console.log(JSON.stringify(orgs));
+  for (const o of orgs)
+    if (o.plugintracelogsetting === 0)
+      await c.request(`organizations(${o.organizationid})`, { method: 'PATCH', body: { plugintracelogsetting: 1 } });
+}
+const rows = await c.list(
+  "plugintracelogs?$select=createdon,typename,exceptiondetails,messageblock,correlationid&$filter=startswith(typename,'Paqvilo.Demo.') and exceptiondetails ne null&$orderby=createdon desc&$top=5",
+);
+await mkdir('examples/company-operations/.paqvilo/plugins', { recursive: true });
+await writeFile('examples/company-operations/.paqvilo/plugins/trace-errors.json', JSON.stringify(rows, null, 2));
+console.log(
+  JSON.stringify(
+    rows.map((r) => ({ type: r.typename, exception: r.exceptiondetails?.slice(-6500), trace: r.messageblock })),
+    null,
+    2,
+  ),
+);

@@ -1,2 +1,19 @@
-import test from'node:test';import assert from'node:assert/strict';import{queryDropFlagTemplate,buildQueryDropFlagProbes}from'../portal-harness/query-drop-flags.mjs';
-test('flag probes capture properties/XML before the first implicit results access',()=>{const plan={id:'invented',fetchXml:'<fetch><entity name="widget"/></fetch>',pageSize:10,fields:[],requestedRight:'write'},source=queryDropFlagTemplate(plan);assert.ok(source.indexOf('capture flags_before')<source.indexOf('visibility_query.results'));assert.ok(source.indexOf('capture xml_before')<source.indexOf('visibility_query.results'));assert.ok(source.includes("right:'write'"));assert.ok(source.includes('after-results'));assert.equal(new Set(buildQueryDropFlagProbes([{kind:'admitted',plan}]).map(p=>p.id)).size,4);assert.throws(()=>queryDropFlagTemplate({...plan,requestedRight:'bogus'}),/right/);});
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { queryDropFlagTemplate, buildQueryDropFlagProbes } from '../portal-harness/query-drop-flags.mjs';
+test('flag probes capture properties/XML before the first implicit results access', () => {
+  const plan = {
+      id: 'invented',
+      fetchXml: '<fetch><entity name="widget"/></fetch>',
+      pageSize: 10,
+      fields: [],
+      requestedRight: 'write',
+    },
+    source = queryDropFlagTemplate(plan);
+  assert.ok(source.indexOf('capture flags_before') < source.indexOf('visibility_query.results'));
+  assert.ok(source.indexOf('capture xml_before') < source.indexOf('visibility_query.results'));
+  assert.ok(source.includes("right:'write'"));
+  assert.ok(source.includes('after-results'));
+  assert.equal(new Set(buildQueryDropFlagProbes([{ kind: 'admitted', plan }]).map((p) => p.id)).size, 4);
+  assert.throws(() => queryDropFlagTemplate({ ...plan, requestedRight: 'bogus' }), /right/);
+});

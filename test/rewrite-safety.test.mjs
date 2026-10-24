@@ -24,14 +24,27 @@ function source(rel, base, text, props = {}) {
   sources.push({ rel, file, kind: 'web-template', mode: 'markup', ...props });
 }
 function makeRewriter(options = {}) {
-  const baseline = { cache: new Map(), changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
-  return new HtmlRewriter({ model: { inlineSources: sources, languageCodes: new Set(['en-us', 'pl-pl']) }, site: SITE, baseline, ...options });
+  const baseline = {
+    cache: new Map(),
+    changedFiles: () => new Set(versions.keys()),
+    show: (file) => versions.get(file),
+  };
+  return new HtmlRewriter({
+    model: { inlineSources: sources, languageCodes: new Set(['en-us', 'pl-pl']) },
+    site: SITE,
+    baseline,
+    ...options,
+  });
 }
 const rewrite = (body, url = '/', options = {}) => makeRewriter(options).rewrite(body, url);
-const script = (rel, before, after) => source(rel, before, after, { kind: 'basic-form-js', mode: 'block', tag: 'script' });
+const script = (rel, before, after) =>
+  source(rel, before, after, { kind: 'basic-form-js', mode: 'block', tag: 'script' });
 
 test('page copy patches stay on the page they belong to', () => {
-  source('copy.html', '<p>Shared original text</p>', '<p>Only this page changed</p>', { kind: 'page-copy', pageUrl: '/one' });
+  source('copy.html', '<p>Shared original text</p>', '<p>Only this page changed</p>', {
+    kind: 'page-copy',
+    pageUrl: '/one',
+  });
   const body = '<main><p>Shared original text</p></main>';
   assert.equal(rewrite(body, '/two').html, body);
   assert.equal(rewrite(body, '/en-US/one').html, '<main><p>Only this page changed</p></main>');
@@ -62,7 +75,11 @@ test('different values for a repeated Liquid expression cannot overwrite each ot
 
 test('Liquid comment and capture bodies cannot patch unrelated matching rendered text', () => {
   for (const tag of ['comment', 'capture saved']) {
-    source(`${tag}.html`, `{% ${tag} %}\n<p>Shared literal text</p>\n{% end${tag.split(' ')[0]} %}`, `{% ${tag} %}\n<p>Changed literal text</p>\n{% end${tag.split(' ')[0]} %}`);
+    source(
+      `${tag}.html`,
+      `{% ${tag} %}\n<p>Shared literal text</p>\n{% end${tag.split(' ')[0]} %}`,
+      `{% ${tag} %}\n<p>Changed literal text</p>\n{% end${tag.split(' ')[0]} %}`,
+    );
   }
   const rewriter = makeRewriter();
   const body = '<p>Shared literal text</p>';
@@ -72,7 +89,10 @@ test('Liquid comment and capture bodies cannot patch unrelated matching rendered
 });
 
 test('same-line literal edits preserve rendered conditional and output values', () => {
-  for (const logic of ['AUTH:{% if user %}true{% else %}false{% endif %}', '<span>{{ user.name }}</span>{% if user %}AUTH:true{% endif %}']) {
+  for (const logic of [
+    'AUTH:{% if user %}true{% else %}false{% endif %}',
+    '<span>{{ user.name }}</span>{% if user %}AUTH:true{% endif %}',
+  ]) {
     sources = [];
     versions.clear();
     const before = `<p>Original owned paragraph.</p>${logic}`;
@@ -97,7 +117,11 @@ test('same-line fallback protects capture/comment bodies and changed or newly in
     ['<p>Original owned paragraph.</p>{% if user %}true{% endif %}', 'Original owned', '{{ newValue }}'],
     ['<p>Original owned paragraph.</p>{%- if user -%}true{% endif %}', 'Original owned', 'Edited owned'],
     ['<p>Original owned paragraph.</p>{{- user.name -}}{% if user %}true{% endif %}', 'Original owned', 'Edited owned'],
-    ['{% assign value = "Original owned paragraph." %}<p>Other unchanged paragraph.</p>', 'Original owned', 'Edited owned'],
+    [
+      '{% assign value = "Original owned paragraph." %}<p>Other unchanged paragraph.</p>',
+      'Original owned',
+      'Edited owned',
+    ],
   ];
   for (const [before, from, to] of cases) {
     sources = [];
@@ -132,7 +156,10 @@ test('same-line literal fallback refuses ambiguous source/runtime and localized 
   assert.equal(ambiguous.unsupported.length, 1);
   sources = [];
   versions.clear();
-  source('Value.en-US.contentsnippet.value.html', before, before.replace('Original owned', 'Edited owned'), { kind: 'content-snippet', snippetName: 'Actions' });
+  source('Value.en-US.contentsnippet.value.html', before, before.replace('Original owned', 'Edited owned'), {
+    kind: 'content-snippet',
+    snippetName: 'Actions',
+  });
   source('Value.pl-PL.contentsnippet.value.html', before, before, { kind: 'content-snippet', snippetName: 'Actions' });
   const localized = makeRewriter();
   assert.equal(localized.rewrite(body, '/').html, body);
@@ -164,11 +191,23 @@ test('Liquid output delimiters inside quoted filter arguments do not end the exp
 
 test('localized Values require an anchor that distinguishes their baseline languages', () => {
   const file = path.join(dir, 'localized.json');
-  const before = ['<button>Shared action</button>\n<p>English context</p>\n', '<button>Shared action</button>\n<p>Polish context</p>\n'];
+  const before = [
+    '<button>Shared action</button>\n<p>English context</p>\n',
+    '<button>Shared action</button>\n<p>Polish context</p>\n',
+  ];
   const after = ['<button>Changed action</button>\n<p>English context</p>\n', before[1]];
   fs.writeFileSync(file, JSON.stringify(after));
   versions.set(file, JSON.stringify(before));
-  sources = before.map((_, i) => ({ file, rel: `localized.json#value.${i}`, field: 'value', fieldPath: ['value'], lcid: i === 0 ? 1033 : 1045, kind: 'web-template', mode: 'markup', extract: raw => JSON.parse(raw)[i] }));
+  sources = before.map((_, i) => ({
+    file,
+    rel: `localized.json#value.${i}`,
+    field: 'value',
+    fieldPath: ['value'],
+    lcid: i === 0 ? 1033 : 1045,
+    kind: 'web-template',
+    mode: 'markup',
+    extract: (raw) => JSON.parse(raw)[i],
+  }));
   const rewriter = makeRewriter();
   assert.equal(rewriter.rewrite(before[0], '/en-US/').html, after[0]);
   assert.equal(rewriter.rewrite(before[1], '/pl-PL/').html, before[1]);
@@ -180,7 +219,16 @@ test('identical localized baseline Values are refused instead of cross-applying 
   const before = '<button>Shared action</button>';
   fs.writeFileSync(file, JSON.stringify(['<button>English edit</button>', before]));
   versions.set(file, JSON.stringify([before, before]));
-  sources = [1033, 1045].map((lcid, i) => ({ file, rel: `localized.json#value.${i}`, field: 'value', fieldPath: ['value'], lcid, kind: 'web-template', mode: 'markup', extract: raw => JSON.parse(raw)[i] }));
+  sources = [1033, 1045].map((lcid, i) => ({
+    file,
+    rel: `localized.json#value.${i}`,
+    field: 'value',
+    fieldPath: ['value'],
+    lcid,
+    kind: 'web-template',
+    mode: 'markup',
+    extract: (raw) => JSON.parse(raw)[i],
+  }));
   const rewriter = makeRewriter();
   for (const url of ['/en-US/', '/pl-PL/']) assert.equal(rewriter.rewrite(before, url).html, before);
   assert.equal(rewriter.unsupported.length, 1);
@@ -188,7 +236,12 @@ test('identical localized baseline Values are refused instead of cross-applying 
 });
 
 test('unreadable extracted fields and inactive parents have format-neutral diagnostics', () => {
-  source('form.yml', 'before', 'invalid', { kind: 'web-template', extract: () => null, format: 'yaml', field: '0.adx_description' });
+  source('form.yml', 'before', 'invalid', {
+    kind: 'web-template',
+    extract: () => null,
+    format: 'yaml',
+    field: '0.adx_description',
+  });
   const model = { inlineSources: sources, inactiveSources: [{ file: sources[0].file, rel: 'form.yml#inactive' }] };
   const rewriter = makeRewriter({ model });
   assert.ok(rewriter.unsupported.some((item) => /record or its parent is inactive/.test(item.reason)));
@@ -203,8 +256,16 @@ test('classic language page copy and snippet anchors grow to distinguish variant
     const suffix = kind === 'page-copy' ? 'webpage.copy.html' : 'contentsnippet.value.html';
     const english = '<button>Shared action</button>\n<p>English context</p>\n';
     const polish = '<button>Shared action</button>\n<p>Polish context</p>\n';
-    source(`Value.en-US.${suffix}`, english, english.replace('Shared action', 'English edit'), { kind, pageUrl: kind === 'page-copy' ? '/one' : null, snippetName: 'Actions' });
-    source(`Value.pl-PL.${suffix}`, polish, polish, { kind, pageUrl: kind === 'page-copy' ? '/one' : null, snippetName: 'Actions' });
+    source(`Value.en-US.${suffix}`, english, english.replace('Shared action', 'English edit'), {
+      kind,
+      pageUrl: kind === 'page-copy' ? '/one' : null,
+      snippetName: 'Actions',
+    });
+    source(`Value.pl-PL.${suffix}`, polish, polish, {
+      kind,
+      pageUrl: kind === 'page-copy' ? '/one' : null,
+      snippetName: 'Actions',
+    });
     const rewriter = makeRewriter();
     assert.equal(rewriter.rewrite(english, '/en-US/one').html, english.replace('Shared action', 'English edit'));
     assert.equal(rewriter.rewrite(polish, '/pl-PL/one').html, polish);
@@ -217,8 +278,16 @@ test('classic language page copy and snippet anchors grow to distinguish variant
 });
 
 test('classic page-script language variants cannot claim an identical rendered baseline', () => {
-  for (const [locale, text] of [['en-US', 'english();'], ['pl-PL', 'polish();']]) {
-    source(`web-pages/one/content-pages/One.${locale}.webpage.custom_javascript.js`, 'shared();', text, { kind: 'page-js', mode: 'block', tag: 'script', pageUrl: '/one' });
+  for (const [locale, text] of [
+    ['en-US', 'english();'],
+    ['pl-PL', 'polish();'],
+  ]) {
+    source(`web-pages/one/content-pages/One.${locale}.webpage.custom_javascript.js`, 'shared();', text, {
+      kind: 'page-js',
+      mode: 'block',
+      tag: 'script',
+      pageUrl: '/one',
+    });
   }
   const body = '<html><body><script>shared();</script></body></html>';
   const result = rewrite(body, '/one');
@@ -239,8 +308,14 @@ test('classic page-script language variants cannot claim an identical rendered b
 
 test('new snippet expressions refuse differing language Values but allow identical ones', () => {
   source('template.html', '<nav>Original</nav>', '<nav>{{ snippets["Action"] }}</nav>');
-  source('Action.en-US.contentsnippet.value.html', 'English', 'English', { kind: 'content-snippet', snippetName: 'Action' });
-  source('Action.pl-PL.contentsnippet.value.html', 'Polish', 'Polish', { kind: 'content-snippet', snippetName: 'Action' });
+  source('Action.en-US.contentsnippet.value.html', 'English', 'English', {
+    kind: 'content-snippet',
+    snippetName: 'Action',
+  });
+  source('Action.pl-PL.contentsnippet.value.html', 'Polish', 'Polish', {
+    kind: 'content-snippet',
+    snippetName: 'Action',
+  });
   const body = '<nav>Original</nav>';
   const result = rewrite(body);
   assert.equal(result.html, body);
@@ -251,7 +326,8 @@ test('new snippet expressions refuse differing language Values but allow identic
 
 test('script-looking text inside comments and raw-text elements is left intact', () => {
   script('form.js', 'old();', 'new();');
-  const inert = '<!-- <script>old();</script> --><textarea><script>old();</script></textarea><title><script>old();</script></title>';
+  const inert =
+    '<!-- <script>old();</script> --><textarea><script>old();</script></textarea><title><script>old();</script></title>';
   assert.equal(rewrite(`${inert}<script>old();</script>`).html, `${inert}<script>new();</script>`);
 });
 
@@ -304,7 +380,12 @@ test('local inline code cannot close its HTML element early or hide its closing 
   }
   sources = [];
   versions.clear();
-  source('style.css', '.old {}', '.new { content: "</style>"; }', { kind: 'page-css', mode: 'block', tag: 'style', pageUrl: '/' });
+  source('style.css', '.old {}', '.new { content: "</style>"; }', {
+    kind: 'page-css',
+    mode: 'block',
+    tag: 'style',
+    pageUrl: '/',
+  });
   const body = '<style>.old {}</style><p>After</p>';
   assert.equal(rewrite(body).html, body);
 });
@@ -329,7 +410,15 @@ test('unterminated tags are consumed once even when they contain many apparent t
 
 test('browser-supported script MIME and language values are recognized after HTML decoding', () => {
   script('form.js', 'old();', 'new();');
-  for (const attrs of ['type="application/x-javascript"', 'type="text/javascript1.5"', 'type="text/jscript"', 'type="text&#x2f;javascript"', 'type="text&sol;javascript"', 'language="javascript"', 'language=""']) {
+  for (const attrs of [
+    'type="application/x-javascript"',
+    'type="text/javascript1.5"',
+    'type="text/jscript"',
+    'type="text&#x2f;javascript"',
+    'type="text&sol;javascript"',
+    'language="javascript"',
+    'language=""',
+  ]) {
     assert.equal(rewrite(`<script ${attrs}>old();</script>`).html, `<script ${attrs}>new();</script>`);
   }
   const inert = '<script language="vbscript">old();</script>';
@@ -347,15 +436,24 @@ test('an empty script type is JavaScript, while external scripts and non-CSS sty
 test('source maps keep inline modules in place to preserve relative import URLs', () => {
   script('form.js', 'import "./module.js";', 'import "./new-module.js";');
   const body = '<script type="module" async>import "./module.js";</script>';
-  assert.equal(rewrite(body, '/', { sourceMaps: true }).html, '<script type="module" async>import "./new-module.js";</script>');
+  assert.equal(
+    rewrite(body, '/', { sourceMaps: true }).html,
+    '<script type="module" async>import "./new-module.js";</script>',
+  );
 });
 
 test('source maps preserve relative dynamic imports in existing and newly injected classic scripts', () => {
   script('form.js', 'import("./module.js");', 'import /* comment */ ("./new-module.js");');
   const body = '<script>import("./module.js");</script>';
-  assert.equal(rewrite(body, '/', { sourceMaps: true }).html, '<script>import /* comment */ ("./new-module.js");</script>');
+  assert.equal(
+    rewrite(body, '/', { sourceMaps: true }).html,
+    '<script>import /* comment */ ("./new-module.js");</script>',
+  );
   source('page.js', '', 'import("./page.js");', { kind: 'page-js', mode: 'block', tag: 'script', pageUrl: '/' });
-  assert.equal(rewrite('<html><body></body></html>', '/', { sourceMaps: true }).html, '<html><body><script type="text/javascript">\nimport("./page.js");\n</script>\n</body></html>');
+  assert.equal(
+    rewrite('<html><body></body></html>', '/', { sourceMaps: true }).html,
+    '<html><body><script type="text/javascript">\nimport("./page.js");\n</script>\n</body></html>',
+  );
 });
 
 test('externalising a classic script preserves async-like text inside other attributes', () => {
@@ -366,8 +464,15 @@ test('externalising a classic script preserves async-like text inside other attr
 
 test('externalising a classic script removes integrity that only becomes active with src', () => {
   script('form.js', 'old();', 'new();');
-  const result = rewrite('<script nonce="local" integrity="sha256-stale" data-note="integrity=keep">old();</script>', '/', { sourceMaps: true });
-  assert.equal(result.html, '<script nonce="local" data-note="integrity=keep" src="/__paqvilo/inline/form.js"></script>');
+  const result = rewrite(
+    '<script nonce="local" integrity="sha256-stale" data-note="integrity=keep">old();</script>',
+    '/',
+    { sourceMaps: true },
+  );
+  assert.equal(
+    result.html,
+    '<script nonce="local" data-note="integrity=keep" src="/__paqvilo/inline/form.js"></script>',
+  );
 });
 
 test('every repeated snippet is patched, including occurrences past 200', () => {
@@ -389,7 +494,10 @@ test('equally matching clones with different local contents are reported instead
 test('new page scripts are inserted at a real body closing tag, not one printed in a comment', () => {
   source('page.js', '', 'fresh();', { kind: 'page-js', mode: 'block', tag: 'script', pageUrl: '/' });
   const body = '<html><head></head><body>content</body></html><!-- example: </body> -->';
-  assert.equal(rewrite(body).html, '<html><head></head><body>content<script type="text/javascript">\nfresh();\n</script>\n</body></html><!-- example: </body> -->');
+  assert.equal(
+    rewrite(body).html,
+    '<html><head></head><body>content<script type="text/javascript">\nfresh();\n</script>\n</body></html><!-- example: </body> -->',
+  );
   const fragment = '<textarea>example: </body></textarea><!-- </body> -->';
   assert.equal(rewrite(fragment).html, fragment);
 });
@@ -424,15 +532,36 @@ test('enhanced sources sharing a file share the raw read but retain separate ext
   fs.writeFileSync(file, JSON.stringify({ js: 'changed();', copy: '<p>Changed copy</p>' }));
   versions.set(file, JSON.stringify({ js: 'original();', copy: '<p>Original copy</p>' }));
   sources.push(
-    { rel: 'component.xml#js', file, kind: 'page-js', pageUrl: '/', mode: 'block', tag: 'script', extract: (raw) => JSON.parse(raw).js },
-    { rel: 'component.xml#copy', file, kind: 'page-copy', pageUrl: '/', mode: 'markup', extract: (raw) => JSON.parse(raw).copy },
+    {
+      rel: 'component.xml#js',
+      file,
+      kind: 'page-js',
+      pageUrl: '/',
+      mode: 'block',
+      tag: 'script',
+      extract: (raw) => JSON.parse(raw).js,
+    },
+    {
+      rel: 'component.xml#copy',
+      file,
+      kind: 'page-copy',
+      pageUrl: '/',
+      mode: 'markup',
+      extract: (raw) => JSON.parse(raw).copy,
+    },
   );
   const rewriter = makeRewriter();
   assert.equal(rewriter.sourceCache.size, 1);
-  assert.equal(rewriter.rewrite('<script>original();</script><p>Original copy</p>', '/').html, '<script>changed();</script><p>Changed copy</p>');
+  assert.equal(
+    rewriter.rewrite('<script>original();</script><p>Original copy</p>', '/').html,
+    '<script>changed();</script><p>Changed copy</p>',
+  );
   fs.writeFileSync(file, JSON.stringify({ js: 'saved();', copy: '<p>Saved copy</p>' }));
   rewriter.refresh([file]);
-  assert.equal(rewriter.rewrite('<script>original();</script><p>Original copy</p>', '/').html, '<script>saved();</script><p>Saved copy</p>');
+  assert.equal(
+    rewriter.rewrite('<script>original();</script><p>Original copy</p>', '/').html,
+    '<script>saved();</script><p>Saved copy</p>',
+  );
 });
 
 test('cached source reads reject a directory replaced by an external junction', () => {
@@ -485,7 +614,13 @@ test('large markup files keep safe distant edits separate from unchanged Liquid 
 test('async construction preloads stable sources with bounded concurrency and shared changed state', async () => {
   for (let i = 0; i < 40; i++) script(`form-${i}.js`, `original${i}();`, `local${i}();`);
   const changed = new Set(versions.keys());
-  const baseline = { cache: new Map(), changedFiles: () => { throw new Error('shared changed state must avoid another Git scan'); }, show: (file) => versions.get(file) };
+  const baseline = {
+    cache: new Map(),
+    changedFiles: () => {
+      throw new Error('shared changed state must avoid another Git scan');
+    },
+    show: (file) => versions.get(file),
+  };
   const open = fs.promises.open;
   const syncRead = fs.readFileSync;
   let running = 0;
@@ -494,14 +629,33 @@ test('async construction preloads stable sources with bounded concurrency and sh
   fs.promises.open = async (...args) => {
     maximum = Math.max(maximum, ++running);
     let handle;
-    try { handle = await open(...args); } catch (error) { running--; throw error; }
+    try {
+      handle = await open(...args);
+    } catch (error) {
+      running--;
+      throw error;
+    }
     const close = handle.close.bind(handle);
-    handle.close = async () => { try { return await close(); } finally { running--; } };
+    handle.close = async () => {
+      try {
+        return await close();
+      } finally {
+        running--;
+      }
+    };
     return handle;
   };
-  fs.readFileSync = (...args) => { synchronous++; return syncRead(...args); };
+  fs.readFileSync = (...args) => {
+    synchronous++;
+    return syncRead(...args);
+  };
   try {
-    const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline, changedFiles: changed });
+    const rewriter = await HtmlRewriter.create({
+      model: { sourceDir: dir, inlineSources: sources },
+      site: SITE,
+      baseline,
+      changedFiles: changed,
+    });
     assert.equal(synchronous, 0);
     assert.ok(maximum > 1 && maximum <= 16);
     assert.equal(rewriter.rewrite('<script>original0();</script>', '/').html, '<script>local0();</script>');
@@ -519,7 +673,8 @@ test('async construction retries a source that finishes saving during prefetch',
   const open = fs.promises.open;
   let saved = false;
   fs.promises.open = async (...args) => {
-    const handle = await open(...args), read = handle.read.bind(handle);
+    const handle = await open(...args),
+      read = handle.read.bind(handle);
     handle.read = async (...input) => {
       const result = await read(...input);
       if (!saved && args[0] === openedFile) {
@@ -531,10 +686,21 @@ test('async construction retries a source that finishes saving during prefetch',
     return handle;
   };
   try {
-    const baseline = { cache: new Map(), changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
-    const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline });
+    const baseline = {
+      cache: new Map(),
+      changedFiles: () => new Set(versions.keys()),
+      show: (file) => versions.get(file),
+    };
+    const rewriter = await HtmlRewriter.create({
+      model: { sourceDir: dir, inlineSources: sources },
+      site: SITE,
+      baseline,
+    });
     assert.equal(saved, true, 'the intended descriptor read triggered the concurrent save');
-    assert.equal(rewriter.rewrite('<script>original();</script>', '/').html, '<script>finishedSavingTheLatestVersion();</script>');
+    assert.equal(
+      rewriter.rewrite('<script>original();</script>', '/').html,
+      '<script>finishedSavingTheLatestVersion();</script>',
+    );
   } finally {
     fs.promises.open = open;
   }
@@ -548,15 +714,22 @@ test('async construction revalidates early files after other reads finish', asyn
   const realpath = fs.promises.realpath;
   let firstClosed = false;
   let releaseFirst;
-  const firstReady = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstReady = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
   fs.promises.realpath = async (...args) => {
     const result = await realpath(...args);
     if ((args[0] === sources[0].file || args[0] === openedFiles[0]) && firstClosed) setImmediate(releaseFirst);
     return result;
   };
   fs.promises.open = async (...args) => {
-    const handle = await open(...args), read = handle.read.bind(handle), close = handle.close.bind(handle);
-    handle.close = async () => { await close(); if (args[0] === openedFiles[0]) firstClosed = true; };
+    const handle = await open(...args),
+      read = handle.read.bind(handle),
+      close = handle.close.bind(handle);
+    handle.close = async () => {
+      await close();
+      if (args[0] === openedFiles[0]) firstClosed = true;
+    };
     handle.read = async (...input) => {
       const result = await read(...input);
       if (args[0] === openedFiles[1]) {
@@ -569,9 +742,16 @@ test('async construction revalidates early files after other reads finish', asyn
   };
   try {
     const baseline = { changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
-    const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline });
+    const rewriter = await HtmlRewriter.create({
+      model: { sourceDir: dir, inlineSources: sources },
+      site: SITE,
+      baseline,
+    });
     assert.equal(firstClosed, true, 'the early source read completed before the later save');
-    assert.equal(rewriter.rewrite('<script>firstOriginal();</script>', '/').html, '<script>latestSavedWhileAnotherSourceWasLoading();</script>');
+    assert.equal(
+      rewriter.rewrite('<script>firstOriginal();</script>', '/').html,
+      '<script>latestSavedWhileAnotherSourceWasLoading();</script>',
+    );
   } finally {
     fs.promises.open = open;
     fs.promises.realpath = realpath;
@@ -588,12 +768,20 @@ test('explicit source revalidation invalidates only stale bytes and follows the 
   changed.add(sources[1].file);
   const originalRead = fs.readFileSync;
   const reads = [];
-  fs.readFileSync = (file, ...args) => { reads.push(file); return originalRead(file, ...args); };
+  fs.readFileSync = (file, ...args) => {
+    reads.push(file);
+    return originalRead(file, ...args);
+  };
   try {
     rewriter.refresh([], { revalidate: true });
     assert.deepEqual(reads, [sources[1].file]);
-    assert.equal(rewriter.rewrite('<script>firstLocal();</script><script>secondOriginal();</script>', '/').html, '<script>firstLocal();</script><script>latestSecond();</script>');
+    assert.equal(
+      rewriter.rewrite('<script>firstLocal();</script><script>secondOriginal();</script>', '/').html,
+      '<script>firstLocal();</script><script>latestSecond();</script>',
+    );
     assert.equal(rewriter.blocks.find((block) => block.rel === 'first.js').active, false);
     assert.equal(rewriter.blocks.find((block) => block.rel === 'second.js').active, true);
-  } finally { fs.readFileSync = originalRead; }
+  } finally {
+    fs.readFileSync = originalRead;
+  }
 });

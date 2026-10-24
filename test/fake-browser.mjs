@@ -56,7 +56,12 @@ export function fakeBrowser(online = {}) {
       page,
       cdp,
       pause: (requestId, url, { type = 'XHR', method = 'GET', frameId = 'main', headers = {}, postData } = {}) =>
-        cdp.emit('Fetch.requestPaused', { requestId, frameId, resourceType: type, request: { url, method, headers, postData, hasPostData: postData != null } }),
+        cdp.emit('Fetch.requestPaused', {
+          requestId,
+          frameId,
+          resourceType: type,
+          request: { url, method, headers, postData, hasPostData: postData != null },
+        }),
     };
     context.tabs.push(tab);
     return tab;

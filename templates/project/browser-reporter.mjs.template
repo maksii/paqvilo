@@ -1,0 +1,23 @@
+import { writeSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { spec } from 'node:test/reporters';
+
+// Consume documented Node test events, never human TAP/spec text. FD 3 is an
+// owned child-process pipe; only coverage site IDs leave this reporter.
+export default async function* reporter(source) {
+  const reported = new Set();
+  async function* observed() {
+    for await (const event of source) {
+      const data = event.data;
+      if (event.type === 'test:pass' && !data.skip && !data.todo && data.details?.type !== 'suite') {
+        const match = /^\[paqvilo-acceptance:([^\]\r\n]{1,480})\] /.exec(data.name);
+        if (match && !reported.has(match[1])) {
+          reported.add(match[1]);
+          writeSync(3, JSON.stringify({ site: decodeURIComponent(match[1]) }) + '\n');
+        }
+      }
+      yield event;
+    }
+  }
+  yield* Readable.from(observed(), { objectMode: true }).pipe(new spec());
+}

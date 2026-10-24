@@ -1,5 +1,77 @@
 # Release notes
 
+## 0.9.6
+
+This release runs much more of the Power Platform locally: a simulated Dataverse organization with its Web API,
+model-driven and canvas apps from Solutions, and the automation around them. Setup and the simulator workspace are
+redesigned, and Lense works on model-driven apps.
+
+### New
+
+- **Dataverse Web API:** a local organization API with OAuth (client secret, certificate and delegated flows),
+  security roles, teams, sharing, column security, `$batch`, `$metadata`, change tracking, file and image columns,
+  metadata writes, platform messages and a read-only TDS (SQL) endpoint. It can run without a Power Pages export.
+  See [Dataverse API](../mirage/docs/dataverse-api.md) and [apps and APIs without a portal](../mirage/docs/standalone-organization.md).
+- **Model-driven apps:** apps from your Solutions open at `/main.aspx` with their forms, views, dashboards, ribbon
+  commands, web resources, PCF controls and the `Xrm` client API, including mobile offline. See
+  [model-driven apps](../mirage/docs/model-driven-apps.md) and [client API](../mirage/docs/model-driven-client-api.md).
+- **Canvas and code apps:** canvas apps run headlessly on Mirage's Power Fx interpreter, which also evaluates formula
+  columns, Dataverse Functions and low-code plug-ins; code apps get a local client-library bridge. See
+  [canvas apps](../mirage/docs/canvas-apps.md) and [code apps](../mirage/docs/code-apps.md).
+- **Automation:** plug-ins, cloud flows, classic workflows, custom connectors and background jobs run against the
+  local organization, with jobs committed in the triggering transaction. See [operations](../mirage/docs/operations.md)
+  and [plug-ins](../mirage/docs/dataverse-plugins.md).
+- **Platform services:** Azurite blob storage, the Service Bus emulator, the outbox, SharePoint document adapters and
+  fixtures for services Paqvilo does not execute. See [platform stack](../mirage/docs/platform-stack.md).
+- **Enhanced authorization:** sites on the enhanced Power Pages authorization model use mapped Dataverse users, roles
+  and column security locally.
+- **Model-driven Lense:** the Lense panel, Inspect, X-ray and Explore work on model-driven apps and name the table,
+  column, form and view behind what you select. An **Actions** tab adds inspection, navigation, diagnostics,
+  reversible form overrides and Web API request impersonation. See [model-driven actions](model-driven-actions.md).
+- **Quick setup:** `/_setup/` starts with five plain steps that find your exports, write the configuration and start
+  the preview without a terminal; **All settings** covers every key. See [setup](setup.md#quick-setup).
+- **Simulator workspace:** `/_sim/` opens on an Infrastructure view with a live system map, activity and diagnostics,
+  and adds Providers & services, Flows & jobs, Capabilities & preflight and Data packs. Setup and `/_sim/` share one
+  shell. See [simulation administration](../mirage/docs/sim-administration.md).
+
+### Improved
+
+- X-ray identifies sources faster on large exports, inspects same-origin frames in place and never activates a control
+  inside a frame.
+- Large Solutions and data sets start and load their first catalogue several times faster; startup reports its
+  progress and can be cancelled.
+- Portal lists, subgrids and lookups resolve bare-ID lookups; portal reads mask secured columns as Dataverse does.
+- New projects set up dependencies and browsers explicitly, and readiness checks no longer treat an empty starter as
+  tested.
+- Acceptance runners can observe request lifecycles; reference parity accepts explicit local visitors.
+- **Contributor checks:** local validation and GitHub Actions share dependency-aware suite selection. Isolated Lense
+  overlay changes select Lense tests; shared changes expand the selection, and main, release and manual full runs
+  cover every suite. Strict ESLint 10, Prettier and workflow checks run before commits against the staged sources.
+  Formatting writes files atomically and rejects conflicting editor saves. See [contributing](../CONTRIBUTING.md).
+- **Test reliability:** browser fixtures close their browser connections before stopping local servers, avoiding
+  teardown hangs in CI.
+
+### Fixed
+
+- JSON `$batch` change sets keep their atomicity when requests depend on each other.
+- Changed settings no longer reuse a running preview started with the old ones.
+- Localized Solution labels apply to tabs, sections and nested quick forms.
+- Setup and `/_sim/` fit narrow screens, and the system map no longer overlaps labels or tooltips.
+- Setup preserves unchanged YAML scalar formatting, flow collections and comments when saving other settings.
+- Exported JavaScript server logic allows separately bounded worker startup on busy hosts while retaining its
+  script execution limits.
+
+### Upgrade notes
+
+Node.js **24.22.1 or a newer 24.x release** is required; Node 22 is no longer supported. Toolkit contributors use
+Node 24.22.1 with npm 11.19.1 and run `npm run setup:repo` to prepare checks and install Git hooks. Mirage and example
+validation use the pinned .NET SDK 10.0.113. Platform compatibility libraries retain their required versions.
+
+Update with `npm install --save-dev paqvilo@^0.9.6` and commit the lockfile. Model-driven Lense runs project scripts
+in the live app, so it requires `modelDriven.trustedExtensions: true` in the project file. Turn the model-driven surface
+off with `modelDriven.enabled: false`. Reference reads still require explicit authorization and the intended signed-in
+browser.
+
 ## 0.9.5
 
 This release fixes what the recorded walkthroughs and a documentation review surfaced, and

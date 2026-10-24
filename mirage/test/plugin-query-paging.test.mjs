@@ -3,16 +3,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
-import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
-test('Installed SDK query paging codec preserves constructor, omitted, null and populated states', {skip:process.platform!=='win32'||!process.env.PAQ_TEST_XRM_SDK}, async t=>{
- const dir=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-query-paging-'));
- t.after(()=>fs.rm(dir,{recursive:true,force:true,maxRetries:5}));
- const sdk=path.resolve(process.env.PAQ_TEST_XRM_SDK),source=path.join(dir,'PagingProbe.cs'),exe=path.join(dir,'PagingProbe.exe');
- await fs.copyFile(sdk,path.join(dir,'Microsoft.Xrm.Sdk.dll'));
- await fs.writeFile(source,`using System;using System.Collections.Generic;using System.Reflection;using System.Web.Script.Serialization;using Microsoft.Xrm.Sdk.Query;
+test(
+  'Installed SDK query paging codec preserves constructor, omitted, null and populated states',
+  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-query-paging-'));
+    t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
+    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      source = path.join(dir, 'PagingProbe.cs'),
+      exe = path.join(dir, 'PagingProbe.exe');
+    await fs.copyFile(sdk, path.join(dir, 'Microsoft.Xrm.Sdk.dll'));
+    await fs.writeFile(
+      source,
+      `using System;using System.Collections.Generic;using System.Reflection;using System.Web.Script.Serialization;using Microsoft.Xrm.Sdk.Query;
 namespace Invented {public static class PagingProbe {
 static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
 static object Call(string name,params object[] args){try{return typeof(PaqviloPluginHost).GetMethod(name,BindingFlags.NonPublic|BindingFlags.Static).Invoke(null,args);}catch(TargetInvocationException e){throw e.InnerException;}}
@@ -24,14 +31,49 @@ static void RoundTrip(QueryBase query){var encoded=Json.Serialize(Encode(query))
 static QueryByAttribute By(){var q=new QueryByAttribute("widget"){ColumnSet=new ColumnSet("title"),TopCount=3};q.AddAttributeValue("title","Selected");q.AddOrder("title",OrderType.Descending);return q;}
 static QueryExpression Expression(){var q=new QueryExpression("widget"){ColumnSet=new ColumnSet("title"),TopCount=3};q.Criteria.AddCondition("title",ConditionOperator.Equal,"Selected");q.AddOrder("title",OrderType.Descending);return q;}
 public static void Main(){var cases=new List<string>();var originalBy=By();Check(originalBy.PageInfo==null,"Installed SDK QueryByAttribute constructor no longer has null paging");RoundTrip(originalBy);cases.Add("QueryByAttribute-constructor");var originalExpression=Expression();Check(originalExpression.PageInfo!=null,"Installed SDK QueryExpression constructor paging absent");RoundTrip(originalExpression);cases.Add("QueryExpression-constructor");
-foreach(var kind in new[]{"QueryByAttribute","QueryExpression"}){var omitted=(QueryBase)Decode("{\\\"$type\\\":\\\""+kind+"\\\",\\\"entityName\\\":\\\"widget\\\"}");var absentPage=kind=="QueryByAttribute"?((QueryByAttribute)omitted).PageInfo:((QueryExpression)omitted).PageInfo;Page(absentPage,kind=="QueryByAttribute"?new QueryByAttribute("widget").PageInfo:new QueryExpression("widget").PageInfo);cases.Add(kind+"-omitted");var explicitNull=(QueryBase)Decode("{\\\"$type\\\":\\\""+kind+"\\\",\\\"entityName\\\":\\\"widget\\\",\\\"pageInfo\\\":null}");Page(kind=="QueryByAttribute"?((QueryByAttribute)explicitNull).PageInfo:((QueryExpression)explicitNull).PageInfo,null);cases.Add(kind+"-wire-null");}
+foreach(var kind in new[]{"QueryByAttribute","QueryExpression"}){var omitted=(QueryBase)Decode("{\\"$type\\":\\""+kind+"\\",\\"entityName\\":\\"widget\\"}");var absentPage=kind=="QueryByAttribute"?((QueryByAttribute)omitted).PageInfo:((QueryExpression)omitted).PageInfo;Page(absentPage,kind=="QueryByAttribute"?new QueryByAttribute("widget").PageInfo:new QueryExpression("widget").PageInfo);cases.Add(kind+"-omitted");var explicitNull=(QueryBase)Decode("{\\"$type\\":\\""+kind+"\\",\\"entityName\\":\\"widget\\",\\"pageInfo\\":null}");Page(kind=="QueryByAttribute"?((QueryByAttribute)explicitNull).PageInfo:((QueryExpression)explicitNull).PageInfo,null);cases.Add(kind+"-wire-null");}
 foreach(var populated in new[]{false,true}){var page=populated?new PagingInfo{Count=2,PageNumber=4,PagingCookie="<cookie page='3' />"}:null;var by=By();by.PageInfo=page;RoundTrip(by);cases.Add("QueryByAttribute-original-"+(populated?"populated":"null"));var expression=Expression();expression.PageInfo=page;RoundTrip(expression);cases.Add("QueryExpression-original-"+(populated?"populated":"null"));}
 var counted=By();counted.PageInfo=new PagingInfo{ReturnTotalRecordCount=true};RoundTrip(counted);cases.Add("QueryByAttribute-count-flag-retained");var countedExpression=Expression();countedExpression.PageInfo.ReturnTotalRecordCount=true;RoundTrip(countedExpression);cases.Add("QueryExpression-count-flag-retained");Console.WriteLine(Json.Serialize(cases));}
-}}`);
- const host=fileURLToPath(new URL('../lib/plugin-clr-host.cs',import.meta.url));
- const build=spawnSync(path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:exe','/main:Invented.PagingProbe','/out:'+exe,'/reference:'+sdk,'/reference:System.Web.Extensions.dll','/reference:System.Runtime.Serialization.dll','/reference:System.ServiceModel.dll',host,source],{encoding:'utf8',windowsHide:true,timeout:20000,maxBuffer:256*1024});
- assert.equal(build.status,0,build.stdout+build.stderr);
- const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:ORDINARY_CLR_TIMEOUT_MS,maxBuffer:256*1024});
- assert.equal(result.status,0,result.stdout+result.stderr);
- assert.deepEqual(JSON.parse(result.stdout),['QueryByAttribute-constructor','QueryExpression-constructor','QueryByAttribute-omitted','QueryByAttribute-wire-null','QueryExpression-omitted','QueryExpression-wire-null','QueryByAttribute-original-null','QueryExpression-original-null','QueryByAttribute-original-populated','QueryExpression-original-populated','QueryByAttribute-count-flag-retained','QueryExpression-count-flag-retained']);
-});
+}}`,
+    );
+    const host = fileURLToPath(new URL('../lib/plugin-clr-host.cs', import.meta.url));
+    const build = spawnSync(
+      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
+      [
+        '/nologo',
+        '/target:exe',
+        '/main:Invented.PagingProbe',
+        '/out:' + exe,
+        '/reference:' + sdk,
+        '/reference:System.Web.Extensions.dll',
+        '/reference:System.Runtime.Serialization.dll',
+        '/reference:System.ServiceModel.dll',
+        host,
+        source,
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 20000, maxBuffer: 256 * 1024 },
+    );
+    assert.equal(build.status, 0, build.stdout + build.stderr);
+    const result = spawnSync(exe, [], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: ORDINARY_CLR_TIMEOUT_MS,
+      maxBuffer: 256 * 1024,
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [
+      'QueryByAttribute-constructor',
+      'QueryExpression-constructor',
+      'QueryByAttribute-omitted',
+      'QueryByAttribute-wire-null',
+      'QueryExpression-omitted',
+      'QueryExpression-wire-null',
+      'QueryByAttribute-original-null',
+      'QueryExpression-original-null',
+      'QueryByAttribute-original-populated',
+      'QueryExpression-original-populated',
+      'QueryByAttribute-count-flag-retained',
+      'QueryExpression-count-flag-retained',
+    ]);
+  },
+);

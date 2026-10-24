@@ -63,17 +63,13 @@
       "name": "account",
       "existing": true,
       "solution": "PaqviloBaseline",
-      "existingColumns": [
-        "accountid"
-      ]
+      "existingColumns": ["accountid"]
     },
     {
       "name": "contact",
       "existing": true,
       "solution": "PaqviloBaseline",
-      "existingColumns": [
-        "contactid"
-      ]
+      "existingColumns": ["contactid"]
     },
     {
       "name": "pqvd_baselineparent",
@@ -382,9 +378,7 @@
         {
           "name": "pqvd_baselineitem_code",
           "label": "Baseline item code",
-          "columns": [
-            "pqvd_code"
-          ]
+          "columns": ["pqvd_code"]
         }
       ]
     },

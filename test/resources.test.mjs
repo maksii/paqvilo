@@ -5,34 +5,68 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import YAML from 'yaml';
 import { PortalModel } from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { describeResources, resourceFilters } from '../lense/commands/resources.mjs';
 import { editSource } from '../lense/source-edit.mjs';
+import { OverlaySession } from '../lense/session.mjs';
+import { buildMapping } from '../lense/commands/map.mjs';
+import { auditResources } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
 
-const cfgFor = (dir, site = SITE) => ({ siteName: 'test', envName: 'local', origin: 'https://portal.invalid', sourceDir: dir, configFile: path.join(dir, 'catalogue.yml'), site });
+const cfgFor = (dir, site = SITE) => ({
+  siteName: 'test',
+  envName: 'local',
+  origin: 'https://portal.invalid',
+  sourceDir: dir,
+  configFile: path.join(dir, 'catalogue.yml'),
+  site,
+});
 function describe(dir, args = {}, site = SITE) {
   const model = new PortalModel(dir);
   const baseline = new GitBaseline(dir, site.markup.baseline);
-  return describeResources(cfgFor(dir, site), model, baseline, baseline.changedFiles({ refreshRef: false }), resourceFilters(args));
+  return describeResources(
+    cfgFor(dir, site),
+    model,
+    baseline,
+    baseline.changedFiles({ refreshRef: false }),
+    resourceFilters(args),
+  );
 }
 
 test('offline page filtering distinguishes short exported routes from localized routes and home', (t) => {
-  const fx = createFixture(); t.after(fx.cleanup);
-  fx.write('web-pages/it/IT.webpage.yml', `adx_webpageid: it-page\nadx_name: IT\nadx_partialurl: it\nadx_parentpageid: ${HOME_ID}`);
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write(
+    'web-pages/it/IT.webpage.yml',
+    `adx_webpageid: it-page\nadx_name: IT\nadx_partialurl: it\nadx_parentpageid: ${HOME_ID}`,
+  );
   fx.write('web-pages/it/IT.webpage.custom_javascript.js', 'window.it = true;');
-  fx.write('websitelanguage.yml', '- adx_websitelanguageid: fr\n  adx_name: French - France\n  adx_languagecode: fr-FR');
+  fx.write(
+    'websitelanguage.yml',
+    '- adx_websitelanguageid: fr\n  adx_name: French - France\n  adx_languagecode: fr-FR',
+  );
   const direct = describe(fx.dir, { page: '/it', limit: 500 });
   const localized = describe(fx.dir, { page: '/fr-FR/it', limit: 500 });
-  assert.deepEqual(direct.resources.map((row) => row.id), localized.resources.map((row) => row.id));
-  assert.equal(direct.resources.some((row) => row.id === 'page:it-page'), true);
-  assert.equal(direct.resources.some((row) => row.id === `page:${HOME_ID}`), false);
+  assert.deepEqual(
+    direct.resources.map((row) => row.id),
+    localized.resources.map((row) => row.id),
+  );
+  assert.equal(
+    direct.resources.some((row) => row.id === 'page:it-page'),
+    true,
+  );
+  assert.equal(
+    direct.resources.some((row) => row.id === `page:${HOME_ID}`),
+    false,
+  );
   assert.equal(describe(fx.dir, { page: '/zz-ZZ/', limit: 500 }).resources.length, 0);
 });
 
 test('offline resources expose exact classic paths and only configured page relationships', (t) => {
-  const fx = createFixture(); t.after(() => fx.cleanup());
+  const fx = createFixture();
+  t.after(() => fx.cleanup());
   const formId = '00000000-0000-0000-0000-000000000099';
   fx.write('basic-forms/contact/Contact.basicform.yml', `adx_entityformid: ${formId}\nadx_name: Contact\n`);
   const metadata = 'web-pages/home/content-pages/Home.en-US.webpage.yml';
@@ -45,31 +79,56 @@ test('offline resources expose exact classic paths and only configured page rela
   assert.equal(form.path, fx.file('basic-forms/contact/Contact.basicform.custom_javascript.js'));
   assert.equal(form.field, null);
   assert.deepEqual(form.relatedPageUrls, ['/']);
-  assert.ok(report.relationships.some((edge) => edge.sourceId === form.id && edge.targetId === `page:${HOME_ID}` && edge.kind === 'configured-on-page'));
-  assert.equal(report.resources.some((resource) => resource.kind === 'web-template'), false, 'templates must not be guessed to appear on a page');
+  assert.ok(
+    report.relationships.some(
+      (edge) => edge.sourceId === form.id && edge.targetId === `page:${HOME_ID}` && edge.kind === 'configured-on-page',
+    ),
+  );
+  assert.equal(
+    report.resources.some((resource) => resource.kind === 'web-template'),
+    false,
+    'templates must not be guessed to appear on a page',
+  );
   const home = report.resources.find((resource) => resource.id === `page:${HOME_ID}`);
   assert.ok(home.metadataPaths.includes(fx.file(metadata)));
-  assert.ok(home.configuredComponentIds.includes(formId), 'language-page configuration contributes to the canonical page');
+  assert.ok(
+    home.configuredComponentIds.includes(formId),
+    'language-page configuration contributes to the canonical page',
+  );
   assert.ok(report.relationships.find((edge) => edge.sourceId === form.id).evidence.paths.includes(fx.file(metadata)));
   assert.match(report.relationshipScope, /dynamic dependencies are not inferred/);
-  assert.ok(report.resources.every((resource) => !Object.hasOwn(resource, 'body') && !Object.hasOwn(resource, 'content')));
+  assert.ok(
+    report.resources.every((resource) => !Object.hasOwn(resource, 'body') && !Object.hasOwn(resource, 'content')),
+  );
 });
 
 test('resource IDs and pagination are stable, and changed scope exposes effective explicit routes', (t) => {
-  const fx = createFixture(); t.after(() => fx.cleanup());
+  const fx = createFixture();
+  t.after(() => fx.cleanup());
   fx.write('web-files/app.js', 'changed');
   const site = structuredClone(SITE);
   site.scope = 'changed';
-  site.routes = [{ url: '/scripts/app.js', file: 'web-files/Site-Logo' }, { url: '/online/**', passthrough: true }, { url: '/outside.js', file: path.join(fx.dir, '..', 'external.js') }];
+  site.routes = [
+    { url: '/scripts/app.js', file: 'web-files/Site-Logo' },
+    { url: '/online/**', passthrough: true },
+    { url: '/outside.js', file: path.join(fx.dir, '..', 'external.js') },
+  ];
   const full = describe(fx.dir, { limit: '500' }, site);
   const first = describe(fx.dir, { limit: '2' }, site);
   const second = describe(fx.dir, { limit: '2', offset: '2' }, site);
   assert.equal(first.pagination.nextOffset, 2);
-  assert.deepEqual([...first.resources, ...second.resources].map((resource) => resource.id), full.resources.slice(0, 4).map((resource) => resource.id));
+  assert.deepEqual(
+    [...first.resources, ...second.resources].map((resource) => resource.id),
+    full.resources.slice(0, 4).map((resource) => resource.id),
+  );
   const changed = describe(fx.dir, { changed: true, kind: ['web-file'] }, site);
   assert.equal(changed.pagination.total, 1);
   assert.equal(changed.resources[0].relativePath, 'web-files/app.js');
-  assert.equal(changed.resources[0].preview.selected, false, 'a matching unchanged explicit route keeps this URL online in changed scope');
+  assert.equal(
+    changed.resources[0].preview.selected,
+    false,
+    'a matching unchanged explicit route keeps this URL online in changed scope',
+  );
   const routes = full.resources.filter((resource) => resource.kind === 'route');
   assert.equal(routes[0].path, fx.file('web-files/Site-Logo'));
   assert.equal(routes[1].preview.strategy, 'passthrough');
@@ -83,10 +142,17 @@ test('enhanced discovery separates physical XML path from editable field and exc
   const component = (id, type, content, inactive = false) => {
     const file = path.join(dir, 'powerpagecomponents', id, 'powerpagecomponent.xml');
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `<powerpagecomponent powerpagecomponentid="${id}"><powerpagecomponenttype>${type}</powerpagecomponenttype><statecode>${inactive ? 1 : 0}</statecode><name>${id}</name><content><![CDATA[${JSON.stringify(content)}]]></content></powerpagecomponent>`);
+    fs.writeFileSync(
+      file,
+      `<powerpagecomponent powerpagecomponentid="${id}"><powerpagecomponenttype>${type}</powerpagecomponenttype><statecode>${inactive ? 1 : 0}</statecode><name>${id}</name><content><![CDATA[${JSON.stringify(content)}]]></content></powerpagecomponent>`,
+    );
     return file;
   };
-  const file = component('home', 2, { partialurl: '/', customjavascript: 'console.log("hello")', copy: '<p>Hello</p>' });
+  const file = component('home', 2, {
+    partialurl: '/',
+    customjavascript: 'console.log("hello")',
+    copy: '<p>Hello</p>',
+  });
   component('inactive', 2, { partialurl: 'inactive', customjavascript: 'hidden' }, true);
   const report = describe(dir, { kind: ['page-js', 'page-copy'] });
   assert.equal(report.baseline.available, false);
@@ -98,36 +164,69 @@ test('enhanced discovery separates physical XML path from editable field and exc
 });
 
 test('resource query validation rejects ambiguous paths and unbounded result limits', () => {
-  for (const args of [{ limit: '0' }, { limit: '501' }, { offset: '-1' }, { offset: '9007199254740992' }, { page: '//other.invalid' }, { page: '/page?secret=1' }, { kind: ['unknown'] }]) assert.throws(() => resourceFilters(args));
+  for (const [args, message] of [
+    [{ limit: '0' }, /--limit/],
+    [{ limit: '501' }, /--limit/],
+    [{ offset: '-1' }, /--offset/],
+    [{ offset: '9007199254740992' }, /--offset/],
+    [{ page: '//other.invalid' }, /--page/],
+    [{ page: '/page?secret=1' }, /--page/],
+    [{ kind: ['unknown'] }, /Unknown resource kind "unknown"/],
+  ]) {
+    assert.throws(() => resourceFilters(args), { code: 'invalid_argument', message });
+  }
   assert.deepEqual(resourceFilters({ kind: ['page-js', 'page-js'] }).kinds, ['page-js']);
 });
 
 test('resources CLI JSON is deterministic and does not create mapping files or personal settings', (t) => {
-  const fx = createFixture(); t.after(() => fx.cleanup());
+  const fx = createFixture();
+  t.after(() => fx.cleanup());
   const config = fx.file('catalogue.yml');
   fs.writeFileSync(config, 'sites:\n  test:\n    source: .\n    environments:\n      local: https://portal.invalid\n');
   const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PAQVILO_|GIT_)/.test(key)));
-  const args = [cli, 'resources', '--config', config, '--site', 'test', '--env', 'local', '--kind', 'page-js', '--json'];
+  const args = [
+    cli,
+    'resources',
+    '--config',
+    config,
+    '--site',
+    'test',
+    '--env',
+    'local',
+    '--kind',
+    'page-js',
+    '--json',
+  ];
   const run = () => spawnSync(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
-  const first = run(); const second = run();
+  const first = run();
+  const second = run();
   assert.equal(first.status, 0, first.stderr);
   assert.equal(second.stdout, first.stdout);
   const report = JSON.parse(first.stdout);
   assert.equal(report.command, 'resources');
-  assert.ok(report.resources.every((resource) => resource.kind === 'page-js'));
+  assert.deepEqual(
+    report.resources.map((resource) => resource.kind),
+    ['page-js', 'page-js'],
+  );
   assert.equal(fs.existsSync(fx.file('.paqvilo')), false);
   assert.equal(fs.existsSync(fx.file('.env')), false);
 });
 
 test('large piped resource reports drain completely before the CLI exits', (t) => {
-  const fx = createFixture(); t.after(() => fx.cleanup());
-  for (let i = 0; i < 120; i++) fx.write(`web-pages/about/content-pages/Resource-${String(i).padStart(3, '0')}.webpage.custom_javascript.js`, '');
+  const fx = createFixture();
+  t.after(() => fx.cleanup());
+  for (let i = 0; i < 120; i++)
+    fx.write(`web-pages/about/content-pages/Resource-${String(i).padStart(3, '0')}.webpage.custom_javascript.js`, '');
   const config = fx.file('catalogue.yml');
   fs.writeFileSync(config, 'sites:\n  test:\n    source: .\n    environments:\n      local: https://portal.invalid\n');
   const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PAQVILO_|GIT_)/.test(key)));
-  const result = spawnSync(process.execPath, [cli, 'resources', '--config', config, '--kind', 'page-js', '--limit', '500', '--json'], { env, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+  const result = spawnSync(
+    process.execPath,
+    [cli, 'resources', '--config', config, '--kind', 'page-js', '--limit', '500', '--json'],
+    { env, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+  );
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.length > 64 * 1024, 'exercise more than a pipe buffer');
   const report = JSON.parse(result.stdout);
@@ -136,10 +235,14 @@ test('large piped resource reports drain completely before the CLI exits', (t) =
 });
 
 test('discovered YAML and localized descriptors can be edited without losing field or identity context', (t) => {
-  const fx = createFixture(); t.after(() => fx.cleanup());
+  const fx = createFixture();
+  t.after(() => fx.cleanup());
   fx.write('weblink-sets/footer/Footer.weblinkset.yml', 'adx_name: Footer\nadx_copy: <p>Footer before</p>\n');
   const metadata = 'basic-forms/contact/Contact.basicform.basicformmetadata.yml';
-  fx.write(metadata, '- adx_entityformmetadataid: record-one\n  adx_description: \'[{"LCID":1033,"Value":"<p>Description before</p>"},{"LCID":1045,"Value":"<p>Other language</p>"}]\'\n');
+  fx.write(
+    metadata,
+    '- adx_entityformmetadataid: record-one\n  adx_description: \'[{"LCID":1033,"Value":"<p>Description before</p>"},{"LCID":1045,"Value":"<p>Other language</p>"}]\'\n',
+  );
   const report = describe(fx.dir, { kind: ['metadata-markup'], limit: '500' });
   const footer = report.resources.find((item) => item.field === 'adx_copy');
   assert.equal(footer.format, 'yaml');
@@ -155,4 +258,121 @@ test('discovered YAML and localized descriptors can be edited without losing fie
   assert.match(fx.read(metadata), /Description after/);
   assert.match(fx.read(metadata), /Other language/);
   assert.match(fx.read('weblink-sets/footer/Footer.weblinkset.yml'), /Footer after/);
+});
+
+test('map and resources share one thousand-record metadata parse, skip excluded fields and invalidate changed sources', async (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  const source = YAML.stringify(
+    Array.from({ length: 1000 }, (_, index) => ({
+      adx_entityformmetadataid: 'field-' + index,
+      adx_entityform: 'form',
+      adx_description: '<p>Text ' + index + '</p>',
+    })),
+  );
+  fx.write('basic-forms/form/Fields.basicformmetadata.yml', source);
+  const parse = YAML.parse;
+  let count = 0;
+  t.mock.method(YAML, 'parse', (text, ...args) => {
+    if (text === source) count++;
+    return parse(text, ...args);
+  });
+  const session = await OverlaySession.create({ sourceDir: fx.dir, site: structuredClone(SITE) });
+  const mapping = buildMapping(session);
+  assert.equal(mapping.inline.filter((row) => row.kind === 'metadata-markup').length, 1000);
+  assert.equal(count, 1);
+  const baseline = { available: false, spec: 'HEAD' },
+    changed = new Set(),
+    started = performance.now();
+  const resources = describeResources(
+    session.cfg,
+    session.model,
+    baseline,
+    changed,
+    resourceFilters({ kind: 'metadata-markup', limit: 10 }),
+  );
+  assert.equal(resources.pagination.total, 1000);
+  assert.equal(resources.resources.length, 10);
+  assert.equal(count, 1, 'presence checks reuse the model parse');
+  const sourceFile = fx.file('basic-forms/form/Fields.basicformmetadata.yml'),
+    read = fs.readFileSync;
+  let reads = 0;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (String(file) === sourceFile) reads++;
+    return read(file, ...args);
+  });
+  describeResources(session.cfg, session.model, baseline, changed, resourceFilters({ kind: 'page' }));
+  assert.equal(reads, 0, 'a page-only query never reads markup source content');
+  assert.equal(count, 1);
+  fx.write('basic-forms/form/Fields.basicformmetadata.yml', source + '\n');
+  let changedParses = 0;
+  const currentParse = YAML.parse;
+  t.mock.method(YAML, 'parse', (text, ...args) => {
+    if (text === source + '\n') changedParses++;
+    return currentParse(text, ...args);
+  });
+  describeResources(
+    session.cfg,
+    session.model,
+    baseline,
+    changed,
+    resourceFilters({ kind: 'metadata-markup', limit: 10 }),
+  );
+  assert.equal(changedParses, 1);
+  assert.equal(reads, 1);
+  describeResources(
+    session.cfg,
+    session.model,
+    baseline,
+    changed,
+    resourceFilters({ kind: 'metadata-markup', limit: 10 }),
+  );
+  assert.equal(changedParses, 1, 'unchanged stamped content is reused on the next run');
+  const parseDocument = YAML.parseDocument;
+  let auditParses = 0;
+  t.mock.method(YAML, 'parseDocument', (text, ...args) => {
+    if (text === source + '\n') auditParses++;
+    return parseDocument(text, ...args);
+  });
+  auditResources(session.model, session.cfg.site);
+  assert.equal(auditParses, 1, 'independent duplicate-aware audit parses each YAML document once');
+  t.diagnostic(`1000-field resources and cache checks: ${(performance.now() - started).toFixed(1)} ms`);
+});
+
+test('enhanced optional fields expose presence and language-root rendering separately', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-fields-feedback-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const put = (id, type, content) => {
+    const dir = path.join(root, 'powerpagecomponents', id);
+    fs.mkdirSync(dir, { recursive: true });
+    const json = JSON.stringify(content).replaceAll('&', '&amp;').replaceAll('<', '&lt;');
+    fs.writeFileSync(
+      path.join(dir, 'powerpagecomponent.xml'),
+      `<powerpagecomponent powerpagecomponentid="${id}"><name>${id}</name><powerpagecomponenttype>${type}</powerpagecomponenttype><content>${json}</content></powerpagecomponent>`,
+    );
+  };
+  put('root', 2, { isroot: true, partialurl: '/' });
+  put('language', 2, { isroot: false, rootwebpageid: 'root', partialurl: '/', copy: '<p>Localized</p>' });
+  put('form', 15, {});
+  const model = new PortalModel(root),
+    report = describeResources(
+      { sourceDir: root, site: SITE },
+      model,
+      { available: false, spec: 'HEAD' },
+      new Set(),
+      resourceFilters({ limit: 500 }),
+    );
+  const rootCopy = report.resources.find((row) => row.relativePath?.includes('/root/') && row.field === 'copy'),
+    formScript = report.resources.find(
+      (row) => row.relativePath?.includes('/form/') && row.field === 'customjavascript',
+    );
+  assert.equal(rootCopy.exists, false);
+  assert.equal(rootCopy.renders, false);
+  assert.equal(formScript.exists, false);
+  assert.equal(formScript.preview.eligible, false);
+  assert.equal(
+    report.resources.find((row) => row.relativePath?.includes('/language/') && row.field === 'copy').empty,
+    false,
+    'enhanced XML fields keep their component extractor',
+  );
 });

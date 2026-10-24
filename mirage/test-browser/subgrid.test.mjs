@@ -1,69 +1,97 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chromium} from 'playwright-core';
-import {browserLaunchOptions} from '../lib/browser-launch.mjs';
-import {simulatorFixture,parentId,pendingId,acceptedId} from '../test/fixtures/subgrid.mjs';
-import {signInContext} from '../testing/session.mjs';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { simulatorFixture, parentId, pendingId, acceptedId } from '../test/fixtures/subgrid.mjs';
+import { signInContext } from '../testing/session.mjs';
 
-test('native grid form dialogs save, retain parent edits and refresh authored handlers; Delete requires confirmation',async t=>{
-  const app=await simulatorFixture(t),browser=await chromium.launch(browserLaunchOptions({headless:true}));
-  t.after(()=>browser.close());
+test('native grid form dialogs save, retain parent edits and refresh authored handlers; Delete requires confirmation', async (t) => {
+  const app = await simulatorFixture(t),
+    browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
   // Portal requests are signed in explicitly as the fixture's Editor persona.
-  const context=await browser.newContext();
-  await signInContext(context,app,'editor',{roles:['Editor']});
-  const page=await context.newPage(),errors=[],failures=[],requests=[];
-  page.on('pageerror',e=>errors.push(e.message));
-  page.on('response',r=>{if(r.status()>=400)failures.push({url:r.url(),status:r.status()});});
-  page.on('request',r=>{if(r.method()==='POST'&&(r.url().includes('/_portal/modal-form-template-path')||r.url().includes('/_services/')))requests.push({path:new URL(r.url()).pathname,body:r.url().includes('/_portal/')?Object.fromEntries(new URLSearchParams(r.postData())):r.postDataJSON()});});
-  await page.goto(app.url+'/?id='+parentId);
-  await page.getByLabel('Parent name',{exact:true}).fill('Unsaved parent edit');
+  const context = await browser.newContext();
+  await signInContext(context, app, 'editor', { roles: ['Editor'] });
+  const page = await context.newPage(),
+    errors = [],
+    failures = [],
+    requests = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('response', (r) => {
+    if (r.status() >= 400) failures.push({ url: r.url(), status: r.status() });
+  });
+  page.on('request', (r) => {
+    if (
+      r.method() === 'POST' &&
+      (r.url().includes('/_portal/modal-form-template-path') || r.url().includes('/_services/'))
+    )
+      requests.push({
+        path: new URL(r.url()).pathname,
+        body: r.url().includes('/_portal/') ? Object.fromEntries(new URLSearchParams(r.postData())) : r.postDataJSON(),
+      });
+  });
+  await page.goto(app.url + '/?id=' + parentId);
+  await page.getByLabel('Parent name', { exact: true }).fill('Unsaved parent edit');
   // Native subgrid: rows load from the subgrid data service after the shell renders.
-  const row=id=>page.locator('#Children .view-grid tr[data-id="'+id+'"]');
+  const row = (id) => page.locator('#Children .view-grid tr[data-id="' + id + '"]');
   await row(pendingId).waitFor();
-  assert.equal(await page.evaluate(()=>window.gridLoads),1);
-  assert.equal(await row(acceptedId).locator('.edit-link').count(),0);
-  assert.equal(await row(acceptedId).locator('.delete-link').count(),0);
+  assert.equal(await page.evaluate(() => window.gridLoads), 1);
+  assert.equal(await row(acceptedId).locator('.edit-link').count(), 0);
+  assert.equal(await row(acceptedId).locator('.delete-link').count(), 0);
   await row(pendingId).locator('a.edit-link.launch-modal').click();
-  const modal=page.locator('#Children section.modal-form-edit'),frame=page.frameLocator('#Children section.modal-form-edit iframe');
-  await frame.getByLabel('Message',{exact:true}).fill('New notification message');
-  const sizes = await modal.evaluate(element => {
-    const body = element.querySelector('.modal-body'), frame = body.querySelector('iframe'), style = getComputedStyle(body);
-    return { content: body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), frame: frame.getBoundingClientRect().width, border: getComputedStyle(frame).borderLeftWidth, height: getComputedStyle(frame).height };
+  const modal = page.locator('#Children section.modal-form-edit'),
+    frame = page.frameLocator('#Children section.modal-form-edit iframe');
+  await frame.getByLabel('Message', { exact: true }).fill('New notification message');
+  const sizes = await modal.evaluate((element) => {
+    const body = element.querySelector('.modal-body'),
+      frame = body.querySelector('iframe'),
+      style = getComputedStyle(body);
+    return {
+      content: body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      frame: frame.getBoundingClientRect().width,
+      border: getComputedStyle(frame).borderLeftWidth,
+      height: getComputedStyle(frame).height,
+    };
   });
   assert.ok(Math.abs(sizes.content - sizes.frame) < 1, JSON.stringify(sizes));
   assert.equal(sizes.border, '0px');
   assert.equal(sizes.height, '700px');
-  const controlSizes = await frame.getByLabel('Message',{exact:true}).evaluate(input => [input.getBoundingClientRect().width, input.parentElement.getBoundingClientRect().width]);
+  const controlSizes = await frame
+    .getByLabel('Message', { exact: true })
+    .evaluate((input) => [input.getBoundingClientRect().width, input.parentElement.getBoundingClientRect().width]);
   assert.ok(Math.abs(controlSizes[0] - controlSizes[1]) < 1, JSON.stringify(controlSizes));
   await frame.locator('#UpdateButton').click();
   // The frame posts back, Form.aspx posts "Success" and the grid closes the dialog and refreshes.
-  await page.waitForFunction(()=>window.gridLoads>=2);
-  assert.equal(app.store.snapshot().tables.child.find(entry=>entry.childkey===pendingId).notice,'New notification message');
-  await modal.waitFor({state:'hidden'});
-  assert.equal(await page.getByLabel('Parent name',{exact:true}).inputValue(),'Unsaved parent edit');
-  const deleteModal=page.locator('#Children section.modal-delete');
+  await page.waitForFunction(() => window.gridLoads >= 2);
+  assert.equal(
+    app.store.snapshot().tables.child.find((entry) => entry.childkey === pendingId).notice,
+    'New notification message',
+  );
+  await modal.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByLabel('Parent name', { exact: true }).inputValue(), 'Unsaved parent edit');
+  const deleteModal = page.locator('#Children section.modal-delete');
   await row(pendingId).locator('a.delete-link').click();
-  await deleteModal.waitFor({state:'visible'});
-  assert.equal(app.store.snapshot().tables.child.length,3);
-  await deleteModal.getByRole('button',{name:'Cancel'}).click();
-  await deleteModal.waitFor({state:'hidden'});
-  assert.equal(app.store.snapshot().tables.child.length,3);
+  await deleteModal.waitFor({ state: 'visible' });
+  assert.equal(app.store.snapshot().tables.child.length, 3);
+  await deleteModal.getByRole('button', { name: 'Cancel' }).click();
+  await deleteModal.waitFor({ state: 'hidden' });
+  assert.equal(app.store.snapshot().tables.child.length, 3);
   await row(pendingId).locator('a.delete-link').click();
-  await deleteModal.getByRole('button',{name:'Delete'}).click();
-  await page.waitForFunction(()=>window.gridLoads>=3);
-  assert.equal(await row(pendingId).count(),0);
-  assert.equal(app.store.snapshot().tables.child.length,2);
-  assert.equal(await page.getByLabel('Parent name',{exact:true}).inputValue(),'Unsaved parent edit');
+  await deleteModal.getByRole('button', { name: 'Delete' }).click();
+  await page.waitForFunction(() => window.gridLoads >= 3);
+  assert.equal(await row(pendingId).count(), 0);
+  assert.equal(app.store.snapshot().tables.child.length, 2);
+  assert.equal(await page.getByLabel('Parent name', { exact: true }).inputValue(), 'Unsaved parent edit');
   // The dialog's form posts the modal document back (WebForms postback) with its EntityID control.
-  const saves=requests.filter(entry=>entry.path.startsWith('/_portal/modal-form-template-path'));
-  assert.equal(saves.length,1);
-  assert.equal(Object.entries(saves[0].body).find(([name])=>name.endsWith('_EntityID'))[1],pendingId);
-  assert.equal(saves[0].body.__EVENTTARGET,'ctl00$ContentContainer$MainContent$EntityFormControl$UpdateButton');
-  const deletes=requests.filter(entry=>entry.path==='/_services/entity-grid-delete/site');
-  assert.equal(deletes.length,1);
-  assert.deepEqual([deletes[0].body.LogicalName,deletes[0].body.Id],['child',pendingId]);
-  assert.equal(typeof deletes[0].body.base64SecureConfiguration,'string');
-  assert.ok(requests.filter(entry=>entry.path==='/_services/entity-subgrid-data.json/site').length>=3);
-  assert.deepEqual(errors,[]);
-  assert.deepEqual(failures,[]);
+  const saves = requests.filter((entry) => entry.path.startsWith('/_portal/modal-form-template-path'));
+  assert.equal(saves.length, 1);
+  assert.equal(Object.entries(saves[0].body).find(([name]) => name.endsWith('_EntityID'))[1], pendingId);
+  assert.equal(saves[0].body.__EVENTTARGET, 'ctl00$ContentContainer$MainContent$EntityFormControl$UpdateButton');
+  const deletes = requests.filter((entry) => entry.path === '/_services/entity-grid-delete/site');
+  assert.equal(deletes.length, 1);
+  assert.deepEqual([deletes[0].body.LogicalName, deletes[0].body.Id], ['child', pendingId]);
+  assert.equal(typeof deletes[0].body.base64SecureConfiguration, 'string');
+  assert.ok(requests.filter((entry) => entry.path === '/_services/entity-subgrid-data.json/site').length >= 3);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(failures, []);
 });

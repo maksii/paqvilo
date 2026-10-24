@@ -3,100 +3,166 @@
  * native forms post the page back (__doPostBack) unless the project selects the JSON endpoint
  * with observed.nativeFormTransport: json.
  */
-export const nativeFormTransport = (observed) => observed?.nativeFormTransport === 'json' ? 'json' : 'postback';
+export const nativeFormTransport = (observed) => (observed?.nativeFormTransport === 'json' ? 'json' : 'postback');
 
 /** Source-derived WebForms names shared by rendering and postback decoding. */
-export const compactNativeControlId = (value) => String(value ?? "")
-  .replace(/[{}]/g, "")
-  .toLowerCase()
-  .replace(/-/g, "")
-  .replace(/[^A-Za-z0-9_]/g, "_");
+export const compactNativeControlId = (value) =>
+  String(value ?? '')
+    .replace(/[{}]/g, '')
+    .toLowerCase()
+    .replace(/-/g, '')
+    .replace(/[^A-Za-z0-9_]/g, '_');
 
 export function nativeFormControlIds(kind, id, { modal = false, pageControl = false } = {}) {
   const N = compactNativeControlId(id);
   // Legacy ASPX page templates nest the content master in the site master: the page controls sit
-  // under ctl00$ctl00$ (live bound-entityform and bound-webform pages).
-  const prefix = "ctl00$ctl00$ContentContainer$MainContent$EntityControls$";
-  if (kind === "webform") return pageControl
-    ? { wrapper: "WebFormControl", panel: "WebFormPanel", view: "EntityFormView", names: `${prefix}WebFormControl$EntityFormView$`, buttons: `${prefix}WebFormControl$` }
-    : { wrapper: `WebFormControl_${N}`, panel: "WebFormPanel", view: "EntityFormView", names: `ctl00$ContentContainer$WebFormControl_${N}$EntityFormView$`, buttons: `ctl00$ContentContainer$WebFormControl_${N}$` };
-  if (kind === "entityform") return modal || pageControl
-    ? { wrapper: "EntityFormControl", panel: "EntityFormPanel", view: "EntityFormControl_EntityFormView", names: `${pageControl ? prefix : "ctl00$ContentContainer$MainContent$"}EntityFormControl$EntityFormControl_EntityFormView$`, buttons: `${pageControl ? prefix : "ctl00$ContentContainer$MainContent$"}EntityFormControl$` }
-    : { wrapper: `EntityFormControl_${N}`, panel: "EntityFormPanel", view: `EntityFormControl_${N}_EntityFormView`, names: `ctl00$ContentContainer$EntityFormControl_${N}$EntityFormControl_${N}_EntityFormView$`, buttons: `ctl00$ContentContainer$EntityFormControl_${N}$` };
-  throw new TypeError("Unknown native form kind");
+  // under ctl00$ctl00$.
+  const prefix = 'ctl00$ctl00$ContentContainer$MainContent$EntityControls$';
+  if (kind === 'webform')
+    return pageControl
+      ? {
+          wrapper: 'WebFormControl',
+          panel: 'WebFormPanel',
+          view: 'EntityFormView',
+          names: `${prefix}WebFormControl$EntityFormView$`,
+          buttons: `${prefix}WebFormControl$`,
+        }
+      : {
+          wrapper: `WebFormControl_${N}`,
+          panel: 'WebFormPanel',
+          view: 'EntityFormView',
+          names: `ctl00$ContentContainer$WebFormControl_${N}$EntityFormView$`,
+          buttons: `ctl00$ContentContainer$WebFormControl_${N}$`,
+        };
+  if (kind === 'entityform')
+    return modal || pageControl
+      ? {
+          wrapper: 'EntityFormControl',
+          panel: 'EntityFormPanel',
+          view: 'EntityFormControl_EntityFormView',
+          names: `${pageControl ? prefix : 'ctl00$ContentContainer$MainContent$'}EntityFormControl$EntityFormControl_EntityFormView$`,
+          buttons: `${pageControl ? prefix : 'ctl00$ContentContainer$MainContent$'}EntityFormControl$`,
+        }
+      : {
+          wrapper: `EntityFormControl_${N}`,
+          panel: 'EntityFormPanel',
+          view: `EntityFormControl_${N}_EntityFormView`,
+          names: `ctl00$ContentContainer$EntityFormControl_${N}$EntityFormControl_${N}_EntityFormView$`,
+          buttons: `ctl00$ContentContainer$EntityFormControl_${N}$`,
+        };
+  throw new TypeError('Unknown native form kind');
 }
 
 export class NativePostbackError extends Error {
   constructor(message) {
     super(message);
-    this.name = "NativePostbackError";
-    this.code = "InvalidNativePostback";
+    this.name = 'NativePostbackError';
+    this.code = 'InvalidNativePostback';
     this.status = 400;
   }
 }
 
-const invalid = (message) => { throw new NativePostbackError(message); };
-const dangerous = new Set(["__proto__", "prototype", "constructor"]);
+const invalid = (message) => {
+  throw new NativePostbackError(message);
+};
+const dangerous = new Set(['__proto__', 'prototype', 'constructor']);
 // "tab": an auto-generated step's Next/Previous (no save; actionIndex names the tab to show).
-const actions = new Set(["submit", "previous", "delete", "deactivate", "activate", "tab"]);
+const actions = new Set(['submit', 'previous', 'delete', 'deactivate', 'activate', 'tab']);
 
 /**
  * Mirage's own __VIEWSTATE payload: an auto-generated step form keeps the tab index and the
  * earlier tabs' posted values in the page's hidden field, as the platform keeps them in its
  * ViewState. The value is client-supplied and bounded; only string values of safe names survive.
  */
-export const encodeNativeViewState = (state) => "/wE" + Buffer.from(JSON.stringify({ v: 1, ...state })).toString("base64");
+export const encodeNativeViewState = (state) =>
+  '/wE' + Buffer.from(JSON.stringify({ v: 1, ...state })).toString('base64');
 /**
  * The anti-forgery key a page's __VIEWSTATE carries (k), as ASP.NET binds ViewState to the
  * visitor (ViewStateUserKey): a WebForms postback then posts the page's own fields only, without
- * a separate __RequestVerificationToken (live postback bodies). Null for any other value.
+ * a separate __RequestVerificationToken. Null for any other value.
  */
 export function nativeViewStateKey(text) {
-  if (typeof text !== "string" || text.length > 262144 || !text.startsWith("/wE")) return null;
+  if (typeof text !== 'string' || text.length > 262144 || !text.startsWith('/wE')) return null;
   try {
-    const parsed = JSON.parse(Buffer.from(text.slice(3), "base64").toString("utf8"));
-    return parsed && parsed.v === 1 && typeof parsed.k === "string" && parsed.k ? parsed.k : null;
-  } catch { return null; }
+    const parsed = JSON.parse(Buffer.from(text.slice(3), 'base64').toString('utf8'));
+    return parsed && parsed.v === 1 && typeof parsed.k === 'string' && parsed.k ? parsed.k : null;
+  } catch {
+    return null;
+  }
 }
 export function decodeNativeViewState(text) {
-  if (typeof text !== "string" || text.length > 262144 || !text.startsWith("/wE")) return null;
+  if (typeof text !== 'string' || text.length > 262144 || !text.startsWith('/wE')) return null;
   let parsed;
-  try { parsed = JSON.parse(Buffer.from(text.slice(3), "base64").toString("utf8")); } catch { return null; }
-  if (!parsed || typeof parsed !== "object" || parsed.v !== 1 || typeof parsed.form !== "string") return null;
+  try {
+    parsed = JSON.parse(Buffer.from(text.slice(3), 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || parsed.v !== 1 || typeof parsed.form !== 'string') return null;
   const values = {};
-  for (const [key, value] of Object.entries(parsed.values && typeof parsed.values === "object" ? parsed.values : {}))
-    if (typeof value === "string" && /^[a-z][\w]*$/i.test(key) && !dangerous.has(key)) values[key] = value;
-  return { form: parsed.form, autoStep: Number.isInteger(parsed.autoStep) && parsed.autoStep >= 0 ? parsed.autoStep : 0, values };
+  for (const [key, value] of Object.entries(parsed.values && typeof parsed.values === 'object' ? parsed.values : {}))
+    if (typeof value === 'string' && /^[a-z][\w]*$/i.test(key) && !dangerous.has(key)) values[key] = value;
+  return {
+    form: parsed.form,
+    autoStep: Number.isInteger(parsed.autoStep) && parsed.autoStep >= 0 ? parsed.autoStep : 0,
+    values,
+  };
 }
 
 /**
  * The caller supplies only fields and actions resolved for a rendered component.
  * Record, step, identity and permission context remain server-owned.
  */
-export function nativeFormPostbackDescriptor({ kind, formId, fields = [], actions: declaredActions = [], modal = false, pageControl = false }) {
-  if (typeof formId !== "string" || !formId) invalid("Native form identity required");
-  if (!Array.isArray(fields) || !Array.isArray(declaredActions)) invalid("Native form fields and actions must be arrays");
+export function nativeFormPostbackDescriptor({
+  kind,
+  formId,
+  fields = [],
+  actions: declaredActions = [],
+  modal = false,
+  pageControl = false,
+}) {
+  if (typeof formId !== 'string' || !formId) invalid('Native form identity required');
+  if (!Array.isArray(fields) || !Array.isArray(declaredActions))
+    invalid('Native form fields and actions must be arrays');
   const ids = nativeFormControlIds(kind, formId, { modal, pageControl });
   const names = new Set();
   const boundFields = [];
   for (const field of fields) {
-    if (!field || typeof field.name !== "string" || !field.name || dangerous.has(field.name)) invalid("Invalid declared native form field");
+    if (!field || typeof field.name !== 'string' || !field.name || dangerous.has(field.name))
+      invalid('Invalid declared native form field');
     if (field.readOnly || field.disabled || field.ownerHidden) continue;
     const wireName = ids.names + field.name;
     // A column placed on the form more than once renders (and posts) only its first cell.
     if (names.has(wireName)) continue;
     names.add(wireName);
-    boundFields.push({ name: field.name, wireName, multiple: field.multiple === true, ...(field.control === 'checkbox' || field.type === 'checkbox' ? { checkbox: true } : {}) });
+    boundFields.push({
+      name: field.name,
+      wireName,
+      multiple: field.multiple === true,
+      ...(field.control === 'checkbox' || field.type === 'checkbox' ? { checkbox: true } : {}),
+    });
   }
   const targets = new Set();
   const boundActions = declaredActions.map((action) => {
-    if (!action || typeof action.button !== "string" || !action.button || action.button.includes("$") || !actions.has(action.action)) invalid("Invalid declared native form action");
-    if (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0)) invalid("Invalid declared native action index");
+    if (
+      !action ||
+      typeof action.button !== 'string' ||
+      !action.button ||
+      action.button.includes('$') ||
+      !actions.has(action.action)
+    )
+      invalid('Invalid declared native form action');
+    if (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0))
+      invalid('Invalid declared native action index');
     // Auto-generated step buttons are named inside the view (ids.names), the others after the control.
     const target = (action.view ? ids.names : ids.buttons) + action.button;
-    if (targets.has(target)) invalid("Ambiguous declared native form action");
+    if (targets.has(target)) invalid('Ambiguous declared native form action');
     targets.add(target);
-    return { target, action: action.action, ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}) };
+    return {
+      target,
+      action: action.action,
+      ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}),
+    };
   });
   return { kind, formId, ids, fields: boundFields, actions: boundActions };
 }
@@ -109,44 +175,72 @@ export function nativeFormPostbackDescriptor({ kind, formId, fields = [], action
  * Opaque state/token fields and controls belonging to other forms are not copied.
  */
 export function parseNativePostback(entries, descriptors) {
-  if (!entries || typeof entries[Symbol.iterator] !== "function" || !Array.isArray(descriptors)) invalid("Native postback entries and descriptors required");
+  if (!entries || typeof entries[Symbol.iterator] !== 'function' || !Array.isArray(descriptors))
+    invalid('Native postback entries and descriptors required');
   const posted = new Map();
   let entryCount = 0;
   for (const pair of entries) {
-    if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "string") invalid("Native postback requires textual entries");
+    if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || typeof pair[1] !== 'string')
+      invalid('Native postback requires textual entries');
     const values = posted.get(pair[0]) ?? [];
     values.push(pair[1]);
     posted.set(pair[0], values);
     entryCount++;
   }
-  const targets = posted.get("__EVENTTARGET") ?? [];
-  if (targets.length !== 1) invalid("One native postback target required");
+  const targets = posted.get('__EVENTTARGET') ?? [];
+  if (targets.length !== 1) invalid('One native postback target required');
   // A WebForms submit button (an auto-generated step's Next) posts an empty __EVENTTARGET and
   // its own name=value pair; the posted button name is the target then.
   if (!targets[0]) {
-    const buttons = descriptors.flatMap((descriptor) => (descriptor?.actions ?? []).map((action) => action?.target)).filter((target) => posted.has(target));
-    if (buttons.length !== 1) invalid("One native postback target required");
+    const buttons = descriptors
+      .flatMap((descriptor) => (descriptor?.actions ?? []).map((action) => action?.target))
+      .filter((target) => posted.has(target));
+    if (buttons.length !== 1) invalid('One native postback target required');
     targets[0] = buttons[0];
   }
   const matches = descriptors.flatMap((descriptor) => {
-    if (!descriptor || !Array.isArray(descriptor.actions) || !Array.isArray(descriptor.fields)) invalid("Invalid native postback descriptor");
-    if (!["entityform", "webform"].includes(descriptor.kind) || typeof descriptor.formId !== "string" || !descriptor.formId) invalid("Invalid native postback identity");
+    if (!descriptor || !Array.isArray(descriptor.actions) || !Array.isArray(descriptor.fields))
+      invalid('Invalid native postback descriptor');
+    if (
+      !['entityform', 'webform'].includes(descriptor.kind) ||
+      typeof descriptor.formId !== 'string' ||
+      !descriptor.formId
+    )
+      invalid('Invalid native postback identity');
     const fieldNames = new Set();
     const logicalNames = new Set();
     for (const field of descriptor.fields) {
-      if (!field || typeof field.name !== "string" || !field.name || dangerous.has(field.name) || typeof field.wireName !== "string" || !field.wireName || fieldNames.has(field.wireName) || logicalNames.has(field.name)) invalid("Invalid or ambiguous native postback field");
+      if (
+        !field ||
+        typeof field.name !== 'string' ||
+        !field.name ||
+        dangerous.has(field.name) ||
+        typeof field.wireName !== 'string' ||
+        !field.wireName ||
+        fieldNames.has(field.wireName) ||
+        logicalNames.has(field.name)
+      )
+        invalid('Invalid or ambiguous native postback field');
       fieldNames.add(field.wireName);
       logicalNames.add(field.name);
     }
     for (const action of descriptor.actions) {
-      if (!action || typeof action.target !== "string" || !actions.has(action.action) || (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0))) invalid("Invalid native postback action");
+      if (
+        !action ||
+        typeof action.target !== 'string' ||
+        !actions.has(action.action) ||
+        (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0))
+      )
+        invalid('Invalid native postback action');
     }
-    return descriptor.actions.filter((action) => action.target === targets[0]).map((action) => ({ descriptor, action }));
+    return descriptor.actions
+      .filter((action) => action.target === targets[0])
+      .map((action) => ({ descriptor, action }));
   });
-  if (matches.length !== 1) invalid("Native postback target is unknown or ambiguous");
+  if (matches.length !== 1) invalid('Native postback target is unknown or ambiguous');
   const { descriptor, action } = matches[0];
-  const argumentsPosted = posted.get("__EVENTARGUMENT") ?? [];
-  if (argumentsPosted.length > 1) invalid("Ambiguous native postback argument");
+  const argumentsPosted = posted.get('__EVENTARGUMENT') ?? [];
+  if (argumentsPosted.length > 1) invalid('Ambiguous native postback argument');
   const values = {};
   let consumed = targets.length + argumentsPosted.length + (posted.has(targets[0]) ? posted.get(targets[0]).length : 0);
   for (const field of descriptor.fields) {
@@ -155,18 +249,19 @@ export function parseNativePostback(entries, descriptors) {
       if (field.checkbox === true) values[field.name] = 'false';
       continue;
     }
-    if (!field.multiple && found.length !== 1) invalid("Ambiguous scalar native form value");
-    if (dangerous.has(field.name)) invalid("Invalid native form field");
+    if (!field.multiple && found.length !== 1) invalid('Ambiguous scalar native form value');
+    if (dangerous.has(field.name)) invalid('Invalid native form field');
     // ASP.NET checkbox post data is a presence flag, not a Boolean text parser.
     // A custom non-empty value still means checked; radio/select values stay textual.
-    values[field.name] = field.checkbox === true ? (found[0] ? 'true' : 'false') : field.multiple ? [...found] : found[0];
+    values[field.name] =
+      field.checkbox === true ? (found[0] ? 'true' : 'false') : field.multiple ? [...found] : found[0];
     consumed += found.length;
   }
   return {
     kind: descriptor.kind,
     formId: descriptor.formId,
     body: { action: action.action, ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}), values },
-    eventArgument: argumentsPosted[0] ?? "",
+    eventArgument: argumentsPosted[0] ?? '',
     ignoredEntryCount: entryCount - consumed,
   };
 }
@@ -178,13 +273,22 @@ export function parseNativePostback(entries, descriptors) {
  */
 export async function multipartControls(bytes, contentType) {
   let data;
-  try { data = await new Response(bytes, { headers: { "content-type": contentType } }).formData(); }
-  catch { throw new NativePostbackError("Malformed multipart native postback"); }
+  try {
+    data = await new Response(bytes, { headers: { 'content-type': contentType } }).formData();
+  } catch {
+    throw new NativePostbackError('Malformed multipart native postback');
+  }
   const controls = new URLSearchParams();
   controls.files = [];
   for (const [name, value] of data) {
-    if (typeof value === "string") controls.append(name, value);
-    else if (value.size || value.name) controls.files.push({ field: name, name: value.name, type: value.type, content: Buffer.from(await value.arrayBuffer()).toString("base64") });
+    if (typeof value === 'string') controls.append(name, value);
+    else if (value.size || value.name)
+      controls.files.push({
+        field: name,
+        name: value.name,
+        type: value.type,
+        content: Buffer.from(await value.arrayBuffer()).toString('base64'),
+      });
   }
   return controls;
 }

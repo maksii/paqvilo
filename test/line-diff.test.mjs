@@ -29,13 +29,19 @@ function editDistance(a, b) {
 
 test('line diffs reconstruct and minimally edit deterministic duplicate-heavy inputs', () => {
   let seed = 47121;
-  const random = (max) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % max; };
+  const random = (max) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed % max;
+  };
   for (let i = 0; i < 1500; i++) {
     const a = Array.from({ length: random(25) }, () => `line ${random(6)}`);
     const b = Array.from({ length: random(25) }, () => `line ${random(6)}`);
     const hunks = diffLines(a, b);
     assert.deepEqual(apply(a, b, hunks), b);
-    assert.equal(hunks.reduce((sum, h) => sum + h.aEnd - h.aStart + h.bEnd - h.bStart, 0), editDistance(a, b));
+    assert.equal(
+      hunks.reduce((sum, h) => sum + h.aEnd - h.aStart + h.bEnd - h.bStart, 0),
+      editDistance(a, b),
+    );
   }
 });
 
@@ -45,7 +51,10 @@ test('distant edits in a large template remain separate hunks', () => {
   after[1] = 'first edit';
   after[99_998] = 'last edit';
   const hunks = diffLines(before, after);
-  assert.deepEqual(hunks, [{ aStart: 1, aEnd: 2, bStart: 1, bEnd: 2 }, { aStart: 99_998, aEnd: 99_999, bStart: 99_998, bEnd: 99_999 }]);
+  assert.deepEqual(hunks, [
+    { aStart: 1, aEnd: 2, bStart: 1, bEnd: 2 },
+    { aStart: 99_998, aEnd: 99_999, bStart: 99_998, bEnd: 99_999 },
+  ]);
   assert.deepEqual(apply(before, after, hunks), after);
 });
 

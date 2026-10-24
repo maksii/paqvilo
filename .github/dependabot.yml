@@ -11,14 +11,38 @@ updates:
       actions:
         patterns: ['*']
   - package-ecosystem: npm
-    directories: ['/', '/mirage']
+    directories:
+      - /
+      - /mirage
+      - /examples/company-operations
+      - /mirage/test-sdk/tds
+      - /mirage/test-sdk/dynamics-web-api
+      - /mirage/test-sdk/cert-auth
     target-branch: main
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore
+    # These dependencies reproduce the online platform. Review vulnerabilities without
+    # proposing routine version upgrades that would change emulator behavior.
+    ignore:
+      - dependency-name: jquery
+      - dependency-name: moment
     groups:
-      runtime:
+      tooling:
+        patterns: ['*']
+        update-types: [minor, patch]
+  - package-ecosystem: nuget
+    directories:
+      - /mirage/test-sdk/cert-auth/Gate
+      - /mirage/test-sdk/serviceclient/Gate
+      - /mirage/test-sdk/webapi-samples/Gate
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      sdk-fixtures:
         patterns: ['*']
         update-types: [minor, patch]

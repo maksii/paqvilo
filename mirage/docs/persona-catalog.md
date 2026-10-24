@@ -3,6 +3,9 @@
 Catalogues describe **which contact to test and why**. Contacts, parent accounts and
 exported web-role memberships remain the identity source. Metadata never creates
 records or grants permissions. Legacy pack `personas` keeps its existing meaning.
+Additive datasets may separately opt in to materializing explicit `personaRoles`
+descriptors; see [data generation](data-packs.md). Catalogue metadata is never an
+input to that operation.
 
 ## Version 1 contract
 
@@ -15,45 +18,69 @@ helpers follow the [semver policy](../../docs/public-api.md).
 ```js
 const personaCatalog = {
   version: 1,
-  groups: [{ id: 'review', label: 'Review', order: 10,
-    subgroups: [{ id: 'own', label: 'Own records' }] }],
-  personas: [{
-    key: 'reviewer-own', contactId: '11111111-1111-4111-8111-111111111111',
-    label: 'Reviewer with own records', group: 'review', subgroup: 'own',
-    tags: ['reviewer', 'own'], description: 'Reviews own synthetic records.',
-    order: 10, startPath: '/reviews/', context: 'alternate',
-    extensions: { 'my-pack:fixture': { revision: 2 } },
-  }],
-  contexts: [{
-    id: 'alternate', label: 'Alternate configuration',
-    deploymentProfile: { profile: 'test', enabled: { pages: true } },
-    environmentVariables: { sample_Enabled: true },
-    portalOverrides: { snippets: { 'Home/Welcome': 'Local fixture' },
-      settings: { 'Feature/Preview': 'true' } },
-    browser: { locale: 'en-GB', timezoneId: 'Europe/London',
-      viewport: { width: 1280, height: 800 }, colorScheme: 'light' },
-  }],
-  scenarios: [{ id: 'review-own', label: 'Review own records', group: 'review',
-    persona: 'reviewer-own', context: 'alternate', startPath: '/reviews/' }],
+  groups: [{ id: 'review', label: 'Review', order: 10, subgroups: [{ id: 'own', label: 'Own records' }] }],
+  personas: [
+    {
+      key: 'reviewer-own',
+      contactId: '11111111-1111-4111-8111-111111111111',
+      label: 'Reviewer with own records',
+      group: 'review',
+      subgroup: 'own',
+      tags: ['reviewer', 'own'],
+      description: 'Reviews own synthetic records.',
+      order: 10,
+      startPath: '/reviews/',
+      context: 'alternate',
+      extensions: { 'my-pack:fixture': { revision: 2 } },
+    },
+  ],
+  contexts: [
+    {
+      id: 'alternate',
+      label: 'Alternate configuration',
+      deploymentProfile: { profile: 'test', enabled: { pages: true } },
+      environmentVariables: { sample_Enabled: true },
+      portalOverrides: { snippets: { 'Home/Welcome': 'Local fixture' }, settings: { 'Feature/Preview': 'true' } },
+      browser: {
+        locale: 'en-GB',
+        timezoneId: 'Europe/London',
+        viewport: { width: 1280, height: 800 },
+        colorScheme: 'light',
+      },
+    },
+  ],
+  scenarios: [
+    {
+      id: 'review-own',
+      label: 'Review own records',
+      group: 'review',
+      persona: 'reviewer-own',
+      context: 'alternate',
+      startPath: '/reviews/',
+    },
+  ],
 };
 export default {
-  id: 'my-pack', name: 'Synthetic fixtures', description: 'Project fixtures',
+  id: 'my-pack',
+  name: 'Synthetic fixtures',
+  description: 'Project fixtures',
   matches: ({ portal }) => portal?.website?.name === 'Synthetic site',
-  personaCatalog, presets: () => ({}),
+  personaCatalog,
+  presets: () => ({}),
 };
 ```
 
-| Field | Rules |
-| --- | --- |
-| Top level | `version: 1`, required `groups`, `personas` arrays; optional `contexts`, `scenarios`. Empty arrays are valid. Unknown fields fail. |
-| IDs and keys | Lowercase letters, digits, dots, underscores, hyphens; start with a letter/digit. Unique within each collection; subgroup IDs unique within a group. |
-| Groups | Required `id`, `label` (1–60 characters); optional integer `order`, `subgroups`. Subgroups accept `id`, `label`, `order` only. Two levels maximum. |
-| Personas | Required `key`, GUID `contactId`, declared `group`; optional `label` (1–80), declared `subgroup`, `tags`, `description`, `order`, `startPath`, declared `context`, `extensions`. GUID matching ignores case/braces. |
-| Tags / description | Up to 20 lowercase alphanumeric/hyphen tags, each 1–40 characters. Plain-text description up to 500; card shows its first line. HTML is escaped. |
-| Ordering | Integer `order`, default 1000; then label and stable ID/key. Other contacts follow catalogue groups. |
-| Navigation | `startPath` starts with `/`; external URLs, protocol-relative paths, backslashes, encoded path escapes and control characters fail. Query/fragment supported. |
-| Scenarios | Required `id`, `label`, declared `group`, `persona`; optional `description`, `order`, declared `subgroup`, `context`, `preset`, `startPath`. |
-| Extensions | Personas/contexts accept namespaced keys (`my-pack:fixture`) containing finite, acyclic JSON up to 32 levels deep. Mirage returns this metadata without executing it. |
+| Field              | Rules                                                                                                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Top level          | `version: 1`, required `groups`, `personas` arrays; optional `contexts`, `scenarios`. Empty arrays are valid. Unknown fields fail.                                                                                  |
+| IDs and keys       | Lowercase letters, digits, dots, underscores, hyphens; start with a letter/digit. Unique within each collection; subgroup IDs unique within a group.                                                                |
+| Groups             | Required `id`, `label` (1–60 characters); optional integer `order`, `subgroups`. Subgroups accept `id`, `label`, `order` only. Two levels maximum.                                                                  |
+| Personas           | Required `key`, GUID `contactId`, declared `group`; optional `label` (1–80), declared `subgroup`, `tags`, `description`, `order`, `startPath`, declared `context`, `extensions`. GUID matching ignores case/braces. |
+| Tags / description | Up to 20 lowercase alphanumeric/hyphen tags, each 1–40 characters. Plain-text description up to 500; card shows its first line. HTML is escaped.                                                                    |
+| Ordering           | Integer `order`, default 1000; then label and stable ID/key. Other contacts follow catalogue groups.                                                                                                                |
+| Navigation         | `startPath` starts with `/`; external URLs, protocol-relative paths, backslashes, encoded path escapes and control characters fail. Query/fragment supported.                                                       |
+| Scenarios          | Required `id`, `label`, declared `group`, `persona`; optional `description`, `order`, declared `subgroup`, `context`, `preset`, `startPath`.                                                                        |
+| Extensions         | Personas/contexts accept namespaced keys (`my-pack:fixture`) containing finite, acyclic JSON up to 32 levels deep. Mirage returns this metadata without executing it.                                               |
 
 Contexts accept `id`, `label`, `description`, `order`, `deploymentProfile`,
 `environmentVariables`, `portalOverrides`, `preset`, `startPath`, `browser`,
@@ -158,31 +185,39 @@ other/total/skipped/diagnostics, contexts/scenarios, effective `catalog`,
 one, `personas` keeps the legacy shape. Catalogue values are local admin data; do
 not put secrets in fixture catalogues.
 
-| API | Operation |
-| --- | --- |
-| `PUT /__sim/api/persona-catalog` | `{catalog,expectedDigest}` validates/saves state metadata. |
-| `DELETE /__sim/api/persona-catalog` | `{expectedDigest}` resets state metadata. |
-| `POST /__sim/api/personas/launch` | `{personaKey}` or `{scenario}`, optional `instanceKey`, `returnUrl`; returns actual origin/path/identity/browser options and sets the local cookie. |
-| `GET /__sim/api/persona-runtimes` | Lists owned copies and the limit. |
-| `DELETE /__sim/api/persona-runtimes/<id>` | Stops/discards an owned copy. |
+| API                                       | Operation                                                                                                                                           |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT /__sim/api/persona-catalog`          | `{catalog,expectedDigest}` validates/saves state metadata.                                                                                          |
+| `DELETE /__sim/api/persona-catalog`       | `{expectedDigest}` resets state metadata.                                                                                                           |
+| `POST /__sim/api/personas/launch`         | `{personaKey}` or `{scenario}`, optional `instanceKey`, `returnUrl`; returns actual origin/path/identity/browser options and sets the local cookie. |
+| `GET /__sim/api/persona-runtimes`         | Lists owned copies and the limit.                                                                                                                   |
+| `DELETE /__sim/api/persona-runtimes/<id>` | Stops/discards an owned copy.                                                                                                                       |
 
 Writes require `x-sim-csrf`; `connectRuntime` handles it:
 
 ```js
-import {connectRuntime, createPersonaSession,
-  createPersonaBrowserContext} from 'paqvilo/mirage/testing';
-const sim = await connectRuntime({config:'./paqvilo.config.yml',site:'demo'});
+import { connectRuntime, createPersonaSession, createPersonaBrowserContext } from 'paqvilo/mirage/testing';
+const sim = await connectRuntime({ config: './paqvilo.config.yml', site: 'demo' });
 const report = await sim.personas();
 // sim.savePersonaCatalog(catalog, {expectedDigest:report.catalogDigest});
-const visitor = await sim.createSession({personaKey:'reviewer-own',instanceKey:'run-42'});
-try { await visitor.request(visitor.persona.path); }
-finally { await visitor.close(); }
+const visitor = await sim.createSession({ personaKey: 'reviewer-own', instanceKey: 'run-42' });
+try {
+  await visitor.request(visitor.persona.path);
+} finally {
+  await visitor.close();
+}
 
 const opened = await createPersonaBrowserContext(browser, {
-  origin:sim.origin,scenario:'review-own',instanceKey:'browser-run-42',
+  origin: sim.origin,
+  scenario: 'review-own',
+  instanceKey: 'browser-run-42',
 });
-try { const page = await opened.context.newPage(); await page.goto(opened.url); }
-finally { await opened.context.close(); }
+try {
+  const page = await opened.context.newPage();
+  await page.goto(opened.url);
+} finally {
+  await opened.context.close();
+}
 ```
 
 `createPersonaSession` accepts `{config,site}` or `{origin}` directly. Management
@@ -219,8 +254,8 @@ Configure the local chooser in site/default Mirage settings:
 ```yaml
 mirage:
   identityProvider:
-    newUser: auto             # auto | always | never
-    presentation: dialog      # page | dialog (same-origin presentation)
+    newUser: auto # auto | always | never
+    presentation: dialog # page | dialog (same-origin presentation)
     title: Choose a test operator
     description: Select the identity for this browser session.
     accentColor: '#315bd5'

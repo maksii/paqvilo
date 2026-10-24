@@ -1,45 +1,39 @@
-import { portalField } from "./importer.mjs";
-import { accountWebRoleIds } from "./platform-changes.mjs";
+import { portalField } from './importer.mjs';
+import { accountWebRoleIds } from './platform-changes.mjs';
+import { guidKey } from './dataverse-values.mjs';
 
 const id = (value) =>
-  String(value?.id ?? value ?? "")
-    .replace(/[{}]/g, "")
+  guidKey(value?.id ?? value) ??
+  String(value?.id ?? value ?? '')
+    .replace(/[{}]/g, '')
     .toLowerCase();
-const scalar = (value) =>
-  value && typeof value === "object" ? (value.id ?? value.value) : value;
-const truth = (value) =>
-  value === true ||
-  value === 1 ||
-  (typeof value === "string" && value.toLowerCase() === "true");
+const scalar = (value) => (value && typeof value === 'object' ? (value.id ?? value.value) : value);
+const truth = (value) => value === true || value === 1 || (typeof value === 'string' && value.toLowerCase() === 'true');
 const operations = [
-  ["read", "read"],
-  ["create", "create"],
-  ["write", "update"],
-  ["delete", "delete"],
-  ["append", "append"],
-  ["appendto", "appendTo"],
+  ['read', 'read'],
+  ['create', 'create'],
+  ['write', 'update'],
+  ['delete', 'delete'],
+  ['append', 'append'],
+  ['appendto', 'appendTo'],
 ];
 const scopes = {
-  756150000: "global",
-  756150001: "contact",
-  756150002: "account",
-  756150003: "parent",
-  756150004: "self",
+  756150000: 'global',
+  756150001: 'contact',
+  756150002: 'account',
+  756150003: 'parent',
+  756150004: 'self',
 };
 const clone = (value) => structuredClone(value);
 
 export function portalWebRoles(portal) {
   return (portal.records ?? [])
-    .filter(
-      (record) =>
-        record.kind === "webrole" &&
-        Number(scalar(portalField(record, "statecode", 0))) !== 1,
-    )
+    .filter((record) => record.kind === 'webrole' && Number(scalar(portalField(record, 'statecode', 0))) !== 1)
     .map((record) => ({
       id: id(record.id),
-      name: record.name ?? portalField(record, "name"),
-      authenticated: truth(portalField(record, "authenticatedusersrole")),
-      anonymous: truth(portalField(record, "anonymoususersrole")),
+      name: record.name ?? portalField(record, 'name'),
+      authenticated: truth(portalField(record, 'authenticatedusersrole')),
+      anonymous: truth(portalField(record, 'anonymoususersrole')),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -48,16 +42,12 @@ export function membershipsForRoles(portal, personas) {
   const roles = portalWebRoles(portal),
     byName = new Map(roles.map((role) => [role.name, role.id]));
   for (const role of roles)
-    if (roles.filter((candidate) => candidate.name === role.name).length > 1)
-      byName.set(role.name, null);
+    if (roles.filter((candidate) => candidate.name === role.name).length > 1) byName.set(role.name, null);
   const memberships = [];
   for (const persona of personas)
     for (const name of persona.roles ?? []) {
       const roleId = byName.get(name);
-      if (!roleId)
-        throw new Error(
-          `Web role '${name}' is absent or ambiguous in the selected portal export.`,
-        );
+      if (!roleId) throw new Error(`Web role '${name}' is absent or ambiguous in the selected portal export.`);
       memberships.push({
         contactId: id(persona.contactId ?? persona.id),
         roleId,
@@ -71,7 +61,7 @@ function membershipModel(portal, state) {
     roles = new Map(webRoles.map((role) => [role.id, role]));
   const contacts = new Map(
     (state.tables?.contact ?? []).map((contact) => [
-      id(contact.contactid),
+      id(contact[state.mappings?.contact?.idColumn ?? 'contactid']),
       contact,
     ]),
   );
@@ -81,21 +71,20 @@ function membershipModel(portal, state) {
   for (const assignment of state.simulator?.contactRoles ?? []) {
     const contactId = id(assignment.contactId),
       roleId = id(assignment.roleId),
-      key = contactId + ":" + roleId;
+      key = contactId + ':' + roleId;
     if (
       !contacts.has(contactId) ||
       Number(scalar(contacts.get(contactId)?.statecode) ?? 0) !== 0 ||
       !roles.has(roleId)
     ) {
       diagnostics.push({
-        code: "PERSONA_MEMBERSHIP_UNRESOLVED",
+        code: 'PERSONA_MEMBERSHIP_UNRESOLVED',
         contactId,
         roleId,
         message:
-          !contacts.has(contactId) ||
-          Number(scalar(contacts.get(contactId)?.statecode) ?? 0) !== 0
-            ? "Assigned contact does not exist or is inactive in local data."
-            : "Assigned web role does not exist in the selected portal export.",
+          !contacts.has(contactId) || Number(scalar(contacts.get(contactId)?.statecode) ?? 0) !== 0
+            ? 'Assigned contact does not exist or is inactive in local data.'
+            : 'Assigned web role does not exist in the selected portal export.',
       });
       continue;
     }
@@ -113,63 +102,39 @@ function membershipModel(portal, state) {
 }
 
 /** Local contact membership resolution; browser live permissions are independent. */
-export function resolvePortalIdentity(
-  portal,
-  state,
-  selected = state.simulator?.identity ?? {},
-  suppliedModel,
-) {
+export function resolvePortalIdentity(portal, state, selected = state.simulator?.identity ?? {}, suppliedModel) {
   selected ??= {};
   const model = suppliedModel ?? membershipModel(portal, state),
     contactId = id(selected.contactId ?? selected.id),
     contact = model.contacts.get(contactId);
-  if (selected.roleSource !== "memberships") {
+  if (selected.roleSource !== 'memberships') {
     // admin is an internal storage capability; stale membership IDs are not manual grants.
-    const {
-      admin: ignoredAdmin,
-      roleIds: ignoredRoleIds,
-      ...override
-    } = clone(selected);
+    const { admin: ignoredAdmin, roleIds: ignoredRoleIds, ...override } = clone(selected);
     const roles = [...new Set(selected.roles ?? [])],
       roleIds = [];
     for (const role of roles) {
-      const matches = model.webRoles.filter(
-        (candidate) => candidate.name === role || candidate.id === id(role),
-      );
+      const matches = model.webRoles.filter((candidate) => candidate.name === role || candidate.id === id(role));
       if (matches.length === 1) roleIds.push(matches[0].id);
     }
     return {
       ...override,
-      roleSource: "override",
+      roleSource: 'override',
       roles,
       roleIds,
       diagnostics: [],
     };
   }
-  const authenticated = Boolean(
-    contact && Number(scalar(contact.statecode) ?? 0) === 0,
-  );
+  const authenticated = Boolean(contact && Number(scalar(contact.statecode) ?? 0) === 0);
   const roleIds = new Set(
-    model.webRoles
-      .filter((role) => (authenticated ? role.authenticated : role.anonymous))
-      .map((role) => role.id),
+    model.webRoles.filter((role) => (authenticated ? role.authenticated : role.anonymous)).map((role) => role.id),
   );
-  if (authenticated)
-    for (const roleId of model.membershipsByContact.get(contactId) ?? []) roleIds.add(roleId);
+  if (authenticated) for (const roleId of model.membershipsByContact.get(contactId) ?? []) roleIds.add(roleId);
   const parent = contact?.parentcustomerid ?? contact?._parentcustomerid_value;
   const parentType =
-    parent?.logical_name ??
-    contact?.[
-      "_parentcustomerid_value@Microsoft.Dynamics.CRM.lookuplogicalname"
-    ];
-  const accountId =
-    authenticated && (!parentType || parentType === "account")
-      ? id(scalar(parent)) || null
-      : null;
-  const roles = [...roleIds]
-    .map((roleId) => model.roles.get(roleId)?.name)
-    .filter(Boolean);
-  // Web roles of the persona's parent account are reported, not applied (  // lib/platform-changes.mjs accountWebRoleIds).
+    parent?.logical_name ?? contact?.['_parentcustomerid_value@Microsoft.Dynamics.CRM.lookuplogicalname'];
+  const accountId = authenticated && (!parentType || parentType === 'account') ? id(scalar(parent)) || null : null;
+  const roles = [...roleIds].map((roleId) => model.roles.get(roleId)?.name).filter(Boolean);
+  // Web roles of the persona's parent account are reported, not applied (platform-changes.mjs accountWebRoleIds).
   const accountRoles = accountId
     ? accountWebRoleIds(state, accountId).filter((roleId) => model.roles.has(roleId) && !roleIds.has(roleId))
     : [];
@@ -178,30 +143,27 @@ export function resolvePortalIdentity(
     contactId: authenticated ? contactId : null,
     accountId,
     name: authenticated
-      ? (contact.fullname ??
-          [contact.firstname, contact.lastname].filter(Boolean).join(" ")) ||
-        contactId
-      : "Anonymous",
-    fullname: authenticated ? (contact.fullname ?? "") : null,
+      ? (contact.fullname ?? [contact.firstname, contact.lastname].filter(Boolean).join(' ')) || contactId
+      : 'Anonymous',
+    fullname: authenticated ? (contact.fullname ?? '') : null,
     roles,
     roleIds: [...roleIds],
-    roleSource: "memberships",
+    roleSource: 'memberships',
     diagnostics: [
       ...model.diagnostics,
       ...(contactId && !authenticated
         ? [
             {
-              code: "PERSONA_CONTACT_UNAVAILABLE",
+              code: 'PERSONA_CONTACT_UNAVAILABLE',
               contactId,
-              message:
-                "The selected local contact is missing or inactive; anonymous permissions apply.",
+              message: 'The selected local contact is missing or inactive; anonymous permissions apply.',
             },
           ]
         : []),
       ...(accountRoles.length
         ? [
             {
-              code: "PERSONA_ACCOUNT_ROLES_NOT_APPLIED",
+              code: 'PERSONA_ACCOUNT_ROLES_NOT_APPLIED',
               contactId,
               accountId,
               roleIds: accountRoles,
@@ -216,52 +178,40 @@ export function resolvePortalIdentity(
 }
 
 function exportedPermissions(portal, { includeInactive = false } = {}) {
-  const byRole = new Map(
-    portalWebRoles(portal).map((role) => [role.id, role.name]),
-  );
+  const byRole = new Map(portalWebRoles(portal).map((role) => [role.id, role.name]));
   return (portal.records ?? [])
     .filter(
       (record) =>
-        record.kind === "tablepermission" &&
-        (includeInactive || Number(scalar(portalField(record, "statecode", 0))) !== 1),
+        record.kind === 'tablepermission' &&
+        (includeInactive || Number(scalar(portalField(record, 'statecode', 0))) !== 1),
     )
     .map((record) => {
-      const roleValues =
-        portalField(record, "entitypermission_webrole", []) ?? [];
-      const roleIds = (
-        Array.isArray(roleValues) ? roleValues : [roleValues]
-      ).map((value) =>
-        id(
-          typeof value === "object"
-            ? (value.id ?? value.adx_webroleid ?? value.mspp_webroleid)
-            : value,
-        ),
+      const roleValues = portalField(record, 'entitypermission_webrole', []) ?? [];
+      const roleIds = (Array.isArray(roleValues) ? roleValues : [roleValues]).map((value) =>
+        id(typeof value === 'object' ? (value.id ?? value.adx_webroleid ?? value.mspp_webroleid) : value),
       );
-      const scopeValue = scalar(portalField(record, "scope"));
-      const scope = scopes[scopeValue] ?? "unresolved";
+      const scopeValue = scalar(portalField(record, 'scope'));
+      const scope = scopes[scopeValue] ?? 'unresolved';
       return {
         id: id(record.id),
-        name: record.name || portalField(record, "entityname") || record.id,
-        entity: portalField(record, "entitylogicalname"),
+        name: record.name || portalField(record, 'entityname') || record.id,
+        entity: portalField(record, 'entitylogicalname'),
         scope,
         sourceScope: scopeValue,
-        operations: operations
-          .filter(([field]) => truth(portalField(record, field)))
-          .map(([, operation]) => operation),
+        operations: operations.filter(([field]) => truth(portalField(record, field))).map(([, operation]) => operation),
         roles: roleIds.map((roleId) => byRole.get(roleId) ?? roleId),
         roleIds,
-        relationshipName: ["contact", "account", "parent"].includes(scope)
+        relationshipName: ['contact', 'account', 'parent'].includes(scope)
           ? portalField(record, `${scope}relationship`)
           : undefined,
-        parentPermissionId:
-          id(portalField(record, "parententitypermission")) || null,
+        parentPermissionId: id(portalField(record, 'parententitypermission')) || null,
         imported: true,
         provenance: {
-          type: "portal-export",
+          type: 'portal-export',
           file: record.file ?? record._file ?? record.source?.path ?? null,
           recordId: record.id,
         },
-        enabled: Number(scalar(portalField(record, "statecode", 0))) !== 1,
+        enabled: Number(scalar(portalField(record, 'statecode', 0))) !== 1,
       };
     });
 }
@@ -277,7 +227,7 @@ function descriptor(rel, permission, target, mappings) {
  */
 export function resolveScopedRelationship(rel, permission, target, mappings = {}) {
   if (!rel) return null;
-  if (rel.type === "one-to-many") {
+  if (rel.type === 'one-to-many') {
     if (rel.referencingEntity === permission.entity && rel.referencedEntity === target)
       return {
         field: rel.referencingAttribute,
@@ -297,15 +247,15 @@ export function resolveScopedRelationship(rel, permission, target, mappings = {}
         },
       };
   }
-  if (rel.type === "many-to-many") {
+  if (rel.type === 'many-to-many') {
     const first = rel.entity1 === permission.entity && rel.entity2 === target,
       second = rel.entity2 === permission.entity && rel.entity1 === target;
     if (first || second)
       return {
         descriptor: {
           entity: target,
-          from: mappings[permission.entity]?.idColumn ?? permission.entity + "id",
-          to: mappings[target]?.idColumn ?? target + "id",
+          from: mappings[permission.entity]?.idColumn ?? permission.entity + 'id',
+          to: mappings[target]?.idColumn ?? target + 'id',
           intersect: {
             entity: rel.intersectEntity,
             from: first ? rel.attribute1 : rel.attribute2,
@@ -323,22 +273,17 @@ export function buildPermissionModel(
   state,
   {
     relationships = {},
-    source = state.simulator?.permissionSource ?? "configured",
+    source = state.simulator?.permissionSource ?? 'configured',
     observed = portal.observed ?? {},
   } = {},
 ) {
-  if (!["configured", "exported", "combined"].includes(source))
-    throw new Error("Unknown permissionSource.");
+  if (!['configured', 'exported', 'combined'].includes(source)) throw new Error('Unknown permissionSource.');
   const identityModel = membershipModel(portal, state),
     configured = clone(state.permissions ?? []),
     exported = exportedPermissions(portal);
-  const existing = new Map(
-    configured
-      .filter((rule) => rule.imported)
-      .map((rule) => [id(rule.id), rule]),
-  );
+  const existing = new Map(configured.filter((rule) => rule.imported).map((rule) => [id(rule.id), rule]));
   const permissions =
-    source === "configured"
+    source === 'configured'
       ? configured
       : exported.map((rule) => {
           const merged = { ...existing.get(rule.id), ...rule };
@@ -350,42 +295,42 @@ export function buildPermissionModel(
           delete merged.ownRoleIds;
           return merged;
         });
-  if (source === "combined")
+  if (source === 'combined')
     permissions.push(
       ...configured
         .filter((rule) => !rule.imported)
         .map((rule) => ({
           ...rule,
-          provenance: rule.provenance ?? { type: "local-configuration" },
+          provenance: rule.provenance ?? { type: 'local-configuration' },
         })),
     );
   const byId = new Map(permissions.map((rule) => [id(rule.id), rule])),
-    sourceDefinitions = new Map(exportedPermissions(portal, { includeInactive: true }).map(rule => [rule.id, rule])),
-    inactiveSourceParents = new Map([...sourceDefinitions.values()]
-      .filter(rule => rule.enabled === false).map(rule => [rule.id, rule])),
+    sourceDefinitions = new Map(exportedPermissions(portal, { includeInactive: true }).map((rule) => [rule.id, rule])),
+    inactiveSourceParents = new Map(
+      [...sourceDefinitions.values()].filter((rule) => rule.enabled === false).map((rule) => [rule.id, rule]),
+    ),
     diagnostics = [...identityModel.diagnostics],
     visiting = new Set(),
     visited = new Set();
   for (const record of portal.records ?? [])
     if (
-      Number(portalField(record, "statecode", 0)) !== 1 &&
-      portalField(record, "tablename") &&
-      portalField(record, "columnpermissionprofile_webrole") &&
-      portalField(record, "allcolumnpermissions") == null
+      Number(portalField(record, 'statecode', 0)) !== 1 &&
+      portalField(record, 'tablename') &&
+      portalField(record, 'columnpermissionprofile_webrole') &&
+      portalField(record, 'allcolumnpermissions') == null
     )
       diagnostics.push({
-        code: "COLUMN_PERMISSION_DEFAULT_INHERITED",
+        code: 'COLUMN_PERMISSION_DEFAULT_INHERITED',
         id: record.id,
-        entity: portalField(record, "tablename"),
+        entity: portalField(record, 'tablename'),
         file: record.file ?? record._file ?? record.source?.path ?? null,
         message:
-          "The optional All Column Permissions setting is empty. Unspecified columns retain table-level operations; explicit child-column restrictions and Web API enabled fields still apply.",
+          'The optional All Column Permissions setting is empty. Unspecified columns retain table-level operations; explicit child-column restrictions and Web API enabled fields still apply.',
       });
   // The first reason is the root cause; later checks add context without hiding it.
   const disable = (rule, code, message) => {
     if (rule.enabled === false && rule.disabledReason && rule.disabledCode) {
-      if (!(rule.disabledReasons ??= [rule.disabledReason]).includes(message))
-        rule.disabledReasons.push(message);
+      if (!(rule.disabledReasons ??= [rule.disabledReason]).includes(message)) rule.disabledReasons.push(message);
       return;
     }
     rule.enabled = false;
@@ -394,29 +339,23 @@ export function buildPermissionModel(
     diagnostics.push({ code, id: rule.id, entity: rule.entity, message });
   };
   // Child (parent-scope) grants inherit their parent's roles (Microsoft: "These roles are
-  // inherited from the parent table permission"; legacy runtime ignored child links).
+  // inherited from the parent table permission").
   // settings.childPermissionRoles = "intersect" keeps only roles also on the parent.
-  const childRoleMode =
-    state.settings?.childPermissionRoles === "intersect" ? "intersect" : "inherit";
+  const childRoleMode = state.settings?.childPermissionRoles === 'intersect' ? 'intersect' : 'inherit';
   const counts = new Map();
-  for (const rule of permissions)
-    counts.set(id(rule.id), (counts.get(id(rule.id)) ?? 0) + 1);
+  for (const rule of permissions) counts.set(id(rule.id), (counts.get(id(rule.id)) ?? 0) + 1);
   for (const rule of permissions)
     if (counts.get(id(rule.id)) > 1)
       disable(
         rule,
-        "PERMISSION_ID_AMBIGUOUS",
-        "More than one permission source defines this ID. Resolve the conflicting export or local definitions before enabling it.",
+        'PERMISSION_ID_AMBIGUOUS',
+        'More than one permission source defines this ID. Resolve the conflicting export or local definitions before enabling it.',
       );
   function compile(rule) {
     const key = id(rule.id);
     if (visited.has(key)) return;
     if (visiting.has(key)) {
-      disable(
-        rule,
-        "PERMISSION_PARENT_CYCLE",
-        "The permission hierarchy contains a cycle.",
-      );
+      disable(rule, 'PERMISSION_PARENT_CYCLE', 'The permission hierarchy contains a cycle.');
       return;
     }
     visiting.add(key);
@@ -424,27 +363,21 @@ export function buildPermissionModel(
     delete rule.observedOrphanParent;
     if (rule.imported && !Array.isArray(rule.roleIds))
       rule.roleIds = (rule.roles ?? []).flatMap((name) => {
-        const matches = identityModel.webRoles.filter(
-          (role) => role.name === name,
-        );
+        const matches = identityModel.webRoles.filter((role) => role.name === name);
         return matches.length === 1 ? [matches[0].id] : [];
       });
-    if (!rule.imported && rule.scope === "parent") {
+    if (!rule.imported && rule.scope === 'parent') {
       const parent = byId.get(id(rule.parentPermissionId));
       if (!parent)
         disable(
           rule,
-          "PERMISSION_PARENT_MISSING",
-          "A local parent grant must reference an existing parent permission.",
+          'PERMISSION_PARENT_MISSING',
+          'A local parent grant must reference an existing parent permission.',
         );
       else {
         compile(parent);
         if (parent.enabled === false)
-          disable(
-            rule,
-            "PERMISSION_PARENT_DISABLED",
-            "The parent permission is disabled or unresolved.",
-          );
+          disable(rule, 'PERMISSION_PARENT_DISABLED', 'The parent permission is disabled or unresolved.');
         if (!rule.roles?.length) {
           rule.roles = clone(parent.roles ?? []);
           rule.inheritedRoles = true;
@@ -457,88 +390,83 @@ export function buildPermissionModel(
         )
           disable(
             rule,
-            "PERMISSION_RELATIONSHIP_UNRESOLVED",
-            "The local child relationship must connect to its parent permission table.",
+            'PERMISSION_RELATIONSHIP_UNRESOLVED',
+            'The local child relationship must connect to its parent permission table.',
           );
       }
     }
     if (rule.imported) {
-      if (rule.scope === "unresolved" || !rule.entity)
+      if (rule.scope === 'unresolved' || !rule.entity)
         disable(
           rule,
-          "PERMISSION_UNRESOLVED",
-          rule.scope === "unresolved"
-            ? `The exported scope '${rule.sourceScope ?? "missing"}' is not supported by the local permission evaluator. Version-specific Custom Access and other unknown scopes require qualification.`
-            : "The source permission has no supported table.",
+          'PERMISSION_UNRESOLVED',
+          rule.scope === 'unresolved'
+            ? `The exported scope '${rule.sourceScope ?? 'missing'}' is not supported by the local permission evaluator. Version-specific Custom Access and other unknown scopes require qualification.`
+            : 'The source permission has no supported table.',
         );
       // Web-role associations are alternative grants. An unavailable role
       // cannot authorize anyone, but must not revoke another exact source ID.
       const assignedRoles = rule.roles ?? [],
         assignedIds = [...new Set((rule.roleIds ?? []).map(id))],
-        unresolvedIds = assignedIds.filter(
-          (roleId) => !identityModel.roles.has(roleId),
-        );
-      rule.roleIds = assignedIds.filter((roleId) =>
-        identityModel.roles.has(roleId),
-      );
+        unresolvedIds = assignedIds.filter((roleId) => !identityModel.roles.has(roleId));
+      rule.roleIds = assignedIds.filter((roleId) => identityModel.roles.has(roleId));
       rule.unresolvedRoleIds = unresolvedIds;
       if (unresolvedIds.length)
         diagnostics.push({
-          code: "PERMISSION_ROLE_ID_UNRESOLVED",
+          code: 'PERMISSION_ROLE_ID_UNRESOLVED',
           id: rule.id,
           entity: rule.entity,
           roleIds: unresolvedIds,
           message:
-            "These source web-role IDs are absent or inactive and cannot grant access: " +
-            unresolvedIds.join(", ") +
-            ". Other exact active source role associations remain eligible.",
+            'These source web-role IDs are absent or inactive and cannot grant access: ' +
+            unresolvedIds.join(', ') +
+            '. Other exact active source role associations remain eligible.',
         });
-      rule.roles = rule.roleIds.map(
-        (roleId) => identityModel.roles.get(roleId).name,
-      );
-      if (assignedRoles.length && !rule.roleIds.length && rule.scope !== "parent")
+      rule.roles = rule.roleIds.map((roleId) => identityModel.roles.get(roleId).name);
+      if (assignedRoles.length && !rule.roleIds.length && rule.scope !== 'parent')
         disable(
           rule,
-          "PERMISSION_ROLE_ID_UNRESOLVED",
-          "The imported grant does not resolve to exact active exported web-role IDs.",
+          'PERMISSION_ROLE_ID_UNRESOLVED',
+          'The imported grant does not resolve to exact active exported web-role IDs.',
         );
-      let parent =
-        rule.scope === "parent" ? byId.get(id(rule.parentPermissionId)) : null;
-      if (rule.scope === "parent") {
-        // This explicit, evidence-backed profile reproduces a recorded unsafe
+      let parent = rule.scope === 'parent' ? byId.get(id(rule.parentPermissionId)) : null;
+      if (rule.scope === 'parent') {
+        // This opt-in observed profile reproduces an unsafe
         // native configuration. Only an exact inactive exported parent qualifies;
         // missing exports, unknown relationships and cycles remain closed.
-        if (!parent && observed?.tablePermissionOrphans === "unrestricted") {
+        if (!parent && observed?.tablePermissionOrphans === 'unrestricted') {
           parent = inactiveSourceParents.get(id(rule.parentPermissionId));
-          const ownSourceRoles = (sourceDefinitions.get(rule.id)?.roleIds ?? [])
-            .filter(roleId => identityModel.roles.has(roleId));
+          const ownSourceRoles = (sourceDefinitions.get(rule.id)?.roleIds ?? []).filter((roleId) =>
+            identityModel.roles.has(roleId),
+          );
           if (parent && ownSourceRoles.length) {
             // A configured state may already contain inherited role IDs. Only
             // exact associations on this surviving exported child qualify.
             rule.roleIds = ownSourceRoles;
-            rule.roles = ownSourceRoles.map(roleId => identityModel.roles.get(roleId).name);
-            rule.observedOrphanParent = { parentPermissionId: parent.id, source: "inactive-exported-parent" };
-            diagnostics.push({ code: "PERMISSION_OBSERVED_ORPHAN_UNRESTRICTED", id: rule.id,
-              entity: rule.entity, parentPermissionId: parent.id,
-              message: "The evidence-backed orphan profile reproduces native access broadening: the inactive parent stops identity restriction and the surviving child's parent lookup is tested only for not-null." });
+            rule.roles = ownSourceRoles.map((roleId) => identityModel.roles.get(roleId).name);
+            rule.observedOrphanParent = { parentPermissionId: parent.id, source: 'inactive-exported-parent' };
+            diagnostics.push({
+              code: 'PERMISSION_OBSERVED_ORPHAN_UNRESTRICTED',
+              id: rule.id,
+              entity: rule.entity,
+              parentPermissionId: parent.id,
+              message:
+                "The evidence-backed orphan profile reproduces native access broadening: the inactive parent stops identity restriction and the surviving child's parent lookup is tested only for not-null.",
+            });
           } else parent = null;
         }
         if (!parent)
           disable(
             rule,
-            "PERMISSION_PARENT_MISSING",
+            'PERMISSION_PARENT_MISSING',
             rule.parentPermissionId
-              ? "The parent permission is inactive or was not exported into this portal; a child of an ineffective parent permission does not take effect."
-              : "The parent-scope permission names no parent permission.",
+              ? 'The parent permission is inactive or was not exported into this portal; a child of an ineffective parent permission does not take effect.'
+              : 'The parent-scope permission names no parent permission.',
           );
         else if (!rule.observedOrphanParent) {
           compile(parent);
           if (parent.enabled === false)
-            disable(
-              rule,
-              "PERMISSION_PARENT_DISABLED",
-              "The source parent permission is disabled or unresolved.",
-            );
+            disable(rule, 'PERMISSION_PARENT_DISABLED', 'The source parent permission is disabled or unresolved.');
           else {
             // Configured states keep the source links in ownRoleIds across recompiles.
             const own = [...new Set((rule.ownRoleIds ?? rule.roleIds ?? []).map(id))].filter((role) =>
@@ -547,23 +475,23 @@ export function buildPermissionModel(
               inherited = parent.roleIds ?? [];
             const outside = own.filter((role) => !inherited.includes(role));
             const effective =
-              childRoleMode === "intersect" && own.length
+              childRoleMode === 'intersect' && own.length
                 ? own.filter((role) => inherited.includes(role))
                 : [...inherited];
             if (own.length) rule.ownRoleIds = own;
             if (outside.length)
               diagnostics.push({
-                code: "PERMISSION_CHILD_ROLE_NOT_ON_PARENT",
+                code: 'PERMISSION_CHILD_ROLE_NOT_ON_PARENT',
                 id: rule.id,
                 entity: rule.entity,
                 roleIds: outside,
                 message:
                   "One or more roles applied to this child permission aren't available to its parent table permission; they cannot grant access through the parent: " +
-                  outside.map((role) => identityModel.roles.get(role)?.name ?? role).join(", "),
+                  outside.map((role) => identityModel.roles.get(role)?.name ?? role).join(', '),
               });
-            if (childRoleMode === "inherit" && own.length && (outside.length || own.length !== inherited.length))
+            if (childRoleMode === 'inherit' && own.length && (outside.length || own.length !== inherited.length))
               diagnostics.push({
-                code: "PERMISSION_CHILD_ROLES_INHERITED",
+                code: 'PERMISSION_CHILD_ROLES_INHERITED',
                 id: rule.id,
                 entity: rule.entity,
                 ownRoleIds: own,
@@ -571,72 +499,66 @@ export function buildPermissionModel(
                   "Child permission roles are inherited from the parent permission; this child's own web-role links do not narrow access. Set settings.childPermissionRoles to 'intersect' to evaluate only roles shared with the parent.",
               });
             rule.roleIds = effective;
-            rule.roles = effective.map(
-              (role) => identityModel.roles.get(role)?.name ?? role,
-            );
-            rule.inheritedRoles = childRoleMode === "inherit" || !own.length;
+            rule.roles = effective.map((role) => identityModel.roles.get(role)?.name ?? role);
+            rule.inheritedRoles = childRoleMode === 'inherit' || !own.length;
             if (!effective.length)
               disable(
                 rule,
-                "PERMISSION_CHILD_ROLES_UNAVAILABLE",
+                'PERMISSION_CHILD_ROLES_UNAVAILABLE',
                 "None of this child permission's web roles is available to its parent permission.",
               );
           }
         }
       }
-      if (["contact", "account", "parent"].includes(rule.scope)) {
-        if (source !== "configured" && rule.userConfigured !== true) {
+      if (['contact', 'account', 'parent'].includes(rule.scope)) {
+        if (source !== 'configured' && rule.userConfigured !== true) {
           delete rule.field;
           delete rule.relationship;
           delete rule.identityRelationship;
           delete rule.metadataSource;
         }
-        const target =
-          parent?.entity ?? (rule.scope === "account" ? "account" : "contact");
-        const rel =
-          relationships[String(rule.relationshipName ?? "").toLowerCase()];
+        const target = parent?.entity ?? (rule.scope === 'account' ? 'account' : 'contact');
+        const rel = relationships[String(rule.relationshipName ?? '').toLowerCase()];
         let resolved = descriptor(rel, rule, target, state.mappings ?? {});
         if (
           !resolved?.entity ||
           !resolved.from ||
           !resolved.to ||
-          (resolved.intersect &&
-            (!resolved.intersect.entity ||
-              !resolved.intersect.from ||
-              !resolved.intersect.to))
+          (resolved.intersect && (!resolved.intersect.entity || !resolved.intersect.from || !resolved.intersect.to))
         )
           resolved = null;
         if (resolved) {
-          if (rule.scope === "parent") rule.relationship = resolved;
-          else if (
-            rel.type === "one-to-many" &&
-            rel.referencingEntity === rule.entity
-          )
+          if (rule.scope === 'parent') rule.relationship = resolved;
+          else if (rel.type === 'one-to-many' && rel.referencingEntity === rule.entity)
             rule.field = rel.referencingAttribute;
           else rule.identityRelationship = resolved;
           rule.metadataSource = rel.source;
           if (rule.observedOrphanParent) rule.observedOrphanParent.field = resolved.from;
         }
-        if (rule.observedOrphanParent &&
-            !(rel?.type === "one-to-many" && rel.referencingEntity === rule.entity && rel.referencedEntity === parent.entity))
-          disable(rule, "PERMISSION_ORPHAN_PROFILE_UNQUALIFIED",
-            "The observed inactive-parent replay qualifies a child lookup to its parent; reverse or many-to-many orphan paths are not qualified and remain disabled.");
-        const identityRelationship = rule.identityRelationship;
         if (
-          rule.scope === "parent"
-            ? !rule.relationship?.entity ||
-              !rule.relationship.from ||
-              !rule.relationship.to
-            : !rule.field &&
-              (!identityRelationship?.entity ||
-                !identityRelationship.from ||
-                !identityRelationship.to)
+          rule.observedOrphanParent &&
+          !(
+            rel?.type === 'one-to-many' &&
+            rel.referencingEntity === rule.entity &&
+            rel.referencedEntity === parent.entity
+          )
         )
           disable(
             rule,
-            "PERMISSION_RELATIONSHIP_UNRESOLVED",
+            'PERMISSION_ORPHAN_PROFILE_UNQUALIFIED',
+            'The observed inactive-parent replay qualifies a child lookup to its parent; reverse or many-to-many orphan paths are not qualified and remain disabled.',
+          );
+        const identityRelationship = rule.identityRelationship;
+        if (
+          rule.scope === 'parent'
+            ? !rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to
+            : !rule.field && (!identityRelationship?.entity || !identityRelationship.from || !identityRelationship.to)
+        )
+          disable(
+            rule,
+            'PERMISSION_RELATIONSHIP_UNRESOLVED',
             !rule.relationshipName
-              ? "The exported permission has no relationship name for its scope."
+              ? 'The exported permission has no relationship name for its scope.'
               : !rel
                 ? `No selected solution layer or documented Dataverse relationship defines '${rule.relationshipName}'.`
                 : `Relationship '${rel.schemaName ?? rule.relationshipName}' does not connect '${rule.entity}' to '${target}'.`,
@@ -645,8 +567,8 @@ export function buildPermissionModel(
       if (!rule.roles?.length)
         disable(
           rule,
-          "PERMISSION_ROOT_ROLE_MISSING",
-          "No web role is associated with this permission; Power Pages requires at least one web role for a table permission to take effect.",
+          'PERMISSION_ROOT_ROLE_MISSING',
+          'No web role is associated with this permission; Power Pages requires at least one web role for a table permission to take effect.',
         );
     }
     visiting.delete(key);
@@ -655,7 +577,7 @@ export function buildPermissionModel(
   for (const rule of permissions) compile(rule);
   const tree = permissions.map((rule) => ({
     id: rule.id,
-    parentId: rule.scope === "parent" ? rule.parentPermissionId : null,
+    parentId: rule.scope === 'parent' ? rule.parentPermissionId : null,
     name: rule.name ?? rule.entity,
     entity: rule.entity,
     scope: rule.scope,
@@ -669,19 +591,20 @@ export function buildPermissionModel(
     disabledReason: rule.disabledReason,
     ...(rule.disabledCode ? { disabledCode: rule.disabledCode } : {}),
     ...(rule.disabledReasons?.length > 1 ? { disabledReasons: rule.disabledReasons } : {}),
-    provenance:
-      rule.provenance ??
-      (rule.imported
-        ? { type: "portal-export" }
-        : { type: "local-configuration" }),
+    provenance: rule.provenance ?? (rule.imported ? { type: 'portal-export' } : { type: 'local-configuration' }),
   }));
-  const personas = [...identityModel.contacts.values()].map((contact) => {
-    const effective = resolvePortalIdentity(portal, state, {
-      contactId: contact.contactid,
-      roleSource: "memberships",
-    }, identityModel);
+  const personas = [...identityModel.contacts].map(([contactId]) => {
+    const effective = resolvePortalIdentity(
+      portal,
+      state,
+      {
+        contactId,
+        roleSource: 'memberships',
+      },
+      identityModel,
+    );
     return {
-      contactId: id(contact.contactid),
+      contactId,
       name: effective.name,
       accountId: effective.accountId,
       roles: effective.roles,
@@ -699,9 +622,33 @@ export function buildPermissionModel(
     diagnostics,
     settings: {
       associationPermissions:
-        source === "configured"
-          ? (state.settings?.associationPermissions ?? "compatibility")
-          : "enforce",
+        source === 'configured' ? (state.settings?.associationPermissions ?? 'compatibility') : 'enforce',
     },
+  };
+}
+
+/**
+ * Power Pages document control permissions (Learn, configure/manage-sharepoint-documents, step 5): the parent table
+ * permission needs Read and Append To (Write to upload); the child permission on Document Location needs Read to list,
+ * Create, Write and Append to upload, and Delete to delete. `location` is the record's active document location, or null
+ * before the first upload creates it (the child permission is then tested against that prospective location).
+ * Returns { list, upload, delete } for `identity` through the store's table-permission evaluation.
+ */
+export function portalDocumentAccess(store, { entity, row, location = null }, identity = {}) {
+  const LOCATION = 'sharepointdocumentlocation';
+  const mapping = store.resolveMapping(entity);
+  const child = location ?? {
+    regardingobjectid: { id: row?.[mapping.idColumn], logical_name: mapping.logicalName },
+    statecode: 0,
+  };
+  const can = (logical, operation, target) => Boolean(target) && store.allowed(logical, operation, target, identity);
+  const parent = can(mapping.logicalName, 'read', row) && can(mapping.logicalName, 'appendTo', row);
+  return {
+    list: parent && can(LOCATION, 'read', child),
+    upload:
+      parent &&
+      can(mapping.logicalName, 'update', row) &&
+      ['create', 'update', 'append'].every((operation) => can(LOCATION, operation, child)),
+    delete: parent && can(LOCATION, 'delete', child),
   };
 }

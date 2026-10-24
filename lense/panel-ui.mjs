@@ -117,6 +117,7 @@ export function panelUi(data) {
       .search kbd, .foot kbd { font: 11px Consolas, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--muted); background: var(--bg); }
 
       .body { flex: 1; overflow: auto; padding: 0 10px 10px; overscroll-behavior: contain; }
+      button:disabled { opacity:.5;cursor:default; } button[aria-busy=true]{cursor:wait;} .working{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--tint);font-size:12px;color:var(--fg)}.spinner{display:inline-block;width:14px;height:14px;flex:none;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:panel-spin .9s linear infinite}.loading-state{display:flex;gap:10px;align-items:flex-start;padding:24px 10px;color:var(--muted)}.loading-state strong{display:block;color:var(--fg);margin-bottom:4px}.loading-state .spinner{margin-top:3px}@keyframes panel-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
       .foot { display: flex; gap: 10px; align-items: center; padding: 5px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; background: var(--tint); white-space: nowrap; overflow: hidden; }
 
       .card { padding: 2px 2px 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -180,7 +181,7 @@ export function panelUi(data) {
       .time { color: var(--muted); font-size: 11.5px; flex: none; font-variant-numeric: tabular-nums; }
 
       .empty { text-align: center; color: var(--muted); padding: 26px 20px; }
-      .empty b { display: block; color: var(--fg); margin-bottom: 4px; font-size: 14px; }
+      .empty > b:first-child { display: block; color: var(--fg); margin-bottom: 4px; font-size: 14px; }
 
       .dhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
       .dhead .t { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -214,7 +215,8 @@ export function panelUi(data) {
       @media (prefers-reduced-motion: reduce) { .row.fresh { animation: none; } }
     `;
     const ICON = {
-      setup: '<circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M3 13l1.5-1.5M11.5 4.5 13 3"/>',
+      setup:
+        '<circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M3 13l1.5-1.5M11.5 4.5 13 3"/>',
       sim: '<path d="M5 2h6M6 2v5l-4 6h12l-4-6V2M4.5 10h7"/>',
       code: '<path d="M6 4 2 8l4 4M10 4l4 4-4 4"/>',
       diff: '<path d="M4 4.5h5M6.5 2v5M4 12h5M12.5 2.5v11"/>',
@@ -261,25 +263,50 @@ export function panelUi(data) {
       ['issues', 'Issues'],
       ['activity', 'Activity'],
       ['explore', 'Explore'],
+      ['actions', 'Actions'],
     ];
     const MIRAGE_TABS = ['tweaks'];
-    const PLACEHOLDER = { overrides: 'Filter overrides', runtime: 'Filter tables, templates, settings ...', issues: 'Filter issues', activity: 'Filter activity', explore: 'Find a page, file, template, snippet ...' };
+    const PLACEHOLDER = {
+      overrides: 'Filter overrides',
+      runtime: 'Filter tables, templates, settings ...',
+      issues: 'Filter issues',
+      activity: 'Filter activity',
+      explore: 'Find a page, file, template, snippet ...',
+    };
 
     const S = {
       d: null,
-      ui: { pos: { h: 'left', v: 'bottom', dx: 12, dy: 12 }, open: false, hidden: false, tab: 'overrides', large: false, collapsed: { insync: true }, filter: 'all', localOnly: false },
+      ui: {
+        pos: { h: 'left', v: 'bottom', dx: 12, dy: 12 },
+        open: false,
+        hidden: false,
+        tab: 'overrides',
+        large: false,
+        collapsed: { insync: true },
+        filter: 'all',
+        localOnly: false,
+      },
       first: true,
       q: '',
       catalog: null,
+      catalogLoading: null,
+      catalogError: null,
       diff: null,
       html: {},
-      flashed: (() => { try { return Number(sessionStorage.getItem('paqvilo:last-change:' + data.token)) || 0; } catch { return 0; } })(),
+      flashed: (() => {
+        try {
+          return Number(sessionStorage.getItem('paqvilo:last-change:' + data.token)) || 0;
+        } catch {
+          return 0;
+        }
+      })(),
       dragged: 0,
       targets: [],
       // Mirage: the page report is fetched once per runtime version, tweaks once per revision.
       inspect: null,
       inspectLoading: null,
       inspectRequest: 0,
+      completedInspectionLoadingId: 0,
       tweaks: null,
       tweaksLoading: null,
       defaults: {},
@@ -289,9 +316,14 @@ export function panelUi(data) {
       inspectSection: 'all',
       selectedElement: null,
       pickingElement: false,
+      pendingActions: new Map(),
     };
     const nativeFetch = window.fetch.bind(window);
-    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const esc = (s) =>
+      String(s ?? '').replace(
+        /[&<>"']/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+      );
     const terms = () => S.q.toLowerCase().split(/\s+/).filter(Boolean);
     const matches = (...texts) => {
       const hay = texts.join('\n').toLowerCase();
@@ -302,7 +334,8 @@ export function panelUi(data) {
       const s = String(text ?? '');
       const low = s.toLowerCase();
       const spans = [];
-      for (const t of terms()) for (let at = low.indexOf(t); at >= 0; at = low.indexOf(t, at + t.length)) spans.push([at, at + t.length]);
+      for (const t of terms())
+        for (let at = low.indexOf(t); at >= 0; at = low.indexOf(t, at + t.length)) spans.push([at, at + t.length]);
       if (!spans.length) return esc(s);
       spans.sort((a, b) => a[0] - b[0]);
       let out = '';
@@ -316,9 +349,14 @@ export function panelUi(data) {
       return out + esc(s.slice(pos));
     };
     const clock = (at) => new Date(at).toLocaleTimeString('en-GB');
-    const baseName = (p) => String(p).split('#')[0].split('/').pop() + (String(p).includes('#') ? ' #' + String(p).split('#')[1] : '');
+    const baseName = (p) =>
+      String(p).split('#')[0].split('/').pop() + (String(p).includes('#') ? ' #' + String(p).split('#')[1] : '');
     /** "Home.en-US" for Home.en-US.webpage.custom_javascript.js: the kind is shown next to it */
-    const shortName = (rel) => baseName(rel).replace(/\.(?:webpage|basicform|advancedformstep|list|webtemplate|contentsnippet)\.[a-z_]+\.(?:js|css|html)$/i, '');
+    const shortName = (rel) =>
+      baseName(rel).replace(
+        /\.(?:webpage|basicform|advancedformstep|list|webtemplate|contentsnippet)\.[a-z_]+\.(?:js|css|html)$/i,
+        '',
+      );
     const fileIcon = (item) => {
       if (KIND[item.kind]) return KIND[item.kind];
       const ext = (/\.([a-z0-9]+)$/i.exec(item.url || item.rel || '')?.[1] ?? '').toLowerCase();
@@ -329,16 +367,74 @@ export function panelUi(data) {
       return [(ext || 'FILE').slice(0, 4).toUpperCase(), '', 'web file'];
     };
 
-    const api = (name, body) =>
-      lifetime.signal.aborted ? Promise.resolve({ ok: false, error: 'the dev loop has stopped' }) :
-      nativeFetch('/__paqvilo/api/' + name, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-paqvilo-token': S.d.token },
-        body: JSON.stringify(body ?? {}),
-        signal: lifetime.signal,
-      })
-        .then((r) => r.json())
-        .catch(() => ({ ok: false, error: 'the dev loop does not answer (is it still running?)' }));
+    const api = async (name, body) => {
+      if (lifetime.signal.aborted) return { ok: false, error: 'the dev loop has stopped' };
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 120_000);
+      const stop = () => controller.abort();
+      lifetime.signal.addEventListener('abort', stop, { once: true });
+      try {
+        if (S.d.transport === 'model-driven') {
+          if (typeof window.__paqviloModelPanelApi !== 'function')
+            return { ok: false, error: 'The model-driven dev loop is unavailable.' };
+          return await Promise.race([
+            window.__paqviloModelPanelApi({ token: S.d.token, name, body: body ?? {} }),
+            new Promise((resolve) =>
+              controller.signal.addEventListener(
+                'abort',
+                () =>
+                  resolve({
+                    ok: false,
+                    error: timedOut
+                      ? 'The request timed out. Its result is unknown; inspect current state before retrying.'
+                      : 'The dev loop has stopped.',
+                  }),
+                { once: true },
+              ),
+            ),
+          ]);
+        }
+        return await nativeFetch('/__paqvilo/api/' + name, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-paqvilo-token': S.d.token },
+          body: JSON.stringify(body ?? {}),
+          signal: controller.signal,
+        }).then((r) => r.json());
+      } catch {
+        const writing = [
+          'mode',
+          'live',
+          'persona',
+          'signin',
+          'signout',
+          'permissions',
+          'preset',
+          'scenario',
+          'toggle',
+          'scope',
+          'rebaseline',
+          'clear',
+          'ui',
+        ].includes(name);
+        return {
+          ok: false,
+          error: lifetime.signal.aborted
+            ? 'the dev loop has stopped'
+            : timedOut
+              ? writing
+                ? 'The request timed out. Its result is unknown; check the current state before retrying.'
+                : 'The request timed out. Check the dev loop and retry.'
+              : 'the dev loop does not answer (is it still running?)',
+        };
+      } finally {
+        clearTimeout(timeout);
+        lifetime.signal.removeEventListener('abort', stop);
+      }
+    };
 
     host.style.cssText = 'position:fixed;z-index:2147483647;';
     const root = host.attachShadow({ mode: 'open' });
@@ -369,7 +465,7 @@ export function panelUi(data) {
     const $ = (sel) => root.querySelector(sel);
     const wrap = $('.wrap');
 
-    // ------------------------------------------------------------------------------ the portal's look
+    // ---- the portal's look
     /**
      * Font, colours and corner radius as the portal's own stylesheet gives them to ordinary
      * elements (a link, a primary button, an input, the alerts), so the panel looks like a part
@@ -378,20 +474,38 @@ export function panelUi(data) {
     const readTheme = () => {
       const probe = document.createElement('div');
       probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
-      const classes = ['btn btn-primary', 'form-control', 'text-muted', 'alert alert-warning', 'alert alert-danger', 'alert alert-success', 'btn btn-danger', 'btn btn-success', 'badge', 'dropdown-menu'];
+      const classes = [
+        'btn btn-primary',
+        'form-control',
+        'text-muted',
+        'alert alert-warning',
+        'alert alert-danger',
+        'alert alert-success',
+        'btn btn-danger',
+        'btn btn-success',
+        'badge',
+        'dropdown-menu',
+      ];
       probe.innerHTML = '<a href="#">a</a>' + classes.map((c) => `<div class="${c}">x</div>`).join('');
-      probe.dataset.paqviloThemeProbe='';
+      probe.dataset.paqviloThemeProbe = '';
       host.appendChild(probe);
-      const [link, button, input, muted, warning, danger, success, dangerButton, successButton, badge, menu] = [...probe.children].map((node) => getComputedStyle(node));
+      const [link, button, input, muted, warning, danger, success, dangerButton, successButton, badge, menu] = [
+        ...probe.children,
+      ].map((node) => getComputedStyle(node));
       const solid = (color) => (color && !/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(color) ? color : null);
       // the colour that says "warning" / "error" / "done" on this site: the accent bar of its
       // alerts where it has one, else its coloured buttons
-      const accent = (alert, btn) => (parseFloat(alert.borderLeftWidth) >= 2 ? solid(alert.borderLeftColor) : null) ?? (btn ? solid(btn.backgroundColor) : null);
+      const accent = (alert, btn) =>
+        (parseFloat(alert.borderLeftWidth) >= 2 ? solid(alert.borderLeftColor) : null) ??
+        (btn ? solid(btn.backgroundColor) : null);
       const body = getComputedStyle(document.body);
       // a data table of the page, when there is one, has the site's header shade and row lines
       const th = document.querySelector('table thead th');
       const td = document.querySelector('table tbody td');
-      const cellLine = td && parseFloat(getComputedStyle(td).borderBottomWidth) > 0 ? solid(getComputedStyle(td).borderBottomColor) : null;
+      const cellLine =
+        td && parseFloat(getComputedStyle(td).borderBottomWidth) > 0
+          ? solid(getComputedStyle(td).borderBottomColor)
+          : null;
       const primary = solid(button.backgroundColor);
       const theme = {
         '--font': body.fontFamily,
@@ -402,9 +516,15 @@ export function panelUi(data) {
         '--on-primary': primary && solid(button.color),
         '--radius': primary ? `${Math.min(parseFloat(button.borderTopLeftRadius) || 0, 10)}px` : null,
         '--input-line': parseFloat(input.borderTopWidth) > 0 ? solid(input.borderTopColor) : null,
-        '--muted': muted.color !== body.color ? solid(muted.color) : solid(warning.backgroundColor) && warning.color !== body.color ? solid(warning.color) : null,
+        '--muted':
+          muted.color !== body.color
+            ? solid(muted.color)
+            : solid(warning.backgroundColor) && warning.color !== body.color
+              ? solid(warning.color)
+              : null,
         '--warn-bg': solid(warning.backgroundColor),
-        '--warn': accent(warning, null) ?? (parseFloat(warning.borderTopWidth) > 0 ? solid(warning.borderTopColor) : null),
+        '--warn':
+          accent(warning, null) ?? (parseFloat(warning.borderTopWidth) > 0 ? solid(warning.borderTopColor) : null),
         '--danger': accent(danger, dangerButton),
         '--danger-bg': solid(danger.backgroundColor),
         '--success': accent(success, successButton),
@@ -418,28 +538,56 @@ export function panelUi(data) {
       };
       // The host does not inherit the portal's ancestor backgrounds. Resolve alpha against
       // the document canvas before checking contrast or using that colour in the shadow root.
-      const sample = document.createElement('canvas'); sample.width = sample.height = 1;
-      const sampler = sample.getContext('2d', {willReadFrequently:true});
-      const rgba = color => {
+      const sample = document.createElement('canvas');
+      sample.width = sample.height = 1;
+      const sampler = sample.getContext('2d', { willReadFrequently: true });
+      const rgba = (color) => {
         if (!color) return null;
         if (sampler) {
-          sampler.clearRect(0,0,1,1); sampler.fillStyle = 'transparent'; sampler.fillStyle = color; sampler.fillRect(0,0,1,1);
-          const pixels = sampler.getImageData(0,0,1,1).data;
-          return [pixels[0],pixels[1],pixels[2],pixels[3]/255];
+          sampler.clearRect(0, 0, 1, 1);
+          sampler.fillStyle = 'transparent';
+          sampler.fillStyle = color;
+          sampler.fillRect(0, 0, 1, 1);
+          const pixels = sampler.getImageData(0, 0, 1, 1).data;
+          return [pixels[0], pixels[1], pixels[2], pixels[3] / 255];
         }
         const match = /^rgba?\(([^)]+)\)$/.exec(String(color));
         if (!match) return null;
-        const channels = match[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+        const channels = match[1]
+          .split(/[\s,/]+/)
+          .filter(Boolean)
+          .map(Number);
         return channels.length >= 3 ? [...channels.slice(0, 3), channels[3] ?? 1] : null;
       };
-      const blend = (foreground, background) => foreground.slice(0, 3).map((channel, index) => channel * foreground[3] + background[index] * (1 - foreground[3]));
-      const canvas = blend(rgba(getComputedStyle(document.documentElement).backgroundColor) ?? [255,255,255,1], [255,255,255]);
-      const background = blend(rgba(body.backgroundColor) ?? [0,0,0,0], canvas);
+      const blend = (foreground, background) =>
+        foreground
+          .slice(0, 3)
+          .map((channel, index) => channel * foreground[3] + background[index] * (1 - foreground[3]));
+      const canvas = blend(
+        rgba(getComputedStyle(document.documentElement).backgroundColor) ?? [255, 255, 255, 1],
+        [255, 255, 255],
+      );
+      const background = blend(rgba(body.backgroundColor) ?? [0, 0, 0, 0], canvas);
       if (rgba(theme['--bg'])) theme['--bg'] = `rgb(${background.join(',')})`;
       probe.remove();
-      const luminance=color=>{const channels=rgba(color);if(!channels)return null;return blend(channels,background).map(c=>{c/=255;return c<=.04045?c/12.92:((c+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i],0);};
-      const bg=luminance(theme['--bg']??'#fff'),fg=luminance(theme['--primary']);
-      theme['--tab-ink']=bg!==null&&fg!==null&&(Math.max(bg,fg)+.05)/(Math.min(bg,fg)+.05)>=4.5?theme['--primary']:(bg??1)>.179?'#000':'#fff';
+      const luminance = (color) => {
+        const channels = rgba(color);
+        if (!channels) return null;
+        return blend(channels, background)
+          .map((c) => {
+            c /= 255;
+            return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+          })
+          .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+      };
+      const bg = luminance(theme['--bg'] ?? '#fff'),
+        fg = luminance(theme['--primary']);
+      theme['--tab-ink'] =
+        bg !== null && fg !== null && (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05) >= 4.5
+          ? theme['--primary']
+          : (bg ?? 1) > 0.179
+            ? '#000'
+            : '#fff';
       for (const [name, value] of Object.entries(theme)) {
         if (value) wrap.style.setProperty(name, value);
         else wrap.style.removeProperty(name);
@@ -448,9 +596,74 @@ export function panelUi(data) {
     // Probe once after stylesheets load, rather than caching the unstyled document's colours.
     if (document.readyState === 'complete') readTheme();
     else window.addEventListener('load', readTheme, { once: true, signal: lifetime.signal });
-    const el = { pill: $('.pill'), panel: $('.panel'), head: $('.head'), targets: $('.targets'), git: $('.gitline'), tabs: $('.tabs'), body: $('.body'), foot: $('.foot'), input: $('.search input'), toolbtns: $('.toolbtns'), toast: $('.toast'), float: $('.float') };
+    const el = {
+      pill: $('.pill'),
+      panel: $('.panel'),
+      head: $('.head'),
+      targets: $('.targets'),
+      git: $('.gitline'),
+      tabs: $('.tabs'),
+      body: $('.body'),
+      foot: $('.foot'),
+      input: $('.search input'),
+      toolbtns: $('.toolbtns'),
+      toast: $('.toast'),
+      float: $('.float'),
+    };
+    const working = document.createElement('div');
+    working.className = 'working';
+    working.hidden = true;
+    working.setAttribute('role', 'status');
+    working.setAttribute('aria-live', 'polite');
+    el.body.before(working);
+    const actionLabels = {
+      mode: 'Switching source mode…',
+      live: 'Updating live reload…',
+      persona: 'Switching persona…',
+      signin: 'Signing in…',
+      signout: 'Signing out…',
+      permissions: 'Updating permissions…',
+      'confirm-yes': 'Applying local setup…',
+      open: 'Opening the source editor…',
+      toggle: 'Updating override…',
+      scope: 'Updating source scope…',
+      rebaseline: 'Pinning the comparison baseline…',
+      clear: 'Clearing the list…',
+    };
+    const mutationActions = new Set([
+      'mode',
+      'live',
+      'persona',
+      'signin',
+      'signout',
+      'permissions',
+      'confirm-yes',
+      'toggle',
+      'scope',
+      'rebaseline',
+    ]);
+    const pendingFeedback = () => {
+      const jobs = [...S.pendingActions.values()];
+      working.hidden = !jobs.length;
+      const message = jobs[0]?.label ?? '',
+        html = `<span class="spinner" aria-hidden="true"></span><span>${esc(message)}</span>`;
+      if (working.innerHTML !== html) working.innerHTML = html;
+      const mutating = jobs.some((job) => mutationActions.has(job.name));
+      for (const button of el.panel.querySelectorAll('[data-act]')) {
+        const busy = S.pendingActions.has(button.dataset.act) || (mutating && mutationActions.has(button.dataset.act));
+        if (busy) {
+          if (!button.hasAttribute('data-paqvilo-busy')) button.dataset.paqviloBusy = String(button.disabled);
+          button.disabled = true;
+          button.setAttribute('aria-busy', 'true');
+        } else if (button.hasAttribute('data-paqvilo-busy')) {
+          button.disabled = button.dataset.paqviloBusy === 'true';
+          delete button.dataset.paqviloBusy;
+          button.removeAttribute('aria-busy');
+        }
+      }
+    };
 
-    // ------------------------------------------------------------------------------ feedback
+    // ---- feedback
     let toastTimer = 0;
     const toast = (text, bad = false) => {
       el.toast.textContent = text;
@@ -468,39 +681,95 @@ export function panelUi(data) {
     let saveTimer = 0;
     const saveUi = () => {
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => S.d && api('ui', S.ui), 250);
+      saveTimer = setTimeout(() => {
+        saveTimer = 0;
+        if (S.d) api('ui', S.ui);
+      }, 250);
     };
+    // A navigation inside the delay would drop the change, so a pending save goes out with keepalive as the page hides.
+    window.addEventListener(
+      'pagehide',
+      () => {
+        if (!saveTimer || !S.d) return;
+        clearTimeout(saveTimer);
+        saveTimer = 0;
+        if (S.d.transport === 'model-driven') {
+          api('ui', S.ui);
+          return;
+        }
+        nativeFetch('/__paqvilo/api/ui', {
+          method: 'POST',
+          keepalive: true,
+          headers: { 'content-type': 'application/json', 'x-paqvilo-token': S.d.token },
+          body: JSON.stringify(S.ui),
+        }).catch(() => {});
+      },
+      { signal: lifetime.signal },
+    );
 
-    // ------------------------------------------------------------------------------ placement
+    // ---- placement
     const place = () => {
-      const pos = S.ui.open ? S.ui.pos : (S.pillPos ??= {h:'left',v:'bottom',dx:12,dy:12});
+      const pos = S.ui.open ? S.ui.pos : (S.pillPos ??= { h: 'left', v: 'bottom', dx: 12, dy: 12 });
       const vw = document.documentElement.clientWidth || window.innerWidth;
       const vh = window.innerHeight;
-      const dx = Math.max(4, Math.min(pos.dx, vw - 48));
-      const dy = Math.max(4, Math.min(pos.dy, vh - 34));
+      const box = (S.ui.open ? el.panel : el.pill).getBoundingClientRect();
+      const dx = Math.max(4, Math.min(pos.dx, vw - box.width - 4));
+      const dy = Math.max(4, Math.min(pos.dy, vh - box.height - 4));
       host.style.left = pos.h === 'left' ? dx + 'px' : 'auto';
       host.style.right = pos.h === 'right' ? dx + 'px' : 'auto';
       host.style.top = pos.v === 'top' ? dy + 'px' : 'auto';
       host.style.bottom = pos.v === 'bottom' ? dy + 'px' : 'auto';
-      if(!S.ui.open&&!S.ui.hidden&&!stopDrag){
-        const rect=el.pill.getBoundingClientRect();
-        const controls=[...document.querySelectorAll('a[href],button,input:not([type=hidden]),select,textarea,[role=button],iframe')].filter(node=>!node.closest('#paqvilo-panel,#paqvilo-xray')).flatMap(node=>{
-          const r=node.getBoundingClientRect();
-          return r.width&&r.height&&r.right>0&&r.bottom>0&&r.left<vw&&r.top<vh&&getComputedStyle(node).visibility!=='hidden'?[r]:[];
-        });
-        const score=(left,top)=>{
-          let count=0,area=0;
-          for(const r of controls){const overlap=Math.max(0,Math.min(left+rect.width,r.right)-Math.max(left,r.left))*Math.max(0,Math.min(top+rect.height,r.bottom)-Math.max(top,r.top));if(overlap){count++;area+=overlap;}}
-          return {count,area};
+      if (!S.ui.open && !S.ui.hidden && !stopDrag) {
+        const rect = el.pill.getBoundingClientRect();
+        const controls = [
+          ...document.querySelectorAll('a[href],button,input:not([type=hidden]),select,textarea,[role=button],iframe'),
+        ]
+          .filter((node) => !node.closest('#paqvilo-panel,#paqvilo-xray'))
+          .flatMap((node) => {
+            const r = node.getBoundingClientRect();
+            return r.width &&
+              r.height &&
+              r.right > 0 &&
+              r.bottom > 0 &&
+              r.left < vw &&
+              r.top < vh &&
+              getComputedStyle(node).visibility !== 'hidden'
+              ? [r]
+              : [];
+          });
+        const score = (left, top) => {
+          let count = 0,
+            area = 0;
+          for (const r of controls) {
+            const overlap =
+              Math.max(0, Math.min(left + rect.width, r.right) - Math.max(left, r.left)) *
+              Math.max(0, Math.min(top + rect.height, r.bottom) - Math.max(top, r.top));
+            if (overlap) {
+              count++;
+              area += overlap;
+            }
+          }
+          return { count, area };
         };
-        let best={pos,score:score(rect.left,rect.top)};
-        for(const h of ['left','right'])for(const v of ['bottom','top']){
-          const candidate={h,v,dx:12,dy:12},candidateScore=score(h==='left'?12:vw-12-rect.width,v==='top'?12:vh-12-rect.height);
-          if(candidateScore.count<best.score.count||candidateScore.count===best.score.count&&candidateScore.area<best.score.area)best={pos:candidate,score:candidateScore};
-        }
-        S.pillPos=best.pos;
-        host.style.left=best.pos.h==='left'?best.pos.dx+'px':'auto';host.style.right=best.pos.h==='right'?best.pos.dx+'px':'auto';
-        host.style.top=best.pos.v==='top'?best.pos.dy+'px':'auto';host.style.bottom=best.pos.v==='bottom'?best.pos.dy+'px':'auto';
+        let best = { pos, score: score(rect.left, rect.top) };
+        for (const h of ['left', 'right'])
+          for (const v of ['bottom', 'top']) {
+            const candidate = { h, v, dx: 12, dy: 12 },
+              candidateScore = score(
+                h === 'left' ? 12 : vw - 12 - rect.width,
+                v === 'top' ? 12 : vh - 12 - rect.height,
+              );
+            if (
+              candidateScore.count < best.score.count ||
+              (candidateScore.count === best.score.count && candidateScore.area < best.score.area)
+            )
+              best = { pos: candidate, score: candidateScore };
+          }
+        S.pillPos = best.pos;
+        host.style.left = best.pos.h === 'left' ? best.pos.dx + 'px' : 'auto';
+        host.style.right = best.pos.h === 'right' ? best.pos.dx + 'px' : 'auto';
+        host.style.top = best.pos.v === 'top' ? best.pos.dy + 'px' : 'auto';
+        host.style.bottom = best.pos.v === 'bottom' ? best.pos.dy + 'px' : 'auto';
       }
     };
     let stopDrag = null;
@@ -534,7 +803,8 @@ export function panelUi(data) {
         ev.preventDefault();
       };
       const stop = () => {
-        for (const type of ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture']) handle.removeEventListener(type, type === 'pointermove' ? move : stop);
+        for (const type of ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'])
+          handle.removeEventListener(type, type === 'pointermove' ? move : stop);
         stopDrag = null;
         wrap.classList.remove('dragging');
         if (moved) {
@@ -569,20 +839,25 @@ export function panelUi(data) {
       { capture: true, signal: lifetime.signal },
     );
     let placeTimer;
-    const schedulePlace=()=>{clearTimeout(placeTimer);placeTimer=setTimeout(place,100);};
+    const schedulePlace = () => {
+      clearTimeout(placeTimer);
+      placeTimer = setTimeout(place, 100);
+    };
     window.addEventListener('resize', schedulePlace, { signal: lifetime.signal });
-    window.addEventListener('scroll', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
-    window.addEventListener('scrollend', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
+    window.addEventListener('scroll', schedulePlace, { capture: true, passive: true, signal: lifetime.signal });
+    window.addEventListener('scrollend', schedulePlace, { capture: true, passive: true, signal: lifetime.signal });
 
-    // ------------------------------------------------------------------------------ pieces
+    // ---- pieces
     const chips = (it) => {
       const env = esc(S.d.env);
       let out = '';
       if (it.paused) out += '<span class="c same">paused</span>';
       if (it.edited) out += '<span class="c edited" title="differs from the git baseline: your change">edited</span>';
       if (it.isNew) out += `<span class="c new" title="does not exist on ${env} yet">new</span>`;
-      else if (it.differs === true) out += `<span class="c diff" title="the local version differs from what ${env} serves">&ne; ${env}</span>`;
-      else if (it.differs === false) out += `<span class="c same" title="same content as on ${env}: this override changes nothing">= ${env}</span>`;
+      else if (it.differs === true)
+        out += `<span class="c diff" title="the local version differs from what ${env} serves">&ne; ${env}</span>`;
+      else if (it.differs === false)
+        out += `<span class="c same" title="same content as on ${env}: this override changes nothing">= ${env}</span>`;
       if (it.note) out += `<span class="c act">${esc(it.note)}</span>`;
       if (it.count > 1) out += `<span class="c same" title="requested ${it.count} times">&times;${it.count}</span>`;
       return out;
@@ -591,7 +866,7 @@ export function panelUi(data) {
       const [code, cls, what] = fileIcon(it);
       const title = it.title || shortName(it.rel);
       const sub = it.url && it.kind === 'web-file' ? `${it.url}  ←  ${it.rel}` : it.rel;
-      return `<div class="row${it.fresh ? ' fresh' : ''}${it.paused ? ' off' : ''}" data-rel="${esc(it.rel)}" data-url="${esc(it.url ?? '')}">
+      return `<div class="row${it.fresh ? ' fresh' : ''}${it.paused ? ' off' : ''}" data-rel="${esc(it.rel)}" data-path="${esc(it.path ?? '')}" data-url="${esc(it.url ?? '')}">
         <span class="ico ${cls}" title="${esc(what)}">${code}</span>
         <button class="main" data-act="open" title="Open ${esc(it.rel)} in the editor">
           <div class="name" title="${esc(title)}"><span>${hl(title)}</span>${KIND[it.kind] ? `<span class="what">${esc(what)}</span>` : ''}${chips(it)}</div>
@@ -610,13 +885,27 @@ export function panelUi(data) {
       return `<div class="group"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? rows.length}</span><span class="line"></span></button>${closed ? '' : rows.join('')}</div>`;
     };
     const emptyState = (title, text) => `<div class="empty"><b>${esc(title)}</b>${text}</div>`;
+    const loadingState = (title, text) =>
+      `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><div><strong>${esc(title)}</strong>${esc(text)}</div></div>`;
+    // Loading epochs let a completed response retire a delayed progress push without
+    // hiding a newer background metadata refresh that retains the previous report.
+    const inspectionPending = (inspection) =>
+      Boolean(
+        inspection?.loading &&
+        (Number.isSafeInteger(inspection.loadingId)
+          ? inspection.loadingId > S.completedInspectionLoadingId
+          : !S.inspect?.report),
+      );
 
     const overridesHtml = () => {
       const d = S.d;
       let out = '';
       if (d.page) {
         const srcs = d.page.sources
-          .map((s) => `<button class="src${s.empty ? ' none' : ''}" data-act="open" data-rel="${esc(s.rel)}" title="${esc(s.rel)}${s.empty ? ' (empty)' : ''}">${esc(s.label)}</button>`)
+          .map(
+            (s) =>
+              `<button class="src${s.empty ? ' none' : ''}" data-act="open" data-rel="${esc(s.rel)}" title="${esc(s.rel)}${s.empty ? ' (empty)' : ''}">${esc(s.label)}</button>`,
+          )
           .join('');
         out += `<div class="card"><div class="path">${esc(d.page.path)} <span class="dim">&nbsp;${esc(d.page.name ?? '')}${d.page.dir ? ' &middot; ' + esc(d.page.dir) : ''}</span></div>${srcs ? `<div class="srcs"><span class="lbl2">Sources of this page</span>${srcs}</div>` : ''}</div>`;
       } else {
@@ -625,7 +914,9 @@ export function panelUi(data) {
       if (d.online) {
         out += `<div class="banner grey"><span class="grow">Overrides are off: this is the page exactly as <b>${esc(d.env)}</b> serves it.</span><button class="btn" data-act="mode" data-v="local">Back to local</button></div>`;
       }
-      if (d.pendingBaseline) out += '<div class="banner"><span class="grow">The Git baseline changed since this page loaded.</span><button class="btn" data-act="reload">Reload</button></div>';
+      if (d.pendingBaseline)
+        out +=
+          '<div class="banner"><span class="grow">The Git baseline changed since this page loaded.</span><button class="btn" data-act="reload">Reload</button></div>';
       const git = d.git ?? {};
       if (git.headMoved && git.baseline?.pinned) {
         out += `<div class="banner"><span class="grow">Git HEAD moved to <b>${esc(git.branch ?? 'detached')} ${esc((git.commit ?? '').slice(0, 7))}</b> after the baseline was pinned at <b>${esc((git.baseline.commit ?? '').slice(0, 7))}</b>: edited markers and template patches still compare with that commit.</span>${git.canRepin ? '<button class="btn" data-act="rebaseline" title="Compare with the current HEAD from now on, as a restart would">Pin HEAD</button>' : ''}</div>`;
@@ -634,32 +925,74 @@ export function panelUi(data) {
         out += `<div class="banner"><span class="grow"><b>${d.pending.length}</b> file${d.pending.length > 1 ? 's' : ''} changed since this page loaded: ${esc(d.pending.slice(0, 2).map(baseName).join(', '))}${d.pending.length > 2 ? ' ...' : ''}</span><button class="btn" data-act="reload">Reload</button></div>`;
       }
       const all = d.items;
-      const counts = { all: all.length, edited: all.filter((i) => i.edited).length, differs: all.filter((i) => i.differs === true || i.isNew).length };
+      const counts = {
+        all: all.length,
+        edited: all.filter((i) => i.edited).length,
+        differs: all.filter((i) => i.differs === true || i.isNew).length,
+      };
       const filter = counts[S.ui.filter] == null ? 'all' : S.ui.filter;
       out += `<div class="filters">
-        ${[['all', 'All'], ['edited', 'Edited'], ['differs', '≠ ' + d.env]].map(([id, label]) => `<button class="f${filter === id ? ' on' : ''}" data-act="filter" data-v="${id}">${esc(label)} <b>${counts[id]}</b></button>`).join('')}
-        <span class="grow"></span>${d.mirageMode ? '' : `<span class="lbl2">scope</span><span class="seg">${['all', 'changed'].map((s) => `<button class="${d.scope === s ? 'on' : ''}" data-act="scope" data-v="${s}" title="${s === 'all' ? 'every local file overrides the site' : 'only files that differ from the git baseline override the site'}">${s}</button>`).join('')}</span>`}
+        ${[
+          ['all', 'All'],
+          ['edited', 'Edited'],
+          ['differs', '≠ ' + d.env],
+        ]
+          .filter(([id]) => id === 'all' || d.capabilities?.comparison !== false)
+          .map(
+            ([id, label]) =>
+              `<button class="f${filter === id ? ' on' : ''}" data-act="filter" data-v="${id}">${esc(label)} <b>${counts[id]}</b></button>`,
+          )
+          .join('')}
+        <span class="grow"></span>${d.mirageMode || d.capabilities?.scope === false ? '' : `<span class="lbl2">scope</span><span class="seg">${['all', 'changed'].map((s) => `<button class="${d.scope === s ? 'on' : ''}" data-act="scope" data-v="${s}" title="${s === 'all' ? 'every local file overrides the site' : 'only files that differ from the git baseline override the site'}">${s}</button>`).join('')}</span>`}
       </div>`;
-      const shown = all.filter((i) => (filter === 'edited' ? i.edited : filter === 'differs' ? i.differs === true || i.isNew : true) && matches(i.rel, i.url ?? '', i.title ?? ''));
+      const shown = all.filter(
+        (i) =>
+          (filter === 'edited' ? i.edited : filter === 'differs' ? i.differs === true || i.isNew : true) &&
+          matches(i.rel, i.url ?? '', i.title ?? ''),
+      );
       let lists = '';
       for (const [id, title] of GROUPS) lists += group(id, title, shown.filter((i) => i.group === id).map(itemRow));
       const paused = d.paused.filter((i) => matches(i.rel, i.url ?? ''));
       lists += group('paused', 'Paused overrides', paused.map(itemRow));
+      if (d.modelDriven)
+        lists += group(
+          'unobserved',
+          'Not observed on this revision',
+          (d.unobserved ?? []).filter((i) => matches(i.rel, i.url ?? '', i.title ?? '')).map(itemRow),
+        );
       const insync = d.insync.filter((i) => matches(i.rel));
       lists += group('insync', `Recognised, same as ${d.env}`, insync.map(itemRow));
       if (!lists) {
-        if (S.q || filter !== 'all') out += emptyState('Nothing matches', 'Clear the filter to see every override of this page.');
-        else if (d.online) out += emptyState('Online mode', 'Switch back to <b style="display:inline">Local</b> to lay your sources over the site.');
-        else out += d.mirageMode
-          ? emptyState('Mirage owns source rendering', 'Open Inspect to see this page’s templates, tables, permissions and sources, or Tweaks to change the persona.')
-          : emptyState('Nothing on this page comes from local sources', d.scope === 'changed' ? 'Scope is <i>changed</i>: only files that differ from the git baseline override the site. Edit a file and save.' : 'No web file, script, template or snippet of the local sources was found in this page.');
+        if (S.q || filter !== 'all')
+          out += emptyState('Nothing matches', 'Clear the filter to see every override of this page.');
+        else if (d.online)
+          out += emptyState('Online mode', 'Switch back to <b>Local</b> to lay your sources over the site.');
+        else
+          out += d.mirageMode
+            ? emptyState(
+                'Mirage owns source rendering',
+                'Open Inspect to see this page’s templates, tables, permissions and sources, or Tweaks to change the persona.',
+              )
+            : emptyState(
+                'Nothing on this page comes from local sources',
+                d.scope === 'changed'
+                  ? 'Scope is <i>changed</i>: only files that differ from the git baseline override the site. Edit a file and save.'
+                  : d.modelDriven
+                    ? 'No web resource or code component (PCF) of your Solution sources was loaded by this page. Open Inspect for its table, form and views.'
+                    : 'No web file, script, template or snippet of the local sources was found in this page.',
+              );
       }
       return out + lists;
     };
 
-    // ------------------------------------------------------------------------------ Mirage: Inspect and Tweaks
+    // ---- Mirage: Inspect and Tweaks
     const FORM_MODE = { 100000000: 'insert', 100000001: 'edit', 100000002: 'read only' };
-    const PERMISSION_CHIPS = [['read', 'R'], ['create', 'C'], ['update', 'U'], ['delete', 'D']];
+    const PERMISSION_CHIPS = [
+      ['read', 'R'],
+      ['create', 'C'],
+      ['update', 'U'],
+      ['delete', 'D'],
+    ];
     const RUNTIME_LIMIT = 80;
     /** A Mirage group: collapsible (with a default), filtered, and capped until "Show all". */
     const rgroup = (id, title, items, toRow, { count, collapsed = false } = {}) => {
@@ -672,10 +1005,17 @@ export function panelUi(data) {
       return `<div class="group" data-group="${id}"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? items.length}</span><span class="line"></span></button>${shown.join('')}${capped ? `<button class="morebtn" data-act="more" data-id="${id}">Show all ${items.length}</button>` : ''}</div>`;
     };
     /** One reported item; rows with a reference open their local source (at `find` when given). */
-    const rrow = (item, { code, title, sub = '', chips = '', acts = '', depth = 0, find = '', wrap = false, cls = '' }) => {
+    const rrow = (
+      item,
+      { code, title, sub = '', chips = '', acts = '', depth = 0, find = '', wrap = false, cls = '' },
+    ) => {
       const ref = item?.ref ?? '';
       // Enhanced components keep each field as a JSON key inside powerpagecomponent.xml.
-      const findText = find || (/powerpagecomponent\.xml$/i.test(ref) && /^[a-z_]+$/i.test(item?.fieldPath ?? '') ? `"${item.fieldPath}":` : '');
+      const findText =
+        find ||
+        (/powerpagecomponent\.xml$/i.test(ref) && /^[a-z_]+$/i.test(item?.fieldPath ?? '')
+          ? `"${item.fieldPath}":`
+          : '');
       const body = `<div class="name" title="${esc(title)}"><span>${hl(title)}</span>${chips}</div>${sub ? `<div class="sub">${hl(sub)}</div>` : ''}`;
       return `<div class="row${wrap ? ' wrapt' : ''}${depth ? ` d${Math.min(depth, 6)}` : ''}" data-rel="${esc(ref)}" data-path="${esc(item?.path ?? '')}" data-find="${esc(findText)}">
         <span class="ico ${cls}">${esc(code)}</span>
@@ -683,18 +1023,30 @@ export function panelUi(data) {
         <div class="acts">${acts}${ref ? `<button class="ib" data-act="open" title="Open in the editor">${icon('code')}</button><button class="ib" data-act="copy" title="Copy the file path">${icon('copy')}</button>` : ''}</div>
       </div>`;
     };
-    const simButton = (hash, title) => S.d.mirageMode ? `<button class="ib" data-act="sim" data-hash="${esc(hash)}" title="${esc(title)}">${icon('go')}</button>` : '';
+    const simButton = (hash, title) =>
+      S.d.mirageMode
+        ? `<button class="ib" data-act="sim" data-hash="${esc(hash)}" title="${esc(title)}">${icon('go')}</button>`
+        : '';
     const pageRecordId = () => {
-      try { return new URLSearchParams(location.search).get('id'); } catch { return null; }
+      try {
+        return new URLSearchParams(location.search).get('id');
+      } catch {
+        return null;
+      }
     };
-    const recordsHash = (entity) => `records?entity=${encodeURIComponent(entity)}${pageRecordId() ? `&id=${encodeURIComponent(pageRecordId())}` : ''}`;
+    const recordsHash = (entity) =>
+      `records?entity=${encodeURIComponent(entity)}${pageRecordId() ? `&id=${encodeURIComponent(pageRecordId())}` : ''}`;
     const mirageStatusCard = (c) => {
       const s = c.status ?? {};
       // The browser's own sign-in session wins over the Mirage default persona.
       const session = c.session?.supported ? c.session : null;
       const who = session
-        ? (session.signedIn ? `Signed in as ${session.name ?? session.contactId}` : 'Anonymous (not signed in)')
-        : (s.identity?.contactId ? (s.identity.name ?? s.identity.contactId) : 'Anonymous visitor');
+        ? session.signedIn
+          ? `Signed in as ${session.name ?? session.contactId}`
+          : 'Anonymous (not signed in)'
+        : s.identity?.contactId
+          ? (s.identity.name ?? s.identity.contactId)
+          : 'Anonymous visitor';
       const roles = session ? session.roles : s.identity?.roles;
       return `<div class="card"><div class="path">Local Mirage <span class="dim">${esc(s.site ?? S.d.site)} · ${esc(s.format ?? 'portal source')}</span></div>
         <div class="srcs"><span class="lbl2">Runtime</span><span class="dim" title="Source fingerprint ${esc(s.sourceFingerprint ?? 'unknown')}">revision ${esc(s.revision ?? '?')} · source ${esc(String(s.sourceFingerprint ?? '').slice(0, 8) || 'unknown')}</span>${s.reloading ? '<span class="c diff">reloading sources</span>' : ''}${s.pendingReload ? '<span class="c diff">another reload queued</span>' : ''}<button class="src" data-act="sim" data-hash="evidence">${esc(s.diagnostics ?? 0)} diagnostics</button></div>
@@ -704,219 +1056,846 @@ export function panelUi(data) {
 
     const runtimeHtml = () => {
       const runtime = S.d.inspection ?? S.d.mirage;
-      if (!runtime) return emptyState('Loading source inspection ...', 'The current address is being matched to the selected export.');
-      if (!runtime?.active) return emptyState('Source inspection unavailable', esc(runtime?.error ?? 'The selected export could not be read.'));
-      const live = runtime.mode === 'live-sources';
-      let out = live ? `<div class="card"><div class="path">Live portal · local source inspection</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>` : mirageStatusCard(runtime);
-      if (!S.inspect || S.inspect.version < runtime.version) return out + emptyState('Loading page inspection ...', '');
-      if (S.inspect.error && !S.inspect.report) return out + emptyState('Dependency inspection unavailable', esc(S.inspect.error));
+      if (!runtime || (inspectionPending(runtime) && !(S.inspect?.report && S.inspect.version >= runtime.version)))
+        return loadingState(
+          'Reading local sources…',
+          runtime?.phase ?? 'Matching the current address to the selected export.',
+        );
+      if (!runtime?.active)
+        return emptyState(
+          'Source inspection unavailable',
+          esc(runtime?.error ?? 'The selected export could not be read.'),
+        );
+      const live = ['live-sources', 'model-driven'].includes(runtime.mode);
+      let out = live
+        ? `<div class="card"><div class="path">${runtime.mode === 'model-driven' ? 'Model-driven app · local Solution inspection' : 'Live portal · local source inspection'}</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>`
+        : mirageStatusCard(runtime);
+      if (inspectionPending(runtime) && S.inspect?.report)
+        out += loadingState(
+          'Updating source inspection…',
+          runtime.phase ?? 'Previous source details remain visible until the update finishes.',
+        );
+      if (!S.inspect || S.inspect.version < runtime.version)
+        return (
+          out + loadingState('Inspecting this page…', 'Matching templates, fields and controls to their local sources.')
+        );
+      if (S.inspect.error && !S.inspect.report)
+        return (
+          out +
+          emptyState('Dependency inspection unavailable', esc(S.inspect.error)) +
+          '<button class="btn" data-act="inspect-refresh">Retry inspection</button>'
+        );
       const report = S.inspect.report;
-      if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'));
-      const sections = [['all', 'All'], ['source', 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', 'Files & snippets'], ['unresolved', 'Unresolved']];
+      if (!report)
+        return (
+          out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'))
+        );
+      if (report.modelDriven) {
+        const c = report.modelDriven;
+        out += `<div class="card"><div class="path">${esc(c.entity ?? 'App context')}</div><div class="sub">${esc([c.appId && 'App: ' + c.appId, c.formId && 'Form: ' + c.formId, c.identity?.available ? 'Signed-in user context available' : 'Signed-in user context unavailable'].filter(Boolean).join(' · '))}</div><div class="sub">Only matching exported form IDs establish ownership; table-only matches remain candidates.</div></div>`;
+      }
+      const sections = [
+        ['all', 'All'],
+        ['source', report.modelDriven ? 'Solution sources' : 'Page & templates'],
+        ['components', 'Forms & controls'],
+        ['data', 'Tables & access'],
+        ['assets', report.modelDriven ? 'Resources' : 'Files & snippets'],
+        ['unresolved', 'Unresolved'],
+      ];
       out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="xray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎ Lense X-ray</button><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
-      if (S.pickingElement) out += '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
+      if (S.pickingElement)
+        out +=
+          '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
       if (S.selectedElement) {
         const selected = S.selectedElement;
-        const identity=S.selectedIdentity;
-        out += `<div class="card" data-selected-identity><div class="path">Selected: ${esc(identity?.title??selected.tag)}${identity?'':selected.id?`#${esc(selected.id)}`:''}</div><div class="sub">${esc(identity?`${identity.kind} · ${identity.sub??''}`:'Select again with X-ray to resolve this element.')}</div>${(identity?.fields??[]).map(item=>rrow(item,{code:'COL',title:`${item.entity}.${item.name}`,sub:item.label??''})).join('')}${[...(identity?.forms??[]),...(identity?.views??[]),...(identity?.lists??[])].map(item=>rrow(item,{code:'CFG',title:item.name,sub:item.ref??''})).join('')}${(identity?.sources??[]).map(item=>rrow(item,{code:'SRC',title:item.name,sub:[item.ref,item.line?`line ${item.line}`:''].filter(Boolean).join(' · ')})).join('')}</div>`;
+        const identity = S.selectedIdentity;
+        out += `<div class="card" data-selected-identity><div class="path">Selected: ${esc(identity?.title ?? selected.tag)}${identity ? '' : selected.id ? `#${esc(selected.id)}` : ''}</div><div class="sub">${esc(identity ? `${identity.kind} · ${identity.sub ?? ''}` : 'Select again with X-ray to resolve this element.')}</div>${(identity?.fields ?? []).map((item) => rrow(item, { code: 'COL', title: `${item.entity}.${item.name}`, sub: item.label ?? '' })).join('')}${[...(identity?.forms ?? []), ...(identity?.views ?? []), ...(identity?.lists ?? [])].map((item) => rrow(item, { code: 'CFG', title: item.name, sub: item.ref ?? '' })).join('')}${(identity?.sources ?? []).map((item) => rrow(item, { code: 'SRC', title: item.name, sub: [item.ref, item.line ? `line ${item.line}` : ''].filter(Boolean).join(' · ') })).join('')}</div>`;
       }
       const page = report.page;
       if (page) {
         const access = page.access ?? {};
-        const verdict = access.allowed === true ? '<span class="c new">allowed</span>' : access.allowed === false ? `<span class="c st" title="${esc(access.code ?? '')}">denied</span>` : '';
+        const verdict =
+          access.allowed === true
+            ? '<span class="c new">allowed</span>'
+            : access.allowed === false
+              ? `<span class="c st" title="${esc(access.code ?? '')}">denied</span>`
+              : '';
         out += `<div class="card"><div class="path">${esc(page.pageName ?? page.name ?? location.pathname)} <span class="dim">${esc(page.url ?? '')}</span></div>
           <div class="srcs"><span class="lbl2">Template</span><span class="dim">${esc(page.pageTemplateName ?? 'none')}</span><span class="lbl2">Publishing</span><span class="dim">${esc(page.publishingState?.name ?? 'not set')}${page.publishingState?.visible === false ? ' (not visible)' : ''}</span>${page.parent ? `<span class="lbl2">Parent</span><span class="dim">${esc(page.parent.name ?? page.parent.url)}</span>` : ''}</div>
           <div class="srcs"><span class="lbl2">${live ? 'Live access' : 'Current persona'}</span>${verdict || (live ? '<span class="dim">unknown</span>' : '')}<span class="dim">${esc(access.reason ?? access.code ?? '')}</span>${page.ref ? `<button class="src" data-act="open" data-rel="${esc(page.ref)}">Page source</button>` : ''}</div></div>`;
-      } else out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no exported page matches this address</span></div></div>`;
+      } else if (!report.modelDriven)
+        out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no exported page matches this address</span></div></div>`;
       const keep = (...texts) => matches(...texts.map((text) => String(text ?? '')));
       const groups = [];
       const sourceRows = (report.pageSources ?? []).filter((item) => keep(item.name, item.ref));
-      groups.push(rgroup('runtime-page-sources', 'Page source files', sourceRows, (item) => rrow(item, { code: 'SRC', title: item.name, sub: item.ref ?? item.fieldPath ?? '' })));
-      const rules = (page?.access?.rules ?? []).filter((rule) => keep(rule.name, rule.rightLabel, rule.page?.url, ...(rule.roles ?? []).map((role) => role.name ?? role.id)));
-      groups.push(rgroup('runtime-access', 'Page access rules', rules, (rule) => rrow(rule, {
-        code: rule.right === 1 ? 'GRANT' : 'RULE',
-        title: rule.name,
-        sub: `${rule.id} · ${rule.page?.url??''} · ${rule.rightLabel} · ${rule.scopeLabel} · ${(rule.roles ?? []).map((role) => role.name ?? `${role.id} (unresolved)`).join(', ') || 'no roles'}${rule.inherited ? ` · inherited from ${rule.page?.name ?? rule.page?.url ?? 'an ancestor'}` : ''}`,
-        chips: `${rule.matches ? '<span class="c new">current persona</span>' : ''}${rule.overridden ? '<span class="c edited">local override</span>' : ''}`,
-        find: rule.id,
-        wrap: true,
-        acts: simButton(`portal?kind=access-rules&name=${encodeURIComponent(rule.id)}`, 'Edit this rule in _sim'),
-      })));
+      groups.push(
+        rgroup('runtime-page-sources', 'Page source files', sourceRows, (item) =>
+          rrow(item, { code: 'SRC', title: item.name, sub: item.ref ?? item.fieldPath ?? '' }),
+        ),
+      );
+      const rules = (page?.access?.rules ?? []).filter((rule) =>
+        keep(rule.name, rule.rightLabel, rule.page?.url, ...(rule.roles ?? []).map((role) => role.name ?? role.id)),
+      );
+      groups.push(
+        rgroup('runtime-access', 'Page access rules', rules, (rule) =>
+          rrow(rule, {
+            code: rule.right === 1 ? 'GRANT' : 'RULE',
+            title: rule.name,
+            sub: `${rule.id} · ${rule.page?.url ?? ''} · ${rule.rightLabel} · ${rule.scopeLabel} · ${(rule.roles ?? []).map((role) => role.name ?? `${role.id} (unresolved)`).join(', ') || 'no roles'}${rule.inherited ? ` · inherited from ${rule.page?.name ?? rule.page?.url ?? 'an ancestor'}` : ''}`,
+            chips: `${rule.matches ? '<span class="c new">current persona</span>' : ''}${rule.overridden ? '<span class="c edited">local override</span>' : ''}`,
+            find: rule.id,
+            wrap: true,
+            acts: simButton(`portal?kind=access-rules&name=${encodeURIComponent(rule.id)}`, 'Edit this rule in _sim'),
+          }),
+        ),
+      );
       const chain = (report.templateChain ?? []).filter((row) => keep(row.name, row.kind, row.via, row.ref));
-      groups.push(rgroup('runtime-chain', 'Template chain', chain, (row) => rrow(row, {
-        code: { 'page-template': 'PT', 'web-template': 'TPL', 'content-snippet': 'SNIP', root: 'FROM' }[row.kind] ?? 'SRC',
-        title: row.name,
-        sub: row.kind === 'root' ? 'renders' : `${row.kind.replace(/-/g, ' ')}${row.via && row.kind === 'web-template' ? ` · ${row.via}` : ''}${row.repeated ? ' · included again' : ''}${row.ref ? ` · ${row.ref}` : ''}`,
-        depth: row.depth,
-      })));
-      const tables = (report.tables ?? []).filter((table) => keep(table.logicalName, table.displayName, table.entitySet, table.ref));
-      groups.push(rgroup('runtime-tables', 'Tables', tables, (table) => {
-        const operations = table.permissions?.operations ?? {};
-        const chips = PERMISSION_CHIPS.map(([op, label]) => {
-          const result = operations[op];
-          if (!result) return '';
-          const tone = !result.allowed ? 'st' : result.scoped ? 'diff' : 'new';
-          return `<span class="c ${tone}" title="${esc(`${op}: ${result.reason ?? ''}`)}">${label}${result.allowed ? (result.scoped ? '~' : '') : '×'}</span>`;
-        }).join('');
-        const reasons = PERMISSION_CHIPS.map(([op]) => operations[op] ? `${op}: ${operations[op].reason}` : '').filter(Boolean).join(' ');
-        const layers = (table.sourceRefs ?? []).length > 1 ? (table.sourceRefs ?? []).map((layer, index) => `<button class="ib lay" data-act="open" data-rel="${esc(layer.ref)}" title="Open layer ${index + 1}: ${esc(layer.ref)}">L${index + 1}</button>`).join('') : '';
-        return rrow(table, {
-          code: 'TBL',
-          title: `${table.logicalName}${table.displayName ? ` (${table.displayName})` : ''}`,
-          sub: `${table.entitySet ? `entity set ${table.entitySet}${table.entitySetInferred ? ' (inferred)' : ''}` : 'entity set unavailable'} · ${table.fieldCount ?? 0} exported fields${live ? ' · effective live access unknown' : table.permissions?.mode === 'permissive' ? ' · permissions not enforced' : ''}${reasons ? ` · ${reasons}` : ''}`,
-          chips,
-          wrap: true,
-          acts: layers + simButton(recordsHash(table.logicalName), `Open ${table.logicalName} records in _sim`),
-        });
-      }));
-      const grants = (report.permissionRules ?? []).filter((rule) => keep(rule.name, rule.entity, rule.scope, ...(rule.roles ?? [])));
-      groups.push(rgroup('runtime-permissions', 'Table permissions and web roles', grants, (rule) => rrow(rule, { code: 'RULE', title: rule.name, sub: `${rule.entity} · ${rule.scope} · ${(rule.operations ?? []).join(', ') || 'no operations'} · roles ${(rule.roles ?? []).join(', ') || 'none'}${rule.relationshipName ? ` · relationship ${rule.relationshipName}` : ''}${rule.parentPermissionId ? ` · parent ${rule.parentPermissionId}` : ''}${live ? ' · exported grant; live access unknown' : ''}`, wrap: true })));
-      const forms = (report.forms ?? []).filter((form) => keep(form.name, form.entity, form.formName, form.kind, ...(form.steps ?? []).map((step) => step.name)));
-      groups.push(rgroup('runtime-forms', 'Forms', forms, (form) => [
-        rrow(form, { code: form.kind === 'advanced-form' ? 'ADV' : 'FORM', title: form.name, sub: `${form.kind === 'advanced-form' ? 'advanced form' : 'basic form'}${FORM_MODE[form.mode] ? ` · ${FORM_MODE[form.mode]}` : ''} · table ${form.entity ?? 'unknown'}${form.formName ? ` · form ${form.formName}` : ''}${form.evidence === 'rendered-component-id' ? ' · observed form ID' : form.evidence === 'configured-modal-form' ? ' · configured modal source' : ''}`, acts: form.entity ? simButton(recordsHash(form.entity), `Open ${form.entity} records in _sim`) : '' }),
-        ...(report.components ?? []).filter((component) => component.recordId === form.id && component.kind === 'basic-form' && component.ref !== form.ref).map((component) => rrow(component, { code: 'JS', title: 'Form JavaScript', sub: component.ref ?? 'Custom script source', depth: 1 })),
-        ...(form.formXml?.ref ? [rrow(form.formXml, { code: 'XML', title: form.formXml.name ?? 'FormXml', sub: `Solution FormXml · ${form.formXml.ref}`, depth: 1 })] : []),
-        ...(form.steps ?? []).flatMap((step) => [
-          rrow(step, { code: 'STEP', title: step.name ?? step.id, sub: `${step.entity ?? 'no table'}${FORM_MODE[step.mode] ? ` · ${FORM_MODE[step.mode]}` : ''}${step.formName ? ` · form ${step.formName}` : ''}`, depth: 1 }),
-          ...(step.formXml?.ref ? [rrow(step.formXml, { code: 'XML', title: step.formXml.name ?? 'FormXml', sub: `Solution FormXml · ${step.formXml.ref}`, depth: 2 })] : []),
-        ]),
-      ].join('')));
-      const views = (report.views ?? []).filter((view) => keep(view.name, view.entity, ...(view.fields ?? []).map((field) => field.name)));
-      groups.push(rgroup('runtime-views', 'Views', views, (view) => rrow(view, { code: 'VIEW', title: view.name, sub: `${view.entity} · ${(view.fields ?? []).length} columns: ${(view.fields ?? []).map((field) => field.name).join(', ')}${view.usedBy?.length ? ` · used by ${[...new Set(view.usedBy)].join(', ')}` : ''}${view.evidence === 'rendered-view-id' ? ' · observed view ID' : ''}`, wrap: true })));
-      const native = (report.nativeComponents ?? []).filter((item) => keep(item.name, item.id, item.kind, item.entity, item.owner, item.relationship));
-      groups.push(rgroup('runtime-native', 'Native grids, quick views and notes', native, (item) => [
-        rrow(item, { code: item.kind === 'subgrid' ? 'GRID' : item.kind === 'quickform' ? 'QUICK' : 'NOTES', title: item.name, sub: `${item.owner} · table ${item.entity ?? 'unknown'}${item.relationship ? ` · relationship ${item.relationship}` : ''}${item.lookup ? ` · lookup ${item.lookup}` : ''} · ${item.evidence === 'rendered-control-id' ? 'observed control ID' : 'exported form control'}${item.hidden ? ' · hidden in FormXml' : ''}`, wrap: true }),
-        ...(item.metadataSources ?? []).map((source) => rrow(source, { code: 'META', title: source.name, sub: source.ref ?? '', depth: 1 })),
-        ...(item.actions ?? []).map((action) => rrow(action, { code: 'ACTION', title: `${action.name}${action.formName ? `: ${action.formName}` : ''}`, sub: `exported action${action.formId ? ` · modal form ${action.formId}` : ''}${action.conditional ? ' · conditional visibility' : ''}`, depth: 1, wrap: true })),
-      ].join('')));
-      const columns = (report.columns ?? []).filter((column) => keep(column.entity, column.name, column.label, column.type));
-      groups.push(rgroup('runtime-columns', 'Fields and columns', columns, (column) => rrow(column, {
-        code: 'COL',
-        title: `${column.entity}.${column.name}`,
-        sub: column.resolved === false ? 'not described by the selected Solution metadata' : `${column.label ?? column.name} · ${column.type ?? 'unknown type'}${column.required ? ' · required' : ''}${column.maxLength ? ` · max ${column.maxLength}` : ''}${column.optionCount ? ` · ${column.optionCount} options: ${(column.options ?? []).map((option) => option.label).join(', ')}${column.optionCount > (column.options ?? []).length ? ' ...' : ''}` : ''}`,
-        chips: column.required ? '<span class="c edited">required</span>' : '',
-        find: `<LogicalName>${column.name}</LogicalName>`,
-        acts: `<button class="ib" data-act="inspect-locate" data-field="${esc(column.name)}" title="Find this field on the page">${icon('go')}</button>`,
-      }), { collapsed: columns.length > 25 }));
-      const USAGE_CODE = { entityform: 'FORM', entitylist: 'LIST', webform: 'ADV', entityview: 'VIEW', editable: 'EDIT', include: 'INC', snippet: 'SNIP', fetchxml: 'FXML' };
-      const lists = (report.components ?? []).filter((component) => component.kind === 'list' && keep(component.name, component.entity, 'list'));
-      const usages = (report.usages ?? []).filter((usage) => keep(usage.kind, usage.reference, usage.expression, usage.owner, usage.target));
-      groups.push(rgroup('runtime-components', 'Components and controls', [...lists.map((list) => ({ list })), ...usages.map((usage) => ({ usage }))], ({ list, usage }) => list
-        ? rrow(list, { code: 'LIST', title: list.name, sub: `list${list.entity ? ` · table ${list.entity}` : ''}` })
-        : rrow({}, { code: USAGE_CODE[usage.kind] ?? 'USE', title: `${usage.kind}${usage.reference ? `: ${usage.reference}` : ' (dynamic)'}`, sub: `${usage.expression} · in ${usage.owner}`, wrap: true }), { collapsed: usages.length > 40 }));
-      const controls = (report.renderedControls ?? []).filter((item) => keep(item.id, item.name, item.field, item.entity));
-      groups.push(rgroup('runtime-rendered', 'Rendered controls', controls, (item) => rrow(item, { code: 'DOM', title: item.field ?? item.name ?? item.id ?? item.tag, sub: `${item.tag}${item.type ? ` · ${item.type}` : ''} · ${item.evidence === 'rendered-and-source' ? 'observed with source match' : 'observed; source binding unknown'}`, acts: item.id || item.name ? `<button class="ib" data-act="inspect-locate" data-field="${esc(item.id || item.name)}" title="Find on the page">${icon('go')}</button>` : '' }), { collapsed: controls.length > 25 }));
-      groups.push(rgroup('runtime-api', 'Web API references', (report.apiReferences ?? []).filter((item) => keep(item.name, item.entity)), (item) => rrow(item, { code: 'API', title: `/_api/${item.name}`, sub: `${item.entity ? `table ${item.entity}` : 'Entity set binding is absent from selected Solution metadata'} · ${item.evidence === 'observed-api-request' ? 'observed request; IDs and query values excluded' : 'literal source reference'}` })));
-      groups.push(rgroup('runtime-logic', 'Server logic, flows and plugin registrations', (report.logic ?? []).filter((item) => keep(item.name, item.ref, item.entity, item.typeName, item.assemblyName)), (item) => [rrow(item, { code: item.kind === 'cloud-flow' ? 'FLOW' : item.kind === 'plugin-step' ? 'PLUGIN' : 'LOGIC', title: item.name, sub: item.kind === 'plugin-step' ? item.description : `${item.description ?? item.path ?? ''} · static reference`, wrap: true }), ...(item.sources ?? []).map(source => rrow(source, { code: source.kind === 'plugin-type' ? 'TYPE' : source.kind === 'plugin-code' ? 'C#' : 'ASM', title: source.name, sub: source.kind === 'plugin-code' ? 'Explicit C# source mapping; editing requires build and deployment to affect live code' : 'Exported metadata source; compiled code execution is not observed', depth: 1 }))].join('')));
-      groups.push(rgroup('runtime-pcf', 'Code components', (report.codeComponents ?? []).filter((item) => keep(item.name, item.schemaName, item.owner)), (item) => [rrow(item, { code: 'PCF', title: item.schemaName ?? item.name, sub: `${item.expression} · ${item.binding === 'native-formxml' ? `Native binding · ${item.selectedDesktop ? 'desktop selected' : 'other form factor'} · portal ${item.enablement}` : item.binding === 'declared-schema-name' ? 'Exported schema name' : item.schemaName ? 'Configured component mapping' : 'Solution binding unknown'}`, wrap: true }), ...(item.formSourceFile ? [rrow(item.formSource, { code: 'XML', title: item.owner, sub: `${item.entity ?? ''}.${item.field ?? ''} · ${(item.boundAttributes ?? []).join(', ') || 'No bound columns'}`, depth: 1 })] : []), ...(item.metadataSources ?? []).map((source) => rrow(source, { code: 'CFG', title: source.name, sub: 'Exported attribute metadata', depth: 1 })), ...(item.datasets ?? []).map((dataset) => rrow(dataset, { code: 'DATA', title: dataset.name, sub: `${dataset.binding || 'Binding missing'} · ${dataset.resolved ? `${dataset.entity}${dataset.viewName ? ` · ${dataset.viewName}` : ''} · ${dataset.fields?.length ?? 0} columns` : 'Table/view binding unknown'}`, depth: 1 })), ...(item.resources ?? []).map((resource) => rrow(resource, { code: resource.name.toUpperCase(), title: resource.ref ?? resource.url, sub: 'Declared component resource', depth: 1 }))].join('')));
-      groups.push(rgroup('runtime-assets', 'Web files used on this page', (report.assets ?? []).filter((item) => keep(item.name, item.url, item.ref)), (item) => rrow(item, { code: /\.css$/i.test(item.url) ? 'CSS' : /\.m?js$/i.test(item.url) ? 'JS' : 'FILE', title: item.url, sub: `${item.evidence === 'rendered-asset' ? 'observed in rendered DOM' : 'static source reference'} · ${item.ref ?? 'attachment source unavailable'}` })));
+      groups.push(
+        rgroup('runtime-chain', 'Template chain', chain, (row) =>
+          rrow(row, {
+            code:
+              { 'page-template': 'PT', 'web-template': 'TPL', 'content-snippet': 'SNIP', root: 'FROM' }[row.kind] ??
+              'SRC',
+            title: row.name,
+            sub:
+              row.kind === 'root'
+                ? 'renders'
+                : `${row.kind.replace(/-/g, ' ')}${row.via && row.kind === 'web-template' ? ` · ${row.via}` : ''}${row.repeated ? ' · included again' : ''}${row.ref ? ` · ${row.ref}` : ''}`,
+            depth: row.depth,
+          }),
+        ),
+      );
+      const tables = (report.tables ?? []).filter((table) =>
+        keep(table.logicalName, table.displayName, table.entitySet, table.ref),
+      );
+      groups.push(
+        rgroup('runtime-tables', 'Tables', tables, (table) => {
+          const operations = table.permissions?.operations ?? {};
+          const chips = PERMISSION_CHIPS.map(([op, label]) => {
+            const result = operations[op];
+            if (!result) return '';
+            const tone = !result.allowed ? 'st' : result.scoped ? 'diff' : 'new';
+            return `<span class="c ${tone}" title="${esc(`${op}: ${result.reason ?? ''}`)}">${label}${result.allowed ? (result.scoped ? '~' : '') : '×'}</span>`;
+          }).join('');
+          const reasons = PERMISSION_CHIPS.map(([op]) => (operations[op] ? `${op}: ${operations[op].reason}` : ''))
+            .filter(Boolean)
+            .join(' ');
+          const layers =
+            (table.sourceRefs ?? []).length > 1
+              ? (table.sourceRefs ?? [])
+                  .map(
+                    (layer, index) =>
+                      `<button class="ib lay" data-act="open" data-rel="${esc(layer.ref)}" title="Open layer ${index + 1}: ${esc(layer.ref)}">L${index + 1}</button>`,
+                  )
+                  .join('')
+              : '';
+          return rrow(table, {
+            code: 'TBL',
+            title: `${table.logicalName}${table.displayName ? ` (${table.displayName})` : ''}`,
+            sub: `${table.entitySet ? `entity set ${table.entitySet}${table.entitySetInferred ? ' (inferred)' : ''}` : 'entity set unavailable'} · ${table.fieldCount ?? 0} exported fields${live ? ' · effective live access unknown' : table.permissions?.mode === 'permissive' ? ' · permissions not enforced' : ''}${reasons ? ` · ${reasons}` : ''}`,
+            chips,
+            wrap: true,
+            acts: layers + simButton(recordsHash(table.logicalName), `Open ${table.logicalName} records in _sim`),
+          });
+        }),
+      );
+      const grants = (report.permissionRules ?? []).filter((rule) =>
+        keep(rule.name, rule.entity, rule.scope, ...(rule.roles ?? [])),
+      );
+      groups.push(
+        rgroup('runtime-permissions', 'Table permissions and web roles', grants, (rule) =>
+          rrow(rule, {
+            code: 'RULE',
+            title: rule.name,
+            sub: `${rule.entity} · ${rule.scope} · ${(rule.operations ?? []).join(', ') || 'no operations'} · roles ${(rule.roles ?? []).join(', ') || 'none'}${rule.relationshipName ? ` · relationship ${rule.relationshipName}` : ''}${rule.parentPermissionId ? ` · parent ${rule.parentPermissionId}` : ''}${live ? ' · exported grant; live access unknown' : ''}`,
+            wrap: true,
+          }),
+        ),
+      );
+      const forms = (report.forms ?? []).filter((form) =>
+        keep(form.name, form.entity, form.formName, form.kind, ...(form.steps ?? []).map((step) => step.name)),
+      );
+      groups.push(
+        rgroup('runtime-forms', 'Forms', forms, (form) =>
+          [
+            rrow(form, {
+              code: form.kind === 'advanced-form' ? 'ADV' : 'FORM',
+              title: form.name,
+              sub: `${form.kind === 'advanced-form' ? 'advanced form' : form.kind === 'model-driven-form' ? `${form.formType ?? 'main'} form` : 'basic form'}${FORM_MODE[form.mode] ? ` · ${FORM_MODE[form.mode]}` : ''} · table ${form.entity ?? 'unknown'}${form.formName ? ` · form ${form.formName}` : ''}${form.evidence === 'rendered-component-id' ? ' · observed form ID' : form.evidence === 'configured-modal-form' ? ' · configured modal source' : ''}`,
+              acts: form.entity ? simButton(recordsHash(form.entity), `Open ${form.entity} records in _sim`) : '',
+            }),
+            ...(report.components ?? [])
+              .filter(
+                (component) =>
+                  component.recordId === form.id && component.kind === 'basic-form' && component.ref !== form.ref,
+              )
+              .map((component) =>
+                rrow(component, {
+                  code: 'JS',
+                  title: 'Form JavaScript',
+                  sub: component.ref ?? 'Custom script source',
+                  depth: 1,
+                }),
+              ),
+            ...(form.formXml?.ref
+              ? [
+                  rrow(form.formXml, {
+                    code: 'XML',
+                    title: form.formXml.name ?? 'FormXml',
+                    sub: `Solution FormXml · ${form.formXml.ref}`,
+                    depth: 1,
+                  }),
+                ]
+              : []),
+            ...(form.steps ?? []).flatMap((step) => [
+              rrow(step, {
+                code: 'STEP',
+                title: step.name ?? step.id,
+                sub: `${step.entity ?? 'no table'}${FORM_MODE[step.mode] ? ` · ${FORM_MODE[step.mode]}` : ''}${step.formName ? ` · form ${step.formName}` : ''}`,
+                depth: 1,
+              }),
+              ...(step.formXml?.ref
+                ? [
+                    rrow(step.formXml, {
+                      code: 'XML',
+                      title: step.formXml.name ?? 'FormXml',
+                      sub: `Solution FormXml · ${step.formXml.ref}`,
+                      depth: 2,
+                    }),
+                  ]
+                : []),
+            ]),
+          ].join(''),
+        ),
+      );
+      const views = (report.views ?? []).filter((view) =>
+        keep(view.name, view.entity, ...(view.fields ?? []).map((field) => field.name)),
+      );
+      groups.push(
+        rgroup('runtime-views', 'Views', views, (view) =>
+          rrow(view, {
+            code: 'VIEW',
+            title: view.name,
+            sub: `${view.entity} · ${(view.fields ?? []).length} columns: ${(view.fields ?? []).map((field) => field.name).join(', ')}${view.usedBy?.length ? ` · used by ${[...new Set(view.usedBy)].join(', ')}` : ''}${view.evidence === 'rendered-view-id' ? ' · observed view ID' : ''}`,
+            wrap: true,
+          }),
+        ),
+      );
+      const native = (report.nativeComponents ?? []).filter((item) =>
+        keep(item.name, item.id, item.kind, item.entity, item.owner, item.relationship),
+      );
+      groups.push(
+        rgroup('runtime-native', 'Native grids, quick views and notes', native, (item) =>
+          [
+            rrow(item, {
+              code: item.kind === 'subgrid' ? 'GRID' : item.kind === 'quickform' ? 'QUICK' : 'NOTES',
+              title: item.name,
+              sub: `${item.owner} · table ${item.entity ?? 'unknown'}${item.relationship ? ` · relationship ${item.relationship}` : ''}${item.lookup ? ` · lookup ${item.lookup}` : ''} · ${item.evidence === 'rendered-control-id' ? 'observed control ID' : 'exported form control'}${item.hidden ? ' · hidden in FormXml' : ''}`,
+              wrap: true,
+            }),
+            ...(item.metadataSources ?? []).map((source) =>
+              rrow(source, { code: 'META', title: source.name, sub: source.ref ?? '', depth: 1 }),
+            ),
+            ...(item.actions ?? []).map((action) =>
+              rrow(action, {
+                code: 'ACTION',
+                title: `${action.name}${action.formName ? `: ${action.formName}` : ''}`,
+                sub: `exported action${action.formId ? ` · modal form ${action.formId}` : ''}${action.conditional ? ' · conditional visibility' : ''}`,
+                depth: 1,
+                wrap: true,
+              }),
+            ),
+          ].join(''),
+        ),
+      );
+      const columns = (report.columns ?? []).filter((column) =>
+        keep(column.entity, column.name, column.label, column.type),
+      );
+      groups.push(
+        rgroup(
+          'runtime-columns',
+          'Fields and columns',
+          columns,
+          (column) =>
+            rrow(column, {
+              code: 'COL',
+              title: `${column.entity}.${column.name}`,
+              sub:
+                column.resolved === false
+                  ? 'not described by the selected Solution metadata'
+                  : `${column.label ?? column.name} · ${column.type ?? 'unknown type'}${column.required ? ' · required' : ''}${column.maxLength ? ` · max ${column.maxLength}` : ''}${column.optionCount ? ` · ${column.optionCount} options: ${(column.options ?? []).map((option) => option.label).join(', ')}${column.optionCount > (column.options ?? []).length ? ' ...' : ''}` : ''}`,
+              chips: column.required ? '<span class="c edited">required</span>' : '',
+              find: `<LogicalName>${column.name}</LogicalName>`,
+              acts: `<button class="ib" data-act="inspect-locate" data-field="${esc(column.name)}" title="Find this field on the page">${icon('go')}</button>`,
+            }),
+          { collapsed: columns.length > 25 },
+        ),
+      );
+      const USAGE_CODE = {
+        entityform: 'FORM',
+        entitylist: 'LIST',
+        webform: 'ADV',
+        entityview: 'VIEW',
+        editable: 'EDIT',
+        include: 'INC',
+        snippet: 'SNIP',
+        fetchxml: 'FXML',
+      };
+      const lists = (report.components ?? []).filter(
+        (component) => component.kind === 'list' && keep(component.name, component.entity, 'list'),
+      );
+      const usages = (report.usages ?? []).filter((usage) =>
+        keep(usage.kind, usage.reference, usage.expression, usage.owner, usage.target),
+      );
+      groups.push(
+        rgroup(
+          'runtime-components',
+          'Components and controls',
+          [...lists.map((list) => ({ list })), ...usages.map((usage) => ({ usage }))],
+          ({ list, usage }) =>
+            list
+              ? rrow(list, {
+                  code: 'LIST',
+                  title: list.name,
+                  sub: `list${list.entity ? ` · table ${list.entity}` : ''}`,
+                })
+              : rrow(
+                  {},
+                  {
+                    code: USAGE_CODE[usage.kind] ?? 'USE',
+                    title: `${usage.kind}${usage.reference ? `: ${usage.reference}` : ' (dynamic)'}`,
+                    sub: `${usage.expression} · in ${usage.owner}`,
+                    wrap: true,
+                  },
+                ),
+          { collapsed: usages.length > 40 },
+        ),
+      );
+      const controls = (report.renderedControls ?? []).filter((item) =>
+        keep(item.id, item.name, item.field, item.entity),
+      );
+      groups.push(
+        rgroup(
+          'runtime-rendered',
+          'Rendered controls',
+          controls,
+          (item) =>
+            rrow(item, {
+              code: 'DOM',
+              title: item.field ?? item.name ?? item.id ?? item.tag,
+              sub: `${item.tag}${item.type ? ` · ${item.type}` : ''} · ${item.evidence === 'rendered-and-source' ? 'observed with source match' : 'observed; source binding unknown'}`,
+              acts:
+                item.id || item.name
+                  ? `<button class="ib" data-act="inspect-locate" data-field="${esc(item.id || item.name)}" title="Find on the page">${icon('go')}</button>`
+                  : '',
+            }),
+          { collapsed: controls.length > 25 },
+        ),
+      );
+      groups.push(
+        rgroup(
+          'runtime-api',
+          'Web API references',
+          (report.apiReferences ?? []).filter((item) => keep(item.name, item.entity)),
+          (item) =>
+            rrow(item, {
+              code: 'API',
+              title: `/_api/${item.name}`,
+              sub: `${item.entity ? `table ${item.entity}` : 'Entity set binding is absent from selected Solution metadata'} · ${item.evidence === 'observed-api-request' ? 'observed request; IDs and query values excluded' : 'literal source reference'}`,
+            }),
+        ),
+      );
+      groups.push(
+        rgroup(
+          'runtime-logic',
+          'Server logic, flows and plugin registrations',
+          (report.logic ?? []).filter((item) =>
+            keep(item.name, item.ref, item.entity, item.typeName, item.assemblyName),
+          ),
+          (item) =>
+            [
+              rrow(item, {
+                code: item.kind === 'cloud-flow' ? 'FLOW' : item.kind === 'plugin-step' ? 'PLUGIN' : 'LOGIC',
+                title: item.name,
+                sub:
+                  item.kind === 'plugin-step'
+                    ? item.description
+                    : `${item.description ?? item.path ?? ''} · static reference`,
+                wrap: true,
+              }),
+              ...(item.sources ?? []).map((source) =>
+                rrow(source, {
+                  code: source.kind === 'plugin-type' ? 'TYPE' : source.kind === 'plugin-code' ? 'C#' : 'ASM',
+                  title: source.name,
+                  sub:
+                    source.kind === 'plugin-code'
+                      ? 'Explicit C# source mapping; editing requires build and deployment to affect live code'
+                      : 'Exported metadata source; compiled code execution is not observed',
+                  depth: 1,
+                }),
+              ),
+            ].join(''),
+        ),
+      );
+      groups.push(
+        rgroup(
+          'runtime-pcf',
+          'Code components',
+          (report.codeComponents ?? []).filter((item) => keep(item.name, item.schemaName, item.owner)),
+          (item) =>
+            [
+              rrow(item, {
+                code: 'PCF',
+                title: item.schemaName ?? item.name,
+                sub: `${item.expression} · ${item.binding === 'native-formxml' ? `Native binding · ${item.selectedDesktop ? 'desktop selected' : 'other form factor'} · portal ${item.enablement}` : item.binding === 'declared-schema-name' ? 'Exported schema name' : item.schemaName ? 'Configured component mapping' : 'Solution binding unknown'}`,
+                wrap: true,
+              }),
+              ...(item.formSourceFile
+                ? [
+                    rrow(item.formSource, {
+                      code: 'XML',
+                      title: item.owner,
+                      sub: `${item.entity ?? ''}.${item.field ?? ''} · ${(item.boundAttributes ?? []).join(', ') || 'No bound columns'}`,
+                      depth: 1,
+                    }),
+                  ]
+                : []),
+              ...(item.metadataSources ?? []).map((source) =>
+                rrow(source, { code: 'CFG', title: source.name, sub: 'Exported attribute metadata', depth: 1 }),
+              ),
+              ...(item.datasets ?? []).map((dataset) =>
+                rrow(dataset, {
+                  code: 'DATA',
+                  title: dataset.name,
+                  sub: `${dataset.binding || 'Binding missing'} · ${dataset.resolved ? `${dataset.entity}${dataset.viewName ? ` · ${dataset.viewName}` : ''} · ${dataset.fields?.length ?? 0} columns` : 'Table/view binding unknown'}`,
+                  depth: 1,
+                }),
+              ),
+              ...(item.resources ?? []).map((resource) =>
+                rrow(resource, {
+                  code: resource.name.toUpperCase(),
+                  title: resource.ref ?? resource.url,
+                  sub: 'Declared component resource',
+                  depth: 1,
+                }),
+              ),
+            ].join(''),
+        ),
+      );
+      groups.push(
+        rgroup(
+          'runtime-assets',
+          report.modelDriven ? 'Web resources of your Solutions' : 'Web files used on this page',
+          (report.assets ?? []).filter((item) => keep(item.name, item.url, item.ref)),
+          (item) =>
+            rrow(item, {
+              code: /\.css$/i.test(item.url) ? 'CSS' : /\.m?js$/i.test(item.url) ? 'JS' : 'FILE',
+              title: item.url,
+              sub: `${item.evidence === 'rendered-asset' ? 'observed in rendered DOM' : 'static source reference'} · ${item.ref ?? 'attachment source unavailable'}`,
+            }),
+        ),
+      );
       const snippets = (report.snippets ?? []).filter((snippet) => keep(snippet.name, snippet.value, snippet.ref));
-      groups.push(rgroup('runtime-snippets', 'Content snippets', snippets, (snippet) => rrow(snippet, {
-        code: 'SNIP',
-        title: snippet.name,
-        sub: snippet.deleted ? 'removed locally' : snippet.value == null ? '' : `“${snippet.value}”`,
-        chips: snippet.overridden ? '<span class="c edited">local override</span>' : '',
-        acts: simButton(`portal?kind=snippets&name=${encodeURIComponent(snippet.name)}`, 'Edit this snippet in _sim'),
-      }), { collapsed: snippets.length > 40 }));
+      groups.push(
+        rgroup(
+          'runtime-snippets',
+          'Content snippets',
+          snippets,
+          (snippet) =>
+            rrow(snippet, {
+              code: 'SNIP',
+              title: snippet.name,
+              sub: snippet.deleted ? 'removed locally' : snippet.value == null ? '' : `“${snippet.value}”`,
+              chips: snippet.overridden ? '<span class="c edited">local override</span>' : '',
+              acts: simButton(
+                `portal?kind=snippets&name=${encodeURIComponent(snippet.name)}`,
+                'Edit this snippet in _sim',
+              ),
+            }),
+          { collapsed: snippets.length > 40 },
+        ),
+      );
       const settings = (report.siteSettings ?? []).filter((setting) => keep(setting.name, setting.value));
-      groups.push(rgroup('runtime-settings', 'Site settings', settings, (setting) => rrow(setting, {
-        code: 'SET',
-        title: setting.name,
-        sub: setting.deleted ? 'removed locally' : `= ${setting.value ?? ''}`,
-        chips: setting.overridden ? '<span class="c edited">local override</span>' : '',
-        find: setting.recordId ?? setting.name,
-        acts: simButton(`portal?kind=settings&name=${encodeURIComponent(setting.name)}`, 'Edit this setting in _sim'),
-      }), { collapsed: settings.length > 40 }));
+      groups.push(
+        rgroup(
+          'runtime-settings',
+          'Site settings',
+          settings,
+          (setting) =>
+            rrow(setting, {
+              code: 'SET',
+              title: setting.name,
+              sub: setting.deleted ? 'removed locally' : `= ${setting.value ?? ''}`,
+              chips: setting.overridden ? '<span class="c edited">local override</span>' : '',
+              find: setting.recordId ?? setting.name,
+              acts: simButton(
+                `portal?kind=settings&name=${encodeURIComponent(setting.name)}`,
+                'Edit this setting in _sim',
+              ),
+            }),
+          { collapsed: settings.length > 40 },
+        ),
+      );
       const related = report.related ?? {};
       const relatedItems = [
         ...(related.weblinks ?? []).filter((link) => keep(link.name, link.set)).map((item) => ({ kind: 'link', item })),
-        ...(related.sitemarkers ?? []).filter((marker) => keep(marker.name, 'site marker')).map((item) => ({ kind: 'marker', item })),
-        ...(related.redirects ?? []).filter((redirect) => keep(redirect.name, redirect.inboundUrl, 'redirect')).map((item) => ({ kind: 'redirect', item })),
-        ...(related.shortcuts ?? []).filter((shortcut) => keep(shortcut.name, shortcut.title, 'shortcut')).map((item) => ({ kind: 'shortcut', item })),
+        ...(related.sitemarkers ?? [])
+          .filter((marker) => keep(marker.name, 'site marker'))
+          .map((item) => ({ kind: 'marker', item })),
+        ...(related.redirects ?? [])
+          .filter((redirect) => keep(redirect.name, redirect.inboundUrl, 'redirect'))
+          .map((item) => ({ kind: 'redirect', item })),
+        ...(related.shortcuts ?? [])
+          .filter((shortcut) => keep(shortcut.name, shortcut.title, 'shortcut'))
+          .map((item) => ({ kind: 'shortcut', item })),
       ];
-      groups.push(rgroup('runtime-related', 'Related metadata', relatedItems, ({ kind, item }) => kind === 'link'
-        ? rrow(item, { code: 'LINK', title: item.name, sub: `web link in ${item.set ?? 'an unknown set'}`, find: item.id })
-        : kind === 'marker'
-          ? rrow(item, { code: 'MARK', title: item.name, sub: 'site marker', find: item.id })
-          : kind === 'redirect'
-            ? rrow(item, { code: 'REDIR', title: `/${String(item.inboundUrl ?? '').replace(/^\//, '')}`, sub: `redirect ${item.statusCode ?? ''} to this page${item.name ? ` · ${item.name}` : ''}`, find: item.id })
-            : rrow(item, { code: 'SHORT', title: item.title ?? item.name, sub: 'shortcut', find: item.id })));
-      const unresolved = (report.unresolved ?? []).filter((item) => keep(item.name, item.expression, item.kind, item.reason, item.owner));
-      groups.push(rgroup('runtime-unresolved', 'Unresolved dependencies', unresolved, (item) => `<div class="row wrapt"><span class="ico k-warn">?</span><div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? item.kind ?? 'Dependency')}</span><span class="what">${esc(item.kind ?? '')}</span></div><div class="sub">${hl(item.reason ?? item.message ?? '')}${item.owner ? ` · in ${esc(item.owner)}` : ''}</div></div></div>`, { collapsed: unresolved.length > 20 }));
-      const sectionOf = { 'runtime-page-sources': 'source', 'runtime-chain': 'source', 'runtime-access': 'data', 'runtime-tables': 'data', 'runtime-permissions': 'data', 'runtime-api': 'data', 'runtime-forms': 'components', 'runtime-views': 'components', 'runtime-native': 'components', 'runtime-columns': 'components', 'runtime-components': 'components', 'runtime-rendered': 'components', 'runtime-logic': 'components', 'runtime-pcf': 'components', 'runtime-assets': 'assets', 'runtime-snippets': 'assets', 'runtime-settings': 'assets', 'runtime-related': 'source', 'runtime-unresolved': 'unresolved' };
-      const listed = groups.filter((group) => S.inspectSection === 'all' || sectionOf[/data-group="([^"]+)"/.exec(group)?.[1]] === S.inspectSection).join('');
-      return out + (listed || emptyState(S.q ? 'Nothing matches' : 'No dependencies in this section', S.q ? 'Clear the filter to see the page inspection.' : 'Choose another section or refresh after navigating.'));
+      groups.push(
+        rgroup('runtime-related', 'Related metadata', relatedItems, ({ kind, item }) =>
+          kind === 'link'
+            ? rrow(item, {
+                code: 'LINK',
+                title: item.name,
+                sub: `web link in ${item.set ?? 'an unknown set'}`,
+                find: item.id,
+              })
+            : kind === 'marker'
+              ? rrow(item, { code: 'MARK', title: item.name, sub: 'site marker', find: item.id })
+              : kind === 'redirect'
+                ? rrow(item, {
+                    code: 'REDIR',
+                    title: `/${String(item.inboundUrl ?? '').replace(/^\//, '')}`,
+                    sub: `redirect ${item.statusCode ?? ''} to this page${item.name ? ` · ${item.name}` : ''}`,
+                    find: item.id,
+                  })
+                : rrow(item, { code: 'SHORT', title: item.title ?? item.name, sub: 'shortcut', find: item.id }),
+        ),
+      );
+      const unresolved = (report.unresolved ?? []).filter((item) =>
+        keep(item.name, item.expression, item.kind, item.reason, item.owner),
+      );
+      groups.push(
+        rgroup(
+          'runtime-unresolved',
+          'Unresolved dependencies',
+          unresolved,
+          (item) =>
+            `<div class="row wrapt"><span class="ico k-warn">?</span><div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? item.kind ?? 'Dependency')}</span><span class="what">${esc(item.kind ?? '')}</span></div><div class="sub">${hl(item.reason ?? item.message ?? '')}${item.owner ? ` · in ${esc(item.owner)}` : ''}</div></div></div>`,
+          { collapsed: unresolved.length > 20 },
+        ),
+      );
+      const sectionOf = {
+        'runtime-page-sources': 'source',
+        'runtime-chain': 'source',
+        'runtime-access': 'data',
+        'runtime-tables': 'data',
+        'runtime-permissions': 'data',
+        'runtime-api': 'data',
+        'runtime-forms': 'components',
+        'runtime-views': 'components',
+        'runtime-native': 'components',
+        'runtime-columns': 'components',
+        'runtime-components': 'components',
+        'runtime-rendered': 'components',
+        'runtime-logic': 'components',
+        'runtime-pcf': 'components',
+        'runtime-assets': 'assets',
+        'runtime-snippets': 'assets',
+        'runtime-settings': 'assets',
+        'runtime-related': 'source',
+        'runtime-unresolved': 'unresolved',
+      };
+      const listed = groups
+        .filter(
+          (group) =>
+            S.inspectSection === 'all' || sectionOf[/data-group="([^"]+)"/.exec(group)?.[1]] === S.inspectSection,
+        )
+        .join('');
+      return (
+        out +
+        (listed ||
+          emptyState(
+            S.q ? 'Nothing matches' : 'No dependencies in this section',
+            S.q
+              ? 'Clear the filter to see the page inspection.'
+              : 'Choose another section or refresh after navigating.',
+          ))
+      );
     };
 
-    const personaFold = value => String(value??'').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[øæœßđðłþ]/g,letter=>S.tweaks?.personaCatalog?.transliterations?.[letter]??letter);
+    const personaFold = (value) =>
+      String(value ?? '')
+        .normalize('NFKD')
+        .replace(/\p{M}/gu, '')
+        .toLowerCase()
+        .replace(/[øæœßđðłþ]/g, (letter) => S.tweaks?.personaCatalog?.transliterations?.[letter] ?? letter);
     const personaPreferences = () => {
-      try{const value=JSON.parse(localStorage.getItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope??location.origin}`)??'{}');return {pinned:Array.isArray(value.pinned)?value.pinned.filter(v=>typeof v==='string').slice(0,100):[],recent:Array.isArray(value.recent)?value.recent.filter(v=>typeof v==='string').slice(0,5):[]};}catch{return {pinned:[],recent:[]};}
+      try {
+        const value = JSON.parse(
+          localStorage.getItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope ?? location.origin}`) ?? '{}',
+        );
+        return {
+          pinned: Array.isArray(value.pinned) ? value.pinned.filter((v) => typeof v === 'string').slice(0, 100) : [],
+          recent: Array.isArray(value.recent) ? value.recent.filter((v) => typeof v === 'string').slice(0, 5) : [],
+        };
+      } catch {
+        return { pinned: [], recent: [] };
+      }
     };
-    const savePersonaPreferences = value => {try{localStorage.setItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope??location.origin}`,JSON.stringify(value));}catch{/* optional preference */}};
-    const personaCollator=new Intl.Collator('en',{sensitivity:'base'});
+    const savePersonaPreferences = (value) => {
+      try {
+        localStorage.setItem(
+          `paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope ?? location.origin}`,
+          JSON.stringify(value),
+        );
+      } catch {
+        /* optional preference */
+      }
+    };
+    const personaCollator = new Intl.Collator('en', { sensitivity: 'base' });
     let personaOrderCache;
-    const personaMatches = (query=S.personaFilters??{q:'',roles:[],tags:[],groups:[],subgroups:[]}) => {
-      const terms=personaFold(query.q).trim().split(/\s+/).filter(Boolean),people=S.tweaks?.personas??[];
-      const index=S.tweaks?.personaIndex??people.map(person=>({key:person.key??`@contact:${person.contactId}`,text:personaFold([person.name,...(person.roles??[])].join(' ')),roles:(person.roles??[]).map(personaFold),tags:[],group:'__other'}));
-      const groups=S.tweaks?.personaCatalog?.groups??[],groupOrder=new Map(groups.map((group,index)=>[personaFold(group.id),index])),subgroups=new Map(groups.map(group=>[personaFold(group.id),new Map((group.subgroups??[]).map((sub,index)=>[personaFold(sub.id),index]))]));
-      if(personaOrderCache?.people!==people)personaOrderCache={people,ordered:index.map((entry,i)=>({...entry,persona:people[i]})).filter(entry=>entry.persona).sort((a,b)=>(groupOrder.get(a.group)??groups.length)-(groupOrder.get(b.group)??groups.length)||(a.subgroup?subgroups.get(a.group)?.get(a.subgroup)??1000:-1)-(b.subgroup?subgroups.get(b.group)?.get(b.subgroup)??1000:-1)||(a.persona.order??1000)-(b.persona.order??1000)||personaCollator.compare(String(a.persona.label??a.persona.name??a.key),String(b.persona.label??b.persona.name??b.key))||a.key.localeCompare(b.key))};
-      return personaOrderCache.ordered.filter(entry=>entry.persona&&entry.persona.active!==false&&terms.every(term=>entry.text.includes(term))&&['roles','tags','accounts'].every(facet=>!query[facet]?.length||query[facet].some(value=>entry[facet].includes(personaFold(value))))&&(!query.rolesOnly||entry.roles.length>0)&&(!query.groups?.length||query.groups.map(personaFold).includes(entry.group))&&(!query.subgroups?.length||query.subgroups.some(value=>personaFold(value)===`${entry.group}:${entry.subgroup}`)));
+    const personaMatches = (query = S.personaFilters ?? { q: '', roles: [], tags: [], groups: [], subgroups: [] }) => {
+      const terms = personaFold(query.q).trim().split(/\s+/).filter(Boolean),
+        people = S.tweaks?.personas ?? [];
+      const index =
+        S.tweaks?.personaIndex ??
+        people.map((person) => ({
+          key: person.key ?? `@contact:${person.contactId}`,
+          text: personaFold([person.name, ...(person.roles ?? [])].join(' ')),
+          roles: (person.roles ?? []).map(personaFold),
+          tags: [],
+          group: '__other',
+        }));
+      const groups = S.tweaks?.personaCatalog?.groups ?? [],
+        groupOrder = new Map(groups.map((group, index) => [personaFold(group.id), index])),
+        subgroups = new Map(
+          groups.map((group) => [
+            personaFold(group.id),
+            new Map((group.subgroups ?? []).map((sub, index) => [personaFold(sub.id), index])),
+          ]),
+        );
+      if (personaOrderCache?.people !== people)
+        personaOrderCache = {
+          people,
+          ordered: index
+            .map((entry, i) => ({ ...entry, persona: people[i] }))
+            .filter((entry) => entry.persona)
+            .sort(
+              (a, b) =>
+                (groupOrder.get(a.group) ?? groups.length) - (groupOrder.get(b.group) ?? groups.length) ||
+                (a.subgroup ? (subgroups.get(a.group)?.get(a.subgroup) ?? 1000) : -1) -
+                  (b.subgroup ? (subgroups.get(b.group)?.get(b.subgroup) ?? 1000) : -1) ||
+                (a.persona.order ?? 1000) - (b.persona.order ?? 1000) ||
+                personaCollator.compare(
+                  String(a.persona.label ?? a.persona.name ?? a.key),
+                  String(b.persona.label ?? b.persona.name ?? b.key),
+                ) ||
+                a.key.localeCompare(b.key),
+            ),
+        };
+      return personaOrderCache.ordered.filter(
+        (entry) =>
+          entry.persona &&
+          entry.persona.active !== false &&
+          terms.every((term) => entry.text.includes(term)) &&
+          ['roles', 'tags', 'accounts'].every(
+            (facet) => !query[facet]?.length || query[facet].some((value) => entry[facet].includes(personaFold(value))),
+          ) &&
+          (!query.rolesOnly || entry.roles.length > 0) &&
+          (!query.groups?.length || query.groups.map(personaFold).includes(entry.group)) &&
+          (!query.subgroups?.length ||
+            query.subgroups.some((value) => personaFold(value) === `${entry.group}:${entry.subgroup}`)),
+      );
     };
     const personaRowsHtml = () => {
-      const matching=personaMatches(),preferences=personaPreferences(),offset=Math.max(0,Math.min(S.personaPage??0,Math.max(0,matching.length-1))),pageRows=matching.slice(offset,offset+50);
-      const row=entry=>{const p=entry.persona,selected=S.pick.personaKey?S.pick.personaKey===entry.key:S.pick.persona===p.contactId;return `<div class="pp-persona-row${selected?' selected':''}" data-panel-persona-row="${esc(entry.key)}"><button class="pp-persona-choice" data-act="choosepersona" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" aria-pressed="${selected}"><strong>${esc(p.label??p.name??p.contactId)}${p.default?' · Default':''}</strong><span>${esc(p.name??p.contactId)}${p.account?.name?` · ${esc(p.account.name)}`:""}</span>${p.description?`<span>${esc(p.description.split(/\r?\n/,1)[0])}</span>`:''}<span>${esc((p.roles??[]).join(', ')||'No web roles')}${p.tags?.length?` · ${esc(p.tags.join(', '))}`:''}${p.context?` · Setup available: ${esc(S.tweaks.personaCatalog?.contexts?.find(c=>c.id===p.context)?.label??p.context)} (full picker)`:''}</span></button><button data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${preferences.pinned.includes(entry.key)}" aria-label="Pin ${esc(p.label??p.name)}">${preferences.pinned.includes(entry.key)?'★':'☆'}</button></div>`;};
-      const shortcut=(keys,label)=>{const byKey=new Map(matching.map(entry=>[entry.key,entry]));const rows=keys.map(key=>byKey.get(key)).filter(Boolean).slice(0,10);return rows.length?`<section><h4>${label}</h4>${rows.map(row).join('')}</section>`:'';};
-      const groups=[...(S.tweaks?.personaCatalog?.groups??[]).filter(group=>matching.some(entry=>entry.persona.group===group.id)),{id:'__other',label:'Other contacts'}];
-      const defaultRow=offset===0?matching.find(entry=>entry.persona.default):null;
-      return `<p class="dim" role="status" data-panel-persona-count>${matching.length?offset+1:0}–${Math.min(offset+50,matching.length)} of ${matching.length} personas</p>${defaultRow?`<section><h4>Default</h4>${row(defaultRow)}</section>`:''}${shortcut(preferences.pinned,'Pinned')}${shortcut(preferences.recent,'Recent')}${groups.map(group=>{const all=matching.filter(entry=>(entry.group||'__other')===group.id),rows=pageRows.filter(entry=>(entry.group||'__other')===group.id&&entry!==defaultRow);if(!all.length)return '';return `<details class="pp-persona-group"${all.length<=25||S.personaFilters?.q||S.personaFilters?.rolesOnly||['roles','tags','accounts','groups','subgroups'].some(key=>S.personaFilters?.[key]?.length)?' open':''}><summary>${esc(group.label)} · ${all.length}${!rows.length?`<button class="btn" data-act="persona-group" data-group="${esc(group.id)}">View ${esc(group.label)} matches</button>`:''}</summary>${rows.filter(entry=>!entry.persona.subgroup).map(row).join('')}${(group.subgroups??[]).map(sub=>{const entries=rows.filter(entry=>entry.persona.subgroup===sub.id);return entries.length?`<h4>${esc(sub.label)} · ${all.filter(entry=>entry.persona.subgroup===sub.id).length}</h4>${entries.map(row).join('')}`:''}).join('')}</details>`;}).join('')}${matching.length?'':'<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}<div class="tw">${offset?'<button class="btn" data-act="persona-page" data-direction="-1">Previous</button>':''}${offset+50<matching.length?'<button class="btn" data-act="persona-page" data-direction="1">Show more</button>':''}</div>`;
+      const matching = personaMatches(),
+        preferences = personaPreferences(),
+        offset = Math.max(0, Math.min(S.personaPage ?? 0, Math.max(0, matching.length - 1))),
+        pageRows = matching.slice(offset, offset + 50);
+      const row = (entry) => {
+        const p = entry.persona,
+          selected = S.pick.personaKey ? S.pick.personaKey === entry.key : S.pick.persona === p.contactId;
+        return `<div class="pp-persona-row${selected ? ' selected' : ''}" data-panel-persona-row="${esc(entry.key)}"><button class="pp-persona-choice" data-act="choosepersona" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" aria-pressed="${selected}"><strong>${esc(p.label ?? p.name ?? p.contactId)}${p.default ? ' · Default' : ''}</strong><span>${esc(p.name ?? p.contactId)}${p.account?.name ? ` · ${esc(p.account.name)}` : ''}</span>${p.description ? `<span>${esc(p.description.split(/\r?\n/, 1)[0])}</span>` : ''}<span>${esc((p.roles ?? []).join(', ') || 'No web roles')}${p.tags?.length ? ` · ${esc(p.tags.join(', '))}` : ''}${p.context ? ` · Setup available: ${esc(S.tweaks.personaCatalog?.contexts?.find((c) => c.id === p.context)?.label ?? p.context)} (full picker)` : ''}</span></button><button data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${preferences.pinned.includes(entry.key)}" aria-label="Pin ${esc(p.label ?? p.name)}">${preferences.pinned.includes(entry.key) ? '★' : '☆'}</button></div>`;
+      };
+      const shortcut = (keys, label) => {
+        const byKey = new Map(matching.map((entry) => [entry.key, entry]));
+        const rows = keys
+          .map((key) => byKey.get(key))
+          .filter(Boolean)
+          .slice(0, 10);
+        return rows.length ? `<section><h4>${label}</h4>${rows.map(row).join('')}</section>` : '';
+      };
+      const groups = [
+        ...(S.tweaks?.personaCatalog?.groups ?? []).filter((group) =>
+          matching.some((entry) => entry.persona.group === group.id),
+        ),
+        { id: '__other', label: 'Other contacts' },
+      ];
+      const defaultRow = offset === 0 ? matching.find((entry) => entry.persona.default) : null;
+      return `<p class="dim" role="status" data-panel-persona-count>${matching.length ? offset + 1 : 0}–${Math.min(offset + 50, matching.length)} of ${matching.length} personas</p>${defaultRow ? `<section><h4>Default</h4>${row(defaultRow)}</section>` : ''}${shortcut(preferences.pinned, 'Pinned')}${shortcut(preferences.recent, 'Recent')}${groups
+        .map((group) => {
+          const all = matching.filter((entry) => (entry.group || '__other') === group.id),
+            rows = pageRows.filter((entry) => (entry.group || '__other') === group.id && entry !== defaultRow);
+          if (!all.length) return '';
+          return `<details class="pp-persona-group"${all.length <= 25 || S.personaFilters?.q || S.personaFilters?.rolesOnly || ['roles', 'tags', 'accounts', 'groups', 'subgroups'].some((key) => S.personaFilters?.[key]?.length) ? ' open' : ''}><summary>${esc(group.label)} · ${all.length}${!rows.length ? `<button class="btn" data-act="persona-group" data-group="${esc(group.id)}">View ${esc(group.label)} matches</button>` : ''}</summary>${rows
+            .filter((entry) => !entry.persona.subgroup)
+            .map(row)
+            .join('')}${(group.subgroups ?? [])
+            .map((sub) => {
+              const entries = rows.filter((entry) => entry.persona.subgroup === sub.id);
+              return entries.length
+                ? `<h4>${esc(sub.label)} · ${all.filter((entry) => entry.persona.subgroup === sub.id).length}</h4>${entries.map(row).join('')}`
+                : '';
+            })
+            .join('')}</details>`;
+        })
+        .join(
+          '',
+        )}${matching.length ? '' : '<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}<div class="tw">${offset ? '<button class="btn" data-act="persona-page" data-direction="-1">Previous</button>' : ''}${offset + 50 < matching.length ? '<button class="btn" data-act="persona-page" data-direction="1">Show more</button>' : ''}</div>`;
     };
     const personaPickerHtml = (selectedId) => {
-      if(S.pick.persona===undefined&&selectedId!==undefined)S.pick.persona=selectedId;
-      const query=S.personaFilters??{q:'',roles:[],tags:[],groups:[],subgroups:[]},people=S.tweaks?.personas??[],groups=[...(S.tweaks?.personaCatalog?.groups??[]).filter(group=>people.some(person=>person.active!==false&&person.group===group.id)),...(people.some(person=>person.active!==false&&person.group==='__other')?[{id:'__other',label:'Other contacts'}]:[])];
-      const facets=[['roles','Web role',[...new Set(people.flatMap(p=>p.roles??[]))].map(id=>({id,label:id}))],['tags','Tag',[...new Set(people.flatMap(p=>p.tags??[]))].map(id=>({id,label:id}))],['accounts','Account',[...new Map(people.filter(p=>p.account?.id).map(p=>[p.account.id,p.account.name??p.account.id])).entries()].map(([id,label])=>({id,label}))],['groups','Group',groups],['subgroups','Subgroup',groups.flatMap(group=>(group.subgroups??[]).map(sub=>({id:`${group.id}:${sub.id}`,label:`${group.label} / ${sub.label}`})))]];
+      if (S.pick.persona === undefined && selectedId !== undefined) S.pick.persona = selectedId;
+      const query = S.personaFilters ?? { q: '', roles: [], tags: [], groups: [], subgroups: [] },
+        people = S.tweaks?.personas ?? [],
+        groups = [
+          ...(S.tweaks?.personaCatalog?.groups ?? []).filter((group) =>
+            people.some((person) => person.active !== false && person.group === group.id),
+          ),
+          ...(people.some((person) => person.active !== false && person.group === '__other')
+            ? [{ id: '__other', label: 'Other contacts' }]
+            : []),
+        ];
+      const facets = [
+        ['roles', 'Web role', [...new Set(people.flatMap((p) => p.roles ?? []))].map((id) => ({ id, label: id }))],
+        ['tags', 'Tag', [...new Set(people.flatMap((p) => p.tags ?? []))].map((id) => ({ id, label: id }))],
+        [
+          'accounts',
+          'Account',
+          [
+            ...new Map(
+              people.filter((p) => p.account?.id).map((p) => [p.account.id, p.account.name ?? p.account.id]),
+            ).entries(),
+          ].map(([id, label]) => ({ id, label })),
+        ],
+        ['groups', 'Group', groups],
+        [
+          'subgroups',
+          'Subgroup',
+          groups.flatMap((group) =>
+            (group.subgroups ?? []).map((sub) => ({
+              id: `${group.id}:${sub.id}`,
+              label: `${group.label} / ${sub.label}`,
+            })),
+          ),
+        ],
+      ];
       for (const facet of facets) {
-        const [name] = facet, available = new Set();
-        for (const entry of personaMatches({...query,[name]:[]})) {
-          const values = name === 'groups' ? [entry.group] : name === 'subgroups' ? entry.subgroup ? [`${entry.group}:${entry.subgroup}`] : [] : entry[name] ?? [];
+        const [name] = facet,
+          available = new Set();
+        for (const entry of personaMatches({ ...query, [name]: [] })) {
+          const values =
+            name === 'groups'
+              ? [entry.group]
+              : name === 'subgroups'
+                ? entry.subgroup
+                  ? [`${entry.group}:${entry.subgroup}`]
+                  : []
+                : (entry[name] ?? []);
           for (const value of values) available.add(personaFold(value));
         }
-        facet[2] = facet[2].filter(item => available.has(personaFold(item.id)) || query[name]?.includes(item.id));
+        facet[2] = facet[2].filter((item) => available.has(personaFold(item.id)) || query[name]?.includes(item.id));
       }
-      const selected=people.find(p=>p.contactId===S.pick.persona),activeFilters=[query.roles,query.tags,query.groups,query.subgroups,query.accounts].reduce((total,values)=>total+(values?.length??0),0)+(query.rolesOnly?1:0);
-      return `<div class="pp-persona-picker"><label>Find a persona<input type="search" data-panel-persona-query value="${esc(query.q)}" placeholder="Name, account, role, tag or description"></label><details class="pp-persona-filter-disclosure"${(S.personaFilterDisclosureOpen??Boolean(activeFilters))?' open':''}><summary>Filters${activeFilters?` · ${activeFilters} active`:''}</summary><div class="pp-persona-facets">${facets.filter(([, ,options])=>options.length).map(([name,label,options])=>`<label>${label}<select data-panel-persona-facet="${name}" aria-label="${label}" multiple size="2">${options.filter((item,index)=>index<100||query[name]?.includes(item.id)).map(item=>`<option value="${esc(item.id)}"${query[name]?.includes(item.id)?' selected':''}>${esc(item.label)}</option>`).join('')}</select></label>`).join('')}</div><label><input type="checkbox" data-panel-persona-roles-only${query.rolesOnly?' checked':''}> Has web roles</label><p class="dim">All terms match. Any values within one filter match; filters combine.${facets.some(([, ,options])=>options.length>100)?' Filter menus show the first 100 values; use search for other names, roles, accounts or tags.':''}</p><button class="btn" data-act="persona-clear">Clear filters</button></details><div data-panel-persona-results>${personaRowsHtml()}</div><p class="dim" data-panel-persona-selected>Selected: ${esc(selected?.label??selected?.name??'Choose a persona')}. ${S.tweaks?.session?.supported?'Sign-in changes this browser’s identity; runtime settings stay unchanged.':'Switch persona changes the runtime default for requests without their own sign-in session.'}</p><button class="btn" data-act="sim" data-hash="identity">Open full picker and isolated setups</button></div>`;
+      const selected = people.find((p) => p.contactId === S.pick.persona),
+        activeFilters =
+          [query.roles, query.tags, query.groups, query.subgroups, query.accounts].reduce(
+            (total, values) => total + (values?.length ?? 0),
+            0,
+          ) + (query.rolesOnly ? 1 : 0);
+      return `<div class="pp-persona-picker"><label>Find a persona<input type="search" data-panel-persona-query value="${esc(query.q)}" placeholder="Name, account, role, tag or description"></label><details class="pp-persona-filter-disclosure"${(S.personaFilterDisclosureOpen ?? Boolean(activeFilters)) ? ' open' : ''}><summary>Filters${activeFilters ? ` · ${activeFilters} active` : ''}</summary><div class="pp-persona-facets">${facets
+        .filter(([, , options]) => options.length)
+        .map(
+          ([name, label, options]) =>
+            `<label>${label}<select data-panel-persona-facet="${name}" aria-label="${label}" multiple size="2">${options
+              .filter((item, index) => index < 100 || query[name]?.includes(item.id))
+              .map(
+                (item) =>
+                  `<option value="${esc(item.id)}"${query[name]?.includes(item.id) ? ' selected' : ''}>${esc(item.label)}</option>`,
+              )
+              .join('')}</select></label>`,
+        )
+        .join(
+          '',
+        )}</div><label><input type="checkbox" data-panel-persona-roles-only${query.rolesOnly ? ' checked' : ''}> Has web roles</label><p class="dim">All terms match. Any values within one filter match; filters combine.${facets.some(([, , options]) => options.length > 100) ? ' Filter menus show the first 100 values; use search for other names, roles, accounts or tags.' : ''}</p><button class="btn" data-act="persona-clear">Clear filters</button></details><div data-panel-persona-results>${personaRowsHtml()}</div><p class="dim" data-panel-persona-selected>Selected: ${esc(selected?.label ?? selected?.name ?? 'Choose a persona')}. ${S.tweaks?.session?.supported ? 'Sign-in changes this browser’s identity; runtime settings stay unchanged.' : 'Switch persona changes the runtime default for requests without their own sign-in session.'}</p><button class="btn" data-act="sim" data-hash="identity">Open full picker and isolated setups</button></div>`;
     };
     const refreshPersonaRows = () => {
       // Recompute available facets as well as rows, preserving the focused search/control.
-      const picker=el.panel.querySelector('.pp-persona-picker');
-      if(picker){
-        S.personaFilterDisclosureOpen=picker.querySelector('.pp-persona-filter-disclosure')?.open??false;
-        const active=root.activeElement,search=active?.hasAttribute('data-panel-persona-query'),selection=search?[active.selectionStart,active.selectionEnd]:null;
-        const identity=active&&picker.contains(active)?{tag:active.tagName,data:{...active.dataset}}:null;
-        picker.outerHTML=personaPickerHtml();
+      const picker = el.panel.querySelector('.pp-persona-picker');
+      if (picker) {
+        S.personaFilterDisclosureOpen = picker.querySelector('.pp-persona-filter-disclosure')?.open ?? false;
+        const active = root.activeElement,
+          search = active?.hasAttribute('data-panel-persona-query'),
+          selection = search ? [active.selectionStart, active.selectionEnd] : null;
+        const identity =
+          active && picker.contains(active) ? { tag: active.tagName, data: { ...active.dataset } } : null;
+        picker.outerHTML = personaPickerHtml();
         delete S.html.body;
-        const replacement=identity?[...el.panel.querySelectorAll('.pp-persona-picker button,.pp-persona-picker input,.pp-persona-picker select')].find(node=>node.tagName===identity.tag&&Object.entries(identity.data).every(([key,value])=>node.dataset[key]===value)):null;
-        if(identity)(replacement??el.tabs.querySelector('[aria-selected=true]'))?.focus({preventScroll:true});if(search&&selection)try{replacement?.setSelectionRange(...selection);}catch{}
+        const replacement = identity
+          ? [
+              ...el.panel.querySelectorAll(
+                '.pp-persona-picker button,.pp-persona-picker input,.pp-persona-picker select',
+              ),
+            ].find(
+              (node) =>
+                node.tagName === identity.tag &&
+                Object.entries(identity.data).every(([key, value]) => node.dataset[key] === value),
+            )
+          : null;
+        if (identity) (replacement ?? el.tabs.querySelector('[aria-selected=true]'))?.focus({ preventScroll: true });
+        if (search && selection)
+          try {
+            replacement?.setSelectionRange(...selection);
+          } catch {
+            /* Optional inspection or cleanup failure must not interrupt the owning operation. */
+          }
       }
-      const query=S.personaFilters??{},count=['roles','tags','groups','subgroups','accounts'].reduce((total,key)=>total+(query[key]?.length??0),0)+(query.rolesOnly?1:0),summary=el.panel.querySelector('.pp-persona-filter-disclosure>summary');
-      if(summary)summary.textContent='Filters'+(count?` · ${count} active`:'');
+      const query = S.personaFilters ?? {},
+        count =
+          ['roles', 'tags', 'groups', 'subgroups', 'accounts'].reduce(
+            (total, key) => total + (query[key]?.length ?? 0),
+            0,
+          ) + (query.rolesOnly ? 1 : 0),
+        summary = el.panel.querySelector('.pp-persona-filter-disclosure>summary');
+      if (summary) summary.textContent = 'Filters' + (count ? ` · ${count} active` : '');
     };
 
     const tweaksHtml = () => {
       const runtime = S.d.mirage;
       if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', '');
-      if (!runtime?.active) return emptyState('Mirage is not active', runtime?.error ? esc(runtime.error) : 'Tweaks change the local Mirage runtime.');
+      if (!runtime?.active)
+        return emptyState(
+          'Mirage is not active',
+          runtime?.error ? esc(runtime.error) : 'Tweaks change the local Mirage runtime.',
+        );
       const t = S.tweaks;
-      if (!t) return emptyState('Loading Mirage tweaks ...', '');
-      if (!t.ok) return emptyState('Tweaks unavailable', esc(t.error ?? ''));
+      if (!t || S.tweaksLoading !== null)
+        return loadingState('Loading local setup…', 'Reading personas, permissions and scenarios.');
+      if (!t.ok)
+        return (
+          emptyState('Tweaks unavailable', esc(t.error ?? '')) +
+          '<button class="btn" data-act="tweaks-retry">Retry</button>'
+        );
       let out = '';
-      if (S.confirm) out += `<div class="banner"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
-      const option = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
-      const personaLabel = (item) => `${item.name ?? item.contactId}${item.roles?.length ? ` — ${item.roles.join(', ')}` : ''}${item.active === false ? ' (inactive)' : ''}`;
+      if (S.confirm)
+        out += `<div class="banner"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
+      const option = (value, label, selected) =>
+        `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
       const session = t.session?.supported ? t.session : null;
       if (session) {
         // This browser's own sign-in session (a cookie): not the Mirage default persona.
         const listed = (id) => t.personas.some((item) => item.contactId === id);
-        const persona = [S.pick.persona, session.signedIn ? session.contactId : null, t.personas[0]?.contactId].find((id) => id && listed(id)) ?? '';
+        const persona =
+          [S.pick.persona, session.signedIn ? session.contactId : null, t.personas[0]?.contactId].find(
+            (id) => id && listed(id),
+          ) ?? '';
         const chosen = t.personas.find((item) => item.contactId === persona);
         // How the portal signs in: the site's identity provider (the local stand-in on loopback),
         // or the local persona sign-in page when the site has no external provider.
@@ -934,13 +1913,21 @@ export function panelUi(data) {
           ${session.error ? `<div class="dim">${esc(session.error)}</div>` : ''}
           <div class="dim">This page runs the portal's own sign-in (or sign-out) and comes back here. Only this browser changes; other browsers keep their own sessions.</div></div>`;
       } else {
-        const persona = S.pick.persona ?? (t.identity?.contactId ?? '');
+        const persona = S.pick.persona ?? t.identity?.contactId ?? '';
         out += `<div class="card"><div class="path">Persona</div>${t.personasAvailable ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="choosepersona" data-contact="" data-key="anonymous">Anonymous visitor</button><button class="btn" data-act="persona">Switch persona</button></div>` : '<div class="dim">This Mirage does not report personas.</div>'}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
       }
-      out += `<div class="card"><div class="path">Table permissions</div><div class="tw"><span class="seg">${[['enforce', 'Enforce'], ['permissive', 'Permissive']].map(([value, label]) => `<button class="${t.permissionMode === value ? 'on' : ''}" data-act="permissions" data-v="${value}" title="${value === 'enforce' ? 'Apply table permissions, web roles and scopes' : 'Sandbox: every identity may read and write all local tables'}">${label}</button>`).join('')}</span><span class="dim">grant source ${esc(t.permissionSource ?? 'unknown')}</span></div></div>`;
+      out += `<div class="card"><div class="path">Table permissions</div><div class="tw"><span class="seg">${[
+        ['enforce', 'Enforce'],
+        ['permissive', 'Permissive'],
+      ]
+        .map(
+          ([value, label]) =>
+            `<button class="${t.permissionMode === value ? 'on' : ''}" data-act="permissions" data-v="${value}" title="${value === 'enforce' ? 'Apply table permissions, web roles and scopes' : 'Sandbox: every identity may read and write all local tables'}">${label}</button>`,
+        )
+        .join('')}</span><span class="dim">grant source ${esc(t.permissionSource ?? 'unknown')}</span></div></div>`;
       if (t.scenarios.length) {
         const pick = S.pick.scenario ?? t.activeScenario?.id ?? t.scenarios[0].id;
-        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, `${item.name ?? item.id}${item.catalogue ? ` · ${item.persona} → ${item.startPath ?? "/"}${item.context ? " · isolated setup" : ""}` : ""}`, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
+        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, `${item.name ?? item.id}${item.catalogue ? ` · ${item.persona} → ${item.startPath ?? '/'}${item.context ? ' · isolated setup' : ''}` : ''}`, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
       }
       if (t.presets.length) {
         const pick = S.pick.preset ?? t.presets[0].id;
@@ -951,15 +1938,27 @@ export function panelUi(data) {
       out += `<div class="card"><div class="path">Open in _sim</div><div class="srcs"><button class="src" data-act="admin">Administration</button><button class="src" data-act="sim" data-hash="${esc(`audit?path=${encodeURIComponent(location.pathname)}`)}">Requests for this page</button><button class="src" data-act="sim" data-hash="evidence">Diagnostics</button><button class="src" data-act="sim" data-hash="access">Personas &amp; permissions</button><button class="src" data-act="sim" data-hash="portal">Settings &amp; snippets</button></div>${t.tables.length ? `<div class="srcs"><span class="lbl2">Records${id ? ` (id ${esc(id)})` : ''}</span>${t.tables.map((table) => `<button class="src" data-act="sim" data-hash="${esc(recordsHash(table))}">${esc(table)}</button>`).join('')}</div>` : ''}<div class="srcs"><button class="src" data-act="copypage">Copy local URL</button><span class="dim">${esc(location.href)}</span></div></div>`;
       const s = t.status ?? {};
       // Loopback confinement of local pages (an opt-in Content-Security-Policy) and its exceptions.
-      const policy = typeof s.confinePortalPages !== 'boolean' ? null : s.confinePortalPages
-        ? `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${s.externalFrameOrigins ? `${s.externalFrameOrigins} online embed origin${s.externalFrameOrigins === 1 ? '' : 's'} allowed` : 'no online embedded content'}`
-        : 'Not confined: pages carry only the headers their site settings define';
-      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policy ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${esc(policy)} · ${esc(s.contentPolicySource??'runtime state')}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>` : ''}</div>`;
+      const policy =
+        typeof s.confinePortalPages !== 'boolean'
+          ? null
+          : s.confinePortalPages
+            ? `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${s.externalFrameOrigins ? `${s.externalFrameOrigins} online embed origin${s.externalFrameOrigins === 1 ? '' : 's'} allowed` : 'no online embedded content'}`
+            : 'Not confined: pages carry only the headers their site settings define';
+      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policy ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${esc(policy)} · ${esc(s.contentPolicySource ?? 'runtime state')}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>` : ''}</div>`;
       return out;
     };
 
     const issueRow = (p) => {
-      const kind = p.type === 'http' || p.type === 'failed' ? ['NET', 'k-err'] : p.type === 'deploy' ? ['SRC', 'k-warn'] : p.type === 'note' ? ['SKIP', 'k-warn'] : ['ERR', 'k-err'];
+      const kind =
+        p.type === 'http' || p.type === 'failed'
+          ? ['NET', 'k-err']
+          : p.type === 'deploy'
+            ? ['SRC', 'k-warn']
+            : p.type === 'note'
+              ? ['SKIP', 'k-warn']
+              : p.type === 'warning'
+                ? ['WARN', 'k-warn']
+                : ['ERR', 'k-err'];
       const where = p.rel ? `${p.rel}${p.line ? ':' + p.line : ''}` : (p.where ?? '');
       const main = `<div class="name"><span>${hl(p.text)}</span>${p.status ? `<span class="c st">${p.status}</span>` : ''}${p.rel && p.type !== 'deploy' && p.type !== 'note' ? '<span class="c local" title="comes from a local file">local</span>' : ''}${p.count > 1 ? `<span class="c same">&times;${p.count}</span>` : ''}</div><div class="sub">${hl(where)}</div>`;
       return `<div class="row wrapt" data-rel="${esc(p.rel ?? '')}" data-line="${p.line ?? ''}" data-col="${p.col ?? ''}" data-text="${esc(p.text)}">
@@ -976,26 +1975,57 @@ export function panelUi(data) {
       const notes = d.notes.map((n) => ({ type: 'note', text: n.reason, rel: n.rel })).filter(keep);
       const errors = d.problems.filter((p) => p.type === 'error' || p.type === 'console').filter(keep);
       const net = d.problems.filter((p) => p.type === 'http' || p.type === 'failed').filter(keep);
+      const warnings = d.problems.filter((p) => p.type === 'warning').filter(keep);
       const lists =
         group('deploy', 'Source and deployment limitations', deploy.map(issueRow)) +
         group('notes', 'Changes not applied on this page', notes.map(issueRow)) +
         group('errors', 'JavaScript errors', errors.map(issueRow)) +
+        group('warnings', 'Console warnings', warnings.map(issueRow)) +
         group('net', 'Failed requests', net.map(issueRow));
-      return lists || emptyState(S.q || S.ui.localOnly ? 'Nothing matches' : 'No issues on this page', S.q || S.ui.localOnly ? 'Clear the filter to see everything.' : 'JavaScript errors, failed requests and source or deployment limitations show up here.');
+      return (
+        lists ||
+        emptyState(
+          S.q || S.ui.localOnly ? 'Nothing matches' : 'No issues on this page',
+          S.q || S.ui.localOnly
+            ? 'Clear the filter to see everything.'
+            : 'JavaScript errors, failed requests and source or deployment limitations show up here.',
+        )
+      );
     };
 
     const activityHtml = () => {
       const rows = S.d.activity
         .filter((a) => matches(a.text, (a.files ?? []).join(' ')))
         .map((a) => {
-          const kind = a.type === 'fault' ? ['ERR', 'k-err'] : a.type === 'dialog' ? ['DIALOG', 'k-warn'] : a.type === 'deploy' ? ['DEPL', 'k-warn'] : a.type === 'switch' ? ['SET', ''] : a.how === 'css' ? ['CSS', ''] : ['SAVE', ''];
+          const kind =
+            a.type === 'fault'
+              ? ['ERR', 'k-err']
+              : a.type === 'dialog'
+                ? ['DIALOG', 'k-warn']
+                : a.type === 'deploy'
+                  ? ['DEPL', 'k-warn']
+                  : a.type === 'switch'
+                    ? ['SET', '']
+                    : a.how === 'css'
+                      ? ['CSS', '']
+                      : ['SAVE', ''];
           return `<div class="row wrapt"><span class="ico ${kind[1]}">${kind[0]}</span><div class="main"><div class="name"><span>${hl(a.text)}</span></div>${a.files?.length ? `<div class="sub">${hl(a.files.join(', '))}</div>` : ''}</div><span class="time">${clock(a.at)}</span></div>`;
         });
-      return rows.join('') || emptyState('Nothing happened yet', 'Saves, reloads and switches of this session are listed here.');
+      return (
+        rows.join('') ||
+        emptyState('Nothing happened yet', 'Saves, reloads and switches of this session are listed here.')
+      );
     };
 
     const exploreHtml = () => {
-      if (!S.catalog) return emptyState('Loading ...', '');
+      if (S.catalogLoading !== null)
+        return loadingState('Reading the source catalogue…', 'Finding pages, files, templates and snippets.');
+      if (S.catalogError)
+        return (
+          emptyState('Source catalogue unavailable', esc(S.catalogError)) +
+          '<button class="btn" data-act="catalog-retry">Retry</button>'
+        );
+      if (!S.catalog) return loadingState('Reading the source catalogue…', '');
       const q = S.q.trim().toLowerCase();
       // an address or name that is exactly what was typed comes first, then the ones starting with it
       const rank = (c) => {
@@ -1007,7 +2037,7 @@ export function panelUi(data) {
       const rows = found.slice(0, 150).map((c) => {
         const [code, cls, what] = c.t === 'page' ? KIND.page : fileIcon(c);
         const sub = [c.url, c.rel].filter(Boolean).join('  ←  ');
-        return `<div class="row" data-rel="${esc(c.rel ?? '')}" data-url="${esc(c.url ?? '')}">
+        return `<div class="row" data-rel="${esc(c.rel ?? '')}" data-path="${esc(c.path ?? '')}" data-url="${esc(c.url ?? '')}">
           <span class="ico ${cls}" title="${esc(what)}">${code}</span>
           <button class="main" data-act="${c.t === 'page' ? 'go' : 'open'}" title="${c.t === 'page' ? 'Open this page' : 'Open in the editor'}">
             <div class="name"><span>${hl(c.title || shortName(c.rel))}</span>${c.t !== 'page' && KIND[c.kind] ? `<span class="what">${esc(what)}</span>` : ''}</div><div class="sub">${hl(sub)}</div>
@@ -1020,17 +2050,33 @@ export function panelUi(data) {
         </div>`;
       });
       const head = `<div class="filters"><span class="lbl2">${found.length} of ${S.catalog.length} pages and sources${found.length > 150 ? ', first 150 shown' : ''}</span></div>`;
-      return head + (rows.join('') || emptyState('Nothing found', 'Try part of a page address, a file name or a template name.'));
+      return (
+        head +
+        (rows.join('') || emptyState('Nothing found', 'Try part of a page address, a file name or a template name.'))
+      );
     };
 
     const diffHtml = () => {
       const f = S.diff;
-      if (f.loading) return `<div class="dhead"><button class="ib" data-act="closediff" title="Back">${icon('back')}</button><span class="t">${esc(baseName(f.rel))}</span></div>` + emptyState('Comparing ...', '');
+      if (f.loading)
+        return (
+          `<div class="dhead"><button class="ib" data-act="closediff" title="Back">${icon('back')}</button><span class="t">${esc(baseName(f.rel))}</span></div>` +
+          loadingState('Comparing sources…', 'You can go back while the comparison runs.')
+        );
       const head = `<div class="dhead"><button class="ib" data-act="closediff" title="Back (Esc)">${icon('back')}</button><span class="t" title="${esc(f.rel)}">${esc(baseName(f.rel))}</span>
         <span class="lbl2">local vs ${esc(f.against ?? '')}</span><span class="grow"></span>${f.ok ? `<b class="plus">+${f.added}</b> <b class="minus">&minus;${f.removed}</b>` : ''}
         <button class="ib" data-act="open" data-rel="${esc(f.rel)}" title="Open in the editor">${icon('code')}</button></div>`;
       if (!f.ok) return head + emptyState('Cannot compare', esc(f.error ?? ''));
-      if (!f.lines.length) return head + emptyState('No difference', `The local file has the same content as ${esc(f.against)}.`);
+      if (!f.lines.length)
+        return (
+          head +
+          (f.rawEqual === false
+            ? emptyState(
+                'No line difference',
+                'Raw bytes differ, including BOM or newline formatting. The line comparison normalizes that formatting.',
+              )
+            : emptyState('No difference', `The local file has the same content as ${esc(f.against)}.`))
+        );
       const lines = f.lines
         .map(([t, a, b, s]) =>
           t === '@'
@@ -1038,18 +2084,36 @@ export function panelUi(data) {
             : `<div class="dl ${t === '+' ? 'a' : t === '-' ? 'r' : ''}"${t !== '-' && b ? ` data-act="open" data-rel="${esc(f.rel)}" data-line="${b}"` : ''}><i>${a ?? ''}</i><i>${b ?? ''}</i><span>${t}${esc(s)}</span></div>`,
         )
         .join('');
-      return head + `<div class="difft">${lines}</div>${f.truncated ? '<div class="empty">The comparison is long; only its beginning is shown.</div>' : ''}`;
+      return (
+        head +
+        `<div class="difft">${lines}</div>${f.truncated ? '<div class="empty">The comparison is long; only its beginning is shown.</div>' : ''}`
+      );
     };
 
-    // ------------------------------------------------------------------------------ render
+    // ---- render
     const set = (key, node, html) => {
       if (S.html[key] === html) return false;
       S.html[key] = html;
-      const active=root.activeElement;
-      const identity=item=>{const row=item.closest('[data-rel],[data-panel-persona-row],[data-group]');return row?JSON.stringify({...row.dataset}):'';};
-      const focused=active&&node.contains(active)?{tag:active.tagName,data:{...active.dataset},id:active.id,row:identity(active)}:null;
+      const active = root.activeElement;
+      const identity = (item) => {
+        const row = item.closest('[data-rel],[data-panel-persona-row],[data-group]');
+        return row ? JSON.stringify({ ...row.dataset }) : '';
+      };
+      const focused =
+        active && node.contains(active)
+          ? { tag: active.tagName, data: { ...active.dataset }, id: active.id, row: identity(active) }
+          : null;
       node.innerHTML = html;
-      if(focused){const replacement=[...node.querySelectorAll('button,input,select,a,[tabindex]')].find(item=>item.tagName===focused.tag&&item.id===focused.id&&identity(item)===focused.row&&Object.entries(focused.data).every(([key,value])=>item.dataset[key]===value));(replacement??el.tabs.querySelector('[aria-selected=true]'))?.focus({preventScroll:true});}
+      if (focused) {
+        const replacement = [...node.querySelectorAll('button,input,select,a,[tabindex]')].find(
+          (item) =>
+            item.tagName === focused.tag &&
+            item.id === focused.id &&
+            identity(item) === focused.row &&
+            Object.entries(focused.data).every(([key, value]) => item.dataset[key] === value),
+        );
+        (replacement ?? el.tabs.querySelector('[aria-selected=true]'))?.focus({ preventScroll: true });
+      }
       return true;
     };
     const render = () => {
@@ -1058,12 +2122,12 @@ export function panelUi(data) {
       if (!d) return;
       const ui = S.ui;
       const errs = d.problems.filter((p) => p.type === 'error' || p.type === 'console').length;
-      const warns = d.needsDeploy.length + d.notes.length;
-      const net = d.problems.length - errs;
+      const warns = d.needsDeploy.length + d.notes.length + d.problems.filter((p) => p.type === 'warning').length;
+      const net = d.problems.filter((p) => p.type === 'http' || p.type === 'failed').length;
       wrap.className = `wrap${ui.open ? ' open' : ''}${ui.hidden ? ' hidden' : ''}${ui.large ? ' large' : ''}${d.caution ? ' caution' : ''}`;
       host.dataset.mode = d.online ? 'online' : 'local';
       host.dataset.overrides = String(d.items.length);
-      host.dataset.issues = String(warns + d.problems.length);
+      host.dataset.issues = String(warns + errs + net);
       host.dataset.label = `${d.site} @ ${d.env}`;
       place();
       const dot = `<span class="dot${d.online ? ' off' : d.mirageMode || d.live ? '' : ' paused'}" title="${d.mirageMode ? 'Mirage renders local source and manages reloads' : d.online ? 'overrides are off' : d.live ? 'live reload is on' : 'live reload is off'}"></span>`;
@@ -1071,34 +2135,61 @@ export function panelUi(data) {
       // which checkout state the overlay serves: branch, HEAD commit and the comparison baseline
       const git = d.git ?? {};
       const gitLabel = git.branch ?? (git.commit ? git.commit.slice(0, 7) : null);
-      const baselineText = git.baseline?.available ? `baseline ${git.baseline.requested}${git.baseline.pinned ? ` pinned at ${(git.baseline.commit ?? '').slice(0, 7)}` : ''}` : 'no Git baseline';
-      const gitTitle = gitLabel ? `${git.detached ? 'detached HEAD' : `branch ${git.branch}`} @ ${(git.commit ?? '').slice(0, 7)} · ${baselineText}${git.headMoved ? ' · HEAD differs from the comparison baseline' : ''}` : baselineText;
-      const branch = gitLabel ? `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">⎇ ${esc(gitLabel)}${git.headMoved && git.baseline?.pinned ? ' ≠ baseline' : ''}</span>` : '';
+      const baselineText = git.baseline?.available
+        ? `baseline ${git.baseline.requested}${git.baseline.pinned ? ` pinned at ${(git.baseline.commit ?? '').slice(0, 7)}` : ''}`
+        : 'no Git baseline';
+      const gitTitle = gitLabel
+        ? `${git.detached ? 'detached HEAD' : `branch ${git.branch}`} @ ${(git.commit ?? '').slice(0, 7)} · ${baselineText}${git.headMoved ? ' · HEAD differs from the comparison baseline' : ''}`
+        : baselineText;
+      const branch = gitLabel
+        ? `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">⎇ ${esc(gitLabel)}${git.headMoved && git.baseline?.pinned ? ' ≠ baseline' : ''}</span>`
+        : '';
       set(
         'pill',
         el.pill,
         `${dot}<b>${d.online ? 'ONLINE' : 'LOCAL'}</b><span class="lbl">${esc(d.site)} @ ${esc(d.env)}</span>${real}${branch}
          ${d.online || d.mirageMode ? '' : `<span class="n ok" title="${d.items.length} overrides on this page">${d.items.length}</span>`}
-         ${warns ? `<span class="n warn" title="${d.mirageMode ? 'source notes or runtime issues' : `${warns} changes need a deployment or were not applied`}">${warns}</span>` : ''}
-         ${errs + net ? `<span class="n err" title="${errs} JavaScript ${errs===1?'error':'errors'}, ${net} failed ${net===1?'request':'requests'}">${errs + net}</span>` : ''}
+         ${warns ? `<span class="n warn" title="${d.mirageMode ? 'source notes or runtime issues' : `${warns} source notes, deployment limitations or console warnings`}">${warns}</span>` : ''}
+         ${errs + net ? `<span class="n err" title="${errs} JavaScript ${errs === 1 ? 'error' : 'errors'}, ${net} failed ${net === 1 ? 'request' : 'requests'}">${errs + net}</span>` : ''}
          ${d.pending.length || d.pendingBaseline ? `<span class="n warn" title="${d.mirageMode ? 'source changes are being applied by Mirage' : 'sources or baseline changed since this page loaded'}">${icon('reload')}</span>` : ''}`,
       );
       // a save that just arrived: say so even while the panel is closed or hidden
       if (d.lastChange && d.lastChange.at !== S.flashed) {
         const fresh = d.now - d.lastChange.at < 8000;
         S.flashed = d.lastChange.at;
-        try { sessionStorage.setItem('paqvilo:last-change:' + d.token, String(S.flashed)); } catch { /* optional toast deduplication */ }
+        try {
+          sessionStorage.setItem('paqvilo:last-change:' + d.token, String(S.flashed));
+        } catch {
+          /* optional toast deduplication */
+        }
         if (fresh && !d.online && d.lastChange.how !== 'skipped') {
-          const names = d.lastChange.files.slice(0, 2).map(baseName).join(', ') + (d.lastChange.files.length > 2 ? ` +${d.lastChange.files.length - 2}` : '') || (d.lastChange.baselineChanged ? 'Git baseline updated' : '');
-          float(`${d.lastChange.how === 'css' ? 'Styles swapped' : d.lastChange.how === 'reload' ? 'Reloaded' : 'Saved'} &middot; ${esc(names)}`);
+          const names =
+            d.lastChange.files.slice(0, 2).map(baseName).join(', ') +
+              (d.lastChange.files.length > 2 ? ` +${d.lastChange.files.length - 2}` : '') ||
+            (d.lastChange.baselineChanged ? 'Git baseline updated' : '');
+          float(
+            `${d.lastChange.how === 'css' ? 'Styles swapped' : d.lastChange.how === 'reload' ? 'Reloaded' : 'Saved'} &middot; ${esc(names)}`,
+          );
         }
       }
       const xray = document.getElementById('paqvilo-xray')?.__px;
-      const currentInspection=d.inspection??d.mirage;
-      const inspected=currentInspection?.active&&S.inspect&&S.inspect.version>=currentInspection.version?S.inspect:null;
-      xray?.update({ ...d, ui, inspectionError: inspected?.error }, inspected?.report??null);
+      const currentInspection = d.inspection ?? d.mirage;
+      const inspected =
+        currentInspection?.active && S.inspect && S.inspect.version >= currentInspection.version ? S.inspect : null;
+      xray?.update(
+        {
+          ...d,
+          ui,
+          inspectionLoading: S.inspectLoading !== null || inspectionPending(currentInspection),
+          inspectionError: inspected?.error,
+        },
+        inspected?.report ?? null,
+      );
       if (xray?.enabled) ensureInspect();
-      if (!ui.open) {place();return;}
+      if (!ui.open) {
+        place();
+        return;
+      }
       set(
         'head',
         el.head,
@@ -1112,19 +2203,65 @@ export function panelUi(data) {
          <button class="ib" data-act="close" title="Collapse (${d.keys.panel} or Esc)">${icon('down')}</button>`,
       );
       const inspection = d.inspection ?? d.mirage;
-      const tabCount = { overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`, runtime: '', tweaks: '', issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '', activity: '', explore: '' };
-      const targetGroups = [['Local runtimes',t=>/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Remote',t=>!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Caution · REAL DATA',t=>t.caution]].map(([name,keep])=>{
-        const options=S.targets.map((target,index)=>keep(target)?`<option value="${index}" ${target.origin===location.origin?'selected':''}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`:'').join('');
-        return options?`<optgroup label="${name}">${options}</optgroup>`:'';
-      }).join('');
-      const pendingTarget=S.pendingTarget;
-      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${targetGroups}</select><button data-target-go class="btn" ${S.targetSwitching?'disabled':''}>Go</button>${pendingTarget?`<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution?' (REAL DATA)':''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`:''}`);
-      set('git', el.git, d.mirageMode ? '' : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`);
-      set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab===id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab===id?0:-1}">${label}${tabCount[id]}</button>`).join(''));
-      el.body.setAttribute('aria-labelledby','paqvilo-tab-'+ui.tab);
+      const tabCount = {
+        overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`,
+        runtime: '',
+        tweaks: '',
+        issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '',
+        activity: '',
+        explore: '',
+      };
+      const targetGroups = [
+        [
+          'Local runtimes',
+          (t) => /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin) && !t.caution,
+        ],
+        ['Remote', (t) => !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin) && !t.caution],
+        ['Caution · REAL DATA', (t) => t.caution],
+      ]
+        .map(([name, keep]) => {
+          const options = S.targets
+            .map((target, index) =>
+              keep(target)
+                ? `<option value="${index}" ${target.origin === location.origin ? 'selected' : ''}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`
+                : '',
+            )
+            .join('');
+          return options ? `<optgroup label="${name}">${options}</optgroup>` : '';
+        })
+        .join('');
+      const pendingTarget = S.pendingTarget;
+      set(
+        'targets',
+        el.targets,
+        `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length < 2 ? 'disabled' : ''}>${targetGroups}</select><button data-target-go class="btn" aria-busy="${Boolean(S.targetSwitching)}" ${S.targetSwitching ? 'disabled' : ''}>${S.targetSwitching ? 'Opening…' : 'Go'}</button>${pendingTarget ? `<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution ? ' (REAL DATA)' : ''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>` : ''}`,
+      );
+      set(
+        'git',
+        el.git,
+        d.mirageMode
+          ? ''
+          : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`,
+      );
+      el.targets.hidden = d.capabilities?.targets === false;
+      el.git.hidden = d.capabilities?.git === false;
+      set(
+        'tabs',
+        el.tabs,
+        TABS.filter(
+          ([id]) =>
+            (id !== 'actions' || d.capabilities?.actions === true) && (!MIRAGE_TABS.includes(id) || d.mirageMode),
+        )
+          .map(
+            ([id, label]) =>
+              `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab === id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab === id ? 0 : -1}">${label}${tabCount[id] ?? ''}</button>`,
+          )
+          .join(''),
+      );
+      el.body.setAttribute('aria-labelledby', 'paqvilo-tab-' + ui.tab);
       el.input.placeholder = PLACEHOLDER[ui.tab] ?? '';
-      el.input.setAttribute('aria-label',el.input.placeholder||'Search');
-      el.input.closest('.search').hidden=ui.tab==='tweaks';
+      el.input.setAttribute('aria-label', el.input.placeholder || 'Search');
+      el.input.closest('.search').hidden = ['tweaks', 'actions'].includes(ui.tab);
       set(
         'toolbtns',
         el.toolbtns,
@@ -1136,18 +2273,45 @@ export function panelUi(data) {
       );
       if (ui.tab === 'runtime') ensureInspect();
       if (ui.tab === 'tweaks') ensureTweaks();
-      const body = S.diff ? diffHtml() : ui.tab === 'runtime' ? runtimeHtml() : ui.tab === 'tweaks' ? tweaksHtml() : ui.tab === 'issues' ? issuesHtml() : ui.tab === 'activity' ? activityHtml() : ui.tab === 'explore' ? exploreHtml() : overridesHtml();
+      const body = S.diff
+        ? diffHtml()
+        : ui.tab === 'actions' && d.capabilities?.actions
+          ? '<div data-panel-actions-host></div>'
+          : ui.tab === 'runtime'
+            ? runtimeHtml()
+            : ui.tab === 'tweaks'
+              ? tweaksHtml()
+              : ui.tab === 'issues'
+                ? issuesHtml()
+                : ui.tab === 'activity'
+                  ? activityHtml()
+                  : ui.tab === 'explore'
+                    ? exploreHtml()
+                    : overridesHtml();
       const top = el.body.scrollTop;
       if (set('body', el.body, body)) el.body.scrollTop = S.keepScroll === false ? 0 : top;
+      host.dispatchEvent(new CustomEvent('paqvilo-panel-render', { detail: { token: d.token, tab: ui.tab } }));
+      el.body.setAttribute(
+        'aria-busy',
+        String(
+          Boolean(
+            S.diff?.loading ||
+            (ui.tab === 'runtime' && (S.inspectLoading !== null || inspectionPending(inspection))) ||
+            (ui.tab === 'tweaks' && S.tweaksLoading !== null) ||
+            (ui.tab === 'explore' && S.catalogLoading !== null),
+          ),
+        ),
+      );
+      pendingFeedback();
       S.keepScroll = true;
       set(
         'foot',
         el.foot,
-        `<span title="${d.keys.hide} hides or shows paqvilo, ${d.keys.panel} opens or closes this panel${d.mirageMode ? '' : `, ${d.keys.mode} switches between local and online`}">Alt+Shift+ <kbd>${d.keyCodes.hide.slice(-1)}</kbd> hide &nbsp;<kbd>${d.keyCodes.panel.slice(-1)}</kbd> panel${d.mirageMode ? '' : ` &nbsp;<kbd>${d.keyCodes.mode.slice(-1)}</kbd> online`} &nbsp;<kbd>X</kbd> X-ray &nbsp;<kbd>Esc</kbd> close &nbsp;<kbd>/</kbd> search</span><span class="grow"></span><span class="stats" title="${d.mirageMode ? 'Mirage renders source and owns source reloads' : 'what the local sources hold: web files, custom scripts and styles, changed templates and snippets'}">${d.mirageMode ? 'Mirage runtime' : `${d.stats.webFiles} files &middot; ${d.stats.blocks} scripts &middot; ${d.stats.patches} patches`}</span>`,
+        `<span title="${d.keys.hide} hides or shows paqvilo, ${d.keys.panel} opens or closes this panel${d.mirageMode ? '' : `, ${d.keys.mode} switches between local and online`}">Alt+Shift+ <kbd>${d.keyCodes.hide.slice(-1)}</kbd> hide &nbsp;<kbd>${d.keyCodes.panel.slice(-1)}</kbd> panel${d.mirageMode ? '' : ` &nbsp;<kbd>${d.keyCodes.mode.slice(-1)}</kbd> online`} &nbsp;<kbd>X</kbd> X-ray &nbsp;<kbd>Esc</kbd> close &nbsp;<kbd>/</kbd> search</span><span class="grow"></span><span class="stats" title="${d.mirageMode ? 'Mirage renders source and owns source reloads' : 'what the local sources hold: web files, custom scripts and styles, changed templates and snippets'}">${d.mirageMode ? 'Mirage runtime' : `${d.stats.webFiles} ${d.modelDriven ? 'web resources' : `files &middot; ${d.stats.blocks} scripts &middot; ${d.stats.patches} patches`}`}</span>`,
       );
     };
 
-    // ------------------------------------------------------------------------------ actions
+    // ---- actions
     const copy = async (text, what) => {
       try {
         await navigator.clipboard.writeText(text);
@@ -1162,14 +2326,15 @@ export function panelUi(data) {
     };
     let previousFocus;
     const setOpen = (open) => {
-      if(open)document.getElementById('paqvilo-xray')?.__px?.toggle(false);
-      if(open&&!S.ui.open)previousFocus=root.activeElement??document.activeElement;
+      if (open) document.getElementById('paqvilo-xray')?.__px?.toggle(false);
+      if (open && !S.ui.open) previousFocus = root.activeElement ?? document.activeElement;
       S.ui.open = open;
       if (open) S.ui.hidden = false;
       if (open && S.ui.tab === 'explore' && !S.catalog) loadCatalog();
       saveUi();
       render();
-      if(open)el.tabs.querySelector('[aria-selected=true]')?.focus();else (previousFocus?.isConnected?previousFocus:el.pill).focus();
+      if (open) el.tabs.querySelector('[aria-selected=true]')?.focus();
+      else (previousFocus?.isConnected ? previousFocus : el.pill).focus();
     };
     const setHidden = (hidden) => {
       S.ui.hidden = hidden;
@@ -1181,7 +2346,8 @@ export function panelUi(data) {
       // reload() may repeat the POST that produced a form result. Navigating explicitly uses GET.
       const url = new URL(location.href);
       // A same-URL navigation with a fragment is only a scroll; vary the query to fetch a document.
-      if (url.href.includes('#')) url.searchParams.set('paqvilo', `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+      if (url.href.includes('#'))
+        url.searchParams.set('paqvilo', `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
       location.assign(url.href);
     };
     /** A Mirage change reloads open pages through its own event; reload here only if that never comes. */
@@ -1198,41 +2364,74 @@ export function panelUi(data) {
       else toast(r.error ?? 'failed', true);
     };
     /** The Inspect report is requested once per runtime version, outside of every redraw. */
-    const acceptInspection=(request,version,answer)=>{
-      if(lifetime.signal.aborted||S.inspectRequest!==request)return false;
-      S.inspectLoading=null;
-      const current=S.d?.inspection??S.d?.mirage,resultVersion=Math.max(version,answer.version??0);
-      if(!current?.active||current.version>resultVersion){render();return false;}
-      S.inspect=answer.ok?{version:resultVersion,report:answer.report,status:answer.status,error:answer.error}:{version,report:null,error:answer.error??'inspection failed'};
-      render();return true;
+    const acceptInspection = (request, version, answer) => {
+      if (lifetime.signal.aborted || S.inspectRequest !== request) return false;
+      S.inspectLoading = null;
+      if (Number.isSafeInteger(answer.loadingId))
+        S.completedInspectionLoadingId = Math.max(S.completedInspectionLoadingId, answer.loadingId);
+      const current = S.d?.inspection ?? S.d?.mirage,
+        resultVersion = Math.max(version, answer.version ?? 0);
+      if (!current?.active || current.version > resultVersion) {
+        render();
+        return false;
+      }
+      S.inspect = answer.ok
+        ? { version: resultVersion, report: answer.report, status: answer.status, error: answer.error }
+        : { version, report: null, error: answer.error ?? 'inspection failed' };
+      render();
+      return true;
     };
     const ensureInspect = () => {
       const c = S.d?.inspection ?? S.d?.mirage;
-      if (!c?.active || !c.version || (S.inspect && S.inspect.version >= c.version) || S.inspectLoading === c.version) return;
+      if (
+        !c?.active ||
+        c.loading ||
+        !c.version ||
+        (S.inspect && S.inspect.version >= c.version) ||
+        S.inspectLoading === c.version
+      )
+        return;
       const version = c.version;
-      const request=++S.inspectRequest;
+      const request = ++S.inspectRequest;
       S.inspectLoading = version;
       api('inspect').then((r) => {
-        acceptInspection(request,version,r);
+        acceptInspection(request, version, r);
       });
     };
     const ensureTweaks = () => {
       const c = S.d?.mirage;
-      if (!c?.active || !c.version || (S.tweaks && S.tweaks.version >= c.version) || S.tweaksLoading === c.version) return;
+      if (!c?.active || !c.version || (S.tweaks && S.tweaks.version >= c.version) || S.tweaksLoading === c.version)
+        return;
       const version = c.version;
       S.tweaksLoading = version;
       api('tweaks').then((r) => {
-        if (S.tweaksLoading !== version) return;
+        if (lifetime.signal.aborted || S.tweaksLoading !== version) return;
         S.tweaksLoading = null;
-        S.tweaks = { ...r, version, personas: r.personas ?? [], presets: r.presets ?? [], scenarios: r.scenarios ?? [], tables: r.tables ?? [] };
+        S.tweaks = {
+          ...r,
+          version,
+          personas: r.personas ?? [],
+          presets: r.presets ?? [],
+          scenarios: r.scenarios ?? [],
+          tables: r.tables ?? [],
+        };
         render();
       });
     };
     const loadCatalog = async () => {
       const version = S.d.catalogVersion;
+      if (S.catalogLoading === version) return;
+      S.catalogLoading = version;
+      S.catalogError = null;
       const r = await api('catalog');
-      if (S.d.catalogVersion !== version) return;
-      S.catalog = r.ok ? r.entries : [];
+      if (lifetime.signal.aborted || S.catalogLoading !== version) return;
+      S.catalogLoading = null;
+      if (S.d.catalogVersion !== version) {
+        if (S.ui.open && S.ui.tab === 'explore') void loadCatalog();
+        return;
+      }
+      S.catalog = r.ok ? r.entries : null;
+      S.catalogError = r.ok ? null : (r.error ?? 'No source catalogue was returned.');
       render();
     };
     const stopPicking = () => {
@@ -1244,15 +2443,20 @@ export function panelUi(data) {
     };
     const locateElement = (field) => {
       const nodes = [...document.querySelectorAll('input,select,textarea,[id],[name]')];
-      const node = nodes.find((item) => !item.closest('#paqvilo-panel') && (item.id === field || item.getAttribute('name') === field));
+      const node = nodes.find(
+        (item) => !item.closest('#paqvilo-panel') && (item.id === field || item.getAttribute('name') === field),
+      );
       if (!node) return toast('This field is not present in the rendered page.', true);
       node.scrollIntoView({ block: 'center', behavior: 'smooth' });
       const prior = { outline: node.style.outline, offset: node.style.outlineOffset };
       node.style.outline = '3px solid #c38a2e';
       node.style.outlineOffset = '4px';
-      setTimeout(() => { node.style.outline = prior.outline; node.style.outlineOffset = prior.offset; }, 2500);
+      setTimeout(() => {
+        node.style.outline = prior.outline;
+        node.style.outlineOffset = prior.offset;
+      }, 2500);
     };
-    const act = async (name, t) => {
+    const performAction = async (name, t) => {
       const row = t.closest('[data-rel]');
       const rel = t.dataset.rel || row?.dataset.rel || '';
       const url = row?.dataset.url || '';
@@ -1265,49 +2469,109 @@ export function panelUi(data) {
           render();
           break;
         case 'choosepersona': {
-          if(t.dataset.contact&&!S.tweaks?.personas?.some(p=>p.contactId===t.dataset.contact))break;
-          S.pick.persona=t.dataset.contact;S.pick.personaKey=t.dataset.key;render();break;
+          if (t.dataset.contact && !S.tweaks?.personas?.some((p) => p.contactId === t.dataset.contact)) break;
+          S.pick.persona = t.dataset.contact;
+          S.pick.personaKey = t.dataset.key;
+          render();
+          break;
         }
-        case 'pinpersona': {const value=personaPreferences();value.pinned=value.pinned.includes(t.dataset.key)?value.pinned.filter(key=>key!==t.dataset.key):[t.dataset.key,...value.pinned].slice(0,100);savePersonaPreferences(value);refreshPersonaRows();break;}
-        case 'persona-group': S.personaFilters={...S.personaFilters,groups:[t.dataset.group],subgroups:[]};S.personaFilterDisclosureOpen=true;S.personaPage=0;render();break;
-        case 'persona-page': S.personaPage=Math.max(0,(S.personaPage??0)+Number(t.dataset.direction)*50);refreshPersonaRows();break;
-        case 'persona-clear': S.personaFilters={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilterDisclosureOpen=false;S.personaPage=0;render();break;
+        case 'pinpersona': {
+          const value = personaPreferences();
+          value.pinned = value.pinned.includes(t.dataset.key)
+            ? value.pinned.filter((key) => key !== t.dataset.key)
+            : [t.dataset.key, ...value.pinned].slice(0, 100);
+          savePersonaPreferences(value);
+          refreshPersonaRows();
+          break;
+        }
+        case 'persona-group':
+          S.personaFilters = { ...S.personaFilters, groups: [t.dataset.group], subgroups: [] };
+          S.personaFilterDisclosureOpen = true;
+          S.personaPage = 0;
+          render();
+          break;
+        case 'persona-page':
+          S.personaPage = Math.max(0, (S.personaPage ?? 0) + Number(t.dataset.direction) * 50);
+          refreshPersonaRows();
+          break;
+        case 'persona-clear':
+          S.personaFilters = { q: '', roles: [], tags: [], groups: [], subgroups: [] };
+          S.personaFilterDisclosureOpen = false;
+          S.personaPage = 0;
+          render();
+          break;
 
         case 'inspect-section':
           S.inspectSection = t.dataset.v;
           render();
           break;
         case 'inspect-fold':
-          for (const key of Object.keys(S.defaults).filter((key) => key.startsWith('runtime-'))) S.ui.collapsed[key] = t.dataset.v === 'closed';
+          for (const key of Object.keys(S.defaults).filter((key) => key.startsWith('runtime-')))
+            S.ui.collapsed[key] = t.dataset.v === 'closed';
           saveUi();
           render();
           break;
         case 'inspect-refresh': {
-          const version=(S.d?.inspection??S.d?.mirage)?.version??0,request=++S.inspectRequest;
-          S.inspect=null;S.inspectLoading=version;render();
+          if (S.inspectLoading !== null) break;
+          const version = (S.d?.inspection ?? S.d?.mirage)?.version ?? 0,
+            request = ++S.inspectRequest;
+          S.inspect = null;
+          S.inspectLoading = version;
+          render();
           const answer = await api('inspect', { refresh: true });
-          if(acceptInspection(request,version,answer)){
-            if(!answer.ok)toast(answer.error??'Inspection failed.',true);
+          if (acceptInspection(request, version, answer)) {
+            if (!answer.ok) toast(answer.error ?? 'Inspection failed.', true);
             fresh();
           }
           break;
         }
+        case 'catalog-retry':
+          void loadCatalog();
+          render();
+          break;
+        case 'tweaks-retry':
+          S.tweaks = null;
+          ensureTweaks();
+          render();
+          break;
         case 'inspect-locate':
           locateElement(t.dataset.field);
           break;
         case 'inspect-pick': {
-          const xray=document.getElementById('paqvilo-xray')?.__px;
-          if(xray){stopPicking();S.ui.open=false;render();xray.pickOnce();break;}
-          if (S.pickingElement) { stopPicking(); render(); break; }
+          const xray = document.getElementById('paqvilo-xray')?.__px;
+          if (xray) {
+            stopPicking();
+            S.ui.open = false;
+            render();
+            xray.pickOnce();
+            break;
+          }
+          if (S.pickingElement) {
+            stopPicking();
+            render();
+            break;
+          }
           S.pickingElement = true;
           S.pickHandler = (event) => {
             const node = event.target instanceof Element ? event.target : event.target?.parentElement;
             if (!node || node.closest('#paqvilo-panel, #paqvilo-handle')) return;
-            event.preventDefault(); event.stopImmediatePropagation();
-            S.selectedElement = { tag: node.tagName.toLowerCase(), id: node.id.slice(0, 160), name: (node.getAttribute('name') ?? '').slice(0, 160), classes: String(node.className ?? '').slice(0, 160) };
-            stopPicking(); render();
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            S.selectedElement = {
+              tag: node.tagName.toLowerCase(),
+              id: node.id.slice(0, 160),
+              name: (node.getAttribute('name') ?? '').slice(0, 160),
+              classes: String(node.className ?? '').slice(0, 160),
+            };
+            stopPicking();
+            render();
           };
-          S.pickEscape = (event) => { if (event.key === 'Escape') { stopPicking(); render(); } };
+          S.pickEscape = (event) => {
+            if (event.key === 'Escape') {
+              stopPicking();
+              render();
+            }
+          };
           document.addEventListener('click', S.pickHandler, true);
           document.addEventListener('keydown', S.pickEscape, true);
           render();
@@ -1340,7 +2604,9 @@ export function panelUi(data) {
           copy(location.href, 'Address');
           break;
         case 'persona': {
-          const r = await api('persona', { contactId: (S.pick.persona ?? S.tweaks?.identity?.contactId ?? '') || null });
+          const r = await api('persona', {
+            contactId: (S.pick.persona ?? S.tweaks?.identity?.contactId ?? '') || null,
+          });
           if (r.ok) reloadAfterTweak('Persona switched; reloading ...');
           else toast(r.error ?? 'Could not switch the persona', true);
           break;
@@ -1348,12 +2614,19 @@ export function panelUi(data) {
         case 'signin': {
           const personas = S.tweaks?.personas ?? [];
           const session = S.tweaks?.session ?? {};
-          const contactId = [S.pick.persona, session.signedIn ? session.contactId : null, personas[0]?.contactId].find((id) => id && personas.some((item) => item.contactId === id));
+          const contactId = [S.pick.persona, session.signedIn ? session.contactId : null, personas[0]?.contactId].find(
+            (id) => id && personas.some((item) => item.contactId === id),
+          );
           if (!contactId) break;
           const name = personas.find((item) => item.contactId === contactId)?.name ?? contactId;
           // The page posts the portal's sign-in form and navigates; it comes back signed in.
           const r = await api('signin', { contactId });
-          if(r.ok){const value=personaPreferences(),key=S.pick.personaKey??`@contact:${contactId}`;value.recent=[key,...value.recent.filter(item=>item!==key)].slice(0,5);savePersonaPreferences(value);}
+          if (r.ok) {
+            const value = personaPreferences(),
+              key = S.pick.personaKey ?? `@contact:${contactId}`;
+            value.recent = [key, ...value.recent.filter((item) => item !== key)].slice(0, 5);
+            savePersonaPreferences(value);
+          }
           if (r.ok) toast(`Signing in as ${name} through ${r.via ?? 'the portal'} ...`);
           else toast(r.error ?? 'Could not sign in', true);
           break;
@@ -1367,7 +2640,8 @@ export function panelUi(data) {
         case 'permissions': {
           if (S.tweaks?.permissionMode === t.dataset.v) break;
           const r = await api('permissions', { mode: t.dataset.v });
-          if (r.ok) reloadAfterTweak(`Permissions ${t.dataset.v === 'enforce' ? 'enforced' : 'permissive'}; reloading ...`);
+          if (r.ok)
+            reloadAfterTweak(`Permissions ${t.dataset.v === 'enforce' ? 'enforced' : 'permissive'}; reloading ...`);
           else toast(r.error ?? 'Could not change permission enforcement', true);
           break;
         }
@@ -1377,9 +2651,24 @@ export function panelUi(data) {
           const id = S.pick[kind] ?? (kind === 'scenario' ? S.tweaks?.activeScenario?.id : null) ?? list[0]?.id;
           const item = list.find((entry) => entry.id === id);
           if (!item) break;
-          S.confirm = kind === 'preset'
-            ? { kind, id, label: 'Apply preset', text: `Apply preset "${item.name ?? id}"? It replaces the local records, roles and settings it defines; pages reload.` }
-            : { kind, id, catalogue: item.catalogue === true, ...(item.catalogueId?{id:item.catalogueId}:{}), label: 'Apply scenario', text: item.catalogue ? `Open "${item.name}" as ${item.persona} at ${item.startPath??'/'}? ${item.context||item.preset?'Its setup opens in an isolated local runtime.':'This browser signs in through the portal.'}` : `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.` };
+          S.confirm =
+            kind === 'preset'
+              ? {
+                  kind,
+                  id,
+                  label: 'Apply preset',
+                  text: `Apply preset "${item.name ?? id}"? It replaces the local records, roles and settings it defines; pages reload.`,
+                }
+              : {
+                  kind,
+                  id,
+                  catalogue: item.catalogue === true,
+                  ...(item.catalogueId ? { id: item.catalogueId } : {}),
+                  label: 'Apply scenario',
+                  text: item.catalogue
+                    ? `Open "${item.name}" as ${item.persona} at ${item.startPath ?? '/'}? ${item.context || item.preset ? 'Its setup opens in an isolated local runtime.' : 'This browser signs in through the portal.'}`
+                    : `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.`,
+                };
           render();
           break;
         }
@@ -1392,9 +2681,12 @@ export function panelUi(data) {
           S.confirm = null;
           render();
           if (!pending) break;
-          const r = await api(pending.kind, { id: pending.id, ...(pending.catalogue?{catalogue:true}:{}) });
+          const r = await api(pending.kind, { id: pending.id, ...(pending.catalogue ? { catalogue: true } : {}) });
           // A scenario persona signs this browser in (or out) through the portal after the reload.
-          if (r.ok && r.navigating) toast(`${pending.label.replace('Apply ', '')} applied; ${r.contactId ? 'signing in as its persona' : 'signing out'} after the reload ...`);
+          if (r.ok && r.navigating)
+            toast(
+              `${pending.label.replace('Apply ', '')} applied; ${r.contactId ? 'signing in as its persona' : 'signing out'} after the reload ...`,
+            );
           else if (r.ok) reloadAfterTweak(`${pending.label.replace('Apply ', '')} applied; reloading ...`);
           else toast(r.error ?? `Could not apply the ${pending.kind}`, true);
           break;
@@ -1427,7 +2719,7 @@ export function panelUi(data) {
           if (url) location.href = url;
           break;
         case 'admin':
-          window.open('/_sim/','_blank','noopener');
+          window.open('/_sim/', '_blank', 'noopener');
           break;
         case 'copy':
           copy(row?.dataset.path || d.sourceDir.replace(/[\\/]$/, '') + '/' + rel.split('#')[0], 'Path');
@@ -1441,10 +2733,18 @@ export function panelUi(data) {
         case 'open': {
           if (!rel) break;
           const line = Number(t.dataset.line || row?.dataset.line) || undefined;
-          const r = await api('open', { rel, line, col: Number(row?.dataset.col) || undefined, find: t.dataset.find || row?.dataset.find || undefined });
-          document.getElementById('paqvilo-xray')?.__px?.status(r.ok ? `Opened ${baseName(rel)} in the editor` : r.error ?? 'Could not open the editor');
+          const r = await api('open', {
+            rel,
+            line,
+            col: Number(row?.dataset.col) || undefined,
+            find: t.dataset.find || row?.dataset.find || undefined,
+          });
+          document
+            .getElementById('paqvilo-xray')
+            ?.__px?.status(r.ok ? `Opened ${baseName(rel)} in the editor` : (r.error ?? 'Could not open the editor'));
           if (r.ok) toast(`Opened ${baseName(rel)}${line ? ':' + line : ''} in the editor`);
-          else if (r.url) location.href = r.url; // the editor's own link; the browser asks once
+          else if (r.url)
+            location.href = r.url; // the editor's own link; the browser asks once
           else toast(r.error ?? 'Could not open the editor', true);
           break;
         }
@@ -1455,11 +2755,12 @@ export function panelUi(data) {
           break;
         }
         case 'mode':
-          if (!d.mirageMode) setMode(t.dataset.v === 'online');
+          if (!d.mirageMode) await setMode(t.dataset.v === 'online');
           break;
         case 'live': {
           const r = await api('live', { on: !d.live });
           if (r.ok) toast(`Live reload is ${d.live ? 'off' : 'on'}`);
+          else toast(r.error ?? 'Could not update live reload', true);
           break;
         }
         case 'scope': {
@@ -1475,14 +2776,16 @@ export function panelUi(data) {
           else toast(r.error ?? 'Could not pin the baseline', true);
           break;
         }
-        case 'clear':
-          await api('clear', { what: t.dataset.v });
+        case 'clear': {
+          const r = await api('clear', { what: t.dataset.v });
+          toast(r.ok ? 'List cleared' : (r.error ?? 'Could not clear the list'), !r.ok);
           break;
+        }
         case 'diff': {
-          S.diff = { loading: true, rel };
+          const pending = (S.diff = { loading: true, rel });
           fresh();
           const r = await api('diff', { rel, url });
-          if (S.diff?.rel === rel) S.diff = { ...r, rel };
+          if (S.diff === pending) S.diff = { ...r, rel };
           fresh();
           break;
         }
@@ -1492,16 +2795,63 @@ export function panelUi(data) {
           break;
       }
     };
+    const act = async (name, target) => {
+      const label = actionLabels[name];
+      if (!label) return performAction(name, target);
+      if (
+        S.pendingActions.has(name) ||
+        (mutationActions.has(name) && [...S.pendingActions.values()].some((job) => mutationActions.has(job.name)))
+      )
+        return;
+      S.pendingActions.set(name, { name, label });
+      pendingFeedback();
+      if (name === 'open') document.getElementById('paqvilo-xray')?.__px?.status(label);
+      try {
+        return await performAction(name, target);
+      } catch (error) {
+        if (!lifetime.signal.aborted) toast(error.message ?? 'The action could not finish.', true);
+      } finally {
+        S.pendingActions.delete(name);
+        if (!lifetime.signal.aborted) pendingFeedback();
+      }
+    };
 
     el.panel.addEventListener('click', (e) => {
       const t = e.target.closest('[data-act]');
       if (t) act(t.dataset.act, t);
     });
-    el.panel.addEventListener('toggle',event=>{if(event.target.isConnected&&event.target.matches('.pp-persona-filter-disclosure'))S.personaFilterDisclosureOpen=event.target.open;},true);
-    el.panel.addEventListener('input',event=>{if(!event.target.matches('[data-panel-persona-query]'))return;S.personaFilters??={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilters.q=event.target.value;S.personaPage=0;refreshPersonaRows();});
+    el.panel.addEventListener(
+      'toggle',
+      (event) => {
+        if (event.target.isConnected && event.target.matches('.pp-persona-filter-disclosure'))
+          S.personaFilterDisclosureOpen = event.target.open;
+      },
+      true,
+    );
+    el.panel.addEventListener('input', (event) => {
+      if (!event.target.matches('[data-panel-persona-query]')) return;
+      S.personaFilters ??= { q: '', roles: [], tags: [], groups: [], subgroups: [] };
+      S.personaFilters.q = event.target.value;
+      S.personaPage = 0;
+      refreshPersonaRows();
+    });
     el.panel.addEventListener('change', (e) => {
-      if(e.target.matches('[data-panel-persona-roles-only]')){S.personaFilters??={q:'',roles:[],tags:[]};S.personaFilters.rolesOnly=e.target.checked;S.personaPage=0;refreshPersonaRows();return;}
-      if(e.target.matches('[data-panel-persona-facet]')){S.personaFilters??={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilters[e.target.dataset.panelPersonaFacet]=[...e.target.selectedOptions].map(option=>option.value);S.personaPage=0;refreshPersonaRows();return;}
+      if (e.target.matches('[data-panel-persona-roles-only]')) {
+        S.personaFilters ??= { q: '', roles: [], tags: [] };
+        S.personaFilters.rolesOnly = e.target.checked;
+        S.personaPage = 0;
+        refreshPersonaRows();
+        return;
+      }
+      if (e.target.matches('[data-panel-persona-facet]')) {
+        S.personaFilters ??= { q: '', roles: [], tags: [], groups: [], subgroups: [] };
+        S.personaFilters[e.target.dataset.panelPersonaFacet] = [...e.target.selectedOptions].map(
+          (option) => option.value,
+        );
+        S.personaPage = 0;
+        refreshPersonaRows();
+        return;
+      }
       const pick = e.target.closest?.('[data-pick]');
       if (!pick) return;
       S.pick[pick.dataset.pick] = pick.value;
@@ -1510,32 +2860,78 @@ export function panelUi(data) {
     el.pill.addEventListener('click', () => {
       if (Date.now() - S.dragged > 250) setOpen(true);
     });
-    const resetTarget=()=>{const select=el.targets.querySelector('select');if(select)select.value=String(S.targets.findIndex(target=>target.origin===location.origin));};
-    const cancelTarget=()=>{S.pendingTarget=null;resetTarget();render();el.targets.querySelector('[data-target-go]')?.focus();};
-    const switchTarget=async target=>{
-      if(S.targetSwitching)return;
-      S.pendingTarget=null;resetTarget();S.targetSwitching=true;render();
-      try{
-        if(!S.targets.some(item=>item.origin===target.origin&&item.url===target.url))throw new Error('The selected target is no longer available');
-        const result=await api('ui',S.ui);
-        if(!result.ok)throw new Error(result.error??'The dev loop did not save the current panel');
-        location.assign(target.url);
-      }catch(error){toast(error.message,true);}
-      finally{S.targetSwitching=false;resetTarget();render();el.targets.querySelector('[data-target-go]')?.focus();}
+    const resetTarget = () => {
+      const select = el.targets.querySelector('select');
+      if (select) select.value = String(S.targets.findIndex((target) => target.origin === location.origin));
     };
-    const goTarget=async()=>{
-      const value=el.targets.querySelector('select')?.value,target=/^\d+$/.test(value)?S.targets[Number(value)]:null;
-      if(!target||target.origin===location.origin){cancelTarget();return;}
-      if(target.caution||S.d.mirageMode&&!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(target.origin)){
-        S.pendingTarget=target;resetTarget();render();el.targets.querySelector('[data-target-cancel]')?.focus();return;
+    const cancelTarget = () => {
+      S.pendingTarget = null;
+      resetTarget();
+      render();
+      el.targets.querySelector('[data-target-go]')?.focus();
+    };
+    const switchTarget = async (target) => {
+      if (S.targetSwitching) return;
+      S.pendingTarget = null;
+      resetTarget();
+      S.targetSwitching = true;
+      render();
+      try {
+        if (!S.targets.some((item) => item.origin === target.origin && item.url === target.url))
+          throw new Error('The selected target is no longer available');
+        const result = await api('ui', S.ui);
+        if (!result.ok) throw new Error(result.error ?? 'The dev loop did not save the current panel');
+        location.assign(target.url);
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        S.targetSwitching = false;
+        resetTarget();
+        render();
+        el.targets.querySelector('[data-target-go]')?.focus();
+      }
+    };
+    const goTarget = async () => {
+      const value = el.targets.querySelector('select')?.value,
+        target = /^\d+$/.test(value) ? S.targets[Number(value)] : null;
+      if (!target || target.origin === location.origin) {
+        cancelTarget();
+        return;
+      }
+      if (
+        target.caution ||
+        (S.d.mirageMode && !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(target.origin))
+      ) {
+        S.pendingTarget = target;
+        resetTarget();
+        render();
+        el.targets.querySelector('[data-target-cancel]')?.focus();
+        return;
       }
       await switchTarget(target);
     };
-    el.targets.addEventListener('click',event=>{if(event.target.closest('[data-target-cancel]'))cancelTarget();else if(event.target.closest('[data-target-confirm]')&&S.pendingTarget)void switchTarget(S.pendingTarget);else if(event.target.closest('[data-target-go]'))void goTarget();});
-    el.targets.addEventListener('change',()=>{if(S.pendingTarget){S.pendingTarget=null;render();}});
-    el.targets.addEventListener('keydown',event=>{if(event.key==='Enter'&&event.target.matches('select')){event.preventDefault();void goTarget();}});
+    el.targets.addEventListener('click', (event) => {
+      if (event.target.closest('[data-target-cancel]')) cancelTarget();
+      else if (event.target.closest('[data-target-confirm]') && S.pendingTarget) void switchTarget(S.pendingTarget);
+      else if (event.target.closest('[data-target-go]')) void goTarget();
+    });
+    el.targets.addEventListener('change', () => {
+      if (S.pendingTarget) {
+        S.pendingTarget = null;
+        render();
+      }
+    });
+    el.targets.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.target.matches('select')) {
+        event.preventDefault();
+        void goTarget();
+      }
+    });
     el.pill.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();setOpen(true);}
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setOpen(true);
+      }
     });
     el.input.addEventListener('input', () => {
       S.q = el.input.value;
@@ -1546,42 +2942,87 @@ export function panelUi(data) {
       el.panel.addEventListener(type, (e) => {
         e.stopPropagation();
         if (type !== 'keydown') return;
-        if(e.target.matches('[role=tab]')&&['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){const tabs=[...el.tabs.querySelectorAll('[role=tab]')],at=tabs.indexOf(e.target),next=e.key==='Home'?0:e.key==='End'?tabs.length-1:(at+(e.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;e.preventDefault();void act('tab',tabs[next]);el.tabs.querySelector('[aria-selected=true]')?.focus();return;}
+        if (e.target.matches('[role=tab]') && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+          const tabs = [...el.tabs.querySelectorAll('[role=tab]')],
+            at = tabs.indexOf(e.target),
+            next =
+              e.key === 'Home'
+                ? 0
+                : e.key === 'End'
+                  ? tabs.length - 1
+                  : (at + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+          e.preventDefault();
+          void act('tab', tabs[next]);
+          el.tabs.querySelector('[aria-selected=true]')?.focus();
+          return;
+        }
         if (e.key === 'Escape') {
-          if(S.pendingTarget){cancelTarget();return;}
+          if (S.pendingTarget) {
+            cancelTarget();
+            return;
+          }
           if (S.diff) S.diff = null;
           else if (S.q) S.q = el.input.value = '';
           else return setOpen(false);
           fresh();
-        } else if (e.key === '/' && S.ui.tab !== 'tweaks' && !e.target.matches('input,textarea,select,[contenteditable]:not([contenteditable=false])')) {
+        } else if (
+          e.key === '/' &&
+          S.ui.tab !== 'tweaks' &&
+          !e.target.matches('input,textarea,select,[contenteditable]:not([contenteditable=false])')
+        ) {
           e.preventDefault();
           el.input.focus();
         }
       });
     }
-    document.addEventListener('paqvilo-xray', (event) => {
-      const detail = event.detail ?? {};
-      if (detail.action === 'open') {
-        act('open', { dataset: { rel: detail.ref, line: detail.line, find: detail.find }, closest: () => null });
-      } else if (detail.action === 'refresh') {
-        act('inspect-refresh', { dataset: {}, closest: () => null });
-      } else if (detail.action === 'selected') {
-        S.selectedElement = detail.element;
-        S.selectedIdentity = detail.identity;
-        if(detail.oneShot){S.ui.tab='runtime';setOpen(true);}
-      } else if (detail.action === 'toggled') {
-        if (detail.enabled) { S.ui.hidden = false; S.ui.open = false; }
-        render();
-      }
-    }, { signal: lifetime.signal });
+    document.addEventListener(
+      'paqvilo-xray',
+      (event) => {
+        const detail = event.detail ?? {};
+        if (detail.action === 'open') {
+          act('open', { dataset: { rel: detail.ref, line: detail.line, find: detail.find }, closest: () => null });
+        } else if (detail.action === 'refresh') {
+          act('inspect-refresh', { dataset: {}, closest: () => null });
+        } else if (detail.action === 'selected') {
+          S.selectedElement = detail.element;
+          S.selectedIdentity = detail.identity;
+          if (detail.oneShot) {
+            S.ui.tab = 'runtime';
+            setOpen(true);
+          }
+        } else if (detail.action === 'toggled') {
+          if (detail.enabled) {
+            S.ui.hidden = false;
+            S.ui.open = false;
+          }
+          render();
+        }
+      },
+      { signal: lifetime.signal },
+    );
     const onKey = (e) => {
       if (!host.isConnected) return window.removeEventListener('keydown', onKey, true);
-      if(S.ui.open&&S.ui.tab!=='tweaks'&&e.key==='/'&&!e.altKey&&!e.ctrlKey&&!e.metaKey&&!e.composedPath().some(node=>node?.matches?.('input,textarea,select,[contenteditable]:not([contenteditable=false])'))){e.preventDefault();el.input.focus();return;}
+      if (
+        S.ui.open &&
+        S.ui.tab !== 'tweaks' &&
+        e.key === '/' &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e
+          .composedPath()
+          .some((node) => node?.matches?.('input,textarea,select,[contenteditable]:not([contenteditable=false])'))
+      ) {
+        e.preventDefault();
+        el.input.focus();
+        return;
+      }
       if (!S.d || !e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey) return;
       // by key position, so it works on any keyboard layout
       if (e.code === S.d.keyCodes.hide) setHidden(!S.ui.hidden);
       else if (e.code === S.d.keyCodes.panel) setOpen(!S.ui.open || S.ui.hidden);
-      else if (e.code === S.d.keyCodes.mode && !S.d.mirageMode) setMode(!S.d.online);
+      else if (e.code === S.d.keyCodes.mode && !S.d.mirageMode)
+        void act('mode', { dataset: { v: S.d.online ? 'local' : 'online' }, closest: () => null });
       else return;
       e.preventDefault();
       e.stopPropagation();
@@ -1589,7 +3030,19 @@ export function panelUi(data) {
     window.addEventListener('keydown', onKey, { capture: true, signal: lifetime.signal });
 
     return {
-      get token() { return S.d?.token; },
+      get token() {
+        return S.d?.token;
+      },
+      openTab(tab) {
+        if (TABS.some(([id]) => id === tab) && (tab !== 'actions' || S.d?.capabilities?.actions)) {
+          S.ui.tab = tab;
+          setOpen(true);
+          render();
+        }
+      },
+      collapse() {
+        setOpen(false);
+      },
       dispose() {
         stopPicking();
         document.getElementById('paqvilo-xray')?.__px?.dispose();
@@ -1603,20 +3056,47 @@ export function panelUi(data) {
       update(d) {
         if (lifetime.signal.aborted) return;
         const catalogChanged = S.d && S.d.catalogVersion !== d.catalogVersion;
-        const previousInspection=S.d?.inspection??S.d?.mirage,nextInspection=d.inspection??d.mirage;
-        if(catalogChanged||previousInspection&&previousInspection.version!==nextInspection?.version){S.selectedElement=null;S.selectedIdentity=null;}
+        const previousInspection = S.d?.inspection ?? S.d?.mirage,
+          nextInspection = d.inspection ?? d.mirage;
+        if (catalogChanged || (previousInspection && previousInspection.version !== nextInspection?.version)) {
+          S.selectedElement = null;
+          S.selectedIdentity = null;
+        }
         S.d = d;
         if (MIRAGE_TABS.includes(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
         S.targets = (Array.isArray(d.targets) ? d.targets : []).flatMap((target) => {
           try {
+            // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
             if (!target || typeof target.origin !== 'string' || /[\\\x00-\x20]/.test(target.origin)) return [];
             const origin = new URL(target.origin);
             const startPath = target.startPath ?? '/';
-            if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || typeof startPath !== 'string' || !startPath.startsWith('/') || /[\\\x00-\x20]/.test(startPath)) return [];
+            if (
+              !['http:', 'https:'].includes(origin.protocol) ||
+              origin.username ||
+              origin.password ||
+              origin.pathname !== '/' ||
+              origin.search ||
+              origin.hash ||
+              typeof startPath !== 'string' ||
+              !startPath.startsWith('/') ||
+              // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+              /[\\\x00-\x20]/.test(startPath)
+            )
+              return [];
             const url = new URL(startPath, origin);
             if (url.origin !== origin.origin || url.username || url.password) return [];
-            return [{ siteName: target.siteName, envName: target.envName, caution: Boolean(target.caution), origin: origin.origin, url: url.href }];
-          } catch { return []; }
+            return [
+              {
+                siteName: target.siteName,
+                envName: target.envName,
+                caution: Boolean(target.caution),
+                origin: origin.origin,
+                url: url.href,
+              },
+            ];
+          } catch {
+            return [];
+          }
         });
         if (catalogChanged) {
           S.catalog = null;
@@ -1625,9 +3105,15 @@ export function panelUi(data) {
         if (S.first) {
           // where it was left, in whatever tab or page that was
           const saved = d.ui ?? {};
-          S.ui = { ...S.ui, ...saved, pos: { ...S.ui.pos, ...(saved.pos ?? {}) }, collapsed: { ...S.ui.collapsed, ...(saved.collapsed ?? {}) } };
+          S.ui = {
+            ...S.ui,
+            ...saved,
+            pos: { ...S.ui.pos, ...(saved.pos ?? {}) },
+            collapsed: { ...S.ui.collapsed, ...(saved.collapsed ?? {}) },
+          };
           if (S.ui.open && S.ui.tab === 'explore') loadCatalog();
         }
+        if (S.ui.tab === 'actions' && !d.capabilities?.actions) S.ui.tab = 'overrides';
         render();
         S.first = false;
       },

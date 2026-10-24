@@ -1,0 +1,157 @@
+// Small, local line icons. No external fonts, web resources or platform bundles.
+const paths = {
+  home: '<path d="m1.5 7 6.5-5.5L14.5 7M3 6.5v7h4v-4h2v4h4v-7"/>',
+  recent: '<circle cx="8" cy="8" r="6.5"/><path d="M8 3.5V8l3 1.5"/>',
+  pin: '<path d="m9.5 1 5.5 5.5-2 1-2 3-2-1-6 6-1-1 6-6-1-2 3-2z"/>',
+  globe: '<circle cx="8" cy="8" r="6.7"/><ellipse cx="8" cy="8" rx="3" ry="6.7"/><path d="M1.5 5.5h13M1.5 10.5h13"/>',
+  page: '<path d="M3 1h6l4 4v10H3zM9 1v4h4M5 8h5M5 10h5M5 12h3"/>',
+  template: '<path d="M3 1h6l4 4v10H3z" stroke-dasharray="1.25 1.25"/><path d="M9 1v4h4"/>',
+  language: '<path d="M1 2h14v12H1zM3 5h6M6 3.5V5m-2 0c0 3 2 5 4 6M8 5c0 3-2 5-4 6m5 0 2-5 2 5m-3.5-1.5h3"/>',
+  pageCode: '<path d="M3 1h6l4 4v10H3zM9 1v4h4m-7 3-2 2 2 2m3-4 2 2-2 2"/>',
+  pageForm: '<path d="M3 1h6l4 4v10H3zM9 1v4h4M5 7h1m2 0h3M5 10h1m2 0h3M5 13h1m2 0h3"/>',
+  pageGrid: '<path d="M3 1h6l4 4v10H3zM9 1v4h4M5 7h1m2 0h3M5 10h1m2 0h3M5 13h1m2 0h3"/>',
+  redirect: '<path d="M2 14V7h10M9 3l4 4-4 4"/>',
+  marker:
+    '<circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c-3 3-3 8 0 11M7 1.5c2 2 3 4 2.5 7M12 9l3 6-3-1-2 1z"/>',
+  settings:
+    '<path d="m6 1-.5 2-1.5.8L2 3.5.5 6l1.5 1.5v1L.5 10 2 12.5l2-.3 1.5.8.5 2h3l.5-2 1.5-.8 2 .3 1.5-2.5L13 8.5v-1L14.5 6 13 3.5l-2 .3L9.5 3 9 1z"/><circle cx="7.5" cy="8" r="2.5"/>',
+  siteSettings:
+    '<path d="M1 1h14v10H1zM3 3h4v4H3zM9 3h4M9 5h4M3 9h6m2 1 1-2 1 2 2 .5-1.5 1.5.5 2-2-1-2 1 .5-2L9 10.5z"/>',
+  list: '<path d="M2 1h12v14H2zM4 4h1m2 0h5M4 7h1m2 0h5M4 10h1m2 0h5M4 13h1m2 0h5"/>',
+  edit: '<path d="M3 1h9v4M3 1v14h6M5 4h5M5 7h3m2 7-2 .5.5-2L13 8l1.5 1.5zM12 9l1.5 1.5"/>',
+  shortcut: '<path d="M2 7V3h11v8H9M.5 10.5h7m-3-3 3 3-3 3"/>',
+  file: '<path d="M3 1h6l4 4v10H3zM9 1v4h4"/><circle cx="11" cy="11" r="4"/><path d="M7 11h8M11 7c-2 2-2 6 0 8m0-8c2 2 2 6 0 8"/>',
+  lines: '<path d="M1 2h14M1 6h14M1 10h14M1 14h14"/>',
+  pages: '<path d="M1 1h10v10H1zM3 4h10v10H3zM5 7h10v8H5z"/>',
+  person: '<circle cx="8" cy="4.5" r="3"/><path d="M1.5 15v-2a6.5 6.5 0 0 1 13 0v2"/>',
+  shield: '<path d="M2 1h10v6M4 4h6M4 7h3m2 1 3-1 3 1v3c-.5 2-1.5 3-3 4-1.5-1-2.5-2-3-4zM11 11l1 1 2-3"/>',
+  key: '<circle cx="5" cy="5" r="3.5"/><path d="m7.5 7.5 7 7m-4-4 2-2m0 4 2-2"/>',
+  lock: '<path fill="currentColor" stroke="none" d="M3 6h10v9H3z"/><path d="M5 6V4a3 3 0 0 1 6 0v2" stroke-width="1.5"/><path d="M8 9v3" stroke="white"/>',
+  invitation: '<path d="M1 5h14v9H1zM1 5l7 5 7-5M5 5V2h6v3"/>',
+  transition: '<path d="M2 2h4v4H2zM10 10h4v4h-4zM8 1l4 4-4 4-4-4zM4 8v4h4m4-5v1"/>',
+  back: '<path d="m7 2-6 6 6 6M1 8h14"/>',
+  open: '<path d="M8 1h7v7m0-7L7 9M6 2H2v12h12v-4"/>',
+  add: '<path d="M8 0v16M0 8h16"/>',
+  delete: '<path d="M2 4h12M6 1h4v3M4 4v11h8V4M6 6v7M8 6v7M10 6v7"/>',
+  refresh: '<path d="M13 4A6.5 6.5 0 1 1 7 1.5M10 1h4v4"/>',
+  gridModes: '<path d="M1 1h5v5H1zM9 1h5v5H9zM1 9h13v6H1z"/>',
+  chart: '<path d="M1 2h14v10H1zM4 8l3-3 3 2 3-3M8 12v4M5 15h6"/>',
+  powerbi: '<path fill="currentColor" stroke="none" d="M1 9h4v6H1zm5-5h4v11H6zm5-4h4v15h-4z"/>',
+  email: '<path d="M1 3h14v9H1zM1 3l7 5 7-5m-3 5 3 3-3 3m-2-6-3 3 3 3"/>',
+  mail: '<path d="M1 2.5h14v11H1zM1 3l7 5 7-5"/>',
+  phone: '<path d="m4 1 3 4-2 2c1 2 2 3 4 4l2-2 4 3-1 3C7 15 1 9 1 3z"/>',
+  ticker: '<path d="M2 15v-4M6 15V8m4 7v-5m4 5V5M1 8l4-4 4 2 6-5M11 1h4v4"/>',
+  flow: '<path d="M1 2h7l6 6-6 6H1l6-6zM7 2h4l5 6-5 6H7"/>',
+  report: '<path d="M4 1h9v12H4zM1 4h9v11H1zM3 12V8M5 12V6M7 12V9"/>',
+  share: '<path d="m9 1 6 5-6 5V8H6c-2 0-3 1-4 3V7c0-2 2-3 4-3h3zM2 3H1v12h12v-3"/>',
+  filter: '<path d="M1 2h14l-5 6v5l-4 2V8z"/>',
+  columns: '<path d="M1 1h14v10H1zM1 4h14M5 4v7M10 4v7m-2 1 2 3 2-3M10 8v7"/>',
+  search: '<circle cx="6.5" cy="6.5" r="5"/><path d="m10 10 5 5"/>',
+  save: '<path d="M1 1h11l3 3v11H1zM4 1v5h7V1M4 15V9h8v6M9 2v3"/>',
+  saveClose: '<path d="M4 1h9l2 2v10H4zM6 1v4h5V1M1 5h9v10H1zM3 5v3h5V5M3 15v-4h5v4"/>',
+  deactivate: '<path d="M3 1h6l4 4v5M3 1v14h5M9 1v4h4"/><circle cx="12" cy="12" r="3.5"/><path d="m9.5 9.5 5 5"/>',
+  vscode: '<path d="m11 1 4 2v10l-4 2-7-5-2 2-2-2 3-2-3-2 2-2 2 2zM11 4 6 8l5 4z"/>',
+  more: '<circle cx="8" cy="2" r=".65" fill="currentColor"/><circle cx="8" cy="8" r=".65" fill="currentColor"/><circle cx="8" cy="14" r=".65" fill="currentColor"/>',
+  chevron: '<path d="m3 6 5 5 5-5"/>',
+  menu: '<path d="M0 4h16M0 8h16M0 12h16"/>',
+  info: '<circle cx="8" cy="8" r="6.5"/><path d="M8 7v5M8 3.5v1"/>',
+  help: '<path d="M4 4a4 4 0 0 1 8 0c0 3-4 3-4 6M8 13v2"/>',
+  check: '<path d="m2 8 4 4L14 3"/>',
+  close: '<path d="m3 3 10 10M13 3 3 13"/>',
+  sortUp: '<path d="M8 15V1M3 6l5-5 5 5"/>',
+  sortDown: '<path d="M8 1v14M3 10l5 5 5-5"/>',
+  arrowRight: '<path d="M1 8h14M9 2l6 6-6 6"/>',
+  group: '<path d="M1 2h5M1 5h5M3 5v7h4M9 2h5v4H9zM9 10h5v4H9z"/>',
+  calendar: '<path d="M1 3h14v12H1zM1 6h14M4 1v4M12 1v4M4 9h2m2 0h2m2 0h1M4 12h2m2 0h2"/>',
+  text: '<path d="M1 3h14v10H1zM3 10l1.5-4L6 10M3.5 9h2M8 6v4m0-2c3-3 3 4 0 1m5-2c-3-2-3 4 0 2"/>',
+  number: '<path d="M6 1 4 15M12 1l-2 14M1 6h14M1 10h14"/>',
+  numericColumn: '<path d="M1 3h14v10H1zM3 7l1-1v4m2-3c0-2 3-1 2 0l-2 3h3m2-4c3-1 3 2 1 2 2 0 2 3-1 2"/>',
+  choiceColumn: '<path d="M1 3h14v10H1zM10 7l2 2 2-2"/>',
+  booleanColumn: '<path d="M1 1h14v14H1zM3 8l3 3 7-7"/>',
+  lookupColumn: '<path d="M1 2h5v5H1zM10 2h5v5h-5zM1 10h5v5H1zM6 4h3M3 7v2m8 1h4m-2-2v7"/>',
+  moneyColumn: '<path d="M1 3h14v10H1zM3 5h1m8 0h1M3 11h1m8 0h1"/><circle cx="8" cy="8" r="3"/>',
+  imageColumn: '<path d="M1 1h14v14H1zM2 13l4-5 3 3 3-4 2 3"/><circle cx="5" cy="5" r="1.5"/>',
+  reset: '<path d="M1 7a6 6 0 1 1 2 6M1 2v5h5"/>',
+  download: '<path d="M8 1v10M4 7l4 4 4-4M2 12v3h12v-3"/>',
+};
+export const icon = (name, className = '') =>
+  `<svg class="icon icon-${name} ${className}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width=".85" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.page}</svg>`;
+// Column browsers use metadata glyphs, including types whose form editor is unavailable.
+export const columnIcon = (field) =>
+  field?.type === 'date'
+    ? 'calendar'
+    : field?.type === 'lookup'
+      ? field.dataverseType === 'owner'
+        ? 'person'
+        : 'lookupColumn'
+      : field?.type === 'boolean'
+        ? 'booleanColumn'
+        : field?.options || ['picklist', 'state', 'status', 'multiselectpicklist'].includes(field?.dataverseType)
+          ? 'choiceColumn'
+          : field?.dataverseType === 'money'
+            ? 'moneyColumn'
+            : field?.dataverseType === 'image'
+              ? 'imageColumn'
+              : field?.dataverseType === 'file'
+                ? 'help'
+                : field?.type === 'number'
+                  ? 'numericColumn'
+                  : 'text';
+export const navigationIcon = (item) =>
+  ({
+    website: 'globe',
+    pagetemplate: 'page',
+    redirect: 'redirect',
+    sitemarker: 'marker',
+    sitesetting: 'siteSettings',
+    setting: 'settings',
+    contentsnippet: 'pageCode',
+    basicform: 'edit',
+    entityform: 'edit',
+    list: 'list',
+    entitylist: 'list',
+    shortcut: 'shortcut',
+    webfile: 'file',
+    advancedform: 'pageForm',
+    webform: 'pageForm',
+    weblinkset: 'lines',
+    webpage: 'pages',
+    webtemplate: 'template',
+    websitelanguage: 'language',
+    contact: 'person',
+    tablepermission: 'shield',
+    entitypermission: 'shield',
+    columnpermissionprofile: 'shield',
+    invitation: 'invitation',
+    publishingstatetransitionrule: 'transition',
+    webpageaccesscontrolrule: 'shield',
+    webrole: 'person',
+    websiteaccess: 'key',
+  })[item.id] ??
+  {
+    website: 'globe',
+    pagetemplate: 'page',
+    redirect: 'redirect',
+    sitemarker: 'marker',
+    sitesetting: 'siteSettings',
+    setting: 'settings',
+    contentsnippet: 'pageCode',
+    entityform: 'edit',
+    entitylist: 'list',
+    shortcut: 'shortcut',
+    webfile: 'file',
+    webform: 'pageForm',
+    weblinkset: 'lines',
+    webpage: 'pages',
+    webtemplate: 'template',
+    websitelanguage: 'language',
+    contact: 'person',
+    entitypermission: 'shield',
+    columnpermissionprofile: 'shield',
+    invitation: 'invitation',
+    publishingstatetransitionrule: 'transition',
+    webpageaccesscontrolrule: 'shield',
+    webrole: 'person',
+    websiteaccess: 'key',
+  }[item.entity?.replace(/^.*?_/, '')] ??
+  'page';

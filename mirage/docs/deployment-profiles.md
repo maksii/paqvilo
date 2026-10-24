@@ -48,11 +48,11 @@ a toolkit session with different profile settings.
 
 The three sections are independently mapped and enabled:
 
-| Section | File content | Local effect |
-| --- | --- | --- |
-| `pages` | PAC Pages table-to-record-patch YAML, or the equivalent JSON | Overlays exported portal records before rendering and permission compilation |
-| `environmentVariables` | PAC deployment-settings object containing an `EnvironmentVariables` array | Sets current values of exported Solution variable definitions |
-| `connectionReferences` | PAC deployment-settings object containing a `ConnectionReferences` array | Seeds local `connectionreference` records with deterministic IDs |
+| Section                | File content                                                              | Local effect                                                                 |
+| ---------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `pages`                | PAC Pages table-to-record-patch YAML, or the equivalent JSON              | Overlays exported portal records before rendering and permission compilation |
+| `environmentVariables` | PAC deployment-settings object containing an `EnvironmentVariables` array | Sets current values of exported Solution variable definitions                |
+| `connectionReferences` | PAC deployment-settings object containing a `ConnectionReferences` array  | Seeds local `connectionreference` records with deterministic IDs             |
 
 Both Solution sections can point to the same JSON file or to separate files, and accept
 ordered lists of files. Later files replace entries with the same case-insensitive schema
@@ -74,11 +74,13 @@ An individual Solution settings file has this structure:
 ```json
 {
   "EnvironmentVariables": [{ "SchemaName": "sample_ServiceUrl", "Value": "https://service.example.test" }],
-  "ConnectionReferences": [{
-    "LogicalName": "sample_Api",
-    "ConnectionId": "synthetic-connection",
-    "ConnectorId": "/providers/Microsoft.PowerApps/apis/shared_sample"
-  }]
+  "ConnectionReferences": [
+    {
+      "LogicalName": "sample_Api",
+      "ConnectionId": "synthetic-connection",
+      "ConnectorId": "/providers/Microsoft.PowerApps/apis/shared_sample"
+    }
+  ]
 }
 ```
 
@@ -138,3 +140,58 @@ ambiguous combinations.
 
 Formats follow Microsoft's [Pages deployment-profile tutorial](https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-tutorial#upload-the-changes-using-deployment-profile)
 and [Solution deployment settings](https://learn.microsoft.com/en-us/power-platform/alm/conn-ref-env-variables-build-tools).
+
+## Environment variable types, effective values and secrets
+
+Solution environment variables keep their exported type: String (100000000), Number (100000001), Boolean
+(100000002), JSON (100000003), Data source (100000004) and Secret (100000005). Values are text. The effective
+value of a variable is, lowest first: the definition default → the Solution value → the selected profile →
+project `environmentVariables` → the `/_sim/` or persona local value. Solution seeding writes that result into
+the `environmentvariablevalue` row, so Web API reads, `RetrieveEnvironmentVariableValue` and
+`effectiveEnvironmentVariables(state)` in `mirage/lib/secret-resolver.mjs` all see the same value. Server logic
+reads non-secret values through `Server.EnvironmentVariable.get(name)` (names match without case); a Secret variable
+answers `null` there and records `SECRET_NOT_EXPOSED_TO_SERVER_LOGIC`, because Power Pages hands secrets to a site
+through a site setting bound to the variable. The importer records those bindings as `settingEnvironmentVariables`
+(setting name → variable), read from the setting's `environmentvariable` field with `source` 1.
+
+Site settings bound to a Secret variable keep their secret classification (`secretSettingNames`) through local
+portal overrides. Page inspection (`/__sim/api/page-resources`, Lense) shows `[secret]` and `secret: true` for every such
+setting, its value and its source value, and never the bound value; rendering still receives the resolved value.
+`runExportedServerLogic` reads the effective environment variables from the store when its caller passes none, so
+`Server.EnvironmentVariable.get` answers the same value in a running site as in tests.
+
+A Secret variable's value is a Key Vault reference, never the secret:
+
+```text
+/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.KeyVault/vaults/{vault}/secrets/{name}[/{version}]
+https://{vault}.vault.azure.net/secrets/{name}[/{version}]
+```
+
+Paqvilo never contacts Key Vault. The project `secrets` config binds `<vault>/<name>` to where the value lives on
+this machine when it is read:
+
+```yaml
+secrets:
+  fx-vault/func-key:
+    source: environment # read process.env[variable] at resolve time
+    variable: FX_FUNC_KEY
+    versions: { current: v2 } # optional: a reference naming another version is missing
+    expiresOn: 2026-12-31T00:00:00Z # optional: expired after this instant
+    allow: [77777777-7777-4777-8777-777777777777] # principal ids; absent means nobody (fail closed)
+    disabled: false
+  fx-vault/other:
+    source: protected # a Windows DPAPI blob (current user), as lense/dataverse/connection.mjs stores credentials
+    protectedValue: '<base64 DPAPI blob>'
+```
+
+A `value` key is refused: secret values never live in config, state or profiles. `RetrieveEnvironmentVariableSecretValue`
+resolves the reference for the calling user when a `secrets` config exists: resolved 200, a principal not in `allow`
+403, an unbound or missing secret 404, an expired or disabled one 400, a definition that is not a Key Vault Secret 400. Without a `secrets` config the message answers 501.
+`NotifyEnvironmentVariableSecretChange` only validates its arguments.
+
+What is never revealed: `RetrieveEnvironmentVariables`, OData reads of `environmentvariablevalues` and
+`/__sim/api/environment` return the reference only. The environment table omits `value`, `effectiveValue` and
+`defaultValue` for secret definitions (Secret type, or `secretstore` 1) and adds `reference` (Key Vault Secrets only)
+and `secretStatus` (`bound`, `status`, `version`, `expiresOn`; `not-configured` without a resolver). Resolver
+diagnostics (`SECRET_DENIED`, `SECRET_MISSING`, `SECRET_EXPIRED`, `SECRET_DISABLED`, `SECRET_UNBOUND`) name the
+`<vault>/<name>` key and the reason, never the value.

@@ -1,32 +1,45 @@
+import { readRawBody } from './http-body.mjs';
+import { globalMetadataVersion } from './metadata-version.mjs';
 // Local Power Pages portals Web API (/_api) over the simulator data store.
 //
 // Routes, system query options, annotations, writes and the error envelope
 // follow the Power Pages Web API documentation (power-pages/configure:
 // web-api-overview, read-operations, write-update-delete-operations,
 // web-api-http-requests-handle-errors) and, where Power Pages passes requests
-// through, the Dataverse Web API. docs/dataverse-parity.md lists the evidence
-// and the remaining open questions for each behaviour.
-import {isExactNumeric} from './exact-numeric.mjs';
-import {preparePortalFetchXml} from './portal-fetchxml.mjs';
-import { createHash } from "node:crypto";
-import { DataError } from "./data-error.mjs";
-import { parseEntityReference, parseKeySegment } from "./data.mjs";
-import { parseXmlDocument, planFetch, structuralIntersects, webApiPagingCookie } from "./fetchxml-engine.mjs";
-import { prepareODataPage } from "./odata-paging.mjs";
-import { parseExpand, parseSelect } from "./odata-query.mjs";
-import { createWebApiFormatter } from "./webapi-format.mjs";
-import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from "./webapi-policy.mjs";
-import { fieldKind, GUID_PATTERN, own } from "./dataverse-values.mjs";
-import { siteHeaders } from "./response-headers.mjs";
-import { attachODataReaderDetails, odataNumberLexemes, odataRootDetails, observedODataInnerMessage } from "./webapi-error-details.mjs";
-import { appendObservedWebApiErrorTemplate } from "./webapi-error-templates.mjs";
+// through, the Dataverse Web API.
+import { isExactNumeric } from './exact-numeric.mjs';
+import { preparePortalFetchXml } from './portal-fetchxml.mjs';
+import { DataError } from './data-error.mjs';
+import { parseEntityReference, parseKeySegment } from './data.mjs';
+import {
+  parseXmlDocument,
+  planFetch,
+  structuralIntersects,
+  webApiPagingCookie,
+  xmlEscapeAttribute,
+} from './fetchxml-engine.mjs';
+import { compilePermissionFetchXml } from './permission-query.mjs';
+import { prepareODataPage } from './odata-paging.mjs';
+import { parseExpand, parseSelect } from './odata-query.mjs';
+import { createWebApiFormatter } from './webapi-format.mjs';
+import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from './webapi-policy.mjs';
+import { fieldKind, GUID_PATTERN, own } from './dataverse-values.mjs';
+import { contentDisposition, fileNameHeader, siteHeaders } from './response-headers.mjs';
+import { ATTACHMENT_COLUMNS } from './dataverse-files.mjs';
+import {
+  attachODataReaderDetails,
+  odataNumberLexemes,
+  odataRootDetails,
+  observedODataInnerMessage,
+} from './webapi-error-details.mjs';
+import { appendObservedWebApiErrorTemplate } from './webapi-error-templates.mjs';
 
-export const WEBAPI_COUNT_LIMIT = 5000;
+const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
 const ROUTE = new RegExp(
   String.raw`^([A-Za-z_]\w*)(?:\(${KEY}\))?(?:/([A-Za-z_]\w*|\$count)(?:\(${KEY}\))?)?(?:/(\$ref|\$value|\$count))?$`,
 );
-const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 // The local /_api response contract omits
 // OData-Version or Preference-Applied header; cache-control no-cache with Pragma and
 // Expires (ASP.NET's no-cache pair); the site's HTTP/* headers as portal pages carry
@@ -34,12 +47,12 @@ const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 // X-Content-Type-Options nosniff, which the Web API sends even when the site defines
 // no HTTP/X-Content-Type-Options setting (portal pages then send none).
 const CACHE_HEADERS = Object.freeze({
-  "cache-control": "no-cache",
-  pragma: "no-cache",
-  expires: "-1",
+  'cache-control': 'no-cache',
+  pragma: 'no-cache',
+  expires: '-1',
 });
 const apiHeaders = (portal) => ({
-  "x-content-type-options": "nosniff",
+  'x-content-type-options': 'nosniff',
   ...siteHeaders(portal ?? {}),
   ...CACHE_HEADERS,
   ...(portal?.observed?.headers?.webApi ?? {}),
@@ -49,113 +62,121 @@ const apiHeaders = (portal) => ({
 // $filter, $expand or paths through a non-navigation property), as does an
 // entity set that names no Dataverse table.
 const QUERY_CODES = new Set([
-  "InvalidAttribute",
-  "UnsupportedQuery",
-  "InvalidQuery",
-  "MissingRelationship",
-  "DuplicateQueryOption",
-  "UnknownEntitySet",
-  "UnsupportedKeySyntax",
+  'InvalidAttribute',
+  'UnsupportedQuery',
+  'InvalidQuery',
+  'MissingRelationship',
+  'DuplicateQueryOption',
+  'UnknownEntitySet',
+  'UnsupportedKeySyntax',
 ]);
 const queryPhase = (error) => {
   // These are Dataverse execution budgets, including permission-generated
   // joins. They must retain the CDS error envelope rather than being reported
   // as a portal OData grammar failure.
-  if (["0x8004430c", "0x8004430d"].includes(String(error?.details?.innerCode).toLowerCase()) && error.details.phase == null)
-    error.details = { ...error.details, phase: "backend" };
+  if (
+    ['0x8004430c', '0x8004430d'].includes(String(error?.details?.innerCode).toLowerCase()) &&
+    error.details.phase == null
+  )
+    error.details = { ...error.details, phase: 'backend' };
   if (error && QUERY_CODES.has(error.code) && error.details?.phase == null)
-    error.details = { ...(error.details ?? {}), phase: "query" };
+    error.details = { ...(error.details ?? {}), phase: 'query' };
   return error;
 };
 
 const notFound = (segment) =>
-  new DataError(`Resource not found for the segment ${segment}.`, 404, "ResourceNotFound", { segment });
+  new DataError(`Resource not found for the segment ${segment}.`, 404, 'ResourceNotFound', { segment });
 const unknownSet = (segment) =>
-  new DataError(`No Dataverse table has the entity set name ${segment}.`, 400, "UnknownEntitySet", {
+  new DataError(`No Dataverse table has the entity set name ${segment}.`, 400, 'UnknownEntitySet', {
     segment,
-    phase: "query",
+    phase: 'query',
   });
 const methodNotAllowed = (method, target) =>
-  new DataError(`The HTTP method '${method}' is not allowed for ${target}.`, 405, "MethodNotAllowed");
-const badRequest = (message, code = "InvalidRequest", innerCode = "0x80040203") =>
+  new DataError(`The HTTP method '${method}' is not allowed for ${target}.`, 405, 'MethodNotAllowed');
+const badRequest = (message, code = 'InvalidRequest', innerCode = '0x80040203') =>
   new DataError(message, 400, code, { innerCode });
 
 /** Parse the path after /_api/ into a Web API resource description. */
 export function parseWebApiRoute(pathname) {
   let path;
   try {
-    path = decodeURIComponent(String(pathname).replace(/^\/_api\//, ""));
+    path = decodeURIComponent(String(pathname).replace(/^\/_api\//, ''));
   } catch {
-    throw badRequest("The request URI is not valid.", "InvalidRoute", "0x0");
+    throw badRequest('The request URI is not valid.', 'InvalidRoute', '0x0');
   }
-  if (/^cloudflow(?:\/|$)/i.test(path)) return { kind: "cloudflow", path };
+  if (/^cloudflow(?:\/|$)/i.test(path)) return { kind: 'cloudflow', path };
   const match = ROUTE.exec(path);
   if (!match) throw notFound(path.split(/[/(]/)[0] || path);
   const [, set, rawKey, segment, navigationKey, tail] = match;
-  const key = rawKey != null && rawKey.trim() !== "" ? rawKey.trim() : null;
-  // The OData v2/v3 key literal guid'…' isn't OData v4 syntax: live sites reject it
+  const key = rawKey != null && rawKey.trim() !== '' ? rawKey.trim() : null;
+  // The OData v2/v3 key literal guid'…' isn't OData v4 syntax: the platform rejects it
   // while parsing the URL, 400 9004010A, before any permission check.
   for (const literal of [key, navigationKey])
     if (literal != null && /^\s*guid'/i.test(literal))
-      throw new DataError(`The key ${literal.trim()} uses OData v3 syntax; OData v4 GUID keys are bare.`, 400, "UnsupportedKeySyntax", {
-        segment: literal.trim(),
-        phase: "query",
-      });
+      throw new DataError(
+        `The key ${literal.trim()} uses OData v3 syntax; OData v4 GUID keys are bare.`,
+        400,
+        'UnsupportedKeySyntax',
+        {
+          segment: literal.trim(),
+          phase: 'query',
+        },
+      );
   if (key == null) {
-    if (segment === "$count" && navigationKey == null && !tail) return { kind: "count", set };
-    if (segment == null && !tail) return { kind: "collection", set };
+    if (segment === '$count' && navigationKey == null && !tail) return { kind: 'count', set };
+    if (segment == null && !tail) return { kind: 'collection', set };
     throw notFound(segment ?? tail);
   }
   if (segment == null) {
     if (tail) throw notFound(tail);
-    return { kind: "entity", set, key };
+    return { kind: 'entity', set, key };
   }
-  if (segment === "$count") throw notFound(segment);
+  if (segment === '$count') throw notFound(segment);
   if (navigationKey != null) {
-    if (tail === "$ref") return { kind: "ref", set, key, segment, targetKey: navigationKey.trim() };
+    if (tail === '$ref') return { kind: 'ref', set, key, segment, targetKey: navigationKey.trim() };
     throw notFound(tail ?? segment);
   }
-  if (tail === "$ref") return { kind: "ref", set, key, segment };
-  if (tail === "$value") return { kind: "value", set, key, segment };
-  if (tail === "$count") return { kind: "navcount", set, key, segment };
-  return { kind: "member", set, key, segment };
+  if (tail === '$ref') return { kind: 'ref', set, key, segment };
+  if (tail === '$value') return { kind: 'value', set, key, segment };
+  if (tail === '$count') return { kind: 'navcount', set, key, segment };
+  return { kind: 'member', set, key, segment };
 }
 
 /** Prefer header: include-annotations value (null when absent) and return=representation. */
 export function parsePrefer(header) {
-  const text = Array.isArray(header) ? header.join(",") : String(header ?? "");
+  const text = Array.isArray(header) ? header.join(',') : String(header ?? '');
   const annotations = /(?:^|[,;\s])odata\.include-annotations\s*=\s*(?:"([^"]*)"|([^,;\s"]*))/i.exec(text);
   return {
-    annotations: annotations ? (annotations[1] ?? annotations[2] ?? "") : null,
+    annotations: annotations ? (annotations[1] ?? annotations[2] ?? '') : null,
     representation: /(?:^|[,;\s])return\s*=\s*representation(?:$|[,;\s])/i.test(text),
   };
 }
 
 /** OData include-annotations matcher: names, namespace.* patterns, * and -exclusions. */
 export function annotationMatcher(value) {
-  const patterns = String(value ?? "")
-    .split(",")
+  const patterns = String(value ?? '')
+    .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
   const matches = (pattern, term) => {
     const p = pattern.toLowerCase(),
       t = term.toLowerCase();
-    return p === "*" || p === t || (p.endsWith(".*") && t.startsWith(p.slice(0, -1)));
+    return p === '*' || p === t || (p.endsWith('.*') && t.startsWith(p.slice(0, -1)));
   };
   return (term) =>
-    patterns.some((pattern) => !pattern.startsWith("-") && matches(pattern, term)) &&
-    !patterns.some((pattern) => pattern.startsWith("-") && matches(pattern.slice(1), term));
+    patterns.some((pattern) => !pattern.startsWith('-') && matches(pattern, term)) &&
+    !patterns.some((pattern) => pattern.startsWith('-') && matches(pattern.slice(1), term));
 }
 
 const stripAnnotations = (value, include) => {
   if (Array.isArray(value)) return value.map((item) => stripAnnotations(item, include));
-  if (!value || typeof value !== "object") return value;
+  if (!value || typeof value !== 'object') return value;
   const out = {};
   for (const [key, item] of Object.entries(value)) {
-    const at = key.indexOf("@");
+    const at = key.indexOf('@');
     const term = at < 0 ? null : key.slice(at + 1);
-    if (term != null && !term.startsWith("odata.") && !include(term)) continue;
-    out[key] = item && typeof item === "object" ? stripAnnotations(item, include) : item;
+    if (term != null && !term.startsWith('odata.') && !include(term)) continue;
+    out[key] = item && typeof item === 'object' ? stripAnnotations(item, include) : item;
   }
   return out;
 };
@@ -167,54 +188,54 @@ const siteSetting = (settings, name) => {
   return key === undefined ? undefined : settings[key];
 };
 const settingTrue = (settings, name) =>
-  String(siteSetting(settings, name) ?? "")
+  String(siteSetting(settings, name) ?? '')
     .trim()
-    .toLowerCase() === "true";
+    .toLowerCase() === 'true';
 
 const POLICY_CODES = new Set([
-  "WebApiFieldNotEnabled",
-  "WebApiPrivateField",
-  "WebApiColumnPermissionDenied",
-  "WebApiFieldsNotConfigured",
-  "WebApiColumnsViewUnresolved",
-  "WebApiWildcardDeprecated",
+  'WebApiFieldNotEnabled',
+  'WebApiPrivateField',
+  'WebApiColumnPermissionDenied',
+  'WebApiFieldsNotConfigured',
+  'WebApiColumnsViewUnresolved',
+  'WebApiWildcardDeprecated',
 ]);
 const DEFAULT_INNER_CODES = {
-  UnsupportedQuery: "0x0",
-  InvalidQuery: "0x0",
-  DuplicateQueryOption: "0x0",
-  MissingRelationship: "0x0",
-  QueryParamNotSupported: "0x80060888",
-  InvalidPagingToken: "0x80060888",
-  NotFound: "0x80040217",
-  InvalidLookup: "0x80040217",
-  DuplicateRecord: "0x80040237",
-  PreconditionFailed: "0x80060882",
-  PluginValidation: "0x80040265",
+  UnsupportedQuery: '0x0',
+  InvalidQuery: '0x0',
+  DuplicateQueryOption: '0x0',
+  MissingRelationship: '0x0',
+  QueryParamNotSupported: '0x80060888',
+  InvalidPagingToken: '0x80060888',
+  NotFound: '0x80040217',
+  InvalidLookup: '0x80040217',
+  DuplicateRecord: '0x80040237',
+  PreconditionFailed: '0x80060882',
+  PluginValidation: '0x80040265',
 };
 
-// innererror.type of each error code. Observed on two live reference sites with
-// innererror on every error (identical on both): 9004010A UnexpectedError,
+// innererror.type of each error code. Observed natively, with
+// innererror on every error: 9004010A UnexpectedError,
 // 9004010E ConfigurationResourceNotSupported, 9004010C ResourceDoesNotExists and
 // 90040120 EntityPermissionReadIsMissing. The others are the documented error names
 // (web-api-http-requests-handle-errors: the error code table and the 405 error types).
 const ERROR_TYPES = Object.freeze({
-  "9004010A": "UnexpectedError",
-  "9004010E": "ConfigurationResourceNotSupported",
-  "90040120": "EntityPermissionReadIsMissing",
-  "900400FF": "NoAttributesForTableCreate",
-  "90040100": "InvalidAttribute",
-  "90040101": "AttributePermissionIsMissing",
-  "90040102": "TablePermissionWriteIsMissingDuringUpdate",
-  "90040103": "TablePermissionCreateIsMissing",
-  "90040104": "TablePermissionDeleteIsMissing",
-  "90040105": "TablePermissionAppendIsMissngDuringAssociationChange",
-  "90040106": "TablePermissionAppendToIsMissingDuringAssociationChange",
-  "90040107": "HttpAntiForgeryException",
-  "90040109": "MissingPortalSessionCookie",
-  "9004010C": "ResourceDoesNotExists",
-  "9004010D": "CDSError",
-  InvalidOperation: "InvalidOperation",
+  '9004010A': 'UnexpectedError',
+  '9004010E': 'ConfigurationResourceNotSupported',
+  90040120: 'EntityPermissionReadIsMissing',
+  '900400FF': 'NoAttributesForTableCreate',
+  90040100: 'InvalidAttribute',
+  90040101: 'AttributePermissionIsMissing',
+  90040102: 'TablePermissionWriteIsMissingDuringUpdate',
+  90040103: 'TablePermissionCreateIsMissing',
+  90040104: 'TablePermissionDeleteIsMissing',
+  90040105: 'TablePermissionAppendIsMissngDuringAssociationChange',
+  90040106: 'TablePermissionAppendToIsMissingDuringAssociationChange',
+  90040107: 'HttpAntiForgeryException',
+  90040109: 'MissingPortalSessionCookie',
+  '9004010C': 'ResourceDoesNotExists',
+  '9004010D': 'CDSError',
+  InvalidOperation: 'InvalidOperation',
 });
 
 /**
@@ -229,115 +250,202 @@ const ERROR_TYPES = Object.freeze({
  *   error): code and message repeat the outer error, as observed; Dataverse failures,
  *   keep the Dataverse code and message that portal scripts read without a type.
  *   Portal exceptions use ERROR_TYPES, or null for a code without a name.
- * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
-export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod } = {}) {
+export function webApiErrorResponse(
+  error,
+  {
+    innerError = false,
+    innerErrorScope = 'dataverse-errors',
+    cdsErrorMessage = 'CDS error occurred.',
+    cdsErrorCode = 'innererror',
+    antiForgery = 'cookie-mismatch-403',
+    invalidDate = 'invalid-format',
+    errorDetails = 'diagnostic',
+    errorStacks = 'diagnostic',
+    errorTemplates,
+    errorMethod,
+    mutationPermissionText,
+    selfNnPermissionErrors,
+  } = {},
+) {
   const status = Number(error?.status ?? error?.statusCode) || 500;
   const internal = error?.code == null ? null : String(error.code);
   const details = error?.details ?? {};
-  const headers = internal ? { "X-Sim-Error-Code": internal } : {};
-  const everyError = innerErrorScope === "all-errors";
+  const headers = internal ? { 'X-Sim-Error-Code': internal } : {};
+  const everyError = innerErrorScope === 'all-errors';
   const respond = (httpStatus, code, message, inner) => {
     const body = { error: { code, message } };
     if (innerError && everyError && !details.hideInner)
       body.error.innererror = {
         code: inner?.code ?? code,
         message: inner?.message ?? message,
-        ...(code === "9004010D" ? {} : { type: ERROR_TYPES[code] ?? null }),
+        ...(code === '9004010D' ? {} : { type: ERROR_TYPES[code] ?? null }),
       };
-    else if (innerError && inner && !details.hideInner) body.error.innererror = { code: inner.code, message: inner.message };
+    else if (innerError && inner && !details.hideInner)
+      body.error.innererror = { code: inner.code, message: inner.message };
     return { status: httpStatus, body, headers };
   };
   const plain = undefined;
-  if(internal==='PortalFetchTransportFailure'&&details.phase==='native-api-transport'){
-    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:details.innerMessage});
-    if(response.body.error.innererror)response.body.error.innererror.type='CDSError';
-    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+  if (internal === 'PortalFetchTransportFailure' && details.phase === 'native-api-transport') {
+    const response = respond(status, '9004010D', cdsErrorMessage, {
+      code: details.innerCode,
+      message: details.innerMessage,
+    });
+    if (response.body.error.innererror) response.body.error.innererror.type = 'CDSError';
+    if (cdsErrorCode === 'cdscode') response.body.error.cdscode = details.innerCode;
     return response;
   }
-  if(internal==='ODataPermissionNavigationFailure'&&details.phase==='native-odata-conversion'&&[400,501].includes(status)){
-    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:error.message});
-    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+  if (
+    internal === 'ODataPermissionNavigationFailure' &&
+    details.phase === 'native-odata-conversion' &&
+    [400, 501].includes(status)
+  ) {
+    const response = respond(status, '9004010D', cdsErrorMessage, { code: details.innerCode, message: error.message });
+    if (cdsErrorCode === 'cdscode') response.body.error.cdscode = details.innerCode;
     return response;
   }
   if (internal === 'PortalQueryAdmissionFailure' && details.phase === 'native-api-admission')
     return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
-  if (details.phase === "query" && QUERY_CODES.has(internal))
-    return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
+  if (details.phase === 'query' && QUERY_CODES.has(internal))
+    return respond(400, '9004010A', 'An unexpected error occurred while processing the request', plain);
   // A write payload the OData reader can't map (an @odata.bind name that isn't a navigation
-  // property): the same generic 9004010A as a malformed query (decision, not observed).
-  if (details.phase === "payload" && internal === "UndeclaredNavigationProperty")
-    return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
-  if (internal === "WebApiInvalidReference")
-    return respond(500, "9004010A", "An unexpected error occurred while processing the request", plain);
-  if (internal === "WebApiConfigurationTable")
-    return respond(404, "9004010E", `Configuration table ${details.table} is not supported.`, plain);
-  if (internal === "ResourceNotFound" || internal === "WebApiTableNotEnabled" || internal === "UnknownEntity")
-    return respond(404, "9004010C", `Resource not found for the segment ${details.table ?? details.segment ?? ""}.`, plain);
-  if (internal === "InvalidAttribute")
-    return respond(400, "90040100", `Attribute ${details.attribute} cannot be found for table ${details.table}.`, plain);
+  // property): the same generic 9004010A as a malformed query (a guess: not observed natively).
+  if (details.phase === 'payload' && internal === 'UndeclaredNavigationProperty')
+    return respond(400, '9004010A', 'An unexpected error occurred while processing the request', plain);
+  if (internal === 'WebApiInvalidReference')
+    return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
+  if (internal === 'WebApiConfigurationTable')
+    return respond(404, '9004010E', `Configuration table ${details.table} is not supported.`, plain);
+  if (internal === 'ResourceNotFound' || internal === 'WebApiTableNotEnabled' || internal === 'UnknownEntity')
+    return respond(
+      404,
+      '9004010C',
+      `Resource not found for the segment ${details.table ?? details.segment ?? ''}.`,
+      plain,
+    );
+  if (internal === 'InvalidAttribute')
+    return respond(
+      400,
+      '90040100',
+      `Attribute ${details.attribute} cannot be found for table ${details.table}.`,
+      plain,
+    );
   if (POLICY_CODES.has(internal))
     return respond(
       403,
-      "90040101",
+      '90040101',
       details.attribute && details.table
         ? `Attribute ${details.attribute} in table ${details.table} is not enabled for Web Api.`
         : error.message,
       plain,
     );
-  if (internal === "PermissionDenied") {
-    const operation = String(details.operation ?? "").toLowerCase(),
-      table = details.table ?? "";
-    if (operation === "create")
-      return respond(403, "90040103", `You don't have permission to create ${table} entity.`, plain);
-    if (operation === "update" || operation === "write")
-      return respond(403, "90040102", `You don't have permission to update ${table} entity.`, plain);
-    if (operation === "delete")
-      return respond(403, "90040104", `You don't have permission to delete ${table} entity.`, plain);
-    if (operation === "append")
-      return respond(
+  if (internal === 'PermissionDenied') {
+    const operation = String(details.operation ?? '').toLowerCase(),
+      table = details.table ?? '';
+    const selfNn = details.portalSelfNnAssociation;
+    if (
+      ['append', 'appendto'].includes(operation) &&
+      selfNn?.table === table &&
+      details.related === table &&
+      selfNnPermissionErrors?.[String(selfNn.schema).toLowerCase()] === 'native-classic'
+    ) {
+      const response = respond(
         403,
-        "90040105",
-        `You don't have permission to associate or disassociate table ${table} with ${details.related ?? ""}.`,
+        '90040106',
+        `You don’t have permission to associate or disassociate table ${table} to ${table}`,
         plain,
       );
-    if (operation === "appendto")
+      if (response.body.error.innererror)
+        response.body.error.innererror.type = 'EntityPermissionAppendToIsMissingDuringAssociationChange';
+      return response;
+    }
+    if (operation === 'create')
+      return respond(403, '90040103', `You don't have permission to create ${table} entity.`, plain);
+    if (operation === 'update' || operation === 'write')
       return respond(
         403,
-        "90040106",
-        `You don't have permission to associate or disassociate table ${table} to ${details.related ?? ""}`,
+        '90040102',
+        mutationPermissionText === 'table'
+          ? `You don’t have permission to update ${table} table.`
+          : `You don't have permission to update ${table} entity.`,
+        plain,
+      );
+    if (operation === 'delete')
+      return respond(
+        403,
+        '90040104',
+        mutationPermissionText === 'table'
+          ? `You don’t have permission to delete ${table} table.`
+          : `You don't have permission to delete ${table} entity.`,
+        plain,
+      );
+    if (operation === 'append')
+      return respond(
+        403,
+        '90040105',
+        `You don't have permission to associate or disassociate table ${table} with ${details.related ?? ''}.`,
+        plain,
+      );
+    if (operation === 'appendto')
+      return respond(
+        403,
+        '90040106',
+        `You don't have permission to associate or disassociate table ${table} to ${details.related ?? ''}`,
         plain,
       );
     // Read denial: 403 90040120, also for FetchXML link-entity tables.
-    return respond(403, "90040120", `You don't have permission to read the ${table} table.`, plain);
+    return respond(403, '90040120', `You don't have permission to read the ${table} table.`, plain);
   }
   // Learn lists 401 for MissingPortalRequestVerificationToken and MissingPortalSessionCookie
   // (90040109) and gives 90040107 HttpAntiForgeryException no status; Microsoft's clients
   // treat 403 with 90040107 as an expired token and 401 as an expired session. Local tokens
   // aren't bound to a session, so no local path raises MissingPortalSessionCookie.
-  if (internal === "MissingPortalRequestVerificationToken") return respond(401, "90040107", antiForgery === "decryption-401" ? "Request validation failed : " + error.message : error.message, plain);
-  if (internal === "HttpAntiForgeryException") return respond(antiForgery === "decryption-401" ? 401 : 403, "90040107", antiForgery === "decryption-401" ? 'Request validation failed : The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.' : error.message, plain);
-  if (internal === "MissingPortalSessionCookie")
-    return respond(401, "90040109", "An Invalid session token was passed into the throwing method.", plain);
-  if (internal === "NoAttributesForTableCreate")
-    return respond(400, "900400FF", "No attributes for Create Table action.", plain);
-  if (internal === "MethodNotAllowed") return respond(405, "InvalidOperation", error.message, plain);
-  if (internal === "NotImplemented") return respond(501, "NotImplemented", error.message, plain);
-  if (status === 413) return respond(413, "", error.message, plain);
-  if (status === 409 && internal === "StateConflict") return respond(409, "", error.message, plain);
-  if (status >= 500) return respond(500, "", "An unexpected error occurred while processing the request.", plain);
+  if (internal === 'MissingPortalRequestVerificationToken')
+    return respond(
+      401,
+      '90040107',
+      antiForgery === 'decryption-401' ? 'Request validation failed : ' + error.message : error.message,
+      plain,
+    );
+  if (internal === 'HttpAntiForgeryException')
+    return respond(
+      antiForgery === 'decryption-401' ? 401 : 403,
+      '90040107',
+      antiForgery === 'decryption-401'
+        ? 'Request validation failed : The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.'
+        : error.message,
+      plain,
+    );
+  if (internal === 'MissingPortalSessionCookie')
+    return respond(401, '90040109', 'An Invalid session token was passed into the throwing method.', plain);
+  if (internal === 'NoAttributesForTableCreate')
+    return respond(400, '900400FF', 'No attributes for Create Table action.', plain);
+  if (internal === 'MethodNotAllowed') return respond(405, 'InvalidOperation', error.message, plain);
+  if (internal === 'NotImplemented') return respond(501, 'NotImplemented', error.message, plain);
+  if (status === 413) return respond(413, '', error.message, plain);
+  if (status === 409 && internal === 'StateConflict') return respond(409, '', error.message, plain);
+  if (status >= 500) return respond(500, '', 'An unexpected error occurred while processing the request.', plain);
   // Everything else is Dataverse rejecting the request: CDSError with the
   // platform error code and message in innererror.
-  const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? "0x80040203");
-  const response = respond(status, "9004010D", cdsErrorMessage, {
+  const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? '0x80040203');
+  const response = respond(status, '9004010D', cdsErrorMessage, {
     code: innerCode,
-    message: internal === "InvalidDateTime" && (details.failedDateConversion || details.dateTimeBelowMinimum) && invalidDate === "crm-minimum"
-      ? `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`
-      : (() => {
-        const observed = observedODataInnerMessage(error, errorDetails);
-        return observed === null ? error?.message ?? "" : appendObservedWebApiErrorTemplate(error, observed, { mode: errorStacks, templates: errorTemplates, method: errorMethod });
-      })(),
+    message:
+      internal === 'InvalidDateTime' &&
+      (details.failedDateConversion || details.dateTimeBelowMinimum) &&
+      invalidDate === 'crm-minimum'
+        ? `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`
+        : (() => {
+            const observed = observedODataInnerMessage(error, errorDetails);
+            return observed === null
+              ? (error?.message ?? '')
+              : appendObservedWebApiErrorTemplate(error, observed, {
+                  mode: errorStacks,
+                  templates: errorTemplates,
+                  method: errorMethod,
+                });
+          })(),
   });
   if (cdsErrorCode === 'cdscode') response.body.error.cdscode = innerCode;
   return response;
@@ -353,7 +461,7 @@ export async function handleWebApi(req, res, url, deps) {
   } catch (cause) {
     if (res.headersSent) throw cause;
     const response = webApiErrorResponse(cause, {
-      innerError: settingTrue(deps.portal?.settings, "Webapi/error/innererror"),
+      innerError: settingTrue(deps.portal?.settings, 'Webapi/error/innererror'),
       innerErrorScope: deps.portal?.observed?.webApiInnerError,
       cdsErrorMessage: deps.portal?.observed?.webApiCdsErrorMessage,
       cdsErrorCode: deps.portal?.observed?.webApiCdsErrorCode,
@@ -363,6 +471,8 @@ export async function handleWebApi(req, res, url, deps) {
       errorStacks: deps.portal?.observed?.webApiErrorStacks,
       errorTemplates: deps.webApiErrorTemplates,
       errorMethod: req.method,
+      mutationPermissionText: deps.portal?.observed?.webApiMutationPermissionText,
+      selfNnPermissionErrors: deps.portal?.observed?.webApiSelfNnPermissionErrors,
     });
     deps.onError?.(cause, response);
     deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
@@ -370,52 +480,51 @@ export async function handleWebApi(req, res, url, deps) {
 }
 
 async function route(req, res, url, deps) {
-  const method = req.method === "HEAD" ? "GET" : req.method;
+  const method = req.method === 'HEAD' ? 'GET' : req.method;
   const seen = new Set();
   for (const key of url.searchParams.keys()) {
     if (seen.has(key))
       throw queryPhase(
         badRequest(
           `Query option '${key}' was specified more than once, but it must be specified at most once.`,
-          "DuplicateQueryOption",
-          "0x0",
+          'DuplicateQueryOption',
+          '0x0',
         ),
       );
     seen.add(key);
   }
   if (WRITE_METHODS.has(method)) {
-    // Token failures (docs/dataverse-parity.md, "Token failures"): no token is Learn's
+    // Token failures: no token is Learn's
     // 401 MissingPortalRequestVerificationToken; a token that doesn't match this session's is
     // 90040107 with 403, the status Microsoft's Power Pages clients refresh the token on.
     const supplied = req.headers.__requestverificationtoken;
-    if (supplied == null || supplied === "")
+    if (supplied == null || supplied === '')
       throw new DataError(
         'The required anti-forgery form field "__RequestVerificationToken" is not present.',
         401,
-        "MissingPortalRequestVerificationToken",
+        'MissingPortalRequestVerificationToken',
       );
     if (supplied !== deps.csrf)
       throw new DataError(
-        "The anti-forgery cookie token and form field token do not match.",
+        'The anti-forgery cookie token and form field token do not match.',
         403,
-        "HttpAntiForgeryException",
+        'HttpAntiForgeryException',
       );
-  } else if (method !== "GET") throw methodNotAllowed(method, "the portals Web API");
+  } else if (method !== 'GET') throw methodNotAllowed(method, 'the portals Web API');
   const target = parseWebApiRoute(url.pathname);
-  if (target.kind === "cloudflow")
+  if (target.kind === 'cloudflow')
     throw new DataError(
       `Cloud flow triggers are not run locally; configure a simulator endpoint for ${url.pathname} to answer this request.`,
       501,
-      "NotImplemented",
+      'NotImplemented',
     );
   const t = requestContext(req, res, url, deps, target, method);
   // A read observer can issue independently committed SDK writes. Finish the
   // serialized read unit before sending a successful response, including text
   // properties and conditional 304s, so persistence failures remain errors.
-  const execute = () => method === "GET" && typeof deps.store.readOperation === "function"
-    ? dispatchRead(t)
-    : dispatch(t);
-  if (method === "GET" && !(target.kind === "collection" && url.searchParams.has("fetchXml")))
+  const execute = () =>
+    method === 'GET' && typeof deps.store.readOperation === 'function' ? dispatchRead(t) : dispatch(t);
+  if (method === 'GET' && !(target.kind === 'collection' && url.searchParams.has('fetchXml')))
     try {
       return await execute();
     } catch (error) {
@@ -427,14 +536,28 @@ async function route(req, res, url, deps) {
 async function dispatchRead(t) {
   let response;
   const pending = {
-    writeHead(status, headers) { response = { status, headers, raw: true }; },
-    end(body) { response = { ...response, raw: true, body }; },
+    writeHead(status, headers) {
+      response = { status, headers, raw: true };
+    },
+    end(body) {
+      response = { ...response, raw: true, body };
+    },
   };
-  const buffered = { ...t, res: pending, deps: { ...t.deps,
-    json(_res, status, body, headers) { response = { status, body, headers }; },
-  } };
-  await t.store.readOperation(async () => { await dispatch(buffered); });
-  if (!response) throw new DataError("The read operation produced no response.", 500, "InvalidReadResponse");
+  const buffered = {
+    ...t,
+    res: pending,
+    deps: {
+      ...t.deps,
+      json(_res, status, body, headers) {
+        response = { status, body, headers };
+      },
+    },
+  };
+  await t.store.readOperation(async () => {
+    await dispatch(buffered);
+  });
+  if (!response) throw new DataError('The read operation produced no response.', 500, 'InvalidReadResponse');
+  if (!response.raw && response.status === 200) await hydrateAttachments(t, response.body);
   if (response.raw) {
     t.res.writeHead(response.status, response.headers);
     return t.res.end(response.body);
@@ -442,37 +565,52 @@ async function dispatchRead(t) {
   return t.deps.json(t.res, response.status, response.body, response.headers);
 }
 
+// A note's documentbody or an attachment's body held by a storage provider (dataverse-storage-routing.mjs) reads as null
+// from the row; deps.attachmentBody (organization-host.mjs) reads it before the entity or collection response leaves.
+// ponytail: bodies under $expand of another table are not read back; add the walk when a portal page expands notes.
+async function hydrateAttachments(t, body) {
+  const logical = t.mapping?.logicalName,
+    column = ATTACHMENT_COLUMNS[logical];
+  if (!column || typeof t.deps.attachmentBody !== 'function' || !body || typeof body !== 'object') return;
+  const idColumn = t.mapping.idColumn;
+  for (const row of Array.isArray(body.value) ? body.value : [body]) {
+    if (!row || typeof row !== 'object' || !own(row, column) || row[column] != null || !row[idColumn]) continue;
+    row[column] = await t.deps.attachmentBody(logical, { [idColumn]: row[idColumn] });
+  }
+}
+
 function dispatch(t) {
   const { url, target, method } = t;
   switch (target.kind) {
-    case "collection":
-      if (method === "GET") return url.searchParams.has("fetchXml") ? getFetch(t) : getCollection(t);
-      if (method === "POST") return createEntity(t);
-      throw methodNotAllowed(method, "an entity set");
-    case "count":
-      if (method === "GET") return getCount(t);
-      throw methodNotAllowed(method, "$count");
-    case "entity":
-      if (method === "GET") return getEntity(t);
-      if (method === "PATCH") return patchEntity(t);
-      if (method === "DELETE") return deleteEntity(t);
-      throw methodNotAllowed(method, "an entity");
-    case "member":
+    case 'collection':
+      if (method === 'GET') return url.searchParams.has('fetchXml') ? getFetch(t) : getCollection(t);
+      if (method === 'POST') return createEntity(t);
+      throw methodNotAllowed(method, 'an entity set');
+    case 'count':
+      if (method === 'GET') return getCount(t);
+      throw methodNotAllowed(method, '$count');
+    case 'entity':
+      if (method === 'GET') return getEntity(t);
+      if (method === 'PATCH') return patchEntity(t);
+      if (method === 'DELETE') return deleteEntity(t);
+      throw methodNotAllowed(method, 'an entity');
+    case 'member':
       if (t.mapping.relationships?.[target.segment]) {
-        if (method === "GET") return getNavigation(t);
-        throw methodNotAllowed(method, "a navigation property; use $ref or @odata.bind");
+        if (method === 'GET') return getNavigation(t);
+        throw methodNotAllowed(method, 'a navigation property; use $ref or @odata.bind');
       }
-      if (method === "GET") return getProperty(t, false);
-      if (method === "PUT") return putProperty(t);
-      if (method === "DELETE") return deleteProperty(t);
-      throw methodNotAllowed(method, "a property");
-    case "value":
-      if (method === "GET") return getProperty(t, true);
-      throw methodNotAllowed(method, "$value");
-    case "navcount":
-      if (method === "GET") return getNavigationCount(t);
-      throw methodNotAllowed(method, "$count");
-    case "ref":
+      if (fileKind(t) && ['PUT', 'PATCH', 'DELETE'].includes(method)) return fileColumnRequest(t);
+      if (method === 'GET') return getProperty(t, false);
+      if (method === 'PUT') return putProperty(t);
+      if (method === 'DELETE') return deleteProperty(t);
+      throw methodNotAllowed(method, 'a property');
+    case 'value':
+      if (method === 'GET') return fileKind(t) ? fileColumnRequest(t) : getProperty(t, true);
+      throw methodNotAllowed(method, '$value');
+    case 'navcount':
+      if (method === 'GET') return getNavigationCount(t);
+      throw methodNotAllowed(method, '$count');
+    case 'ref':
       return reference(t);
     default:
       throw notFound(target.set);
@@ -482,10 +620,10 @@ function dispatch(t) {
 /**
  * Resolve an entity set segment; Web API segments are case-sensitive entity set names.
  * A segment that names no Dataverse table answers 400 9004010A, a known table that
- * isn't enabled 404 9004010C with its logical name (webApiPolicy), as live reference
- * sites answer (docs/dataverse-parity.md). Known tables are the local mappings, data
- * and site tables, and the Power Pages tables every environment has
- * (POWER_PAGES_TABLES).
+ * isn't enabled 404 9004010C with its logical name (webApiPolicy), as the platform
+ * answers. Known tables are the local mappings (including
+ * tables the simulated Dataverse API seeds or creates), data and site tables, and the
+ * Power Pages tables every environment has (POWER_PAGES_TABLES).
  */
 function resolveSet(store, set) {
   // The entity set name wins over a table whose logical name happens to equal it (a
@@ -496,12 +634,12 @@ function resolveSet(store, set) {
   try {
     mapping = store.resolveMapping(set);
   } catch (error) {
-    if (!(error.status === 404 || error.code === "UnknownEntity")) throw error;
+    if (!(error.status === 404 || error.code === 'UnknownEntity')) throw error;
   }
   if (mapping?.entitySet === set) return mapping;
   const table = POWER_PAGES_TABLES.get(set);
   if (table)
-    throw new DataError(`Resource not found for the segment '${set}'.`, 404, "WebApiTableNotEnabled", {
+    throw new DataError(`Resource not found for the segment '${set}'.`, 404, 'WebApiTableNotEnabled', {
       segment: set,
       table,
     });
@@ -517,7 +655,7 @@ function configurationTable(store, set) {
     // Unmapped: fall back to the entity set spelling below.
   }
   if (WEBAPI_UNSUPPORTED_TABLES.has(set)) return set;
-  for (const suffix of ["es", "s"])
+  for (const suffix of ['es', 's'])
     if (set.endsWith(suffix) && WEBAPI_UNSUPPORTED_TABLES.has(set.slice(0, -suffix.length)))
       return set.slice(0, -suffix.length);
   return null;
@@ -527,11 +665,11 @@ function requestContext(req, res, url, deps, target, method) {
   const { store } = deps;
   const configuration = configurationTable(store, target.set);
   if (configuration)
-    throw new DataError(`Configuration table ${configuration} is not supported.`, 404, "WebApiConfigurationTable", {
+    throw new DataError(`Configuration table ${configuration} is not supported.`, 404, 'WebApiConfigurationTable', {
       table: configuration,
     });
   const mapping = resolveSet(store, target.set);
-  const policy = webApiPolicy(deps.portal, store, mapping.logicalName);
+  const policy = webApiPolicy(policyPortal(store, deps), store, mapping.logicalName);
   const prefer = parsePrefer(req.headers.prefer);
   const include = prefer.annotations == null ? null : annotationMatcher(prefer.annotations);
   const settings = store.state.settings ?? {};
@@ -551,52 +689,71 @@ function requestContext(req, res, url, deps, target, method) {
   return { req, res, url, deps, store, target, method, mapping, policy, prefer, include, formatter };
 }
 
-// ---- response helpers -------------------------------------------------------
+// ---- response helpers
 
-const send = (t, status, body, headers = {}) =>
-  t.deps.json(t.res, status, status === 204 ? null : t.include ? stripAnnotations(body, t.include) : body, {
+const send = async (t, status, body, headers = {}) => {
+  if (status === 200 || status === 201) {
+    const relationship = t.mapping.relationships?.[t.target.segment];
+    const mapping = relationship ? t.store.resolveMapping(relationship.entity) : t.mapping;
+    await hydrateImages(t, body, mapping);
+  }
+  return t.deps.json(t.res, status, status === 204 ? null : t.include ? stripAnnotations(body, t.include) : body, {
     ...apiHeaders(t.deps.portal),
     ...headers,
   });
+};
+
+// Query projection already enforced row, column and field-security permissions.
+// Resolve only surviving image IDs, using the same authorized byte reader as /$value.
+async function hydrateImages(t, body, mapping) {
+  const files = t.store.recordPipeline?.fileContentInternal;
+  if (typeof files?.kindOf !== 'function' || !body || typeof body !== 'object') return;
+  for (const row of Array.isArray(body.value) ? body.value : [body]) {
+    if (!row || typeof row !== 'object') continue;
+    if (GUID_PATTERN.test(String(row[mapping.idColumn] ?? ''))) {
+      for (const [column, value] of Object.entries(row)) {
+        if (!GUID_PATTERN.test(String(value ?? '')) || files.kindOf(mapping.logicalName, column) !== 'image') continue;
+        const answer = await files({
+          principal: filePrincipal(t, mapping, 'read'),
+          entity: mapping.logicalName,
+          id: row[mapping.idColumn],
+          column,
+          operation: 'download',
+        });
+        row[column] = answer.statusCode === 200 ? answer.body.$content : null;
+      }
+    }
+    for (const [navigation, relation] of Object.entries(mapping.relationships ?? {})) {
+      if (!own(row, navigation) || !row[navigation] || typeof row[navigation] !== 'object') continue;
+      const nested = Array.isArray(row[navigation]) ? { value: row[navigation] } : row[navigation];
+      await hydrateImages(t, nested, t.store.resolveMapping(relation.entity));
+    }
+  }
+}
 const sendText = (t, value) => {
-  t.res.writeHead(200, { "content-type": "text/plain; charset=utf-8", ...apiHeaders(t.deps.portal) });
+  t.res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...apiHeaders(t.deps.portal) });
   t.res.end(String(value));
 };
-const metadataVersions = new WeakMap();
-/**
- * @Microsoft.Dynamics.CRM.globalmetadataversion: Dataverse publishes an
- * opaque numeric string that changes with metadata. Locally it is a stable
- * number derived from the table mappings (synthetic, never a live value).
- */
-function globalMetadataVersion(store) {
-  if(store.observed?.webApiGlobalMetadataVersion!=null)return store.observed.webApiGlobalMetadataVersion;
-  const mappings = store.state.mappings ?? {};
-  if (!metadataVersions.has(mappings)) {
-    const digest = createHash("sha256").update(JSON.stringify(mappings)).digest("hex");
-    metadataVersions.set(mappings, String(parseInt(digest.slice(0, 8), 16)));
-  }
-  return metadataVersions.get(mappings);
-}
+
 /** OData context URL: $metadata#set(select,nav(select)) as the platform publishes it. */
 function contextUrl(t, mapping, params, { entity = false } = {}) {
   const describe = (select, expand) => {
     const parts = [...(select ?? [])];
     for (const spec of expand ?? [])
-      parts.push(`${spec.navigation}(${describe(parseSelect(spec.select), spec.expand ?? []).join(",")})`);
+      parts.push(`${spec.navigation}(${describe(parseSelect(spec.select), spec.expand ?? []).join(',')})`);
     return parts;
   };
-  const parts = params ? describe(parseSelect(params.get("$select")), parseExpand(params.get("$expand"))) : [];
-  return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}${parts.length ? `(${parts.join(",")})` : ""}${entity ? "/$entity" : ""}`;
+  const parts = params ? describe(parseSelect(params.get('$select')), parseExpand(params.get('$expand'))) : [];
+  return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}${parts.length ? `(${parts.join(',')})` : ''}${entity ? '/$entity' : ''}`;
 }
 const sendNoContent = (t, headers = {}) => send(t, 204, null, headers);
 const pick = (params, names) => {
   const out = new URLSearchParams();
-  for (const [key, value] of params)
-    if (names.includes(key) || key.startsWith("@")) out.set(key, value);
+  for (const [key, value] of params) if (names.includes(key) || key.startsWith('@')) out.set(key, value);
   return out;
 };
 const queryOptions = (t, extra = {}) => ({
-  dialect: "dataverse",
+  dialect: 'dataverse',
   portalRequest: true,
   metadata: t.deps.metadata,
   includeKeys: true,
@@ -604,14 +761,14 @@ const queryOptions = (t, extra = {}) => ({
 });
 const entityLocation = (t, mapping, id) => `${t.deps.origin}/_api/${mapping.entitySet}(${id})`;
 const recordNotFound = (mapping, key) =>
-  new DataError(`${mapping.logicalName} With Id = ${key} Does Not Exist`, 404, "NotFound", {
-    innerCode: "0x80040217",
+  new DataError(`${mapping.logicalName} With Id = ${key} Does Not Exist`, 404, 'NotFound', {
+    innerCode: '0x80040217',
   });
 
 /** Explicitly allow-listed columns a select-less read returns, null when unset. */
 function fillDeclaredColumns(t, out, policy, mapping) {
   for (const name of policy.fields) {
-    if (name === "*") continue;
+    if (name === '*') continue;
     const lookupName = /^_(.+)_value$/.exec(name);
     const physical = lookupName ? lookupName[1] : name;
     const rel = mapping.relationships?.[physical];
@@ -621,7 +778,7 @@ function fillDeclaredColumns(t, out, policy, mapping) {
     if (!definition) continue;
     const lookup =
       lookupName ||
-      fieldKind(definition) === "lookup" ||
+      fieldKind(definition) === 'lookup' ||
       Object.values(mapping.relationships ?? {}).some((rel) => rel.many === false && rel.from === physical);
     const key = lookup ? `_${physical}_value` : physical;
     if (own(out, key) || own(out, physical) || !policy.allowed(key)) continue;
@@ -639,12 +796,12 @@ function shapeEntity(t, policy, mapping, projected, { fill = false, expand = nul
 /** Resolve a key segment (primary key or alternate key) to a stored primary key. */
 function locate(t, mapping, key) {
   const text = String(key).trim();
-  if (text.includes("=")) {
+  if (text.includes('=')) {
     const row = t.store.findByKey(mapping, text);
     return { id: row ? row[mapping.idColumn] : null, alternate: parseKeySegment(text) };
   }
   return {
-    id: text.replace(/^'(.*)'$/s, (_all, value) => value.replace(/''/g, "'")).replace(/^\{(.*)\}$/, "$1"),
+    id: text.replace(/^'(.*)'$/s, (_all, value) => value.replace(/''/g, "'")).replace(/^\{(.*)\}$/, '$1'),
     alternate: null,
   };
 }
@@ -656,20 +813,20 @@ const readRecord = (t, mapping, id, key) => {
   return row;
 };
 
-// ---- reads -----------------------------------------------------------------
+// ---- reads
 
 function collectionBody(t, mapping, params, result, value, paging) {
   // Collections carry the context and the CRM count annotations
   // (totalrecordcount is -1 without $count), with or without a Prefer header.
-  const body = { "@odata.context": contextUrl(t, mapping, params) };
-  const count = result["@odata.count"];
-  if (count !== undefined) body["@odata.count"] = count;
+  const body = { '@odata.context': contextUrl(t, mapping, params) };
+  const count = result['@odata.count'];
+  if (count !== undefined) body['@odata.count'] = count;
   const total = result.paging?.totalCount ?? count;
-  body["@Microsoft.Dynamics.CRM.totalrecordcount"] = count === undefined ? -1 : Math.min(total, WEBAPI_COUNT_LIMIT);
-  body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"] = count !== undefined && total > WEBAPI_COUNT_LIMIT;
-  body["@Microsoft.Dynamics.CRM.globalmetadataversion"] = globalMetadataVersion(t.store);
+  body['@Microsoft.Dynamics.CRM.totalrecordcount'] = count === undefined ? -1 : Math.min(total, WEBAPI_COUNT_LIMIT);
+  body['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] = count !== undefined && total > WEBAPI_COUNT_LIMIT;
+  body['@Microsoft.Dynamics.CRM.globalmetadataversion'] = globalMetadataVersion(t.store);
   body.value = value;
-  if (paging && result.paging?.moreRecords) body["@odata.nextLink"] = paging.nextLink(result.paging.nextOffset);
+  if (paging && result.paging?.moreRecords) body['@odata.nextLink'] = paging.nextLink(result.paging.nextOffset);
   return body;
 }
 
@@ -677,7 +834,7 @@ function collectionBody(t, mapping, params, result, value, paging) {
 function propertyName(mapping, name, definition) {
   if (/^_.+_value$/.test(name)) return name;
   const lookup =
-    fieldKind(definition) === "lookup" ||
+    fieldKind(definition) === 'lookup' ||
     Object.values(mapping.relationships ?? {}).some((rel) => rel.many === false && rel.from === name);
   return lookup ? `_${name}_value` : name;
 }
@@ -687,25 +844,30 @@ function propertyName(mapping, name, definition) {
  * a wildcard list returns every column.
  */
 function assertSelectLessRead(t, policy, mapping) {
-  if (policy.fields.includes("*")) return;
+  if (policy.fields.includes('*')) return;
   const columns = new Set();
   for (const [name, definition] of Object.entries(t.store.fieldDefinitions(mapping.logicalName, t.deps.metadata)))
     if (!definition?.attributeOf) columns.add(propertyName(mapping, name, definition));
   for (const row of t.store.tableRows(mapping.logicalName))
     for (const [name, value] of Object.entries(row))
-      if (!/^__sim/i.test(name) && !name.includes("@"))
+      if (!/^__sim/i.test(name) && !name.includes('@'))
         columns.add(
-          value && typeof value === "object" && own(value, "id") && own(value, "logical_name")
+          value && typeof value === 'object' && own(value, 'id') && own(value, 'logical_name')
             ? `_${name}_value`
             : propertyName(mapping, name, t.store.fieldDefinition(mapping.logicalName, name, t.deps.metadata)),
         );
   columns.delete(mapping.idColumn);
   const denied = [...columns].sort().find((column) => !policy.allowed(column));
   if (denied)
-    throw new DataError(`Attribute ${denied} in table ${mapping.logicalName} is not enabled for Web Api.`, 403, "WebApiFieldNotEnabled", {
-      attribute: denied,
-      table: mapping.logicalName,
-    });
+    throw new DataError(
+      `Attribute ${denied} in table ${mapping.logicalName} is not enabled for Web Api.`,
+      403,
+      'WebApiFieldNotEnabled',
+      {
+        attribute: denied,
+        table: mapping.logicalName,
+      },
+    );
 }
 
 /**
@@ -717,15 +879,15 @@ function assertSelectLessRead(t, policy, mapping) {
  */
 function assertExpandReadable(t, mapping, expand, specs = parseExpand(expand)) {
   const { store, deps } = t;
-  if (deps.identity?.admin || store.state.settings?.permissionMode === "permissive") return;
+  if (deps.identity?.admin || store.state.settings?.permissionMode === 'permissive') return;
   const visit = (owner, specs) => {
     for (const spec of specs) {
       const rel = owner.relationships?.[spec.navigation];
       if (!rel) continue;
       const target = store.resolveMapping(rel.entity);
-      if (!store.rules(target.logicalName, "read", deps.identity).length)
-        throw new DataError(`Table permission denies read on ${target.logicalName}`, 403, "PermissionDenied", {
-          operation: "read",
+      if (!store.rules(target.logicalName, 'read', deps.identity).length)
+        throw new DataError(`Table permission denies read on ${target.logicalName}`, 403, 'PermissionDenied', {
+          operation: 'read',
           table: target.logicalName,
         });
       visit(target, spec.expand ?? []);
@@ -737,27 +899,41 @@ function assertExpandReadable(t, mapping, expand, specs = parseExpand(expand)) {
 function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
   const { url, store, deps } = t;
   policy.assertQuery(url.searchParams);
-  const apply = url.searchParams.has("$apply");
+  const apply = url.searchParams.has('$apply');
   // Table permission is checked before the select-less column rule.
-  if (!deps.identity?.admin && store.state.settings?.permissionMode !== "permissive" && !store.rules(mapping.logicalName, "read", deps.identity).length)
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, "PermissionDenied", {
-      operation: "read",
+  if (
+    !deps.identity?.admin &&
+    store.state.settings?.permissionMode !== 'permissive' &&
+    !store.rules(mapping.logicalName, 'read', deps.identity).length
+  )
+    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
+      operation: 'read',
       table: mapping.logicalName,
     });
-  if (!apply) assertExpandReadable(t, mapping, url.searchParams.get("$expand"));
-  if (!apply && !url.searchParams.has("$select")) assertSelectLessRead(t, policy, mapping);
+  if (!apply) assertExpandReadable(t, mapping, url.searchParams.get('$expand'));
+  if (!apply && !url.searchParams.has('$select')) assertSelectLessRead(t, policy, mapping);
   const paging = prepareODataPage({
     url,
-    prefer: t.req.headers.prefer ?? "",
+    prefer: t.req.headers.prefer ?? '',
     identity: deps.identity,
     revision: store.dataRevision(),
     secret: deps.csrf,
   });
-  const result = store.query(mapping.logicalName, paging.params, deps.identity, paging, queryOptions(t, ids ? { ids } : {}));
+  const result = store.query(
+    mapping.logicalName,
+    paging.params,
+    deps.identity,
+    paging,
+    queryOptions(t, ids ? { ids } : {}),
+  );
   const value = apply
     ? result.value.map((row) => t.formatter.formatEntity(row, mapping, { etag: false }))
-    : result.value.map((row) => shapeEntity(t, policy, mapping, row, { expand: url.searchParams.get("$expand") }));
-  return send(t, 200, collectionBody(t, mapping, apply ? null : url.searchParams, result, value, apply ? null : paging));
+    : result.value.map((row) => shapeEntity(t, policy, mapping, row, { expand: url.searchParams.get('$expand') }));
+  return send(
+    t,
+    200,
+    collectionBody(t, mapping, apply ? null : url.searchParams, result, value, apply ? null : paging),
+  );
 }
 
 /**
@@ -767,7 +943,10 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
  * still checked, as the engine checks them.
  */
 function fetchTables(store, xml) {
-  const plan = planFetch(parseXmlDocument(xml, { root: "fetch" }), { profile: "webapi", limits: store.querySettings().fetchLimits });
+  const plan = planFetch(parseXmlDocument(xml, { root: 'fetch' }), {
+    profile: 'webapi',
+    limits: store.querySettings().fetchLimits,
+  });
   const mappingOf = new Map([[plan.root, store.resolveMapping(plan.root.attrs.name)]]);
   for (const link of plan.links) mappingOf.set(link, store.resolveMapping(link.attrs.name));
   const structural = structuralIntersects(plan, mappingOf);
@@ -780,8 +959,9 @@ function fetchTables(store, xml) {
  * lookups as _x_value,x, followed by x() for each lookup. The primary key
  * leads when the query doesn't select it.
  */
-function fetchContext(t, mapping, info, {empty=false}={}) {
-  if((info.aggregate||empty)&&t.store.observed?.tablePermissionQueryPipeline==='native-classic')return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}`;
+function fetchContext(t, mapping, info, { empty = false } = {}) {
+  if ((info.aggregate || empty) && t.store.observed?.tablePermissionQueryPipeline === 'native-classic')
+    return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}`;
   const columns = info.columns.filter((column) => column.alias == null && !column.aliased && !column.aggregate);
   const parts = [],
     lookups = [];
@@ -795,56 +975,79 @@ function fetchContext(t, mapping, info, {empty=false}={}) {
       lookups.push(`${column.attribute}()`);
     } else parts.push(name);
   }
-  return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}(${[...parts, ...lookups].join(",")})`;
+  return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}(${[...parts, ...lookups].join(',')})`;
 }
 
 function getFetch(t) {
   const { url, store, deps, mapping } = t;
-  const authoredXml = url.searchParams.get("fetchXml");
-  const xml = deps.identity?.admin ? authoredXml : preparePortalFetchXml(authoredXml,{linkTypes:store.observed?.webApiFetchXmlLinkTypes});
-  const nativePolicy=!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic';
-  const admitTables=()=>{
+  const authoredXml = url.searchParams.get('fetchXml');
+  const xml = deps.identity?.admin
+    ? authoredXml
+    : preparePortalFetchXml(authoredXml, { linkTypes: store.observed?.webApiFetchXmlLinkTypes });
+  const nativePolicy = !deps.identity?.admin && store.observed?.tablePermissionQueryPipeline === 'native-classic';
+  const admitTables = () => {
     if (!deps.identity?.admin && store.state.settings?.permissionMode !== 'permissive')
-      for(const logical of fetchTables(store,xml))if(!store.rules(logical,'read',deps.identity).length)
-        throw new DataError(`Table permission denies read on ${logical}`,403,'PermissionDenied',{operation:'read',table:logical});
+      for (const logical of fetchTables(store, xml))
+        if (!store.rules(logical, 'read', deps.identity).length)
+          throw new DataError(`Table permission denies read on ${logical}`, 403, 'PermissionDenied', {
+            operation: 'read',
+            table: logical,
+          });
   };
   let project;
   try {
-    if(nativePolicy)admitTables();
-    project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName,{structuralJoinFields:nativePolicy});
-  }
-  catch(cause) {
-    if(!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic'&&cause.details?.innerCode==='0x8004430d')
-      throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+    if (nativePolicy) admitTables();
+    project = webApiFetchPolicy(policyPortal(store, deps), store, xml, mapping.logicalName, {
+      structuralJoinFields: nativePolicy,
+    });
+  } catch (cause) {
+    if (
+      !deps.identity?.admin &&
+      store.observed?.tablePermissionQueryPipeline === 'native-classic' &&
+      cause.details?.innerCode === '0x8004430d'
+    )
+      throw new DataError(
+        'An unexpected error occurred while processing the request',
+        500,
+        'PortalQueryAdmissionFailure',
+        { phase: 'native-api-admission' },
+      );
     throw cause;
   }
   // Return 403 90040120 when any table the query reads (root or link-entity)
   // has no read permission for the caller, instead of silently empty joins.
-  if(!nativePolicy)admitTables();
-  const counted = url.searchParams.get("$count") === "true";
+  if (!nativePolicy) admitTables();
+  const counted = url.searchParams.get('$count') === 'true';
   const fetched = store.fetchXml(authoredXml, deps.identity, {
-    profile: "webapi",
+    profile: 'webapi',
     portalRequest: true,
     metadata: deps.metadata,
     returnTotal: counted,
   });
   const info = fetched.columns;
-  const body = { "@odata.context": fetchContext(t, mapping, info,{empty:fetched.entities.length===0}) };
-  if (counted || nativePolicy && fetched.total_record_count >= 0) body["@odata.count"] = Math.max(fetched.total_record_count, 0);
-  body["@Microsoft.Dynamics.CRM.totalrecordcount"] = fetched.total_record_count;
-  body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"] = fetched.total_record_count_limit_exceeded;
-  body["@Microsoft.Dynamics.CRM.globalmetadataversion"] = globalMetadataVersion(store);
-  if(nativePolicy){
-    const executed=planFetch(parseXmlDocument(fetched.executedXml??fetched.xml??xml,{root:'fetch'}),{profile:'webapi',limits:store.querySettings().fetchLimits});
-    for(const link of executed.root.children.filter(node=>node.name==='link-entity'))
-      body[`@${executed.aliasOf.get(link)}.OData.Community.Display.V1.CurrentEntityField`]=link.attrs.to;
+  const body = { '@odata.context': fetchContext(t, mapping, info, { empty: fetched.entities.length === 0 }) };
+  if (counted || (nativePolicy && fetched.total_record_count >= 0))
+    body['@odata.count'] = Math.max(fetched.total_record_count, 0);
+  body['@Microsoft.Dynamics.CRM.totalrecordcount'] = fetched.total_record_count;
+  body['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] = fetched.total_record_count_limit_exceeded;
+  body['@Microsoft.Dynamics.CRM.globalmetadataversion'] = globalMetadataVersion(store);
+  if (nativePolicy) {
+    const executed = planFetch(parseXmlDocument(fetched.executedXml ?? fetched.xml ?? xml, { root: 'fetch' }), {
+      profile: 'webapi',
+      limits: store.querySettings().fetchLimits,
+    });
+    for (const link of executed.root.children.filter((node) => node.name === 'link-entity'))
+      body[`@${executed.aliasOf.get(link)}.OData.Community.Display.V1.CurrentEntityField`] = link.attrs.to;
   }
   // The final page carries neither morerecords nor the paging cookie
   // (fetchxml/page-results).
   if (fetched.more_records) {
-    body["@Microsoft.Dynamics.CRM.morerecords"] = true;
+    body['@Microsoft.Dynamics.CRM.morerecords'] = true;
     if (fetched.paging_cookie)
-      body["@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
+      body['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'] = webApiPagingCookie(
+        fetched.paging_cookie,
+        Number(info.page ?? 1),
+      );
   }
   body.value = fetched.entities.map((row) => project(t.formatter.formatFetchRow(row, info)));
   return send(t, 200, body);
@@ -852,9 +1055,9 @@ function getFetch(t) {
 
 function getCount(t) {
   const { url, store, deps, mapping, policy } = t;
-  const params = pick(url.searchParams, ["$filter"]);
+  const params = pick(url.searchParams, ['$filter']);
   policy.assertQuery(params);
-  params.set("$select", mapping.idColumn);
+  params.set('$select', mapping.idColumn);
   const result = store.query(mapping.logicalName, params, deps.identity, undefined, queryOptions(t));
   return sendText(t, Math.min(result.value.length, WEBAPI_COUNT_LIMIT));
 }
@@ -864,8 +1067,8 @@ function entityResponse(t, mapping, policy, id, params) {
   const projected = result.value[0];
   if (!projected) throw recordNotFound(mapping, id);
   return {
-    "@odata.context": contextUrl(t, mapping, params, { entity: true }),
-    ...shapeEntity(t, policy, mapping, projected, { fill: !params.has("$select"), expand: params.get("$expand") }),
+    '@odata.context': contextUrl(t, mapping, params, { entity: true }),
+    ...shapeEntity(t, policy, mapping, projected, { fill: !params.has('$select'), expand: params.get('$expand') }),
   };
 }
 
@@ -873,14 +1076,21 @@ function getEntity(t) {
   const { url, mapping, policy, target } = t;
   // Every supplied option is column-checked, even ones a single entity ignores.
   policy.assertQuery(url.searchParams);
-  const params = pick(url.searchParams, ["$select", "$expand"]);
+  const params = pick(url.searchParams, ['$select', '$expand']);
   const { id } = locate(t, mapping, target.key);
   readRecord(t, mapping, id, target.key);
-  assertExpandReadable(t, mapping, params.get("$expand"));
+  assertExpandReadable(t, mapping, params.get('$expand'));
   const body = entityResponse(t, mapping, policy, id, params);
-  const match = t.req.headers["if-none-match"];
-  if (match && body["@odata.etag"] && String(match).split(",").map((item) => item.trim()).includes(body["@odata.etag"])) {
-    t.res.writeHead(304, { ...apiHeaders(t.deps.portal), ETag: body["@odata.etag"] });
+  const match = t.req.headers['if-none-match'];
+  if (
+    match &&
+    body['@odata.etag'] &&
+    String(match)
+      .split(',')
+      .map((item) => item.trim())
+      .includes(body['@odata.etag'])
+  ) {
+    t.res.writeHead(304, { ...apiHeaders(t.deps.portal), ETag: body['@odata.etag'] });
     return t.res.end();
   }
   return send(t, 200, body);
@@ -890,7 +1100,7 @@ function navigationTarget(t) {
   const rel = t.mapping.relationships[t.target.segment];
   t.policy.assertPath([t.target.segment]);
   const targetMapping = t.store.resolveMapping(rel.entity);
-  const targetPolicy = webApiPolicy(t.deps.portal, t.store, targetMapping.logicalName);
+  const targetPolicy = webApiPolicy(policyPortal(t.store, t.deps), t.store, targetMapping.logicalName);
   const { id } = locate(t, t.mapping, t.target.key);
   const parent = readRecord(t, t.mapping, id, t.target.key);
   const related = t.store
@@ -902,12 +1112,13 @@ function navigationTarget(t) {
 
 function getNavigation(t) {
   const { rel, targetMapping, targetPolicy, related } = navigationTarget(t);
-  if (rel.many !== false)
-    return getCollection(t, { mapping: targetMapping, policy: targetPolicy, ids: related });
-  const params = pick(t.url.searchParams, ["$select", "$expand"]);
+  if (rel.many !== false) return getCollection(t, { mapping: targetMapping, policy: targetPolicy, ids: related });
+  const params = pick(t.url.searchParams, ['$select', '$expand']);
   targetPolicy.assertQuery(params);
   // The related table needs read permission, as for $expand and collection navigations.
-  assertExpandReadable(t, t.mapping, null, [{ navigation: t.target.segment, expand: parseExpand(params.get("$expand")) }]);
+  assertExpandReadable(t, t.mapping, null, [
+    { navigation: t.target.segment, expand: parseExpand(params.get('$expand')) },
+  ]);
   if (!related.length) return sendNoContent(t);
   return send(t, 200, entityResponse(t, targetMapping, targetPolicy, related[0], params));
 }
@@ -915,13 +1126,13 @@ function getNavigation(t) {
 function getNavigationCount(t) {
   if (!t.mapping.relationships?.[t.target.segment]) throw notFound(t.target.segment);
   const { rel, related } = navigationTarget(t);
-  if (rel.many === false) throw notFound("$count");
+  if (rel.many === false) throw notFound('$count');
   return sendText(t, Math.min(related.length, WEBAPI_COUNT_LIMIT));
 }
 
-function getProperty(t, raw) {
+async function getProperty(t, raw) {
   const { mapping, policy, target } = t;
-  if (mapping.relationships?.[target.segment]) throw notFound(raw ? "$value" : target.segment);
+  if (mapping.relationships?.[target.segment]) throw notFound(raw ? '$value' : target.segment);
   policy.assert(target.segment);
   const { id } = locate(t, mapping, target.key);
   readRecord(t, mapping, id, target.key);
@@ -929,27 +1140,45 @@ function getProperty(t, raw) {
   const result = t.store.query(mapping.logicalName, params, t.deps.identity, undefined, queryOptions(t, { id }));
   const formatted = t.formatter.formatEntity(result.value[0] ?? {}, mapping, { etag: false });
   const lookup = /^_(.+)_value$/.test(target.segment) ? target.segment : `_${target.segment}_value`;
-  const value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
+  let value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
+  if (value != null && fileKind(t) === 'image') {
+    const row = { [mapping.idColumn]: id, [target.segment]: value };
+    await hydrateImages(t, row, mapping);
+    value = row[target.segment];
+  }
+  if (
+    value == null &&
+    ATTACHMENT_COLUMNS[mapping.logicalName] === target.segment &&
+    typeof t.deps.attachmentBody === 'function'
+  )
+    value = await t.deps.attachmentBody(mapping.logicalName, { [mapping.idColumn]: id }, { strict: raw });
   if (value == null) return sendNoContent(t);
-  if (raw) return sendText(t, isExactNumeric(value)?value.value:value);
+  if (raw) return sendText(t, isExactNumeric(value) ? value.value : value);
   return send(t, 200, { value });
 }
 
-// ---- writes ----------------------------------------------------------------
+// ---- writes
 
 async function readBody(t) {
-  const observed = t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper";
+  const observed = t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper';
   const body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
   t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;
-  if (!body || typeof body !== "object" || Array.isArray(body))
-    throw attachODataReaderDetails(badRequest("The request body must be a JSON object.", "InvalidRequest", "0x0"), observed ? odataRootDetails(body) : null);
+  if (!body || typeof body !== 'object' || Array.isArray(body))
+    throw attachODataReaderDetails(
+      badRequest('The request body must be a JSON object.', 'InvalidRequest', '0x0'),
+      observed ? odataRootDetails(body) : null,
+    );
   return body;
 }
 
 /** @odata.bind and @odata.id references must stay on this portal (or its live origin). */
 function checkReferenceOrigin(t, value, name) {
-  const observed = t.deps.portal?.observed?.webApiReferenceErrors === "unexpected";
-  const failure = (message) => new DataError(message, observed ? 500 : 400, observed ? "WebApiInvalidReference" : "InvalidLookup", { innerCode: "0x80040203", ...(observed ? { hideInner: true } : {}) });
+  const observed = t.deps.portal?.observed?.webApiReferenceErrors === 'unexpected';
+  const failure = (message) =>
+    new DataError(message, observed ? 500 : 400, observed ? 'WebApiInvalidReference' : 'InvalidLookup', {
+      innerCode: '0x80040203',
+      ...(observed ? { hideInner: true } : {}),
+    });
   const reference = parseEntityReference(value);
   if (!reference) throw failure(`Invalid entity reference in ${name}.`);
   if (observed && !GUID_PATTERN.test(reference.id) && !parseKeySegment(reference.id))
@@ -959,31 +1188,125 @@ function checkReferenceOrigin(t, value, name) {
   if (observed) {
     const target = t.store.resolveMapping(reference.set);
     if (!t.store.findByKey(target, reference.id))
-      throw new DataError(`The referenced record does not exist.`, 404, "InvalidLookup", { hideInner: true });
+      throw new DataError(`The referenced record does not exist.`, 404, 'InvalidLookup', { hideInner: true });
   }
   return reference;
 }
 function assertBindOrigins(t, body) {
   for (const [key, value] of Object.entries(body ?? {})) {
-    if (key.endsWith("@odata.bind")) {
+    if (key.endsWith('@odata.bind')) {
       for (const item of Array.isArray(value) ? value : [value])
-        if (item != null || t.deps.portal?.observed?.webApiReferenceErrors === "unexpected") checkReferenceOrigin(t, item, key);
-    } else if (value && typeof value === "object")
+        if (item != null || t.deps.portal?.observed?.webApiReferenceErrors === 'unexpected')
+          checkReferenceOrigin(t, item, key);
+    } else if (value && typeof value === 'object')
       for (const item of Array.isArray(value) ? value : [value])
-        if (item && typeof item === "object" && !Array.isArray(item)) assertBindOrigins(t, item);
+        if (item && typeof item === 'object' && !Array.isArray(item)) assertBindOrigins(t, item);
   }
 }
 const writeOptions = (t, extra = {}) => ({
   coerce: true,
   portalRequest: true,
-  odataErrorDetails: t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper",
+  odataErrorDetails: t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper',
   odataNumberLexemes: t.odataNumberLexemes,
-  ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(String(t.req.headers["content-type"] ?? "")),
+  ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(
+    String(t.req.headers['content-type'] ?? ''),
+  ),
   metadata: t.deps.metadata,
-  ifMatch: t.req.headers["if-match"],
-  ifNoneMatch: t.req.headers["if-none-match"],
+  ifMatch: t.req.headers['if-match'],
+  ifNoneMatch: t.req.headers['if-none-match'],
   ...extra,
 });
+// Portal writes go through the organization's internal entries (dataverse-records.mjs, store.recordPipeline) once the
+// portal policy (prepareWrite, table permissions in the store) has admitted them: the organization rules (state defaults,
+// record hooks, audit and version columns, alternate-key answers) apply as on any organization write ("Dataverse and portal
+// share data"). The portal's own value rules stay (no dataverseWebApi, the portal metadata). Without an organization on the
+// store, the store writes directly. Under enhanced authorization the write runs as the visitor's mapped Dataverse user,
+// called by the site's application user (portal-authorization.mjs principal), so column security profiles apply to it.
+const portalContext = (t) => ({
+  identity: t.deps.identity,
+  portal: true,
+  caller: null,
+  method: t.req.method,
+  headers: {},
+  ...t.store.portalAuthorization?.principal(t.deps.identity),
+});
+// The portal the column policy reads: enhanced authorization bypasses the Web API column permissions (portal-authorization.mjs).
+const policyPortal = (store, deps) => store.portalAuthorization?.webApiPortal(deps.portal) ?? deps.portal;
+const internalOptions = (t, extra) => ({
+  authorized: true,
+  writeOptions: { ...writeOptions(t, extra), dataverseWebApi: false },
+});
+function portalCreate(t, mapping, data, extra) {
+  const records = t.store.recordPipeline;
+  if (!records) return t.store.createRecordAsync(mapping.logicalName, data, t.deps.identity, writeOptions(t, extra));
+  return records.createInternal(portalContext(t), mapping.logicalName, data, internalOptions(t, extra));
+}
+function portalUpdate(t, mapping, id, data, extra) {
+  assertUpdatePermissionQueryAdmission(t, mapping);
+  const records = t.store.recordPipeline;
+  if (!records)
+    return t.store.updateRecordAsync(mapping.logicalName, id, data, t.deps.identity, writeOptions(t, extra));
+  return records.updateInternal(portalContext(t), mapping.logicalName, id, data, internalOptions(t, extra));
+}
+// Some classic portals build the complete Update permission query before
+// checking the addressed row. Qualify this independently: an oversized source
+// graph can fail even for a row that would otherwise be denied. Do not execute
+// the modeled query or apply this portal admission rule to SDK writes.
+function assertUpdatePermissionQueryAdmission(t, mapping) {
+  const store = t.store,
+    identity = t.deps.identity;
+  if (
+    store.observed?.webApiUpdatePermissionQuery !== 'native-classic' ||
+    identity?.admin ||
+    store.state.settings?.permissionMode === 'permissive'
+  )
+    return;
+  const xml = `<fetch><entity name="${xmlEscapeAttribute(mapping.logicalName)}"><attribute name="${xmlEscapeAttribute(mapping.idColumn)}"/></entity></fetch>`;
+  const query = compilePermissionFetchXml(xml, {
+    permissions: store.state.permissions,
+    identity,
+    mappings: store.state.mappings,
+    operation: 'update',
+    rules: store.rules.bind(store),
+  });
+  if (!query.permissionGranted) return;
+  try {
+    planFetch(parseXmlDocument(query.xml), {
+      profile: 'webapi',
+      limits: store.querySettings().fetchLimits,
+      linkBudgetError: store.observed?.fetchLinkBudgetError,
+    });
+  } catch (error) {
+    if (String(error.details?.innerCode).toLowerCase() === '0x8004430d')
+      throw new DataError(
+        'An unexpected error occurred while processing the request',
+        500,
+        'PortalQueryAdmissionFailure',
+        { phase: 'native-api-admission' },
+      );
+    throw error;
+  }
+}
+function portalRemove(t, mapping, id) {
+  const records = t.store.recordPipeline;
+  if (!records) return t.store.removeRecordAsync(mapping.logicalName, id, t.deps.identity, writeOptions(t));
+  return records.removeInternal(portalContext(t), mapping.logicalName, id, internalOptions(t));
+}
+// Portal $ref associations run the organization's association pipeline (records.associateInternal/disassociateInternal:
+// record hooks, Associate/Disassociate plug-in stages, committed work); the store write keeps the portal identity, so the
+// table permissions (append/appendTo) apply.
+function portalAssociation(t, mapping, id, navigation, targetId, associate) {
+  const records = t.store.recordPipeline;
+  if (!records)
+    return t.store.changeAssociationRecord(mapping.logicalName, id, navigation, targetId, t.deps.identity, associate);
+  const entry = associate ? records.associateInternal : records.disassociateInternal;
+  return entry(portalContext(t), mapping.logicalName, id, navigation, [targetId], {
+    authorized: true,
+    writeOptions: { portalRequest: true },
+  });
+}
+// One portal write in its own store transaction (the write slot the store's update/remove wrappers took).
+const portalWrite = (t, fn) => t.deps.change(() => t.store.transact(fn, { incremental: true }));
 
 /**
  * Prefer: return=representation is validated before anything is written: the
@@ -995,23 +1318,27 @@ const writeOptions = (t, extra = {}) => ({
 function representationParams(t, mapping) {
   if (!t.prefer.representation) return null;
   const { store, deps } = t;
-  const params = pick(t.url.searchParams, ["$select", "$expand"]);
+  const params = pick(t.url.searchParams, ['$select', '$expand']);
   t.policy.assertQuery(params);
-  if (!deps.identity?.admin && store.state.settings?.permissionMode !== "permissive" && !store.rules(mapping.logicalName, "read", deps.identity).length)
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, "PermissionDenied", {
-      operation: "read",
+  if (
+    !deps.identity?.admin &&
+    store.state.settings?.permissionMode !== 'permissive' &&
+    !store.rules(mapping.logicalName, 'read', deps.identity).length
+  )
+    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
+      operation: 'read',
       table: mapping.logicalName,
     });
-  assertExpandReadable(t, mapping, params.get("$expand"));
+  assertExpandReadable(t, mapping, params.get('$expand'));
   return params;
 }
 function representationBody(t, mapping, id, params) {
   try {
     return entityResponse(t, mapping, t.policy, id, params);
   } catch (error) {
-    if (error?.code !== "NotFound") throw error;
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, "PermissionDenied", {
-      operation: "read",
+    if (error?.code !== 'NotFound') throw error;
+    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
+      operation: 'read',
       table: mapping.logicalName,
     });
   }
@@ -1019,26 +1346,30 @@ function representationBody(t, mapping, id, params) {
 /** Run a write and, when requested, read its representation in one store transaction. */
 function writeAndRepresent(t, mapping, params, write) {
   return t.deps.change(() =>
-    t.store.transact(() => {
-      const outcome = write();
-      const row = outcome.row ?? outcome;
-      const id = row[mapping.idColumn];
-      return { outcome, id, body: params ? representationBody(t, mapping, id, params) : null };
-    }, { incremental: true }),
+    t.store.transact(
+      async () => {
+        const outcome = await write();
+        const row = outcome.row ?? outcome;
+        const id = row[mapping.idColumn];
+        return { outcome, id, body: params ? representationBody(t, mapping, id, params) : null };
+      },
+      { incremental: true },
+    ),
   );
 }
 
 async function createEntity(t) {
-  const { mapping, policy, store, deps } = t;
+  const { mapping, policy } = t;
   const body = await readBody(t);
-  if (!Object.keys(body).length) throw new DataError("No attributes for Create Table action.", 400, "NoAttributesForTableCreate");
+  if (!Object.keys(body).length)
+    throw new DataError('No attributes for Create Table action.', 400, 'NoAttributesForTableCreate');
   assertBindOrigins(t, body);
-  const prepared = policy.prepareWrite(body, "create");
+  const prepared = policy.prepareWrite(body, 'create');
   const params = representationParams(t, mapping);
   const { id, body: represented } = await writeAndRepresent(t, mapping, params, () =>
-    store.createRecord(mapping.logicalName, prepared, deps.identity, writeOptions(t)),
+    portalCreate(t, mapping, prepared),
   );
-  const headers = { "OData-EntityId": entityLocation(t, mapping, id), entityid: String(id) };
+  const headers = { 'OData-EntityId': entityLocation(t, mapping, id), entityid: String(id) };
   if (params) return send(t, 201, represented, headers);
   return sendNoContent(t, headers);
 }
@@ -1053,103 +1384,208 @@ async function patchEntity(t) {
   if (!exists && options.ifMatch != null) throw recordNotFound(mapping, target.key);
   let write;
   if (exists) {
-    const prepared = policy.prepareWrite(body, "update");
-    write = () => store.upsertRecord(mapping.logicalName, located.id, prepared, deps.identity, options);
+    const prepared = policy.prepareWrite(body, 'update');
+    if (!store.recordPipeline) assertUpdatePermissionQueryAdmission(t, mapping);
+    write = store.recordPipeline
+      ? async () => ({ created: false, row: await portalUpdate(t, mapping, located.id, prepared) })
+      : () => store.upsertRecordAsync(mapping.logicalName, located.id, prepared, deps.identity, options);
   } else {
     // Upsert creates the record with the addressed primary or alternate key.
     const keyed = { ...body, ...(located.alternate ?? {}) };
-    const prepared = policy.prepareWrite(keyed, "create");
-    write = located.alternate
-      ? () => ({ created: true, row: store.createRecord(mapping.logicalName, prepared, deps.identity, options) })
-      : () => store.upsertRecord(mapping.logicalName, located.id, prepared, deps.identity, options);
+    const prepared = policy.prepareWrite(keyed, 'create');
+    write =
+      located.alternate || store.recordPipeline
+        ? async () => ({
+            created: true,
+            row: await portalCreate(
+              t,
+              mapping,
+              located.alternate ? prepared : { ...prepared, [mapping.idColumn]: located.id },
+            ),
+          })
+        : () => store.upsertRecordAsync(mapping.logicalName, located.id, prepared, deps.identity, options);
   }
   const params = representationParams(t, mapping);
   const { outcome, id, body: represented } = await writeAndRepresent(t, mapping, params, write);
-  const headers = { "OData-EntityId": entityLocation(t, mapping, id) };
+  const headers = { 'OData-EntityId': entityLocation(t, mapping, id) };
   if (params) return send(t, outcome.created ? 201 : 200, represented, headers);
   return sendNoContent(t, headers);
 }
 
 async function deleteEntity(t) {
-  const { mapping, store, deps, target } = t;
+  const { mapping, target } = t;
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
-  await deps.change(() => store.remove(mapping.logicalName, id, deps.identity, writeOptions(t)));
+  await portalWrite(t, () => portalRemove(t, mapping, id));
   return sendNoContent(t);
 }
 
 async function putProperty(t) {
-  const { mapping, policy, store, deps, target } = t;
+  const { mapping, policy, target } = t;
   const body = await readBody(t);
-  if (!own(body, "value")) throw badRequest("A property value is required: { \"value\": ... }.", "InvalidRequest", "0x0");
+  if (!own(body, 'value')) throw badRequest('A property value is required: { "value": ... }.', 'InvalidRequest', '0x0');
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
-  const prepared = policy.prepareWrite({ [target.segment]: body.value }, "update");
-  await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t)));
+  const prepared = policy.prepareWrite({ [target.segment]: body.value }, 'update');
+  await portalWrite(t, () => portalUpdate(t, mapping, id, prepared));
   return sendNoContent(t);
 }
 
+// ---- file and image columns (Learn: power-pages/configure/file-column#web-api; the binary contract is Dataverse's,
+// power-apps/developer/data-platform/file-column-data): PUT or PATCH /_api/<set>(id)/<column> with the bytes as the body
+// and the name in x-ms-file-name (header or query), GET /_api/<set>(id)/<column>/$value (size=full|thumbnail for images),
+// DELETE /_api/<set>(id)/<column>. The portal checks come first: the column enabled in Webapi/<table>/fields, its column
+// permission, and the table permission (Read to download, Write to upload or delete) on the row. The bytes then go through
+// the organization's file seam (store.recordPipeline.fileContentInternal, dataverse-files.mjs): column MaxSizeInKB, image
+// sniffing, storage routing, the 404 of an empty file column and the 204 of an empty image, as on /api/data.
+// Native portal response headers are not known; a download answers 200 (Learn's sample shows 204), an upload or delete 204.
+// A download is never served as its stored type on the portal origin (an uploaded .html would run as the reader):
+// application/octet-stream, attachment disposition, nosniff, and the stored type in the mimetype header with the
+// x-ms-file-name and x-ms-file-size headers /api/data sends. An upload without a name keeps the stored file's name, else
+// <column>.bin (seam defaultName).
+// ponytail: one request carries the whole file (Range and chunked transfer are not served on /_api); add Range when a
+// portal file passes 16 MB, the Learn single-call limit.
+const FILE_BODY_LIMIT = 128 * 1024 * 1024; // Learn: a single-request Web API upload is under 128 MB.
+const fileKind = (t) =>
+  t.store.recordPipeline?.fileContentInternal?.kindOf?.(t.mapping.logicalName, t.target.segment) ?? null;
+function filePrincipal(t, mapping, operation) {
+  const userId =
+    [t.deps.identity?.contactId, t.deps.identity?.id].find((value) => GUID_PATTERN.test(String(value ?? ''))) ??
+    '00000000-0000-0000-0000-000000000000';
+  return {
+    userId,
+    evidence: 'portal table permissions (webapi-handler.mjs)',
+    grants: [{ entity: mapping.logicalName, operations: [operation] }],
+  };
+}
+const rawBody = (req) =>
+  readRawBody(req, {
+    maximum: FILE_BODY_LIMIT,
+    tooLarge: () =>
+      new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' }),
+  });
+async function fileColumnRequest(t) {
+  const { mapping, policy, target, method, store, deps, url, req } = t;
+  const download = method === 'GET';
+  if (download) policy.assert(target.segment);
+  else policy.assertWrite({ [target.segment]: null }, 'update');
+  const { id } = locate(t, mapping, target.key);
+  const row = download
+    ? readRecord(t, mapping, id, target.key)
+    : id == null
+      ? null
+      : store.findByKey(mapping, String(id));
+  if (!row) throw recordNotFound(mapping, target.key);
+  // A field-security projection may hide an existing file. Never re-read its
+  // raw storage ID through the byte seam after the portal reader masked it.
+  if (download && !GUID_PATTERN.test(String(row[target.segment] ?? ''))) {
+    if (fileKind(t) === 'image') return sendNoContent(t);
+    throw new DataError('No file attachment found.', 404, 'NotFound', { innerCode: '0x80040217' });
+  }
+  const operation = download ? 'read' : 'update';
+  store.assertAllowed(mapping.logicalName, operation, row, deps.identity);
+  // The table permission check above is the grant; the profile only carries it into the seam's own check.
+  const principal = filePrincipal(t, mapping, operation);
+  const header = (name) => (typeof req.headers?.[name] === 'string' ? req.headers[name] : null);
+  const fileName = header('x-ms-file-name') ?? url.searchParams.get('x-ms-file-name');
+  // A file name is a name, never a path: separators, NUL and "."/".." are refused before anything is read or stored.
+  // The platform's code and wording for such a name are a guess.
+  if (fileName != null && (/[\\/\0]/.test(fileName) || /^\.{1,2}$/.test(fileName.trim())))
+    throw badRequest('The file name must not contain a path.', 'InvalidRequest', '0x80040203');
+  const answer = await store.recordPipeline.fileContentInternal({
+    principal,
+    entity: mapping.logicalName,
+    id: row[mapping.idColumn],
+    column: target.segment,
+    operation: download ? 'download' : method === 'DELETE' ? 'delete' : 'upload',
+    size: download && url.searchParams.get('size') === 'full' ? 'full' : null,
+    content: download || method === 'DELETE' ? null : await rawBody(req),
+    fileName,
+    contentType: header('content-type'),
+    defaultName: true,
+  });
+  if (answer.statusCode !== 200) return sendNoContent(t);
+  const { name, size, mimeType } = answer.file;
+  t.res.writeHead(200, {
+    ...apiHeaders(deps.portal),
+    'content-type': 'application/octet-stream',
+    'content-disposition': contentDisposition('attachment', name),
+    'x-content-type-options': 'nosniff',
+    mimetype: mimeType,
+    'x-ms-file-name': fileNameHeader(name),
+    'x-ms-file-size': String(size),
+    'access-control-expose-headers': 'mimetype, x-ms-file-name, x-ms-file-size',
+  });
+  return t.res.end(Buffer.from(answer.body['$content'], 'base64'));
+}
+
 async function deleteProperty(t) {
-  const { mapping, policy, store, deps, target } = t;
+  const { mapping, policy, target } = t;
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
-  const prepared = policy.prepareWrite({ [target.segment]: null }, "update");
-  await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t)));
+  const prepared = policy.prepareWrite({ [target.segment]: null }, 'update');
+  await portalWrite(t, () => portalUpdate(t, mapping, id, prepared));
   return sendNoContent(t);
 }
 
 /** $ref: POST/DELETE on collection-valued, PUT/DELETE on single-valued navigation properties. */
 async function reference(t) {
-  const { mapping, policy, store, deps, target, method } = t;
+  const { mapping, policy, store, target, method } = t;
   const navigation = target.segment;
-  if (!["POST", "PUT", "DELETE"].includes(method)) throw methodNotAllowed(method, "$ref");
-  policy.assertWrite({ [`${navigation}@odata.bind`]: null }, "update");
+  if (!['POST', 'PUT', 'DELETE'].includes(method)) throw methodNotAllowed(method, '$ref');
+  policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
   const rel = mapping.relationships?.[navigation];
-  if (!rel) throw new DataError(`Relationship ${navigation} is not mapped for ${mapping.logicalName}.`, 400, "MissingRelationship");
+  if (!rel)
+    throw new DataError(
+      `Relationship ${navigation} is not mapped for ${mapping.logicalName}.`,
+      400,
+      'MissingRelationship',
+    );
   const targetMapping = store.resolveMapping(rel.entity);
   const { id } = locate(t, mapping, target.key);
   if (id == null) throw recordNotFound(mapping, target.key);
   const single = rel.many === false;
   const referenced = (value, name) => {
-    if (typeof value !== "string") throw badRequest(`A target ${name} is required.`, "InvalidLookup");
+    if (typeof value !== 'string') throw badRequest(`A target ${name} is required.`, 'InvalidLookup');
     const ref = checkReferenceOrigin(t, value, name);
     let referencedMapping;
     try {
       referencedMapping = resolveSet(store, ref.set);
     } catch {
-      throw badRequest(`Relationship target ${ref.set} is not a mapped entity set.`, "InvalidLookup");
+      throw badRequest(`Relationship target ${ref.set} is not a mapped entity set.`, 'InvalidLookup');
     }
     if (referencedMapping.logicalName !== targetMapping.logicalName)
-      throw badRequest("Relationship target entity does not match its mapping.", "InvalidLookup");
+      throw badRequest('Relationship target entity does not match its mapping.', 'InvalidLookup');
     return { set: ref.set, id: locate(t, targetMapping, ref.id).id };
   };
-  if (method === "POST") {
+  if (method === 'POST') {
     if (single || target.targetKey != null)
-      throw methodNotAllowed(method, "a single-valued navigation property; use PUT");
+      throw methodNotAllowed(method, 'a single-valued navigation property; use PUT');
     const body = await readBody(t);
-    const { id: targetId } = referenced(body["@odata.id"], "@odata.id");
-    await deps.change(() => store.associate(mapping.logicalName, id, navigation, targetId, deps.identity));
+    const { id: targetId } = referenced(body['@odata.id'], '@odata.id');
+    await portalWrite(t, () => portalAssociation(t, mapping, id, navigation, targetId, true));
     return sendNoContent(t);
   }
-  if (method === "PUT") {
+  if (method === 'PUT') {
     if (!single || target.targetKey != null)
-      throw methodNotAllowed(method, "a collection-valued navigation property; use POST");
+      throw methodNotAllowed(method, 'a collection-valued navigation property; use POST');
     const body = await readBody(t);
-    const ref = referenced(body["@odata.id"], "@odata.id");
-    const prepared = policy.prepareWrite({ [`${navigation}@odata.bind`]: `/${ref.set}(${ref.id})` }, "update");
-    await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t, { coerce: false })));
+    const ref = referenced(body['@odata.id'], '@odata.id');
+    const prepared = policy.prepareWrite({ [`${navigation}@odata.bind`]: `/${ref.set}(${ref.id})` }, 'update');
+    await portalWrite(t, () => portalUpdate(t, mapping, id, prepared, { coerce: false }));
     return sendNoContent(t);
   }
   if (single) {
-    if (target.targetKey != null || t.url.searchParams.has("$id")) throw badRequest("A single-valued navigation reference is removed without $id.", "InvalidLookup", "0x0");
-    const prepared = policy.prepareWrite({ [`${navigation}@odata.bind`]: null }, "update");
-    await deps.change(() => store.update(mapping.logicalName, id, prepared, deps.identity, writeOptions(t, { coerce: false })));
+    if (target.targetKey != null || t.url.searchParams.has('$id'))
+      throw badRequest('A single-valued navigation reference is removed without $id.', 'InvalidLookup', '0x0');
+    const prepared = policy.prepareWrite({ [`${navigation}@odata.bind`]: null }, 'update');
+    await portalWrite(t, () => portalUpdate(t, mapping, id, prepared, { coerce: false }));
     return sendNoContent(t);
   }
   const targetId =
     target.targetKey != null
       ? locate(t, targetMapping, target.targetKey).id
-      : referenced(t.url.searchParams.get("$id") ?? undefined, "$id").id;
-  await deps.change(() => store.disassociate(mapping.logicalName, id, navigation, targetId, deps.identity));
+      : referenced(t.url.searchParams.get('$id') ?? undefined, '$id').id;
+  await portalWrite(t, () => portalAssociation(t, mapping, id, navigation, targetId, false));
   return sendNoContent(t);
 }

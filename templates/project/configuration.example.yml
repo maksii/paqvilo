@@ -1,0 +1,48 @@
+# Optional recipe only. Not loaded by the generated scripts.
+# Assumes init --pack sample-data. These are inert placeholder origins.
+sourceRoot: ../checkouts
+defaultSite: customer
+portals: all
+browser:
+  channel: msedge
+sites:
+  customer:
+    source: customer-export
+    defaultEnv: dev
+    environments:
+      dev: https://customer-dev.example.test
+      production:
+        url: https://customer-production.example.test
+        caution: true
+    mirage:
+      port: 8787
+      dataPacks:
+        - { id: sample-data, module: ./pack/pack.mjs }
+      preset: sample-data-empty
+      presetMode: bootstrap
+      personaContexts: { maxInstances: 2 }
+      deploymentProfiles:
+        profiles:
+          local:
+            pages: { source: deployment-profiles/local.yml }
+  partner:
+    source: partner-export
+    defaultEnv: sandbox
+    environments:
+      sandbox: https://partner-sandbox.example.test
+    mirage:
+      port: 8788
+defaults:
+  mirage:
+    confinePortalPages: true
+    solutionRoots:
+      - solutions/Core
+      - solutions/Feature
+    deploymentProfiles:
+      default: local
+      profiles:
+        local:
+          environmentVariables:
+            - { sourceRoot: settings/local.json }
+          connectionReferences:
+            - { sourceRoot: settings/local.json }

@@ -4907,207 +4907,122 @@
     {
       "persona": "P01",
       "contactId": "5a0c6c9a-399f-5437-9d58-930fd6a41c7c",
-      "roles": [
-        "COMPANYMANAGER",
-        "TESTRUNNER"
-      ]
+      "roles": ["COMPANYMANAGER", "TESTRUNNER"]
     },
     {
       "persona": "P02",
       "contactId": "fcabab5f-4361-5355-8cd0-f2c92a318fdf",
-      "roles": [
-        "BRANCHMANAGER",
-        "TESTRUNNER"
-      ]
+      "roles": ["BRANCHMANAGER", "TESTRUNNER"]
     },
     {
       "persona": "P03",
       "contactId": "6d72d7c1-7b22-59eb-b860-f61a2d0d0d97",
-      "roles": [
-        "TEAMLEADER",
-        "TESTRUNNER"
-      ]
+      "roles": ["TEAMLEADER", "TESTRUNNER"]
     },
     {
       "persona": "P04",
       "contactId": "b52e749e-7d5c-5814-88f6-76331d290eae",
-      "roles": [
-        "EMPLOYEE",
-        "TESTRUNNER"
-      ]
+      "roles": ["EMPLOYEE", "TESTRUNNER"]
     },
     {
       "persona": "P05",
       "contactId": "8126c085-7c95-51e6-845b-831e85bdf743",
-      "roles": [
-        "CONTRACTOR",
-        "TESTRUNNER"
-      ]
+      "roles": ["CONTRACTOR", "TESTRUNNER"]
     },
     {
       "persona": "P06",
       "contactId": "d98a8229-c4c0-506f-985d-6bcecf9739be",
-      "roles": [
-        "HR",
-        "TESTRUNNER"
-      ]
+      "roles": ["HR", "TESTRUNNER"]
     },
     {
       "persona": "P07",
       "contactId": "d793f290-19a6-5ce6-a287-7284ae5c4c89",
-      "roles": [
-        "IT",
-        "TESTRUNNER"
-      ]
+      "roles": ["IT", "TESTRUNNER"]
     },
     {
       "persona": "P08",
       "contactId": "ae99e667-dc01-504b-99a6-1b4df0a3a22b",
-      "roles": [
-        "FACILITIES",
-        "TESTRUNNER"
-      ]
+      "roles": ["FACILITIES", "TESTRUNNER"]
     },
     {
       "persona": "P09",
       "contactId": "7c25aa20-5277-5ed2-a0ea-b9a641af2cb9",
-      "roles": [
-        "PROCUREMENT",
-        "TESTRUNNER"
-      ]
+      "roles": ["PROCUREMENT", "TESTRUNNER"]
     },
     {
       "persona": "P10",
       "contactId": "7e35f83a-60a0-50be-b555-4e5d65791cc3",
-      "roles": [
-        "AUDITOR",
-        "TESTRUNNER"
-      ]
+      "roles": ["AUDITOR", "TESTRUNNER"]
     },
     {
       "persona": "P11",
       "contactId": "5682c3cd-c824-5bb3-be4c-5f7b5643dd1e",
-      "roles": [
-        "ORGADMIN",
-        "TESTRUNNER"
-      ]
+      "roles": ["ORGADMIN", "TESTRUNNER"]
     },
     {
       "persona": "P12",
       "contactId": "8fc5d0c5-c06b-59e3-a3f4-dcaae6ee13c7",
-      "roles": [
-        "CTO",
-        "TESTRUNNER"
-      ]
+      "roles": ["CTO", "TESTRUNNER"]
     },
     {
       "persona": "P13",
       "contactId": "c09c3427-4b94-5dbd-ade3-6706e227c880",
-      "roles": [
-        "EMPLOYEE",
-        "CONTRACTOR",
-        "TESTRUNNER"
-      ]
+      "roles": ["EMPLOYEE", "CONTRACTOR", "TESTRUNNER"]
     },
     {
       "persona": "P14",
       "contactId": "0b345dea-13ce-578c-8355-2d6b71adfd68",
-      "roles": [
-        "HR",
-        "IT",
-        "TESTRUNNER"
-      ]
+      "roles": ["HR", "IT", "TESTRUNNER"]
     },
     {
       "persona": "P15",
       "contactId": "0107ca5e-fae8-5514-8742-9c99c118f13c",
-      "roles": [
-        "HR",
-        "IT",
-        "TESTRUNNER"
-      ]
+      "roles": ["HR", "IT", "TESTRUNNER"]
     },
     {
       "persona": "P16",
       "contactId": "081d257e-a43c-51cc-a849-8a2355dfb5fe",
-      "roles": [
-        "CONTRACTOR",
-        "HR",
-        "IT",
-        "ORGADMIN",
-        "CTO",
-        "TESTRUNNER"
-      ]
+      "roles": ["CONTRACTOR", "HR", "IT", "ORGADMIN", "CTO", "TESTRUNNER"]
     },
     {
       "persona": "P17",
       "contactId": "eddb27ad-674b-5e4f-a7e7-19df4fa90596",
-      "roles": [
-        "AUDITOR",
-        "IT",
-        "TESTRUNNER"
-      ]
+      "roles": ["AUDITOR", "IT", "TESTRUNNER"]
     },
     {
       "persona": "P18",
       "contactId": "5262ecd5-845c-5547-80d6-07de2ae2a077",
-      "roles": [
-        "BRANCHMANAGER",
-        "TESTRUNNER"
-      ]
+      "roles": ["BRANCHMANAGER", "TESTRUNNER"]
     },
     {
       "persona": "P19",
       "contactId": "f97fcc0d-8afb-557b-a496-e5d7634df0a3",
-      "roles": [
-        "COMPANYMANAGER",
-        "TESTRUNNER"
-      ]
+      "roles": ["COMPANYMANAGER", "TESTRUNNER"]
     },
     {
       "persona": "P20",
       "contactId": "0a7800c1-9a23-5a9a-aae0-7cb8362ef905",
-      "roles": [
-        "BRANCHMANAGER",
-        "EMPLOYEE",
-        "TESTRUNNER"
-      ]
+      "roles": ["BRANCHMANAGER", "EMPLOYEE", "TESTRUNNER"]
     },
     {
       "persona": "P21",
       "contactId": "cf8ea724-1220-5694-9ab8-56f41d4573b6",
-      "roles": [
-        "TEAMLEADER",
-        "IT",
-        "TESTRUNNER"
-      ]
+      "roles": ["TEAMLEADER", "IT", "TESTRUNNER"]
     },
     {
       "persona": "P22",
       "contactId": "17c1ec99-120d-54cd-860c-e0b9fa19d7f2",
-      "roles": [
-        "AUDITOR",
-        "CTO",
-        "IT",
-        "TESTRUNNER"
-      ]
+      "roles": ["AUDITOR", "CTO", "IT", "TESTRUNNER"]
     },
     {
       "persona": "P23",
       "contactId": "5861a3bb-97f6-5397-aff9-abc2896fa19b",
-      "roles": [
-        "HR",
-        "TESTRUNNER"
-      ]
+      "roles": ["HR", "TESTRUNNER"]
     },
     {
       "persona": "P24",
       "contactId": "fce8bac9-4488-5fed-9862-684f2043fc90",
-      "roles": [
-        "EMPLOYEE",
-        "CONTRACTOR",
-        "TESTRUNNER"
-      ]
+      "roles": ["EMPLOYEE", "CONTRACTOR", "TESTRUNNER"]
     },
     {
       "persona": "P-STRESS",

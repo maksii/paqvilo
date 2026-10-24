@@ -10,12 +10,22 @@ import { createFixture, SITE } from './fixture.mjs';
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
   const fixture = createFixture();
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
-  t.after(() => { fixture.cleanup(); fs.rmSync(stateDir, { recursive: true, force: true }); });
+  t.after(() => {
+    fixture.cleanup();
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
   const userDataDir = path.join(stateDir, 'browser');
   fs.mkdirSync(path.join(userDataDir, 'Profile 2'), { recursive: true });
-  const cfg = { configDir: stateDir, stateDir, sourceDir: fixture.dir, siteName: 'fixture', envName: 'local',
-    origin: 'http://127.0.0.1:1', site: structuredClone(SITE),
-    browser: { channel: 'msedge', userDataDir, profileDirectory: 'Profile 2', profileDir: 'profiles' } };
+  const cfg = {
+    configDir: stateDir,
+    stateDir,
+    sourceDir: fixture.dir,
+    siteName: 'fixture',
+    envName: 'local',
+    origin: 'http://127.0.0.1:1',
+    site: structuredClone(SITE),
+    browser: { channel: 'msedge', userDataDir, profileDirectory: 'Profile 2', profileDir: 'profiles' },
+  };
   let launched = false;
   t.mock.method(chromium, 'launchPersistentContext', async (root, options) => {
     launched = true;
@@ -75,15 +85,28 @@ test('JSON verification emits one final failure report when temporary cleanup al
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
   const remove = fs.rmSync;
   let temporary;
-  t.after(() => { if (temporary) remove(temporary, { recursive: true, force: true }); remove(stateDir, { recursive: true, force: true }); });
+  t.after(() => {
+    if (temporary) remove(temporary, { recursive: true, force: true });
+    remove(stateDir, { recursive: true, force: true });
+  });
   t.mock.method(fs, 'rmSync', (file, options) => {
-    if (path.basename(file).startsWith('paqvilo-verify-')) { temporary = file; throw new Error('fixture cleanup failure'); }
+    if (path.basename(file).startsWith('paqvilo-verify-')) {
+      temporary = file;
+      throw new Error('fixture cleanup failure');
+    }
     return remove(file, options);
   });
   const output = [];
   t.mock.method(console, 'log', (line) => output.push(line));
   t.mock.method(console, 'error', () => {});
-  const cfg = { stateDir, siteName: 'fixture', envName: 'local', origin: 'https://portal.invalid', sourceDir: path.join(stateDir, 'missing-extract'), site: { startPath: '/' } };
+  const cfg = {
+    stateDir,
+    siteName: 'fixture',
+    envName: 'local',
+    origin: 'https://portal.invalid',
+    sourceDir: path.join(stateDir, 'missing-extract'),
+    site: { startPath: '/' },
+  };
   assert.equal(await verify(cfg, { json: true }), 1);
   assert.equal(output.length, 1);
   const report = JSON.parse(output[0]);

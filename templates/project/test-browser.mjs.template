@@ -4,6 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const forwarded = process.argv.slice(2), strict = forwarded.includes('--strict');
+const nodeArgs = forwarded.filter(arg => arg !== '--strict');
+if (strict && nodeArgs.some(arg => arg.startsWith('--test-reporter'))) throw new Error('Strict coverage owns the test reporter; select tests with Node test-name flags instead');
+let required = [];
+if (strict) {
+  const { loadCatalogue } = await import('paqvilo/lense');
+  required = Object.keys(loadCatalogue({ config: path.join(root, 'paqvilo.config.yml') }, process.env).sites);
+  if (!required.length) throw new Error('Strict acceptance requires at least one configured site');
+}
 const files = [];
 function collect(directory) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -19,12 +28,31 @@ for (const folder of {{testRoots}}) {
 }
 if (!files.length) {
   console.log('No browser tests found. Add loopback acceptance tests before claiming coverage.');
+  if (strict) process.exitCode = 1;
 } else {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=300000', ...process.argv.slice(2), ...files.sort()], { cwd: root, env, stdio: 'inherit', windowsHide: true });
+  const reporter = strict ? ['--test-reporter', new URL('./browser-reporter.mjs', import.meta.url).href] : [];
+  const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=300000', ...nodeArgs, ...reporter, ...files.sort()], { cwd: root, env, stdio: strict ? ['inherit', 'inherit', 'inherit', 'pipe'] : 'inherit', windowsHide: true });
+  const covered = new Set(); let pending = '', invalidReport = false;
+  child.stdio[3]?.on('data', chunk => {
+    pending += chunk.toString();
+    if (pending.length > 65536) { invalidReport = true; pending = ''; return; }
+    let newline;
+    while ((newline = pending.indexOf('\n')) !== -1) {
+      const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
+      try { const record = JSON.parse(line); if (required.includes(record.site)) covered.add(record.site); }
+      catch { invalidReport = true; }
+    }
+  });
   child.on('error', error => { console.error(error.message); process.exitCode = 1; });
-  child.on('exit', code => { process.exitCode = code ?? 1; });
+  child.on('close', code => {
+    const missing = required.filter(site => !covered.has(site));
+    if (strict && (missing.length || invalidReport || pending)) {
+      console.error(`Strict acceptance requires an executed successful assertion case per configured site. Missing: ${missing.join(', ') || '<invalid coverage report>'}. Use support/site.mjs acceptanceTest; HTTP smoke, skipped and TODO tests do not count.`);
+      process.exitCode = 1;
+    } else process.exitCode = code ?? 1;
+  });
   process.on('SIGINT', () => child.kill('SIGINT'));
   process.on('SIGTERM', () => child.kill('SIGTERM'));
 }

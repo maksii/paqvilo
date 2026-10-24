@@ -5,15 +5,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { PortalModel, detectFormat, sourceText, componentContent, componentContentSpan, isPortalMetadata } from '../lense/portal-model.mjs';
+import {
+  PortalModel,
+  detectFormat,
+  sourceText,
+  componentContent,
+  componentContentSpan,
+  isPortalMetadata,
+} from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { SITE } from './fixture.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
-import {enablePanel} from '../lense/panel.mjs';
-import {fakeBrowser} from './fake-browser.mjs';
+import { enablePanel } from '../lense/panel.mjs';
+import { fakeBrowser } from './fake-browser.mjs';
 
 const HOME = '00000000-0000-0000-0000-0000000000a0';
 const HOME_EN = '00000000-0000-0000-0000-0000000000a1';
@@ -34,7 +41,8 @@ function component(id, type, name, content, attachment) {
     .join('\n');
 }
 
-const NEWS_JS = '$(document).ready(function () {\r\n  if (a < b && c > d) {\r\n    loadNews("latest");\r\n  }\r\n  renderNews();\r\n});';
+const NEWS_JS =
+  '$(document).ready(function () {\r\n  if (a < b && c > d) {\r\n    loadNews("latest");\r\n  }\r\n  renderNews();\r\n});';
 
 let dir;
 const put = (id, xml) => {
@@ -42,26 +50,67 @@ const put = (id, xml) => {
   fs.writeFileSync(path.join(dir, 'powerpagecomponents', id, 'powerpagecomponent.xml'), xml);
 };
 const xmlOf = (id) => path.join(dir, 'powerpagecomponents', id, 'powerpagecomponent.xml');
-const git = (...args) => execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, stdio: 'ignore', windowsHide: true });
+const git = (...args) =>
+  execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], {
+    cwd: dir,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
 
 beforeEach(() => {
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-enh-')));
   put(HOME, component(HOME, 2, 'Home', { isroot: true, partialurl: '/' }));
   put(HOME_EN, component(HOME_EN, 2, 'Home', { isroot: false, rootwebpageid: HOME, partialurl: '/' }));
   put(NEWS, component(NEWS, 2, 'Newsfeed', { isroot: true, partialurl: 'Newsfeed', parentpageid: HOME }));
-  put(NEWS_EN, component(NEWS_EN, 2, 'Newsfeed', { isroot: false, rootwebpageid: NEWS, partialurl: 'Newsfeed', parentpageid: HOME, customjavascript: NEWS_JS, customcss: '.news { color: red; }' }));
+  put(
+    NEWS_EN,
+    component(NEWS_EN, 2, 'Newsfeed', {
+      isroot: false,
+      rootwebpageid: NEWS,
+      partialurl: 'Newsfeed',
+      parentpageid: HOME,
+      customjavascript: NEWS_JS,
+      customcss: '.news { color: red; }',
+    }),
+  );
   // a web file under the root page, with a disk name that differs from its URL
-  put('f1', component('f1', 3, 'Logo', { partialurl: 'portal-logo.svg', parentpageid: HOME }, { mime: 'image/svg+xml', name: 'Example Logo.svg' }));
+  put(
+    'f1',
+    component(
+      'f1',
+      3,
+      'Logo',
+      { partialurl: 'portal-logo.svg', parentpageid: HOME },
+      { mime: 'image/svg+xml', name: 'Example Logo.svg' },
+    ),
+  );
   fs.mkdirSync(path.join(dir, 'powerpagecomponents', 'f1', 'filecontent'));
   fs.writeFileSync(path.join(dir, 'powerpagecomponents', 'f1', 'filecontent', 'Example Logo.svg'), '<svg/>');
   // one whose parent is the language copy of a page, one without a parent
-  put('f2', component('f2', 3, 'robots', { partialurl: 'robots.txt', parentpageid: HOME_EN }, { mime: 'text/plain', name: 'robots.txt' }));
+  put(
+    'f2',
+    component(
+      'f2',
+      3,
+      'robots',
+      { partialurl: 'robots.txt', parentpageid: HOME_EN },
+      { mime: 'text/plain', name: 'robots.txt' },
+    ),
+  );
   fs.mkdirSync(path.join(dir, 'powerpagecomponents', 'f2', 'filecontent'));
   fs.writeFileSync(path.join(dir, 'powerpagecomponents', 'f2', 'filecontent', 'robots.txt'), 'User-agent: *');
-  put('f3', component('f3', 3, 'orphan', { partialurl: 'orphan.json' }, { mime: 'application/json', name: 'orphan.json' }));
+  put(
+    'f3',
+    component('f3', 3, 'orphan', { partialurl: 'orphan.json' }, { mime: 'application/json', name: 'orphan.json' }),
+  );
   fs.mkdirSync(path.join(dir, 'powerpagecomponents', 'f3', 'filecontent'));
   fs.writeFileSync(path.join(dir, 'powerpagecomponents', 'f3', 'filecontent', 'orphan.json'), '{}');
-  put('t1', component('t1', 8, 'Header', { source: '<header>\n  <a class="brand" href="/">{{ website.name }}</a>\n  <nav>Old menu</nav>\n</header>\n' }));
+  put(
+    't1',
+    component('t1', 8, 'Header', {
+      source: '<header>\n  <a class="brand" href="/">{{ website.name }}</a>\n  <nav>Old menu</nav>\n</header>\n',
+    }),
+  );
   put('s1', component('s1', 7, 'Footer/Text', { value: 'All rights reserved by the agency.' }));
   put('x1', component('x1', 9, 'Some/SiteSetting', { value: 'true' }));
   git('init', '-q');
@@ -77,20 +126,29 @@ function editField(id, field, change) {
   const m = /<content>([\s\S]*?)<\/content>/.exec(xml);
   const content = JSON.parse(m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
   content[field] = change(content[field]);
-  fs.writeFileSync(file, xml.replace(m[0], () => `<content>${xmlEscape(JSON.stringify(content, null, 2))}</content>`));
+  fs.writeFileSync(
+    file,
+    xml.replace(m[0], () => `<content>${xmlEscape(JSON.stringify(content, null, 2))}</content>`),
+  );
 }
 
-const rewriter = (site = SITE) => new HtmlRewriter({ model: new PortalModel(dir), site, baseline: new GitBaseline(dir, 'HEAD'), sourceMaps: true });
+const rewriter = (site = SITE) =>
+  new HtmlRewriter({ model: new PortalModel(dir), site, baseline: new GitBaseline(dir, 'HEAD'), sourceMaps: true });
 
-test('component page source labels distinguish the root and localized record without inventing a language',async()=>{
-  const origin='http://127.0.0.1:1234',browser=fakeBrowser(),tab=browser.openTab(origin+'/Newsfeed/');
-  const session=new OverlaySession({sourceDir:dir,origin,site:structuredClone(SITE),sourceMaps:false});
-  const panel=enablePanel(browser.context,session);
-  try{
-    const sources=panel.stateFor(tab.page).page.sources;
-    assert.equal(new Set(sources.map(item=>item.label)).size,sources.length);
-    assert.ok(sources.some(item=>item.label==='JavaScript (root)'));assert.ok(sources.some(item=>item.label===`JavaScript (localized ${NEWS_EN})`));
-  }finally{await panel.dispose();}
+test('component page source labels distinguish the root and localized record without inventing a language', async () => {
+  const origin = 'http://127.0.0.1:1234',
+    browser = fakeBrowser(),
+    tab = browser.openTab(origin + '/Newsfeed/');
+  const session = new OverlaySession({ sourceDir: dir, origin, site: structuredClone(SITE), sourceMaps: false });
+  const panel = enablePanel(browser.context, session);
+  try {
+    const sources = panel.stateFor(tab.page).page.sources;
+    assert.equal(new Set(sources.map((item) => item.label)).size, sources.length);
+    assert.ok(sources.some((item) => item.label === 'JavaScript (root)'));
+    assert.ok(sources.some((item) => item.label === `JavaScript (localized ${NEWS_EN})`));
+  } finally {
+    await panel.dispose();
+  }
 });
 
 test('known enhanced XML saves refresh page code and metadata asynchronously', async () => {
@@ -109,14 +167,24 @@ test('enhanced site and language saves report deployment requirements and refres
   const siteFile = path.join(dir, siteRel);
   const languageFile = path.join(dir, languageRel);
   fs.mkdirSync(path.dirname(siteFile));
-  fs.writeFileSync(siteFile, '<powerpagesites><powerpagesite powerpagesiteid="00000000-0000-0000-0000-000000000100"><content>{"name":"Invented site"}</content><name>Invented site</name></powerpagesite></powerpagesites>');
-  fs.writeFileSync(languageFile, '<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="00000000-0000-0000-0000-000000000101"><languagecode>en-US</languagecode></powerpagesitelanguage></powerpagesitelanguages>');
+  fs.writeFileSync(
+    siteFile,
+    '<powerpagesites><powerpagesite powerpagesiteid="00000000-0000-0000-0000-000000000100"><content>{"name":"Invented site"}</content><name>Invented site</name></powerpagesite></powerpagesites>',
+  );
+  fs.writeFileSync(
+    languageFile,
+    '<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="00000000-0000-0000-0000-000000000101"><languagecode>en-US</languagecode></powerpagesitelanguage></powerpagesitelanguages>',
+  );
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'invented site configuration');
   const baseline = new GitBaseline(dir, 'HEAD');
   const session = new OverlaySession({ sourceDir: dir, site: structuredClone(SITE) });
   assert.ok(session.model.languageCodes.has('en-us'));
-  assert.deepEqual(session.classifyChanges([siteFile, languageFile]), { relevant: [siteFile, languageFile], ignored: [], structural: true });
+  assert.deepEqual(session.classifyChanges([siteFile, languageFile]), {
+    relevant: [siteFile, languageFile],
+    ignored: [],
+    structural: true,
+  });
   assert.ok(isPortalMetadata('configuration/powerpagesites.xml'));
   assert.equal(isPortalMetadata('notes/powerpagesite.xml'), false);
   fs.writeFileSync(siteFile, fs.readFileSync(siteFile, 'utf8').replaceAll('Invented site', 'Changed site'));
@@ -128,19 +196,34 @@ test('enhanced site and language saves report deployment requirements and refres
   assert.deepEqual(changes.map((change) => change.rel).sort(), [siteRel, languageRel].sort());
   assert.ok(changes.every((change) => /require deployment/.test(change.reason)));
   const audit = auditResources(session.model, SITE);
-  for (const rel of [siteRel, languageRel]) assert.equal(audit.resources.find((item) => item.relativePath === rel)?.status, 'deployment');
+  for (const rel of [siteRel, languageRel])
+    assert.equal(audit.resources.find((item) => item.relativePath === rel)?.status, 'deployment');
   assert.equal(audit.coverage.runtimeVerified, false);
   fs.unlinkSync(languageFile);
-  assert.ok(session.model.deploymentChanges(baseline, baseline.changedFiles()).some((change) => change.rel === languageRel && /deleted/.test(change.reason)));
+  assert.ok(
+    session.model
+      .deploymentChanges(baseline, baseline.changedFiles())
+      .some((change) => change.rel === languageRel && /deleted/.test(change.reason)),
+  );
   const added = path.join(dir, 'configuration', 'powerpagesitelanguages.xml');
   fs.mkdirSync(path.dirname(added));
   fs.writeFileSync(added, '<powerpagesitelanguages/>');
-  assert.ok(session.model.deploymentChanges(baseline, [added]).some((change) => /new portal metadata/.test(change.reason)));
+  assert.ok(
+    session.model.deploymentChanges(baseline, [added]).some((change) => /new portal metadata/.test(change.reason)),
+  );
 });
 
 test('language fields of inactive enhanced root pages are excluded', () => {
-  put(NEWS, fs.readFileSync(xmlOf(NEWS), 'utf8').replace('</powerpagecomponent>', '<statecode>1</statecode></powerpagecomponent>'));
-  assert.equal(new PortalModel(dir).inlineSources.some((source) => source.file === xmlOf(NEWS_EN)), false);
+  put(
+    NEWS,
+    fs
+      .readFileSync(xmlOf(NEWS), 'utf8')
+      .replace('</powerpagecomponent>', '<statecode>1</statecode></powerpagecomponent>'),
+  );
+  assert.equal(
+    new PortalModel(dir).inlineSources.some((source) => source.file === xmlOf(NEWS_EN)),
+    false,
+  );
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'inactive root');
   assert.equal(rewriter().unsupported.length, 0);
@@ -156,10 +239,16 @@ test('the format is detected from the folder', () => {
 
 test('web files map by parent page and partial URL to the file under filecontent/', () => {
   const model = new PortalModel(dir);
-  assert.equal(model.findWebFile('/portal-logo.svg').file, path.join(dir, 'powerpagecomponents', 'f1', 'filecontent', 'Example Logo.svg'));
+  assert.equal(
+    model.findWebFile('/portal-logo.svg').file,
+    path.join(dir, 'powerpagecomponents', 'f1', 'filecontent', 'Example Logo.svg'),
+  );
   assert.equal(model.findWebFile('/portal-logo.svg').mimeType, 'image/svg+xml');
   // parent given as the language copy of the page
-  assert.ok(model.findWebFile('/robots.txt'));
+  assert.equal(
+    model.findWebFile('/robots.txt').file,
+    path.join(dir, 'powerpagecomponents', 'f2', 'filecontent', 'robots.txt'),
+  );
   assert.equal(model.findWebFile('/orphan.json'), null);
   assert.ok(model.warnings.some((w) => w.includes('orphan') && w.includes('no parent page')));
 });
@@ -170,8 +259,14 @@ test('page code, templates and snippets are read out of the component XML', () =
   assert.equal(sourceText(js), NEWS_JS);
   assert.equal(js.file, xmlOf(NEWS_EN));
   assert.ok(js.rel.endsWith('/powerpagecomponent.xml#customjavascript'));
-  assert.equal(sourceText(model.inlineSources.find((s) => s.kind === 'web-template')).includes('{{ website.name }}'), true);
-  assert.equal(sourceText(model.inlineSources.find((s) => s.kind === 'content-snippet')), 'All rights reserved by the agency.');
+  assert.equal(
+    sourceText(model.inlineSources.find((s) => s.kind === 'web-template')).includes('{{ website.name }}'),
+    true,
+  );
+  assert.equal(
+    sourceText(model.inlineSources.find((s) => s.kind === 'content-snippet')),
+    'All rights reserved by the agency.',
+  );
   // components that are neither pages, files, templates nor snippets are ignored
   assert.ok(!model.inlineSources.some((s) => s.rel.includes('/x1/')));
 });
@@ -243,7 +338,10 @@ test('enhanced list and multistep form scripts have editable fields and language
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'list and wizard baseline');
   const baseline = new GitBaseline(dir, 'HEAD');
-  for (const [id, kind, original] of [['list1', 'list-js', 'window.listLoaded = true;'], ['step1', 'advanced-form-step-js', 'window.stepLoaded = true;']]) {
+  for (const [id, kind, original] of [
+    ['list1', 'list-js', 'window.listLoaded = true;'],
+    ['step1', 'advanced-form-step-js', 'window.stepLoaded = true;'],
+  ]) {
     const source = new PortalModel(dir).inlineSources.find((entry) => entry.kind === kind);
     assert.equal(source.field, 'customjavascript');
     assert.equal(source.tag, 'script');
@@ -252,24 +350,52 @@ test('enhanced list and multistep form scripts have editable fields and language
     editField(id, 'customjavascript', (text) => text.replace('true', 'false'));
   }
   const model = new PortalModel(dir);
-  assert.equal(model.inlineSources.some((entry) => entry.file === xmlOf('form1')), false);
+  assert.equal(
+    model.inlineSources.some((entry) => entry.file === xmlOf('form1')),
+    false,
+  );
   assert.deepEqual(model.deploymentChanges(baseline, baseline.changedFiles()), []);
-  const result = rewriter().rewrite('<html><body><script>window.listLoaded = true;</script><script>window.stepLoaded = true;</script></body></html>', '/Newsfeed');
+  const result = rewriter().rewrite(
+    '<html><body><script>window.listLoaded = true;</script><script>window.stepLoaded = true;</script></body></html>',
+    '/Newsfeed',
+  );
   assert.ok(result.html.includes('window.listLoaded = false;'));
   assert.ok(result.html.includes('window.stepLoaded = false;'));
   assert.deepEqual(result.applied.map((entry) => entry.kind).sort(), ['advanced-form-step-js', 'list-js']);
   editField('step1', 'webform', () => 'other-form');
-  assert.ok(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()).some((change) => /webform/.test(change.reason)));
+  assert.ok(
+    new PortalModel(dir)
+      .deploymentChanges(baseline, baseline.changedFiles())
+      .some((change) => /webform/.test(change.reason)),
+  );
 });
 
 test('steps of inactive enhanced multistep forms are excluded', () => {
-  put('wizard', component('wizard', 19, 'Wizard', {}).replace('</powerpagecomponent>', '<statecode>1</statecode></powerpagecomponent>'));
-  put('step1', component('step1', 20, 'Details', { webform: 'WIZARD', customjavascript: 'window.inactiveStep = true;' }));
-  put('metadata1', component('metadata1', 21, 'Details hint', { webformstep: 'step1', description: '<p>Inactive hint</p>' }));
+  put(
+    'wizard',
+    component('wizard', 19, 'Wizard', {}).replace(
+      '</powerpagecomponent>',
+      '<statecode>1</statecode></powerpagecomponent>',
+    ),
+  );
+  put(
+    'step1',
+    component('step1', 20, 'Details', { webform: 'WIZARD', customjavascript: 'window.inactiveStep = true;' }),
+  );
+  put(
+    'metadata1',
+    component('metadata1', 21, 'Details hint', { webformstep: 'step1', description: '<p>Inactive hint</p>' }),
+  );
   const model = new PortalModel(dir);
-  assert.equal(model.inlineSources.some((entry) => entry.file === xmlOf('step1')), false);
+  assert.equal(
+    model.inlineSources.some((entry) => entry.file === xmlOf('step1')),
+    false,
+  );
   assert.ok(model.inactiveSources.some((entry) => entry.file === xmlOf('step1')));
-  assert.equal(model.inlineSources.some((entry) => entry.file === xmlOf('metadata1')), false);
+  assert.equal(
+    model.inlineSources.some((entry) => entry.file === xmlOf('metadata1')),
+    false,
+  );
 });
 
 test('enhanced broken page hierarchies report route warnings and retain source discovery', () => {
@@ -277,31 +403,57 @@ test('enhanced broken page hierarchies report route warnings and retain source d
   const model = new PortalModel(dir);
   assert.equal(model.pagePath(NEWS_EN), null);
   assert.ok(model.warnings.some((warning) => warning.includes(NEWS) && /missing parent page/.test(warning)));
-  assert.equal(model.inlineSources.find((source) => source.file === xmlOf(NEWS_EN) && source.kind === 'page-js').pageUrl, null);
+  assert.equal(
+    model.inlineSources.find((source) => source.file === xmlOf(NEWS_EN) && source.kind === 'page-js').pageUrl,
+    null,
+  );
 });
 
 test('enhanced link descriptions and localized form metadata preserve configuration while previewing literal values', () => {
-  put('link1', component('link1', 5, 'Guidance', { description: '<a href="/guide.pdf">Old guidance</a>', weblinksetid: 'links' }));
-  put('metadata1', component('metadata1', 16, 'Form hint', { entityform: 'form1', description: JSON.stringify([{ LCID: 1033, Value: '<p>Old hint</p>' }, { LCID: 1045, Value: '<p>Wskazowka</p>' }]) }));
+  put(
+    'link1',
+    component('link1', 5, 'Guidance', { description: '<a href="/guide.pdf">Old guidance</a>', weblinksetid: 'links' }),
+  );
+  put(
+    'metadata1',
+    component('metadata1', 16, 'Form hint', {
+      entityform: 'form1',
+      description: JSON.stringify([
+        { LCID: 1033, Value: '<p>Old hint</p>' },
+        { LCID: 1045, Value: '<p>Wskazowka</p>' },
+      ]),
+    }),
+  );
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'rendered metadata');
   const baseline = new GitBaseline(dir, 'HEAD');
   const model = new PortalModel(dir);
   const sources = model.inlineSources.filter((source) => source.kind === 'metadata-markup');
   assert.equal(sources.length, 3);
-  for (const source of sources.filter((entry) => entry.lcid !== 1045)) editSource(source, (text) => text.replace('Old', 'New'));
+  for (const source of sources.filter((entry) => entry.lcid !== 1045))
+    editSource(source, (text) => text.replace('Old', 'New'));
   assert.deepEqual(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()), []);
   const site = { ...SITE, markup: { ...SITE.markup, kinds: [...SITE.markup.kinds, 'metadata-markup'] } };
-  const result = rewriter(site).rewrite('<html><body><a href="/guide.pdf">Old guidance</a><p>Old hint</p></body></html>', '/');
+  const result = rewriter(site).rewrite(
+    '<html><body><a href="/guide.pdf">Old guidance</a><p>Old hint</p></body></html>',
+    '/',
+  );
   assert.equal(result.applied.length, 2);
   assert.ok(result.html.includes('New guidance'));
   assert.ok(result.html.includes('New hint'));
   editField('metadata1', 'description', (text) => text.replace('1033', '1031'));
-  assert.ok(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()).some((change) => change.rel.includes('metadata1') && change.reason.includes('description')));
+  assert.ok(
+    new PortalModel(dir)
+      .deploymentChanges(baseline, baseline.changedFiles())
+      .some((change) => change.rel.includes('metadata1') && change.reason.includes('description')),
+  );
 });
 
 test('enhanced multistep titles expose localized literal leaves while preserving component configuration', async () => {
-  const languages = [{ LCID: 1033, Value: '<h3>Original step title</h3>' }, { LCID: 1045, Value: '<h3>Other language</h3>' }];
+  const languages = [
+    { LCID: 1033, Value: '<h3>Original step title</h3>' },
+    { LCID: 1045, Value: '<h3>Other language</h3>' },
+  ];
   const original = { webform: 'wizard', title: JSON.stringify(languages), mode: 123, nextstep: 'next' };
   editField(NEWS, 'webform', () => 'wizard');
   put('step1', component('step1', 20, 'Wizard step', original));
@@ -314,24 +466,57 @@ test('enhanced multistep titles expose localized literal leaves while preserving
   assert.deepEqual(source.fieldPath, ['title']);
   assert.deepEqual(source.jsonPath, [0, 'Value']);
   assert.deepEqual(source.usedOn, ['/Newsfeed']);
-  assert.equal(auditResources(model, SITE).resources.find((entry) => entry.id.endsWith('step1/powerpagecomponent.xml#title.0.Value')).status, 'mapped');
+  assert.equal(
+    auditResources(model, SITE).resources.find((entry) =>
+      entry.id.endsWith('step1/powerpagecomponent.xml#title.0.Value'),
+    ).status,
+    'mapped',
+  );
   editSource(source, (text) => text.replace('Original', 'Updated'));
   const updated = componentContent(fs.readFileSync(xmlOf('step1'), 'utf8'));
   assert.deepEqual({ ...updated, title: original.title }, original);
-  assert.deepEqual(JSON.parse(updated.title), [{ ...languages[0], Value: '<h3>Updated step title</h3>' }, languages[1]]);
+  assert.deepEqual(JSON.parse(updated.title), [
+    { ...languages[0], Value: '<h3>Updated step title</h3>' },
+    languages[1],
+  ]);
   assert.deepEqual(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()), []);
   const site = { ...SITE, markup: { ...SITE.markup, kinds: [...SITE.markup.kinds, 'metadata-markup'] } };
-  assert.match(rewriter(site).rewrite('<html><body><h3>Original step title</h3></body></html>', '/Newsfeed').html, /<h3>Updated step title<\/h3>/);
+  assert.match(
+    rewriter(site).rewrite('<html><body><h3>Original step title</h3></body></html>', '/Newsfeed').html,
+    /<h3>Updated step title<\/h3>/,
+  );
   editField('step1', 'title', (text) => text.replace('1033', '1031'));
   assert.equal(sourceText(source), null);
-  assert.ok(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()).some((entry) => entry.rel.includes('step1')));
+  assert.ok(
+    new PortalModel(dir)
+      .deploymentChanges(baseline, baseline.changedFiles())
+      .some((entry) => entry.rel.includes('step1')),
+  );
 });
 
 test('enhanced attachment names cannot leave filecontent or point to directories', () => {
   fs.writeFileSync(path.join(dir, 'outside.js'), 'private local file');
-  put('escape', component('escape', 3, 'Escape', { partialurl: 'escape.js', parentpageid: HOME }, { mime: 'application/javascript', name: '../../../outside.js' }));
+  put(
+    'escape',
+    component(
+      'escape',
+      3,
+      'Escape',
+      { partialurl: 'escape.js', parentpageid: HOME },
+      { mime: 'application/javascript', name: '../../../outside.js' },
+    ),
+  );
   fs.mkdirSync(path.join(dir, 'powerpagecomponents', 'escape', 'filecontent'));
-  put('directory', component('directory', 3, 'Directory', { partialurl: 'directory.js', parentpageid: HOME }, { mime: 'application/javascript', name: 'folder' }));
+  put(
+    'directory',
+    component(
+      'directory',
+      3,
+      'Directory',
+      { partialurl: 'directory.js', parentpageid: HOME },
+      { mime: 'application/javascript', name: 'folder' },
+    ),
+  );
   fs.mkdirSync(path.join(dir, 'powerpagecomponents', 'directory', 'filecontent', 'folder'), { recursive: true });
   const model = new PortalModel(dir);
   assert.equal(model.findWebFile('/escape.js'), null);
@@ -341,8 +526,17 @@ test('enhanced attachment names cannot leave filecontent or point to directories
 
 test('enhanced CDATA content is parsed and inactive components are not overlaid', () => {
   const js = 'console.log("< & >");';
-  put('cdata', `<powerpagecomponent powerpagecomponentid="cdata"><content><![CDATA[${JSON.stringify({ source: js })}]]></content><name>CDATA</name><powerpagecomponenttype>8</powerpagecomponenttype></powerpagecomponent>`);
-  put('inactive', component('inactive', 8, 'Deleted', { source: 'deleted source' }).replace('</powerpagecomponent>', '<statecode>1</statecode></powerpagecomponent>'));
+  put(
+    'cdata',
+    `<powerpagecomponent powerpagecomponentid="cdata"><content><![CDATA[${JSON.stringify({ source: js })}]]></content><name>CDATA</name><powerpagecomponenttype>8</powerpagecomponenttype></powerpagecomponent>`,
+  );
+  put(
+    'inactive',
+    component('inactive', 8, 'Deleted', { source: 'deleted source' }).replace(
+      '</powerpagecomponent>',
+      '<statecode>1</statecode></powerpagecomponent>',
+    ),
+  );
   const model = new PortalModel(dir);
   assert.equal(sourceText(model.inlineSources.find((s) => s.rel.includes('/cdata/'))), js);
   assert.ok(!model.inlineSources.some((s) => s.rel.includes('/inactive/')));
@@ -356,8 +550,16 @@ test('enhanced content parsing respects CDATA boundaries, comments and split CDA
   const span = componentContentSpan(xml);
   assert.ok(xml.slice(span.contentStart, span.contentEnd).startsWith('<![CDATA['));
   assert.equal(xml.slice(span.contentEnd, span.closeEnd), '</content>');
-  assert.equal(componentContent('<content>{"source":"a"}</content><content>{"source":"b"}</content>'), null, 'duplicate content is ambiguous');
-  assert.equal(componentContent('<content><![CDATA[{"source":"</content>"}</content>'), null, 'unterminated CDATA is not a closing element');
+  assert.equal(
+    componentContent('<content>{"source":"a"}</content><content>{"source":"b"}</content>'),
+    null,
+    'duplicate content is ambiguous',
+  );
+  assert.equal(
+    componentContent('<content><![CDATA[{"source":"</content>"}</content>'),
+    null,
+    'unterminated CDATA is not a closing element',
+  );
   assert.equal(componentContent('<content>{"source":"a"}<!-- </content> --></content>').source, 'a');
 });
 
@@ -372,14 +574,21 @@ test('enhanced deployment diagnostics distinguish previewable source fields from
   assert.equal(changes.length, 1);
   assert.match(changes[0].reason, /title.*require deployment/);
   editField('x1', 'value', () => 'false');
-  assert.ok(model.deploymentChanges(baseline, baseline.changedFiles()).some((change) => change.rel.includes('/x1/') && change.reason.includes('value')));
+  assert.ok(
+    model
+      .deploymentChanges(baseline, baseline.changedFiles())
+      .some((change) => change.rel.includes('/x1/') && change.reason.includes('value')),
+  );
 });
 
 test('async enhanced indexing matches sync sources and cached XML refreshes only changed components', async (t) => {
   const synchronous = new PortalModel(dir);
   const model = await PortalModel.create(dir);
   assert.deepEqual(model.webFiles, synchronous.webFiles);
-  assert.deepEqual(model.inlineSources.map((source) => [source.rel, source.pageUrl, sourceText(source)]), synchronous.inlineSources.map((source) => [source.rel, source.pageUrl, sourceText(source)]));
+  assert.deepEqual(
+    model.inlineSources.map((source) => [source.rel, source.pageUrl, sourceText(source)]),
+    synchronous.inlineSources.map((source) => [source.rel, source.pageUrl, sourceText(source)]),
+  );
   const original = fs.readFileSync;
   let xmlReads = 0;
   t.mock.method(fs, 'readFileSync', function (file, ...args) {
@@ -392,7 +601,9 @@ test('async enhanced indexing matches sync sources and cached XML refreshes only
   xmlReads = 0;
   model.load();
   assert.equal(xmlReads, 1);
-  const changed = model.inlineSources.find((source) => source.file === xmlOf(NEWS_EN) && source.field === 'customjavascript');
+  const changed = model.inlineSources.find(
+    (source) => source.file === xmlOf(NEWS_EN) && source.field === 'customjavascript',
+  );
   assert.equal(sourceText(changed), 'console.log("changed");');
   fs.unlinkSync(xmlOf('s1'));
   model.load();

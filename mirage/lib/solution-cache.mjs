@@ -1,6 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { createHash } from "node:crypto";
+import { orderedMap } from '../../lense/async-map.mjs';
+import { directoryFiles } from '../../lense/directory-files.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { assertProjectOutput } from './project-output.mjs';
 
 const FORMAT = 2;
@@ -8,21 +10,13 @@ const FORMAT = 2;
 /** Run an async mapper with bounded concurrency while preserving input order. */
 export async function mapLimit(items, limit, mapper) {
   const list = [...items];
-  const results = new Array(list.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < list.length) {
-      const index = next++;
-      results[index] = await mapper(list[index], index);
-    }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(Math.max(1, limit), list.length) }, worker),
-  );
-  return results;
+  // This legacy adapter clamps non-positive/fractional limits and accepts numeric strings.
+  const workers = Math.floor(Math.min(Math.max(1, limit), list.length));
+  if (!workers) return new Array(list.length);
+  return orderedMap(list, workers, mapper);
 }
 
-const DIGEST_SKIP = new Set([".git", ".portalconfig", "node_modules", ".paqvilo"]);
+const DIGEST_SKIP = new Set(['.git', '.portalconfig', 'node_modules', '.paqvilo']);
 const digestCache = new Map();
 
 /**
@@ -33,48 +27,31 @@ const digestCache = new Map();
  */
 export async function sourceDirectoryDigest(dir) {
   const root = path.resolve(dir);
-  const children = new Map();
-  let level = [root];
-  while (level.length) {
-    const next = [];
-    await mapLimit(level, 32, async (current) => {
-      const entries = (await fs.readdir(current, { withFileTypes: true }))
-        .filter((entry) => !entry.isSymbolicLink() && !DIGEST_SKIP.has(entry.name))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      children.set(current, entries);
-      for (const entry of entries) if (entry.isDirectory()) next.push(path.join(current, entry.name));
-    });
-    level = next;
-  }
-  const files = [];
-  const flatten = (current) => {
-    for (const entry of children.get(current) ?? []) {
-      const file = path.join(current, entry.name);
-      if (entry.isDirectory()) flatten(file);
-      else if (entry.isFile()) files.push(file);
-    }
-  };
-  flatten(root);
+  const files = await directoryFiles(root, {
+    skip: DIGEST_SKIP,
+    sort: (a, b) => a.name.localeCompare(b.name),
+    concurrency: 32,
+  });
   const stamps = await mapLimit(files, 64, async (file) => {
     const stat = await fs.stat(file, { bigint: true });
     return `${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`;
   });
-  const signature = createHash("sha256").update(stamps.join("\n")).digest("hex");
+  const signature = createHash('sha256').update(stamps.join('\n')).digest('hex');
   const cached = digestCache.get(root);
   if (cached?.signature === signature) return cached.digest;
-  const hash = createHash("sha256");
+  const hash = createHash('sha256');
   const window = 256;
   for (let start = 0; start < files.length; start += window) {
     const slice = files.slice(start, start + window);
     const contents = await mapLimit(slice, 32, (file) => fs.readFile(file));
     slice.forEach((file, index) => {
-      hash.update(path.relative(root, file).replaceAll("\\", "/"));
-      hash.update("\0");
+      hash.update(path.relative(root, file).replaceAll('\\', '/'));
+      hash.update('\0');
       hash.update(contents[index]);
-      hash.update("\0");
+      hash.update('\0');
     });
   }
-  const digest = hash.digest("hex");
+  const digest = hash.digest('hex');
   digestCache.set(root, { signature, digest });
   return digest;
 }
@@ -141,11 +118,10 @@ export class SolutionFileCache {
     const cache = new SolutionFileCache(file);
     if (!cache.file) return cache;
     try {
-      const raw = JSON.parse(await fs.readFile(cache.file, "utf8"));
-      if (raw?.format === FORMAT && raw.entries && typeof raw.entries === "object")
+      const raw = JSON.parse(await fs.readFile(cache.file, 'utf8'));
+      if (raw?.format === FORMAT && raw.entries && typeof raw.entries === 'object')
         for (const [name, entry] of Object.entries(raw.entries))
-          if (entry && typeof entry.stamp === "string" && entry.results)
-            cache.entries.set(name, entry);
+          if (entry && typeof entry.stamp === 'string' && entry.results) cache.entries.set(name, entry);
     } catch {
       // A missing or unreadable cache is rebuilt from sources.
     }
@@ -165,7 +141,8 @@ export class SolutionFileCache {
     if (entry?.stamp === stamp && Object.hasOwn(entry.results, parserId)) {
       this.stats.hits++;
       const shared = processEntries?.get(file);
-      if (processEntries && (shared?.stamp !== stamp || !Object.hasOwn(shared.results, parserId))) shareEntry(file, entry, parserId);
+      if (processEntries && (shared?.stamp !== stamp || !Object.hasOwn(shared.results, parserId)))
+        shareEntry(file, entry, parserId);
       return { value: entry.results[parserId], hash: entry.hash, cached: true };
     }
     const shared = processEntries?.get(file);
@@ -184,8 +161,8 @@ export class SolutionFileCache {
     }
     this.stats.misses++;
     const bytes = await fs.readFile(file);
-    const hash = createHash("sha256").update(bytes).digest("hex");
-    const value = await parser(binary ? bytes : bytes.toString("utf8"), file);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const value = await parser(binary ? bytes : bytes.toString('utf8'), file);
     const next =
       entry?.stamp === stamp && entry.hash === hash
         ? { ...entry, results: { ...entry.results, [parserId]: value } }
@@ -208,7 +185,9 @@ export class SolutionFileCache {
     let cached = entry?.stamp === stamp ? entry.results[resultId] : undefined;
     let hash = entry?.stamp === stamp ? entry.hash : null;
     if (!cached && entry) {
-      hash = createHash("sha256").update(await fs.readFile(file)).digest("hex");
+      hash = createHash('sha256')
+        .update(await fs.readFile(file))
+        .digest('hex');
       if (hash === entry.hash) cached = entry.results[resultId];
     }
     if (cached && cached.key === key) {
@@ -221,7 +200,9 @@ export class SolutionFileCache {
     }
     this.stats.misses++;
     const value = await compute();
-    hash ??= createHash("sha256").update(await fs.readFile(file)).digest("hex");
+    hash ??= createHash('sha256')
+      .update(await fs.readFile(file))
+      .digest('hex');
     const results = entry && entry.hash === hash ? { ...entry.results } : {};
     results[resultId] = { key, value };
     this.entries.set(file, { stamp, hash, results });

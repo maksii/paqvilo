@@ -1,3 +1,4 @@
+import { orderedMap } from './async-map.mjs';
 // Rewrites the HTML the online portal returns so that it reflects the local sources.
 //
 // Two techniques, because the portal renders pages server side and that cannot be reproduced locally:
@@ -27,7 +28,8 @@ const sourceCacheKey = (file) => {
   const absolute = path.resolve(file);
   return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
 };
-const sameStamp = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+const sameStamp = (a, b) =>
+  a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 const MAX_CONTEXT = 8;
 // the longest text a {{ value }} is expected to render to
 const MAX_VALUE_LENGTH = 50_000;
@@ -36,7 +38,7 @@ const WEAK_ANCHOR_LENGTH = 12;
 
 function readText(file) {
   try {
-    return fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+    return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   } catch {
     return null;
   }
@@ -51,7 +53,7 @@ export function pageKey(urlPath, model = null) {
   return key.slice(prefix.length + 1) || '/';
 }
 
-// ---------------------------------------------------------------------------------- block sources
+// ---- block sources
 
 function lineSet(text) {
   const set = new Set();
@@ -87,8 +89,20 @@ function similarity(a, b, weight, aWeight, bWeight, minimum) {
   return count === a.size && count === b.size ? 1 : Math.min(1, shared / total);
 }
 
-const JS_TYPE_RE = /^(?:(?:text|application)\/(?:x-)?(?:java|ecma)script|text\/(?:javascript1\.[0-5]|jscript|livescript)|module)$/i;
-const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
+const JS_TYPE_RE =
+  /^(?:(?:text|application)\/(?:x-)?(?:java|ecma)script|text\/(?:javascript1\.[0-5]|jscript|livescript)|module)$/i;
+const RAW_TEXT = new Set([
+  'script',
+  'style',
+  'textarea',
+  'title',
+  'xmp',
+  'iframe',
+  'noembed',
+  'noframes',
+  'noscript',
+  'plaintext',
+]);
 const HTML_SPACE = /[\t\n\f\r ]/;
 
 // Consume a tag once, including an unfinished tag at EOF. A global tag regex retries every
@@ -102,8 +116,15 @@ function readTag(html, start) {
   let state = 'before';
   for (; at < html.length; at++) {
     const char = html[at];
-    if (state === '"' || state === "'") { if (char === state) state = 'before'; continue; }
-    if (char === '>') return Object.assign([html.slice(start, at + 1), name, html.slice(attrsStart, at)], { index: start, end: at + 1 });
+    if (state === '"' || state === "'") {
+      if (char === state) state = 'before';
+      continue;
+    }
+    if (char === '>')
+      return Object.assign([html.slice(start, at + 1), name, html.slice(attrsStart, at)], {
+        index: start,
+        end: at + 1,
+      });
     if (state === 'value') {
       if (HTML_SPACE.test(char)) continue;
       state = char === '"' || char === "'" ? char : 'unquoted';
@@ -230,7 +251,9 @@ function scriptType(values, useLanguage = true) {
       if (name) return named[name] ?? whole;
       const code = Number.parseInt(hex ?? dec, hex ? 16 : 10);
       return code > 0 && code < 128 ? String.fromCharCode(code) : whole;
-    }).trim().toLowerCase();
+    })
+    .trim()
+    .toLowerCase();
 }
 
 // Relative dynamic imports in classic inline scripts resolve against the document URL too.
@@ -246,24 +269,34 @@ function isInlineCodeBlock(tag, attrs) {
 }
 
 const isLanguageCopy = (src) => src.rel.includes('/content-pages/');
-const sourceLocale = (src) => src.lcid ?? /\.([a-z]{2}(?:-[a-z]{2,4})?)\.(?:webpage|contentsnippet)\./i.exec(src.rel)?.[1]?.toLowerCase() ?? null;
+const sourceLocale = (src) =>
+  src.lcid ?? /\.([a-z]{2}(?:-[a-z]{2,4})?)\.(?:webpage|contentsnippet)\./i.exec(src.rel)?.[1]?.toLowerCase() ?? null;
 function differentLocalizedVariants(a, b) {
   const aLocale = sourceLocale(a);
   const bLocale = sourceLocale(b);
   if (aLocale == null || bLocale == null || aLocale === bLocale || a.kind !== b.kind) return false;
-  if (a.lcid != null || b.lcid != null) return a.file === b.file && a.field === b.field && JSON.stringify(a.fieldPath) === JSON.stringify(b.fieldPath);
-  if (a.kind.startsWith('page-')) return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
-  return a.kind === 'content-snippet' && a.snippetName && b.snippetName && a.snippetName.toLowerCase() === b.snippetName.toLowerCase();
+  if (a.lcid != null || b.lcid != null)
+    return a.file === b.file && a.field === b.field && JSON.stringify(a.fieldPath) === JSON.stringify(b.fieldPath);
+  if (a.kind.startsWith('page-'))
+    return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
+  return (
+    a.kind === 'content-snippet' &&
+    a.snippetName &&
+    b.snippetName &&
+    a.snippetName.toLowerCase() === b.snippetName.toLowerCase()
+  );
 }
 
-// --------------------------------------------------------------------------------- markup sources
+// ---- markup sources
 
 function normExpr(expr) {
   // Whitespace and apostrophes inside Liquid string literals are data. Canonicalise quote
   // delimiters only, so changing a filter argument never reuses a different rendered value.
-  return expr.trim().replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\s+/g, (part) =>
-    /^\s/.test(part) ? ' ' : JSON.stringify(part.slice(1, -1)),
-  );
+  return expr
+    .trim()
+    .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\s+/g, (part) =>
+      /^\s/.test(part) ? ' ' : JSON.stringify(part.slice(1, -1)),
+    );
 }
 
 function toLines(text) {
@@ -290,7 +323,10 @@ function toLines(text) {
   const protect = (from, to) => {
     const whitespaceControl = /\{[{%]-|-[}%]\}/.test(normalized.slice(from, to));
     for (let i = lineAt(from); i <= lineAt(Math.max(from, to - 1)) && i < lines.length; i++) {
-      lines[i].protected.push({ start: Math.max(0, from - starts[i]), end: Math.min(lines[i].text.length, to - starts[i]) });
+      lines[i].protected.push({
+        start: Math.max(0, from - starts[i]),
+        end: Math.min(lines[i].text.length, to - starts[i]),
+      });
       // Trimming can affect literal text on either side of a token. Keep these lines
       // out of the literal-segment fallback even when the token itself is unchanged.
       if (whitespaceControl) lines[i].whitespaceControl = true;
@@ -318,7 +354,10 @@ function toLines(text) {
       } else if (c === '"' || c === "'") quote = c;
       else if (normalized.startsWith(delimiter, end)) break;
     }
-    if (end === normalized.length) { markLogic(start, end); break; }
+    if (end === normalized.length) {
+      markLogic(start, end);
+      break;
+    }
     end += 2;
     tokens.lastIndex = end;
     if (delimiter === '%}') {
@@ -328,7 +367,10 @@ function toLines(text) {
         const closing = new RegExp(`\\{%-?\\s*end${tag}\\s*-?%\\}`, 'gi');
         closing.lastIndex = end;
         const close = closing.exec(normalized);
-        if (!close) { markLogic(start, normalized.length); break; }
+        if (!close) {
+          markLogic(start, normalized.length);
+          break;
+        }
         if (tag === 'comment') markLogic(start, closing.lastIndex);
         else markLogic(close.index, closing.lastIndex);
         tokens.lastIndex = closing.lastIndex;
@@ -341,10 +383,15 @@ function toLines(text) {
       }
     } else {
       const first = lineAt(start);
-      if (first !== lineAt(end - 1) || normalized[start + 2] === '-' || normalized[end - 3] === '-') markLogic(start, end);
+      if (first !== lineAt(end - 1) || normalized[start + 2] === '-' || normalized[end - 3] === '-')
+        markLogic(start, end);
       else {
         protect(start, end);
-        lines[first]?.outputs.push({ index: start - starts[first], text: normalized.slice(start, end), expr: normalized.slice(start + 2, end - 2) });
+        lines[first]?.outputs.push({
+          index: start - starts[first],
+          text: normalized.slice(start, end),
+          expr: normalized.slice(start + 2, end - 2),
+        });
       }
     }
   }
@@ -503,7 +550,11 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
   if (oldCore.some((l) => l.logic) || added.some((l) => l.logic)) {
     const literal = prepareLiteralSegment(oldCore, added, baseText, otherLanguages);
     if (literal) return { where, ...literal };
-    return { where, error: 'the change touches Liquid tags, a comment/capture body, or multiline/whitespace-controlled output; the portal has to render it' };
+    return {
+      where,
+      error:
+        'the change touches Liquid tags, a comment/capture body, or multiline/whitespace-controlled output; the portal has to render it',
+    };
   }
 
   let before = 0;
@@ -514,8 +565,13 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
     after < MAX_CONTEXT && hunk.aEnd + after < baseLines.length && !baseLines[hunk.aEnd + after].logic;
 
   let pattern = buildPattern(baseLines, hunk, before, after);
-  const sharedLanguageAnchor = () => otherLanguages.some((text) => findMatches(pattern, text).some((match) => standsAlone(pattern, text, match)));
-  const good = () => pattern.anchored && pattern.weight >= 3 && findMatches(pattern, baseText, 2).length === 1 && !sharedLanguageAnchor();
+  const sharedLanguageAnchor = () =>
+    otherLanguages.some((text) => findMatches(pattern, text).some((match) => standsAlone(pattern, text, match)));
+  const good = () =>
+    pattern.anchored &&
+    pattern.weight >= 3 &&
+    findMatches(pattern, baseText, 2).length === 1 &&
+    !sharedLanguageAnchor();
   let unique = good();
   let turn = 0;
   while (!unique && (canGrowBefore() || canGrowAfter())) {
@@ -526,16 +582,25 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
     unique = good();
   }
   if (!pattern.anchored || pattern.weight < 3) {
-    return { where, error: 'no literal text next to the change to locate it in the page (it sits between Liquid tags)' };
+    return {
+      where,
+      error: 'no literal text next to the change to locate it in the page (it sits between Liquid tags)',
+    };
   }
-  if (sharedLanguageAnchor()) return { where, error: 'the literal anchor also occurs in another localized Value or language source; the portal language cannot be determined safely from this response' };
+  if (sharedLanguageAnchor())
+    return {
+      where,
+      error:
+        'the literal anchor also occurs in another localized Value or language source; the portal language cannot be determined safely from this response',
+    };
   return { where, pattern, added, unique };
 }
 
 /** A single changed literal gap may share a line with unchanged server-rendered logic. */
 function prepareLiteralSegment(oldLines, newLines, baseText, otherLanguages) {
   if (oldLines.length !== 1 || newLines.length !== 1) return null;
-  const [oldLine] = oldLines, [newLine] = newLines;
+  const [oldLine] = oldLines,
+    [newLine] = newLines;
   if (oldLine.eol !== newLine.eol || oldLine.whitespaceControl || newLine.whitespaceControl) return null;
   const split = (line) => {
     const spans = [];
@@ -544,7 +609,8 @@ function prepareLiteralSegment(oldLines, newLines, baseText, otherLanguages) {
       if (previous && span.start <= previous.end) previous.end = Math.max(previous.end, span.end);
       else spans.push({ ...span });
     }
-    const gaps = [], protectedText = [];
+    const gaps = [],
+      protectedText = [];
     let at = 0;
     for (const span of spans) {
       gaps.push(line.text.slice(at, span.start));
@@ -554,16 +620,26 @@ function prepareLiteralSegment(oldLines, newLines, baseText, otherLanguages) {
     gaps.push(line.text.slice(at));
     return { gaps, protectedText };
   };
-  const before = split(oldLine), after = split(newLine);
-  if (!before.protectedText.length || JSON.stringify(before.protectedText) !== JSON.stringify(after.protectedText)) return null;
-  const changed = before.gaps.map((text, i) => text !== after.gaps[i] ? i : -1).filter(i => i >= 0);
+  const before = split(oldLine),
+    after = split(newLine);
+  if (!before.protectedText.length || JSON.stringify(before.protectedText) !== JSON.stringify(after.protectedText))
+    return null;
+  const changed = before.gaps.map((text, i) => (text !== after.gaps[i] ? i : -1)).filter((i) => i >= 0);
   if (changed.length !== 1) return null;
-  const index = changed[0], oldText = before.gaps[index], newText = after.gaps[index];
+  const index = changed[0],
+    oldText = before.gaps[index],
+    newText = after.gaps[index];
   // Do not introduce Liquid or mistake a raw body's literal delimiters for a template gap.
   if (/\{%|\{\{/.test(oldText) || /\{%|\{\{/.test(newText)) return null;
-  const pattern = { tokens: [{ mark: 'core' }, { lit: oldText }, { mark: 'after' }], literal: [oldText], anchored: !!oldText, weight: oldText.replace(/\s+/g, '').length };
+  const pattern = {
+    tokens: [{ mark: 'core' }, { lit: oldText }, { mark: 'after' }],
+    literal: [oldText],
+    anchored: !!oldText,
+    weight: oldText.replace(/\s+/g, '').length,
+  };
   if (!pattern.anchored || pattern.weight < 3 || findMatches(pattern, baseText, 2).length !== 1) return null;
-  if (otherLanguages.some(text => findMatches(pattern, text).some(match => standsAlone(pattern, text, match)))) return null;
+  if (otherLanguages.some((text) => findMatches(pattern, text).some((match) => standsAlone(pattern, text, match))))
+    return null;
   return { pattern, added: [{ text: newText, eol: false, outputs: [] }], unique: true, literalSegment: true };
 }
 
@@ -594,61 +670,70 @@ function normalise(html) {
   return { text, original, crlf: removed.length * 2 > text.split('\n').length - 1 };
 }
 
-// ------------------------------------------------------------------------------------- rewriter
+// ---- rewriter
 
 export class HtmlRewriter {
   /** Warm cold source reads asynchronously with at most 16 files in flight. */
   static async create(options) {
     const { model, site, baseline } = options;
     const changed = options.changedFiles ?? baseline.changedFiles();
-    const inline = new Set(site.inline?.enabled === false ? [] : site.inline?.kinds ?? []);
-    const markup = new Set(site.markup?.enabled === false ? [] : site.markup?.kinds ?? []);
-    const files = [...new Set(model.inlineSources.filter((src) =>
-      !(src.kind.startsWith('page-') && src.pageUrl == null) &&
-      (src.mode === 'block' ? inline.has(src.kind) : markup.has(src.kind) && changed.has(src.file)),
-    ).map((src) => src.file))];
+    const inline = new Set(site.inline?.enabled === false ? [] : (site.inline?.kinds ?? []));
+    const markup = new Set(site.markup?.enabled === false ? [] : (site.markup?.kinds ?? []));
+    const files = [
+      ...new Set(
+        model.inlineSources
+          .filter(
+            (src) =>
+              !(src.kind.startsWith('page-') && src.pageUrl == null) &&
+              (src.mode === 'block' ? inline.has(src.kind) : markup.has(src.kind) && changed.has(src.file)),
+          )
+          .map((src) => src.file),
+      ),
+    ];
     const raw = new Map();
     const valid = new Map();
     const stamps = new Map();
     const root = model.sourceDir ? await fs.promises.realpath(model.sourceDir) : null;
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(16, files.length) }, async () => {
-      for (let index; (index = next++) < files.length;) {
-        const file = files[index];
-        const key = sourceCacheKey(file);
-        try {
-          const real = await fs.promises.realpath(file);
-          const relative = root ? path.relative(root, real) : null;
-          if (root && (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) throw new Error('outside source root');
-          const before = await fs.promises.stat(file);
-          if (!before.isFile()) throw new Error('not a regular source file');
-          const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
-          const after = await fs.promises.stat(file);
-          if (!sameStamp(before, after) || await fs.promises.realpath(file) !== real) throw new Error('source changed during startup');
-          raw.set(key, text.replace(/^﻿/, ''));
-          valid.set(key, true);
-          stamps.set(key, { file, real, info: after });
-        } catch {
-          // Retry only unstable/unreadable entries through the constructor's normal guarded
-          // read. A save finishing during startup must not leave a permanently cached miss.
-        }
+    await orderedMap(files, 16, async (file) => {
+      const key = sourceCacheKey(file);
+      try {
+        const real = await fs.promises.realpath(file);
+        const relative = root ? path.relative(root, real) : null;
+        if (
+          root &&
+          (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+        )
+          throw new Error('outside source root');
+        const before = await fs.promises.stat(file);
+        if (!before.isFile()) throw new Error('not a regular source file');
+        const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
+        const after = await fs.promises.stat(file);
+        if (!sameStamp(before, after) || (await fs.promises.realpath(file)) !== real)
+          throw new Error('source changed during startup');
+        raw.set(key, text.replace(/^\uFEFF/, ''));
+        valid.set(key, true);
+        stamps.set(key, { file, real, info: after });
+      } catch {
+        // Retry only unstable/unreadable entries through the constructor's normal guarded
+        // read. A save finishing during startup must not leave a permanently cached miss.
       }
-    }));
+    });
     // An early file can be saved while later files are still loading. Revalidate the entire
     // prefetched snapshot once all reads finish; the constructor retries only stale entries.
-    next = 0;
-    const entries = [...stamps];
-    await Promise.all(Array.from({ length: Math.min(16, entries.length) }, async () => {
-      for (let index; (index = next++) < entries.length;) {
-        const [key, stamp] = entries[index];
-        try {
-          if (sameStamp(stamp.info, await fs.promises.stat(stamp.file)) && await fs.promises.realpath(stamp.file) === stamp.real) continue;
-        } catch { /* removed or replaced source */ }
-        raw.delete(key);
-        valid.delete(key);
-        stamps.delete(key);
+    await orderedMap(stamps, 16, async ([key, stamp]) => {
+      try {
+        if (
+          sameStamp(stamp.info, await fs.promises.stat(stamp.file)) &&
+          (await fs.promises.realpath(stamp.file)) === stamp.real
+        )
+          return;
+      } catch {
+        /* removed or replaced source */
       }
-    }));
+      raw.delete(key);
+      valid.delete(key);
+      stamps.delete(key);
+    });
     return new HtmlRewriter(options, { raw, valid, changed, stamps });
   }
 
@@ -677,16 +762,25 @@ export class HtmlRewriter {
 
   /** Re-reads changed sources, or all sources when no file list is supplied. */
   refresh(files, { revalidate = false } = {}) {
-    const invalidate = (key) => { this.sourceCache.delete(key); this.sourceStamps.delete(key); };
-    if (files == null) { this.sourceCache.clear(); this.sourceStamps.clear(); }
-    else for (const file of files) invalidate(sourceCacheKey(file));
-    if (revalidate) for (const key of this.sourceCache.keys()) {
-      const stamp = this.sourceStamps.get(key);
-      try {
-        if (stamp && sameStamp(stamp.info, fs.statSync(stamp.file)) && fs.realpathSync(stamp.file) === stamp.real) continue;
-      } catch { /* removed or replaced source */ }
-      invalidate(key);
-    }
+    const invalidate = (key) => {
+      this.sourceCache.delete(key);
+      this.sourceStamps.delete(key);
+    };
+    if (files == null) {
+      this.sourceCache.clear();
+      this.sourceStamps.clear();
+    } else for (const file of files) invalidate(sourceCacheKey(file));
+    if (revalidate)
+      for (const key of this.sourceCache.keys()) {
+        const stamp = this.sourceStamps.get(key);
+        try {
+          if (stamp && sameStamp(stamp.info, fs.statSync(stamp.file)) && fs.realpathSync(stamp.file) === stamp.real)
+            continue;
+        } catch {
+          /* removed or replaced source */
+        }
+        invalidate(key);
+      }
     const { site, model } = this;
     const changed = this.prepared?.changed ?? this.changedFiles ?? this.baseline.changedFiles();
     this.readValidity = this.prepared?.valid ?? new Map();
@@ -700,8 +794,8 @@ export class HtmlRewriter {
     this.blockChanges = partial ? new Map() : null;
     this.baseline.preload?.(model.inlineSources.filter((src) => changed.has(src.file)).map((src) => src.file));
     const restrict = site.scope === 'changed';
-    const inlineKinds = new Set(site.inline?.enabled === false ? [] : site.inline?.kinds ?? []);
-    const markupKinds = new Set(site.markup?.enabled === false ? [] : site.markup?.kinds ?? []);
+    const inlineKinds = new Set(site.inline?.enabled === false ? [] : (site.inline?.kinds ?? []));
+    const markupKinds = new Set(site.markup?.enabled === false ? [] : (site.markup?.kinds ?? []));
 
     /**
      * Every block source, used to recognise the online blocks. Only `active` ones replace anything:
@@ -714,7 +808,12 @@ export class HtmlRewriter {
     /** changes that cannot be previewed locally: [{rel, reason}] */
     this.unsupported = model.deploymentChanges?.(this.baseline, changed) ?? [];
     for (const source of model.inactiveSources ?? []) {
-      if (changed.has(source.file)) this.unsupported.push({ rel: source.rel, reason: 'the record or its parent is inactive; activate and deploy it before this local change can be previewed' });
+      if (changed.has(source.file))
+        this.unsupported.push({
+          rel: source.rel,
+          reason:
+            'the record or its parent is inactive; activate and deploy it before this local change can be previewed',
+        });
     }
     this.snippets = null;
 
@@ -738,7 +837,11 @@ export class HtmlRewriter {
       const text = this.#readSource(src);
       if (text == null && src.extract && !unreadable.has(src.file)) {
         unreadable.add(src.file);
-        this.unsupported.push({ rel: src.rel, reason: 'the source field cannot be read from its metadata; the record, field or localized identity is missing or invalid' });
+        this.unsupported.push({
+          rel: src.rel,
+          reason:
+            'the source field cannot be read from its metadata; the record, field or localized identity is missing or invalid',
+        });
       }
       return text;
     };
@@ -748,7 +851,10 @@ export class HtmlRewriter {
         // Only a local edit of such a source is a limitation worth reporting; an untouched one is
         // what the portal already serves. The model warns about the broken page hierarchy itself.
         if (changed.has(src.file) && (inlineKinds.has(src.kind) || markupKinds.has(src.kind))) {
-          this.unsupported.push({ rel: src.rel, reason: 'the page URL cannot be resolved from local metadata, so this local change cannot be previewed' });
+          this.unsupported.push({
+            rel: src.rel,
+            reason: 'the page URL cannot be resolved from local metadata, so this local change cannot be previewed',
+          });
         }
         continue;
       }
@@ -768,10 +874,21 @@ export class HtmlRewriter {
         const norm = previous?.text === text ? previous.norm : normEol(text);
         const lines = previous?.text === text ? previous.lines : lineSet(norm);
         const baseNorm = base == null ? null : normEol(base);
-        const baseLines = baseNorm != null && baseNorm !== norm ? previous?.base === base && previous.baseLines ? previous.baseLines : lineSet(baseNorm) : null;
+        const baseLines =
+          baseNorm != null && baseNorm !== norm
+            ? previous?.base === base && previous.baseLines
+              ? previous.baseLines
+              : lineSet(baseNorm)
+            : null;
         this.blockCache.set(src.rel, { text, norm, lines, base, baseLines });
         if (partial?.has(sourceCacheKey(src.file)) && previous?.text !== text) {
-          this.blockChanges.set(src.rel, { kind: src.kind, tag: src.tag, pageKey: src.pageUrl ? urlKey(src.pageUrl) : null, before: previous?.text ?? null, after: text });
+          this.blockChanges.set(src.rel, {
+            kind: src.kind,
+            tag: src.tag,
+            pageKey: src.pageUrl ? urlKey(src.pageUrl) : null,
+            before: previous?.text ?? null,
+            after: text,
+          });
         }
         for (const line of lines) frequency.set(line, (frequency.get(line) ?? 0) + 1);
         this.blocks.push({
@@ -829,7 +946,9 @@ export class HtmlRewriter {
             this.sourceStamps.set(key, { file: src.file, real, info: after });
             break;
           }
-        } catch { /* unreadable source */ }
+        } catch {
+          /* unreadable source */
+        }
         text = null;
       }
       this.sourceCache.set(key, text);
@@ -840,7 +959,10 @@ export class HtmlRewriter {
   #preparePatch(src, text, base) {
     if (base == null) {
       if (text.trim()) {
-        this.unsupported.push({ rel: src.rel, reason: `new ${src.kind}: it does not exist online yet, the portal has to render it` });
+        this.unsupported.push({
+          rel: src.rel,
+          reason: `new ${src.kind}: it does not exist online yet, the portal has to render it`,
+        });
       }
       return;
     }
@@ -849,10 +971,14 @@ export class HtmlRewriter {
     const hunks = diffLines(baseLines.map(lineKey), newLines.map(lineKey));
     if (!hunks.length) return;
     const baseText = normEol(base);
-    const otherLanguages = sourceLocale(src) == null ? [] : this.model.inlineSources
-      .filter((other) => other !== src && differentLocalizedVariants(src, other))
-      .map((other) => sourceText(other, this.baseline.show(other.file) ?? null))
-      .filter((value) => value != null).map(normEol);
+    const otherLanguages =
+      sourceLocale(src) == null
+        ? []
+        : this.model.inlineSources
+            .filter((other) => other !== src && differentLocalizedVariants(src, other))
+            .map((other) => sourceText(other, this.baseline.show(other.file) ?? null))
+            .filter((value) => value != null)
+            .map(normEol);
     const prepared = [];
     for (const hunk of hunks) {
       const p = prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages);
@@ -871,7 +997,13 @@ export class HtmlRewriter {
         let snippetName = src.snippetName;
         if (snippetName === undefined) {
           const yml = readText(src.file.replace(/\.value\.html$/, '.yml'));
-          snippetName = (yml && /^adx_name:\s*(.+)$/m.exec(yml)?.[1].trim().replace(/^["']|["']$/g, '')) || null;
+          snippetName =
+            (yml &&
+              /^adx_name:\s*(.+)$/m
+                .exec(yml)?.[1]
+                .trim()
+                .replace(/^["']|["']$/g, '')) ||
+            null;
         }
         if (snippetName) {
           const key = snippetName.toLowerCase();
@@ -928,7 +1060,8 @@ export class HtmlRewriter {
       for (const src of candidates) {
         if (src.tag !== tag) continue;
         let score = similarity(lines, src.lines, this.lineWeight, weight, src.weight, minSim);
-        if (src.baseLines) score = Math.max(score, similarity(lines, src.baseLines, this.lineWeight, weight, src.baseWeight, minSim));
+        if (src.baseLines)
+          score = Math.max(score, similarity(lines, src.baseLines, this.lineWeight, weight, src.baseWeight, minSim));
         if (score + 1e-12 < minSim) continue;
         // a couple of lines is too little to tell blocks apart, unless the source belongs to this page
         const tiny = Math.min(lines.size, Math.max(src.lines.size, src.baseLines?.size ?? 0)) < 3;
@@ -949,13 +1082,21 @@ export class HtmlRewriter {
     for (const pair of pairs) {
       const first = best.get(pair.block);
       if (!first) best.set(pair.block, pair);
-      else if (Math.abs(pair.rank - first.rank) < 1e-12 && (identity(pair.src) !== identity(first.src) || differentLocalizedVariants(pair.src, first.src)) && pair.src.norm !== first.src.norm) {
+      else if (
+        Math.abs(pair.rank - first.rank) < 1e-12 &&
+        (identity(pair.src) !== identity(first.src) || differentLocalizedVariants(pair.src, first.src)) &&
+        pair.src.norm !== first.src.norm
+      ) {
         ambiguous.add(pair.block);
       }
     }
     for (const block of ambiguous) {
       const { src } = best.get(block);
-      notes.push({ rel: src.rel, reason: 'multiple local sources or language variants match this inline block equally; no source was substituted because its identity cannot be determined safely' });
+      notes.push({
+        rel: src.rel,
+        reason:
+          'multiple local sources or language variants match this inline block equally; no source was substituted because its identity cannot be determined safely',
+      });
     }
     const claimed = new Map();
     for (const { block, src, score } of pairs) {
@@ -975,21 +1116,37 @@ export class HtmlRewriter {
       if (!src) continue;
       const identical = block.norm === src.norm.trim();
       // `online`: what the portal printed, kept for the ones that differ so the two can be compared
-      matched.push({ kind: src.kind, rel: src.rel, file: src.file, score: block.score, identical, active: src.active, online: identical ? undefined : block.norm });
+      matched.push({
+        kind: src.kind,
+        rel: src.rel,
+        file: src.file,
+        score: block.score,
+        identical,
+        active: src.active,
+        online: identical ? undefined : block.norm,
+      });
       const replace = !identical && src.active;
-      // A script that is (now) the local file can be debugged in that file, but debuggers do not
+      // A script replaced by the local file can be debugged in that file, but debuggers do not
       // follow source maps of inline scripts. So it is loaded from the overlay as a file instead;
       // a plain <script src> runs at the same point of the page as the inline block did.
       // (not for text that lives inside another file: there is no script file to load)
       // A module resolves relative imports against its own URL. Moving an inline module to the
       // overlay URL would silently change those imports, so keep modules inline.
-      const external = this.sourceMaps && !src.extract && block.tag === 'script' && canExternalize(src, scriptType(attributes(m[2]))) && (identical || src.active) && src.text.trim() !== '';
+      const external =
+        this.sourceMaps &&
+        !src.extract &&
+        block.tag === 'script' &&
+        canExternalize(src, scriptType(attributes(m[2]))) &&
+        (identical || src.active) &&
+        src.text.trim() !== '';
       if (!replace && !external) continue;
       let replacement;
       if (external) {
         // async/defer and integrity do not act on inline classic scripts, but become active
         // after adding src. Retaining a stale integrity hash would block the local script.
-        const attrs = m[2].replace(/\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g, (whole, name) => /^(?:async|defer|integrity)$/i.test(name) ? '' : whole);
+        const attrs = m[2].replace(/\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g, (whole, name) =>
+          /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
+        );
         replacement = `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;
       } else {
         const content = m[3];
@@ -998,7 +1155,10 @@ export class HtmlRewriter {
         const eol = content.includes('\r\n') || !content.includes('\n') ? '\r\n' : '\n';
         const newContent = `${lead}${src.norm.trim().replace(/\n/g, eol)}${trail}`;
         if (!preservesInlineBoundary(block.tag, newContent, m.closing)) {
-          notes.push({ rel: src.rel, reason: `the local ${block.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline` });
+          notes.push({
+            rel: src.rel,
+            reason: `the local ${block.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline`,
+          });
           continue;
         }
         replacement = `${m.opening}${newContent}${m.closing}`;
@@ -1019,13 +1179,20 @@ export class HtmlRewriter {
         if (done.has(src.kind)) continue;
         done.add(src.kind);
         if (pending.some((other) => differentLocalizedVariants(src, other) && other.norm !== src.norm)) {
-          notes.push({ rel: src.rel, reason: 'new page blocks differ between language variants; no rendered baseline identifies which language to inject' });
+          notes.push({
+            rel: src.rel,
+            reason:
+              'new page blocks differ between language variants; no rendered baseline identifies which language to inject',
+          });
           continue;
         }
         const external = src.tag === 'script' && this.sourceMaps && !src.extract && canExternalize(src);
         const content = src.tag === 'style' ? src.text : `\n${src.text}\n`;
         if (!external && !preservesInlineBoundary(src.tag, content)) {
-          notes.push({ rel: src.rel, reason: `the local ${src.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline` });
+          notes.push({
+            rel: src.rel,
+            reason: `the local ${src.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline`,
+          });
           continue;
         }
         const element =
@@ -1059,7 +1226,10 @@ export class HtmlRewriter {
         const found = all.filter((match) => standsAlone(hunk.pattern, text, match));
         if (!found.length) continue;
         if ((!hunk.unique || hunk.literalSegment) && found.length > 1) {
-          notes.push({ rel: patch.rel, reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied` });
+          notes.push({
+            rel: patch.rel,
+            reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied`,
+          });
           continue;
         }
         for (const match of found) {
@@ -1090,9 +1260,12 @@ export class HtmlRewriter {
             })
             .join('');
           if (unresolved) {
-            notes.push({ rel: patch.rel, reason: unresolvedLanguage
-              ? `${hunk.where}: ${unresolved} has differing local language variants; the portal language cannot be determined safely for this new expression`
-              : `${hunk.where}: ${unresolved} is new and only the portal can evaluate it` });
+            notes.push({
+              rel: patch.rel,
+              reason: unresolvedLanguage
+                ? `${hunk.where}: ${unresolved} has differing local language variants; the portal language cannot be determined safely for this new expression`
+                : `${hunk.where}: ${unresolved} is new and only the portal can evaluate it`,
+            });
             continue;
           }
           edits.push({ start: original(match.core), end: original(match.after), text: replacement, where: hunk.where });
@@ -1106,7 +1279,10 @@ export class HtmlRewriter {
       const pieces = [];
       for (const e of edits) {
         if (e.end > limit) {
-          notes.push({ rel: patch.rel, reason: `${e.where}: overlaps another change of this file in the page, not applied` });
+          notes.push({
+            rel: patch.rel,
+            reason: `${e.where}: overlaps another change of this file in the page, not applied`,
+          });
           continue;
         }
         pieces.push(out.slice(e.end, limit), e.text);
@@ -1115,7 +1291,8 @@ export class HtmlRewriter {
       }
       pieces.push(out.slice(0, limit));
       out = pieces.reverse().join('');
-      if (hits) applied.push({ kind: patch.kind, rel: patch.rel, action: `patched ${hits} change${hits > 1 ? 's' : ''}` });
+      if (hits)
+        applied.push({ kind: patch.kind, rel: patch.rel, action: `patched ${hits} change${hits > 1 ? 's' : ''}` });
     }
     return out;
   }

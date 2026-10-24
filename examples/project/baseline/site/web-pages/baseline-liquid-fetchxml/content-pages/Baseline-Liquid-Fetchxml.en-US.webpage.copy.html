@@ -1,1 +1,14 @@
-<div class="baseline-page" data-baseline-page="liquid-fetchxml"><h1>Baseline Liquid Fetchxml</h1>{% fetchxml baseline_items %}<fetch count="5" returntotalrecordcount="true"><entity name="pqvd_baselineitem"><attribute name="pqvd_name"></attribute><attribute name="pqvd_code"></attribute><order attribute="pqvd_code"></order></entity></fetch>{% endfetchxml %}<p class="baseline-fetch-total">{{ baseline_items.results.total_record_count }}</p><ul class="baseline-fetch-items">{% for item in baseline_items.results.entities %}<li>{{ item.pqvd_code | escape }} {{ item.pqvd_name | escape }}</li>{% endfor %}</ul></div>
+<div class="baseline-page" data-baseline-page="liquid-fetchxml">
+  <h1>Baseline Liquid Fetchxml</h1>
+  {% fetchxml baseline_items %}<fetch count="5" returntotalrecordcount="true"
+    ><entity name="pqvd_baselineitem"
+      ><attribute name="pqvd_name"></attribute><attribute name="pqvd_code"></attribute
+      ><order attribute="pqvd_code"></order></entity></fetch
+  >{% endfetchxml %}
+  <p class="baseline-fetch-total">{{ baseline_items.results.total_record_count }}</p>
+  <ul class="baseline-fetch-items">
+    {% for item in baseline_items.results.entities %}
+    <li>{{ item.pqvd_code | escape }} {{ item.pqvd_name | escape }}</li>
+    {% endfor %}
+  </ul>
+</div>

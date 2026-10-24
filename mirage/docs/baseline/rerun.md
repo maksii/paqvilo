@@ -11,7 +11,7 @@ allowlist and evidence in a separate project. Use ignored `.paqvilo/` for captur
 connection files. The public repository supplies reusable generators and invented fixtures;
 it supplies no tenant connection, browser identity or ready-made project hooks.
 
-You need Node.js 22 or later and the installed package. Use a toolkit checkout for the
+You need Node.js 24.22.1 or later in the 24.x LTS line and the installed package. Use a toolkit checkout for the
 optional fixture-generation scripts below. PAC and an authenticated profile are needed
 only when provisioning or deploying a fixture. Original plugin builds also need .NET.
 Install the Playwright MCP browser extension in the intended signed-in profile and configure
@@ -78,15 +78,33 @@ Stale evidence remains a coverage gap until recaptured.
 
 ## Interpret the result
 
+The capture command returns exit code `0` when every scenario succeeds, `1` for
+failed assertions or blocked writes, and `2` for execution errors in a completed
+run. Validation and setup failures return `1`. Completed runs persist both the
+latest report and dated history before setting their exit code; inspect those
+reports even when the command fails.
+
 Read `report.json`, `summary.md` and each scenario's `diff.json`. Capture folders contain
 metadata, DOM, elements, requests, console output, screenshots and same-origin frame data.
 A failed capture, unexpected sign-in page or blocked scenario is not successful coverage.
+Each capture records `summary.settlements`. Quiet-network readiness waits for visible
+loaders and explicitly busy or indeterminate progress controls. A determinate wizard
+position indicator does not delay readiness. A settle timeout makes the capture fail
+and remains in its problems and settlement records; it is not silently accepted.
 `ALLOWED` means differences were explained by the supplied allowlist; it does not mean
 identical output. Screenshots are retained but are not compared by the tool.
+
+Capture metadata also records `stepOutcomes`: each top-level matrix action is marked `performed`,
+`skipped` or `error`. Optional absent or hidden targets are explicitly skipped;
+an invalid optional selector is an error. The legacy step count and timeline
+include skipped optional actions, so they alone do not prove an action occurred.
 
 Review allowlist proposals against their evidence. Do not hide missing controls, permission
 failures or incorrect saved data behind broad patterns. Keep raw project evidence private;
 publish only deliberately sanitized summaries.
+The capture redacts URL query values in embedded DOM, response bodies, frames,
+element inventories and console text as well as request URLs. Keep source paths and
+structural differences visible when reviewing the sanitized evidence.
 
 Reference portals cache role changes, rows and rendered markup independently. Probe the
 effective persona and actual fixture values before capturing; a fixed delay alone is not
