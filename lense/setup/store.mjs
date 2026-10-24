@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import YAML from 'yaml';
 import { catalogueRoot, loadCatalogue, readEnvSettings, resolveMirageConfig } from '../config.mjs';
@@ -822,17 +822,34 @@ export class SetupStore {
           }
         }
         const originalText = layerText(before) ?? '{}\n';
-        const original = document(originalText, 'Configuration').doc;
-        // YAML serialization may reflow untouched plain strings. Restore their
-        // original scalar tokens, including authored wrapping and quoting.
+        const originalDocument = document(originalText, 'Configuration');
+        const original = originalDocument.doc;
+        // YAML serialization may reflow untouched scalars and flow collections.
+        // Restore their source tokens, including authored spacing and quoting.
         const rendered = doc.toString({ lineWidth: 0 });
-        const serialized = document(rendered, 'Configuration').doc;
+        const serializedDocument = document(rendered, 'Configuration');
+        const serialized = serializedDocument.doc;
         const replacements = [];
+        const valueAt = (value, at) => at.reduce((parent, key) => parent?.[key], value);
         const preserve = (node, at = []) => {
+          const next = serialized.getIn(at, true);
+          if (
+            (YAML.isMap(node) || YAML.isSeq(node)) &&
+            node.flow &&
+            node.range &&
+            next?.range &&
+            isDeepStrictEqual(valueAt(originalDocument.raw, at), valueAt(serializedDocument.raw, at))
+          ) {
+            replacements.push({
+              start: next.range[0],
+              end: next.range[1],
+              value: originalText.slice(node.range[0], node.range[1]),
+            });
+            return; // Whole-collection replacement must not overlap restored child tokens.
+          }
           if (YAML.isMap(node)) for (const pair of node.items) preserve(pair.value, [...at, pair.key.value]);
           else if (YAML.isSeq(node)) node.items.forEach((item, index) => preserve(item, [...at, index]));
           else if (YAML.isScalar(node) && node.range) {
-            const next = serialized.getIn(at, true);
             if (YAML.isScalar(next) && next.range && Object.is(node.value, next.value))
               replacements.push({
                 start: next.range[0],

@@ -123,6 +123,23 @@ test('guided edits preserve siblings, comments, environment shorthand and mappin
   assert.equal(parsed.sites.portal.routes[0].dir, 'web-files');
 });
 
+test('guided edits preserve untouched flow collections without undoing changed collection values', async (t) => {
+  const directory = await work(t),
+    filename = path.join(directory, 'paqvilo.config.yml');
+  const original =
+    "sourceRoot: .\ndefaultSite: portal\nsites:\n  portal:\n    source: .\n    routes: [{url: /assets/**, dir: web-files}]\n    mirage:\n      port: 8787\n      solutionRoots: [./one, './two'] # keep authored collection spacing\n";
+  await fs.writeFile(filename, original);
+  const store = new SetupStore({ directory, processEnv: {} });
+  await edit(store, 'shared', [set(['sites', 'portal', 'mirage', 'port'], 0)]);
+  assert.equal(await fs.readFile(filename, 'utf8'), original.replace('port: 8787', 'port: 0'));
+  await edit(store, 'shared', [set(['sites', 'portal', 'mirage', 'solutionRoots', 0], './updated')]);
+  const updated = await fs.readFile(filename, 'utf8');
+  assert.deepEqual(YAML.parse(updated).sites.portal.mirage.solutionRoots, ['./updated', './two']);
+  assert.ok(updated.includes('routes: [{url: /assets/**, dir: web-files}]\n'));
+  assert.ok(updated.includes("'./two'"));
+  assert.ok(updated.includes('# keep authored collection spacing'));
+});
+
 test('schema failures, dangerous keys and concurrent edits leave original documents intact', async (t) => {
   const directory = await work(t),
     filename = path.join(directory, 'paqvilo.config.yml');
