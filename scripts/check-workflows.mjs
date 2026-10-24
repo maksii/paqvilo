@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { downloadVerifiedArchive } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const assets = {
@@ -51,9 +52,7 @@ async function provision(name, specification) {
   fs.mkdirSync(directory, { recursive: true });
   if (!fs.existsSync(archive)) {
     console.log(`Preparing ${name} ${version} from its upstream release.`);
-    const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-    if (!response.ok) throw new Error(`${name} download failed (${response.status}).`);
-    fs.writeFileSync(archive, new Uint8Array(await response.arrayBuffer()));
+    await downloadVerifiedArchive(url, archive, expected);
   }
   if (digest(archive) !== expected) throw new Error(`${name} archive digest mismatch.`);
   let recorded;

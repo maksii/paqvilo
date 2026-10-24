@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
 import { dependencyReadiness } from './ensure-dependencies.mjs';
+import { downloadVerifiedArchive } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SDK_VERSION = '9.0.2.60';
@@ -55,12 +56,11 @@ async function clrFixture() {
   fs.mkdirSync(directory, { recursive: true });
   const archive = path.join(directory, 'sdk.zip');
   if (!fs.existsSync(archive)) {
-    const response = await fetch(
+    await downloadVerifiedArchive(
       `https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/${SDK_VERSION}/microsoft.crmsdk.coreassemblies.${SDK_VERSION}.nupkg`,
-      { signal: AbortSignal.timeout(60_000) },
+      archive,
+      SDK_SHA256,
     );
-    if (!response.ok) throw new Error(`SDK fixture download failed (${response.status}).`);
-    fs.writeFileSync(archive, new Uint8Array(await response.arrayBuffer()));
   }
   if (createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== SDK_SHA256)
     throw new Error('SDK fixture archive digest mismatch.');
