@@ -12,13 +12,14 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { createFixture } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
 function run(...args) {
-  return new Promise((resolve) => {
+  return withProcessSlot(() => new Promise((resolve) => {
     execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }));
-  });
+  }));
 }
 // Reads of one catalogue state run concurrently: each CLI process costs a quarter of a second to start.
 const runAll = (...commands) => Promise.all(commands.map((args) => run(...args)));

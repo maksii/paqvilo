@@ -6,6 +6,7 @@ import {execFile} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createFixture} from './fixture.mjs';
 import {inspectProcessResult} from '../lense/commands/mirage.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 test('Lense Mirage inspect retains invalid-source diagnostic reports and the failing exit status',async t=>{
   const fixture=createFixture();t.after(fixture.cleanup);
@@ -14,7 +15,7 @@ test('Lense Mirage inspect retains invalid-source diagnostic reports and the fai
   fs.writeFileSync(config,JSON.stringify({sourceRoot:fixture.dir,sites:{invented:{source:'.',environments:{local:'http://127.0.0.1:8787'}}}}));
   const cli=fileURLToPath(new URL('../lense/cli.mjs',import.meta.url));
   const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')&&!key.startsWith('GIT_')));
-  const run=(...args)=>new Promise(resolve=>execFile(process.execPath,[cli,'mirage','inspect','--config',config,...args],{encoding:'utf8',windowsHide:true,env,timeout:15000},(error,stdout,stderr)=>resolve({status:error?error.code:0,stdout,stderr})));
+  const run=(...args)=>withProcessSlot(() => new Promise(resolve=>execFile(process.execPath,[cli,'mirage','inspect','--config',config,...args],{encoding:'utf8',windowsHide:true,env,timeout:15000},(error,stdout,stderr)=>resolve({status:error?error.code:0,stdout,stderr}))));
   const [result,human]=await Promise.all([run('--json'),run()]);
   assert.equal(result.status,1,result.stdout+result.stderr);
   const report=JSON.parse(result.stdout);

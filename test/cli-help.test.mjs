@@ -6,12 +6,13 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {MIRAGE_COMMANDS,MIRAGE_TOOLS} from '../mirage/tool-registry.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const bin=fileURLToPath(new URL('../bin/paqvilo.mjs',import.meta.url));
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')));
 // Asynchronous so that the independent invocations of one test run concurrently.
-const run=(args,options={})=>new Promise(resolve=>execFile(process.execPath,[bin,...args],{env,encoding:'utf8',windowsHide:true,timeout:30000,...options},(error,stdout,stderr)=>
-  resolve({status:error?(typeof error.code==='number'?error.code:null):0,stdout,stderr})));
+const run=(args,options={})=>withProcessSlot(() => new Promise(resolve=>execFile(process.execPath,[bin,...args],{env,encoding:'utf8',windowsHide:true,timeout:30000,...options},(error,stdout,stderr)=>
+  resolve({status:error?(typeof error.code==='number'?error.code:null):0,stdout,stderr}))));
 
 test('public tool registry routes each tool-specific help and prints the package version',async()=>{
   const tools=Object.keys(MIRAGE_TOOLS);

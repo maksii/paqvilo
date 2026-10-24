@@ -11,12 +11,13 @@ import {fileURLToPath} from 'node:url';
 import YAML from 'yaml';
 import {createFixture} from './fixture.mjs';
 import {AGENT_ACTIONS} from '../lense/commands/agent.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli=fileURLToPath(new URL('../bin/paqvilo.mjs',import.meta.url));
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')));
 // Asynchronous so that the independent invocations of one test run concurrently.
-const run=(...args)=>new Promise(resolve=>execFile(process.execPath,[cli,...args],{encoding:'utf8',windowsHide:true,timeout:30000,env,maxBuffer:64<<20},(error,stdout,stderr)=>
-  resolve({status:error?(typeof error.code==='number'?error.code:null):0,stdout,stderr})));
+const run=(...args)=>withProcessSlot(() => new Promise(resolve=>execFile(process.execPath,[cli,...args],{encoding:'utf8',windowsHide:true,timeout:30000,env,maxBuffer:64<<20},(error,stdout,stderr)=>
+  resolve({status:error?(typeof error.code==='number'?error.code:null):0,stdout,stderr}))));
 
 test('every bounded agent action has a documented reference section',()=>{
   const documentation=fs.readFileSync(new URL('../docs/lense.md',import.meta.url),'utf8');

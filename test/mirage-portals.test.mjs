@@ -9,6 +9,7 @@ import { execFile, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createFixture } from './fixture.mjs';
 import { severalPortals } from '../lense/commands/mirage.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const ENHANCED = fs.realpathSync.native(fileURLToPath(new URL('../test-browser/fixtures/enhanced/', import.meta.url)));
@@ -18,9 +19,9 @@ function run(...args) {
 }
 // Independent refusals run concurrently: each CLI process costs a quarter of a second to start.
 function runAsync(...args) {
-  return new Promise((resolve) => {
+  return withProcessSlot(() => new Promise((resolve) => {
     execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }));
-  });
+  }));
 }
 const json = (result) => JSON.parse(result.stdout);
 

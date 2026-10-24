@@ -6,12 +6,13 @@ import {fileURLToPath} from 'node:url';
 import YAML from 'yaml';
 import {createFixture} from './fixture.mjs';
 import {resolveDeploymentProfiles,loadDeploymentProfiles} from '../mirage/lib/deployment-profiles.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli=fileURLToPath(new URL('../bin/paqvilo.mjs',import.meta.url));
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')));
 // Asynchronous so that the independent invocations of one test run concurrently.
-const doctor=(cwd,...args)=>new Promise(resolve=>execFile(process.execPath,[cli,'lense','doctor',...args],{cwd,env,encoding:'utf8',windowsHide:true,timeout:30000,maxBuffer:64<<20},(error,stdout,stderr)=>
-  resolve({status:error?(typeof error.code==='number'?error.code:null):0,stdout,stderr})));
+const doctor=(cwd,...args)=>withProcessSlot(() => new Promise(resolve=>execFile(process.execPath,[cli,'lense','doctor',...args],{cwd,env,encoding:'utf8',windowsHide:true,timeout:30000,maxBuffer:64<<20},(error,stdout,stderr)=>
+  resolve({status:error?(typeof error.code==='number'?error.code:null):0,stdout,stderr}))));
 
 test('export-wide profile lint warns on an unbound profile and binding it fails readiness',async t=>{
   const fx=createFixture();t.after(fx.cleanup);

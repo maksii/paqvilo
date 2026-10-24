@@ -495,8 +495,15 @@ export function panelUi(data) {
     let saveTimer = 0;
     const saveUi = () => {
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => S.d && api('ui', S.ui), 250);
+      saveTimer = setTimeout(() => { saveTimer = 0; if (S.d) api('ui', S.ui); }, 250);
     };
+    // A navigation inside the delay would drop the change, so a pending save goes out with keepalive as the page hides.
+    window.addEventListener('pagehide', () => {
+      if (!saveTimer || !S.d) return;
+      clearTimeout(saveTimer); saveTimer = 0;
+      if (S.d.transport === 'model-driven') { api('ui', S.ui); return; }
+      nativeFetch('/__paqvilo/api/ui', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json', 'x-paqvilo-token': S.d.token }, body: JSON.stringify(S.ui) }).catch(() => {});
+    }, { signal: lifetime.signal });
 
     // ---- placement
     const place = () => {

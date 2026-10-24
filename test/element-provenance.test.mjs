@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { elementSourceHints, scriptSourceHints, elementSourceHintCacheStats } from '../lense/element-provenance.mjs';
-import { Worker } from 'node:worker_threads';
-import { once } from 'node:events';
 
 test('markup hints keep source lines and escaped selectors without parsing script, comments or dynamic IDs', () => {
   const hints = elementSourceHints('<div id="hero:card">\n<input id="fx_title" value="secret">\n<!-- <b id="comment"> -->\n<script>const html = `<b id="script">`</script><b id="{{ dynamic }}"></b>', { sourceFile: '/source.html', name: 'Partial' });
@@ -36,26 +34,17 @@ test('container class evidence excludes Liquid expressions and cached ancestry s
 
 const partial={sourceFile:'/invented/Partial.html',name:'Partial'};
 
-test('wide markup is walked without spreading children into call arguments',async()=>{
-  // A worker with a small stack keeps the input small: there, spreading 20 000 values
-  // already overflows, while 40 000 sibling elements must still be inspected.
-  const url=new URL('../lense/element-provenance.mjs',import.meta.url).href;
-  const code=`const {parentPort}=require('node:worker_threads');
-let control;try{[].push(...new Array(20000).fill(0));control='no overflow'}catch(error){control=error.message}
-import(${JSON.stringify(url)}).then(({elementSourceHints})=>{
-  try{parentPort.postMessage({control,hints:elementSourceHints('<br>'.repeat(40000),{}).length})}catch(error){parentPort.postMessage({control,error:error.message})}
-});`;
-  const worker=new Worker(code,{eval:true,resourceLimits:{stackSizeMb:0.25}});
-  try{
-    const [result]=await once(worker,'message');
-    assert.deepEqual(result,{control:'Maximum call stack size exceeded',hints:0});
-  }finally{await worker.terminate();}
+test('wide markup under the 1 MB cap is walked without spreading children into call arguments',()=>{
+  // 200 000 siblings overflow the default stack if any walk spreads them into one call.
+  assert.deepEqual(elementSourceHints('<br>'.repeat(200_000),{}),[]);
 });
 test('repeated selectors are collected in linear time',()=>{
   const time=count=>{const body='<p class="note"></p>'.repeat(count),started=performance.now();elementSourceHints(body,{sourceFile:`/invented/repeat-${count}-${Math.random()}.html`});return performance.now()-started;};
   time(500);
-  const small=Math.min(time(2500),time(2500)),large=Math.min(time(10000),time(10000));
-  assert.ok(large<small*8,`4x repeats took ${(large/small).toFixed(1)}x the time`);
+  // 8x the repeats: linear collection takes about 8x the time, quadratic about 64x; the bound sits far from both.
+  const best=count=>Math.min(time(count),time(count),time(count));
+  const small=best(2500),large=best(20000);
+  assert.ok(large<small*24,`8x repeats took ${(large/small).toFixed(1)}x the time`);
 });
 test('Liquid comments and manifests cannot supply rendered markup evidence',()=>{
   const rows=elementSourceHints('{% comment %}\n<div id="ghost"></div>\n{% endcomment %}\n<div id="actual"></div>{% manifest %}<b id="manifest"></b>{% endmanifest %}',partial);

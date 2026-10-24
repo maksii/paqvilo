@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const execute = promisify(execFile), cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 test('public project inspect/start/reuse/stop works without any portal or catalogue', { timeout: 60000 }, async t => {
@@ -15,8 +16,8 @@ test('public project inspect/start/reuse/stop works without any portal or catalo
     defaultPortal: 'future', portals: [{ id: 'future', path: './unavailable-portal' }, { id: 'other', path: './another-unavailable-portal' }] });
   await fs.writeFile(project, text);
   const run = async (...args) => {
-    const result = await execute(process.execPath, [cli, 'mirage', ...args, '--project', project, '--json'],
-      { cwd: directory, windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+    const result = await withProcessSlot(() => execute(process.execPath, [cli, 'mirage', ...args, '--project', project, '--json'],
+      { cwd: directory, windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024 }));
     return JSON.parse(result.stdout);
   };
   t.after(async () => { await run('stop').catch(() => {}); await fs.rm(directory, { recursive: true, force: true }); });
@@ -40,8 +41,8 @@ test('catalogue standalone lifecycle needs no source or environment and stops on
   const text = 'sites:\n  first:\n    mirage:\n      runtime: {kind: model-driven}\n      simulation: {level: dry-run}\n  second:\n    mirage:\n      runtime: {kind: model-driven}\n      simulation: {level: dry-run}\n';
   await fs.writeFile(config, text);
   const run = async (site, command, ...args) => {
-    const result = await execute(process.execPath, [cli, 'mirage', command, '--config', config, '--site', site, '--json', ...args],
-      { cwd: directory, windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+    const result = await withProcessSlot(() => execute(process.execPath, [cli, 'mirage', command, '--config', config, '--site', site, '--json', ...args],
+      { cwd: directory, windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024 }));
     return JSON.parse(result.stdout);
   };
   t.after(async () => { await run('first', 'stop').catch(() => {}); await run('second', 'stop').catch(() => {}); await fs.rm(directory, { recursive: true, force: true }); });

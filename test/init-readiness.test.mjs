@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync, execFile } from 'node:child_process';
 import { checkProject, inspectProjectAdoption, inspectProjectPaths, readyProject, scaffoldMarkers } from '../lense/project-check.mjs';
 import { developmentScript, developmentWorkflows } from '../lense/project-workflows.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
 // Asynchronous so that independent invocations of one test run concurrently.
-const run = (directory, ...args) => new Promise(resolve => execFile(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 }, (error, stdout, stderr) =>
-  resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr })));
+const run = (directory, ...args) => withProcessSlot(() => new Promise(resolve => execFile(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 }, (error, stdout, stderr) =>
+  resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }))));
 const secret = 'INVENTED_PROFILE_VALUE_MUST_NOT_APPEAR';
 const write = async (directory, file, body) => { await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true }); await fs.writeFile(path.join(directory, file), body); };
 const configFile = 'paqvilo.config.json';

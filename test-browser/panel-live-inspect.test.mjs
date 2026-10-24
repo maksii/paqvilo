@@ -50,10 +50,9 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   context.setDefaultTimeout(12_000);
   await context.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.fallback() : route.abort());
   const session = new OverlaySession({ sourceDir: fx.portal, origin, site: structuredClone(SITE), sourceMaps: false, siteName: 'Widget fixture', envName: 'loopback', stateDir: fx.work, browser: {}, mirageConfig: { project: fx.project } });
-  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
-  const page = await context.newPage(); page.on('pageerror', (error) => errors.push(error.message));
   detach = await attachSession(context, session);
   panel = enablePanel(context, session, { open: async (...args) => { opened.push(args); return null; } });
+  const page = await context.newPage(); page.on('pageerror', (error) => errors.push(error.message));
   // Resolves with the source the panel asked the editor to open after one click.
   const openedBy = async (locator) => {
     const before = opened.length;
@@ -106,7 +105,10 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   await scope.locator('[data-act="inspect-refresh"]').click();
   await scope.locator('[data-group="runtime-snippets"]').getByText('“Updated banner”').waitFor();
   await page.locator('#other').click();
-  await scope.locator('[data-act="tab"][data-v="runtime"]').click();
+  await scope.locator('[data-act="tab"][data-v="runtime"]').click().catch(async (error) => {
+    const panelState = await page.evaluate(() => { const panel = document.getElementById('paqvilo-panel'); return { url: location.href, ready: document.readyState, panel: Boolean(panel), open: panel?.classList.contains('open') ?? null, tabs: [...(panel?.querySelectorAll('[data-act=tab]') ?? [])].map((tab) => tab.dataset.v), html: panel?.outerHTML.slice(0, 400) }; }).catch((cause) => ({ evaluate: cause.message }));
+    throw Object.assign(error, { message: `${error.message}\npanel after navigation: ${JSON.stringify(panelState)}` });
+  });
   await scope.getByText('Other', { exact: false }).first().waitFor();
   assert.equal(panel.stateFor(page).inspection.path, '/other/');
   assert.equal(requests.some((route) => route.startsWith('/_sim/') || route.startsWith('/__sim/')), false);

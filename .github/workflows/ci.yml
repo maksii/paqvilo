@@ -204,6 +204,11 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      # The example and Company Operations suites need their own packages; the unit job installs them in its scripts.
+      - name: Install example project dependencies
+        run: |
+          npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false
+          npm ci --prefix examples/company-operations --offline --ignore-scripts --no-audit --no-fund
       - name: Lense loopback browser acceptance
         run: npm run test:browser
         env:

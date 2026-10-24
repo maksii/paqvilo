@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { createFixture, SITE } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 let fx;
 before(() => { fx = createFixture(); });
@@ -17,8 +18,8 @@ const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
 // Asynchronous so that independent invocations of one test run concurrently.
 function runWithin(timeout, ...args) {
-  return new Promise((resolve) => execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 64 << 20 }, (error, stdout, stderr) =>
-    resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr, error: error && typeof error.code !== 'number' ? error : undefined })));
+  return withProcessSlot(() => new Promise((resolve) => execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 64 << 20 }, (error, stdout, stderr) =>
+    resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr, error: error && typeof error.code !== 'number' ? error : undefined }))));
 }
 const run = (...args) => runWithin(30_000, ...args);
 

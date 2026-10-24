@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspectProjectBoundary } from '../scripts/project-boundary.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const cli = path.join(root, 'bin/paqvilo.mjs');
@@ -13,8 +14,8 @@ const cli = path.join(root, 'bin/paqvilo.mjs');
 test('public command namespaces select Lense and Mirage independently', async () => {
   const portal = path.join(root, 'examples/project/portal');
   // Independent processes: run them together.
-  const runAsync = (...args) => new Promise(resolve => execFile(process.execPath, [cli, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
-    (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr })));
+  const runAsync = (...args) => withProcessSlot(() => new Promise(resolve => execFile(process.execPath, [cli, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+    (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }))));
   const [lense, mirage, invalid, inventory, status] = await Promise.all([
     runAsync('lense', '--help'), runAsync('mirage', '--help'), runAsync('dev', '--json'),
     runAsync('mirage', 'liquid-inventory', '--portal', portal, '--json'), runAsync('mirage', 'status', '--json')]);

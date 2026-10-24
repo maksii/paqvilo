@@ -1,4 +1,17 @@
-import { parseFragment } from 'parse5';
+import { Parser, defaultTreeAdapter } from 'parse5';
+
+// parse5's parseFragment moves each top-level node with detachNode(firstChild), which is quadratic in the number of
+// top-level nodes (80 000 take seconds). The fragment is taken from the parser's root in one step instead.
+// ponytail: Parser is exported as internal; recheck on a parse5 major upgrade.
+function parseFlatFragment(text) {
+  const parser = Parser.getFragmentParser(null, { sourceCodeLocationInfo: true });
+  parser.tokenizer.write(text, true);
+  const root = defaultTreeAdapter.getFirstChild(parser.document), fragment = defaultTreeAdapter.createDocumentFragment();
+  fragment.childNodes = root.childNodes;
+  root.childNodes = [];
+  for (const child of fragment.childNodes) child.parentNode = fragment;
+  return fragment;
+}
 
 const markupCache=new Map();let markupBytes=0,markupParses=0,markupHits=0;
 const scriptCache=new Map();let scriptBytes=0;
@@ -32,7 +45,7 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
   if(cached?.body===text){markupHits++;markupCache.delete(cacheKey);markupCache.set(cacheKey,cached);return cached.hints.slice(0,limit).map(hint=>copyHint(hint,source));}
   const original=String(body),prepared=markupForInspection(original);
   markupParses++;
-  const tree = parseFragment(prepared.text, { sourceCodeLocationInfo: true });
+  const tree = parseFlatFragment(prepared.text);
   const nodes = [], ids = new Map(), selectors = new Map();
   const pending = [tree];
   const staticValue=value=>value&&value.length<=160&&!/[{}%]/.test(value);

@@ -12,6 +12,7 @@ import { refreshEditor } from '../lense/project-editor.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
 import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -24,8 +25,8 @@ const read = (directory, name) => fs.readFile(path.join(directory, name), 'utf8'
 const readJson = async (directory, name) => JSON.parse(await read(directory, name));
 const checkProject = (directory, options = {}) => inspectProject(directory, { processEnv: {}, ...options });
 // Asynchronous so that independent invocations of one test run concurrently.
-const node = (args, options = {}) => new Promise(resolve => execFile(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options }, (error, stdout, stderr) =>
-  resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr })));
+const node = (args, options = {}) => withProcessSlot(() => new Promise(resolve => execFile(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options }, (error, stdout, stderr) =>
+  resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr }))));
 const run = (directory, ...args) => node([cli, 'init', directory, ...args]);
 
 test('defaults generate a complete empty project, valid catalogue and bound offline pack', async t => {

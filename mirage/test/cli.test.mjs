@@ -9,6 +9,7 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runtimePort } from "../lib/runtime-port.mjs";
+import { withProcessSlot } from './process-slots.mjs';
 
 const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
 async function fixture(t, files) {
@@ -86,6 +87,7 @@ function startup(child, completion, output) {
     .finally(() => child.stdout.off("data", check));
 }
 async function run(t, args, cwd) {
+  return withProcessSlot(async () => {
   const child = spawn(process.execPath, [cli, ...args], {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
@@ -112,6 +114,7 @@ async function run(t, args, cwd) {
   } finally {
     await forceStop(child, completion);
   }
+  });
 }
 
 test('runtime ports accept decimal integers from 0 to 65535 and reject empty and non-decimal spellings', () => {

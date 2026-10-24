@@ -9,10 +9,11 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { renderTemplate } from '../lense/setup/templates.mjs';
 import { loadDevTargets, mirageOnlySite, loadCatalogue } from '../lense/config.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !/^GIT_/i.test(key)));
-const run = (...args) => new Promise((resolve) => execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 60_000 }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr })));
+const run = (...args) => withProcessSlot(() => new Promise((resolve) => execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 60_000 }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }))));
 
 function fixture(t) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-only-')));

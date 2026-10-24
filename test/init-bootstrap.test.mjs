@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^PAQVILO_|^npm_config_/i.test(key)));
@@ -18,6 +19,7 @@ async function workspace(t) {
   return root;
 }
 function run(args, { cwd, env = cleanEnv() } = {}) {
+  return withProcessSlot(async () => {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const timer = setTimeout(() => { child.kill(); reject(new Error('Fixture child exceeded 30 seconds')); }, 30000);
@@ -26,6 +28,7 @@ function run(args, { cwd, env = cleanEnv() } = {}) {
     child.stderr.setEncoding('utf8').on('data', value => { stderr += value; });
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
   });
 }
 async function npmCli() {

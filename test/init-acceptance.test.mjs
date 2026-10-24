@@ -7,6 +7,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const toolkit=fileURLToPath(new URL('../',import.meta.url));
 const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')&&key!=='NODE_TEST_CONTEXT'));
@@ -19,11 +20,13 @@ async function project(t,options={}){
   return root;
 }
 async function run(root,args=['tools/test-browser.mjs'],timeout=60000){
+  return withProcessSlot(async () => {
   const child=spawn(process.execPath,args,{cwd:root,env:environment,windowsHide:true,stdio:['ignore','pipe','pipe']});
   let output='';child.stdout.on('data',chunk=>{output+=chunk;});child.stderr.on('data',chunk=>{output+=chunk;});
   const timer=setTimeout(()=>child.kill(),timeout);
   try{return await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>resolve({code,output}));});}
   finally{clearTimeout(timer);}
+  });
 }
 async function fixture(root,site='portal'){
   const directory=path.join(root,'test-browser/fixtures',site);

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../mirage/cli.mjs', import.meta.url));
 const FLOW = '77777777-7777-4777-8777-777777777777';
@@ -43,10 +44,10 @@ async function fixture(t) {
 const env = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
 // Every run uses an empty state directory and the fixture root as cwd, so a write outside it cannot reach the checkout.
 // Runs are independent and start concurrently; each resolves with its exit status and output.
-const runIn = ({ root, stateDir }, command, ...args) => new Promise((resolve) => {
+const runIn = ({ root, stateDir }, command, ...args) => withProcessSlot(() => new Promise((resolve) => {
   execFile(process.execPath, [cli, command, ...args, '--state-dir', stateDir], { cwd: root, encoding: 'utf8', windowsHide: true, env: env(), timeout: 60000 },
     (error, stdout, stderr) => resolve({ status: error ? error.code : 0, signal: error?.signal ?? null, killed: error?.killed ?? false, stdout, stderr }));
-});
+}));
 
 test('mirage preflight reports a placeholder flow and blocks on it only with --strict or a scenario', async t => {
   const { root, portal, solution, stateDir, run } = await fixture(t);

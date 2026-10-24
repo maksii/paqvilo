@@ -25,7 +25,8 @@ test('the blocker leaves authored closing-tag literals intact and ignores fragme
 });
 
 test('a missing ready release fails open at a bounded timeout and cleans owned requests', async t => {
-  const diagnostics = [], readiness = createFrameReadiness({ timeoutMs: 30, diagnostic: item => diagnostics.push(item) });
+  const diagnostics = [], readiness = createFrameReadiness({ timeoutMs: 1000, diagnostic: item => diagnostics.push(item) });
+  // The timeout runs from decoration; 1 s lets the image request arrive first even on a loaded runner.
   const server = http.createServer((req, res) => readiness.handle(req, res, new URL(req.url, `http://${req.headers.host}`)));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { readiness.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });

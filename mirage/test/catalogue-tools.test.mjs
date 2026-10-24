@@ -10,11 +10,12 @@ import { resolveTarget } from '../render-sweep.mjs';
 import { TOOL_OPTIONS, parseToolArgs } from '../tool-options.mjs';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertProjectOutput } from '../lib/project-output.mjs';
+import { withProcessSlot } from './process-slots.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 // Resolves with the exit status instead of rejecting, so callers can assert failures too.
-const runMirage = (args, timeout) => new Promise(resolve => execFile(process.execPath, [bin, 'mirage', ...args], { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout },
-  (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr })));
+const runMirage = (args, timeout) => withProcessSlot(() => new Promise(resolve => execFile(process.execPath, [bin, 'mirage', ...args], { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout },
+  (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }))));
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));

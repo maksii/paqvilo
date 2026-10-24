@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { performanceFixture } from './runtime-performance-fixture.mjs';
+import { withProcessSlot } from './process-slots.mjs';
 
 test('startup observers cannot reject or delay portal, model-driven or API runtime startup', { timeout: 30000 }, async t => {
   const fixture = await performanceFixture({ tables: 1, columns: 2, records: 1 });
@@ -35,8 +36,8 @@ test('startup observers cannot reject or delay portal, model-driven or API runti
     const options = { runtime: { kind }, ...(kind === 'power-pages' ? { sourceDir: fixture.sourceDir } : {}),
       solutionRoots: fixture.solutionRoots, projectRoot: fixture.root, watch: false,
       dataverse: { enabled: kind === 'dataverse-api', tls: false, tds: { enabled: false } } };
-    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code, JSON.stringify(options)],
-      { windowsHide: true, timeout: 10000 });
+    const { stdout } = await withProcessSlot(() => promisify(execFile)(process.execPath, ['--input-type=module', '-e', code, JSON.stringify(options)],
+      { windowsHide: true, timeout: 10000 }));
     const report = JSON.parse(stdout);
     assert.equal(report.kind, kind); assert.deepEqual(report.unhandled, []);
     assert.equal(report.phases.at(-1), 'listener-ready');
