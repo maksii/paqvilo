@@ -176,7 +176,7 @@ async function serverFixture(t) {
         let found = [...rows.values()].filter((r) => table.primaryId in r);
         const filter = url.searchParams.get('$filter');
         if (filter) {
-          const [, field, value] = filter.match(/(\w+) eq '([^']+)'/);
+          const [, field, value] = filter.match(/^(\w+) eq '([^']+)'$/);
           found = found.filter((r) => r[field] === value);
         }
         return send(200, { value: found });
