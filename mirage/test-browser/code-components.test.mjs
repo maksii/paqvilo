@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import http from 'node:http';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -115,9 +115,18 @@ async function hostFixture(t) {
     response.end('<html><body><script src="/host.js"></script></body></html>');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const context = await browser.newContext();
-  t.after(() => context.close());
+  let context;
+  t.after(() =>
+    drainFixture([
+      () => context?.close(),
+      () =>
+        new Promise((resolve) => {
+          server.close(resolve);
+          server.closeAllConnections();
+        }),
+    ]),
+  );
+  context = await browser.newContext();
   const page = await context.newPage();
   await page.goto('http://127.0.0.1:' + server.address().port);
   return { page, requests };

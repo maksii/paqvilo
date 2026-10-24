@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
+import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
+import { drainFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
 
@@ -91,8 +94,20 @@ async function fixture(t) {
     res.end('<!doctype html><html><head></head><body><main></main></body></html>');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const page = await chrome.page(t);
+  const browserCleanup = [];
+  // A browser can retain speculative or partial HTTP connections. Close its
+  // context before the server, and drain remaining connections even on failure.
+  t.after(() =>
+    drainFixture([
+      ...browserCleanup,
+      () =>
+        new Promise((resolve) => {
+          server.close(resolve);
+          server.closeAllConnections();
+        }),
+    ]),
+  );
+  const page = await chrome.page({ after: (cleanup) => browserCleanup.push(cleanup) });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
@@ -131,6 +146,28 @@ async function fixture(t) {
   });
   return { page, errors, scriptCount: () => scripts };
 }
+
+test('PCF fixture teardown closes speculative HTTP connections after its browser context', async (t) => {
+  const { page } = await fixture(t);
+  const address = new URL(page.url());
+  const socket = net.connect({ host: address.hostname, port: Number(address.port) });
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  await once(socket, 'connect');
+  // No HTTP request is sent: this models a browser's speculative connection,
+  // which bare server.close() cannot finish while the socket remains open.
+  let deadlineExpired = false;
+  const deadline = setTimeout(() => {
+    deadlineExpired = true;
+    socket.destroy(); // Release a broken teardown so the regression fails promptly.
+  }, 5000);
+  t.after(async () => {
+    await closed;
+    clearTimeout(deadline);
+    assert.equal(deadlineExpired, false, 'fixture teardown must drain the socket before its cleanup deadline');
+    assert.equal(page.isClosed(), true);
+    assert.equal(socket.destroyed, true);
+  });
+});
 
 test('trusted standard PCF uses compiled exports, typed context, dirty outputs and deterministic cleanup', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);

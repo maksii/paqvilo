@@ -7,7 +7,7 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 test('PCF localized instances keep languages, missing keys and empty labels across updates and teardown', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-localization-'));
@@ -89,9 +89,18 @@ test('PCF localized instances keep languages, missing keys and empty labels acro
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
+  let browser;
+  ownedFixture(t).add(() =>
+    drainFixture([
+      () => browser?.close(),
+      () =>
+        new Promise((resolve) => {
+          server.close(resolve);
+          server.closeAllConnections();
+        }),
+    ]),
+  );
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   const page = await browser.newPage();
   page.setDefaultTimeout(10000);
   const errors = [],

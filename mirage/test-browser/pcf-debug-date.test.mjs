@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { drainFixture } from '../testing/owned-fixture.mjs';
 
 test('PCF debugger updates typed instances, native timestamp wires and contains lifecycle failures', async (t) => {
   const runtime = await fs.readFile(new URL('../lib/code-components-client.js', import.meta.url), 'utf8');
@@ -12,11 +13,20 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
     response.end('<!doctype html><html><body></body></html>');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const context = await browser.newContext({ timezoneId: 'Europe/Kiev' });
-  t.after(() => context.close());
+  let browser, context;
+  t.after(() =>
+    drainFixture([
+      () => context?.close(),
+      () => browser?.close(),
+      () =>
+        new Promise((resolve) => {
+          server.close(resolve);
+          server.closeAllConnections();
+        }),
+    ]),
+  );
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  context = await browser.newContext({ timezoneId: 'Europe/Kiev' });
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
