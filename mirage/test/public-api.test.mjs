@@ -160,6 +160,7 @@ test('a site-bound context reuses its portal import and exposes effective Soluti
   t.mock.method(fs,'readFile',(file,...args)=>{if(path.relative(website,String(file))===''&&args[0]==='utf8')imports++;return read(file,...args);});
   const context=await createMirageContext({config,site:'sample'}),app=await context.createSimulator({watch:false});t.after(()=>app.close());
   assert.equal(imports,1);
-  const status=await (await fetch(app.url+'/__sim/api/status')).json();assert.deepEqual(status.solutionRoots,[path.join(await fs.realpath(root),'solution')]);assert.deepEqual(app.state().status.solutionRoots,status.solutionRoots);
+  const status=await (await fetch(app.url+'/__sim/api/status')).json();// The configured spelling may be a short Windows path (RUNNER~1); compare the folder each root names.
+  assert.deepEqual(await Promise.all(status.solutionRoots.map(folder=>fs.realpath(folder))),[await fs.realpath(path.join(root,'solution'))]);assert.deepEqual(app.state().status.solutionRoots,status.solutionRoots);
   const override=await context.createSimulator({sourceDir:portalDir,watch:false});t.after(()=>override.close());assert.equal(imports,2);
 });
