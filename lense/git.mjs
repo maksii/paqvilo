@@ -5,7 +5,14 @@ import path from 'node:path';
 const GIT_ARGS = ['-c', 'core.quotepath=off', '-c', 'core.longpaths=true'];
 
 function gitOptions(cwd, { buffer = false, input } = {}) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG.*)$/i.test(key)));
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG.*)$/i.test(
+          key,
+        ),
+    ),
+  );
   return {
     cwd,
     encoding: buffer ? 'buffer' : 'utf8',
@@ -19,9 +26,10 @@ function gitOptions(cwd, { buffer = false, input } = {}) {
 }
 
 const git = (cwd, args, options) => execFileSync('git', [...GIT_ARGS, ...args], gitOptions(cwd, options));
-const gitAsync = (cwd, args) => new Promise((resolve, reject) => {
-  execFile('git', [...GIT_ARGS, ...args], gitOptions(cwd), (err, stdout) => err ? reject(err) : resolve(stdout));
-});
+const gitAsync = (cwd, args) =>
+  new Promise((resolve, reject) => {
+    execFile('git', [...GIT_ARGS, ...args], gitOptions(cwd), (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  });
 
 /**
  * Where HEAD of the checkout points right now: its commit and branch (null when detached or in an
@@ -30,11 +38,15 @@ const gitAsync = (cwd, args) => new Promise((resolve, reject) => {
  */
 export async function gitHead(sourceDir) {
   try {
-    const [commit, name] = (await gitAsync(path.resolve(sourceDir), ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'])).trim().split(/\r?\n/);
+    const [commit, name] = (await gitAsync(path.resolve(sourceDir), ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']))
+      .trim()
+      .split(/\r?\n/);
     if (!/^[0-9a-f]{40,64}$/.test(commit ?? '')) return null;
     const branch = name && name !== 'HEAD' ? name : null;
     return { commit, branch, detached: branch === null };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -45,10 +57,20 @@ export async function gitHead(sourceDir) {
 export async function gitDirectories(sourceDir) {
   sourceDir = path.resolve(sourceDir);
   try {
-    const [gitDir, commonDir, toplevel] = (await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel'])).trim().split(/\r?\n/);
+    const [gitDir, commonDir, toplevel] = (
+      await gitAsync(sourceDir, ['rev-parse', '--git-dir', '--git-common-dir', '--show-toplevel'])
+    )
+      .trim()
+      .split(/\r?\n/);
     if (!gitDir || !commonDir || !toplevel) return null;
-    return { gitDir: path.resolve(sourceDir, gitDir), commonDir: path.resolve(sourceDir, commonDir), toplevel: path.resolve(toplevel) };
-  } catch { return null; }
+    return {
+      gitDir: path.resolve(sourceDir, gitDir),
+      commonDir: path.resolve(sourceDir, commonDir),
+      toplevel: path.resolve(toplevel),
+    };
+  } catch {
+    return null;
+  }
 }
 
 // All paths go to git relative to sourceDir (and come back that way), so it does not matter how the
@@ -71,15 +93,25 @@ export class GitBaseline {
     this.changeQueue = Promise.resolve();
     this.pendingRefCheck = null;
     try {
-      if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\0\r\n]/.test(ref)) throw new Error('invalid baseline ref');
+      if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\0\r\n]/.test(ref))
+        throw new Error('invalid baseline ref');
       const target = ref.startsWith('merge-base:') ? ref.slice('merge-base:'.length) : null;
       if (target !== null && (!target || target.startsWith('-'))) throw new Error('invalid merge-base ref');
-      this.refArgs = target === null ? ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`] : ['merge-base', 'HEAD', target];
+      this.refArgs =
+        target === null
+          ? ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]
+          : ['merge-base', 'HEAD', target];
       this.#acceptCommit(git(this.sourceDir, this.refArgs).trim());
     } catch (err) {
       this.#unavailable(err);
       // A repository without commits has no baseline yet (not a broken ref): callers skip baseline checks with a note.
-      try { this.unborn = git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' && !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim(); } catch { this.unborn = false; }
+      try {
+        this.unborn =
+          git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' &&
+          !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
+      } catch {
+        this.unborn = false;
+      }
     }
   }
 
@@ -128,13 +160,18 @@ export class GitBaseline {
 
   #relative(file) {
     const rel = path.relative(this.sourceDir, path.resolve(file));
-    return !rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ? null : rel.replace(/\\/g, '/');
+    return !rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)
+      ? null
+      : rel.replace(/\\/g, '/');
   }
 
   /** Read many baseline blobs in one process. Each batch response is framed by its byte length. */
   preload(files) {
     if (!this.available) return;
-    const entries = [...new Set(files.map((file) => path.resolve(file)))].filter((file) => !this.cache.has(file)).map((file) => ({ file, rel: this.#relative(file) })).filter(({ rel }) => rel && !/[\r\n]/.test(rel));
+    const entries = [...new Set(files.map((file) => path.resolve(file)))]
+      .filter((file) => !this.cache.has(file))
+      .map((file) => ({ file, rel: this.#relative(file) }))
+      .filter(({ rel }) => rel && !/[\r\n]/.test(rel));
     if (!entries.length) return;
     try {
       const input = entries.map(({ rel }) => `${this.commit}:./${rel}\n`).join('');
@@ -181,9 +218,10 @@ export class GitBaseline {
 
   #changePlan(files, forceFull = false) {
     const rootChanged = files?.some((file) => path.relative(this.sourceDir, path.resolve(file)) === '');
-    let scoped = !forceFull && this.changedSnapshot && files?.length && !rootChanged
-      ? [...new Set(files.map((file) => this.#relative(file)).filter(Boolean))]
-      : null;
+    let scoped =
+      !forceFull && this.changedSnapshot && files?.length && !rootChanged
+        ? [...new Set(files.map((file) => this.#relative(file)).filter(Boolean))]
+        : null;
     // Large save batches are cheaper as one full scan and must fit Windows' argument limit.
     if (scoped && (scoped.length > 128 || scoped.join(' ').length > 16_000)) scoped = null;
     const targets = scoped ? scoped.map((file) => `./${file}`) : ['.'];
@@ -191,7 +229,19 @@ export class GitBaseline {
       scoped,
       previous: this.changedSnapshot,
       commands: [
-        ['--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '--relative', '-z', this.commit, '--', ...targets],
+        [
+          '--literal-pathspecs',
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--no-renames',
+          '--name-only',
+          '--relative',
+          '-z',
+          this.commit,
+          '--',
+          ...targets,
+        ],
         ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...targets],
       ],
     };
@@ -203,7 +253,7 @@ export class GitBaseline {
       for (const rel of list.split('\0')) if (rel) out.add(path.resolve(this.sourceDir, rel));
     }
     if (scoped) {
-      const key = (file) => process.platform === 'win32' ? file.toLowerCase() : file;
+      const key = (file) => (process.platform === 'win32' ? file.toLowerCase() : file);
       const roots = scoped.map((file) => key(path.resolve(this.sourceDir, file)));
       for (const file of previous) {
         const candidate = key(file);
@@ -232,7 +282,10 @@ export class GitBaseline {
       if (!this.available) return new Set();
       const plan = this.#changePlan(files, this.pendingChanges > 0);
       if (plan.scoped?.length === 0) return new Set(this.changedSnapshot);
-      return this.#mergeChanges(plan, plan.commands.map((args) => git(this.sourceDir, args)));
+      return this.#mergeChanges(
+        plan,
+        plan.commands.map((args) => git(this.sourceDir, args)),
+      );
     } catch (err) {
       this.#unavailable(err);
       return new Set();
@@ -273,20 +326,31 @@ export class GitBaseline {
           if (generation !== this.changeGeneration) return current();
           // A ref poll changed the baseline during the scan. Recompute against its new commit.
           if (version !== this.baselineVersion) {
-            if (++attempts >= 3) throw new Error('Baseline changed during three consecutive change scans; retry after local Git activity settles');
+            if (++attempts >= 3)
+              throw new Error(
+                'Baseline changed during three consecutive change scans; retry after local Git activity settles',
+              );
             continue;
           }
           const failed = results.find((result) => result.status === 'rejected');
           if (failed) throw failed.reason;
-          return this.#mergeChanges(plan, results.map((result) => result.value));
+          return this.#mergeChanges(
+            plan,
+            results.map((result) => result.value),
+          );
         }
         return current();
       } catch (err) {
         if (generation === this.changeGeneration) this.#unavailable(err);
         return current();
       }
-    })().finally(() => { this.pendingChanges--; });
-    this.changeQueue = pending.then(() => undefined, () => undefined);
+    })().finally(() => {
+      this.pendingChanges--;
+    });
+    this.changeQueue = pending.then(
+      () => undefined,
+      () => undefined,
+    );
     return pending;
   }
 }

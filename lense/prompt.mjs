@@ -11,12 +11,16 @@ export async function choose(title, items, current) {
   if (!items.length) throw new Error(`${title}: nothing to choose from`);
   if (items.length === 1) return items[0].value;
   if (!process.stdin.isTTY) {
-    throw new Error(`${title}: cannot ask here (no interactive terminal). Name it instead, e.g. --site ${items[0].value}`);
+    throw new Error(
+      `${title}: cannot ask here (no interactive terminal). Name it instead, e.g. --site ${items[0].value}`,
+    );
   }
   const width = Math.max(...items.map((i) => i.value.length));
   console.log(`\n${title}`);
   items.forEach((item, i) => {
-    console.log(`  ${String(i + 1).padStart(2)}  ${item.value.padEnd(width)}  ${item.hint ?? ''}${item.value === current ? '   (current)' : ''}`);
+    console.log(
+      `  ${String(i + 1).padStart(2)}  ${item.value.padEnd(width)}  ${item.hint ?? ''}${item.value === current ? '   (current)' : ''}`,
+    );
   });
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -50,9 +54,15 @@ export async function pickSiteAndEnv(catalogue, given = {}, current = {}) {
     given.env ??
     (await choose(
       `Which environment of ${site}?`,
-      Object.entries(chosen.environments).map(([name, e]) => ({ value: name, hint: e.url + (e.caution ? '   CAUTION: real data' : '') })),
+      Object.entries(chosen.environments).map(([name, e]) => ({
+        value: name,
+        hint: e.url + (e.caution ? '   CAUTION: real data' : ''),
+      })),
       current.site === site ? current.env : chosen.defaultEnv,
     ));
-  if (!chosen.environments[env]) throw new Error(`Unknown environment "${env}" for site "${site}". Known: ${Object.keys(chosen.environments).join(', ')}`);
+  if (!chosen.environments[env])
+    throw new Error(
+      `Unknown environment "${env}" for site "${site}". Known: ${Object.keys(chosen.environments).join(', ')}`,
+    );
   return { site, env };
 }

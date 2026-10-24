@@ -1,12 +1,30 @@
 // Request interception on the DevTools protocol. Each paused request is answered by this module,
 // including handler failures, without relying on another network event to complete the route.
 import { refreshUrl } from './navigation.mjs';
-const RESOURCE_TYPES = { XHR: 'xhr', Fetch: 'fetch', Document: 'document', Stylesheet: 'stylesheet', Script: 'script', Image: 'image', Font: 'font', Media: 'media' };
+const RESOURCE_TYPES = {
+  XHR: 'xhr',
+  Fetch: 'fetch',
+  Document: 'document',
+  Stylesheet: 'stylesheet',
+  Script: 'script',
+  Image: 'image',
+  Font: 'font',
+  Media: 'media',
+};
 
 // set by the browser or recomputed for the body that is actually sent
 const NOT_FORWARDED = new Set(['cookie', 'host', 'content-length', 'connection']);
 const NOT_REPLAYED = new Set(['content-encoding', 'content-length', 'transfer-encoding']);
-const STALE_AFTER_EDIT = new Set(['etag', 'last-modified', 'content-md5', 'digest', 'content-digest', 'repr-digest', 'cache-control', 'expires']);
+const STALE_AFTER_EDIT = new Set([
+  'etag',
+  'last-modified',
+  'content-md5',
+  'digest',
+  'content-digest',
+  'repr-digest',
+  'cache-control',
+  'expires',
+]);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // A DevTools command sent while a tab swaps documents can go unanswered; setup and release must still end.
 const CDP_SETUP_MS = 10_000;
@@ -16,8 +34,13 @@ const CDP_RELEASE_MS = 5_000;
 function settlesWithin(promise, ms) {
   let timer;
   return Promise.race([
-    Promise.resolve(promise).then(() => true, () => true),
-    new Promise((resolve) => { timer = setTimeout(resolve, ms, false); }),
+    Promise.resolve(promise).then(
+      () => true,
+      () => true,
+    ),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, ms, false);
+    }),
   ]).finally(() => clearTimeout(timer));
 }
 
@@ -35,10 +58,21 @@ export async function interceptOrigin(context, origin, handler, options = {}) {
 }
 
 /** One CDP attachment per tab, routing all configured origins without competing Fetch handlers. */
-export async function interceptOrigins(context, origins, handler, { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message) } = {}) {
+export async function interceptOrigins(
+  context,
+  origins,
+  handler,
+  { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message) } = {},
+) {
   const allowed = new Set(origins.map((origin) => new URL(origin).origin));
   if (!allowed.size) throw new Error('At least one portal origin is required');
-  const matches = (url) => { try { return allowed.has(new URL(url).origin); } catch { return false; } };
+  const matches = (url) => {
+    try {
+      return allowed.has(new URL(url).origin);
+    } catch {
+      return false;
+    }
+  };
   const attached = new WeakSet();
   const sessions = new Map();
   const pendingAttachments = new Set();
@@ -56,17 +90,25 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
     record.closing = (async () => {
       // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
       const step = async (label, action) => {
-        if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS))) onError(new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`));
+        if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS)))
+          onError(new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`));
       };
       // Abort before disabling interception, so an in-flight POST cannot be resumed and repeated.
-      await step('pending requests', () => Promise.allSettled([...record.routes].map(async (route) => {
-        activeRoutes.delete(route);
-        await route.abort();
-        await route.disposeResponses();
-      })));
+      await step('pending requests', () =>
+        Promise.allSettled(
+          [...record.routes].map(async (route) => {
+            activeRoutes.delete(route);
+            await route.abort();
+            await route.disposeResponses();
+          }),
+        ),
+      );
       record.routes.clear();
-      const restore = [['Fetch.disable', {}], ['Network.setCacheDisabled', { cacheDisabled: false }],
-        ['Network.setBypassServiceWorker', { bypass: false }]];
+      const restore = [
+        ['Fetch.disable', {}],
+        ['Network.setCacheDisabled', { cacheDisabled: false }],
+        ['Network.setBypassServiceWorker', { bypass: false }],
+      ];
       if (bypassCSP) restore.push(['Page.setBypassCSP', { enabled: false }]);
       for (const [method, params] of restore) await step(method, () => record.cdp.send(method, params));
       await step('detach', () => record.cdp.detach?.());
@@ -85,20 +127,26 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
       if (stopped || page.isClosed()) return;
       throw new Error(`Could not attach development interception: ${error.message}`, { cause: error });
     }
-    if (stopped || page.isClosed()) { await cdp.detach?.().catch(() => {}); return; }
+    if (stopped || page.isClosed()) {
+      await cdp.detach?.().catch(() => {});
+      return;
+    }
     const record = { page, cdp, routes: new Set(), closed: false };
     sessions.set(cdp, record);
     let mainFrameId = null;
     let sawDocument = false;
     record.onPaused = (event) => {
-      const isMainDocument = event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
+      const isMainDocument =
+        event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
       if (isMainDocument) sawDocument = true;
       const route = makeRoute({ cdp, context, page, event, isMainDocument });
       activeRoutes.add(route);
       record.routes.add(route);
       // whatever the handler does or fails to do, the request is not left paused
       Promise.resolve()
-        .then(() => stopped || record.closed ? route.abort() : matches(event.request.url) ? handler(route) : route.fallback())
+        .then(() =>
+          stopped || record.closed ? route.abort() : matches(event.request.url) ? handler(route) : route.fallback(),
+        )
         .catch(() => {})
         .then(() => route.answered || route.fallback())
         .finally(async () => {
@@ -109,14 +157,26 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
         .catch(() => {});
     };
     cdp.on('Fetch.requestPaused', record.onPaused);
-    record.onClose = () => { release(record).catch(() => {}); };
+    record.onClose = () => {
+      release(record).catch(() => {});
+    };
     page.once('close', record.onClose);
     const configure = async (method, params) => {
       if (stopped || record.closed) throw new Error('Browser page closed during interception setup');
       let timer;
       try {
-        return await Promise.race([cdp.send(method, params), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${method} did not answer within ${CDP_SETUP_MS} ms`)), CDP_SETUP_MS); })]);
-      } finally { clearTimeout(timer); }
+        return await Promise.race([
+          cdp.send(method, params),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`${method} did not answer within ${CDP_SETUP_MS} ms`)),
+              CDP_SETUP_MS,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     };
     try {
       mainFrameId = (await configure('Page.getFrameTree')).frameTree.frame.id;
@@ -136,7 +196,10 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
       if (pageClosed) return;
       throw new Error(`Could not enable development interception: ${error.message}`, { cause: error });
     }
-    if (record.closed || stopped) { await release(record); return; }
+    if (record.closed || stopped) {
+      await release(record);
+      return;
+    }
     // A tab opened by the portal (target=_blank, window.open) may have asked for its page before
     // interception was on. Load that page once more so it gets the local sources too.
     const late = () => {
@@ -152,17 +215,24 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
   const startAttachment = (page, initial = false) => {
     const pending = attach(page);
     pendingAttachments.add(pending);
-    pending.then(() => pendingAttachments.delete(pending), (error) => {
-      pendingAttachments.delete(pending);
-      if (!initial && !stopped) {
-        // EventEmitter does not await page handlers. Observe callback failures too, so a
-        // reporting callback cannot turn a tab setup error into an unhandled rejection.
-        Promise.resolve().then(() => onError(error)).catch(() => {});
-      }
-    });
+    pending.then(
+      () => pendingAttachments.delete(pending),
+      (error) => {
+        pendingAttachments.delete(pending);
+        if (!initial && !stopped) {
+          // EventEmitter does not await page handlers. Observe callback failures too, so a
+          // reporting callback cannot turn a tab setup error into an unhandled rejection.
+          Promise.resolve()
+            .then(() => onError(error))
+            .catch(() => {});
+        }
+      },
+    );
     return pending;
   };
-  const onPage = (page) => { startAttachment(page); };
+  const onPage = (page) => {
+    startAttachment(page);
+  };
   const dispose = () => {
     if (disposal) return disposal;
     stopped = true;
@@ -187,7 +257,8 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
 
 function makeRoute({ cdp, context, page, event, isMainDocument }) {
   const { requestId, request } = event;
-  let fetched = false, headersChanged = false;
+  let fetched = false,
+    headersChanged = false;
   const responses = new Set();
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const send = (method, params) => {
@@ -213,14 +284,17 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
     /** An opt-in owned developer tool may add a validated request header. */
     setRequestHeader(name, value) {
       if (route.answered || fetched) throw new Error('Request headers are already sent');
-      if (!/^[!#$%&'*+.^_`|~\w-]+$/.test(name) || typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new Error('Invalid request header');
-      headers[name.toLowerCase()] = value; headersChanged = true;
+      if (!/^[!#$%&'*+.^_`|~\w-]+$/.test(name) || typeof value !== 'string' || /[\r\n\0]/.test(value))
+        throw new Error('Invalid request header');
+      headers[name.toLowerCase()] = value;
+      headersChanged = true;
     },
     /** Remove an internal owned-tool header before continuing the native request. */
     removeRequestHeader(name) {
       if (route.answered || fetched) throw new Error('Request headers are already sent');
       if (typeof name !== 'string' || !/^[!#$%&'*+.^_`|~\w-]+$/.test(name)) throw new Error('Invalid request header');
-      delete headers[name.toLowerCase()]; headersChanged = true;
+      delete headers[name.toLowerCase()];
+      headersChanged = true;
     },
     request: () => ({
       postData,
@@ -229,7 +303,10 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       resourceType: () => RESOURCE_TYPES[event.resourceType] ?? 'other',
       headers: () => headers,
       isNavigationRequest: () => event.resourceType === 'Document',
-      frame: () => ({ page: () => page, parentFrame: () => (isMainDocument || event.resourceType !== 'Document' ? null : {}) }),
+      frame: () => ({
+        page: () => page,
+        parentFrame: () => (isMainDocument || event.resourceType !== 'Document' ? null : {}),
+      }),
     }),
     /** Asks the online portal, with the cookies of the browser. Redirects are not followed unless asked. */
     async fetch({ url, maxRedirects = 0, timeout = 120_000 } = {}) {
@@ -238,9 +315,20 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       if (route.answered) throw new Error('Request already answered');
       const forwarded = Object.fromEntries(Object.entries(headers).filter(([name]) => !NOT_FORWARDED.has(name)));
       fetched = true;
-      const response = await context.request.fetch(url ?? request.url, { method: request.method, headers: forwarded, data, maxRedirects, timeout, failOnStatusCode: false });
+      const response = await context.request.fetch(url ?? request.url, {
+        method: request.method,
+        headers: forwarded,
+        data,
+        maxRedirects,
+        timeout,
+        failOnStatusCode: false,
+      });
       if (route.answered) {
-        try { await response.dispose?.(); } catch { /* response already released */ }
+        try {
+          await response.dispose?.();
+        } catch {
+          /* response already released */
+        }
         throw new Error('Request finished after the browser stopped waiting');
       }
       responses.add(response);
@@ -292,7 +380,15 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       });
     },
     /** Lets the request go to the online portal untouched. */
-    fallback: () => fetched && !SAFE_METHODS.has(request.method) ? route.abort() : send('Fetch.continueRequest', headersChanged ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) } : {}),
+    fallback: () =>
+      fetched && !SAFE_METHODS.has(request.method)
+        ? route.abort()
+        : send(
+            'Fetch.continueRequest',
+            headersChanged
+              ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) }
+              : {},
+          ),
     abort: () => send('Fetch.failRequest', { errorReason: 'Aborted' }),
     disposeResponses: async () => {
       await Promise.allSettled([...responses].map((response) => response.dispose?.()));

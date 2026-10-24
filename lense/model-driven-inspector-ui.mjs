@@ -7,7 +7,9 @@ export function modelDrivenInspectorUi(data) {
   host.__paqModelInspector?.dispose();
   host.__paqModelInspector = {
     token: data.token,
-    closePanel() { host.__pp?.collapse(); },
+    closePanel() {
+      host.__pp?.collapse();
+    },
     dispose() {
       host.__paqModelWatch?.dispose?.();
       host.__paqModelActions?.dispose?.();

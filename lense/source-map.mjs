@@ -22,14 +22,20 @@ function vlq(value) {
  * @param {string} file absolute path of the local source
  * @param {number} lineCount
  */
-export function identityMapUrl(file, lineCount, sourceContent, {line=0,column=0,subsequentColumn=0}={}) {
-  if (!Number.isSafeInteger(lineCount) || lineCount < 0) throw new RangeError('lineCount must be a non-negative integer');
+export function identityMapUrl(file, lineCount, sourceContent, { line = 0, column = 0, subsequentColumn = 0 } = {}) {
+  if (!Number.isSafeInteger(lineCount) || lineCount < 0)
+    throw new RangeError('lineCount must be a non-negative integer');
   // fields per segment: generated column, source index, source line, source column - all relative
   // to the previous segment (the generated column restarts on every line)
   const first = vlq(0) + vlq(0) + vlq(line) + vlq(column);
   const next = ';' + vlq(0) + vlq(0) + vlq(1) + vlq(0);
-  const second = ';' + vlq(0) + vlq(0) + vlq(1) + vlq(subsequentColumn-column);
-  const map = { version: 3, sources: [pathToFileURL(file).href], names: [], mappings: lineCount ? first + (lineCount>1 ? second + next.repeat(lineCount-2) : '') : '' };
+  const second = ';' + vlq(0) + vlq(0) + vlq(1) + vlq(subsequentColumn - column);
+  const map = {
+    version: 3,
+    sources: [pathToFileURL(file).href],
+    names: [],
+    mappings: lineCount ? first + (lineCount > 1 ? second + next.repeat(lineCount - 2) : '') : '',
+  };
   if (sourceContent !== undefined) map.sourcesContent = [sourceContent];
   return `data:application/json;charset=utf-8;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}`;
 }

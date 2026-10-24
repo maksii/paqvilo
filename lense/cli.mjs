@@ -183,25 +183,89 @@ try {
     },
   }));
 } catch (err) {
-  const code=err.code==='ERR_PARSE_ARGS_UNKNOWN_OPTION'?'unsupported_option':'invalid_argument';
-  if (process.argv.includes('--json') || process.argv[2] === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command: process.argv[2] ?? null,...(process.argv[2]==='agent'?{action:process.argv[3]?.startsWith('--')?'sessions':process.argv[3]??'sessions'}:{}),ok: false, offline:true, writesFiles:[], errors:[{code,message:err.message}], error: { code, message: err.message } }));
+  const code = err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' ? 'unsupported_option' : 'invalid_argument';
+  if (process.argv.includes('--json') || process.argv[2] === 'agent')
+    console.log(
+      JSON.stringify({
+        schemaVersion: 1,
+        command: process.argv[2] ?? null,
+        ...(process.argv[2] === 'agent'
+          ? { action: process.argv[3]?.startsWith('--') ? 'sessions' : (process.argv[3] ?? 'sessions') }
+          : {}),
+        ok: false,
+        offline: true,
+        writesFiles: [],
+        errors: [{ code, message: err.message }],
+        error: { code, message: err.message },
+      }),
+    );
   else console.error(`paqvilo: ${err.message}\nRun with --help to see supported options.`);
   process.exit(1);
 }
 
 const command = positionals[0];
-if(values.json||command==='agent'){
-  const print=console.log.bind(console);
-  console.log=(value)=>{let result;try{result=JSON.parse(value);}catch{return print(value);}
-    const normalizeError=error=>typeof error==='string'?{code:command==='doctor'?'check_failed':'command_failed',message:error}:{...error,code:error?.code??'check_failed',message:error?.message??error?.reason??'Command failed'};
-    if(Array.isArray(result))result={results:result};
-    if(Array.isArray(result.reports))result.reports=result.reports.map(report=>({...report,errors:(report.errors??[]).map(normalizeError),...(report.mirage?{mirage:{...report.mirage,errors:(report.mirage.errors??[]).map(normalizeError)}}:{})}));
-    const errors=(result.errors??(result.error?[result.error]:(result.reports??[]).flatMap(report=>[...(report.errors??[]),...(result.checks?.includes('mirage')&&report.mirage?.ready===false?report.mirage.errors:[]) ]))).map(normalizeError);
-    print(JSON.stringify({schemaVersion:1,command,offline:result.command==='help'||(command==='mirage'?['init','inspect'].includes(positionals[1]):!['agent','dev','verify','status'].includes(command)),...result,...(command==='agent'?{action:positionals[1]??'sessions'}:{}),ok:result.ok??result.ready??result.passed??errors.length===0,writesFiles:Array.isArray(result.writesFiles)?result.writesFiles:[],errors},null,2));
+if (values.json || command === 'agent') {
+  const print = console.log.bind(console);
+  console.log = (value) => {
+    let result;
+    try {
+      result = JSON.parse(value);
+    } catch {
+      return print(value);
+    }
+    const normalizeError = (error) =>
+      typeof error === 'string'
+        ? { code: command === 'doctor' ? 'check_failed' : 'command_failed', message: error }
+        : {
+            ...error,
+            code: error?.code ?? 'check_failed',
+            message: error?.message ?? error?.reason ?? 'Command failed',
+          };
+    if (Array.isArray(result)) result = { results: result };
+    if (Array.isArray(result.reports))
+      result.reports = result.reports.map((report) => ({
+        ...report,
+        errors: (report.errors ?? []).map(normalizeError),
+        ...(report.mirage
+          ? { mirage: { ...report.mirage, errors: (report.mirage.errors ?? []).map(normalizeError) } }
+          : {}),
+      }));
+    const errors = (
+      result.errors ??
+      (result.error
+        ? [result.error]
+        : (result.reports ?? []).flatMap((report) => [
+            ...(report.errors ?? []),
+            ...(result.checks?.includes('mirage') && report.mirage?.ready === false ? report.mirage.errors : []),
+          ]))
+    ).map(normalizeError);
+    print(
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          command,
+          offline:
+            result.command === 'help' ||
+            (command === 'mirage'
+              ? ['init', 'inspect'].includes(positionals[1])
+              : !['agent', 'dev', 'verify', 'status'].includes(command)),
+          ...result,
+          ...(command === 'agent' ? { action: positionals[1] ?? 'sessions' } : {}),
+          ok: result.ok ?? result.ready ?? result.passed ?? errors.length === 0,
+          writesFiles: Array.isArray(result.writesFiles) ? result.writesFiles : [],
+          errors,
+        },
+        null,
+        2,
+      ),
+    );
   };
 }
 if (values.help || !command) {
-  if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: Boolean(command || values.help), usage: HELP }));
+  if (values.json || command === 'agent')
+    console.log(
+      JSON.stringify({ schemaVersion: 1, command: 'help', ok: Boolean(command || values.help), usage: HELP }),
+    );
   else console.log(HELP);
   process.exit(command || values.help ? 0 : 1);
 }
@@ -223,44 +287,143 @@ const commands = {
 };
 
 if (!Object.hasOwn(commands, command)) {
-  if (values.json) console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, error: { code: 'unknown_command', message: `Unknown command "${command}"` } }));
+  if (values.json)
+    console.log(
+      JSON.stringify({
+        schemaVersion: 1,
+        command,
+        ok: false,
+        error: { code: 'unknown_command', message: `Unknown command "${command}"` },
+      }),
+    );
   else console.error(`Unknown command "${command}".\n\n${HELP}`);
   process.exit(1);
 }
 
-let phase='arguments';
+let phase = 'arguments';
 let startup;
 try {
-  if (!['use', 'agent', 'mirage', 'model-driven'].includes(command) && positionals.length > 1) throw new Error(`Unexpected argument "${positionals[1]}" for ${command}`);
-  if (command === 'model-driven' && positionals.length > 2) throw new Error('model-driven accepts one action: inspect or dev');
+  if (!['use', 'agent', 'mirage', 'model-driven'].includes(command) && positionals.length > 1)
+    throw new Error(`Unexpected argument "${positionals[1]}" for ${command}`);
+  if (command === 'model-driven' && positionals.length > 2)
+    throw new Error('model-driven accepts one action: inspect or dev');
   if (command === 'use' && positionals.length > 3) throw new Error('use accepts only a site and an environment');
   if (command === 'mirage') (await import('./commands/mirage.mjs')).validateMirageAction(positionals[1] ?? 'status');
   if (command === 'agent' && positionals.length > 2) throw new Error('agent accepts only one action');
-  if (command === 'mirage' && positionals.length > 2) throw new Error('mirage accepts one action: init, start, dev, status, inspect or stop');
+  if (command === 'mirage' && positionals.length > 2)
+    throw new Error('mirage accepts one action: init, start, dev, status, inspect or stop');
   const selection = ['site', 'env', 'url', 'source', 'repo', 'config', 'scope', 'baseline'];
   const browserSelection = ['browser', 'profile', 'user-data-dir', 'profile-directory'];
   const allowed = {
-    dev: [...selection, ...browserSelection, 'cdp-url', 'portals', 'pick', 'path', 'headless', 'headed', 'no-reload', 'no-overrides', 'debug-port'],
-    map: [...selection, 'pick', 'check', 'no-write', 'json'], status: [...selection, 'pick', 'json'],
-    verify: [...selection, ...browserSelection, 'pick', 'path', 'headless', 'headed', 'signed-in', 'json', 'strict', 'sign-in-timeout'],
-    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
+    dev: [
+      ...selection,
+      ...browserSelection,
+      'cdp-url',
+      'portals',
+      'pick',
+      'path',
+      'headless',
+      'headed',
+      'no-reload',
+      'no-overrides',
+      'debug-port',
+    ],
+    map: [...selection, 'pick', 'check', 'no-write', 'json'],
+    status: [...selection, 'pick', 'json'],
+    verify: [
+      ...selection,
+      ...browserSelection,
+      'pick',
+      'path',
+      'headless',
+      'headed',
+      'signed-in',
+      'json',
+      'strict',
+      'sign-in-timeout',
+    ],
+    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'json'],
+    list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
-    agent: ['config', 'session', 'page-id', 'selector', 'limit', 'after', 'output', 'timeout', 'full-page', 'include-panel', 'width', 'height', 'styles', 'path', 'json'],
-    'model-driven': [...browserSelection, 'cdp-url', 'project', 'env', 'url', 'path', 'resource-map', 'headless', 'headed', 'no-reload', 'debug-port', 'timeout', 'output', 'json'],
-    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'apply-configuration', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json', 'runtime', 'simulation'],
+    agent: [
+      'config',
+      'session',
+      'page-id',
+      'selector',
+      'limit',
+      'after',
+      'output',
+      'timeout',
+      'full-page',
+      'include-panel',
+      'width',
+      'height',
+      'styles',
+      'path',
+      'json',
+    ],
+    'model-driven': [
+      ...browserSelection,
+      'cdp-url',
+      'project',
+      'env',
+      'url',
+      'path',
+      'resource-map',
+      'headless',
+      'headed',
+      'no-reload',
+      'debug-port',
+      'timeout',
+      'output',
+      'json',
+    ],
+    mirage: [
+      ...selection,
+      ...browserSelection,
+      'cdp-url',
+      'portals',
+      'project',
+      'portal',
+      'port',
+      'state',
+      'preset',
+      'preset-mode',
+      'apply-configuration',
+      'solution-root',
+      'startup-timeout',
+      'allow-live-writes',
+      'headless',
+      'headed',
+      'no-reload',
+      'debug-port',
+      'out',
+      'force',
+      'json',
+      'runtime',
+      'simulation',
+    ],
   };
-  for (const option of Object.keys(values)) if (!allowed[command].includes(option)) throw Object.assign(new Error(`--${option} is not supported by ${command}`),{code:'unsupported_option'});
-  if (values.pick && values.json) throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
+  for (const option of Object.keys(values))
+    if (!allowed[command].includes(option))
+      throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });
+  if (values.pick && values.json)
+    throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
-  if (values.all && (values.site || values.env)) throw new Error(`${command} --all cannot be combined with --site or --env`);
+  if (values.all && (values.site || values.env))
+    throw new Error(`${command} --all cannot be combined with --site or --env`);
   const { load, needsSite } = commands[command];
-  if (command === 'dev' || command === 'mirage' && ['start', 'dev'].includes(positionals[1]) || command === 'model-driven' && (positionals[1] ?? 'dev') === 'dev') {
+  if (
+    command === 'dev' ||
+    (command === 'mirage' && ['start', 'dev'].includes(positionals[1])) ||
+    (command === 'model-driven' && (positionals[1] ?? 'dev') === 'dev')
+  ) {
     startup = startupProgress({ structured: values.json });
     values.startup = startup;
   }
-  phase='configuration';
+  phase = 'configuration';
   let cfg = null;
   let standaloneProject = null;
   if (command === 'mirage' && values.project && !values.config && !values.site) {
@@ -268,20 +431,30 @@ try {
     const candidate = await loadProjectConfig(values.project);
     if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
   }
-  const standalone = command === 'mirage' && (standaloneProject || values.runtime && values.runtime !== 'power-pages');
+  const standalone =
+    command === 'mirage' && (standaloneProject || (values.runtime && values.runtime !== 'power-pages'));
   let standaloneCatalogue;
   if (command === 'mirage' && !values.project && (values.config || values.site)) {
-    const catalogue = loadCatalogue(values), name = values.site ?? catalogue.root.defaultSite;
+    const catalogue = loadCatalogue(values),
+      name = values.site ?? catalogue.root.defaultSite;
     if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')
-      standaloneCatalogue = (await import('./standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, values);
+      standaloneCatalogue = (await import('./standalone-mirage.mjs')).standaloneCatalogueConfiguration(
+        catalogue,
+        name,
+        values,
+      );
   }
   if (standaloneCatalogue) cfg = standaloneCatalogue;
-  else if (standalone) cfg = (await import('./standalone-mirage.mjs')).standaloneMirageConfiguration(standaloneProject, values);
+  else if (standalone)
+    cfg = (await import('./standalone-mirage.mjs')).standaloneMirageConfiguration(standaloneProject, values);
   else if (needsSite && !(command === 'mirage' && (positionals[1] ?? 'status') === 'status')) {
     if (values.pick) {
       const { pickSiteAndEnv } = await import('./prompt.mjs');
       const catalogue = loadCatalogue(values);
-      const current = { site: catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite, env: catalogue.settings.values.PAQVILO_ENV };
+      const current = {
+        site: catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
+        env: catalogue.settings.values.PAQVILO_ENV,
+      };
       Object.assign(values, await pickSiteAndEnv(catalogue, { site: values.site, env: values.env }, current));
     }
     cfg = await loadConfig(values, process.env, { checkSource: !(command === 'mirage' && values.project) });
@@ -292,22 +465,56 @@ try {
     }
   }
   const { default: run } = await load();
-  phase='execution';
+  phase = 'execution';
   const code = await run(cfg, values, positionals.slice(1));
   // Let large JSON reports drain to piped stdout before exiting.
   if (typeof code === 'number') process.exitCode = code;
 } catch (err) {
   startup?.fail(err.message);
-  if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, writesFiles:err.writesFiles??[], error: { code: err.code??(phase==='arguments'?'invalid_argument':phase==='configuration'?'configuration_error':'command_failed'), message: err.message,...(err.status?{status:err.status}:{}) } }));
+  if (values.json || command === 'agent')
+    console.log(
+      JSON.stringify({
+        schemaVersion: 1,
+        command,
+        ok: false,
+        writesFiles: err.writesFiles ?? [],
+        error: {
+          code:
+            err.code ??
+            (phase === 'arguments'
+              ? 'invalid_argument'
+              : phase === 'configuration'
+                ? 'configuration_error'
+                : 'command_failed'),
+          message: err.message,
+          ...(err.status ? { status: err.status } : {}),
+        },
+      }),
+    );
   else console.error(`paqvilo: ${err.message}`);
-  const starting = command === 'dev' || command === 'mirage' && ['dev', 'start'].includes(positionals[1]);
+  const starting = command === 'dev' || (command === 'mirage' && ['dev', 'start'].includes(positionals[1]));
   // Starting a project that has no configuration yet opens setup in the browser, when a person runs it in a terminal.
-  if (starting && err.code === 'CONFIG_NOT_FOUND' && !values.json && process.stdout.isTTY && process.stdin.isTTY && !values.project) {
-    console.error('There is no project configuration yet. Opening setup in your browser to create it; press Ctrl+C here when you are done.');
-    startup?.close(); startup = null;
-    process.exitCode = await (await import('./commands/setup.mjs')).runSetup(['--config', values.config ?? './paqvilo.config.yml', '--open']);
+  if (
+    starting &&
+    err.code === 'CONFIG_NOT_FOUND' &&
+    !values.json &&
+    process.stdout.isTTY &&
+    process.stdin.isTTY &&
+    !values.project
+  ) {
+    console.error(
+      'There is no project configuration yet. Opening setup in your browser to create it; press Ctrl+C here when you are done.',
+    );
+    startup?.close();
+    startup = null;
+    process.exitCode = await (
+      await import('./commands/setup.mjs')
+    ).runSetup(['--config', values.config ?? './paqvilo.config.yml', '--open']);
   } else {
-    if (!values.json && starting) console.error(`Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`);
+    if (!values.json && starting)
+      console.error(
+        `Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`,
+      );
     if (process.env.PAQVILO_DEBUG) console.error(err.stack);
     process.exitCode = 1;
   }

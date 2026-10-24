@@ -15,7 +15,14 @@ export function discoverExtracts(startDir) {
   let root = startDir;
   try {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
-    root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: startDir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 5000 }).trim();
+    root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: startDir,
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 5000,
+    }).trim();
   } catch {
     /* not a git repository: look below the start folder only */
   }
@@ -33,7 +40,8 @@ export function discoverExtracts(startDir) {
       return;
     }
     for (const e of entries) {
-      if (e.isDirectory() && !/^(?:node_modules|\.git|\.paqvilo|\.vscode)$/.test(e.name)) walk(path.join(dir, e.name), depth + 1);
+      if (e.isDirectory() && !/^(?:node_modules|\.git|\.paqvilo|\.vscode)$/.test(e.name))
+        walk(path.join(dir, e.name), depth + 1);
     }
   };
   walk(root, 0);
@@ -57,14 +65,24 @@ export default async function list(_cfg, args) {
   const rel = (dir) => path.relative(catalogue.configDir, dir).replace(/\\/g, '/') || '.';
 
   // Mirage settings as written (merged over defaults.mirage) and as the mirage command uses them.
-  const mirageOf = (site) => ({ configured: site.mirage ?? null, resolved: resolveMirageConfig(site.mirage, { configDir: catalogue.configDir, sourceRoot: catalogue.sourceRoot, sourceDir: site.sourceDir }) });
-  const mirageText = (resolved, { port = true } = {}) => [
-    resolved.project ? `project ${rel(resolved.project)}` : null,
-    resolved.solutionRoots.length ? `${resolved.solutionRoots.length} Solution root(s)` : null,
-    resolved.dataPacks.length ? `${resolved.dataPacks.length} data pack(s)` : null,
-    resolved.preset ? `preset ${resolved.preset}` : null,
-    port && resolved.port !== null ? `port ${resolved.port}` : null,
-  ].filter(Boolean).join(', ');
+  const mirageOf = (site) => ({
+    configured: site.mirage ?? null,
+    resolved: resolveMirageConfig(site.mirage, {
+      configDir: catalogue.configDir,
+      sourceRoot: catalogue.sourceRoot,
+      sourceDir: site.sourceDir,
+    }),
+  });
+  const mirageText = (resolved, { port = true } = {}) =>
+    [
+      resolved.project ? `project ${rel(resolved.project)}` : null,
+      resolved.solutionRoots.length ? `${resolved.solutionRoots.length} Solution root(s)` : null,
+      resolved.dataPacks.length ? `${resolved.dataPacks.length} data pack(s)` : null,
+      resolved.preset ? `preset ${resolved.preset}` : null,
+      port && resolved.port !== null ? `port ${resolved.port}` : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
   const sites = Object.entries(catalogue.sites).map(([name, site]) => ({
     name,
     source: site.sourceDir,
@@ -78,15 +96,32 @@ export default async function list(_cfg, args) {
   const usable = Boolean(inEffect) || problemCode === 'mirage_only_site';
   // Solution inventory (canvas apps, connectors, dashboards...): listed with counts, never coverage.
   // The same solution cache the derived Solution order uses (lense/commands/mirage.mjs), so a repeated list parses only what changed.
-  const cacheFile = path.join(miragePaths(null, { config: catalogue.configFile }).discoveryRoot, 'cache/solution-discovery.json');
+  const cacheFile = path.join(
+    miragePaths(null, { config: catalogue.configFile }).discoveryRoot,
+    'cache/solution-discovery.json',
+  );
   for (const site of sites) {
     const roots = site.mirage.resolved.solutionRoots;
     if (!roots.length) continue;
     try {
-      const scan = await scanSolutionSources(roots, { cacheFile, order: site.mirage.resolved.solutionOrder ?? 'derived' });
-      try { await scan.cache?.save({ prune: false }); } catch { /* the cache only saves parsing time */ }
-      site.inventory = { level: 'inventory', counts: inventoryCounts(scan.inventory), components: scan.inventory.length, cache: scan.cache?.stats ?? null };
-    } catch (error) { site.inventory = { error: error.message }; }
+      const scan = await scanSolutionSources(roots, {
+        cacheFile,
+        order: site.mirage.resolved.solutionOrder ?? 'derived',
+      });
+      try {
+        await scan.cache?.save({ prune: false });
+      } catch {
+        /* the cache only saves parsing time */
+      }
+      site.inventory = {
+        level: 'inventory',
+        counts: inventoryCounts(scan.inventory),
+        components: scan.inventory.length,
+        cache: scan.cache?.stats ?? null,
+      };
+    } catch (error) {
+      site.inventory = { error: error.message };
+    }
   }
   const configured = new Set(sites.map((s) => s.source && path.resolve(s.source).toLowerCase()));
   const unconfigured = discoverExtracts(catalogue.sourceRoot).filter((dir) => !configured.has(dir.toLowerCase()));
@@ -94,46 +129,131 @@ export default async function list(_cfg, args) {
     mode: inEffect?.portals ?? args.portals ?? catalogue.settings.values.PAQVILO_PORTALS ?? catalogue.root.portals,
     ready: !problem,
     configuredTargetCount: sites.reduce((count, site) => count + site.environments.length, 0),
-    targets: targets.map((target) => ({ site: target.siteName, env: target.envName, origin: target.origin, source: target.sourceDir,
-      scope: target.site.scope, baseline: target.site.markup.baseline, startPath: target.site.startPath, caution: target.caution, initial: target === inEffect })),
+    targets: targets.map((target) => ({
+      site: target.siteName,
+      env: target.envName,
+      origin: target.origin,
+      source: target.sourceDir,
+      scope: target.site.scope,
+      baseline: target.site.markup.baseline,
+      startPath: target.site.startPath,
+      caution: target.caution,
+      initial: target === inEffect,
+    })),
   };
   const profileInfo = inEffect ? browserProfileInfo(inEffect) : null;
 
   if (args.json) {
     let resolved;
-    try { resolved = await resolveCatalogue(args); } catch (error) { resolved = { error: error.message }; }
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', ok: usable, errors: usable ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }], offline: true, sourceRoot: catalogue.sourceRoot, resolved, sites, inEffect: inEffect && {
-      site: inEffect.siteName, env: inEffect.envName, url: inEffect.origin, source: inEffect.sourceDir, scope: inEffect.site.scope, baseline: inEffect.site.markup.baseline, portals: inEffect.portals,
-      browser: { channel: inEffect.browser.channel, headless: inEffect.browser.headless, debugPort: inEffect.browser.debugPort, bypassCSP: inEffect.browser.bypassCSP, mode: inEffect.browser.cdpUrl ? 'attach' : 'launch',
-        profileMode: inEffect.browser.cdpUrl ? 'attached' : inEffect.browser.userDataDir ? 'external' : inEffect.browser.profile ? 'named' : 'default',
-        profile: inEffect.browser.profile, profileDir: inEffect.browser.profileDir, userDataDir: inEffect.browser.userDataDir, profileDirectory: inEffect.browser.profileDirectory, profileInfo },
-      agent: inEffect.agent,
-      mirage: inEffect.mirageConfig,
-      panel: inEffect.panel, liveReload: inEffect.liveReload, sourceMaps: inEffect.sourceMaps, editor: inEffect.editor, chosen: inEffect.chosen,
-    }, coverage, problem, settings: catalogue.settings.values, ...(args.settings ? { supportedSettings: { ...ENV_SETTINGS,
-      'PAQVILO_<SITE>_SOURCE': 'sources folder of a site (overrides the catalogue; a new name adds a site)',
-      'PAQVILO_<SITE>_ENV_<NAME>': 'adds an environment to a site',
-    } } : {}), unconfigured }, null, 2));
+    try {
+      resolved = await resolveCatalogue(args);
+    } catch (error) {
+      resolved = { error: error.message };
+    }
+    console.log(
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          command: 'list',
+          ok: usable,
+          errors: usable ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }],
+          offline: true,
+          sourceRoot: catalogue.sourceRoot,
+          resolved,
+          sites,
+          inEffect: inEffect && {
+            site: inEffect.siteName,
+            env: inEffect.envName,
+            url: inEffect.origin,
+            source: inEffect.sourceDir,
+            scope: inEffect.site.scope,
+            baseline: inEffect.site.markup.baseline,
+            portals: inEffect.portals,
+            browser: {
+              channel: inEffect.browser.channel,
+              headless: inEffect.browser.headless,
+              debugPort: inEffect.browser.debugPort,
+              bypassCSP: inEffect.browser.bypassCSP,
+              mode: inEffect.browser.cdpUrl ? 'attach' : 'launch',
+              profileMode: inEffect.browser.cdpUrl
+                ? 'attached'
+                : inEffect.browser.userDataDir
+                  ? 'external'
+                  : inEffect.browser.profile
+                    ? 'named'
+                    : 'default',
+              profile: inEffect.browser.profile,
+              profileDir: inEffect.browser.profileDir,
+              userDataDir: inEffect.browser.userDataDir,
+              profileDirectory: inEffect.browser.profileDirectory,
+              profileInfo,
+            },
+            agent: inEffect.agent,
+            mirage: inEffect.mirageConfig,
+            panel: inEffect.panel,
+            liveReload: inEffect.liveReload,
+            sourceMaps: inEffect.sourceMaps,
+            editor: inEffect.editor,
+            chosen: inEffect.chosen,
+          },
+          coverage,
+          problem,
+          settings: catalogue.settings.values,
+          ...(args.settings
+            ? {
+                supportedSettings: {
+                  ...ENV_SETTINGS,
+                  'PAQVILO_<SITE>_SOURCE': 'sources folder of a site (overrides the catalogue; a new name adds a site)',
+                  'PAQVILO_<SITE>_ENV_<NAME>': 'adds an environment to a site',
+                },
+              }
+            : {}),
+          unconfigured,
+        },
+        null,
+        2,
+      ),
+    );
     return usable ? 0 : 1;
   }
 
   console.log(`catalogue: ${catalogue.configFile}`);
   console.log(`checkout:  ${catalogue.sourceRoot}`);
-  console.log(`personal:  ${catalogue.settings.file}${fs.existsSync(catalogue.settings.file) ? '' : '   (not there yet: copy .env.example, or run "npm run use")'}\n`);
+  console.log(
+    `personal:  ${catalogue.settings.file}${fs.existsSync(catalogue.settings.file) ? '' : '   (not there yet: copy .env.example, or run "npm run use")'}\n`,
+  );
   for (const site of sites) {
     const current = inEffect?.siteName === site.name;
-    const state = site.mirageOnly ? `${site.mirage.resolved.runtime?.kind ?? site.mirage.configured.runtime.kind} Mirage site, no portal export needed` : !site.source ? 'no source folder configured' : site.format ? `${site.format} extract` : 'FOLDER NOT FOUND or not an extract';
+    const state = site.mirageOnly
+      ? `${site.mirage.resolved.runtime?.kind ?? site.mirage.configured.runtime.kind} Mirage site, no portal export needed`
+      : !site.source
+        ? 'no source folder configured'
+        : site.format
+          ? `${site.format} extract`
+          : 'FOLDER NOT FOUND or not an extract';
     console.log(`${current ? '*' : ' '} ${site.name.padEnd(10)} ${site.source ? rel(site.source) : ''}   [${state}]`);
     const width = Math.max(0, ...site.environments.map((e) => e.name.length));
     for (const env of site.environments) {
       const mark = current && inEffect.envName === env.name ? '*' : ' ';
-      const extras = [env.name === site.defaultEnv ? 'default' : null, env.caution ? 'CAUTION: real data' : null, env.baseline ? `baseline ${env.baseline}` : null, env.scope ? `scope ${env.scope}` : null].filter(Boolean);
-      console.log(`    ${mark} ${env.name.padEnd(width)}  ${env.url}${extras.length ? `   (${extras.join(', ')})` : ''}`);
+      const extras = [
+        env.name === site.defaultEnv ? 'default' : null,
+        env.caution ? 'CAUTION: real data' : null,
+        env.baseline ? `baseline ${env.baseline}` : null,
+        env.scope ? `scope ${env.scope}` : null,
+      ].filter(Boolean);
+      console.log(
+        `    ${mark} ${env.name.padEnd(width)}  ${env.url}${extras.length ? `   (${extras.join(', ')})` : ''}`,
+      );
     }
     if (!site.environments.length && !site.mirageOnly) console.log('      (no environments configured)');
     const mirage = mirageText(site.mirage.resolved, { port: false });
     if (mirage) console.log(`      mirage: ${mirage}`);
-    if (site.inventory?.components) console.log(`      inventory (listed, not coverage): ${Object.entries(site.inventory.counts).map(([kind, levels]) => `${Object.values(levels).reduce((a, b) => a + b, 0)} ${kind}`).join(', ')}`);
+    if (site.inventory?.components)
+      console.log(
+        `      inventory (listed, not coverage): ${Object.entries(site.inventory.counts)
+          .map(([kind, levels]) => `${Object.values(levels).reduce((a, b) => a + b, 0)} ${kind}`)
+          .join(', ')}`,
+      );
   }
 
   console.log('');
@@ -141,17 +261,31 @@ export default async function list(_cfg, args) {
     console.log(`in effect:  ${inEffect.siteName} @ ${inEffect.envName}  ${inEffect.origin}`);
     console.log(`            site from ${inEffect.chosen.site}, environment from ${inEffect.chosen.env}`);
     console.log(`            sources ${inEffect.sourceDir}`);
-    console.log(`            scope ${inEffect.site.scope}, baseline ${inEffect.site.markup.baseline}, browser ${inEffect.browser.channel}, debug port ${inEffect.browser.debugPort ?? 'off'}`);
+    console.log(
+      `            scope ${inEffect.site.scope}, baseline ${inEffect.site.markup.baseline}, browser ${inEffect.browser.channel}, debug port ${inEffect.browser.debugPort ?? 'off'}`,
+    );
     const browser = inEffect.browser;
-    console.log(`            browser profile: ${browser.cdpUrl ? 'attached browser' : browser.userDataDir ? `existing root ${browser.userDataDir}${browser.profileDirectory ? `, directory ${browser.profileDirectory}` : ''}` : browser.profile ? `named toolkit profile ${browser.profile}` : `default toolkit profile (${inEffect.portals === 'all' ? 'catalogue' : `${inEffect.siteName}-${inEffect.envName}`})`}`);
-    if (profileInfo.userDataDir) console.log(`            user-data root ${profileInfo.userDataDir}, profile directory ${profileInfo.profileDirectory}`);
-    console.log(`            mirage ${mirageText(inEffect.mirageConfig) || 'defaults (sibling Solution discovery, port 8787)'}`);
+    console.log(
+      `            browser profile: ${browser.cdpUrl ? 'attached browser' : browser.userDataDir ? `existing root ${browser.userDataDir}${browser.profileDirectory ? `, directory ${browser.profileDirectory}` : ''}` : browser.profile ? `named toolkit profile ${browser.profile}` : `default toolkit profile (${inEffect.portals === 'all' ? 'catalogue' : `${inEffect.siteName}-${inEffect.envName}`})`}`,
+    );
+    if (profileInfo.userDataDir)
+      console.log(
+        `            user-data root ${profileInfo.userDataDir}, profile directory ${profileInfo.profileDirectory}`,
+      );
+    console.log(
+      `            mirage ${mirageText(inEffect.mirageConfig) || 'defaults (sibling Solution discovery, port 8787)'}`,
+    );
     for (const note of inEffect.notes) console.log(`            note: ${note}`);
   } else {
-    console.log(`in effect:  ${usable ? "no Lense target" : "nothing usable"} - ${problem}`);
+    console.log(`in effect:  ${usable ? 'no Lense target' : 'nothing usable'} - ${problem}`);
   }
-  console.log(`\ndev coverage: ${coverage.mode}, ${coverage.targets.length} target(s); ${coverage.configuredTargetCount} configured portal/environment entries${coverage.ready ? '' : ' (not ready)'}`);
-  for (const target of coverage.targets) console.log(`  ${target.initial ? '*' : ' '} ${target.site} @ ${target.env}  ${target.origin}  <- ${rel(target.source)}`);
+  console.log(
+    `\ndev coverage: ${coverage.mode}, ${coverage.targets.length} target(s); ${coverage.configuredTargetCount} configured portal/environment entries${coverage.ready ? '' : ' (not ready)'}`,
+  );
+  for (const target of coverage.targets)
+    console.log(
+      `  ${target.initial ? '*' : ' '} ${target.site} @ ${target.env}  ${target.origin}  <- ${rel(target.source)}`,
+    );
 
   const set = Object.entries(catalogue.settings.values);
   if (set.length) {
@@ -161,7 +295,9 @@ export default async function list(_cfg, args) {
   if (args.settings) {
     console.log('\nsettings you can put in .env:');
     for (const [key, what] of Object.entries(ENV_SETTINGS)) console.log(`  ${key.padEnd(24)} ${what}`);
-    console.log(`  ${'PAQVILO_<SITE>_SOURCE'.padEnd(24)} sources folder of a site (yours overrides the catalogue; a new name adds a site)`);
+    console.log(
+      `  ${'PAQVILO_<SITE>_SOURCE'.padEnd(24)} sources folder of a site (yours overrides the catalogue; a new name adds a site)`,
+    );
     console.log(`  ${'PAQVILO_<SITE>_ENV_<NAME>'.padEnd(24)} adds an environment <name> to a site`);
   }
 

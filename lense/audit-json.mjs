@@ -5,21 +5,35 @@ import { componentContentSpan } from './portal-model.mjs';
 
 export function inspectJsonText(text) {
   let value;
-  try { value = JSON.parse(text); }
-  catch { return { value: null, complete: false, diagnostics: [{ code: 'INVALID_JSON', reason: 'Cannot parse JSON; fields were not inventoried.' }] }; }
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return {
+      value: null,
+      complete: false,
+      diagnostics: [{ code: 'INVALID_JSON', reason: 'Cannot parse JSON; fields were not inventoried.' }],
+    };
+  }
   const document = YAML.parseDocument(text);
-  const diagnostics = document.errors.filter((error) => error.code === 'DUPLICATE_KEY').map((error) => ({
-    code: 'DUPLICATE_JSON_KEY',
-    reason: 'Duplicate JSON object key; collapsed occurrences prevent complete source inventory.',
-    offset: error.pos?.[0] ?? null,
-  }));
+  const diagnostics = document.errors
+    .filter((error) => error.code === 'DUPLICATE_KEY')
+    .map((error) => ({
+      code: 'DUPLICATE_JSON_KEY',
+      reason: 'Duplicate JSON object key; collapsed occurrences prevent complete source inventory.',
+      offset: error.pos?.[0] ?? null,
+    }));
   return { value, complete: diagnostics.length === 0, diagnostics };
 }
 
 const XML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
-const xmlUnescape = (value) => value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(lt|gt|amp|quot|apos));/gi, (_match, dec, hex, name) =>
-  dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : XML_ENTITIES[name.toLowerCase()],
-);
+const xmlUnescape = (value) =>
+  value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(lt|gt|amp|quot|apos));/gi, (_match, dec, hex, name) =>
+    dec
+      ? String.fromCodePoint(Number(dec))
+      : hex
+        ? String.fromCodePoint(parseInt(hex, 16))
+        : XML_ENTITIES[name.toLowerCase()],
+  );
 
 /** Inspect the enhanced component's serialized content without losing duplicate keys. */
 export function inspectComponentJson(xml) {
@@ -27,9 +41,21 @@ export function inspectComponentJson(xml) {
   for (let span = componentContentSpan(xml); span; span = componentContentSpan(xml, span.closeEnd)) contents.push(span);
   const diagnostics = [];
   const elementText = xml.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
-  if ([...elementText.matchAll(/<content\b/g)].length !== contents.length || [...elementText.matchAll(/<\/content\s*>/g)].length !== contents.length) diagnostics.push({ code: 'INVALID_XML_CONTENT', reason: 'Component content elements are not completely paired; some fields could not be inventoried.' });
+  if (
+    [...elementText.matchAll(/<content\b/g)].length !== contents.length ||
+    [...elementText.matchAll(/<\/content\s*>/g)].length !== contents.length
+  )
+    diagnostics.push({
+      code: 'INVALID_XML_CONTENT',
+      reason: 'Component content elements are not completely paired; some fields could not be inventoried.',
+    });
   if (contents.length !== 1) {
-    diagnostics.push({ code: contents.length ? 'DUPLICATE_XML_CONTENT' : 'INVALID_XML_CONTENT', reason: contents.length ? 'Multiple component content elements; complete source inventory cannot select one safely.' : 'Component has no readable content element.' });
+    diagnostics.push({
+      code: contents.length ? 'DUPLICATE_XML_CONTENT' : 'INVALID_XML_CONTENT',
+      reason: contents.length
+        ? 'Multiple component content elements; complete source inventory cannot select one safely.'
+        : 'Component has no readable content element.',
+    });
   }
   let value = null;
   for (const content of contents) {
@@ -45,12 +71,18 @@ export function inspectComponentJson(xml) {
         from = sections.lastIndex;
       }
       decoded += xmlUnescape(raw.slice(from));
+    } catch {
+      diagnostics.push({
+        code: 'INVALID_XML_CONTENT',
+        reason: 'Component content contains an invalid XML character entity.',
+      });
+      continue;
     }
-    catch { diagnostics.push({ code: 'INVALID_XML_CONTENT', reason: 'Component content contains an invalid XML character entity.' }); continue; }
     const inspected = inspectJsonText(decoded);
     diagnostics.push(...inspected.diagnostics);
     if (!inspected.value || typeof inspected.value !== 'object' || Array.isArray(inspected.value)) {
-      if (inspected.complete) diagnostics.push({ code: 'INVALID_XML_CONTENT', reason: 'Component JSON content is not an object.' });
+      if (inspected.complete)
+        diagnostics.push({ code: 'INVALID_XML_CONTENT', reason: 'Component JSON content is not an object.' });
       continue;
     }
     value ??= inspected.value;

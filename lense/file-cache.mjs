@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const stamp = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs ?? stat.mtimeMs, stat.ctimeNs ?? stat.ctimeMs].join(':');
+const stamp = (stat) =>
+  [stat.dev, stat.ino, stat.size, stat.mtimeNs ?? stat.mtimeMs, stat.ctimeNs ?? stat.ctimeMs].join(':');
 
 /** Bounded LRU for bytes served locally. Every hit still checks the current file identity. */
 export class FileBodyCache {
@@ -51,8 +52,14 @@ export class FileBodyCache {
     const body = transform(fs.readFileSync(file));
     // A write racing this read must not leave a stale cached version behind.
     const after = fs.statSync(file, { bigint: true });
-    if (stamp(after) === version && body.length <= this.maxEntryBytes && body.length <= this.maxBytes && this.maxEntries > 0) {
-      while (this.entries.size && (this.bytes + body.length > this.maxBytes || this.entries.size >= this.maxEntries)) this.#remove(this.entries.keys().next().value);
+    if (
+      stamp(after) === version &&
+      body.length <= this.maxEntryBytes &&
+      body.length <= this.maxBytes &&
+      this.maxEntries > 0
+    ) {
+      while (this.entries.size && (this.bytes + body.length > this.maxBytes || this.entries.size >= this.maxEntries))
+        this.#remove(this.entries.keys().next().value);
       this.entries.set(key, { file, stamp: version, body });
       this.bytes += body.length;
     }

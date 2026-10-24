@@ -7,25 +7,49 @@ export default async function audit(_cfg, args) {
   const reports = [];
   for (const site of args.all ? Object.keys(catalogue.sites) : [args.site]) {
     try {
-      const cfg = await loadConfig({ ...args, site, ...(args.all ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] } : {}) });
+      const cfg = await loadConfig({
+        ...args,
+        site,
+        ...(args.all
+          ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] }
+          : {}),
+      });
       reports.push({ site: cfg.siteName, ...auditResources(await PortalModel.create(cfg.sourceDir), cfg.site) });
     } catch (err) {
-      reports.push({ site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite, coverage: { inventoryComplete: false, complete: false, runtimeVerified: false }, errors: [{ reason: err.message }], resources: [] });
+      reports.push({
+        site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
+        coverage: { inventoryComplete: false, complete: false, runtimeVerified: false },
+        errors: [{ reason: err.message }],
+        resources: [],
+      });
     }
   }
   const complete = reports.length > 0 && reports.every((report) => report.coverage.complete);
-  const ok = reports.length > 0 && reports.every((report) => report.coverage.inventoryComplete) && (!args.strict || complete);
-  const errors=reports.flatMap(report=>report.errors??[]);
-  if(args.strict&&!complete){const total=key=>reports.reduce((sum,report)=>sum+(report.totals?.[key]??0),0);errors.push({code:'strict_failed',message:`Strict source audit failed: ${total('blocked')} blocked resources, ${total('gaps')} gaps and ${reports.reduce((sum,report)=>sum+(report.diagnostics?.length??0),0)} diagnostics; inventory is incomplete or coverage needs attention.`,blocked:total('blocked'),gaps:total('gaps')});}
-  const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: [], errors,complete, reports };
+  const ok =
+    reports.length > 0 && reports.every((report) => report.coverage.inventoryComplete) && (!args.strict || complete);
+  const errors = reports.flatMap((report) => report.errors ?? []);
+  if (args.strict && !complete) {
+    const total = (key) => reports.reduce((sum, report) => sum + (report.totals?.[key] ?? 0), 0);
+    errors.push({
+      code: 'strict_failed',
+      message: `Strict source audit failed: ${total('blocked')} blocked resources, ${total('gaps')} gaps and ${reports.reduce((sum, report) => sum + (report.diagnostics?.length ?? 0), 0)} diagnostics; inventory is incomplete or coverage needs attention.`,
+      blocked: total('blocked'),
+      gaps: total('gaps'),
+    });
+  }
+  const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: [], errors, complete, reports };
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Independent offline resource inventory (mapping does not prove browser coverage)');
     for (const item of reports) {
-      console.log(`\n${item.site}: ${item.totals ? `${item.totals.mapped}/${item.totals.resources} mapped, ${item.totals.blocked} blocked, ${item.totals.gaps} gaps, ${item.totals.inactive} inactive, ${item.totals.deployment} deployment metadata, ${item.totals.disabled} disabled` : 'inventory failed'}`);
-      for (const resource of item.resources.filter((entry) => entry.status === 'gap' || entry.status === 'blocked')) console.log(`  ${resource.status.toUpperCase()}: ${resource.id}: ${resource.reason}`);
+      console.log(
+        `\n${item.site}: ${item.totals ? `${item.totals.mapped}/${item.totals.resources} mapped, ${item.totals.blocked} blocked, ${item.totals.gaps} gaps, ${item.totals.inactive} inactive, ${item.totals.deployment} deployment metadata, ${item.totals.disabled} disabled` : 'inventory failed'}`,
+      );
+      for (const resource of item.resources.filter((entry) => entry.status === 'gap' || entry.status === 'blocked'))
+        console.log(`  ${resource.status.toUpperCase()}: ${resource.id}: ${resource.reason}`);
       for (const error of item.errors) console.log(`  ERROR: ${error.relativePath ?? ''}: ${error.reason}`);
-      for (const diagnostic of item.diagnostics ?? []) console.log(`  WARNING: ${diagnostic.relativePath}: ${diagnostic.reason}`);
+      for (const diagnostic of item.diagnostics ?? [])
+        console.log(`  WARNING: ${diagnostic.relativePath}: ${diagnostic.reason}`);
     }
   }
   return ok ? 0 : 1;

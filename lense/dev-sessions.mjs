@@ -10,16 +10,32 @@ import { GitBaseline } from './git.mjs';
 import { compareWebFile } from './online.mjs';
 import { devDialogs } from './dev-dialogs.mjs';
 
-export async function startDevSessions(context, selection, { args = {}, attached = false, stop = () => {}, debugPort = null, log = console.log } = {}) {
+export async function startDevSessions(
+  context,
+  selection,
+  { args = {}, attached = false, stop = () => {}, debugPort = null, log = console.log } = {},
+) {
   const { mode, initial, targets } = selection;
   const configs = new Map(targets.map((cfg) => [cfg.origin, cfg]));
-  if (!configs.size || configs.size !== targets.length || !configs.has(initial.origin)) throw new Error('Development targets must have unique origins and include the start portal');
-  const devTargets = targets.map((cfg) => ({ siteName: cfg.siteName, envName: cfg.envName, origin: cfg.origin, startPath: cfg.site.startPath, caution: cfg.caution }));
+  if (!configs.size || configs.size !== targets.length || !configs.has(initial.origin))
+    throw new Error('Development targets must have unique origins and include the start portal');
+  const devTargets = targets.map((cfg) => ({
+    siteName: cfg.siteName,
+    envName: cfg.envName,
+    origin: cfg.origin,
+    startPath: cfg.site.startPath,
+    caution: cfg.caution,
+  }));
   const active = new Map();
   const pending = new Map();
   const failedAt = new Map();
   const records = new Set();
-  const stopDialogs = devDialogs(context, { configs, attached, headless: initial.browser.headless === true, sessionFor: origin => [...records].find(record => record.session.cfg.origin === origin)?.session });
+  const stopDialogs = devDialogs(context, {
+    configs,
+    attached,
+    headless: initial.browser.headless === true,
+    sessionFor: (origin) => [...records].find((record) => record.session.cfg.origin === origin)?.session,
+  });
   let closed = false;
   let detach;
   let closing;
@@ -28,7 +44,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
   const combinedErrors = new WeakSet();
   const combine = (causes, message) => {
     const unique = [];
-    const collect = cause => {
+    const collect = (cause) => {
       if (combinedErrors.has(cause)) for (const item of cause.errors) collect(item);
       else if (!unique.includes(cause)) unique.push(cause);
     };
@@ -38,29 +54,33 @@ export async function startDevSessions(context, selection, { args = {}, attached
     combinedErrors.add(error);
     return error;
   };
-  const retainCleanupFailure = cause => {
+  const retainCleanupFailure = (cause) => {
     if (!cleanupFailures.includes(cause)) cleanupFailures.push(cause);
     failure = combine([...(failure ? [failure] : []), cause], 'Development session failed during cleanup.');
   };
 
-  const dispose = (record) => (record.closing ??= (async () => {
-    const failures = [];
-    const attempt = async operation => {
-      try { await operation(); } catch (cause) { failures.push(cause); retainCleanupFailure(cause); }
-    };
-    await attempt(() => record.stopComparisons?.());
-    await attempt(() => record.stopLogs?.());
-    // Each teardown runs even if another resource has already lost its browser connection.
-    await Promise.all([
-      () => record.agent?.close(),
-      () => record.panel?.dispose(),
-      () => record.watcher?.close(),
-    ].map(attempt));
-    await attempt(() => record.session.removeAllListeners());
-    if (active.get(record.session.cfg.origin) === record) active.delete(record.session.cfg.origin);
-    records.delete(record);
-    if (failures.length) throw combine(failures, 'Development target cleanup failed.');
-  })());
+  const dispose = (record) =>
+    (record.closing ??= (async () => {
+      const failures = [];
+      const attempt = async (operation) => {
+        try {
+          await operation();
+        } catch (cause) {
+          failures.push(cause);
+          retainCleanupFailure(cause);
+        }
+      };
+      await attempt(() => record.stopComparisons?.());
+      await attempt(() => record.stopLogs?.());
+      // Each teardown runs even if another resource has already lost its browser connection.
+      await Promise.all(
+        [() => record.agent?.close(), () => record.panel?.dispose(), () => record.watcher?.close()].map(attempt),
+      );
+      await attempt(() => record.session.removeAllListeners());
+      if (active.get(record.session.cfg.origin) === record) active.delete(record.session.cfg.origin);
+      records.delete(record);
+      if (failures.length) throw combine(failures, 'Development target cleanup failed.');
+    })());
 
   const ensure = (origin) => {
     if (closed) return Promise.reject(new Error('Development browser is stopping'));
@@ -74,12 +94,19 @@ export async function startDevSessions(context, selection, { args = {}, attached
     if (!pending.has(origin)) {
       const initializing = (async () => {
         const cfg = { ...configs.get(origin), devTargets };
-        if (!isExtract(cfg.sourceDir)) throw new Error(`Portal extract not found: ${cfg.sourceDir}. Restore the checkout and reload this portal; other portal sessions remain active.`);
+        if (!isExtract(cfg.sourceDir))
+          throw new Error(
+            `Portal extract not found: ${cfg.sourceDir}. Restore the checkout and reload this portal; other portal sessions remain active.`,
+          );
         // Default HEAD means the state at session start. Committing during the working day
         // must not erase active template/snippet patches. Explicit branch refs remain dynamic.
         if (cfg.site.markup?.baseline === 'HEAD') {
           const baseline = new GitBaseline(cfg.sourceDir, 'HEAD');
-          if (baseline.available && baseline.commit) cfg.site = { ...cfg.site, markup: { ...cfg.site.markup, baseline: baseline.commit, requestedBaseline: 'HEAD' } };
+          if (baseline.available && baseline.commit)
+            cfg.site = {
+              ...cfg.site,
+              markup: { ...cfg.site.markup, baseline: baseline.commit, requestedBaseline: 'HEAD' },
+            };
         }
         const session = await OverlaySession.create(cfg);
         const record = { session };
@@ -90,7 +117,10 @@ export async function startDevSessions(context, selection, { args = {}, attached
           record.stopLogs = logHits(session, log);
           if (!cfg.mirage) {
             // Compare with the browser's own sign-in: a signed-in portal serves its files to that session only.
-            record.stopComparisons = trackOnlineState(session, { compare: (origin, target, options) => compareWebFile(origin, target, { ...options, request: context.request }) });
+            record.stopComparisons = trackOnlineState(session, {
+              compare: (origin, target, options) =>
+                compareWebFile(origin, target, { ...options, request: context.request }),
+            });
           }
           session.liveReload = cfg.mirage ? true : Boolean(cfg.liveReload && !args['no-reload']);
           // Reference captures want the site exactly as the environment serves it: no overlay at all.
@@ -102,14 +132,24 @@ export async function startDevSessions(context, selection, { args = {}, attached
           record.watcher = watchSources(session, context, { log, reload: !cfg.mirage });
           await record.watcher.ready;
           if (closed) throw new Error('Development browser is stopping');
-          record.agent = await startAgentServer({ session, context, panel: record.panel, attached, stop, runtime: { watching: true, debugPort, portals: mode } });
+          record.agent = await startAgentServer({
+            session,
+            context,
+            panel: record.panel,
+            attached,
+            stop,
+            runtime: { watching: true, debugPort, portals: mode },
+          });
           if (closed) throw new Error('Development browser is stopping');
           if (record.agent) log(`agent API   ${cfg.siteName} @ ${cfg.envName}: ${record.agent.discoveryFile}`);
           active.set(origin, record);
           return record;
         } catch (error) {
-          try { await dispose(record); }
-          catch (cleanupError) { throw combine([error, cleanupError], 'Development target initialization and cleanup failed.'); }
+          try {
+            await dispose(record);
+          } catch (cleanupError) {
+            throw combine([error, cleanupError], 'Development target initialization and cleanup failed.');
+          }
           throw error;
         }
       })();
@@ -122,45 +162,77 @@ export async function startDevSessions(context, selection, { args = {}, attached
     return pending.get(origin);
   };
 
-  const close = () => (closing ??= (async () => {
-    closed = true;
-    try { stopDialogs(); } catch (cause) { retainCleanupFailure(cause); }
-    // Release paused requests first. Initializers finish before disposing any resources they own.
-    try { await detach?.(); } catch (cause) { retainCleanupFailure(cause); }
-    await Promise.allSettled(pending.values());
-    await Promise.allSettled([...records].map(dispose));
-    records.clear();
-    pending.clear();
-    failedAt.clear();
-    if (cleanupFailures.length) throw combine(cleanupFailures, 'Development browser cleanup failed.');
-  })());
+  const close = () =>
+    (closing ??= (async () => {
+      closed = true;
+      try {
+        stopDialogs();
+      } catch (cause) {
+        retainCleanupFailure(cause);
+      }
+      // Release paused requests first. Initializers finish before disposing any resources they own.
+      try {
+        await detach?.();
+      } catch (cause) {
+        retainCleanupFailure(cause);
+      }
+      await Promise.allSettled(pending.values());
+      await Promise.allSettled([...records].map(dispose));
+      records.clear();
+      pending.clear();
+      failedAt.clear();
+      if (cleanupFailures.length) throw combine(cleanupFailures, 'Development browser cleanup failed.');
+    })());
 
   try {
-    detach = await interceptOrigins(context, [...configs.keys()], async (route) => {
-      try {
-        const { session, panel } = await ensure(new URL(route.request().url()).origin);
-        try { await panel?.readyFor(route.request().frame().page()); } catch { /* requests without a document */ }
-        if (closed) return route.abort();
-        await session.route(route);
-      } catch {
-        // A configured portal must not quietly appear online after its local setup failed.
-        await route.abort();
-      }
-    }, {
-      bypassCSP: Boolean(initial.browser.bypassCSP),
-      onError: (error) => {
-        failure = error;
-        log(`ERROR       Portal interception failed: ${error.message}`);
-        close().finally(stop).catch(() => {});
+    detach = await interceptOrigins(
+      context,
+      [...configs.keys()],
+      async (route) => {
+        try {
+          const { session, panel } = await ensure(new URL(route.request().url()).origin);
+          try {
+            await panel?.readyFor(route.request().frame().page());
+          } catch {
+            /* requests without a document */
+          }
+          if (closed) return route.abort();
+          await session.route(route);
+        } catch {
+          // A configured portal must not quietly appear online after its local setup failed.
+          await route.abort();
+        }
       },
-    });
-    if (closed) { await detach(); throw failure ?? new Error('Development browser is stopping'); }
+      {
+        bypassCSP: Boolean(initial.browser.bypassCSP),
+        onError: (error) => {
+          failure = error;
+          log(`ERROR       Portal interception failed: ${error.message}`);
+          close()
+            .finally(stop)
+            .catch(() => {});
+        },
+      },
+    );
+    if (closed) {
+      await detach();
+      throw failure ?? new Error('Development browser is stopping');
+    }
     await ensure(initial.origin);
     if (closed) throw failure ?? new Error('Development browser is stopping');
-    return { active, close, get failure() { return failure; } };
+    return {
+      active,
+      close,
+      get failure() {
+        return failure;
+      },
+    };
   } catch (error) {
-    try { await close(); }
-    catch (cleanupError) { throw combine([error, cleanupError], 'Development browser initialization and cleanup failed.'); }
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw combine([error, cleanupError], 'Development browser initialization and cleanup failed.');
+    }
     throw error;
   }
 }
