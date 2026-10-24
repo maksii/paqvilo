@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import vm from 'node:vm';
 import { compilePlans, caseTemplate, dispatcher } from './compile.mjs';
 import {
   authoredQuery,
@@ -403,7 +404,12 @@ test('templates escape XML, use immutable operation intent, and hide no failed o
   assert.match(dispatcher(manifest), /CO Test Runner/);
   const shell = await shellSource(manifest);
   assert.match(shell, /{% raw %}/);
-  assert.ok(!shell.includes("from './core.mjs'"));
+  const module = /<script type="module">([\s\S]*?)<\/script>/.exec(shell)?.[1];
+  assert.ok(module, 'the shell includes its browser module');
+  assert.doesNotThrow(
+    () => new vm.Script(module, { filename: 'bundled-portal-shell.js' }),
+    'the browser bundle has no unresolved module imports or exports',
+  );
   assert.match(shell, /pre.textContent/);
   const actual = assessScenario(catalogue.scenarios[0], [], manifest);
   assert.ok(actual.every((a) => a.verdict === 'incomplete'));

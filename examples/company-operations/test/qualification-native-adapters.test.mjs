@@ -118,11 +118,48 @@ test('unknown committed create is not retried and can be recovered; foreign scal
 test('browser mutations use a single origin-confined call and keep unknown responses journalled', async () =>
   workspace(async (journalFile) => {
     let calls = 0,
-      code;
+      writes = 0,
+      tokenRequests = 0;
+    const context = vm.createContext({
+      document: {
+        getElementById: () => ({ textContent: '<context contact-id="' + actor + '"><roles></roles></context>' }),
+      },
+      shell: {
+        getTokenDeferred: () => {
+          tokenRequests++;
+          return {
+            done(resolve) {
+              resolve('invented-token');
+              return this;
+            },
+            fail() {
+              return this;
+            },
+          };
+        },
+      },
+      fetch: async (url, options) => {
+        writes++;
+        assert.equal(url, '/_api/assets(' + id(3) + ')');
+        assert.equal(options.method, 'DELETE');
+        assert.equal(options.redirect, 'error');
+        assert.equal(options.credentials, 'same-origin');
+        assert.equal(options.cache, 'no-store');
+        assert.equal(options.headers.__RequestVerificationToken, 'invented-token');
+        return { status: 204, headers: { get: () => null }, text: async () => '' };
+      },
+    });
+    context.window = context;
     const browser = {
-      run: async (text) => {
+      run: async (program) => {
         calls++;
-        code = text;
+        await vm.runInContext(
+          program,
+          context,
+        )({
+          goto: async (url) => assert.equal(url, 'https://portal.invalid/permission-lab/'),
+          evaluate: async (callback, input) => callback(input),
+        });
         throw new Error('response lost');
       },
     };
@@ -136,8 +173,8 @@ test('browser mutations use a single origin-confined call and keep unknown respo
       /outcome unknown/,
     );
     assert.equal(calls, 1);
-    assert.match(code, /shell.getTokenDeferred/);
-    assert.match(code, /redirect:'error'/);
+    assert.equal(writes, 1);
+    assert.equal(tokenRequests, 1);
     assert.equal(JSON.parse(await fs.readFile(journalFile)).status, 'unknown');
     await assert.rejects(
       executeQualificationPortalRequest(browser, {
@@ -182,6 +219,7 @@ test('portal qualification serializes hostile request values as data and rejects
         return { status: 200, headers: { get: () => null }, text: async () => '{}' };
       },
     });
+    context.window = context;
     const browser = {
       run: async (program) => {
         browserCalls++;

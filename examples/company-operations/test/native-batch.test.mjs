@@ -84,6 +84,7 @@ test('native batch program treats hostile request metadata as data and uses boun
       };
     },
   });
+  context.window = context;
   const execute = vm.runInContext(nativeBatchProgram(data), context);
   const page = {
     goto: async (url, options) => {
