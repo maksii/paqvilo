@@ -13,6 +13,7 @@ import chokidar from 'chokidar';
 import { createFixture } from '../test/fixture.mjs';
 import { loadDevTargets } from '../lense/config.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
+import { readDiscovery } from '../lense/commands/agent.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
@@ -152,12 +153,18 @@ for (const attached of [false, true]) {
       }
       const record = runtime.active.get(origin);
       if (!attached) {
-        const discovery = JSON.parse(await fs.readFile(record.agent.discoveryFile, 'utf8'));
-        const status = await fetch(`${record.agent.endpoint}/v1/session`, {
+        const discovery = await readDiscovery(record.agent.discoveryFile);
+        assert.equal(discovery.endpoint, record.agent.endpoint);
+        const status = await fetch(`${discovery.endpoint}/v1/session`, {
+          redirect: 'error',
+          signal: AbortSignal.timeout(5000),
           headers: { authorization: `Bearer ${discovery.token}` },
         });
-        assert.equal(status.status, 200);
-        await status.body.cancel();
+        try {
+          assert.equal(status.status, 200);
+        } finally {
+          await status.body?.cancel();
+        }
       }
       const retry = await context.newPage();
       await retrySetup;

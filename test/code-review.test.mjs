@@ -14,6 +14,8 @@ import {
 } from '../scripts/code-review.mjs';
 import { browserSources, knipConfig } from '../scripts/code-review.config.mjs';
 
+const copiedLogic = `export function calculate(items) {\n${Array.from({ length: 20 }, (_, i) => ` const value${i} = items[${i}] * ${i + 1} + ${i + 5};`).join('\n')}\n return [${Array.from({ length: 20 }, (_, i) => `value${i}`).join(',')}];\n}\n`;
+
 test('review tools detect an orphan module, unused export and copied logic without editing sources', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-review-'));
   try {
@@ -27,14 +29,16 @@ test('review tools detect an orphan module, unused export and copied logic witho
     assert.ok(dead.some((item) => item.type === 'files' && item.file === 'orphan.mjs'));
     assert.ok(dead.some((item) => item.type === 'exports' && item.name === 'unused'));
     assert.ok(!dead.some((item) => item.name === 'used'));
-    const block = `export function calculate(items) {\n${Array.from({ length: 20 }, (_, i) => ` const value${i} = items[${i}] * ${i + 1} + ${i + 5};`).join('\n')}\n return [${Array.from({ length: 20 }, (_, i) => `value${i}`).join(',')}];\n}\n`;
+    const block = copiedLogic;
     for (const file of ['copy-a.mjs', 'copy-b.mjs']) await fs.writeFile(path.join(root, file), block);
     const clones = inspectClones(root, ['copy-a.mjs', 'copy-b.mjs'], path.join(root, 'reports'));
     assert.ok(clones.length > 0);
     const cloneReport = JSON.parse(await fs.readFile(path.join(root, 'reports/jscpd-report.json'), 'utf8'));
     assert.deepEqual(
       [cloneReport.duplicates[0].firstFile.name, cloneReport.duplicates[0].secondFile.name].sort(),
-      [path.join(root, 'copy-a.mjs'), path.join(root, 'copy-b.mjs')].sort(),
+      [path.join(root, 'copy-a.mjs'), path.join(root, 'copy-b.mjs')]
+        .map((file) => syncFs.realpathSync.native(file))
+        .sort(),
       'persisted evidence points back to source after its temporary snapshot is removed',
     );
     assert.equal(compareReview(clones, []).length, clones.length);
@@ -58,6 +62,90 @@ test('review tools detect an orphan module, unused export and copied logic witho
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('analysis accepts explicitly aliased roots and rebases clone paths from a canonical temporary root', async (t) => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-root-alias-review-'));
+  t.after(() => fs.rm(fixture, { recursive: true, force: true }));
+  const physical = path.join(fixture, 'physical-source'),
+    alias = path.join(fixture, 'source-alias');
+  const temporary = path.join(fixture, 'physical-temp'),
+    temporaryAlias = path.join(fixture, 'temp-alias');
+  await fs.mkdir(path.join(physical, 'mirage/lib'), { recursive: true });
+  await fs.mkdir(temporary);
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  await fs.symlink(physical, alias, linkType);
+  await fs.symlink(temporary, temporaryAlias, linkType);
+  await fs.writeFile(
+    path.join(physical, 'package.json'),
+    JSON.stringify({ type: 'module', exports: { './mirage': './mirage/api.mjs' } }),
+  );
+  await fs.writeFile(path.join(physical, 'mirage/api.mjs'), "export { used as publicName } from './lib/logic.mjs';");
+  await fs.writeFile(path.join(physical, 'mirage/lib/logic.mjs'), 'export const used = 1;');
+  await fs.writeFile(path.join(physical, 'mirage/lib/orphan.mjs'), 'console.log("invented stranded module");');
+  const config = path.join(physical, 'knip.json');
+  await fs.writeFile(
+    config,
+    JSON.stringify({ entry: ['mirage/api.mjs'], project: ['mirage/**/*.mjs'], includeEntryExports: true }),
+  );
+  for (const name of ['copy-a.mjs', 'copy-b.mjs']) await fs.writeFile(path.join(physical, name), copiedLogic);
+  t.mock.method(os, 'tmpdir', () => temporaryAlias);
+  const origins = publicApiOrigins(alias);
+  assert.ok(origins.has('mirage/lib/logic.mjs:used'));
+  assert.deepEqual([...origins].sort(), [...publicApiOrigins(physical)].sort());
+  assert.ok(
+    inspectDeadCode(alias, config).some((item) => item.type === 'files' && item.file === 'mirage/lib/orphan.mjs'),
+  );
+  assert.ok(reviewInventory(alias).runtime.includes('mirage/lib/logic.mjs'));
+  const output = path.join(fixture, 'report');
+  const clones = inspectClones(alias, ['copy-a.mjs', 'copy-b.mjs'], output);
+  assert.ok(clones.length > 0);
+  assert.deepEqual(clones[0].files, ['copy-a.mjs', 'copy-b.mjs']);
+  const report = JSON.parse(await fs.readFile(path.join(output, 'jscpd-report.json'), 'utf8'));
+  for (const file of [report.duplicates[0].firstFile, report.duplicates[0].secondFile])
+    assert.equal(path.dirname(file.name), syncFs.realpathSync.native(physical));
+  assert.deepEqual(await fs.readdir(temporary), [], 'canonical snapshots are still removed');
+});
+
+test('native Git-root identity retains indexed-link refusals when legacy realpath preserves an alias spelling', async (t) => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-git-root-alias-'));
+  t.after(() => fs.rm(fixture, { recursive: true, force: true }));
+  const root = path.join(fixture, 'repository-with-a-long-directory-name'),
+    alias = path.join(fixture, 'repo-alias');
+  const linked = path.join(root, 'mirage/lib/linked'),
+    privateSource = path.join(root, '.paqvilo/private');
+  await fs.mkdir(linked, { recursive: true });
+  await fs.writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}');
+  await fs.writeFile(path.join(linked, 'source.mjs'), 'console.log("tracked placeholder");');
+  for (const args of [
+    ['init', '--quiet'],
+    ['add', '.'],
+  ])
+    assert.equal(spawnSync('git', args, { cwd: root, windowsHide: true }).status, 0);
+  await fs.rename(linked, `${linked}-original`);
+  await fs.mkdir(privateSource, { recursive: true });
+  await fs.writeFile(path.join(privateSource, 'source.mjs'), 'console.log("invented private sentinel");');
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  await fs.symlink(privateSource, linked, linkType);
+  await fs.symlink(root, alias, linkType);
+  const requested = [alias];
+  if (process.platform === 'win32') {
+    // Read-only conversion uses the actual volume's 8.3 alias when available.
+    const short = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${root}") do @echo %~sI"`], {
+      encoding: 'utf8',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    });
+    assert.equal(short.status, 0);
+    assert.equal(syncFs.realpathSync.native(short.stdout.trim()), syncFs.realpathSync.native(root));
+    requested.push(short.stdout.trim());
+  }
+  const legacy = syncFs.realpathSync;
+  t.mock.method(syncFs, 'realpathSync', (file, ...args) =>
+    path.resolve(file) === path.resolve(alias) ? path.resolve(alias) : legacy(file, ...args),
+  );
+  assert.equal(syncFs.realpathSync.native, legacy.native);
+  for (const directory of requested) assert.throws(() => reviewInventory(directory), /linked path/);
 });
 
 test('review models browser URL aliases and explicit API roots without wildcard public roots', () => {

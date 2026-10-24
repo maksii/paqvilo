@@ -1037,6 +1037,25 @@
       "evidence": "The owned loopback browser regression records event.data into window.frameMessages for assertions. It neither evaluates message data nor inserts it into the live DOM. The actual production form completion handler in entity-grid-compat.js checks event.origin against location.origin and event.data against Success. Test interception is not a production message trust boundary.",
       "verification": "mirage/test-browser/solution-form.test.mjs: passive message assertion; mirage/lib/entity-grid-compat.js: actual modal completion origin gate",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/318"
+    },
+    {
+      "number": 320,
+      "rule": "js/file-access-to-http",
+      "analysisCommit": "558cd787b4e47f6ad44cbfb75f325c185f4b1666",
+      "reviewedHead": "a539721933f89fd9642071dc38a0ac5e2c7193d3",
+      "originalLocation": {
+        "path": "test-browser/dev-session-close-errors.test.mjs",
+        "start_line": 157,
+        "end_line": 157,
+        "start_column": 20,
+        "end_column": 66
+      },
+      "disposition": "false-positive",
+      "dismissalReason": "false positive",
+      "previousAlertNumbers": [],
+      "evidence": "Individually reviewed this new source, sink and caller rather than inheriting an earlier rule/path decision. The fixture obtains runtime.active.get(its own loopback origin); startAgentServer binds literal 127.0.0.1 on an owned ephemeral port, generates the credential and exclusively writes its 0600 discovery file before returning the same in-memory endpoint. The test now uses production readDiscovery (bounded 64 KiB descriptor read, schema/token validation, exact HTTP 127.0.0.1 endpoint with explicit port and no userinfo/path/query/hash), asserts the parsed endpoint equals that in-memory owned endpoint, and sends the credential only as Authorization to /v1/session. Redirects are refused, the request has a five-second bound, HTTP 200 remains asserted, and the response body is always canceled. This is the intended owned-agent authentication protocol, not arbitrary file payload transfer to an unowned destination. No discovery contents or credential values are printed or committed; all CodeQL queries remain enabled.",
+      "verification": "Full dev-session-close-errors browser suite 6/6 and agent-client suite 8/8 passed, including malformed/external/credentialed endpoint and redirect credential-refusal cases; independent current-flow review confirmed producer, endpoint identity, request and cleanup boundaries.",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/320"
     }
   ]
 }

@@ -14,7 +14,12 @@ const tools = {
   jscpd: path.join(root, 'node_modules/jscpd/run-jscpd.js'),
 };
 const baselineFile = path.join(root, 'scripts/code-review-baseline.json');
-const normalize = (file, directory) => path.relative(directory, file.replace(/^\\\\\?\\/, '')).replaceAll('\\', '/');
+const nativePath = (file) => {
+  const real = fs.realpathSync.native(file);
+  // Native Windows paths may use a device prefix; UNC roots keep both leading slashes.
+  return real.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '');
+};
+const normalize = (file, directory) => path.relative(nativePath(directory), nativePath(file)).replaceAll('\\', '/');
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 const PRIVATE_SEGMENTS = new Set(['node_modules', '.git', '.paqvilo', '.claude', '.codex', 'obj', 'out', 'dist']);
 const privateSegment = (part) => PRIVATE_SEGMENTS.has(process.platform === 'win32' ? part.toLowerCase() : part);
@@ -22,7 +27,7 @@ const MODELED_SOURCE = /\.(?:[cm]?[jt]sx?|css|cs|py)$/;
 
 /** Validate every component, including Git-indexed ancestors that may have become junctions. */
 function reviewSource(directory, file) {
-  const root = path.resolve(directory),
+  const root = nativePath(directory),
     source = path.resolve(root, file),
     relative = path.relative(root, source);
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
@@ -46,8 +51,8 @@ function reviewSource(directory, file) {
     if (MODELED_SOURCE.test(relative)) throw new Error(`Review source exceeds the 5 MiB limit: ${relative}`);
     return null;
   }
-  const expected = path.resolve(fs.realpathSync(root), relative),
-    real = fs.realpathSync(source);
+  const expected = path.resolve(root, relative),
+    real = nativePath(source);
   const key = (value) => (process.platform === 'win32' ? value.toLowerCase() : value);
   if (key(real) !== key(expected)) throw new Error(`Review source uses a linked path: ${relative}`);
   return { source, real };
@@ -56,8 +61,8 @@ function reviewSource(directory, file) {
 function reviewBytes(directory, file) {
   const checked = reviewSource(directory, file);
   if (!checked) return null;
-  const bytes = readLocalFileSync(checked.source, {
-    root: directory,
+  const bytes = readLocalFileSync(checked.real, {
+    root: nativePath(directory),
     maxBytes: MAX_REVIEW_BYTES,
     expectedRealPath: checked.real,
   });
@@ -66,6 +71,7 @@ function reviewBytes(directory, file) {
 }
 
 export function publicApiOrigins(directory) {
+  directory = nativePath(directory);
   const manifest = JSON.parse(reviewBytes(directory, 'package.json').toString('utf8'));
   const cache = new Map();
   function exportsOf(file) {
@@ -139,14 +145,15 @@ function invoke(name, args, cwd, env = {}) {
 }
 
 function reviewFiles(directory) {
+  directory = nativePath(directory);
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd: directory,
     encoding: 'utf8',
     windowsHide: true,
   });
   const samePath = (a, b) => {
-    const left = fs.realpathSync(a),
-      right = fs.realpathSync(b);
+    const left = nativePath(a),
+      right = nativePath(b);
     return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
   };
   if (top.status === 0 && samePath(directory, top.stdout.trim())) {
@@ -172,7 +179,8 @@ function reviewFiles(directory) {
 }
 
 function analysisSnapshot(directory, { files, dependencies = true } = {}) {
-  const snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-knip-'));
+  directory = nativePath(directory);
+  const snapshot = nativePath(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-knip-')));
   try {
     for (const name of files ?? reviewFiles(directory)) {
       if (!/\.(?:[cm]?[jt]sx?|json|html|css|ya?ml|cs|py)$/.test(name) || name.split(/[\\/]/).some(privateSegment))
@@ -246,6 +254,7 @@ export function inspectDeadCode(directory, config, scope = 'full') {
 }
 
 export function inspectClones(directory, files, output) {
+  directory = nativePath(directory);
   fs.mkdirSync(output, { recursive: true });
   const config = path.join(output, 'config.json');
   const snapshot = analysisSnapshot(directory, { files, dependencies: false });
@@ -288,6 +297,7 @@ export function inspectClones(directory, files, output) {
 }
 
 function sourceFiles(directory) {
+  directory = nativePath(directory);
   return reviewFiles(directory).filter(
     (file) =>
       !/(?:^|\/)(?:fixtures|generated|node_modules|obj|out|bin\/Release|\.paqvilo|\.claude|\.codex)(?:\/|$)/.test(
