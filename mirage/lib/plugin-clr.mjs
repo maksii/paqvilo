@@ -26,15 +26,21 @@ let executionDepth = 0;
 let parentStartTicks;
 function clrParentIdentity(executable) {
   if (!parentStartTicks) {
+    // This starts the CLR only to read the owning Node process's birth time.
+    // Cold CLR/OS startup gets its own finite allowance, before plugin execution.
     const answer = spawnSync(executable, ['--process-start', String(process.pid)], {
       shell: false,
       windowsHide: true,
       encoding: 'utf8',
-      timeout: 3000,
+      timeout: 30_000,
       maxBuffer: 1024,
     });
     if (answer.status !== 0 || !/^\d{1,19}$/.test(answer.stdout ?? ''))
-      fail('Owned CLR host cannot bind its parent process incarnation.', 'LocalPluginParentUnavailable');
+      fail(
+        'Owned CLR host cannot bind its parent process incarnation.' +
+          (answer.error?.code === 'ETIMEDOUT' ? ' Parent identity probe exceeded its 30-second startup limit.' : ''),
+        'LocalPluginParentUnavailable',
+      );
     parentStartTicks = answer.stdout;
   }
   return { parentProcessId: process.pid, parentStartTicks };

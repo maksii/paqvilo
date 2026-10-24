@@ -188,10 +188,37 @@ console.log(JSON.stringify({value,elapsed:Date.now()-started}));`,
   assert.ok(answer.elapsed >= 1500, 'the execution completed after the delayed worker bootstrap');
 });
 
+test('default server-logic allowance covers a slow local custom API within the documented five-second limit', async (t) => {
+  const { record } = await source(
+    t,
+    "function get(){return Server.Connector.Dataverse.InvokeCustomApi('post','InventedSlow',null);}",
+  );
+  const answer = await runExportedServerLogic({
+    record,
+    portal: {},
+    store: store(),
+    services: {
+      async invokeCustomApi() {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        return { status: 200, body: { completed: true } };
+      },
+    },
+  });
+  assert.deepEqual(JSON.parse(JSON.parse(answer).Body), { completed: true });
+});
+
 test('exported server code is bounded and read requests cannot change local records', async (t) => {
   const fixture = await source(t, 'function get(){while(true){}}');
   await assert.rejects(
     runExportedServerLogic({ record: fixture.record, portal: {}, store: store(), timeout: 100 }),
+    /time|timed out/,
+  );
+  await assert.rejects(
+    runExportedServerLogic({
+      record: fixture.record,
+      portal: { settings: { 'ServerLogic/TimeoutInSeconds': '0.1' } },
+      store: store(),
+    }),
     /time|timed out/,
   );
   await fs.writeFile(
