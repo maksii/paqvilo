@@ -2,6 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FORMS,extras,BANNER_HTML} from '../baseline/generate.mjs';
 
+test('the baseline bigint fixture preserves its exact value through JSON', async () => {
+  const data = await import('../baseline/data.mjs');
+  const row = data.records().rows.find(record => record.fields.pqvd_bigint != null);
+  assert.equal(JSON.parse(JSON.stringify(row)).fields.pqvd_bigint, '9007199254740993');
+});
+
 test('item main form places each column once outside hidden sections and tabs',()=>{
  const xml=FORMS.find(form=>form.file==='item-main').build();
  // Hidden tabs and sections are not rendered, so the platform does not count them; strip them before counting.

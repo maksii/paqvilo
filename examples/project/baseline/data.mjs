@@ -48,7 +48,7 @@ export function records(tester = TESTER_CONTACT) {
       fields: {
         [p("text")]: "alpha text", [p("textarea")]: "line one\nline two", [p("email")]: "alpha@example.invalid", [p("url")]: "https://example.invalid/alpha", [p("phone")]: "+1 555 0100", [p("ticker")]: "ALP",
         [p("richtext")]: "<p>Rich <strong>text</strong> value</p>", [p("memo")]: "Memo paragraph one.\n\nMemo paragraph two.",
-        [p("wholenumber")]: 42, [p("duration")]: 90, [p("timezone")]: 85, [p("language")]: 1033, [p("decimal")]: 12.34, [p("float")]: 1.5, [p("amount")]: 199.99, [p("bigint")]: 9007199254740993,
+        [p("wholenumber")]: 42, [p("duration")]: 90, [p("timezone")]: 85, [p("language")]: 1033, [p("decimal")]: 12.34, [p("float")]: 1.5, [p("amount")]: 199.99, [p("bigint")]: "9007199254740993",
         [p("datetime")]: "2026-03-04T10:30:00Z", [p("dateonly")]: "2026-03-05", [p("datetimetzi")]: "2026-03-06T08:00:00Z", [p("dateonlyuserlocal")]: "2026-03-07T00:00:00Z",
         [p("localchoice")]: 2, [p("globalchoice")]: 18327002, [p("multichoice")]: "18327010,18327012", [p("flag")]: true, [p("flagcheckbox")]: true,
         [p("recommended")]: "recommended value", [p("readonly")]: "read only value", [p("hidden")]: "hidden value", [p("nolabel")]: "no label value", [p("wide")]: "wide value", [p("relabelled")]: "relabelled value",
