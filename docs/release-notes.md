@@ -44,6 +44,12 @@ redesigned, and Lense works on model-driven apps.
 - New projects set up dependencies and browsers explicitly, and readiness checks no longer treat an empty starter as
   tested.
 - Acceptance runners can observe request lifecycles; reference parity accepts explicit local visitors.
+- **Contributor checks:** local validation and GitHub Actions share dependency-aware suite selection. Isolated Lense
+  overlay changes select Lense tests; shared changes expand the selection, and main, release and manual full runs
+  cover every suite. Strict ESLint 10, Prettier and workflow checks run before commits against the staged sources.
+  Formatting writes files atomically and rejects conflicting editor saves. See [contributing](../CONTRIBUTING.md).
+- **Test reliability:** browser fixtures close their browser connections before stopping local servers, avoiding
+  teardown hangs in CI.
 
 ### Fixed
 
@@ -51,8 +57,15 @@ redesigned, and Lense works on model-driven apps.
 - Changed settings no longer reuse a running preview started with the old ones.
 - Localized Solution labels apply to tabs, sections and nested quick forms.
 - Setup and `/_sim/` fit narrow screens, and the system map no longer overlaps labels or tooltips.
+- Setup preserves unchanged YAML scalar formatting, flow collections and comments when saving other settings.
+- Exported JavaScript server logic allows separately bounded worker startup on busy hosts while retaining its
+  script execution limits.
 
 ### Upgrade notes
+
+Node.js **24.22.1 or a newer 24.x release** is required; Node 22 is no longer supported. Toolkit contributors use
+Node 24.22.1 with npm 11.19.1 and run `npm run setup:repo` to prepare checks and install Git hooks. Mirage and example
+validation use the pinned .NET SDK 10.0.113. Platform compatibility libraries retain their required versions.
 
 Update with `npm install --save-dev paqvilo@^0.9.6` and commit the lockfile. Model-driven Lense runs project scripts
 in the live app, so it requires `modelDriven.trustedExtensions: true` in the project file. Turn the model-driven surface
