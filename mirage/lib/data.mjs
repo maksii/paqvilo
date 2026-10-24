@@ -1083,7 +1083,11 @@ export class DataStore {
       lockToken = `${process.pid}:${randomUUID()}`,
       temp = `${this.file}.${randomUUID()}.tmp`;
     let lockHandle;
+    let writeFailed = false;
+    let writeFailure;
+    let cleanupFailure;
     try {
+      await (async () => {
       try {
         lockHandle = await open(lockPath, "wx", 0o600);
       } catch (error) {
@@ -1114,6 +1118,10 @@ export class DataStore {
       await this.storage.checkpointCommitted(prepared);
       this.persistedDigest = this.storage.digest;
       this.recordSave(performance.now() - saveStarted, 'checkpoint');
+      })();
+    } catch (error) {
+      writeFailed = true;
+      writeFailure = error;
     } finally {
       if (lockHandle) await lockHandle.close().catch(() => {});
       await rm(temp, { force: true }).catch(() => {});
@@ -1123,9 +1131,14 @@ export class DataStore {
         if ((await readFile(lockPath, "utf8")) === `${lockToken}\n`)
           await unlink(lockPath);
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (error.code !== "ENOENT") cleanupFailure = error;
       }
     }
+    if (writeFailed && cleanupFailure) {
+      throw new AggregateError([writeFailure, cleanupFailure], 'Local state save and lock cleanup failed', { cause: writeFailure });
+    }
+    if (writeFailed) throw writeFailure;
+    if (cleanupFailure) throw cleanupFailure;
   }
   recordSave(durationMs, mode) {
     this.lastSave = { durationMs: Math.round(durationMs * 100) / 100, mode };

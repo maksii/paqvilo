@@ -295,3 +295,23 @@ test('a failed partially flushed append restores its committed prefix and permit
   assert.deepEqual(await readStateFile(file), store.snapshot());
   assert.equal(await hashStateFile(file), store.persistedDigest);
 });
+
+for (const primary of [new Error('Invented write failure'), null]) test(`save retains both write and lock cleanup failures (${primary === null ? 'null' : 'Error'})`, async t => {
+  const { file, store } = await workspace(t);
+  const before = await fs.readFile(file, 'utf8');
+  store.storage.assertUnchanged = async () => {
+    // This owned directory makes the cleanup read fail without touching another writer's lock.
+    await fs.rm(`${file}.lock`);
+    await fs.mkdir(`${file}.lock`);
+    throw primary;
+  };
+  await assert.rejects(store.save(), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause, primary);
+    assert.equal(error.errors[0], primary);
+    assert.ok(error.errors[1] instanceof Error);
+    assert.equal(error.persistenceFailure, true);
+    return true;
+  });
+  assert.equal(await fs.readFile(file, 'utf8'), before);
+});
