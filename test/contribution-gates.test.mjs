@@ -714,3 +714,14 @@ test('Git status probes fail closed without refreshing the index with optional l
     for (const call of calls) assert.match(call[1], /^\['--no-optional-locks'/, file);
   }
 });
+
+test('package export targets replace every wildcard using the literal imported subpath', (t) => {
+  const { root, write } = fixture(t);
+  write(
+    'package.json',
+    JSON.stringify({ name: 'paqvilo', exports: { './generated/*': './lense/generated/*/copy/*.mjs' } }),
+  );
+  write('lense/generated/$&/copy/$&.mjs', 'export const value = 1;');
+  write('examples/project/test/generated.test.mjs', "import { value } from 'paqvilo/generated/$&';");
+  assert.deepEqual(suitesForScope(completeScope(['lense/generated/$&/copy/$&.mjs'], { root })), ['lense', 'examples']);
+});

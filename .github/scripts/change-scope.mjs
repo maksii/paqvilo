@@ -56,7 +56,10 @@ export function dependencyConsumers(root = toolkitRoot) {
     if (typeof exact === 'string') return path.resolve(root, exact);
     for (const [pattern, target] of Object.entries(pkg.exports ?? {})) {
       if (!pattern.endsWith('/*') || typeof target !== 'string' || !key.startsWith(pattern.slice(0, -1))) continue;
-      return path.resolve(root, target.replace('*', key.slice(pattern.length - 1)));
+      return path.resolve(
+        root,
+        target.replaceAll('*', () => key.slice(pattern.length - 1)),
+      );
     }
     return null;
   }
