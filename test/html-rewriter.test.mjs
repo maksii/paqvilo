@@ -36,7 +36,10 @@ test('page custom CSS: the inline <style> is replaced by the local file', () => 
   const result = rewriter().rewrite(ONLINE_HOME, '/');
   assert.ok(result.html.includes('color: green'));
   assert.ok(!result.html.includes('color: red'));
-  assert.deepEqual(result.applied.map((a) => a.rel), [CSS]);
+  assert.deepEqual(
+    result.applied.map((a) => a.rel),
+    [CSS],
+  );
   // the element and everything around it are intact, in the page's own line endings
   assert.ok(result.html.includes('<style type="text/css">.hero {\r\n  color: green;\r\n}'));
   assert.equal(result.html.replace('color: green', 'color: red'), ONLINE_HOME);
@@ -54,11 +57,17 @@ test('page custom CSS is only applied on its own page (also under a language pre
 
 test('real short routes stay distinct from home and exported language prefixes for blocks and markup', () => {
   for (const slug of ['it', 'ui']) {
-    fx.write(`web-pages/${slug}/${slug}.webpage.yml`, `adx_webpageid: route-${slug}\nadx_name: ${slug}\nadx_partialurl: ${slug}\nadx_parentpageid: 00000000-0000-0000-0000-000000000001`);
+    fx.write(
+      `web-pages/${slug}/${slug}.webpage.yml`,
+      `adx_webpageid: route-${slug}\nadx_name: ${slug}\nadx_partialurl: ${slug}\nadx_parentpageid: 00000000-0000-0000-0000-000000000001`,
+    );
     fx.write(`web-pages/${slug}/${slug}.webpage.custom_css.css`, fx.read(CSS));
     fx.write(`web-pages/${slug}/${slug}.webpage.copy.html`, '<h2>Original section</h2>');
   }
-  fx.write('websitelanguage.yml', '- adx_websitelanguageid: lang-fr\n  adx_name: French - France\n  adx_languagecode: fr-FR');
+  fx.write(
+    'websitelanguage.yml',
+    '- adx_websitelanguageid: lang-fr\n  adx_name: French - France\n  adx_languagecode: fr-FR',
+  );
   fx.commit();
   fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
   fx.write('web-pages/it/it.webpage.custom_css.css', fx.read(CSS).replace('color: green', 'color: navy'));
@@ -79,11 +88,17 @@ test('real short routes stay distinct from home and exported language prefixes f
 });
 
 test('form custom JS: found by similarity on any page, `$` in the code survives', () => {
-  fx.write(FORM_JS, fx.read(FORM_JS).replace('validate();', () => 'validate();\n  var total = "$&-$1-$$";'));
+  fx.write(
+    FORM_JS,
+    fx.read(FORM_JS).replace('validate();', () => 'validate();\n  var total = "$&-$1-$$";'),
+  );
   const result = rewriter().rewrite(ONLINE_HOME, '/some/other/page');
   assert.ok(result.html.includes('var total = "$&-$1-$$";'));
   assert.ok(result.html.includes('var price = "$1";'));
-  assert.deepEqual(result.applied.map((a) => a.kind), ['basic-form-js']);
+  assert.deepEqual(
+    result.applied.map((a) => a.kind),
+    ['basic-form-js'],
+  );
 });
 
 test('a block is still recognised after a heavy local rewrite, through the baseline', () => {
@@ -104,7 +119,10 @@ test('short scripts that only share boilerplate are not mistaken for each other'
   const form = (call) => `var ExampleApp = ExampleApp || {};\n\n$( document ).ready(function() {\n  ${call}\n});\n`;
   fx.write('basic-forms/a/A.basicform.custom_javascript.js', form('ExampleApp.Finalization.paymentContentEdit();'));
   fx.write('basic-forms/b/B.basicform.custom_javascript.js', form('ExampleApp.Finalization.paymentContentAdd();'));
-  fx.write('basic-forms/c/C.basicform.custom_javascript.js', form('ExampleApp.Products.load();\n  ExampleApp.Products.sort();\n  ExampleApp.Products.show();'));
+  fx.write(
+    'basic-forms/c/C.basicform.custom_javascript.js',
+    form('ExampleApp.Products.load();\n  ExampleApp.Products.sort();\n  ExampleApp.Products.show();'),
+  );
   // online: a fourth form, not in the checkout, built from the same boilerplate
   const online = `<html><body><script>${form('ExampleApp.Core.AddControlExtension();')}</script></body></html>`;
   const result = rewriter().rewrite(online, '/any');
@@ -113,7 +131,10 @@ test('short scripts that only share boilerplate are not mistaken for each other'
   // while a real, drifted copy of one of them is still recognised
   const drifted = `<html><body><script>${form('ExampleApp.Products.load();\n  ExampleApp.Products.sort();\n  ExampleApp.Products.show();\n  ExampleApp.Products.newerOnlineCall();')}</script></body></html>`;
   const hit = rewriter().rewrite(drifted, '/any');
-  assert.deepEqual(hit.applied.map((a) => a.rel), ['basic-forms/c/C.basicform.custom_javascript.js']);
+  assert.deepEqual(
+    hit.applied.map((a) => a.rel),
+    ['basic-forms/c/C.basicform.custom_javascript.js'],
+  );
 });
 
 test('non-code script elements and external scripts are never touched', () => {
@@ -134,15 +155,30 @@ test('new page custom JS that is not online yet is injected into its page only',
 });
 
 test('web template: a literal change is patched into the rendered page', () => {
-  fx.write(HEADER, fx.read(HEADER).replace('<a href="/about-us">About us</a>', '<a href="/about-us">About</a>\n    <a href="/contact">Contact</a>'));
+  fx.write(
+    HEADER,
+    fx
+      .read(HEADER)
+      .replace('<a href="/about-us">About us</a>', '<a href="/about-us">About</a>\n    <a href="/contact">Contact</a>'),
+  );
   const result = rewriter().rewrite(ONLINE_HOME, '/');
-  assert.ok(result.html.includes('    <a href="/about-us">About</a>\r\n    <a href="/contact">Contact</a>\r\n  </nav>'));
+  assert.ok(
+    result.html.includes('    <a href="/about-us">About</a>\r\n    <a href="/contact">Contact</a>\r\n  </nav>'),
+  );
   assert.deepEqual(result.applied, [{ kind: 'web-template', rel: HEADER, action: 'patched 1 change' }]);
   assert.deepEqual(result.notes, []);
 });
 
 test('web template: {{ values }} on a changed line keep what the portal rendered', () => {
-  fx.write(HEADER, fx.read(HEADER).replace('<span class="who">Signed in as {{ user.fullname }}</span>', '<b class="who">{{ user.fullname }} is signed in</b>'));
+  fx.write(
+    HEADER,
+    fx
+      .read(HEADER)
+      .replace(
+        '<span class="who">Signed in as {{ user.fullname }}</span>',
+        '<b class="who">{{ user.fullname }} is signed in</b>',
+      ),
+  );
   const result = rewriter().rewrite(ONLINE_HOME, '/');
   assert.ok(result.html.includes('<b class="who">Ada Lovelace is signed in</b>'));
   assert.ok(!result.html.includes('Signed in as'));
@@ -170,14 +206,20 @@ test('web template: a change to Liquid tags is listed as needing a deployment', 
 });
 
 test('web template: literal and Liquid changes in one file are handled independently', () => {
-  fx.write(HEADER, fx.read(HEADER).replace('{% if user %}', '{% if user.roles %}').replace('About us', 'About the agency'));
+  fx.write(
+    HEADER,
+    fx.read(HEADER).replace('{% if user %}', '{% if user.roles %}').replace('About us', 'About the agency'),
+  );
   const r = rewriter();
   assert.ok(r.rewrite(ONLINE_HOME, '/').html.includes('About the agency'));
   assert.equal(r.unsupported.length, 1);
 });
 
 test('web template: removed lines disappear from the page', () => {
-  fx.write(HEADER, fx.read(HEADER).replace('  <nav class="main-nav">\n    <a href="/about-us">About us</a>\n  </nav>\n', ''));
+  fx.write(
+    HEADER,
+    fx.read(HEADER).replace('  <nav class="main-nav">\n    <a href="/about-us">About us</a>\n  </nav>\n', ''),
+  );
   const result = rewriter().rewrite(ONLINE_HOME, '/');
   assert.ok(!result.html.includes('main-nav'));
   assert.ok(result.html.includes('  \r\n</header>'));
@@ -237,7 +279,8 @@ test('data responses (JSON) only take web template changes, never snippet text',
 });
 
 test("scope 'changed': an edited form does not take over the script of a similar, untouched form", () => {
-  const body = (extra) => `$(document).ready(function () {\n  setup("${extra}");\n  bindLookup();\n  bindDates();\n  bindTotals();\n  validateAll();\n});\n`;
+  const body = (extra) =>
+    `$(document).ready(function () {\n  setup("${extra}");\n  bindLookup();\n  bindDates();\n  bindTotals();\n  validateAll();\n});\n`;
   fx.write('basic-forms/order/Order.basicform.custom_javascript.js', body('order'));
   fx.write('basic-forms/quote/Quote.basicform.custom_javascript.js', body('quote'));
   fx.commit();
@@ -285,9 +328,21 @@ test("scope 'changed': unchanged local blocks do not override the online ones", 
 });
 
 test('sourceMaps: a recognised inline script is loaded from its local file, in place', () => {
-  const r = new HtmlRewriter({ model: new PortalModel(fx.dir), site: SITE, baseline: new GitBaseline(fx.dir, 'HEAD'), sourceMaps: true });
-  const result = r.rewrite(ONLINE_HOME.replace('<script type="text/javascript">$(', '<script defer type="text/javascript">$('), '/');
-  assert.ok(result.html.includes(`<form><script type="text/javascript" src="${INLINE_PREFIX}basic-forms/contact/Contact.basicform.custom_javascript.js"></script></form>`));
+  const r = new HtmlRewriter({
+    model: new PortalModel(fx.dir),
+    site: SITE,
+    baseline: new GitBaseline(fx.dir, 'HEAD'),
+    sourceMaps: true,
+  });
+  const result = r.rewrite(
+    ONLINE_HOME.replace('<script type="text/javascript">$(', '<script defer type="text/javascript">$('),
+    '/',
+  );
+  assert.ok(
+    result.html.includes(
+      `<form><script type="text/javascript" src="${INLINE_PREFIX}basic-forms/contact/Contact.basicform.custom_javascript.js"></script></form>`,
+    ),
+  );
   // not an override: the script is the same as online, only where it is loaded from changed
   assert.deepEqual(result.applied, []);
   // styles and data blocks stay inline
@@ -297,7 +352,12 @@ test('sourceMaps: a recognised inline script is loaded from its local file, in p
 
 test('sourceMaps: new page JS is injected as a script file too', () => {
   fx.write(PAGE_JS, 'window.fresh = 1;\n');
-  const r = new HtmlRewriter({ model: new PortalModel(fx.dir), site: SITE, baseline: new GitBaseline(fx.dir, 'HEAD'), sourceMaps: true });
+  const r = new HtmlRewriter({
+    model: new PortalModel(fx.dir),
+    site: SITE,
+    baseline: new GitBaseline(fx.dir, 'HEAD'),
+    sourceMaps: true,
+  });
   const html = r.rewrite(ONLINE_HOME, '/').html;
   assert.ok(html.includes(`<script type="text/javascript" src="${inlineScriptUrl(PAGE_JS)}"></script>\n</body>`));
 });

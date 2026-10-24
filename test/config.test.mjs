@@ -48,7 +48,8 @@ beforeEach(() => {
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cfg-')));
   config = path.join(dir, 'paqvilo.config.yml');
   write('paqvilo.config.yml', CATALOGUE);
-  for (const site of ['alpha', 'beta', 'gamma']) fs.mkdirSync(path.join(dir, 'portals', site, 'web-files'), { recursive: true });
+  for (const site of ['alpha', 'beta', 'gamma'])
+    fs.mkdirSync(path.join(dir, 'portals', site, 'web-files'), { recursive: true });
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -58,7 +59,8 @@ const targets = (opts = {}, shell = {}) => loadDevTargets({ config, ...opts }, s
 
 test('standalone source root resolves all portals in an independent worktree with CLI precedence', async () => {
   for (const root of ['shared-checkout', 'personal-checkout', 'shell-checkout', 'cli-checkout']) {
-    for (const site of ['alpha', 'beta']) fs.mkdirSync(path.join(dir, root, 'portals', site, 'web-files'), { recursive: true });
+    for (const site of ['alpha', 'beta'])
+      fs.mkdirSync(path.join(dir, root, 'portals', site, 'web-files'), { recursive: true });
   }
   write('paqvilo.config.local.yml', 'sourceRoot: shared-checkout\n');
   assert.equal((await load()).sourceDir, path.join(dir, 'shared-checkout', 'portals', 'alpha'));
@@ -76,11 +78,17 @@ test('source root keeps absolute and named personal source paths independent and
   await assert.rejects(load(), /not-present.*does not look like a portal extract/);
   const personal = await load({}, { PAQVILO_ALPHA_SOURCE: 'portals/alpha' });
   assert.equal(personal.sourceDir, path.join(dir, 'portals', 'alpha'));
-  write('paqvilo.config.local.yml', `sourceRoot: not-present\nsites:\n  alpha:\n    source: ${JSON.stringify(path.join(dir, 'portals', 'alpha'))}\n`);
+  write(
+    'paqvilo.config.local.yml',
+    `sourceRoot: not-present\nsites:\n  alpha:\n    source: ${JSON.stringify(path.join(dir, 'portals', 'alpha'))}\n`,
+  );
   assert.equal((await load()).sourceDir, path.join(dir, 'portals', 'alpha'));
   write('paqvilo.config.local.yml', 'sourceRoot: false\n');
   await assert.rejects(load(), /sourceRoot must be a non-empty string/);
-  await assert.rejects(load({ repo: '' }), /sourceRoot must be a non-empty string|repository root must be a non-empty path/);
+  await assert.rejects(
+    load({ repo: '' }),
+    /sourceRoot must be a non-empty string|repository root must be a non-empty path/,
+  );
 });
 
 test('with nothing chosen the catalogue defaults apply', async () => {
@@ -96,9 +104,15 @@ test('with nothing chosen the catalogue defaults apply', async () => {
 });
 
 test('directory route globs can preserve file suffixes and nested segments', async () => {
-  write('paqvilo.config.local.yml', 'defaults:\n  routes:\n    - {url: /assets/*.js, dir: build}\n    - {url: /nested/**/*.css, dir: styles}\n');
+  write(
+    'paqvilo.config.local.yml',
+    'defaults:\n  routes:\n    - {url: /assets/*.js, dir: build}\n    - {url: /nested/**/*.css, dir: styles}\n',
+  );
   const cfg = await load();
-  assert.deepEqual(cfg.site.routes, [{ url: '/assets/*.js', dir: 'build' }, { url: '/nested/**/*.css', dir: 'styles' }]);
+  assert.deepEqual(cfg.site.routes, [
+    { url: '/assets/*.js', dir: 'build' },
+    { url: '/nested/**/*.css', dir: 'styles' },
+  ]);
 });
 
 test('.env chooses site and environment', async () => {
@@ -164,11 +178,22 @@ test('.env can add an environment, repoint a site, and add a whole site', async 
   assert.equal(sandbox.origin, 'https://sandbox.example.com');
   assert.equal(sandbox.sourceDir, path.join(dir, 'elsewhere'));
   // the catalogue's environments of that site are still there
-  assert.deepEqual(Object.keys(loadCatalogue({ config }, {}).sites.alpha.environments), ['dev', 'test', 'prod', 'my-sandbox']);
+  assert.deepEqual(Object.keys(loadCatalogue({ config }, {}).sites.alpha.environments), [
+    'dev',
+    'test',
+    'prod',
+    'my-sandbox',
+  ]);
   const gamma = await load({ site: 'gamma' });
   assert.equal(`${gamma.siteName}@${gamma.envName} ${gamma.origin}`, 'gamma@dev https://gamma-dev.example.com');
   // and it gets the shared defaults like any catalogue site
-  assert.deepEqual(gamma.site.inline.kinds, ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js']);
+  assert.deepEqual(gamma.site.inline.kinds, [
+    'page-js',
+    'page-css',
+    'basic-form-js',
+    'advanced-form-step-js',
+    'list-js',
+  ]);
 });
 
 test('one-off URL and source', async () => {
@@ -179,7 +204,10 @@ test('one-off URL and source', async () => {
 });
 
 test('browser and behaviour settings come from .env', async () => {
-  write('.env', 'PAQVILO_BROWSER=chrome\nPAQVILO_DEBUG_PORT=0\nPAQVILO_LIVE_RELOAD=false\nPAQVILO_SOURCE_MAPS=no\nPAQVILO_HEADLESS=true\n');
+  write(
+    '.env',
+    'PAQVILO_BROWSER=chrome\nPAQVILO_DEBUG_PORT=0\nPAQVILO_LIVE_RELOAD=false\nPAQVILO_SOURCE_MAPS=no\nPAQVILO_HEADLESS=true\n',
+  );
   const cfg = await load();
   assert.equal(cfg.browser.channel, 'chrome');
   assert.equal(cfg.browser.debugPort, null);
@@ -232,8 +260,11 @@ test('use: writes the choice into .env text without disturbing the rest', () => 
 
 test('configuration fails early for malformed schemas and unsafe identifiers', async () => {
   for (const [text, message] of [
-    ['sites: []', /No sites in paqvilo.config.yml/], ['sites: { alpha: nope }', /sites.alpha must be a mapping/], ['liveReload: "false"', /liveReload must be true or false/],
-    ['defaults: { inline: { minSimilarity: 2 } }', /minSimilarity must be between 0 and 1/], ['defaults: { inlien: {} }', /Unknown setting defaults.inlien/],
+    ['sites: []', /No sites in paqvilo.config.yml/],
+    ['sites: { alpha: nope }', /sites.alpha must be a mapping/],
+    ['liveReload: "false"', /liveReload must be true or false/],
+    ['defaults: { inline: { minSimilarity: 2 } }', /minSimilarity must be between 0 and 1/],
+    ['defaults: { inlien: {} }', /Unknown setting defaults.inlien/],
     ['defaults: { routes: [{url: /x, file: a, dir: b}] }', /must select exactly one of file, dir or passthrough/],
     ['sites: { "../escape": {source: portals/alpha} }', /site name must contain only letters/],
     ['sites: { alpha: { environments: { dev: { caution: "false" } } } }', /caution must be true or false/],
@@ -244,15 +275,24 @@ test('configuration fails early for malformed schemas and unsafe identifiers', a
 });
 
 test('URLs, start paths and debugger ports are validated before launching', async () => {
-  for (const url of ['file:///tmp/site', 'javascript:alert(1)', 'ftp://example.com', 'https://user:secret@example.com']) await assert.rejects(load({ url }), /URL/);
-  for (const value of ['@evil.example/', '//evil.example/', '/\\evil.example/', 'https://evil.example/']) await assert.rejects(load({ path: value }), /same-origin/);
-  for (const port of ['-1', '65536', '1.5', 'Infinity']) await assert.rejects(load({ 'debug-port': port }), /port|Port/);
-  assert.equal((await load({ path: '/about?q=yes#section', 'debug-port': '65535' })).site.startPath, '/about?q=yes#section');
+  for (const url of ['file:///tmp/site', 'javascript:alert(1)', 'ftp://example.com', 'https://user:secret@example.com'])
+    await assert.rejects(load({ url }), /URL/);
+  for (const value of ['@evil.example/', '//evil.example/', '/\\evil.example/', 'https://evil.example/'])
+    await assert.rejects(load({ path: value }), /same-origin/);
+  for (const port of ['-1', '65536', '1.5', 'Infinity'])
+    await assert.rejects(load({ 'debug-port': port }), /port|Port/);
+  assert.equal(
+    (await load({ path: '/about?q=yes#section', 'debug-port': '65535' })).site.startPath,
+    '/about?q=yes#section',
+  );
   await assert.rejects(load({ headed: true, headless: true }), /cannot be used together/);
 });
 
 test('a local override can extend a shorthand environment and disable the debugger', async () => {
-  write('paqvilo.config.local.yml', 'browser: { debugPort: null }\nsites: { alpha: { environments: { dev: { baseline: release } } } }');
+  write(
+    'paqvilo.config.local.yml',
+    'browser: { debugPort: null }\nsites: { alpha: { environments: { dev: { baseline: release } } } }',
+  );
   const cfg = await load();
   assert.equal(cfg.origin, 'https://alpha-dev.example.com');
   assert.equal(cfg.site.markup.baseline, 'release');
@@ -263,11 +303,17 @@ test('an explicit environment wins over a remembered one-off URL', async () => {
   write('.env', 'PAQVILO_URL=https://old.example.com\n');
   assert.equal((await load({ env: 'dev' })).origin, 'https://alpha-dev.example.com');
   assert.equal((await load()).origin, 'https://old.example.com');
-  assert.equal((await load({ env: 'dev', url: 'https://explicit.example.com' })).origin, 'https://explicit.example.com');
+  assert.equal(
+    (await load({ env: 'dev', url: 'https://explicit.example.com' })).origin,
+    'https://explicit.example.com',
+  );
 });
 
 test('use updates export, spacing and duplicate values while preserving CRLF', () => {
-  assert.equal(setEnvLine('export PAQVILO_SITE = alpha\r\nPAQVILO_SITE=beta\r\nX=1\r\n', 'PAQVILO_SITE', 'gamma'), 'PAQVILO_SITE=gamma\r\nPAQVILO_SITE=gamma\r\nX=1\r\n');
+  assert.equal(
+    setEnvLine('export PAQVILO_SITE = alpha\r\nPAQVILO_SITE=beta\r\nX=1\r\n', 'PAQVILO_SITE', 'gamma'),
+    'PAQVILO_SITE=gamma\r\nPAQVILO_SITE=gamma\r\nX=1\r\n',
+  );
   assert.equal(setEnvLine('X=1\r\n', 'PAQVILO_SITE', 'alpha'), 'X=1\r\nPAQVILO_SITE=alpha\r\n');
   assert.throws(() => setEnvLine('', 'PAQVILO_SITE', 'alpha\nINJECTED=true'), /Invalid/);
 });
@@ -286,7 +332,12 @@ test('selecting a site cannot silently reuse a one-off source from another check
 });
 
 test('remembered selections disable stale one-off target settings in the file', () => {
-  const text = rememberSelection('PAQVILO_URL=https://old.example.com\r\nexport PAQVILO_SOURCE = old\r\n', 'beta', 'test', 'alpha');
+  const text = rememberSelection(
+    'PAQVILO_URL=https://old.example.com\r\nexport PAQVILO_SOURCE = old\r\n',
+    'beta',
+    'test',
+    'alpha',
+  );
   assert.match(text, /# PAQVILO_URL=https:\/\/old.example.com/);
   assert.match(text, /# export PAQVILO_SOURCE = old/);
   assert.match(text, /PAQVILO_SITE=beta\r\nPAQVILO_ENV=test\r\n$/);
@@ -311,34 +362,54 @@ test('all portal targets retain environment defaults, isolated settings and init
   const result = await targets({ portals: 'all', path: '/initial-only/' });
   assert.equal(result.initial.siteName, 'beta');
   assert.equal(result.initial.site.startPath, '/initial-only/');
-  assert.equal(result.targets.find((cfg) => cfg.siteName === 'beta'), result.initial);
+  assert.equal(
+    result.targets.find((cfg) => cfg.siteName === 'beta'),
+    result.initial,
+  );
   const testEnv = result.targets.find((cfg) => cfg.siteName === 'alpha' && cfg.envName === 'test');
   assert.equal(testEnv.site.startPath, '/home/');
   assert.equal(testEnv.site.scope, 'changed');
   assert.equal(testEnv.site.markup.baseline, 'origin/release/test');
   assert.equal(result.initial.site.markup.baseline, 'origin/beta');
-  assert.equal(result.targets.some((cfg)=>cfg.caution),false);
-  write('paqvilo.config.local.yml','includeCaution: true\n');assert.ok((await targets({portals:'all'})).targets.some(cfg=>cfg.envName==='prod'&&cfg.caution));
+  assert.equal(
+    result.targets.some((cfg) => cfg.caution),
+    false,
+  );
+  write('paqvilo.config.local.yml', 'includeCaution: true\n');
+  assert.ok((await targets({ portals: 'all' })).targets.some((cfg) => cfg.envName === 'prod' && cfg.caution));
   testEnv.site.inline.enabled = false;
   testEnv.site.routes.push({ url: '/only-test', passthrough: true });
   const devEnv = result.targets.find((cfg) => cfg.siteName === 'alpha' && cfg.envName === 'dev');
   assert.equal(devEnv.site.inline.enabled, true);
   assert.deepEqual(devEnv.site.routes, []);
-  const global = await targets({ portals: 'all', scope: 'all', baseline: 'explicit-ref' }, { PAQVILO_SCOPE: 'changed', PAQVILO_BASELINE: 'shell-ref' });
+  const global = await targets(
+    { portals: 'all', scope: 'all', baseline: 'explicit-ref' },
+    { PAQVILO_SCOPE: 'changed', PAQVILO_BASELINE: 'shell-ref' },
+  );
   assert.ok(global.targets.every((cfg) => cfg.site.scope === 'all' && cfg.site.markup.baseline === 'explicit-ref'));
   const shell = await targets({ portals: 'all' }, { PAQVILO_SCOPE: 'changed', PAQVILO_BASELINE: 'shell-ref' });
   assert.ok(shell.targets.every((cfg) => cfg.site.scope === 'changed' && cfg.site.markup.baseline === 'shell-ref'));
 });
 
 test('all portal coverage includes .env site/source/environment additions with one catalogue read and no network', async (t) => {
-  write('.env', 'PAQVILO_PORTALS=all\nPAQVILO_ALPHA_SOURCE=portals/gamma\nPAQVILO_ALPHA_ENV_SANDBOX=https://sandbox.example.com\nPAQVILO_GAMMA_SOURCE=portals/gamma\nPAQVILO_GAMMA_ENV_EXTRA=https://gamma-extra.example.com\n');
+  write(
+    '.env',
+    'PAQVILO_PORTALS=all\nPAQVILO_ALPHA_SOURCE=portals/gamma\nPAQVILO_ALPHA_ENV_SANDBOX=https://sandbox.example.com\nPAQVILO_GAMMA_SOURCE=portals/gamma\nPAQVILO_GAMMA_ENV_EXTRA=https://gamma-extra.example.com\n',
+  );
   const read = fs.readFileSync;
   const reads = [];
-  t.mock.method(fs, 'readFileSync', (file, ...args) => { reads.push(String(file)); return read(file, ...args); });
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    reads.push(String(file));
+    return read(file, ...args);
+  });
   t.mock.method(globalThis, 'fetch', () => assert.fail('target discovery must remain offline'));
   const result = await targets();
   assert.equal(result.targets.length, 5);
-  assert.ok(result.targets.filter((cfg) => cfg.siteName === 'alpha').every((cfg) => cfg.sourceDir === path.join(dir, 'portals', 'gamma')));
+  assert.ok(
+    result.targets
+      .filter((cfg) => cfg.siteName === 'alpha')
+      .every((cfg) => cfg.sourceDir === path.join(dir, 'portals', 'gamma')),
+  );
   assert.equal(result.targets.find((cfg) => cfg.siteName === 'gamma').origin, 'https://gamma-extra.example.com');
   assert.equal(reads.filter((file) => file === config).length, 1);
   assert.equal(reads.filter((file) => file === path.join(dir, '.env')).length, 1);
@@ -346,10 +417,16 @@ test('all portal coverage includes .env site/source/environment additions with o
 
 test('all portal mode rejects every one-off URL/source conflict even when selection would ignore it', async () => {
   for (const option of [{ url: 'https://custom.example.com' }, { source: 'portals/gamma' }]) {
-    await assert.rejects(targets({ portals: 'all', site: 'alpha', ...option }), /portals=all cannot be combined with --(?:url|source)/);
+    await assert.rejects(
+      targets({ portals: 'all', site: 'alpha', ...option }),
+      /portals=all cannot be combined with --(?:url|source)/,
+    );
   }
   for (const setting of [{ PAQVILO_URL: 'https://custom.example.com' }, { PAQVILO_SOURCE: 'portals/gamma' }]) {
-    await assert.rejects(targets({ portals: 'all', site: 'alpha', env: 'dev' }, setting), /portals=all cannot be combined with PAQVILO_(?:URL|SOURCE)/);
+    await assert.rejects(
+      targets({ portals: 'all', site: 'alpha', env: 'dev' }, setting),
+      /portals=all cannot be combined with PAQVILO_(?:URL|SOURCE)/,
+    );
   }
   write('.env', 'PAQVILO_PORTALS=all\nPAQVILO_URL=https://custom.example.com\n');
   await assert.rejects(targets(), /PAQVILO_URL/);
@@ -370,12 +447,28 @@ test('single-target configuration still allows one-off overrides with the all-po
 });
 
 test('all portal mode rejects duplicate origins but defers unvisited source validation', async () => {
-  write('paqvilo.config.local.yml', 'sites:\n  beta:\n    environments:\n      uat: https://ALPHA-DEV.example.com:443/another-path\n');
-  await assert.rejects(targets({ portals: 'all' }), (error) => /Duplicate portal origin https:\/\/alpha-dev.example.com/.test(error.message) && /alpha @ dev/.test(error.message) && /beta @ uat/.test(error.message));
+  write(
+    'paqvilo.config.local.yml',
+    'sites:\n  beta:\n    environments:\n      uat: https://ALPHA-DEV.example.com:443/another-path\n',
+  );
+  await assert.rejects(
+    targets({ portals: 'all' }),
+    (error) =>
+      /Duplicate portal origin https:\/\/alpha-dev.example.com/.test(error.message) &&
+      /alpha @ dev/.test(error.message) &&
+      /beta @ uat/.test(error.message),
+  );
   assert.equal((await targets()).targets.length, 1, 'selected mode does not arm other origins');
   write('paqvilo.config.local.yml', 'sites:\n  beta:\n    source: nonexistent-extract\n');
-  assert.equal((await targets({ portals: 'all' })).targets.length, 3, 'unused extracts do not prevent the working-day session');
-  await assert.rejects(targets({ portals: 'all', site: 'beta' }), /source of site "beta".*does not look like a portal extract/);
+  assert.equal(
+    (await targets({ portals: 'all' })).targets.length,
+    3,
+    'unused extracts do not prevent the working-day session',
+  );
+  await assert.rejects(
+    targets({ portals: 'all', site: 'beta' }),
+    /source of site "beta".*does not look like a portal extract/,
+  );
   write('paqvilo.config.local.yml', 'sites:\n  empty:\n    source: portals/gamma\n');
   await assert.rejects(targets({ portals: 'all' }), /Site "empty" has no environments/);
 });
@@ -412,7 +505,11 @@ test('browser channel and named profile follow CLI, shell, .env and YAML precede
   const explicit = await load({ browser: 'chromium', profile: 'CLI-Work' }, shell);
   assert.equal(explicit.browser.profile, 'cli-work');
   assert.equal(explicit.browser.channel, 'chromium');
-  assert.equal(explicit.browser.profileDir, 'profiles-base', 'named identity does not replace the configured base directory');
+  assert.equal(
+    explicit.browser.profileDir,
+    'profiles-base',
+    'named identity does not replace the configured base directory',
+  );
 });
 
 test('external user-data paths resolve by their configuration layer and preserve profile directory spaces', async () => {
@@ -432,20 +529,61 @@ test('external user-data paths resolve by their configuration layer and preserve
 });
 
 test('profile selectors reject traversal, reserved names, controls and ambiguous settings', async () => {
-  for (const profile of ['', '.', '..', '../outside', 'a/b', 'a\\b', 'has spaces', 'CON', 'lpt9', 'x'.repeat(65), 'bad\nname']) {
+  for (const profile of [
+    '',
+    '.',
+    '..',
+    '../outside',
+    'a/b',
+    'a\\b',
+    'has spaces',
+    'CON',
+    'lpt9',
+    'x'.repeat(65),
+    'bad\nname',
+  ]) {
     await assert.rejects(load({ profile }), /browser.profile/, `profile ${JSON.stringify(profile)}`);
   }
-  for (const child of ['', '.', '..', '../outside', 'a/b', 'a\\b', 'CON', 'NUL.txt', 'COM¹', 'Profile 1.', 'Profile 1 ', 'bad:name', 'bad?name', 'bad\u007fname', 'x'.repeat(256)]) {
-    await assert.rejects(load({ 'user-data-dir': 'browser-root', 'profile-directory': child }), /browser.profileDirectory/, `child ${JSON.stringify(child)}`);
+  for (const child of [
+    '',
+    '.',
+    '..',
+    '../outside',
+    'a/b',
+    'a\\b',
+    'CON',
+    'NUL.txt',
+    'COM¹',
+    'Profile 1.',
+    'Profile 1 ',
+    'bad:name',
+    'bad?name',
+    'bad\u007fname',
+    'x'.repeat(256),
+  ]) {
+    await assert.rejects(
+      load({ 'user-data-dir': 'browser-root', 'profile-directory': child }),
+      /browser.profileDirectory/,
+      `child ${JSON.stringify(child)}`,
+    );
   }
-  for (const root of ['', '   ', 'bad\u0000root', 'bad\nroot']) await assert.rejects(load({ 'user-data-dir': root }), /browser.userDataDir/);
+  for (const root of ['', '   ', 'bad\u0000root', 'bad\nroot'])
+    await assert.rejects(load({ 'user-data-dir': root }), /browser.userDataDir/);
   await assert.rejects(load({ 'profile-directory': 'Default' }), /requires browser.userDataDir/);
   await assert.rejects(load({ profile: 'work', 'user-data-dir': 'browser-root' }), /cannot be combined/);
   write('.env', 'PAQVILO_PROFILE=remembered\n');
-  await assert.rejects(load({ 'user-data-dir': 'browser-root' }), /cannot be combined/, 'CLI does not silently clear a different stored selector');
+  await assert.rejects(
+    load({ 'user-data-dir': 'browser-root' }),
+    /cannot be combined/,
+    'CLI does not silently clear a different stored selector',
+  );
   write('.env', 'PAQVILO_USER_DATA_DIR=remembered-root\n');
   await assert.rejects(load({ profile: 'work' }), /cannot be combined/);
-  await assert.rejects(load({}, { PAQVILO_PROFILE_DIRECTORY: 'Profile 1 ' }), /browser.profileDirectory/, 'shell directory spelling is not silently trimmed');
+  await assert.rejects(
+    load({}, { PAQVILO_PROFILE_DIRECTORY: 'Profile 1 ' }),
+    /browser.profileDirectory/,
+    'shell directory spelling is not silently trimmed',
+  );
   write('.env', 'PAQVILO_USER_DATA_DIR=remembered-root\nPAQVILO_PROFILE_DIRECTORY="Profile 1 "\n');
   await assert.rejects(load(), /browser.profileDirectory/, 'quoted .env directory spelling is not silently trimmed');
   write('.env', 'PAQVILO_PROFILE=" work "\n');
@@ -453,7 +591,13 @@ test('profile selectors reject traversal, reserved names, controls and ambiguous
 });
 
 test('profile fields are schema checked and CDP attachment cannot ignore a resolved profile selection', async () => {
-  for (const browser of [{ profile: 12 }, { profile: 'reserved space' }, { userDataDir: true }, { profileDirectory: ['Default'] }, { profileDirectory: '..' }]) {
+  for (const browser of [
+    { profile: 12 },
+    { profile: 'reserved space' },
+    { userDataDir: true },
+    { profileDirectory: ['Default'] },
+    { profileDirectory: '..' },
+  ]) {
     write('paqvilo.config.local.yml', JSON.stringify({ browser }));
     await assert.rejects(load(), /browser\./);
   }
@@ -461,8 +605,15 @@ test('profile fields are schema checked and CDP attachment cannot ignore a resol
   write('.env', 'PAQVILO_CDP_URL=http://127.0.0.1:9001\n');
   assert.equal((await load()).browser.cdpUrl, 'http://127.0.0.1:9001');
   assert.equal((await load({}, { PAQVILO_CDP_URL: 'http://127.0.0.1:9002' })).browser.cdpUrl, 'http://127.0.0.1:9002');
-  assert.equal((await load({ 'cdp-url': 'ws://127.0.0.1:9003/devtools/browser/id' })).browser.cdpUrl, 'ws://127.0.0.1:9003/devtools/browser/id');
-  for (const selector of [{ profile: 'work' }, { 'user-data-dir': 'browser-root' }, { 'user-data-dir': 'browser-root', 'profile-directory': 'Default' }]) {
+  assert.equal(
+    (await load({ 'cdp-url': 'ws://127.0.0.1:9003/devtools/browser/id' })).browser.cdpUrl,
+    'ws://127.0.0.1:9003/devtools/browser/id',
+  );
+  for (const selector of [
+    { profile: 'work' },
+    { 'user-data-dir': 'browser-root' },
+    { 'user-data-dir': 'browser-root', 'profile-directory': 'Default' },
+  ]) {
     await assert.rejects(load(selector), /browser.cdpUrl.*cannot be combined/);
   }
   await assert.rejects(load({ 'cdp-url': 'https://user:secret@example.com' }), /credentials/);
@@ -474,11 +625,17 @@ test('CDP selection cannot silently ignore an inherited or explicit launch debug
   assert.equal((await load({ 'debug-port': '0' })).browser.debugPort, null);
   assert.equal((await load({}, { PAQVILO_DEBUG_PORT: '0' })).browser.debugPort, null);
   for (const cdpUrl of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented']) {
-    await assert.rejects(load({ 'cdp-url': cdpUrl, 'debug-port': '9222' }), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+    await assert.rejects(
+      load({ 'cdp-url': cdpUrl, 'debug-port': '9222' }),
+      /browser.debugPort.*cannot be combined with browser.cdpUrl/,
+    );
   }
   write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9333", debugPort: null }');
   assert.equal((await load()).browser.cdpUrl, 'http://127.0.0.1:9333');
-  await assert.rejects(load({}, { PAQVILO_DEBUG_PORT: '9222' }), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+  await assert.rejects(
+    load({}, { PAQVILO_DEBUG_PORT: '9222' }),
+    /browser.debugPort.*cannot be combined with browser.cdpUrl/,
+  );
 });
 
 test('all portal targets share resolved browser choices without sharing mutable settings', async () => {
@@ -487,7 +644,14 @@ test('all portal targets share resolved browser choices without sharing mutable 
   result.targets[0].browser.profile = 'changed-one';
   assert.ok(result.targets.slice(1).every((cfg) => cfg.browser.profile === 'team_work'));
   const again = await targets({ portals: 'all', 'user-data-dir': 'profiles-root', 'profile-directory': 'Profile 1' });
-  assert.ok(again.targets.every((cfg) => cfg.browser.profile === null && cfg.browser.userDataDir === path.resolve('profiles-root') && cfg.browser.profileDirectory === 'Profile 1'));
+  assert.ok(
+    again.targets.every(
+      (cfg) =>
+        cfg.browser.profile === null &&
+        cfg.browser.userDataDir === path.resolve('profiles-root') &&
+        cfg.browser.profileDirectory === 'Profile 1',
+    ),
+  );
   assert.equal((await load()).browser.profile, null, 'resolution does not mutate defaults or the catalogue');
 });
 
@@ -499,33 +663,72 @@ test('Mirage dataverse simulator settings resolve from the catalogue mirage key'
 });
 
 test('Mirage settings resolve projects and data packs from the catalogue folder and Solution roots from the checkout', async () => {
-  for (const site of ['alpha', 'beta']) fs.mkdirSync(path.join(dir, 'checkout', 'portals', site, 'web-files'), { recursive: true });
-  write('paqvilo.config.local.yml', [
-    'sourceRoot: checkout',
-    'defaults:',
-    '  mirage: { port: 0, preset: open-sandbox }',
-    'sites:',
-    '  alpha:',
-    '    mirage:',
-    '      project: mirage/alpha.project.yml',
-    '      solutionRoots: [../solutions/Base, ../solutions/Business]',
-    '      dataPacks: [packs/local/pack.mjs, { id: shared-pack, module: packs/shared/pack.mjs }]',
-    '',
-  ].join('\n'));
+  for (const site of ['alpha', 'beta'])
+    fs.mkdirSync(path.join(dir, 'checkout', 'portals', site, 'web-files'), { recursive: true });
+  write(
+    'paqvilo.config.local.yml',
+    [
+      'sourceRoot: checkout',
+      'defaults:',
+      '  mirage: { port: 0, preset: open-sandbox }',
+      'sites:',
+      '  alpha:',
+      '    mirage:',
+      '      project: mirage/alpha.project.yml',
+      '      solutionRoots: [../solutions/Base, ../solutions/Business]',
+      '      dataPacks: [packs/local/pack.mjs, { id: shared-pack, module: packs/shared/pack.mjs }]',
+      '',
+    ].join('\n'),
+  );
   assert.deepEqual((await load()).mirageConfig, {
     project: path.join(dir, 'mirage', 'alpha.project.yml'),
     solutionRoots: [path.join(dir, 'solutions', 'Base'), path.join(dir, 'solutions', 'Business')],
     solutionOrder: 'derived',
-    dataPacks: [{ id: null, module: path.join(dir, 'packs', 'local', 'pack.mjs') }, { id: 'shared-pack', module: path.join(dir, 'packs', 'shared', 'pack.mjs') }],
+    dataPacks: [
+      { id: null, module: path.join(dir, 'packs', 'local', 'pack.mjs') },
+      { id: 'shared-pack', module: path.join(dir, 'packs', 'shared', 'pack.mjs') },
+    ],
     port: 0,
     preset: 'open-sandbox',
     observed: null,
   });
-  assert.deepEqual((await load({ site: 'beta' })).mirageConfig, { project: null, solutionRoots: [], solutionOrder: 'derived', dataPacks: [], port: 0, preset: 'open-sandbox', observed: null }, 'defaults apply to every site');
-  for (const site of ['alpha', 'beta']) fs.mkdirSync(path.join(dir, 'worktree', 'portals', site, 'web-files'), { recursive: true });
-  assert.deepEqual((await load({ repo: path.join(dir, 'worktree') })).mirageConfig.solutionRoots, [path.join(dir, 'solutions', 'Base'), path.join(dir, 'solutions', 'Business')], 'sibling roots follow the selected checkout');
-  write('paqvilo.config.local.yml', 'sourceRoot: checkout\ndefaults:\n  mirage: { port: 0, preset: open-sandbox }\nsites:\n  alpha:\n    mirage: null\n');
-  assert.deepEqual((await load()).mirageConfig, { project: null, solutionRoots: [], solutionOrder: 'derived', dataPacks: [], port: null, preset: null, observed: null }, 'a personal null clears inherited settings');
+  assert.deepEqual(
+    (await load({ site: 'beta' })).mirageConfig,
+    {
+      project: null,
+      solutionRoots: [],
+      solutionOrder: 'derived',
+      dataPacks: [],
+      port: 0,
+      preset: 'open-sandbox',
+      observed: null,
+    },
+    'defaults apply to every site',
+  );
+  for (const site of ['alpha', 'beta'])
+    fs.mkdirSync(path.join(dir, 'worktree', 'portals', site, 'web-files'), { recursive: true });
+  assert.deepEqual(
+    (await load({ repo: path.join(dir, 'worktree') })).mirageConfig.solutionRoots,
+    [path.join(dir, 'solutions', 'Base'), path.join(dir, 'solutions', 'Business')],
+    'sibling roots follow the selected checkout',
+  );
+  write(
+    'paqvilo.config.local.yml',
+    'sourceRoot: checkout\ndefaults:\n  mirage: { port: 0, preset: open-sandbox }\nsites:\n  alpha:\n    mirage: null\n',
+  );
+  assert.deepEqual(
+    (await load()).mirageConfig,
+    {
+      project: null,
+      solutionRoots: [],
+      solutionOrder: 'derived',
+      dataPacks: [],
+      port: null,
+      preset: null,
+      observed: null,
+    },
+    'a personal null clears inherited settings',
+  );
   assert.equal((await load()).mirage, undefined, 'the resolved settings never collide with the Mirage-mode flag');
 });
 
@@ -547,24 +750,32 @@ test('Mirage settings are schema checked', async () => {
   }
 });
 
-test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async t => {
+test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-resolved-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'portal'));
   const config = path.join(root, 'paqvilo.config.yml');
-  fs.writeFileSync(config, 'sourceRoot: .\nsites:\n  synthetic:\n    source: portal\n    environments: { dev: https://synthetic.example.test }\n    mirage: { port: 8888 }\n');
+  fs.writeFileSync(
+    config,
+    'sourceRoot: .\nsites:\n  synthetic:\n    source: portal\n    environments: { dev: https://synthetic.example.test }\n    mirage: { port: 8888 }\n',
+  );
   let resolved = await resolveCatalogue({ config }, {});
   assert.equal(resolved.provenance.sourceRoot, 'catalogue');
   assert.equal(resolved.sites[0].sourceDir, path.join(root, 'portal'));
   assert.equal(resolved.sites[0].mirage.port, 8888);
   assert.equal(resolved.sites[0].mirage.stateFile, path.join(root, '.paqvilo/simulator/synthetic/state.json'));
-  fs.writeFileSync(path.join(root, 'paqvilo.config.local.yml'), 'sourceRoot: .\nsites:\n  synthetic:\n    mirage: { port: 8999 }\n');
+  fs.writeFileSync(
+    path.join(root, 'paqvilo.config.local.yml'),
+    'sourceRoot: .\nsites:\n  synthetic:\n    mirage: { port: 8999 }\n',
+  );
   resolved = await resolveCatalogue({ config }, {});
-  assert.equal(resolved.provenance.sourceRoot, 'local config'); assert.equal(resolved.sites[0].provenance.port, 'local config');
+  assert.equal(resolved.provenance.sourceRoot, 'local config');
+  assert.equal(resolved.sites[0].provenance.port, 'local config');
   assert.equal(resolved.sites[0].mirage.port, 8999);
   fs.writeFileSync(path.join(root, '.env'), 'PAQVILO_REPO=.\nPAQVILO_SYNTHETIC_SOURCE=portal\n');
   resolved = await resolveCatalogue({ config }, {});
-  assert.equal(resolved.provenance.sourceRoot, '.env'); assert.equal(resolved.sites[0].provenance.sourceDir, '.env');
+  assert.equal(resolved.provenance.sourceRoot, '.env');
+  assert.equal(resolved.sites[0].provenance.sourceDir, '.env');
   resolved = await resolveCatalogue({ config }, { PAQVILO_REPO: root });
   assert.equal(resolved.provenance.sourceRoot, 'shell');
 });

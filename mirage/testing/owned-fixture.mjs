@@ -11,11 +11,8 @@ const fail = (errors, message) => {
 export async function drainFixture(callbacks, { concurrent = false } = {}) {
   const errors = [];
   if (concurrent) {
-    const results = await Promise.allSettled(
-      callbacks.map(async (callback) => callback()),
-    );
-    for (const result of results)
-      if (result.status === "rejected") errors.push(result.reason);
+    const results = await Promise.allSettled(callbacks.map(async (callback) => callback()));
+    for (const result of results) if (result.status === 'rejected') errors.push(result.reason);
   } else {
     for (const callback of callbacks) {
       try {
@@ -25,21 +22,19 @@ export async function drainFixture(callbacks, { concurrent = false } = {}) {
       }
     }
   }
-  fail(errors, "Owned fixture resource collection failed to close.");
+  fail(errors, 'Owned fixture resource collection failed to close.');
 }
 
 export function ownedFixture(context) {
   const existing = owners.get(context);
   if (existing) return existing;
-  if (!context || typeof context.after !== "function")
-    throw new TypeError("An owned fixture needs a test context.");
+  if (!context || typeof context.after !== 'function') throw new TypeError('An owned fixture needs a test context.');
   const closers = [],
     removers = [];
   let closing = false;
   const register = (list, callback) => {
-    if (closing) throw new Error("Fixture cleanup has already started.");
-    if (typeof callback !== "function")
-      throw new TypeError("Fixture cleanup must be a function.");
+    if (closing) throw new Error('Fixture cleanup has already started.');
+    if (typeof callback !== 'function') throw new TypeError('Fixture cleanup must be a function.');
     list.push(callback);
   };
   const owner = Object.freeze({
@@ -57,7 +52,7 @@ export function ownedFixture(context) {
         errors.push(error);
       }
     }
-    fail(errors, "Owned fixture resources failed to close.");
+    fail(errors, 'Owned fixture resources failed to close.');
     // State and evidence directories are retained when resource draining fails.
     for (const remove of removers) {
       try {
@@ -66,7 +61,7 @@ export function ownedFixture(context) {
         errors.push(error);
       }
     }
-    fail(errors, "Owned fixture directories failed to be removed.");
+    fail(errors, 'Owned fixture directories failed to be removed.');
   });
   owners.set(context, owner);
   return owner;

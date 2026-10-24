@@ -10,7 +10,14 @@ import { describeStatus } from '../lense/online.mjs';
 
 const fx = createFixture();
 after(() => fx.cleanup());
-const cfg = { siteName: 'test', envName: 'dev', origin: 'https://portal.example', sourceDir: fx.dir, stateDir: path.join(fx.dir, '.paqvilo'), site: structuredClone(SITE) };
+const cfg = {
+  siteName: 'test',
+  envName: 'dev',
+  origin: 'https://portal.example',
+  sourceDir: fx.dir,
+  stateDir: path.join(fx.dir, '.paqvilo'),
+  site: structuredClone(SITE),
+};
 
 test('report labels distinguish redirects, authentication and forbidden responses', () => {
   assert.equal(describeStatus(302), 'redirect (HTTP 302)');
@@ -21,10 +28,27 @@ test('report labels distinguish redirects, authentication and forbidden response
 });
 
 test('mapping markdown displays filenames and metadata as text without breaking tables', () => {
-  const markdown = toMarkdown({ site: 'site', environment: 'dev', source: '/local', origin: cfg.origin, scope: 'all', checked: true,
-    webFiles: [{ url: '/a|b.js', local: 'a[link](url)<img>.js', problem: 'bad\nrow', online: 'unreachable', onlineError: '<error>' }],
+  const markdown = toMarkdown({
+    site: 'site',
+    environment: 'dev',
+    source: '/local',
+    origin: cfg.origin,
+    scope: 'all',
+    checked: true,
+    webFiles: [
+      {
+        url: '/a|b.js',
+        local: 'a[link](url)<img>.js',
+        problem: 'bad\nrow',
+        online: 'unreachable',
+        onlineError: '<error>',
+      },
+    ],
     inline: [{ kind: 'page-js', local: 'a`b.js', technique: 'replace block', usedOn: ['/a|b', '/two'], empty: false }],
-    routes: [{ url: '/**', dir: 'a|b' }], needsDeploy: [{ rel: 'a', reason: '<script>' }], warnings: ['<div>'] });
+    routes: [{ url: '/**', dir: 'a|b' }],
+    needsDeploy: [{ rel: 'a', reason: '<script>' }],
+    warnings: ['<div>'],
+  });
   assert.match(markdown, /a&#124;b\.js/);
   assert.match(markdown, /&#60;img&#62;/);
   assert.doesNotMatch(markdown, /<img>|<script>|<div>/);
@@ -36,10 +60,14 @@ test('mapping markdown displays filenames and metadata as text without breaking 
 test('status JSON signals incomplete network comparisons and keeps per-file diagnostics', async (t) => {
   const output = [];
   t.mock.method(console, 'log', (text) => output.push(text));
-  t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline test failure'); });
+  t.mock.method(globalThis, 'fetch', async () => {
+    throw new Error('offline test failure');
+  });
   assert.equal(await status(cfg, { json: true }), 1);
-  const report = JSON.parse(output[0]), rows = report.results;
-  assert.equal(report.ok, false); assert.equal(report.offline, false);
+  const report = JSON.parse(output[0]),
+    rows = report.results;
+  assert.equal(report.ok, false);
+  assert.equal(report.offline, false);
   assert.equal(report.errors.length, 2);
   assert.equal(rows.length, 2);
   assert.ok(rows.every((row) => row.state === 'unreachable' && row.detail === 'offline test failure'));
@@ -51,7 +79,13 @@ test('map check reports access failures without calling them authentication or l
   t.mock.method(globalThis, 'fetch', async () => new Response('restricted network', { status: 403 }));
   assert.equal(await map(cfg, { check: true, json: true }), 1);
   const mapping = JSON.parse(output[0]);
-  assert.deepEqual(mapping.webFiles.filter((row) => row.url).map((row) => [row.url, row.online]), [['/Logo.svg', 'forbidden'], ['/scripts/app.js', 'forbidden']]);
+  assert.deepEqual(
+    mapping.webFiles.filter((row) => row.url).map((row) => [row.url, row.online]),
+    [
+      ['/Logo.svg', 'forbidden'],
+      ['/scripts/app.js', 'forbidden'],
+    ],
+  );
   assert.ok(fs.existsSync(path.join(cfg.stateDir, 'mapping-test-dev.md')));
 });
 

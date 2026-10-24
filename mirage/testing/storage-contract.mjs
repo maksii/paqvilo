@@ -7,8 +7,19 @@ import { createHash } from 'node:crypto';
 import { ProviderError, guardProvider } from '../lib/storage-provider.mjs';
 import { systemClock } from '../lib/runtime-clock.mjs';
 
-export const STORAGE_CONTRACT_CASES = Object.freeze(['round-trip', 'range', 'conditions', 'block-commit', 'list-paging', 'sas',
-  'key-rejection', 'large-stream', 'unavailable', 'delete', 'head']);
+export const STORAGE_CONTRACT_CASES = Object.freeze([
+  'round-trip',
+  'range',
+  'conditions',
+  'block-commit',
+  'list-paging',
+  'sas',
+  'key-rejection',
+  'large-stream',
+  'unavailable',
+  'delete',
+  'head',
+]);
 
 async function bytesOf(body) {
   const chunks = [];
@@ -23,14 +34,28 @@ const providerError = (code) => (error) => {
 };
 
 // clock.now() (epoch ms) sets the SAS expiries, so a provider built on a fixed clock passes the same way as one on wall time.
-export function runStorageContract(test, makeProvider, { skip = [], label = 'storage contract', clock = systemClock } = {}) {
-  for (const name of skip) if (!STORAGE_CONTRACT_CASES.includes(name)) throw new TypeError(`Unknown storage contract case '${name}'`);
+export function runStorageContract(
+  test,
+  makeProvider,
+  { skip = [], label = 'storage contract', clock = systemClock } = {},
+) {
+  for (const name of skip)
+    if (!STORAGE_CONTRACT_CASES.includes(name)) throw new TypeError(`Unknown storage contract case '${name}'`);
   const raw = new WeakMap();
-  const make = async (t) => { const provider = await makeProvider(t); const guarded = guardProvider(provider); raw.set(guarded, provider); return guarded; };
-  const run = (name, title, fn) => test(`${label} ${name}: ${title}`, { skip: skip.includes(name) }, async (t) => fn(await make(t), t));
+  const make = async (t) => {
+    const provider = await makeProvider(t);
+    const guarded = guardProvider(provider);
+    raw.set(guarded, provider);
+    return guarded;
+  };
+  const run = (name, title, fn) =>
+    test(`${label} ${name}: ${title}`, { skip: skip.includes(name) }, async (t) => fn(await make(t), t));
 
   run('round-trip', 'put then get returns the same bytes, content type and metadata', async (s) => {
-    const put = await s.put('contract/round.txt', Buffer.from('invented bytes'), { contentType: 'text/plain', metadata: { origin: 'contract' } });
+    const put = await s.put('contract/round.txt', Buffer.from('invented bytes'), {
+      contentType: 'text/plain',
+      metadata: { origin: 'contract' },
+    });
     assert.equal(put.key, 'contract/round.txt');
     assert.equal(put.size, 14);
     assert.equal(put.sha256, createHash('sha256').update('invented bytes').digest('hex'));
@@ -58,10 +83,16 @@ export function runStorageContract(test, makeProvider, { skip = [], label = 'sto
     const first = await s.put('contract/etag', Buffer.from('a'));
     const second = await s.put('contract/etag', Buffer.from('a'), { ifMatch: first.etag });
     assert.notEqual(second.etag, first.etag);
-    await assert.rejects(s.put('contract/etag', Buffer.from('b'), { ifMatch: first.etag }), providerError('PreconditionFailed'));
+    await assert.rejects(
+      s.put('contract/etag', Buffer.from('b'), { ifMatch: first.etag }),
+      providerError('PreconditionFailed'),
+    );
     await assert.rejects(s.put('contract/etag', Buffer.from('b'), { ifNoneMatch: '*' }), providerError('Conflict'));
     await s.put('contract/etag-new', Buffer.from('c'), { ifNoneMatch: '*' });
-    await assert.rejects(s.put('contract/etag-missing', Buffer.from('d'), { ifMatch: '*' }), providerError('PreconditionFailed'));
+    await assert.rejects(
+      s.put('contract/etag-missing', Buffer.from('d'), { ifMatch: '*' }),
+      providerError('PreconditionFailed'),
+    );
     const notModified = await s.get('contract/etag', { ifNoneMatch: second.etag });
     assert.equal(notModified.notModified, true);
     assert.equal(notModified.body, null);
@@ -87,11 +118,16 @@ export function runStorageContract(test, makeProvider, { skip = [], label = 'sto
   run('list-paging', 'list filters by prefix and pages with a continuation token', async (s) => {
     for (const name of ['p/c', 'p/a', 'p/e', 'p/b', 'p/d', 'q/a']) await s.put(name, Buffer.from(name));
     const seen = [];
-    let continuation = null, pages = 0;
+    let continuation = null,
+      pages = 0;
     do {
       const page = await s.list('p/', { pageSize: 2, continuation });
       assert.ok(page.items.length <= 2);
-      for (const item of page.items) { assert.equal(typeof item.size, 'number'); assert.ok(item.etag); seen.push(item.key); }
+      for (const item of page.items) {
+        assert.equal(typeof item.size, 'number');
+        assert.ok(item.etag);
+        seen.push(item.key);
+      }
       continuation = page.continuation;
       pages += 1;
     } while (continuation && pages < 10);
@@ -117,9 +153,28 @@ export function runStorageContract(test, makeProvider, { skip = [], label = 'sto
   });
 
   run('key-rejection', 'invalid keys are refused before the implementation sees them', async (s) => {
-    const bad = ['', '/leading', 'a/../b', '..', 'a/./b', 'a//b', 'a/.', 'a\\b', 'nul\0key', '-dash-first', 'space key', 'query?x=1', 'a'.repeat(1025), 42];
+    const bad = [
+      '',
+      '/leading',
+      'a/../b',
+      '..',
+      'a/./b',
+      'a//b',
+      'a/.',
+      'a\\b',
+      'nul\0key',
+      '-dash-first',
+      'space key',
+      'query?x=1',
+      'a'.repeat(1025),
+      42,
+    ];
     for (const key of bad) {
-      await assert.rejects(s.put(key, Buffer.from('x')), providerError('InvalidKey'), `put accepted ${JSON.stringify(String(key).slice(0, 20))}`);
+      await assert.rejects(
+        s.put(key, Buffer.from('x')),
+        providerError('InvalidKey'),
+        `put accepted ${JSON.stringify(String(key).slice(0, 20))}`,
+      );
       await assert.rejects(s.get(key), providerError('InvalidKey'));
     }
     await assert.rejects(s.list('../'), providerError('InvalidKey'));
@@ -128,7 +183,8 @@ export function runStorageContract(test, makeProvider, { skip = [], label = 'sto
   });
 
   run('large-stream', 'a 20 MiB AsyncIterable body is consumed as a stream and read back in chunks', async (s) => {
-    const chunkSize = 64 * 1024, chunks = 320; // 20 MiB
+    const chunkSize = 64 * 1024,
+      chunks = 320; // 20 MiB
     const written = createHash('sha256');
     let produced = 0;
     async function* body() {
@@ -148,8 +204,13 @@ export function runStorageContract(test, makeProvider, { skip = [], label = 'sto
     assert.equal(put.sha256, expected);
     const got = await s.get('contract/large.bin');
     const read = createHash('sha256');
-    let largest = 0, size = 0;
-    for await (const piece of got.body) { read.update(piece); largest = Math.max(largest, piece.length); size += piece.length; }
+    let largest = 0,
+      size = 0;
+    for await (const piece of got.body) {
+      read.update(piece);
+      largest = Math.max(largest, piece.length);
+      size += piece.length;
+    }
     assert.equal(size, chunkSize * chunks);
     assert.equal(read.digest('hex'), expected);
     assert.ok(largest < size / 4, `get returned one ${largest}-byte chunk instead of a stream`);
@@ -158,7 +219,13 @@ export function runStorageContract(test, makeProvider, { skip = [], label = 'sto
   run('unavailable', 'a closed provider and connection failures answer Unavailable', async (s) => {
     const provider = raw.get(s);
     // Connection-level failures from an adapter map to Unavailable without the adapter doing it.
-    const refusing = guardProvider({ ...provider, descriptor: provider.descriptor, async get() { throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' }); } });
+    const refusing = guardProvider({
+      ...provider,
+      descriptor: provider.descriptor,
+      async get() {
+        throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' });
+      },
+    });
     await assert.rejects(refusing.get('contract/any'), providerError('Unavailable'));
     await s.close();
     await assert.rejects(s.put('contract/after-close', Buffer.from('x')), providerError('Unavailable'));

@@ -6,27 +6,50 @@ import { fakeBrowser } from './fake-browser.mjs';
 
 const ORIGIN = 'https://portal.example.com';
 const URL = `${ORIGIN}/form`;
-const pause = (tab, extra = {}, request = {}) => tab.cdp.emit('Fetch.requestPaused', {
-  requestId: 'paused', frameId: 'main', resourceType: 'Document', ...extra,
-  request: { url: URL, method: 'POST', headers: {}, ...request },
-});
+const pause = (tab, extra = {}, request = {}) =>
+  tab.cdp.emit('Fetch.requestPaused', {
+    requestId: 'paused',
+    frameId: 'main',
+    resourceType: 'Document',
+    ...extra,
+    request: { url: URL, method: 'POST', headers: {}, ...request },
+  });
 
 test('page ownership is admitted before attaching CDP or changing cache and CSP', async () => {
-  const b = fakeBrowser(), user = b.openTab(`${ORIGIN}/existing`), owned = b.openTab();
+  const b = fakeBrowser(),
+    user = b.openTab(`${ORIGIN}/existing`),
+    owned = b.openTab();
   let attachments = 0;
   const attach = b.context.newCDPSession;
-  b.context.newCDPSession = async page => { attachments++; assert.equal(page, owned.page); return attach(page); };
-  const dispose = await interceptOrigin(b.context, ORIGIN, async route => route.fallback(), { ownsPage: page => page === owned.page, bypassCSP: true });
+  b.context.newCDPSession = async (page) => {
+    attachments++;
+    assert.equal(page, owned.page);
+    return attach(page);
+  };
+  const dispose = await interceptOrigin(b.context, ORIGIN, async (route) => route.fallback(), {
+    ownsPage: (page) => page === owned.page,
+    bypassCSP: true,
+  });
   b.context.emit('page', b.openTab(`${ORIGIN}/user-popup`).page);
-  b.context.emit('page', user.page); await setImmediate();
+  b.context.emit('page', user.page);
+  await setImmediate();
   assert.equal(attachments, 1);
   assert.equal(user.cdp.listenerCount('Fetch.requestPaused'), 0);
-  assert.equal(b.sent.filter(command => command.method === 'Network.setCacheDisabled' && command.cacheDisabled).length, 1);
-  assert.equal(b.sent.filter(command => command.method === 'Network.setBypassServiceWorker' && command.bypass).length, 1);
+  assert.equal(
+    b.sent.filter((command) => command.method === 'Network.setCacheDisabled' && command.cacheDisabled).length,
+    1,
+  );
+  assert.equal(
+    b.sent.filter((command) => command.method === 'Network.setBypassServiceWorker' && command.bypass).length,
+    1,
+  );
   await dispose();
   assert.equal(owned.cdp.listenerCount('Fetch.requestPaused'), 0);
   assert.equal(b.context.listenerCount('page'), 0);
-  assert.equal(b.sent.filter(command => command.method === 'Network.setBypassServiceWorker' && command.bypass === false).length, 1);
+  assert.equal(
+    b.sent.filter((command) => command.method === 'Network.setBypassServiceWorker' && command.bypass === false).length,
+    1,
+  );
 });
 
 test('all configured origins share one interceptor and foreign origins pass through', async () => {
@@ -50,7 +73,9 @@ test('all configured origins share one interceptor and foreign origins pass thro
     assert.equal(b.answers('multi-0')[0].method, 'Fetch.fulfillRequest');
     assert.equal(b.answers('multi-1')[0].method, 'Fetch.fulfillRequest');
     assert.equal(b.answers('multi-2')[0].method, 'Fetch.continueRequest');
-  } finally { await dispose(); }
+  } finally {
+    await dispose();
+  }
   assert.equal(b.sent.filter((s) => s.method === 'Fetch.disable').length, 1);
 });
 
@@ -80,7 +105,18 @@ test('binary postDataEntries are replayed without UTF-8 corruption', async () =>
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, async (route) => route.fulfill({ response: await route.fetch() }));
   const bytes = Buffer.from([0xff, 0x00, 0x80, 0x31]);
-  pause(tab, {}, { hasPostData: true, postData: 'incorrect text', postDataEntries: [{ bytes: bytes.subarray(0, 2).toString('base64') }, { bytes: bytes.subarray(2).toString('base64') }] });
+  pause(
+    tab,
+    {},
+    {
+      hasPostData: true,
+      postData: 'incorrect text',
+      postDataEntries: [
+        { bytes: bytes.subarray(0, 2).toString('base64') },
+        { bytes: bytes.subarray(2).toString('base64') },
+      ],
+    },
+  );
   await setImmediate();
   assert.deepEqual(b.fetched[0].data, bytes);
 });
@@ -122,7 +158,10 @@ test('a handler failure after a POST was sent cannot repeat the POST', async () 
   pause(tab);
   await setImmediate();
   assert.equal(b.fetched.length, 1);
-  assert.deepEqual(b.answers('paused').map((s) => s.method), ['Fetch.failRequest']);
+  assert.deepEqual(
+    b.answers('paused').map((s) => s.method),
+    ['Fetch.failRequest'],
+  );
 });
 
 test('a paused request receives only one terminal answer', async () => {
@@ -135,16 +174,38 @@ test('a paused request receives only one terminal answer', async () => {
   });
   pause(tab);
   await setImmediate();
-  assert.deepEqual(b.answers('paused').map((s) => s.method), ['Fetch.fulfillRequest']);
+  assert.deepEqual(
+    b.answers('paused').map((s) => s.method),
+    ['Fetch.fulfillRequest'],
+  );
 });
 
 test('edited responses remove stale body validators, apply overrides, and release API response memory', async () => {
-  const b = fakeBrowser({ [URL]: { headers: { 'content-type': 'text/plain', 'Content-Encoding': 'gzip', 'Content-Length': '100', etag: 'old', digest: 'old', 'cache-control': 'public, max-age=86400' }, body: 'old' } });
+  const b = fakeBrowser({
+    [URL]: {
+      headers: {
+        'content-type': 'text/plain',
+        'Content-Encoding': 'gzip',
+        'Content-Length': '100',
+        etag: 'old',
+        digest: 'old',
+        'cache-control': 'public, max-age=86400',
+      },
+      body: 'old',
+    },
+  });
   const tab = b.openTab();
   let disposed = 0;
   const fetch = b.context.request.fetch;
-  b.context.request.fetch = async (...args) => ({ ...await fetch(...args), dispose: async () => disposed++ });
-  await interceptOrigin(b.context, ORIGIN, async (route) => route.fulfill({ response: await route.fetch(), status: 201, headers: { 'Content-Type': 'text/html', 'Content-Length': '999' }, body: 'new body' }));
+  b.context.request.fetch = async (...args) => ({ ...(await fetch(...args)), dispose: async () => disposed++ });
+  await interceptOrigin(b.context, ORIGIN, async (route) =>
+    route.fulfill({
+      response: await route.fetch(),
+      status: 201,
+      headers: { 'Content-Type': 'text/html', 'Content-Length': '999' },
+      body: 'new body',
+    }),
+  );
   pause(tab);
   await setImmediate();
   const [answer] = b.answers('paused');
@@ -191,12 +252,20 @@ test('a DevTools command that never answers cannot hold the release open, and is
   const b = fakeBrowser();
   const tab = b.openTab();
   const answer = tab.cdp.send;
-  tab.cdp.send = (method, params) => (method === 'Fetch.disable' ? (b.sent.push({ method }), new Promise(() => {})) : answer(method, params));
+  tab.cdp.send = (method, params) =>
+    method === 'Fetch.disable' ? (b.sent.push({ method }), new Promise(() => {})) : answer(method, params);
   const errors = [];
-  const dispose = await interceptOrigin(b.context, ORIGIN, async () => {}, { onError: (error) => errors.push(error.message) });
+  const dispose = await interceptOrigin(b.context, ORIGIN, async () => {}, {
+    onError: (error) => errors.push(error.message),
+  });
   let released = false;
-  const disposal = dispose().then(() => { released = true; });
-  for (let i = 0; i < 20 && !released; i++) { await setImmediate(); t.mock.timers.tick(5_000); }
+  const disposal = dispose().then(() => {
+    released = true;
+  });
+  for (let i = 0; i < 20 && !released; i++) {
+    await setImmediate();
+    t.mock.timers.tick(5_000);
+  }
   await disposal;
   assert.deepEqual(errors, ['Releasing development interception: Fetch.disable did not answer within 5000 ms']);
   // the remaining restore steps still ran after the unanswered command
@@ -210,8 +279,18 @@ test('interception setup fails, instead of waiting forever, when a DevTools comm
   const answer = tab.cdp.send;
   tab.cdp.send = (method, params) => (method === 'Fetch.enable' ? new Promise(() => {}) : answer(method, params));
   let outcome;
-  const ready = interceptOrigin(b.context, ORIGIN, async () => {}, { onError: () => {} }).then(() => { outcome = 'ready'; }, (error) => { outcome = error.message; });
-  for (let i = 0; i < 20 && !outcome; i++) { await setImmediate(); t.mock.timers.tick(5_000); }
+  const ready = interceptOrigin(b.context, ORIGIN, async () => {}, { onError: () => {} }).then(
+    () => {
+      outcome = 'ready';
+    },
+    (error) => {
+      outcome = error.message;
+    },
+  );
+  for (let i = 0; i < 20 && !outcome; i++) {
+    await setImmediate();
+    t.mock.timers.tick(5_000);
+  }
   await ready;
   assert.match(outcome, /Could not enable development interception: Fetch\.enable did not answer within 10000 ms/);
 });
@@ -228,7 +307,9 @@ test('disposing while a POST is fetched aborts the original before interception 
   const b = fakeBrowser({ [URL]: { body: 'saved' } });
   const tab = b.openTab();
   let finish;
-  const pending = new Promise((resolve) => { finish = resolve; });
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
   const dispose = await interceptOrigin(b.context, ORIGIN, async (route) => {
     const response = await route.fetch();
     await pending;
@@ -239,8 +320,13 @@ test('disposing while a POST is fetched aborts the original before interception 
   await dispose();
   finish();
   await setImmediate();
-  assert.deepEqual(b.answers('paused').map((s) => s.method), ['Fetch.failRequest']);
-  assert.ok(b.sent.findIndex((s) => s.method === 'Fetch.failRequest') < b.sent.findIndex((s) => s.method === 'Fetch.disable'));
+  assert.deepEqual(
+    b.answers('paused').map((s) => s.method),
+    ['Fetch.failRequest'],
+  );
+  assert.ok(
+    b.sent.findIndex((s) => s.method === 'Fetch.failRequest') < b.sent.findIndex((s) => s.method === 'Fetch.disable'),
+  );
 });
 
 test('an API response arriving after shutdown is released without answering twice', async () => {
@@ -248,37 +334,64 @@ test('an API response arriving after shutdown is released without answering twic
   const tab = b.openTab();
   let finish;
   let disposed = 0;
-  b.context.request.fetch = () => new Promise((resolve) => { finish = resolve; });
-  const dispose = await interceptOrigin(b.context, ORIGIN, async (route) => route.fulfill({ response: await route.fetch() }));
+  b.context.request.fetch = () =>
+    new Promise((resolve) => {
+      finish = resolve;
+    });
+  const dispose = await interceptOrigin(b.context, ORIGIN, async (route) =>
+    route.fulfill({ response: await route.fetch() }),
+  );
   pause(tab);
   await setImmediate();
   await dispose();
-  finish({ dispose: async () => { disposed++; }, body: () => { throw new Error('must not read a stopped response'); } });
+  finish({
+    dispose: async () => {
+      disposed++;
+    },
+    body: () => {
+      throw new Error('must not read a stopped response');
+    },
+  });
   await setImmediate();
   assert.equal(disposed, 1);
-  assert.deepEqual(b.answers('paused').map((s) => s.method), ['Fetch.failRequest']);
+  assert.deepEqual(
+    b.answers('paused').map((s) => s.method),
+    ['Fetch.failRequest'],
+  );
 });
 
 test('shutdown before replay starts never sends an API request', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   let continueHandler;
-  const pending = new Promise((resolve) => { continueHandler = resolve; });
-  const dispose = await interceptOrigin(b.context, ORIGIN, async (route) => { await pending; await route.fetch(); });
+  const pending = new Promise((resolve) => {
+    continueHandler = resolve;
+  });
+  const dispose = await interceptOrigin(b.context, ORIGIN, async (route) => {
+    await pending;
+    await route.fetch();
+  });
   pause(tab);
   await setImmediate();
   await dispose();
   continueHandler();
   await setImmediate();
   assert.equal(b.fetched.length, 0);
-  assert.deepEqual(b.answers('paused').map((s) => s.method), ['Fetch.failRequest']);
+  assert.deepEqual(
+    b.answers('paused').map((s) => s.method),
+    ['Fetch.failRequest'],
+  );
 });
 
 test('closing tabs immediately releases their interception listeners and CDP sessions', async () => {
   const b = fakeBrowser();
   const tabs = Array.from({ length: 50 }, () => b.openTab());
   let detached = 0;
-  tabs.forEach((tab) => { tab.cdp.detach = async () => { detached++; }; });
+  tabs.forEach((tab) => {
+    tab.cdp.detach = async () => {
+      detached++;
+    };
+  });
   const dispose = await interceptOrigin(b.context, ORIGIN, async () => {});
   tabs.forEach((tab) => tab.page.emit('close'));
   await setImmediate();
@@ -296,12 +409,17 @@ test('failed interception setup rejects readiness, restores settings and detache
   const tab = b.openTab();
   const send = tab.cdp.send;
   let detached = 0;
-  tab.cdp.detach = async () => { detached++; };
+  tab.cdp.detach = async () => {
+    detached++;
+  };
   tab.cdp.send = async (method, params) => {
     if (method === 'Fetch.enable') throw new Error('target setup failed');
     return send(method, params);
   };
-  await assert.rejects(interceptOrigin(b.context, ORIGIN, async () => {}, { bypassCSP: true }), /Could not enable development interception: target setup failed/);
+  await assert.rejects(
+    interceptOrigin(b.context, ORIGIN, async () => {}, { bypassCSP: true }),
+    /Could not enable development interception: target setup failed/,
+  );
   assert.equal(detached, 1);
   assert.equal(tab.cdp.listenerCount('Fetch.requestPaused'), 0);
   assert.equal(tab.page.listenerCount('close'), 0);
@@ -312,8 +430,13 @@ test('failed interception setup rejects readiness, restores settings and detache
 test('a live tab CDP attachment failure rejects readiness and removes the page listener', async () => {
   const b = fakeBrowser();
   b.openTab();
-  b.context.newCDPSession = async () => { throw new Error('CDP unavailable'); };
-  await assert.rejects(interceptOrigins(b.context, [ORIGIN], async () => {}), /Could not attach development interception: CDP unavailable/);
+  b.context.newCDPSession = async () => {
+    throw new Error('CDP unavailable');
+  };
+  await assert.rejects(
+    interceptOrigins(b.context, [ORIGIN], async () => {}),
+    /Could not attach development interception: CDP unavailable/,
+  );
   assert.equal(b.context.listenerCount('page'), 0);
 });
 
@@ -321,13 +444,18 @@ test('one failed initial tab releases all concurrent multi-origin attachments', 
   const b = fakeBrowser();
   const tabs = [b.openTab(), b.openTab(), b.openTab()];
   const detached = new Set();
-  tabs.forEach((tab) => { tab.cdp.detach = async () => detached.add(tab); });
+  tabs.forEach((tab) => {
+    tab.cdp.detach = async () => detached.add(tab);
+  });
   const send = tabs[1].cdp.send;
   tabs[1].cdp.send = async (method, params) => {
     if (method === 'Fetch.enable') throw new Error('one tab failed');
     return send(method, params);
   };
-  await assert.rejects(interceptOrigins(b.context, [ORIGIN, 'https://second.example.com'], async () => {}), /one tab failed/);
+  await assert.rejects(
+    interceptOrigins(b.context, [ORIGIN, 'https://second.example.com'], async () => {}),
+    /one tab failed/,
+  );
   assert.equal(detached.size, tabs.length);
   assert.equal(b.context.listenerCount('page'), 0);
   for (const tab of tabs) {
@@ -341,14 +469,21 @@ test('later tab failures call onError through the single-origin wrapper without 
   const b = fakeBrowser();
   b.openTab();
   let reported;
-  const errorReported = new Promise((resolve) => { reported = resolve; });
+  const errorReported = new Promise((resolve) => {
+    reported = resolve;
+  });
   const dispose = await interceptOrigin(b.context, ORIGIN, async () => {}, {
-    onError: (error) => { reported(error); throw new Error('reporting callback failed'); },
+    onError: (error) => {
+      reported(error);
+      throw new Error('reporting callback failed');
+    },
   });
   const tab = b.openTab();
   const send = tab.cdp.send;
   let detached = 0;
-  tab.cdp.detach = async () => { detached++; };
+  tab.cdp.detach = async () => {
+    detached++;
+  };
   tab.cdp.send = async (method, params) => {
     if (method === 'Fetch.enable') throw new Error('later tab failed');
     return send(method, params);
@@ -369,15 +504,24 @@ test('tab closure during attachment or setup stays a harmless race', async () =>
     const tab = b.openTab();
     let closed = false;
     tab.page.isClosed = () => closed;
-    if (phase === 'attach') b.context.newCDPSession = async () => { closed = true; throw new Error('page closed'); };
+    if (phase === 'attach')
+      b.context.newCDPSession = async () => {
+        closed = true;
+        throw new Error('page closed');
+      };
     else {
       const send = tab.cdp.send;
       tab.cdp.send = async (method, params) => {
-        if (method === 'Fetch.enable') { closed = true; throw new Error('page closed'); }
+        if (method === 'Fetch.enable') {
+          closed = true;
+          throw new Error('page closed');
+        }
         return send(method, params);
       };
     }
-    const dispose = await interceptOrigins(b.context, [ORIGIN], async () => {}, { onError: () => assert.fail('closed pages must not report setup errors') });
+    const dispose = await interceptOrigins(b.context, [ORIGIN], async () => {}, {
+      onError: () => assert.fail('closed pages must not report setup errors'),
+    });
     assert.equal(tab.cdp.listenerCount('Fetch.requestPaused'), 0);
     assert.equal(tab.page.listenerCount('close'), 0);
     await dispose();
@@ -392,7 +536,13 @@ test('inspecting and fulfilling an unchanged response obtains its bytes only onc
   let bodyReads = 0;
   b.context.request.fetch = async (...args) => {
     const response = await fetch(...args);
-    return { ...response, body: async () => { bodyReads++; return response.body(); } };
+    return {
+      ...response,
+      body: async () => {
+        bodyReads++;
+        return response.body();
+      },
+    };
   };
   await interceptOrigin(b.context, ORIGIN, async (route) => {
     const response = await route.fetch();
@@ -407,11 +557,23 @@ test('inspecting and fulfilling an unchanged response obtains its bytes only onc
 });
 
 test('bodyless responses never request an API response body', async () => {
-  for (const [method, status] of [['HEAD', 200], ['GET', 204], ['GET', 205], ['GET', 304]]) {
+  for (const [method, status] of [
+    ['HEAD', 200],
+    ['GET', 204],
+    ['GET', 205],
+    ['GET', 304],
+  ]) {
     const b = fakeBrowser();
     const tab = b.openTab();
     let bodyReads = 0;
-    const response = { status: () => status, headersArray: () => [], body: async () => { bodyReads++; throw new Error('body must not be loaded'); } };
+    const response = {
+      status: () => status,
+      headersArray: () => [],
+      body: async () => {
+        bodyReads++;
+        throw new Error('body must not be loaded');
+      },
+    };
     await interceptOrigin(b.context, ORIGIN, (route) => route.fulfill({ response }));
     pause(tab, {}, { method });
     await setImmediate();

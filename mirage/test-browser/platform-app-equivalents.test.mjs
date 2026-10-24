@@ -1,14 +1,16 @@
-import test, { before, after } from "node:test";
-import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import http from "node:http";
-import { chromium } from "playwright-core";
-import { browserLaunchOptions } from "../lib/browser-launch.mjs";
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
 // The local app bundle equivalent (lib/platform-app-compat.js).
-const compat = await fs.readFile(new URL("../lib/platform-app-compat.js", import.meta.url), "utf8");
+const compat = await fs.readFile(new URL('../lib/platform-app-compat.js', import.meta.url), 'utf8');
 let browser;
-before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+before(async () => {
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
 after(() => browser?.close());
 
 // A read-only and an editable form, an ad and a poll placement.
@@ -28,20 +30,20 @@ const PAGE = `<!doctype html><html lang="en"><head><title>App</title></head><bod
 </body></html>`;
 const POLL = `<div class="poll-questionpanel" data-id="poll-1" data-name="Question"><h5 class="poll-question">Question?</h5><ul class="list-unstyled poll-options"><li class="radio"><label for="poll_option_a"><input type="radio" id="poll_option_a" name="Question" value="a">A</label></li></ul><button class="poll-submit" type="button">Submit</button><button class="poll-viewresults" type="button">View results</button></div><div class="poll-resultspanel">Results</div>`;
 
-test("app bundle equivalent: read-only control focus, ad and poll placements", async (t) => {
+test('app bundle equivalent: read-only control focus, ad and poll placements', async (t) => {
   const submitted = [];
   const server = http.createServer((req, res) => {
-    if (req.url === "/page") return res.end(PAGE);
-    if (req.url === "/app.js") {
-      res.setHeader("content-type", "text/javascript");
+    if (req.url === '/page') return res.end(PAGE);
+    if (req.url === '/app.js') {
+      res.setHeader('content-type', 'text/javascript');
       return res.end(compat);
     }
-    if (req.url === "/ad") return res.end(`  <div><a class="ad-link" href="/" title="">Ad</a></div>  `);
-    if (req.url === "/poll") return res.end(POLL);
-    if (req.url === "/submit" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
+    if (req.url === '/ad') return res.end(`  <div><a class="ad-link" href="/" title="">Ad</a></div>  `);
+    if (req.url === '/poll') return res.end(POLL);
+    if (req.url === '/submit' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
         submitted.push(JSON.parse(body));
         res.end(`<div class="poll-resultspanel">Thanks<button class="poll-return" type="button">Back</button></div>`);
       });
@@ -50,7 +52,7 @@ test("app bundle equivalent: read-only control focus, ad and poll placements", a
     res.statusCode = 404;
     res.end();
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => {
     // A preconnected socket that never sent a request would hold server.close open.
     server.closeAllConnections();
@@ -59,42 +61,47 @@ test("app bundle equivalent: read-only control focus, ad and poll placements", a
   const page = await browser.newPage();
   t.after(() => page.context().close());
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/page`);
   // Read-only lookups and option sets inside a read-only form become focusable containers.
-  assert.equal(await page.getAttribute('[data-logical-name="account"]', "tabindex"), "0");
-  assert.equal(await page.getAttribute('[data-logical-name="kind"]', "tabindex"), "0");
-  assert.equal(await page.getAttribute('[data-logical-name="name"]', "tabindex"), null);
-  assert.equal(await page.getAttribute('[data-logical-name="owner"]', "tabindex"), null);
+  assert.equal(await page.getAttribute('[data-logical-name="account"]', 'tabindex'), '0');
+  assert.equal(await page.getAttribute('[data-logical-name="kind"]', 'tabindex'), '0');
+  assert.equal(await page.getAttribute('[data-logical-name="name"]', 'tabindex'), null);
+  assert.equal(await page.getAttribute('[data-logical-name="owner"]', 'tabindex'), null);
   // The ad placement shows the loaded markup.
-  await page.locator(".ad a.ad-link").waitFor();
-  assert.equal(await page.locator(".ad").isVisible(), true);
+  await page.locator('.ad a.ad-link').waitFor();
+  assert.equal(await page.locator('.ad').isVisible(), true);
   // The poll shows its question, then submits the checked option and shows the results.
-  await page.locator(".poll .poll-questionpanel").waitFor();
-  assert.equal(await page.locator(".poll .poll-resultspanel").isVisible(), false);
-  await page.check("#poll_option_a");
-  await page.click(".poll-submit");
-  await page.getByText("Thanks").waitFor();
-  assert.deepEqual(submitted, [{ pollId: "poll-1", optionId: "a" }]);
+  await page.locator('.poll .poll-questionpanel').waitFor();
+  assert.equal(await page.locator('.poll .poll-resultspanel').isVisible(), false);
+  await page.check('#poll_option_a');
+  await page.click('.poll-submit');
+  await page.getByText('Thanks').waitFor();
+  assert.deepEqual(submitted, [{ pollId: 'poll-1', optionId: 'a' }]);
   assert.deepEqual(errors, []);
 });
 
 // An empty read-only form box shows the muted dash; a box with a placeholder shows its
 // placeholder instead (live read-only contact form: the phone boxes carry no dash).
-test("empty read-only boxes get the dash unless they carry a placeholder", async (t) => {
+test('empty read-only boxes get the dash unless they carry a placeholder', async (t) => {
   const page = await browser.newPage();
   t.after(() => page.context().close());
-  await page.route("http://127.0.0.1:11111/**", (route) => {
+  await page.route('http://127.0.0.1:11111/**', (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><div class="crmEntityFormView"><div class="control"><input id="title" type="text" readonly="readonly"></div><div class="control"><input id="phone" type="text" readonly="readonly" placeholder="Provide a telephone number"></div></div><script src="/app.js"></script></body></html>' });
-    if (url.pathname === "/app.js") return route.fulfill({ contentType: "text/javascript; charset=utf-8", body: compat });
-    return route.fulfill({ status: 404, body: "" });
+    if (url.pathname === '/')
+      return route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><html><body><div class="crmEntityFormView"><div class="control"><input id="title" type="text" readonly="readonly"></div><div class="control"><input id="phone" type="text" readonly="readonly" placeholder="Provide a telephone number"></div></div><script src="/app.js"></script></body></html>',
+      });
+    if (url.pathname === '/app.js')
+      return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: compat });
+    return route.fulfill({ status: 404, body: '' });
   });
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("http://127.0.0.1:11111/");
-  await page.waitForFunction(() => document.getElementById("title").nextElementSibling?.textContent === "—");
-  assert.equal(await page.locator("#phone").evaluate((box) => box.nextElementSibling), null);
-  assert.equal(await page.locator("#phone").evaluate((box) => box.parentElement.style.position), "");
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('http://127.0.0.1:11111/');
+  await page.waitForFunction(() => document.getElementById('title').nextElementSibling?.textContent === '—');
+  assert.equal(await page.locator('#phone').evaluate((box) => box.nextElementSibling), null);
+  assert.equal(await page.locator('#phone').evaluate((box) => box.parentElement.style.position), '');
   assert.deepEqual(errors, []);
 });

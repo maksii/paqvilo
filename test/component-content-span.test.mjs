@@ -10,7 +10,12 @@ test('content spans preserve exact offsets through comments, CDATA, processing i
   const suffix = '</content>\n<!-- trailing </content> -->';
   const xml = prefix + opening + body + suffix;
   const span = componentContentSpan(xml);
-  assert.deepEqual(span, { openStart: prefix.length, contentStart: prefix.length + opening.length, contentEnd: prefix.length + opening.length + body.length, closeEnd: prefix.length + opening.length + body.length + '</content>'.length });
+  assert.deepEqual(span, {
+    openStart: prefix.length,
+    contentStart: prefix.length + opening.length,
+    contentEnd: prefix.length + opening.length + body.length,
+    closeEnd: prefix.length + opening.length + body.length + '</content>'.length,
+  });
   assert.equal(xml.slice(span.contentStart, span.contentEnd), body);
   assert.deepEqual(componentContent(xml), { copy: '<content>literal</content>', count: 7 });
 });
@@ -29,28 +34,41 @@ test('fromIndex advances to the next real content element and multiple content b
 });
 
 test('malformed real markup is refused while fake records inside valid sections remain text', () => {
-  for (const xml of ['<content ', '<content note="unterminated>', '<content <!--nested>','<!--> <content>{}</content>', '<![CDATA[unterminated']) assert.equal(componentContentSpan(xml), null);
-  const xml = '<powerpagecomponent powerpagecomponentid="real"><content><![CDATA[{"copy":"<powerpagecomponent powerpagecomponentid=\'fake\'>"}]]></content></powerpagecomponent>';
+  for (const xml of [
+    '<content ',
+    '<content note="unterminated>',
+    '<content <!--nested>',
+    '<!--> <content>{}</content>',
+    '<![CDATA[unterminated',
+  ])
+    assert.equal(componentContentSpan(xml), null);
+  const xml =
+    '<powerpagecomponent powerpagecomponentid="real"><content><![CDATA[{"copy":"<powerpagecomponent powerpagecomponentid=\'fake\'>"}]]></content></powerpagecomponent>';
   assert.equal(componentIdentity(xml), 'real');
   assert.deepEqual(componentContent(xml), { copy: "<powerpagecomponent powerpagecomponentid='fake'>" });
 });
 
 test('large incomplete content tags finish in a bounded worker with semantic refusal', { timeout: 30000 }, async () => {
-  const worker = new Worker(`
+  const worker = new Worker(
+    `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ componentContentSpan, componentIdentity }) => {
       const incomplete = '<content '.repeat(500000);
       const whitespace = '<powerpagecomponent' + ' '.repeat(1000000) + 'invalid/>';
       parentPort.postMessage([componentContentSpan(incomplete), componentIdentity(whitespace)]);
     }).catch(error => { throw error; });
-  `, { eval: true, workerData: { module: new URL('../lense/portal-model.mjs', import.meta.url).href } });
+  `,
+    { eval: true, workerData: { module: new URL('../lense/portal-model.mjs', import.meta.url).href } },
+  );
   let timer;
   try {
     const result = await new Promise((resolve, reject) => {
       timer = setTimeout(() => reject(new Error('XML cursor exceeded its worker deadline.')), 20000);
       worker.once('message', resolve);
       worker.once('error', reject);
-      worker.once('exit', (code) => { if (code) reject(new Error('XML cursor worker exited early.')); });
+      worker.once('exit', (code) => {
+        if (code) reject(new Error('XML cursor worker exited early.'));
+      });
     });
     assert.deepEqual(result, [null, null]);
   } finally {

@@ -1,28 +1,207 @@
-import test,{before,after}from'node:test';import assert from'node:assert/strict';import fs from'node:fs/promises';import path from'node:path';import os from'node:os';import{chromium}from'playwright-core';import{browserLaunchOptions}from'../lib/browser-launch.mjs';import{createSimulator}from'../server.mjs';import{signInContext}from'../testing/session.mjs';
-import { ownedFixture } from "../testing/owned-fixture.mjs";
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { createSimulator } from '../server.mjs';
+import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 let browser;
-before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true}));});
-after(()=>browser?.close());
-test('terminal resumed multistep native postback shows saved success without losing the session record',async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-terminal-wizard-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));const files={'website.yml':'adx_name: Invented\nadx_websiteid: invented','Api.sitesetting.yml':JSON.stringify([{adx_name:'Webapi/answer/enabled',adx_value:'true'},{adx_name:'Webapi/answer/fields',adx_value:'answerid,note,creatorid'}]),'Home.webpage.yml':'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: main','Main.pagetemplate.yml':'adx_pagetemplateid: main\nadx_webtemplateid: main','Main.webtemplate.yml':'adx_name: Main\nadx_webtemplateid: main','Main.webtemplate.source.html':'{% webform name: "Invented wizard" %}','Survey.advancedform.yml':'adx_name: Invented wizard\nadx_webformid: survey\nadx_startnewsessiononload: false\nadx_multiplerecordsperuserpermitted: true'};for(const[name,body]of Object.entries(files))await fs.writeFile(path.join(root,name),body);
- const field={name:'note',type:'text',required:true},step=(id,extra)=>({stepId:id,type:'load',entity:'answer',fields:[field],...extra});const sim=await createSimulator({sourceDir:root,port:0,watch:false,initial:{mappings:{answer:{entitySet:'answers',idColumn:'answerid',relationships:{creator:{entity:'contact',from:'creatorid',to:'contactid',many:false}}},contact:{entitySet:'contacts',idColumn:'contactid'}},tables:{answer:[],contact:[{contactid:'current'},{contactid:'foreign'}]},settings:{permissionMode:'enforce',associationPermissions:'enforce','Webapi/answer/enabled':true,'Webapi/answer/fields':'answerid,note,creatorid'},permissions:[{entity:'answer',scope:'global',roles:['Member'],operations:['create','read','update']}],simulator:{componentSchemas:{survey:{initialStepId:'one',steps:[step('one',{mode:100000000,nextStepId:'two',currentUserAssociationField:{name:'creatorid',type:'lookup'},metadata:{adx_associatecurrentportaluser:true,adx_targetentityportaluserlookupattribute:'creatorid'}}),step('two',{mode:100000001,metadata:{adx_entitysourcetype:100000003,adx_entitysourcestep:'one',adx_successmessage:'Invented terminal success',adx_hideformonsuccess:true}})]}}}}});ownedFixture(t).add(()=>sim.close());const context=await browser.newContext();ownedFixture(t).add(()=>context.close());await signInContext(context,sim,'current',{roles:['Member']});const page=await context.newPage();await page.goto(sim.url);const denied=await context.request.post(sim.url+'/_api/answers',{headers:{__RequestVerificationToken:sim.state().csrf},data:{note:'Explicit lookup','creator@odata.bind':'/contacts(current)'}});assert.equal(denied.status(),403);assert.equal(sim.store.state.tables.answer.length,0);await page.locator('#note').fill('First authored value');await page.locator('#note').evaluate(e=>{const hidden=document.createElement('input');hidden.type='hidden';hidden.name=e.name.replace(/note$/,'creatorid');hidden.value='foreign';e.form.append(hidden);});await page.locator('#NextButton').click();await page.waitForLoadState('domcontentloaded');await page.locator('#note').fill('Final authored value');const post=page.waitForResponse(r=>r.request().method()==='POST');const landing=page.waitForNavigation({waitUntil:'domcontentloaded'});await page.locator('#NextButton').click();const response=await post;await page.waitForLoadState('domcontentloaded');assert.equal(sim.store.state.tables.answer.length,1);assert.equal(sim.store.state.tables.answer[0].note,'Final authored value');assert.equal(response.status(),302);assert.equal((await landing).status(),200);assert.match(response.headers().location,/stepid=two&msg=success$/);assert.equal(sim.store.state.tables.answer[0].creatorid.id,'current');assert.equal(await page.locator('#MessageLabel').innerText(),'Invented terminal success');assert.doesNotMatch(page.url(),/source-invalid/);await page.reload();assert.equal(await page.locator('#MessageLabel').innerText(),'Invented terminal success');assert.equal(sim.store.state.tables.answer.length,1);await page.goto(sim.url+'/?stepid=one&msg=success');assert.doesNotMatch(await page.locator('body').innerText(),/Invented terminal success/);assert.equal(sim.store.state.tables.answer.length,1);
+before(async () => {
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
+after(() => browser?.close());
+test('terminal resumed multistep native postback shows saved success without losing the session record', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-terminal-wizard-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const files = {
+    'website.yml': 'adx_name: Invented\nadx_websiteid: invented',
+    'Api.sitesetting.yml': JSON.stringify([
+      { adx_name: 'Webapi/answer/enabled', adx_value: 'true' },
+      { adx_name: 'Webapi/answer/fields', adx_value: 'answerid,note,creatorid' },
+    ]),
+    'Home.webpage.yml':
+      'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: main',
+    'Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
+    'Main.webtemplate.yml': 'adx_name: Main\nadx_webtemplateid: main',
+    'Main.webtemplate.source.html': '{% webform name: "Invented wizard" %}',
+    'Survey.advancedform.yml':
+      'adx_name: Invented wizard\nadx_webformid: survey\nadx_startnewsessiononload: false\nadx_multiplerecordsperuserpermitted: true',
+  };
+  for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(root, name), body);
+  const field = { name: 'note', type: 'text', required: true },
+    step = (id, extra) => ({ stepId: id, type: 'load', entity: 'answer', fields: [field], ...extra });
+  const sim = await createSimulator({
+    sourceDir: root,
+    port: 0,
+    watch: false,
+    initial: {
+      mappings: {
+        answer: {
+          entitySet: 'answers',
+          idColumn: 'answerid',
+          relationships: { creator: { entity: 'contact', from: 'creatorid', to: 'contactid', many: false } },
+        },
+        contact: { entitySet: 'contacts', idColumn: 'contactid' },
+      },
+      tables: { answer: [], contact: [{ contactid: 'current' }, { contactid: 'foreign' }] },
+      settings: {
+        permissionMode: 'enforce',
+        associationPermissions: 'enforce',
+        'Webapi/answer/enabled': true,
+        'Webapi/answer/fields': 'answerid,note,creatorid',
+      },
+      permissions: [{ entity: 'answer', scope: 'global', roles: ['Member'], operations: ['create', 'read', 'update'] }],
+      simulator: {
+        componentSchemas: {
+          survey: {
+            initialStepId: 'one',
+            steps: [
+              step('one', {
+                mode: 100000000,
+                nextStepId: 'two',
+                currentUserAssociationField: { name: 'creatorid', type: 'lookup' },
+                metadata: {
+                  adx_associatecurrentportaluser: true,
+                  adx_targetentityportaluserlookupattribute: 'creatorid',
+                },
+              }),
+              step('two', {
+                mode: 100000001,
+                metadata: {
+                  adx_entitysourcetype: 100000003,
+                  adx_entitysourcestep: 'one',
+                  adx_successmessage: 'Invented terminal success',
+                  adx_hideformonsuccess: true,
+                },
+              }),
+            ],
+          },
+        },
+      },
+    },
+  });
+  ownedFixture(t).add(() => sim.close());
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  await signInContext(context, sim, 'current', { roles: ['Member'] });
+  const page = await context.newPage();
+  await page.goto(sim.url);
+  const denied = await context.request.post(sim.url + '/_api/answers', {
+    headers: { __RequestVerificationToken: sim.state().csrf },
+    data: { note: 'Explicit lookup', 'creator@odata.bind': '/contacts(current)' },
+  });
+  assert.equal(denied.status(), 403);
+  assert.equal(sim.store.state.tables.answer.length, 0);
+  await page.locator('#note').fill('First authored value');
+  await page.locator('#note').evaluate((e) => {
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = e.name.replace(/note$/, 'creatorid');
+    hidden.value = 'foreign';
+    e.form.append(hidden);
+  });
+  await page.locator('#NextButton').click();
+  await page.waitForLoadState('domcontentloaded');
+  await page.locator('#note').fill('Final authored value');
+  const post = page.waitForResponse((r) => r.request().method() === 'POST');
+  const landing = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await page.locator('#NextButton').click();
+  const response = await post;
+  await page.waitForLoadState('domcontentloaded');
+  assert.equal(sim.store.state.tables.answer.length, 1);
+  assert.equal(sim.store.state.tables.answer[0].note, 'Final authored value');
+  assert.equal(response.status(), 302);
+  assert.equal((await landing).status(), 200);
+  assert.match(response.headers().location, /stepid=two&msg=success$/);
+  assert.equal(sim.store.state.tables.answer[0].creatorid.id, 'current');
+  assert.equal(await page.locator('#MessageLabel').innerText(), 'Invented terminal success');
+  assert.doesNotMatch(page.url(), /source-invalid/);
+  await page.reload();
+  assert.equal(await page.locator('#MessageLabel').innerText(), 'Invented terminal success');
+  assert.equal(sim.store.state.tables.answer.length, 1);
+  await page.goto(sim.url + '/?stepid=one&msg=success');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Invented terminal success/);
+  assert.equal(sim.store.state.tables.answer.length, 1);
 });
 
-test('Create-only terminal PRG confirms the committed write without reading or exposing its fields',async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-create-only-wizard-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));
- const files={
-  'website.yml':'adx_name: Invented\nadx_websiteid: invented',
-  'Home.webpage.yml':'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: main',
-  'Main.pagetemplate.yml':'adx_pagetemplateid: main\nadx_webtemplateid: main',
-  'Main.webtemplate.yml':'adx_name: Main\nadx_webtemplateid: main',
-  'Main.webtemplate.source.html':'{% webform name: "Create only" %}',
-  'Survey.advancedform.yml':'adx_name: Create only\nadx_webformid: survey\nadx_startnewsessiononload: false\nadx_multiplerecordsperuserpermitted: true',
-  'Api.sitesetting.yml':JSON.stringify([{adx_name:'Webapi/answer/enabled',adx_value:'true'},{adx_name:'Webapi/answer/fields',adx_value:'answerid,note'}]),
- };for(const[name,body]of Object.entries(files))await fs.writeFile(path.join(root,name),body);
- const sim=await createSimulator({sourceDir:root,port:0,watch:false,initial:{mappings:{answer:{entitySet:'answers',idColumn:'answerid'}},tables:{answer:[],contact:[{contactid:'current'},{contactid:'foreign'}]},settings:{permissionMode:'enforce'},permissions:[{entity:'answer',scope:'global',roles:['Member'],operations:['create']}],simulator:{componentSchemas:{survey:{initialStepId:'one',steps:[{stepId:'one',type:'load',entity:'answer',mode:100000000,fields:[{name:'note',type:'text',required:true}],js:'window.__completionStartup = true;',metadata:{adx_successmessage:'Created without read',adx_hideformonsuccess:true}}]}}}}});ownedFixture(t).add(()=>sim.close());
- const context=await browser.newContext();ownedFixture(t).add(()=>context.close());await signInContext(context,sim,'current',{roles:['Member']});const page=await context.newPage();await page.goto(sim.url+'/?msg=success&stepid=one');assert.doesNotMatch(await page.locator('body').innerText(),/Created without read/);
- await page.locator('#note').fill('Private saved field');const post=page.waitForResponse(r=>r.request().method()==='POST'),landing=page.waitForNavigation({waitUntil:'domcontentloaded'});await page.locator('#NextButton').click();assert.equal((await post).status(),302);assert.equal((await landing).status(),200);assert.equal(await page.locator('#MessageLabel').innerText(),'Created without read');assert.equal(await page.evaluate(()=>window.__completionStartup),true);assert.doesNotMatch(await page.locator('body').innerText(),/Private saved field/);assert.equal(await page.locator('#note').count(),0);assert.equal(sim.store.state.tables.answer.length,1);
- const id=sim.store.state.tables.answer[0].answerid;assert.equal((await context.request.get(sim.url+'/_api/answers('+id+')')).status(),403);
- await page.reload();assert.equal(await page.locator('#MessageLabel').innerText(),'Created without read');assert.equal(sim.store.state.tables.answer.length,1);
- const foreign=await browser.newContext();ownedFixture(t).add(()=>foreign.close());await signInContext(foreign,sim,'foreign',{roles:['Member']});const other=await foreign.newPage();await other.goto(page.url());assert.doesNotMatch(await other.locator('body').innerText(),/Created without read|Private saved field/);assert.equal(sim.store.state.tables.answer.length,1);
+test('Create-only terminal PRG confirms the committed write without reading or exposing its fields', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-create-only-wizard-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const files = {
+    'website.yml': 'adx_name: Invented\nadx_websiteid: invented',
+    'Home.webpage.yml':
+      'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: main',
+    'Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
+    'Main.webtemplate.yml': 'adx_name: Main\nadx_webtemplateid: main',
+    'Main.webtemplate.source.html': '{% webform name: "Create only" %}',
+    'Survey.advancedform.yml':
+      'adx_name: Create only\nadx_webformid: survey\nadx_startnewsessiononload: false\nadx_multiplerecordsperuserpermitted: true',
+    'Api.sitesetting.yml': JSON.stringify([
+      { adx_name: 'Webapi/answer/enabled', adx_value: 'true' },
+      { adx_name: 'Webapi/answer/fields', adx_value: 'answerid,note' },
+    ]),
+  };
+  for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(root, name), body);
+  const sim = await createSimulator({
+    sourceDir: root,
+    port: 0,
+    watch: false,
+    initial: {
+      mappings: { answer: { entitySet: 'answers', idColumn: 'answerid' } },
+      tables: { answer: [], contact: [{ contactid: 'current' }, { contactid: 'foreign' }] },
+      settings: { permissionMode: 'enforce' },
+      permissions: [{ entity: 'answer', scope: 'global', roles: ['Member'], operations: ['create'] }],
+      simulator: {
+        componentSchemas: {
+          survey: {
+            initialStepId: 'one',
+            steps: [
+              {
+                stepId: 'one',
+                type: 'load',
+                entity: 'answer',
+                mode: 100000000,
+                fields: [{ name: 'note', type: 'text', required: true }],
+                js: 'window.__completionStartup = true;',
+                metadata: { adx_successmessage: 'Created without read', adx_hideformonsuccess: true },
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+  ownedFixture(t).add(() => sim.close());
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  await signInContext(context, sim, 'current', { roles: ['Member'] });
+  const page = await context.newPage();
+  await page.goto(sim.url + '/?msg=success&stepid=one');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Created without read/);
+  await page.locator('#note').fill('Private saved field');
+  const post = page.waitForResponse((r) => r.request().method() === 'POST'),
+    landing = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await page.locator('#NextButton').click();
+  assert.equal((await post).status(), 302);
+  assert.equal((await landing).status(), 200);
+  assert.equal(await page.locator('#MessageLabel').innerText(), 'Created without read');
+  assert.equal(await page.evaluate(() => window.__completionStartup), true);
+  assert.doesNotMatch(await page.locator('body').innerText(), /Private saved field/);
+  assert.equal(await page.locator('#note').count(), 0);
+  assert.equal(sim.store.state.tables.answer.length, 1);
+  const id = sim.store.state.tables.answer[0].answerid;
+  assert.equal((await context.request.get(sim.url + '/_api/answers(' + id + ')')).status(), 403);
+  await page.reload();
+  assert.equal(await page.locator('#MessageLabel').innerText(), 'Created without read');
+  assert.equal(sim.store.state.tables.answer.length, 1);
+  const foreign = await browser.newContext();
+  ownedFixture(t).add(() => foreign.close());
+  await signInContext(foreign, sim, 'foreign', { roles: ['Member'] });
+  const other = await foreign.newPage();
+  await other.goto(page.url());
+  assert.doesNotMatch(await other.locator('body').innerText(), /Created without read|Private saved field/);
+  assert.equal(sim.store.state.tables.answer.length, 1);
 });

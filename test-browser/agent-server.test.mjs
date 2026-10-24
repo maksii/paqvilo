@@ -6,135 +6,317 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once, EventEmitter } from 'node:events';
-import {spawn} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { startAgentServer } from '../lense/agent-server.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 
-test('real browser: agent API inspects DOM/styles/network, resizes, captures and isolates foreign tabs', { timeout: 60_000 }, async (t) => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-agent-browser-'));
-  let browser;
-  let agent;
-  const servers = [];
-  // Each step's name and duration; printed when the test does not finish, to name a stuck step.
-  const trail = [];
-  let finished = false;
-  const step = async (name, action) => {
-    const entry = { name, startedMs: Date.now() };
-    trail.push(entry);
-    try { return await action(); } finally { entry.ms = Date.now() - entry.startedMs; }
-  };
-  ownedFixture(t).add(async () => { if (!finished) console.log(`agent-server steps: ${JSON.stringify(trail.map(({ name, ms }) => ({ name, ms: ms ?? 'unfinished' })))}`); });
-  ownedFixture(t).add(async () => { await agent?.close(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
-  ownedFixture(t).add(async () => { await drainFixture([...servers].map(server => async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); })); });
-  ownedFixture(t).remove(async () => { fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 }); });
-  const serve = async (handler) => {
-    const server = http.createServer(handler);
-    server.on('connect', (_request, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });
-    server.listen(0, '127.0.0.1'); await once(server, 'listening'); servers.push(server);
-    return `http://127.0.0.1:${server.address().port}`;
-  };
-  const external = await serve((request, response) => request.url.startsWith('/missing') ? response.writeHead(404).end('missing fixture asset') : response.writeHead(200, { 'content-type': 'text/html' }).end('<h1>Foreign sign-in fixture</h1>'));
-  const methods = [];
-  const documents = [];
-  let slowSettled;
-  const slowDone = new Promise((resolve) => { slowSettled = resolve; });
-  const origin = await serve((request, response) => {
-    methods.push(request.method);
-    if (request.url.startsWith('/chapter/')) documents.push({ method: request.method, url: request.url });
-    if (request.url.startsWith('/data')) return response.writeHead(200, { 'content-type': 'application/json' }).end('{"privateBody":"neverCaptured"}');
-    if (request.url === '/redirect') return response.writeHead(302, { location: external }).end();
-    if(request.url==='/slow'){const timer=setTimeout(()=>response.end('<p>Late document</p>'),1000);response.once('close',()=>{clearTimeout(timer);slowSettled();});return;}
-    if(request.url==='/never')return;
-    response.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>Agent fixture</title><style>tr{color:rgb(1, 2, 3)}#paqvilo-panel{position:fixed;inset:0;background:red;pointer-events:none}</style><body><table><tr><th>Name</th><th>Status</th></tr><tr style="width:100%"><td>Example</td><td>Ready</td></tr></table><input type="password" value="inputSecret"><textarea>textareaSecret</textarea><div contenteditable>editableSecret</div><a href="next?token=linkSecret">Next</a><form id="fixture-post" method="post" action="/chapter/?filter=ready#posted"><button id="submit">Submit to fixture</button></form><div id="paqvilo-panel">Developer panel</div><script>console.error('token=consoleSecret');fetch('/data?token=requestSecret');</script><script src="${external}/missing.js?token=cdnSecret"></script></body>`);
-  });
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true, proxy: { server: origin, bypass: '127.0.0.1,localhost' }, args: ['--disable-background-networking', '--disable-component-update', '--disable-sync', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'] });
-  const context = await browser.newContext({ serviceWorkers: 'block' });
-  const page = await context.newPage();
-  const session = Object.assign(new EventEmitter(), { cfg: { stateDir: work, origin, sourceDir: work, siteName: 'fixture', envName: 'loopback', site: { scope: 'all' } }, baseline: { available: true, spec: 'HEAD', commit: 'abc' }, model: { webFileByUrl: new Map(), warnings: [] }, rewriter: { activeBlocks: 0, patches: [], unsupported: [] }, changedFiles: new Set(), pageHits: new WeakMap(), rel: (file) => path.relative(work, file) });
-  agent = await startAgentServer({ session, context });
-  const discovery = JSON.parse(fs.readFileSync(agent.discoveryFile, 'utf8'));
-  const call = (url, body) => step(`${body === undefined ? 'GET' : 'POST'} ${url}${body?.url ? ` ${body.url}` : ''}`, () => fetch(agent.endpoint + url, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${discovery.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
-  await step('page.goto /chapter/', () => page.goto(origin + '/chapter/'));
-  const rows = await (await call('/v1/pages/1/dom', { selector: 'table tr', styles: ['display', 'color'] })).json();
-  assert.equal(rows.elements.length, 2);
-  assert.equal(rows.elements[1].text, 'Example Ready');
-  assert.equal(rows.elements[1].style.color, 'rgb(1, 2, 3)');
-  assert.equal(rows.elements[1].attributes.style, 'width:100%');
-  assert.ok(rows.elements[1].rect.width > 0);
-  const all = await (await call('/v1/pages/1/dom', {})).json();
-  for (const secret of ['inputSecret', 'textareaSecret', 'editableSecret', 'linkSecret']) assert.equal(JSON.stringify(all).includes(secret), false);
-  const invalidSelector=await call('/v1/pages/1/dom',{selector:'div[[['});assert.equal(invalidSelector.status,400);
-// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
-  const selectorError=await invalidSelector.json();assert.equal(selectorError.error.code,'invalid_selector');assert.doesNotMatch(selectorError.error.message,/\bat |Call log|\u001b/);
-  const invalidPage=await call('/v1/pages/abc/state');assert.equal(invalidPage.status,400);assert.equal((await invalidPage.json()).error.code,'invalid_argument');
-  const future=await (await call('/v1/events?after=999999999')).json();assert.equal(future.cursorAhead,true);assert.equal(future.sessionId,discovery.id);assert.ok(future.latestSequence<999999999);assert.equal(future.hasMore,false);
-  assert.equal((await call('/v1/pages/0/state')).status,400);
-  assert.equal((await call('/v1/pages/1/unknown')).status,404);
-  const beforeTimeout=page.url();
-  const timeoutResponse=await call('/v1/pages/1/navigate',{url:'/slow',timeoutMs:150});assert.equal(timeoutResponse.status,504);assert.equal((await timeoutResponse.json()).error.code,'action_timeout');
-  // Either the browser abandons the slow document or it arrives late; neither may commit.
-  await slowDone;await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,100)));assert.equal(page.url(),beforeTimeout,'timed-out navigation must not commit later');
-  const command=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','navigate','--session',agent.discoveryFile,'--page-id','1','--path','/never','--timeout','2000'],{windowsHide:true});
-  let output='';command.stdout.on('data',chunk=>(output+=chunk));const [code]=await once(command,'close');
-  const deadlineError=JSON.parse(output);assert.equal(code,1);assert.equal(deadlineError.action,'navigate');assert.equal(deadlineError.error.code,'action_timeout');assert.equal(deadlineError.error.status,504);assert.equal(page.url(),beforeTimeout);
-  const timeoutEvents=await (await call('/v1/events')).json();assert.doesNotMatch(JSON.stringify(timeoutEvents.events.filter(event=>event.type==='action-error')),/Call log|\\u001b/);
-  const history = await (await call('/v1/events')).json();
-  assert.ok(history.events.some((event) => event.type === 'response' && event.status === 404 && event.url.startsWith(external)));
-  assert.ok(history.events.some((event) => event.type === 'requestfinished' && event.timing.responseEnd >= 0));
-  for (const secret of ['privateBody', 'neverCaptured', 'requestSecret', 'cdnSecret', 'consoleSecret']) assert.equal(JSON.stringify(history).includes(secret), false);
-  const resized = await call('/v1/pages/1/viewport', { width: 800, height: 600 });
-  assert.equal(resized.status, 200); assert.deepEqual(page.viewportSize(), { width: 800, height: 600 });
-  const hidden = Buffer.from(await (await call('/v1/pages/1/screenshot', { fullPage: true })).arrayBuffer());
-  const shown = Buffer.from(await (await call('/v1/pages/1/screenshot', { includePanel: true })).arrayBuffer());
-  assert.deepEqual([...hidden.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-  assert.equal(hidden.equals(shown), false);
-  assert.equal(await page.locator('#paqvilo-panel').evaluate((node) => getComputedStyle(node).visibility), 'visible', 'screenshot style is restored');
-  assert.equal(await step('in-page fetch to agent', () => page.evaluate(async (endpoint) => { try { await fetch(endpoint + '/v1/session'); return true; } catch { return false; } }, agent.endpoint)), false, 'browser CORS access is rejected');
-  assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/?filter=ready#table' })).status, 200);
-  const getsBeforeReload = documents.filter((document) => document.method === 'GET').length;
-  const reloaded = await call('/v1/pages/1/reload', {});
-  assert.equal(reloaded.status, 200, JSON.stringify(await reloaded.json()));
-  assert.equal(documents.filter((document) => document.method === 'GET').length, getsBeforeReload + 1);
-  assert.equal(new URL(page.url()).hash, '#table');
-  assert.equal(new URL(page.url()).searchParams.get('filter'), 'ready');
-  assert.ok(new URL(page.url()).searchParams.has('paqvilo'));
-  assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/?filter=ready&filter=other#' })).status, 200);
-  const beforeEmptyFragment = documents.filter((document) => document.method === 'GET').length;
-  assert.equal((await call('/v1/pages/1/reload', {})).status, 200);
-  assert.equal(documents.filter((document) => document.method === 'GET').length, beforeEmptyFragment + 1, 'an empty fragment also forces a real GET');
-  assert.ok(page.url().endsWith('#'));
-  assert.deepEqual(new URL(page.url()).searchParams.getAll('filter'), ['ready', 'other']);
-  await step('submit POST form', () => Promise.all([page.waitForURL(origin + '/chapter/?filter=ready#posted'), page.locator('#submit').click()]));
-  assert.equal(methods.filter((method) => method === 'POST').length, 1);
-  const refused = await call('/v1/pages/1/reload', {});
-  assert.equal(refused.status, 409);
-  assert.equal((await refused.json()).error.code, 'unsafe_reload');
-  assert.equal(methods.filter((method) => method === 'POST').length, 1, 'API reload never repeats a submitted POST');
-  const lateGet = page.waitForRequest((request) => request.isNavigationRequest() && request.url().startsWith(origin + '/chapter/'));
-  const detach = await step('interceptOrigin', () => interceptOrigin(context, origin, (route) => route.fallback()));
-  const lateRequest = await step('late GET retry', () => lateGet);
-  assert.equal(lateRequest.method(), 'GET', 'late interception retry requests GET even for a POST document with a fragment');
-  // Let the retried document arrive; waitForLoadState alone can still see the POST document.
-  assert.equal((await step('late GET response', () => lateRequest.response()))?.status(), 200);
-  await step('waitForLoadState', () => page.waitForLoadState('load'));
-  assert.equal(methods.filter((method) => method === 'POST').length, 1);
-  assert.equal(new URL(page.url()).hash, '#posted');
-  await step('detach', () => detach());
-  assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/' })).status, 200);
-  assert.equal((await call('/v1/pages/1/navigate', { url: external })).status, 403);
-  assert.equal((await call('/v1/pages/1/navigate', { url: '/redirect' })).status, 403, 'same-origin navigation can redirect but foreign page inspection remains denied');
-  assert.equal((await call('/v1/pages/1/dom', {})).status, 404);
-  const state = await (await call('/v1/session')).json();
-  assert.equal(state.access.externalTabCount, 1); assert.equal(state.pages.length, 0);
-  assert.equal(methods.filter((method) => method !== 'GET').length, 1, 'only the explicit loopback fixture submission used POST');
-  await agent.close();
-  assert.equal(fs.existsSync(agent.discoveryFile), false);
-  const stoppedCommand=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','status','--session',agent.discoveryFile],{windowsHide:true});
-  let stoppedOutput='';stoppedCommand.stdout.on('data',chunk=>(stoppedOutput+=chunk));assert.equal((await once(stoppedCommand,'close'))[0],1);
-  assert.equal(JSON.parse(stoppedOutput).error.code,'session_not_found');assert.equal(JSON.parse(stoppedOutput).action,'status');
-  finished = true;
-});
+test(
+  'real browser: agent API inspects DOM/styles/network, resizes, captures and isolates foreign tabs',
+  { timeout: 60_000 },
+  async (t) => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-agent-browser-'));
+    let browser;
+    let agent;
+    const servers = [];
+    // Each step's name and duration; printed when the test does not finish, to name a stuck step.
+    const trail = [];
+    let finished = false;
+    const step = async (name, action) => {
+      const entry = { name, startedMs: Date.now() };
+      trail.push(entry);
+      try {
+        return await action();
+      } finally {
+        entry.ms = Date.now() - entry.startedMs;
+      }
+    };
+    ownedFixture(t).add(async () => {
+      if (!finished)
+        console.log(
+          `agent-server steps: ${JSON.stringify(trail.map(({ name, ms }) => ({ name, ms: ms ?? 'unfinished' })))}`,
+        );
+    });
+    ownedFixture(t).add(async () => {
+      await agent?.close();
+    });
+    ownedFixture(t).add(async () => {
+      await browser?.close();
+    });
+    ownedFixture(t).add(async () => {
+      await drainFixture(
+        [...servers].map((server) => async () => {
+          server.closeAllConnections();
+          await new Promise((resolve) => server.close(resolve));
+        }),
+      );
+    });
+    ownedFixture(t).remove(async () => {
+      fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 });
+    });
+    const serve = async (handler) => {
+      const server = http.createServer(handler);
+      server.on('connect', (_request, socket) => {
+        socket.on('error', () => {});
+        socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      servers.push(server);
+      return `http://127.0.0.1:${server.address().port}`;
+    };
+    const external = await serve((request, response) =>
+      request.url.startsWith('/missing')
+        ? response.writeHead(404).end('missing fixture asset')
+        : response.writeHead(200, { 'content-type': 'text/html' }).end('<h1>Foreign sign-in fixture</h1>'),
+    );
+    const methods = [];
+    const documents = [];
+    let slowSettled;
+    const slowDone = new Promise((resolve) => {
+      slowSettled = resolve;
+    });
+    const origin = await serve((request, response) => {
+      methods.push(request.method);
+      if (request.url.startsWith('/chapter/')) documents.push({ method: request.method, url: request.url });
+      if (request.url.startsWith('/data'))
+        return response.writeHead(200, { 'content-type': 'application/json' }).end('{"privateBody":"neverCaptured"}');
+      if (request.url === '/redirect') return response.writeHead(302, { location: external }).end();
+      if (request.url === '/slow') {
+        const timer = setTimeout(() => response.end('<p>Late document</p>'), 1000);
+        response.once('close', () => {
+          clearTimeout(timer);
+          slowSettled();
+        });
+        return;
+      }
+      if (request.url === '/never') return;
+      response
+        .writeHead(200, { 'content-type': 'text/html' })
+        .end(
+          `<!doctype html><title>Agent fixture</title><style>tr{color:rgb(1, 2, 3)}#paqvilo-panel{position:fixed;inset:0;background:red;pointer-events:none}</style><body><table><tr><th>Name</th><th>Status</th></tr><tr style="width:100%"><td>Example</td><td>Ready</td></tr></table><input type="password" value="inputSecret"><textarea>textareaSecret</textarea><div contenteditable>editableSecret</div><a href="next?token=linkSecret">Next</a><form id="fixture-post" method="post" action="/chapter/?filter=ready#posted"><button id="submit">Submit to fixture</button></form><div id="paqvilo-panel">Developer panel</div><script>console.error('token=consoleSecret');fetch('/data?token=requestSecret');</script><script src="${external}/missing.js?token=cdnSecret"></script></body>`,
+        );
+    });
+    const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+    browser = await chromium.launch({
+      channel: channel === 'chromium' ? undefined : channel,
+      headless: true,
+      proxy: { server: origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const page = await context.newPage();
+    const session = Object.assign(new EventEmitter(), {
+      cfg: {
+        stateDir: work,
+        origin,
+        sourceDir: work,
+        siteName: 'fixture',
+        envName: 'loopback',
+        site: { scope: 'all' },
+      },
+      baseline: { available: true, spec: 'HEAD', commit: 'abc' },
+      model: { webFileByUrl: new Map(), warnings: [] },
+      rewriter: { activeBlocks: 0, patches: [], unsupported: [] },
+      changedFiles: new Set(),
+      pageHits: new WeakMap(),
+      rel: (file) => path.relative(work, file),
+    });
+    agent = await startAgentServer({ session, context });
+    const discovery = JSON.parse(fs.readFileSync(agent.discoveryFile, 'utf8'));
+    const call = (url, body) =>
+      step(`${body === undefined ? 'GET' : 'POST'} ${url}${body?.url ? ` ${body.url}` : ''}`, () =>
+        fetch(agent.endpoint + url, {
+          method: body === undefined ? 'GET' : 'POST',
+          headers: {
+            authorization: `Bearer ${discovery.token}`,
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      );
+    await step('page.goto /chapter/', () => page.goto(origin + '/chapter/'));
+    const rows = await (await call('/v1/pages/1/dom', { selector: 'table tr', styles: ['display', 'color'] })).json();
+    assert.equal(rows.elements.length, 2);
+    assert.equal(rows.elements[1].text, 'Example Ready');
+    assert.equal(rows.elements[1].style.color, 'rgb(1, 2, 3)');
+    assert.equal(rows.elements[1].attributes.style, 'width:100%');
+    assert.ok(rows.elements[1].rect.width > 0);
+    const all = await (await call('/v1/pages/1/dom', {})).json();
+    for (const secret of ['inputSecret', 'textareaSecret', 'editableSecret', 'linkSecret'])
+      assert.equal(JSON.stringify(all).includes(secret), false);
+    const invalidSelector = await call('/v1/pages/1/dom', { selector: 'div[[[' });
+    assert.equal(invalidSelector.status, 400);
+    const selectorError = await invalidSelector.json();
+    assert.equal(selectorError.error.code, 'invalid_selector');
+    // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+    assert.doesNotMatch(selectorError.error.message, /\bat |Call log|\u001b/);
+    const invalidPage = await call('/v1/pages/abc/state');
+    assert.equal(invalidPage.status, 400);
+    assert.equal((await invalidPage.json()).error.code, 'invalid_argument');
+    const future = await (await call('/v1/events?after=999999999')).json();
+    assert.equal(future.cursorAhead, true);
+    assert.equal(future.sessionId, discovery.id);
+    assert.ok(future.latestSequence < 999999999);
+    assert.equal(future.hasMore, false);
+    assert.equal((await call('/v1/pages/0/state')).status, 400);
+    assert.equal((await call('/v1/pages/1/unknown')).status, 404);
+    const beforeTimeout = page.url();
+    const timeoutResponse = await call('/v1/pages/1/navigate', { url: '/slow', timeoutMs: 150 });
+    assert.equal(timeoutResponse.status, 504);
+    assert.equal((await timeoutResponse.json()).error.code, 'action_timeout');
+    // Either the browser abandons the slow document or it arrives late; neither may commit.
+    await slowDone;
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    assert.equal(page.url(), beforeTimeout, 'timed-out navigation must not commit later');
+    const command = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../lense/cli.mjs', import.meta.url)),
+        'agent',
+        'navigate',
+        '--session',
+        agent.discoveryFile,
+        '--page-id',
+        '1',
+        '--path',
+        '/never',
+        '--timeout',
+        '2000',
+      ],
+      { windowsHide: true },
+    );
+    let output = '';
+    command.stdout.on('data', (chunk) => (output += chunk));
+    const [code] = await once(command, 'close');
+    const deadlineError = JSON.parse(output);
+    assert.equal(code, 1);
+    assert.equal(deadlineError.action, 'navigate');
+    assert.equal(deadlineError.error.code, 'action_timeout');
+    assert.equal(deadlineError.error.status, 504);
+    assert.equal(page.url(), beforeTimeout);
+    const timeoutEvents = await (await call('/v1/events')).json();
+    assert.doesNotMatch(
+      JSON.stringify(timeoutEvents.events.filter((event) => event.type === 'action-error')),
+      /Call log|\\u001b/,
+    );
+    const history = await (await call('/v1/events')).json();
+    assert.ok(
+      history.events.some(
+        (event) => event.type === 'response' && event.status === 404 && event.url.startsWith(external),
+      ),
+    );
+    assert.ok(history.events.some((event) => event.type === 'requestfinished' && event.timing.responseEnd >= 0));
+    for (const secret of ['privateBody', 'neverCaptured', 'requestSecret', 'cdnSecret', 'consoleSecret'])
+      assert.equal(JSON.stringify(history).includes(secret), false);
+    const resized = await call('/v1/pages/1/viewport', { width: 800, height: 600 });
+    assert.equal(resized.status, 200);
+    assert.deepEqual(page.viewportSize(), { width: 800, height: 600 });
+    const hidden = Buffer.from(await (await call('/v1/pages/1/screenshot', { fullPage: true })).arrayBuffer());
+    const shown = Buffer.from(await (await call('/v1/pages/1/screenshot', { includePanel: true })).arrayBuffer());
+    assert.deepEqual([...hidden.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.equal(hidden.equals(shown), false);
+    assert.equal(
+      await page.locator('#paqvilo-panel').evaluate((node) => getComputedStyle(node).visibility),
+      'visible',
+      'screenshot style is restored',
+    );
+    assert.equal(
+      await step('in-page fetch to agent', () =>
+        page.evaluate(async (endpoint) => {
+          try {
+            await fetch(endpoint + '/v1/session');
+            return true;
+          } catch {
+            return false;
+          }
+        }, agent.endpoint),
+      ),
+      false,
+      'browser CORS access is rejected',
+    );
+    assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/?filter=ready#table' })).status, 200);
+    const getsBeforeReload = documents.filter((document) => document.method === 'GET').length;
+    const reloaded = await call('/v1/pages/1/reload', {});
+    assert.equal(reloaded.status, 200, JSON.stringify(await reloaded.json()));
+    assert.equal(documents.filter((document) => document.method === 'GET').length, getsBeforeReload + 1);
+    assert.equal(new URL(page.url()).hash, '#table');
+    assert.equal(new URL(page.url()).searchParams.get('filter'), 'ready');
+    assert.ok(new URL(page.url()).searchParams.has('paqvilo'));
+    assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/?filter=ready&filter=other#' })).status, 200);
+    const beforeEmptyFragment = documents.filter((document) => document.method === 'GET').length;
+    assert.equal((await call('/v1/pages/1/reload', {})).status, 200);
+    assert.equal(
+      documents.filter((document) => document.method === 'GET').length,
+      beforeEmptyFragment + 1,
+      'an empty fragment also forces a real GET',
+    );
+    assert.ok(page.url().endsWith('#'));
+    assert.deepEqual(new URL(page.url()).searchParams.getAll('filter'), ['ready', 'other']);
+    await step('submit POST form', () =>
+      Promise.all([page.waitForURL(origin + '/chapter/?filter=ready#posted'), page.locator('#submit').click()]),
+    );
+    assert.equal(methods.filter((method) => method === 'POST').length, 1);
+    const refused = await call('/v1/pages/1/reload', {});
+    assert.equal(refused.status, 409);
+    assert.equal((await refused.json()).error.code, 'unsafe_reload');
+    assert.equal(methods.filter((method) => method === 'POST').length, 1, 'API reload never repeats a submitted POST');
+    const lateGet = page.waitForRequest(
+      (request) => request.isNavigationRequest() && request.url().startsWith(origin + '/chapter/'),
+    );
+    const detach = await step('interceptOrigin', () => interceptOrigin(context, origin, (route) => route.fallback()));
+    const lateRequest = await step('late GET retry', () => lateGet);
+    assert.equal(
+      lateRequest.method(),
+      'GET',
+      'late interception retry requests GET even for a POST document with a fragment',
+    );
+    // Let the retried document arrive; waitForLoadState alone can still see the POST document.
+    assert.equal((await step('late GET response', () => lateRequest.response()))?.status(), 200);
+    await step('waitForLoadState', () => page.waitForLoadState('load'));
+    assert.equal(methods.filter((method) => method === 'POST').length, 1);
+    assert.equal(new URL(page.url()).hash, '#posted');
+    await step('detach', () => detach());
+    assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/' })).status, 200);
+    assert.equal((await call('/v1/pages/1/navigate', { url: external })).status, 403);
+    assert.equal(
+      (await call('/v1/pages/1/navigate', { url: '/redirect' })).status,
+      403,
+      'same-origin navigation can redirect but foreign page inspection remains denied',
+    );
+    assert.equal((await call('/v1/pages/1/dom', {})).status, 404);
+    const state = await (await call('/v1/session')).json();
+    assert.equal(state.access.externalTabCount, 1);
+    assert.equal(state.pages.length, 0);
+    assert.equal(
+      methods.filter((method) => method !== 'GET').length,
+      1,
+      'only the explicit loopback fixture submission used POST',
+    );
+    await agent.close();
+    assert.equal(fs.existsSync(agent.discoveryFile), false);
+    const stoppedCommand = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../lense/cli.mjs', import.meta.url)),
+        'agent',
+        'status',
+        '--session',
+        agent.discoveryFile,
+      ],
+      { windowsHide: true },
+    );
+    let stoppedOutput = '';
+    stoppedCommand.stdout.on('data', (chunk) => (stoppedOutput += chunk));
+    assert.equal((await once(stoppedCommand, 'close'))[0], 1);
+    assert.equal(JSON.parse(stoppedOutput).error.code, 'session_not_found');
+    assert.equal(JSON.parse(stoppedOutput).action, 'status');
+    finished = true;
+  },
+);

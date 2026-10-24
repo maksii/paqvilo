@@ -1,37 +1,29 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
-import { spawn } from "node:child_process";
-import { ownedFixture } from "../mirage/testing/owned-fixture.mjs";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { spawn } from 'node:child_process';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
-const helper = new URL("../mirage/testing/owned-fixture.mjs", import.meta.url)
-  .href;
+const helper = new URL('../mirage/testing/owned-fixture.mjs', import.meta.url).href;
 
 for (const mode of [
-  "removal-failure",
-  "first-close-failure",
-  "grouped-first-close-failure",
-  "concurrent-first-close-failure",
-  "diagnostic-failure",
+  'removal-failure',
+  'first-close-failure',
+  'grouped-first-close-failure',
+  'concurrent-first-close-failure',
+  'diagnostic-failure',
 ]) {
-  test(
-    `fixture ownership drains actual loopback listeners after ${mode}`,
-    { timeout: 10000 },
-    async (t) => {
-      const directory = await fs.mkdtemp(
-        path.join(os.tmpdir(), "paqvilo-owner-lifecycle-"),
-      );
-      const state = path.join(directory, "state");
-      await fs.mkdir(state);
-      ownedFixture(t).remove(() =>
-        fs.rm(directory, { recursive: true, force: true }),
-      );
-      const fixture = path.join(directory, "fixture.test.mjs");
-      await fs.writeFile(
-        fixture,
-        `
+  test(`fixture ownership drains actual loopback listeners after ${mode}`, { timeout: 10000 }, async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-owner-lifecycle-'));
+    const state = path.join(directory, 'state');
+    await fs.mkdir(state);
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+    const fixture = path.join(directory, 'fixture.test.mjs');
+    await fs.writeFile(
+      fixture,
+      `
       import test from 'node:test';
       import http from 'node:http';
       import fs from 'node:fs/promises';
@@ -59,53 +51,39 @@ for (const mode of [
         if (grouped.length) owner.add(() => drainFixture(grouped, { concurrent: ${JSON.stringify(mode)} === 'concurrent-first-close-failure' }));
       });
     `,
-      );
-      const child = spawn(process.execPath, ["--test", fixture], {
-        windowsHide: true,
-        signal: t.signal,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: Object.fromEntries(
-          Object.entries(process.env).filter(
-            ([key]) => key !== "NODE_TEST_CONTEXT",
-          ),
-        ),
-      });
-      let output = "";
-      const collect = (chunk) => {
-        output = (output + chunk).slice(-12000);
-      };
-      child.stdout.on("data", collect);
-      child.stderr.on("data", collect);
-      const closed = new Promise((resolve) => child.once("close", resolve));
-      ownedFixture(t).add(async () => {
-        if (
-          !child.killed &&
-          child.exitCode === null &&
-          child.signalCode === null
-        )
-          assert.ok(child.kill());
-        await closed;
-      });
-      const code = await new Promise((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", resolve);
-      });
-      assert.equal(code, 1, output);
-      assert.match(output, /owned-listener-closed:0/);
-      assert.match(output, /owned-listener-closed:1/);
-      assert.match(
-        output,
-        mode === "removal-failure"
-          ? /invented-removal-failure/
-          : mode === "diagnostic-failure"
-            ? /invented-diagnostic-failure/
-            : /invented-close-failure/,
-      );
-      assert.equal(
-        (await fs.stat(state)).isDirectory(),
-        true,
-        "failed cleanup retains state evidence",
-      );
-    },
-  );
+    );
+    const child = spawn(process.execPath, ['--test', fixture], {
+      windowsHide: true,
+      signal: t.signal,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_TEST_CONTEXT')),
+    });
+    let output = '';
+    const collect = (chunk) => {
+      output = (output + chunk).slice(-12000);
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    const closed = new Promise((resolve) => child.once('close', resolve));
+    ownedFixture(t).add(async () => {
+      if (!child.killed && child.exitCode === null && child.signalCode === null) assert.ok(child.kill());
+      await closed;
+    });
+    const code = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    assert.equal(code, 1, output);
+    assert.match(output, /owned-listener-closed:0/);
+    assert.match(output, /owned-listener-closed:1/);
+    assert.match(
+      output,
+      mode === 'removal-failure'
+        ? /invented-removal-failure/
+        : mode === 'diagnostic-failure'
+          ? /invented-diagnostic-failure/
+          : /invented-close-failure/,
+    );
+    assert.equal((await fs.stat(state)).isDirectory(), true, 'failed cleanup retains state evidence');
+  });
 }

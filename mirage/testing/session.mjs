@@ -17,9 +17,10 @@ export function signInHeaders(simulator, contactId, options = {}) {
  */
 export async function signInContext(context, simulator, contactId, options = {}) {
   const response = await context.request.post(`${simulator.url}/_sim/api/session/sign-in`, {
-    headers: { "x-sim-csrf": simulator.state().csrf },
+    headers: { 'x-sim-csrf': simulator.state().csrf },
     data: { contactId, ...(options.roles ? { roles: options.roles } : {}) },
   });
-  if (!response.ok()) throw new Error(`Sign-in as ${contactId} failed with HTTP ${response.status()}: ${await response.text()}`);
+  if (!response.ok())
+    throw new Error(`Sign-in as ${contactId} failed with HTTP ${response.status()}: ${await response.text()}`);
   return response.json();
 }

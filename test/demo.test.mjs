@@ -34,7 +34,12 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   }
   for (const task of tasks.tasks) {
     if (task.dependsOn) assert.ok(labels.has(task.dependsOn));
-    if (task.isBackground) assert.ok(new RegExp(task.problemMatcher.background.endsPattern).test('edit a file under the sources and the browser follows.'));
+    if (task.isBackground)
+      assert.ok(
+        new RegExp(task.problemMatcher.background.endsPattern).test(
+          'edit a file under the sources and the browser follows.',
+        ),
+      );
   }
   await fs.writeFile(path.join(directory, '.vscode/tasks.json'), '{"myTask":true}');
   await fs.unlink(path.join(directory, '.vscode/launch.json'));
@@ -43,16 +48,34 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal(await fs.readFile(path.join(directory, '.vscode/tasks.json'), 'utf8'), '{"myTask":true}');
   await fs.access(path.join(directory, '.vscode/launch.json'));
   await fs.access(path.join(directory, 'paqvilo-demo.code-workspace'));
-  const scaffold = execFileSync(process.execPath, [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'demo', '--scaffold', '--dir', directory], { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true });
+  const scaffold = execFileSync(
+    process.execPath,
+    [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'demo', '--scaffold', '--dir', directory],
+    { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true },
+  );
   assert.match(scaffold, /No runtime was started/);
   assert.match(scaffold, /paqvilo-demo\.code-workspace/);
   assert.deepEqual(await fs.readdir(path.join(directory, '.paqvilo')), ['demo.json']);
   await fs.access(path.join(directory, 'solution/Entities/Account/Entity.xml'));
   await fs.access(path.join(directory, 'metadata/Other/Relationships.xml'));
   await fs.access(path.join(directory, 'components/DataversePlugins/AccountRules.cs'));
-  await fs.access(path.join(directory, 'solution/PluginAssemblies/PaqviloDemoPlugins-B4700000-0000-4000-8000-370000000001/PaqviloDemoPlugins.dll'));
-  for (const output of ['bin', 'obj']) await assert.rejects(fs.access(path.join(directory, 'components/DataversePlugins', output)), { code: 'ENOENT' });
-  for (const file of ['deployment/PaqviloDemoSample.zip', 'deployment/PaqviloDemoCodeComponents.zip', 'deployment/demo-data.zip', 'deployment/configure.mjs', 'code-solution/Other/Solution.xml', 'components/pcf-field-types/ExampleAccountFields/index.ts', 'components/pcf-field-types/ExampleAccountFields/ControlManifest.Input.xml']) {
+  await fs.access(
+    path.join(
+      directory,
+      'solution/PluginAssemblies/PaqviloDemoPlugins-B4700000-0000-4000-8000-370000000001/PaqviloDemoPlugins.dll',
+    ),
+  );
+  for (const output of ['bin', 'obj'])
+    await assert.rejects(fs.access(path.join(directory, 'components/DataversePlugins', output)), { code: 'ENOENT' });
+  for (const file of [
+    'deployment/PaqviloDemoSample.zip',
+    'deployment/PaqviloDemoCodeComponents.zip',
+    'deployment/demo-data.zip',
+    'deployment/configure.mjs',
+    'code-solution/Other/Solution.xml',
+    'components/pcf-field-types/ExampleAccountFields/index.ts',
+    'components/pcf-field-types/ExampleAccountFields/ControlManifest.Input.xml',
+  ]) {
     await fs.access(path.join(directory, file));
   }
   const fixtures = JSON.parse(await fs.readFile(path.join(directory, 'pack/fixtures.json'), 'utf8'));

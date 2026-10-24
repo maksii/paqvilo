@@ -19,14 +19,41 @@ test('catalogue Mirage settings fill only the options the command line leaves op
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const project = path.join(dir, 'site.project.yml');
   fs.writeFileSync(project, 'version: 1\n');
-  const cfg = (mirageConfig) => ({ siteName: 'site', mirageConfig: { project: null, solutionRoots: [], dataPacks: [], port: null, preset: null, ...mirageConfig } });
+  const cfg = (mirageConfig) => ({
+    siteName: 'site',
+    mirageConfig: { project: null, solutionRoots: [], dataPacks: [], port: null, preset: null, ...mirageConfig },
+  });
   const roots = [path.join(dir, 'Base'), path.join(dir, 'Business')];
-  assert.deepEqual(catalogueArgs(cfg({ solutionRoots: roots, port: 0, preset: 'open-sandbox' }), {}), { 'solution-root': roots, port: '0', preset: 'open-sandbox' });
-  assert.deepEqual(catalogueArgs(cfg({ solutionRoots: roots, port: 0, preset: 'open-sandbox' }), { 'solution-root': ['explicit'], port: '8790', preset: 'other' }), { 'solution-root': ['explicit'], port: '8790', preset: 'other' }, 'explicit options win');
-  assert.deepEqual(catalogueArgs(cfg({ project, solutionRoots: roots }), {}), { project }, 'a catalogued project supplies its own Solution roots');
+  assert.deepEqual(catalogueArgs(cfg({ solutionRoots: roots, port: 0, preset: 'open-sandbox' }), {}), {
+    'solution-root': roots,
+    port: '0',
+    preset: 'open-sandbox',
+  });
+  assert.deepEqual(
+    catalogueArgs(cfg({ solutionRoots: roots, port: 0, preset: 'open-sandbox' }), {
+      'solution-root': ['explicit'],
+      port: '8790',
+      preset: 'other',
+    }),
+    { 'solution-root': ['explicit'], port: '8790', preset: 'other' },
+    'explicit options win',
+  );
+  assert.deepEqual(
+    catalogueArgs(cfg({ project, solutionRoots: roots }), {}),
+    { project },
+    'a catalogued project supplies its own Solution roots',
+  );
   assert.deepEqual(catalogueArgs(cfg({ project }), { project: 'explicit.yml' }), { project: 'explicit.yml' });
   const missing = path.join(dir, 'missing.project.yml');
   assert.throws(() => catalogueArgs(cfg({ project: missing }), {}), /does not exist.*paqvilo mirage init --site site/);
-  assert.deepEqual(catalogueArgs(cfg({ project: missing }), {}, { requireProject: false }), {}, 'stop still works without the project file');
-  assert.deepEqual(catalogueArgs({ siteName: 'legacy' }, { port: '1' }), { port: '1' }, 'configurations without Mirage settings are unchanged');
+  assert.deepEqual(
+    catalogueArgs(cfg({ project: missing }), {}, { requireProject: false }),
+    {},
+    'stop still works without the project file',
+  );
+  assert.deepEqual(
+    catalogueArgs({ siteName: 'legacy' }, { port: '1' }),
+    { port: '1' },
+    'configurations without Mirage settings are unchanged',
+  );
 });

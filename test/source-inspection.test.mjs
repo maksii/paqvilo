@@ -7,185 +7,397 @@ import { createSourceInspector, inspectionSources, inspectRenderedPage } from '.
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
-test('list action modal forms and Web API column candidates come from the selected exports',async t=>{
-  const fx=inspectionFixture();t.after(fx.cleanup);
-  fs.mkdirSync(path.join(fx.portal,'lists'));
-  const settings={ViewActions:[{Type:'CrmEntityFormView-CreateAction',EntityFormId:'widget-edit',TargetType:0}],ItemActions:[{Type:'CrmEntityFormView-EditAction',EntityFormId:'widget-edit',TargetType:0}]};
-  fs.writeFileSync(path.join(fx.portal,'lists/Items.list.yml'),`adx_entitylistid: item-list\nadx_name: Items\nadx_entityname: fx_widget\nadx_settings: ${JSON.stringify(JSON.stringify(settings))}`);
-  fs.writeFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),'{% entitylist name: "Items" %}{% endentitylist %}<script src="/widget.js"></script>');
-  fs.writeFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.yml'),'adx_webpageid: home\nadx_name: Widgets\nadx_partialurl: /\nadx_pagetemplateid: main');
-  fs.writeFileSync(path.join(fx.portal,'web-files/widget.js'),'fetch("/_api/fx_widgets");');
-  const {report}=await createSourceInspector({sourceDir:fx.portal,mirageConfig:{solutionRoots:[fx.solution]}}).inspect('/');
-  const form=report.forms.find(row=>row.id==='widget-edit');assert.ok(form);assert.equal(form.evidence,'configured-list-modal-form');assert.equal(form.usedBy.length,2);
-  assert.ok(report.apiReferences.some(row=>row.entity==='fx_widget'));
-  assert.ok(report.columns.some(row=>row.entity==='fx_widget'&&row.name==='fx_title'));
+test('list action modal forms and Web API column candidates come from the selected exports', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.mkdirSync(path.join(fx.portal, 'lists'));
+  const settings = {
+    ViewActions: [{ Type: 'CrmEntityFormView-CreateAction', EntityFormId: 'widget-edit', TargetType: 0 }],
+    ItemActions: [{ Type: 'CrmEntityFormView-EditAction', EntityFormId: 'widget-edit', TargetType: 0 }],
+  };
+  fs.writeFileSync(
+    path.join(fx.portal, 'lists/Items.list.yml'),
+    `adx_entitylistid: item-list\nadx_name: Items\nadx_entityname: fx_widget\nadx_settings: ${JSON.stringify(JSON.stringify(settings))}`,
+  );
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '{% entitylist name: "Items" %}{% endentitylist %}<script src="/widget.js"></script>',
+  );
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Widgets\nadx_partialurl: /\nadx_pagetemplateid: main',
+  );
+  fs.writeFileSync(path.join(fx.portal, 'web-files/widget.js'), 'fetch("/_api/fx_widgets");');
+  const { report } = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { solutionRoots: [fx.solution] },
+  }).inspect('/');
+  const form = report.forms.find((row) => row.id === 'widget-edit');
+  assert.ok(form);
+  assert.equal(form.evidence, 'configured-list-modal-form');
+  assert.equal(form.usedBy.length, 2);
+  assert.ok(report.apiReferences.some((row) => row.entity === 'fx_widget'));
+  assert.ok(report.columns.some((row) => row.entity === 'fx_widget' && row.name === 'fx_title'));
 });
 
-test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async t => {
-  const fx=inspectionFixture();t.after(fx.cleanup);
-  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'), '<div id="page-block"><button id="fx_title">Title</button></div>');
-  fs.appendFileSync(path.join(fx.portal,'web-templates/Partial.webtemplate.source.html'), '<aside id="template-block"></aside>');
-  fs.writeFileSync(path.join(fx.portal,'content-snippets/Banner.contentsnippet.value.html'), '<span id="snippet-block">A source fixture</span>');
-  fs.writeFileSync(path.join(fx.portal,'web-files/widget.js'), 'document.getElementById("fx_title");');
-  const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/');
-  for(const [selector,suffix] of [['#page-block','Home.webpage.copy.html'],['#template-block','Partial.webtemplate.source.html'],['#snippet-block','Banner.contentsnippet.value.html']]) {
-    const row=report.elementSources.find(item=>item.selector===selector);
-    assert.ok(row?.sourceFile.endsWith(suffix),`${selector} resolves to its owning exported source`);
-    assert.equal(row.certainty,'candidate');assert.equal(row.evidence,'source-selector');
+test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.appendFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '<div id="page-block"><button id="fx_title">Title</button></div>',
+  );
+  fs.appendFileSync(
+    path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'),
+    '<aside id="template-block"></aside>',
+  );
+  fs.writeFileSync(
+    path.join(fx.portal, 'content-snippets/Banner.contentsnippet.value.html'),
+    '<span id="snippet-block">A source fixture</span>',
+  );
+  fs.writeFileSync(path.join(fx.portal, 'web-files/widget.js'), 'document.getElementById("fx_title");');
+  const { report } = await createSourceInspector({ sourceDir: fx.portal }).inspect('/');
+  for (const [selector, suffix] of [
+    ['#page-block', 'Home.webpage.copy.html'],
+    ['#template-block', 'Partial.webtemplate.source.html'],
+    ['#snippet-block', 'Banner.contentsnippet.value.html'],
+  ]) {
+    const row = report.elementSources.find((item) => item.selector === selector);
+    assert.ok(row?.sourceFile.endsWith(suffix), `${selector} resolves to its owning exported source`);
+    assert.equal(row.certainty, 'candidate');
+    assert.equal(row.evidence, 'source-selector');
   }
-  const script=report.elementSources.find(item=>item.selector==='#fx_title'&&item.kind==='script');
-  assert.ok(script.sourceFile.endsWith('widget.js'));assert.equal(script.line,1);assert.equal(script.certainty,'candidate');
+  const script = report.elementSources.find((item) => item.selector === '#fx_title' && item.kind === 'script');
+  assert.ok(script.sourceFile.endsWith('widget.js'));
+  assert.equal(script.line, 1);
+  assert.equal(script.certainty, 'candidate');
 });
 
-test('platform routes index the website shell includes while authored bare-shell pages respect their template',async t=>{
-  const fx=inspectionFixture();t.after(fx.cleanup);
-  fs.appendFileSync(path.join(fx.portal,'website.yml'),'\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer');
-  for(const [name,id,body] of [['Header','header','<header id="site-header">{% include "Logo" %}</header>'],['Logo','logo','<img id="site-logo" src="/logo.svg">'],['Footer','footer','<footer id="site-footer"></footer>']]){
-    fs.writeFileSync(path.join(fx.portal,`web-templates/${name}.webtemplate.yml`),`adx_webtemplateid: ${id}\nadx_name: ${name}`);
-    fs.writeFileSync(path.join(fx.portal,`web-templates/${name}.webtemplate.source.html`),body);
+test('platform routes index the website shell includes while authored bare-shell pages respect their template', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.appendFileSync(
+    path.join(fx.portal, 'website.yml'),
+    '\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer',
+  );
+  for (const [name, id, body] of [
+    ['Header', 'header', '<header id="site-header">{% include "Logo" %}</header>'],
+    ['Logo', 'logo', '<img id="site-logo" src="/logo.svg">'],
+    ['Footer', 'footer', '<footer id="site-footer"></footer>'],
+  ]) {
+    fs.writeFileSync(
+      path.join(fx.portal, `web-templates/${name}.webtemplate.yml`),
+      `adx_webtemplateid: ${id}\nadx_name: ${name}`,
+    );
+    fs.writeFileSync(path.join(fx.portal, `web-templates/${name}.webtemplate.source.html`), body);
   }
-  const inspector=createSourceInspector({sourceDir:fx.portal});
-  const platform=(await inspector.inspect('/SignIn')).report;
-  assert.equal(platform.page,null);assert.ok(platform.elementSources.some(row=>row.selector==='#site-logo'));
-  assert.ok(platform.webTemplates.some(row=>row.name==='Footer'));
-  const authored=(await inspector.inspect('/')).report;
-  assert.equal(authored.webTemplates.some(row=>row.name==='Header'),false,'exported usewebsiteheaderandfooter=false excludes the shell');
+  const inspector = createSourceInspector({ sourceDir: fx.portal });
+  const platform = (await inspector.inspect('/SignIn')).report;
+  assert.equal(platform.page, null);
+  assert.ok(platform.elementSources.some((row) => row.selector === '#site-logo'));
+  assert.ok(platform.webTemplates.some((row) => row.name === 'Footer'));
+  const authored = (await inspector.inspect('/')).report;
+  assert.equal(
+    authored.webTemplates.some((row) => row.name === 'Header'),
+    false,
+    'exported usewebsiteheaderandfooter=false excludes the shell',
+  );
 });
 
-test('source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies',async t=>{
-  const fx=inspectionFixture();t.after(fx.cleanup);
-  const snippets=Array.from({length:1000},(_,index)=>({adx_contentsnippetid:'late-'+index,adx_name:'Late '+index,adx_value:`<aside id="late-${index}"></aside>`}));
-  snippets.push({adx_contentsnippetid:'oversized',adx_name:'Oversized',adx_value:'x'.repeat(1024*1024+1)});
-  fs.writeFileSync(path.join(fx.portal,'contentsnippet.yml'),JSON.stringify(snippets));
-  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),snippets.map(row=>`{{ snippets[${JSON.stringify(row.adx_name)}] }}`).join(''));
-  const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/');
-  assert.ok(report.elementSources.some(row=>row.selector==='#late-900'));
-  assert.equal(report.snippets.filter(row=>row.name.startsWith('Late ')).length,1000);
-  assert.equal(report.elementSourceLimits.truncated,true);
+test('source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const snippets = Array.from({ length: 1000 }, (_, index) => ({
+    adx_contentsnippetid: 'late-' + index,
+    adx_name: 'Late ' + index,
+    adx_value: `<aside id="late-${index}"></aside>`,
+  }));
+  snippets.push({ adx_contentsnippetid: 'oversized', adx_name: 'Oversized', adx_value: 'x'.repeat(1024 * 1024 + 1) });
+  fs.writeFileSync(path.join(fx.portal, 'contentsnippet.yml'), JSON.stringify(snippets));
+  fs.appendFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    snippets.map((row) => `{{ snippets[${JSON.stringify(row.adx_name)}] }}`).join(''),
+  );
+  const { report } = await createSourceInspector({ sourceDir: fx.portal }).inspect('/');
+  assert.ok(report.elementSources.some((row) => row.selector === '#late-900'));
+  assert.equal(report.snippets.filter((row) => row.name.startsWith('Late ')).length, 1000);
+  assert.equal(report.elementSourceLimits.truncated, true);
 });
 
-test('a rendered classic list adds its configured view and columns even without a static page reference',async t=>{
-  const fx=inspectionFixture();t.after(fx.cleanup);const id='10000000-0000-4000-8000-000000000001';
-  fs.mkdirSync(path.join(fx.portal,'lists'));
-  fs.writeFileSync(path.join(fx.portal,'lists/Items.list.yml'),`adx_entitylistid: ${id}\nadx_name: Items\nadx_entityname: fx_widget\nadx_view: item-view`);
-  fs.mkdirSync(path.join(fx.solution,'Entities/fx_widget/SavedQueries'),{recursive:true});
-  fs.writeFileSync(path.join(fx.solution,'Entities/fx_widget/SavedQueries/Items.xml'),'<savedquery><savedqueryid>item-view</savedqueryid><fetchxml><fetch><entity name="fx_widget"><attribute name="fx_title"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="fx_title"/></row></grid></layoutxml><LocalizedNames><LocalizedName description="Items" languagecode="1033"/></LocalizedNames></savedquery>');
-  const {report}=await createSourceInspector({sourceDir:fx.portal,mirageConfig:{project:fx.project}}).inspect('/',{controls:[{listId:id.replaceAll('-','')}]});
-  assert.deepEqual(report.components.find(row=>row.kind==='list').viewIds,['item-view']);
-  assert.ok(report.views.some(row=>row.id==='item-view'));assert.ok(report.columns.some(row=>row.entity==='fx_widget'&&row.name==='fx_title'));
+test('a rendered classic list adds its configured view and columns even without a static page reference', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const id = '10000000-0000-4000-8000-000000000001';
+  fs.mkdirSync(path.join(fx.portal, 'lists'));
+  fs.writeFileSync(
+    path.join(fx.portal, 'lists/Items.list.yml'),
+    `adx_entitylistid: ${id}\nadx_name: Items\nadx_entityname: fx_widget\nadx_view: item-view`,
+  );
+  fs.mkdirSync(path.join(fx.solution, 'Entities/fx_widget/SavedQueries'), { recursive: true });
+  fs.writeFileSync(
+    path.join(fx.solution, 'Entities/fx_widget/SavedQueries/Items.xml'),
+    '<savedquery><savedqueryid>item-view</savedqueryid><fetchxml><fetch><entity name="fx_widget"><attribute name="fx_title"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="fx_title"/></row></grid></layoutxml><LocalizedNames><LocalizedName description="Items" languagecode="1033"/></LocalizedNames></savedquery>',
+  );
+  const { report } = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { project: fx.project },
+  }).inspect('/', { controls: [{ listId: id.replaceAll('-', '') }] });
+  assert.deepEqual(report.components.find((row) => row.kind === 'list').viewIds, ['item-view']);
+  assert.ok(report.views.some((row) => row.id === 'item-view'));
+  assert.ok(report.columns.some((row) => row.entity === 'fx_widget' && row.name === 'fx_title'));
 });
 
-test('repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly',async t=>{
-  const fx=inspectionFixture();t.after(fx.cleanup);
-  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),'{% codecomponent name: "unknown.Control" %}');
-  const inspector=createSourceInspector({sourceDir:fx.portal}),{report}=await inspector.inspect('/');
-  await inspector.enrich(report);const before=structuredClone(report.unresolved);
-  await inspector.enrich(report);assert.deepEqual(report.unresolved,before);
-  assert.ok(before.some(row=>row.kind==='code-component'));
-  for(const value of [null,undefined,[],42,'report'])await assert.rejects(()=>inspector.enrich(value),/requires a page report object/);
+test('repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.appendFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '{% codecomponent name: "unknown.Control" %}',
+  );
+  const inspector = createSourceInspector({ sourceDir: fx.portal }),
+    { report } = await inspector.inspect('/');
+  await inspector.enrich(report);
+  const before = structuredClone(report.unresolved);
+  await inspector.enrich(report);
+  assert.deepEqual(report.unresolved, before);
+  assert.ok(before.some((row) => row.kind === 'code-component'));
+  for (const value of [null, undefined, [], 42, 'report'])
+    await assert.rejects(() => inspector.enrich(value), /requires a page report object/);
 });
 
-test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async t => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
   const steps = path.join(fx.solution, 'SdkMessageProcessingSteps');
-  fs.mkdirSync(path.dirname(assembly), { recursive: true }); fs.mkdirSync(steps, { recursive: true });
+  fs.mkdirSync(path.dirname(assembly), { recursive: true });
+  fs.mkdirSync(steps, { recursive: true });
   fs.writeFileSync(assembly, assemblyXml);
   fs.writeFileSync(path.join(steps, 'update.xml'), stepXml(7, { message: 'Update', attributes: 'fx_title' }));
   fs.writeFileSync(path.join(steps, 'unrelated.xml'), stepXml(8, { entity: 'fx_other' }));
   const code = path.join(fx.work, 'components/Plugins/Rules.cs');
-  fs.mkdirSync(path.dirname(code), { recursive: true }); fs.writeFileSync(code, 'namespace Invented.WidgetRules { class Validate {} }');
-  const projectData = JSON.parse(JSON.stringify({ version: 2, portals: [{ id: 'fixture', path: './portal', observed: { evidence: 'Invented source mapping', pluginSources: { 'Invented.WidgetRules.Validate': { path: 'components/Plugins/Rules.cs', evidence: 'Exact source fixture' } } } }], solutions: [{ id: 'sample', path: './solution' }] }));
-  const projectFile = path.join(fx.work, 'project.json'); fs.writeFileSync(projectFile, JSON.stringify(projectData));
+  fs.mkdirSync(path.dirname(code), { recursive: true });
+  fs.writeFileSync(code, 'namespace Invented.WidgetRules { class Validate {} }');
+  const projectData = JSON.parse(
+    JSON.stringify({
+      version: 2,
+      portals: [
+        {
+          id: 'fixture',
+          path: './portal',
+          observed: {
+            evidence: 'Invented source mapping',
+            pluginSources: {
+              'Invented.WidgetRules.Validate': {
+                path: 'components/Plugins/Rules.cs',
+                evidence: 'Exact source fixture',
+              },
+            },
+          },
+        },
+      ],
+      solutions: [{ id: 'sample', path: './solution' }],
+    }),
+  );
+  const projectFile = path.join(fx.work, 'project.json');
+  fs.writeFileSync(projectFile, JSON.stringify(projectData));
   const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: projectFile } });
   const { report, roots } = await inspector.inspect('/');
-  const plugin = report.logic.find(item => item.kind === 'plugin-step');
-  assert.equal(plugin.id, pluginId(7)); assert.equal(plugin.evidence, 'exported-table-registration'); assert.equal(plugin.effective, 'unknown');
-  assert.equal(report.logic.filter(item => item.kind === 'plugin-step').length, 1);
-  assert.equal(plugin.sources[0].sourceFile, assembly); assert.equal(plugin.sources[1].sourceFile, assembly);
-  assert.equal(plugin.sources[2].kind, 'plugin-code'); assert.equal(plugin.sources[2].sourceFile, code);
-  assert.ok(roots.includes(path.dirname(code))); assert.equal(roots.includes(fx.work), false, 'broad project root is not exposed');
+  const plugin = report.logic.find((item) => item.kind === 'plugin-step');
+  assert.equal(plugin.id, pluginId(7));
+  assert.equal(plugin.evidence, 'exported-table-registration');
+  assert.equal(plugin.effective, 'unknown');
+  assert.equal(report.logic.filter((item) => item.kind === 'plugin-step').length, 1);
+  assert.equal(plugin.sources[0].sourceFile, assembly);
+  assert.equal(plugin.sources[1].sourceFile, assembly);
+  assert.equal(plugin.sources[2].kind, 'plugin-code');
+  assert.equal(plugin.sources[2].sourceFile, code);
+  assert.ok(roots.includes(path.dirname(code)));
+  assert.equal(roots.includes(fx.work), false, 'broad project root is not exposed');
   assert.match(plugin.description, /input attributes: fx_title.*live execution unknown/);
   assert.deepEqual(report.pluginInventory, { assemblies: 1, types: 1, steps: 2, applicable: 1, effective: 'unknown' });
-  const initialReloads=inspector.stats().reloads;
-  fs.unlinkSync(code);inspector.invalidate();
-  const removed=await inspector.inspect('/');
-  assert.equal(removed.report.logic.some(item=>item.sources?.some(source=>source.kind==='plugin-code')),false,'deleted mapped source cannot remain current evidence');
-  assert.equal(removed.roots.includes(path.dirname(code)),false);
-  assert.equal(inspector.stats().reloads,initialReloads+1);
-  fs.writeFileSync(code,'namespace Invented.WidgetRules { class Validate {} }');inspector.invalidate();
-  assert.ok((await inspector.inspect('/')).report.logic.some(item=>item.sources?.some(source=>source.kind==='plugin-code')),'recreated mapped source is discovered');
-  assert.equal(inspector.stats().reloads,initialReloads+2);
-  fs.appendFileSync(code,'\n// Invented source edit');inspector.invalidate();await inspector.inspect('/');
-  assert.equal(inspector.stats().reloads,initialReloads+3,'a mapped file edit invalidates source evidence');
-  fs.writeFileSync(path.join(path.dirname(code),'Unrelated.cs'),'// Not mapped');inspector.invalidate();await inspector.inspect('/');
-  assert.equal(inspector.stats().reloads,initialReloads+3,'unrelated trusted-root files do not trigger a broad scan or reload');
-  const invalid=createSourceInspector({sourceDir:fx.portal,mirageConfig:{solutionRoots:[fx.solution],observed:{pluginSources:{'Invented.WidgetRules.Validate':{root:fx.work,path:'../outside.cs',evidence:'Invented invalid mapping'}}}}});
-  assert.equal((await invalid.inspect('/')).report.logic.some(item=>item.sources?.some(source=>source.kind==='plugin-code')),false,'invalid mappings stay unavailable instead of failing the fingerprint');
+  const initialReloads = inspector.stats().reloads;
+  fs.unlinkSync(code);
+  inspector.invalidate();
+  const removed = await inspector.inspect('/');
+  assert.equal(
+    removed.report.logic.some((item) => item.sources?.some((source) => source.kind === 'plugin-code')),
+    false,
+    'deleted mapped source cannot remain current evidence',
+  );
+  assert.equal(removed.roots.includes(path.dirname(code)), false);
+  assert.equal(inspector.stats().reloads, initialReloads + 1);
+  fs.writeFileSync(code, 'namespace Invented.WidgetRules { class Validate {} }');
+  inspector.invalidate();
+  assert.ok(
+    (await inspector.inspect('/')).report.logic.some((item) =>
+      item.sources?.some((source) => source.kind === 'plugin-code'),
+    ),
+    'recreated mapped source is discovered',
+  );
+  assert.equal(inspector.stats().reloads, initialReloads + 2);
+  fs.appendFileSync(code, '\n// Invented source edit');
+  inspector.invalidate();
+  await inspector.inspect('/');
+  assert.equal(inspector.stats().reloads, initialReloads + 3, 'a mapped file edit invalidates source evidence');
+  fs.writeFileSync(path.join(path.dirname(code), 'Unrelated.cs'), '// Not mapped');
+  inspector.invalidate();
+  await inspector.inspect('/');
+  assert.equal(
+    inspector.stats().reloads,
+    initialReloads + 3,
+    'unrelated trusted-root files do not trigger a broad scan or reload',
+  );
+  const invalid = createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: {
+      solutionRoots: [fx.solution],
+      observed: {
+        pluginSources: {
+          'Invented.WidgetRules.Validate': {
+            root: fx.work,
+            path: '../outside.cs',
+            evidence: 'Invented invalid mapping',
+          },
+        },
+      },
+    },
+  });
+  assert.equal(
+    (await invalid.inspect('/')).report.logic.some((item) =>
+      item.sources?.some((source) => source.kind === 'plugin-code'),
+    ),
+    false,
+    'invalid mappings stay unavailable instead of failing the fingerprint',
+  );
 });
 
 test('live inspection selects exported route languages and matching snippet source identity', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   fs.appendFileSync(path.join(fx.portal, 'website.yml'), '\nadx_defaultlanguage: lang-en');
-  fs.writeFileSync(path.join(fx.portal, 'websitelanguage.yml'), '- adx_websitelanguageid: lang-en\n  adx_name: English\n  adx_languagecode: en-US\n  adx_lcid: 1033\n- adx_websitelanguageid: lang-fr\n  adx_name: French\n  adx_languagecode: fr-FR\n  adx_lcid: 1036');
-  for (const [code, language, label] of [['en-US', 'lang-en', 'English'], ['fr-FR', 'lang-fr', 'French']]) {
+  fs.writeFileSync(
+    path.join(fx.portal, 'websitelanguage.yml'),
+    '- adx_websitelanguageid: lang-en\n  adx_name: English\n  adx_languagecode: en-US\n  adx_lcid: 1033\n- adx_websitelanguageid: lang-fr\n  adx_name: French\n  adx_languagecode: fr-FR\n  adx_lcid: 1036',
+  );
+  for (const [code, language, label] of [
+    ['en-US', 'lang-en', 'English'],
+    ['fr-FR', 'lang-fr', 'French'],
+  ]) {
     const prefix = path.join(fx.portal, `web-pages/home/Home.${code}.webpage`);
-    fs.writeFileSync(`${prefix}.yml`, `adx_webpageid: home-${code}\nadx_rootwebpageid: home\nadx_isroot: false\nadx_name: ${label} page\nadx_webpagelanguageid: ${language}\nadx_partialurl: /\nadx_pagetemplateid: main`);
+    fs.writeFileSync(
+      `${prefix}.yml`,
+      `adx_webpageid: home-${code}\nadx_rootwebpageid: home\nadx_isroot: false\nadx_name: ${label} page\nadx_webpagelanguageid: ${language}\nadx_partialurl: /\nadx_pagetemplateid: main`,
+    );
     fs.writeFileSync(`${prefix}.copy.html`, `{{ snippets["Banner"] }}<p>${label}</p>`);
     fs.writeFileSync(`${prefix}.custom_javascript.js`, `window.language = '${code}';`);
     const snippet = path.join(fx.portal, `content-snippets/Banner.${code}.contentsnippet`);
-    fs.writeFileSync(`${snippet}.yml`, `adx_contentsnippetid: banner-${code}\nadx_name: Banner\nadx_contentsnippetlanguageid: ${language}`);
+    fs.writeFileSync(
+      `${snippet}.yml`,
+      `adx_contentsnippetid: banner-${code}\nadx_name: Banner\nadx_contentsnippetlanguageid: ${language}`,
+    );
     fs.writeFileSync(`${snippet}.value.html`, `${label} banner`);
   }
-  fs.writeFileSync(path.join(fx.portal, 'content-snippets/ZZDisabled.contentsnippet.yml'), 'adx_contentsnippetid: disabled-banner\nadx_name: Banner\nadx_contentsnippetlanguageid: lang-fr\nadx_statecode: 1\nadx_value: Inactive banner');
+  fs.writeFileSync(
+    path.join(fx.portal, 'content-snippets/ZZDisabled.contentsnippet.yml'),
+    'adx_contentsnippetid: disabled-banner\nadx_name: Banner\nadx_contentsnippetlanguageid: lang-fr\nadx_statecode: 1\nadx_value: Inactive banner',
+  );
   const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } });
   const french = (await inspector.inspect('/fr-FR/')).report;
   assert.equal(french.language.code, 'fr-FR');
   assert.equal(french.page.title, 'French page');
   assert.equal(french.requestPath, '/fr-FR/');
-  assert.equal(french.pageSources.find((row) => row.name === 'Language page JavaScript').sourceFile, path.join(fx.portal, 'web-pages/home/Home.fr-FR.webpage.custom_javascript.js'));
+  assert.equal(
+    french.pageSources.find((row) => row.name === 'Language page JavaScript').sourceFile,
+    path.join(fx.portal, 'web-pages/home/Home.fr-FR.webpage.custom_javascript.js'),
+  );
   assert.equal(french.snippets[0].value, 'French banner');
-  assert.equal(french.snippets[0].sourceFile, path.join(fx.portal, 'content-snippets/Banner.fr-FR.contentsnippet.value.html'));
+  assert.equal(
+    french.snippets[0].sourceFile,
+    path.join(fx.portal, 'content-snippets/Banner.fr-FR.contentsnippet.value.html'),
+  );
   const english = (await inspector.inspect('/en-US/')).report;
   assert.equal(english.page.title, 'English page');
   assert.equal(english.snippets[0].value, 'English banner');
-  assert.equal(english.snippets[0].sourceFile, path.join(fx.portal, 'content-snippets/Banner.en-US.contentsnippet.value.html'));
+  assert.equal(
+    english.snippets[0].sourceFile,
+    path.join(fx.portal, 'content-snippets/Banner.en-US.contentsnippet.value.html'),
+  );
   assert.equal((await inspector.inspect('/zz-ZZ/')).report.page, null);
 });
 
 test('asset inspection follows relative declared references with exact browser path matching', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
-  fs.writeFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'), '<script src="widget.js?v=1"></script><link href="assets/theme.css"><script src="/unrelated.js.backup"></script><img src="https://external.invalid/foreign.svg">');
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '<script src="widget.js?v=1"></script><link href="assets/theme.css"><script src="/unrelated.js.backup"></script><img src="https://external.invalid/foreign.svg">',
+  );
   const files = {
     'assets/theme.css': '@import "./nested.css"; .icon { background: url("../logo.svg#icon"); }',
     'assets/nested.css': '@font-face { src: url("../font.woff2"); }',
     'module.js': "export const table = '/_api/fx_widgets';",
-    'logo.svg': '<svg/>', 'font.woff2': 'fixture', 'unrelated.js': 'window.unrelated = true;', 'foreign.svg': '<svg/>',
+    'logo.svg': '<svg/>',
+    'font.woff2': 'fixture',
+    'unrelated.js': 'window.unrelated = true;',
+    'foreign.svg': '<svg/>',
   };
   fs.writeFileSync(path.join(fx.portal, 'web-files/widget.js'), "import('./module.js');");
   for (const [route, body] of Object.entries(files)) {
     const name = route.replaceAll('/', '-');
-    fs.writeFileSync(path.join(fx.portal, `web-files/${name}.webfile.yml`), `adx_webfileid: ${name}\nadx_name: ${name}\nadx_partialurl: ${route}\nadx_parentpageid: home\nfilename: ${name}`);
+    fs.writeFileSync(
+      path.join(fx.portal, `web-files/${name}.webfile.yml`),
+      `adx_webfileid: ${name}\nadx_name: ${name}\nadx_partialurl: ${route}\nadx_parentpageid: home\nfilename: ${name}`,
+    );
     fs.writeFileSync(path.join(fx.portal, `web-files/${name}`), body);
   }
-  const { report } = await createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } }).inspect('/');
-  assert.deepEqual(report.assets.map((row) => row.url).sort(), ['/assets/nested.css', '/assets/theme.css', '/font.woff2', '/logo.svg', '/module.js', '/widget.js']);
+  const { report } = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { project: fx.project },
+  }).inspect('/');
+  assert.deepEqual(report.assets.map((row) => row.url).sort(), [
+    '/assets/nested.css',
+    '/assets/theme.css',
+    '/font.woff2',
+    '/logo.svg',
+    '/module.js',
+    '/widget.js',
+  ]);
   assert.equal(report.apiReferences.find((row) => row.name === 'fx_widgets')?.entity, 'fx_widget');
 });
 
 test('PCF schema-name references trace literal dataset tables, views and columns while dynamic or ambiguous bindings stay unknown', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   addNativeInspectionFixture(fx);
-  fs.writeFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Widget page\nadx_partialurl: /\nadx_pagetemplateid: main');
-  fs.writeFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'), `{% codecomponent name:'fx_Example.Grid', Rows:'child-view' %}{% codecomponent name:'fx_Example.Grid', Rows:page.view %}{% codecomponent name:'fx_example.grid', Rows:'fx_child' %}{% codecomponent name:'fx_Example.Grid', Rows:'Related children' %}`);
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Widget page\nadx_partialurl: /\nadx_pagetemplateid: main',
+  );
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    `{% codecomponent name:'fx_Example.Grid', Rows:'child-view' %}{% codecomponent name:'fx_Example.Grid', Rows:page.view %}{% codecomponent name:'fx_example.grid', Rows:'fx_child' %}{% codecomponent name:'fx_Example.Grid', Rows:'Related children' %}`,
+  );
   const controlDir = path.join(fx.solution, 'Controls/fx_Example.Grid');
   fs.mkdirSync(controlDir, { recursive: true });
-  fs.writeFileSync(path.join(controlDir, 'ControlManifest.xml'), '<manifest><control namespace="Example" constructor="Grid" control-type="standard"><data-set name="Rows"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>');
-  fs.writeFileSync(path.join(controlDir, 'ControlManifest.xml.data.xml'), '<CustomControl><Name>fx_Example.Grid</Name></CustomControl>');
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml'),
+    '<manifest><control namespace="Example" constructor="Grid" control-type="standard"><data-set name="Rows"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+  );
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml.data.xml'),
+    '<CustomControl><Name>fx_Example.Grid</Name></CustomControl>',
+  );
   fs.writeFileSync(path.join(controlDir, 'bundle.js'), 'window.Example = {};');
   const viewFile = path.join(fx.solution, 'Entities/fx_child/SavedQueries/child-view.xml');
-  fs.writeFileSync(path.join(fx.solution, 'Entities/fx_child/SavedQueries/duplicate-view.xml'), fs.readFileSync(viewFile, 'utf8').replace('child-view', 'duplicate-view'));
-  const { report } = await createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } }).inspect('/');
+  fs.writeFileSync(
+    path.join(fx.solution, 'Entities/fx_child/SavedQueries/duplicate-view.xml'),
+    fs.readFileSync(viewFile, 'utf8').replace('child-view', 'duplicate-view'),
+  );
+  const { report } = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { project: fx.project },
+  }).inspect('/');
   const [view, dynamic, table, ambiguous] = report.codeComponents;
   assert.equal(view.binding, 'declared-schema-name');
   assert.equal(view.sourceFile, path.join(controlDir, 'ControlManifest.xml'));
@@ -199,22 +411,46 @@ test('PCF schema-name references trace literal dataset tables, views and columns
   assert.equal(table.datasets[0].sourceFile, path.join(fx.solution, 'Entities/fx_child/Entity.xml'));
   assert.equal(ambiguous.datasets[0].resolved, false);
   assert.equal(report.views.find((row) => row.id === 'child-view').evidence, 'code-component-dataset');
-  assert.equal(report.columns.find((row) => row.entity === 'fx_child' && row.name === 'fx_name').evidence, 'code-component-dataset');
+  assert.equal(
+    report.columns.find((row) => row.entity === 'fx_child' && row.name === 'fx_name').evidence,
+    'code-component-dataset',
+  );
   assert.equal(report.tables.find((row) => row.logicalName === 'fx_child').permissions.effective, 'unknown');
-  assert.equal(report.unresolved.some((row) => /Multiple exported views/.test(row.reason)), true);
+  assert.equal(
+    report.unresolved.some((row) => /Multiple exported views/.test(row.reason)),
+    true,
+  );
 });
 
 test('native PCF inspection links FormXml, enabled attribute metadata and manifests without treating model-driven defaults as portal enablement', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   const formFile = path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml');
-  const descriptions = '<controlDescriptions><controlDescription forControl="native-editor"><customControl name="fx_Example.Editor" formFactor="0"><parameters><value>fx_title</value><caption static="true" type="SingleLine.Text">Configured label</caption></parameters></customControl><customControl name="fx_Example.Tablet" formFactor="1"><parameters><value>fx_title</value></parameters></customControl></controlDescription></controlDescriptions>';
-  fs.writeFileSync(formFile, fs.readFileSync(formFile, 'utf8').replace('id="fx_title"', 'id="fx_title" uniqueid="native-editor"').replace('</tabs>', `</tabs>${descriptions}`));
+  const descriptions =
+    '<controlDescriptions><controlDescription forControl="native-editor"><customControl name="fx_Example.Editor" formFactor="0"><parameters><value>fx_title</value><caption static="true" type="SingleLine.Text">Configured label</caption></parameters></customControl><customControl name="fx_Example.Tablet" formFactor="1"><parameters><value>fx_title</value></parameters></customControl></controlDescription></controlDescriptions>';
+  fs.writeFileSync(
+    formFile,
+    fs
+      .readFileSync(formFile, 'utf8')
+      .replace('id="fx_title"', 'id="fx_title" uniqueid="native-editor"')
+      .replace('</tabs>', `</tabs>${descriptions}`),
+  );
   const metadataFile = path.join(fx.portal, 'basic-forms/Widget.basicform.basicformmetadata.yml');
-  fs.writeFileSync(metadataFile, 'adx_entityformmetadataid: editor-setting\nadx_entityform: widget-edit\nadx_type: 100000000\nadx_attributelogicalname: fx_title\nadx_controlstyle: 756150001');
+  fs.writeFileSync(
+    metadataFile,
+    'adx_entityformmetadataid: editor-setting\nadx_entityform: widget-edit\nadx_type: 100000000\nadx_attributelogicalname: fx_title\nadx_controlstyle: 756150001',
+  );
   for (const component of ['Editor', 'Tablet']) {
-    const controlDir = path.join(fx.solution, `Controls/fx_Example.${component}`); fs.mkdirSync(controlDir, { recursive: true });
-    fs.writeFileSync(path.join(controlDir, 'ControlManifest.xml'), `<manifest><control namespace="Example" constructor="${component}" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>`);
-    fs.writeFileSync(path.join(controlDir, 'ControlManifest.xml.data.xml'), `<CustomControl><Name>fx_Example.${component}</Name></CustomControl>`);
+    const controlDir = path.join(fx.solution, `Controls/fx_Example.${component}`);
+    fs.mkdirSync(controlDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(controlDir, 'ControlManifest.xml'),
+      `<manifest><control namespace="Example" constructor="${component}" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>`,
+    );
+    fs.writeFileSync(
+      path.join(controlDir, 'ControlManifest.xml.data.xml'),
+      `<CustomControl><Name>fx_Example.${component}</Name></CustomControl>`,
+    );
     fs.writeFileSync(path.join(controlDir, 'bundle.js'), 'window.Example = {};');
   }
   const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } });
@@ -232,14 +468,19 @@ test('native PCF inspection links FormXml, enabled attribute metadata and manife
   assert.equal(editor.parameters.value.column, 'fx_title');
   assert.equal(tablet.selectedDesktop, false);
   fs.writeFileSync(metadataFile, fs.readFileSync(metadataFile, 'utf8').replace('756150001', '0'));
-  inspector.invalidate(); report = (await inspector.inspect('/')).report;
+  inspector.invalidate();
+  report = (await inspector.inspect('/')).report;
   assert.equal(report.codeComponents.find((row) => row.name === 'fx_Example.Editor').enablement, 'not-enabled');
 });
 
 test('portal-only live inspection resolves source chains, files and role grants without claiming effective access', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   const inspector = createSourceInspector({ sourceDir: fx.portal });
-  const { report, roots } = await inspector.inspect('/', { assets: [{ path: '/widget.css' }], controls: [{ tag: 'input', id: 'fx_title', name: 'fx_title' }] });
+  const { report, roots } = await inspector.inspect('/', {
+    assets: [{ path: '/widget.css' }],
+    controls: [{ tag: 'input', id: 'fx_title', name: 'fx_title' }],
+  });
   assert.deepEqual(roots, [fx.portal]);
   assert.equal(report.evidence.mode, 'live-sources');
   assert.equal(report.page.pageName, 'Widget page');
@@ -250,17 +491,26 @@ test('portal-only live inspection resolves source chains, files and role grants 
   assert.equal(report.tables[0].permissions.effective, 'unknown');
   assert.equal(report.page.access.allowed, undefined);
   assert.deepEqual(report.permissionRules.map((row) => row.roles[0]).sort(), ['Editor', 'Reader']);
-  assert.equal(report.pageSources.some((row) => row.sourceFile.endsWith('custom_javascript.js')), true);
+  assert.equal(
+    report.pageSources.some((row) => row.sourceFile.endsWith('custom_javascript.js')),
+    true,
+  );
   assert.equal(report.assets.find((row) => row.url === '/widget.css').evidence, 'rendered-asset');
   assert.equal(report.renderedControls[0].evidence, 'rendered-unmapped');
 });
 
 test('project-selected Solution metadata provides exact FormXml and field paths; refresh observes source edits', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } });
-  const { report, roots } = await inspector.inspect('/', { controls: [{ tag: 'input', id: 'fx_title', name: 'fx_title' }] });
+  const { report, roots } = await inspector.inspect('/', {
+    controls: [{ tag: 'input', id: 'fx_title', name: 'fx_title' }],
+  });
   assert.deepEqual(roots, [fx.portal, fx.solution]);
-  assert.equal(report.forms[0].formXml.sourceFile, path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'));
+  assert.equal(
+    report.forms[0].formXml.sourceFile,
+    path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'),
+  );
   assert.equal(report.columns[0].name, 'fx_title');
   assert.equal(report.renderedControls[0].field, 'fx_widget.fx_title');
   assert.equal(report.renderedControls[0].sourceFile, path.join(fx.solution, 'Entities/fx_widget/Entity.xml'));
@@ -270,11 +520,16 @@ test('project-selected Solution metadata provides exact FormXml and field paths;
 });
 
 test('missing or mismatched Solution configuration preserves portal inspection and does not select an unrelated project', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
-  const sources = await inspectionSources({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [path.join(fx.work, 'missing')] } });
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const sources = await inspectionSources({
+    sourceDir: fx.portal,
+    mirageConfig: { solutionRoots: [path.join(fx.work, 'missing')] },
+  });
   assert.deepEqual(sources.roots, []);
   assert.equal(sources.diagnostics[0].code, 'INSPECT_SOLUTION_UNAVAILABLE');
-  const other = inspectionFixture(); t.after(other.cleanup);
+  const other = inspectionFixture();
+  t.after(other.cleanup);
   const mismatched = await inspectionSources({ sourceDir: other.portal, mirageConfig: { project: fx.project } });
   assert.deepEqual(mismatched.roots, []);
   assert.equal(mismatched.diagnostics[0].code, 'INSPECT_PROJECT_UNAVAILABLE');
@@ -282,89 +537,187 @@ test('missing or mismatched Solution configuration preserves portal inspection a
 
 test('the rendered-page reader runs self-contained in a page realm and keeps only same-origin Web API set names', () => {
   // page.evaluate serializes the function, so module-scope helpers would be missing in the browser.
-  const page = { document: { children: [], URL: 'https://portal.invalid/' }, location: new URL('https://portal.invalid/'), URL,
-    performance: { getEntriesByType: () => [{ name: 'https://portal.invalid/_api/fx_widgets?$top=1' }, { name: 'https://other.invalid/_api/foreign' }] } };
-  assert.deepEqual(structuredClone(vm.runInNewContext(`(${inspectRenderedPage})()`, page)), { assets: [], controls: [], apiSets: ['fx_widgets'], ids: [], markupTokens: [], truncated: false });
+  const page = {
+    document: { children: [], URL: 'https://portal.invalid/' },
+    location: new URL('https://portal.invalid/'),
+    URL,
+    performance: {
+      getEntriesByType: () => [
+        { name: 'https://portal.invalid/_api/fx_widgets?$top=1' },
+        { name: 'https://other.invalid/_api/foreign' },
+      ],
+    },
+  };
+  assert.deepEqual(structuredClone(vm.runInNewContext(`(${inspectRenderedPage})()`, page)), {
+    assets: [],
+    controls: [],
+    apiSets: ['fx_widgets'],
+    ids: [],
+    markupTokens: [],
+    truncated: false,
+  });
 });
 
 test('displayed Liquid code and component manifests do not produce component or operation bindings while emitted raw assets remain discoverable', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
-  fs.writeFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'), `{% raw %}{% codecomponent name:'missing.Raw' %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:'missing.Comment' %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:'missing.Manifest' %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`);
-  const logicDir = path.join(fx.portal, 'server-logic'); fs.mkdirSync(logicDir);
-  fs.writeFileSync(path.join(logicDir, 'HiddenOperation.serverlogic.yml'), 'adx_serverlogicid: hidden-operation\nadx_name: HiddenOperation');
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    `{% raw %}{% codecomponent name:'missing.Raw' %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:'missing.Comment' %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:'missing.Manifest' %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`,
+  );
+  const logicDir = path.join(fx.portal, 'server-logic');
+  fs.mkdirSync(logicDir);
+  fs.writeFileSync(
+    path.join(logicDir, 'HiddenOperation.serverlogic.yml'),
+    'adx_serverlogicid: hidden-operation\nadx_name: HiddenOperation',
+  );
   fs.writeFileSync(path.join(logicDir, 'HiddenOperation.js'), 'function get() {}');
-  fs.writeFileSync(path.join(logicDir, 'VisibleOperation.serverlogic.yml'), 'adx_serverlogicid: visible-operation\nadx_name: VisibleOperation');
+  fs.writeFileSync(
+    path.join(logicDir, 'VisibleOperation.serverlogic.yml'),
+    'adx_serverlogicid: visible-operation\nadx_name: VisibleOperation',
+  );
   fs.writeFileSync(path.join(logicDir, 'VisibleOperation.js'), 'function get() {}');
   const { report } = await createSourceInspector({ sourceDir: fx.portal }).inspect('/');
   assert.deepEqual(report.apiReferences, []);
-  assert.deepEqual(report.logic.filter(row => row.kind === 'server-logic').map(row => row.name), ['VisibleOperation']);
+  assert.deepEqual(
+    report.logic.filter((row) => row.kind === 'server-logic').map((row) => row.name),
+    ['VisibleOperation'],
+  );
   assert.equal(report.codeComponents.length, 1);
   assert.equal(report.codeComponents[0].dynamic, true);
-  assert.equal(report.assets.some(row => row.url === '/widget.js'), true);
-  assert.equal(report.unresolved.filter(row => row.kind === 'code-component').length, 1);
+  assert.equal(
+    report.assets.some((row) => row.url === '/widget.js'),
+    true,
+  );
+  assert.equal(report.unresolved.filter((row) => row.kind === 'code-component').length, 1);
 });
 
 test('unquoted literal PCF IDs open declared manifest/resources, while dynamic component expressions stay unresolved', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   const componentId = '10000000-0000-4000-8000-000000000001';
   const controlDir = path.join(fx.solution, 'Controls/fx_Example.Widget');
   fs.mkdirSync(controlDir, { recursive: true });
-  fs.writeFileSync(path.join(controlDir, 'ControlManifest.xml'), '<manifest><control namespace="Example" constructor="Widget" control-type="standard"><resources><code path="bundle.js" order="1"/></resources></control></manifest>');
-  fs.writeFileSync(path.join(controlDir, 'ControlManifest.xml.data.xml'), '<CustomControl><Name>fx_Example.Widget</Name></CustomControl>');
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml'),
+    '<manifest><control namespace="Example" constructor="Widget" control-type="standard"><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+  );
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml.data.xml'),
+    '<CustomControl><Name>fx_Example.Widget</Name></CustomControl>',
+  );
   fs.writeFileSync(path.join(controlDir, 'bundle.js'), 'window.Example = {};');
-  fs.appendFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'), `{% codecomponent name:${componentId} %}{% codecomponent name: page.component %}`);
-  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution], observed: { codeComponents: { [componentId]: 'fx_Example.Widget' } } } });
+  fs.appendFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    `{% codecomponent name:${componentId} %}{% codecomponent name: page.component %}`,
+  );
+  const inspector = createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: {
+      solutionRoots: [fx.solution],
+      observed: { codeComponents: { [componentId]: 'fx_Example.Widget' } },
+    },
+  });
   const { report } = await inspector.inspect('/');
   assert.equal(report.codeComponents[0].schemaName, 'fx_Example.Widget');
   assert.equal(report.codeComponents[0].sourceFile, path.join(controlDir, 'ControlManifest.xml'));
   assert.equal(report.codeComponents[0].resources[0].sourceFile, path.join(controlDir, 'bundle.js'));
   assert.equal(report.codeComponents[1].dynamic, true);
   assert.equal(report.codeComponents[1].sourceFile, undefined);
-  assert.equal(report.unresolved.some((row) => row.kind === 'code-component' && /dynamic/.test(row.reason)), true);
+  assert.equal(
+    report.unresolved.some((row) => row.kind === 'code-component' && /dynamic/.test(row.reason)),
+    true,
+  );
 });
 
 test('observed component IDs resolve dynamic form references without guessing variable values', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
   const pageFile = path.join(fx.portal, 'web-pages/home/Home.webpage.yml');
   fs.writeFileSync(pageFile, fs.readFileSync(pageFile, 'utf8').replace('\nadx_entityformid: widget-edit', ''));
-  fs.writeFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'), '{% entityform name: selected_form %}');
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '{% entityform name: selected_form %}',
+  );
   const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } });
   assert.equal((await inspector.inspect('/')).report.forms.length, 0);
-  const { report } = await inspector.inspect('/', { controls: [{ tag: 'form', formId: 'widget-edit', entity: 'fx_widget' }, { tag: 'input', id: 'fx_title', name: 'fx_title' }] });
+  const { report } = await inspector.inspect('/', {
+    controls: [
+      { tag: 'form', formId: 'widget-edit', entity: 'fx_widget' },
+      { tag: 'input', id: 'fx_title', name: 'fx_title' },
+    ],
+  });
   assert.equal(report.forms[0].evidence, 'rendered-component-id');
-  assert.equal(report.forms[0].formXml.sourceFile, path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'));
+  assert.equal(
+    report.forms[0].formXml.sourceFile,
+    path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'),
+  );
   assert.equal(report.renderedControls[1].field, 'fx_widget.fx_title');
 });
 
 test('native subgrids and quick views trace child views, tables, fields, action metadata and modal form sources', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup); addNativeInspectionFixture(fx);
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  addNativeInspectionFixture(fx);
   const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } });
-  const { report } = await inspector.inspect('/', { controls: [{ tag: 'div', gridId: 'ChildGrid', viewId: 'child-view' }, { tag: 'span', formId: 'widget-edit', entity: 'fx_widget' }] });
-  assert.equal(report.views.find((view) => view.id === 'child-view').sourceFile, path.join(fx.solution, 'Entities/fx_child/SavedQueries/child-view.xml'));
+  const { report } = await inspector.inspect('/', {
+    controls: [
+      { tag: 'div', gridId: 'ChildGrid', viewId: 'child-view' },
+      { tag: 'span', formId: 'widget-edit', entity: 'fx_widget' },
+    ],
+  });
+  assert.equal(
+    report.views.find((view) => view.id === 'child-view').sourceFile,
+    path.join(fx.solution, 'Entities/fx_child/SavedQueries/child-view.xml'),
+  );
   assert.equal(report.views.find((view) => view.id === 'child-view').evidence, 'rendered-view-id');
-  assert.equal(report.tables.some((table) => table.logicalName === 'fx_child'), true);
-  assert.equal(report.columns.some((field) => field.entity === 'fx_child' && field.name === 'fx_name'), true);
+  assert.equal(
+    report.tables.some((table) => table.logicalName === 'fx_child'),
+    true,
+  );
+  assert.equal(
+    report.columns.some((field) => field.entity === 'fx_child' && field.name === 'fx_name'),
+    true,
+  );
   assert.equal(report.forms.find((form) => form.id === 'widget-edit').evidence, 'rendered-component-id');
   for (const operation of ['create', 'edit', 'read']) {
     const form = report.forms.find((form) => form.id === `child-${operation}`);
     assert.equal(form.evidence, 'configured-modal-form');
     assert.equal(form.formXml.sourceFile, path.join(fx.solution, 'Entities/fx_child/FormXml/main/child-form.xml'));
   }
-  assert.equal(report.forms.some((form) => form.id === 'stale-modal-id'), false);
+  assert.equal(
+    report.forms.some((form) => form.id === 'stale-modal-id'),
+    false,
+  );
   const grid = report.nativeComponents.find((control) => control.id === 'ChildGrid');
   assert.equal(grid.evidence, 'rendered-control-id');
   assert.equal(grid.relationship, 'fx_widget_children');
-  assert.equal(grid.metadataSources[0].sourceFile, path.join(fx.portal, 'basic-forms/Widget.basicform.basicformmetadata.yml'));
+  assert.equal(
+    grid.metadataSources[0].sourceFile,
+    path.join(fx.portal, 'basic-forms/Widget.basicform.basicformmetadata.yml'),
+  );
   assert.equal(grid.actions.find((action) => action.name === 'DetailsAction').conditional, true);
-  assert.equal(report.nativeComponents.find((control) => control.id === 'ChildQuick').sourceFile, path.join(fx.solution, 'Entities/fx_child/FormXml/quick/quick-form.xml'));
+  assert.equal(
+    report.nativeComponents.find((control) => control.id === 'ChildQuick').sourceFile,
+    path.join(fx.solution, 'Entities/fx_child/FormXml/quick/quick-form.xml'),
+  );
 });
 
 test('observed Web API entity sets resolve selected metadata without inventing mappings for portal-only exports', async (t) => {
-  const fx = inspectionFixture(); t.after(fx.cleanup);
-  const portalOnly = await createSourceInspector({ sourceDir: fx.portal }).inspect('/', { apiSets: ['fx_widgets', 'unexported_sets'] });
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const portalOnly = await createSourceInspector({ sourceDir: fx.portal }).inspect('/', {
+    apiSets: ['fx_widgets', 'unexported_sets'],
+  });
   assert.equal(portalOnly.report.apiReferences.find((row) => row.name === 'fx_widgets').entity, null);
-  const withSolution = await createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } }).inspect('/', { apiSets: ['fx_widgets', 'unexported_sets'] });
+  const withSolution = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { solutionRoots: [fx.solution] },
+  }).inspect('/', { apiSets: ['fx_widgets', 'unexported_sets'] });
   assert.equal(withSolution.report.apiReferences.find((row) => row.name === 'fx_widgets').entity, 'fx_widget');
-  assert.equal(withSolution.report.apiReferences.find((row) => row.name === 'fx_widgets').evidence, 'observed-api-request');
+  assert.equal(
+    withSolution.report.apiReferences.find((row) => row.name === 'fx_widgets').evidence,
+    'observed-api-request',
+  );
   assert.equal(withSolution.report.apiReferences.find((row) => row.name === 'unexported_sets').entity, null);
 });

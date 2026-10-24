@@ -7,32 +7,84 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 
 async function layoutFixture(t) {
-  const source = await modelDrivenFixture(t); await source.sim.close();
-  const attributes = ['x_notes', 'x_left', 'x_right', 'x_hidden', 'x_pcf', 'x_third'].map(name => `<attribute PhysicalName="${name}"><Name>${name}</Name><Type>${name === 'x_notes' ? 'memo' : 'nvarchar'}</Type><displaynames><displayname description="${name}" languagecode="1033"/></displaynames></attribute>`).join('');
+  const source = await modelDrivenFixture(t);
+  await source.sim.close();
+  const attributes = ['x_notes', 'x_left', 'x_right', 'x_hidden', 'x_pcf', 'x_third']
+    .map(
+      (name) =>
+        `<attribute PhysicalName="${name}"><Name>${name}</Name><Type>${name === 'x_notes' ? 'memo' : 'nvarchar'}</Type><displaynames><displayname description="${name}" languagecode="1033"/></displaynames></attribute>`,
+    )
+    .join('');
   const entity = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
-  await fs.writeFile(entity, (await fs.readFile(entity, 'utf8')).replace('</attributes>', attributes + '</attributes>'));
-  const cell = (name, attributes = '') => `<cell ${attributes}><control id="${name}" uniqueid="${name}-id" datafieldname="${name}"/></cell>`;
-  const section = (name, columns, rows, attributes = '') => `<section name="${name}" columns="${columns}" ${attributes}><labels><label description="${name}" languagecode="1033"/></labels><rows>${rows}</rows></section>`;
-  const left = section('Planning', 2, `<row><cell/>${cell('x_name')}</row><row>${cell('x_notes', 'colspan="2" rowspan="2"')}</row><row/><row>${cell('x_quantity')}${cell('x_right', 'showlabel="false"')}</row>`);
-  const right = section('Ownership', 1, `<row><cell><control datafieldname="x_left" disabled="true"/></cell></row><row>${cell('x_hidden', 'visible="false"')}</row><row>${cell('x_pcf')}</row>`, 'showlabel="false"');
-  const thirds = ['x_name', 'x_pcf', 'x_third'].map((name, index) => `<column width="${index === 0 ? 34 : 33}%"><sections>${section(`Third ${index + 1}`, 1, `<row>${cell(name)}</row>`, index === 1 ? 'celllabelposition="Top"' : '')}</sections></column>`).join('');
-  const matrix = section('Matrix', 3, `<row>${cell('x_notes', 'colspan="2" rowspan="2"')}${cell('x_quantity')}</row><row>${cell('x_third')}</row><row>${cell('x_right', 'showlabel="false"')}<cell/>${cell('x_hidden')}</row><row/><row><cell colspan="3"><control datafieldname="x_left" disabled="true"/></cell></row>`);
-  const afterSpacer = section('After spacer', 2, `<row>${cell('x_name')}${cell('x_quantity')}</row><row><cell/><cell/></row><row>${cell('x_pcf', 'colspan="2"')}</row>`, 'celllabelposition="Top"');
-  await fs.writeFile(path.join(source.solutionDir, 'Entities/x_item/FormXml/main/item.xml'), `<systemform><formid>{item-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Layout" languagecode="1033"/></LocalizedNames><form><tabs><tab name="two"><labels><label description="Two columns" languagecode="1033"/></labels><columns><column width="65%"><sections>${left}</sections></column><column width="35%"><sections>${right}</sections></column></columns></tab><tab name="three"><labels><label description="Three columns" languagecode="1033"/></labels><columns>${thirds}</columns></tab><tab name="matrix"><labels><label description="Matrix" languagecode="1033"/></labels><columns><column width="100%"><sections>${matrix}${afterSpacer}</sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="x_pcf-id"><customControl name="publisher.LayoutEditor" formFactor="0"><parameters><value type="SingleLine.Text">x_pcf</value></parameters></customControl></controlDescription></controlDescriptions></form></systemform>`);
-  const control = path.join(source.solutionDir, 'Controls/publisher.LayoutEditor'); await fs.mkdir(control, { recursive: true });
-  await fs.writeFile(path.join(control, 'ControlManifest.xml'), '<manifest><control namespace="Layout" constructor="Editor" version="1.0.0" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound" required="true"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>');
-  await fs.writeFile(path.join(control, 'ControlManifest.xml.data.xml'), '<CustomControl><Name>publisher.LayoutEditor</Name></CustomControl>');
-  await fs.writeFile(path.join(control, 'bundle.js'), 'window.Layout={Editor:class{init(context,notify,state,container){this.input=document.createElement("input");this.input.setAttribute("aria-label","Mounted editor");this.input.style.cssText="width:100%;box-sizing:border-box";this.input.addEventListener("input",()=>{this.value=this.input.value;notify()});container.append(this.input)}updateView(context){this.value=context.parameters.value.raw;this.input.value=this.value??"";this.input.disabled=context.mode.isControlDisabled}getOutputs(){return{value:this.value}}destroy(){this.input.remove()}}};');
-  const sim = await source.start({ modelDriven: { trustedExtensions: true } }); t.after(() => sim.close());
+  await fs.writeFile(
+    entity,
+    (await fs.readFile(entity, 'utf8')).replace('</attributes>', attributes + '</attributes>'),
+  );
+  const cell = (name, attributes = '') =>
+    `<cell ${attributes}><control id="${name}" uniqueid="${name}-id" datafieldname="${name}"/></cell>`;
+  const section = (name, columns, rows, attributes = '') =>
+    `<section name="${name}" columns="${columns}" ${attributes}><labels><label description="${name}" languagecode="1033"/></labels><rows>${rows}</rows></section>`;
+  const left = section(
+    'Planning',
+    2,
+    `<row><cell/>${cell('x_name')}</row><row>${cell('x_notes', 'colspan="2" rowspan="2"')}</row><row/><row>${cell('x_quantity')}${cell('x_right', 'showlabel="false"')}</row>`,
+  );
+  const right = section(
+    'Ownership',
+    1,
+    `<row><cell><control datafieldname="x_left" disabled="true"/></cell></row><row>${cell('x_hidden', 'visible="false"')}</row><row>${cell('x_pcf')}</row>`,
+    'showlabel="false"',
+  );
+  const thirds = ['x_name', 'x_pcf', 'x_third']
+    .map(
+      (name, index) =>
+        `<column width="${index === 0 ? 34 : 33}%"><sections>${section(`Third ${index + 1}`, 1, `<row>${cell(name)}</row>`, index === 1 ? 'celllabelposition="Top"' : '')}</sections></column>`,
+    )
+    .join('');
+  const matrix = section(
+    'Matrix',
+    3,
+    `<row>${cell('x_notes', 'colspan="2" rowspan="2"')}${cell('x_quantity')}</row><row>${cell('x_third')}</row><row>${cell('x_right', 'showlabel="false"')}<cell/>${cell('x_hidden')}</row><row/><row><cell colspan="3"><control datafieldname="x_left" disabled="true"/></cell></row>`,
+  );
+  const afterSpacer = section(
+    'After spacer',
+    2,
+    `<row>${cell('x_name')}${cell('x_quantity')}</row><row><cell/><cell/></row><row>${cell('x_pcf', 'colspan="2"')}</row>`,
+    'celllabelposition="Top"',
+  );
+  await fs.writeFile(
+    path.join(source.solutionDir, 'Entities/x_item/FormXml/main/item.xml'),
+    `<systemform><formid>{item-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Layout" languagecode="1033"/></LocalizedNames><form><tabs><tab name="two"><labels><label description="Two columns" languagecode="1033"/></labels><columns><column width="65%"><sections>${left}</sections></column><column width="35%"><sections>${right}</sections></column></columns></tab><tab name="three"><labels><label description="Three columns" languagecode="1033"/></labels><columns>${thirds}</columns></tab><tab name="matrix"><labels><label description="Matrix" languagecode="1033"/></labels><columns><column width="100%"><sections>${matrix}${afterSpacer}</sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="x_pcf-id"><customControl name="publisher.LayoutEditor" formFactor="0"><parameters><value type="SingleLine.Text">x_pcf</value></parameters></customControl></controlDescription></controlDescriptions></form></systemform>`,
+  );
+  const control = path.join(source.solutionDir, 'Controls/publisher.LayoutEditor');
+  await fs.mkdir(control, { recursive: true });
+  await fs.writeFile(
+    path.join(control, 'ControlManifest.xml'),
+    '<manifest><control namespace="Layout" constructor="Editor" version="1.0.0" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound" required="true"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+  );
+  await fs.writeFile(
+    path.join(control, 'ControlManifest.xml.data.xml'),
+    '<CustomControl><Name>publisher.LayoutEditor</Name></CustomControl>',
+  );
+  await fs.writeFile(
+    path.join(control, 'bundle.js'),
+    'window.Layout={Editor:class{init(context,notify,state,container){this.input=document.createElement("input");this.input.setAttribute("aria-label","Mounted editor");this.input.style.cssText="width:100%;box-sizing:border-box";this.input.addEventListener("input",()=>{this.value=this.input.value;notify()});container.append(this.input)}updateView(context){this.value=context.parameters.value.raw;this.input.value=this.value??"";this.input.disabled=context.mode.isControlDisabled}getOutputs(){return{value:this.value}}destroy(){this.input.remove()}}};',
+  );
+  const sim = await source.start({ modelDriven: { trustedExtensions: true } });
+  t.after(() => sim.close());
   return sim.origin ?? sim.url;
 }
 
-test('exported two and three column forms preserve spacers, spans, labels and PCF widths across responsive reflow and saves', async t => {
+test('exported two and three column forms preserve spacers, spans, labels and PCF widths across responsive reflow and saves', async (t) => {
   const origin = await layoutFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const browser = await chromium.launch(browserLaunchOptions());
+  t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
-  const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(
+    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  );
   await page.getByLabel('Mounted editor', { exact: true }).waitFor();
   assert.equal(await page.getByRole('heading', { name: 'Planning', exact: true }).isVisible(), true);
   assert.equal(await page.getByRole('heading', { name: 'Ownership', exact: true }).count(), 0);
@@ -40,89 +92,217 @@ test('exported two and three column forms preserve spacers, spans, labels and PC
   assert.equal(await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(), 1);
   await page.evaluate(() => window.Xrm.Page.getControl('x_left').setDisabled(false));
   assert.equal(await page.getByLabel('x_left', { exact: true }).isEnabled(), true);
-  assert.equal(await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(), 0, 'unlocking a source presentation flag removes its native lock');
+  assert.equal(
+    await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(),
+    0,
+    'unlocking a source presentation flag removes its native lock',
+  );
   await page.evaluate(() => window.Xrm.Page.getControl('x_left').setDisabled(true));
   assert.equal(await page.getByLabel('x_left', { exact: true }).locator('..').locator('.field-lock').count(), 1);
   assert.equal(await page.getByLabel('x_hidden', { exact: true }).isVisible(), false);
-  assert.equal(await page.getByLabel('x_right', { exact: true }).locator('..').locator('label').getAttribute('class'), 'sr-only');
+  assert.equal(
+    await page.getByLabel('x_right', { exact: true }).locator('..').locator('label').getAttribute('class'),
+    'sr-only',
+  );
   const shape = await page.evaluate(() => {
-    const columns = [...document.querySelectorAll('.form-column')].map(node => node.getBoundingClientRect());
-    const spacer = document.querySelector('.form-spacer').getBoundingClientRect(), name = document.querySelector('#field-x_name').closest('.field').getBoundingClientRect();
+    const columns = [...document.querySelectorAll('.form-column')].map((node) => node.getBoundingClientRect());
+    const spacer = document.querySelector('.form-spacer').getBoundingClientRect(),
+      name = document.querySelector('#field-x_name').closest('.field').getBoundingClientRect();
     const notes = document.querySelector('#field-x_notes').closest('.field');
-    return { widths: columns.map(node => node.width), gap: columns[1].left - columns[0].right, spacer: { left: spacer.left, width: spacer.width, top: spacer.top, height: spacer.height }, name: { left: name.left, top: name.top }, span: notes.style.gridRow };
+    return {
+      widths: columns.map((node) => node.width),
+      gap: columns[1].left - columns[0].right,
+      spacer: { left: spacer.left, width: spacer.width, top: spacer.top, height: spacer.height },
+      name: { left: name.left, top: name.top },
+      span: notes.style.gridRow,
+    };
   });
   assert.ok(Math.abs(shape.widths[0] / shape.widths.reduce((sum, width) => sum + width, 0) - 0.65) < 0.005);
   assert.ok(shape.gap >= 12 && shape.gap <= 16);
-  assert.ok(shape.name.left > shape.spacer.left + shape.spacer.width); assert.equal(shape.name.top, shape.spacer.top);
-  assert.ok(shape.spacer.height >= 32); assert.equal(shape.span, '2', 'an empty row inside a memo span does not fabricate a blank field row');
-  const editorFits = async () => page.getByLabel('Mounted editor', { exact: true }).evaluate(input => {
-    const host = input.closest('.model-driven-pcf').getBoundingClientRect(), control = input.getBoundingClientRect();
-    return control.width > 0 && Math.abs(control.width - host.width) <= 1 && control.right <= host.right + 1;
-  });
+  assert.ok(shape.name.left > shape.spacer.left + shape.spacer.width);
+  assert.equal(shape.name.top, shape.spacer.top);
+  assert.ok(shape.spacer.height >= 32);
+  assert.equal(shape.span, '2', 'an empty row inside a memo span does not fabricate a blank field row');
+  const editorFits = async () =>
+    page.getByLabel('Mounted editor', { exact: true }).evaluate((input) => {
+      const host = input.closest('.model-driven-pcf').getBoundingClientRect(),
+        control = input.getBoundingClientRect();
+      return control.width > 0 && Math.abs(control.width - host.width) <= 1 && control.right <= host.right + 1;
+    });
   assert.equal(await editorFits(), true);
-  await page.getByLabel('Name', { exact: true }).fill('Layout edit'); await page.getByLabel('Mounted editor', { exact: true }).fill('Bound edit');
-  await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
-  const saved = await (await page.request.get(origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
-  assert.equal(saved.row.x_name, 'Layout edit'); assert.equal(saved.row.x_pcf, 'Bound edit');
-  await page.setViewportSize({ width:390, height:844 });
-  assert.ok(await page.getByLabel('Name', { exact:true }).evaluate(input => input.getBoundingClientRect().left - input.closest('.field').getBoundingClientRect().left >= 180), 'native two-column tabs retain their Left label column on a narrow form');
+  await page.getByLabel('Name', { exact: true }).fill('Layout edit');
+  await page.getByLabel('Mounted editor', { exact: true }).fill('Bound edit');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  const saved = await (
+    await page.request.get(origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  ).json();
+  assert.equal(saved.row.x_name, 'Layout edit');
+  assert.equal(saved.row.x_pcf, 'Bound edit');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(
+    await page
+      .getByLabel('Name', { exact: true })
+      .evaluate(
+        (input) => input.getBoundingClientRect().left - input.closest('.field').getBoundingClientRect().left >= 180,
+      ),
+    'native two-column tabs retain their Left label column on a narrow form',
+  );
   assert.equal(await editorFits(), true);
-  await page.setViewportSize({ width:1582, height:1000 });
-  await page.getByRole('tab', { name: 'Three columns', exact: true }).click(); await page.getByLabel('Mounted editor', { exact: true }).waitFor();
-  const thirds = await page.locator('.form-column').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width));
-  const total = thirds.reduce((sum, width) => sum + width, 0); assert.ok(Math.abs(thirds[0] / total - 0.34) < 0.005); assert.equal(await editorFits(), true);
-  assert.equal(await page.locator('.model-driven-pcf').evaluate(host => host.getBoundingClientRect().top >= host.closest('.field').querySelector('label').getBoundingClientRect().bottom), true, 'source Top label placement must sit above the PCF');
+  await page.setViewportSize({ width: 1582, height: 1000 });
+  await page.getByRole('tab', { name: 'Three columns', exact: true }).click();
+  await page.getByLabel('Mounted editor', { exact: true }).waitFor();
+  const thirds = await page
+    .locator('.form-column')
+    .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().width));
+  const total = thirds.reduce((sum, width) => sum + width, 0);
+  assert.ok(Math.abs(thirds[0] / total - 0.34) < 0.005);
+  assert.equal(await editorFits(), true);
+  assert.equal(
+    await page
+      .locator('.model-driven-pcf')
+      .evaluate(
+        (host) =>
+          host.getBoundingClientRect().top >=
+          host.closest('.field').querySelector('label').getBoundingClientRect().bottom,
+      ),
+    true,
+    'source Top label placement must sit above the PCF',
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
   await page.waitForFunction(() => document.querySelectorAll('[role="tab"]:not([hidden])').length === 1);
-  assert.equal(await page.getByRole('tab').count(), 1, 'compact forms expose the active tab while More retains the others');
-  assert.equal(await page.getByRole('button', { name:'More tabs', exact:true }).isVisible(), true);
-  const compactCards = await page.locator('.form-section').evaluateAll(nodes => nodes.map(node => { const { left, top, bottom } = node.getBoundingClientRect(); return { left, top, bottom }; }));
-  assert.equal(compactCards[0].left, 0); assert.equal(compactCards[1].top - compactCards[0].bottom, 6);
-  assert.ok(await page.getByLabel('Name', { exact:true }).evaluate(input => input.getBoundingClientRect().left - input.closest('.field').getBoundingClientRect().left >= 180), 'settled narrow source Left labels remain beside their inputs');
+  assert.equal(
+    await page.getByRole('tab').count(),
+    1,
+    'compact forms expose the active tab while More retains the others',
+  );
+  assert.equal(await page.getByRole('button', { name: 'More tabs', exact: true }).isVisible(), true);
+  const compactCards = await page.locator('.form-section').evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const { left, top, bottom } = node.getBoundingClientRect();
+      return { left, top, bottom };
+    }),
+  );
+  assert.equal(compactCards[0].left, 0);
+  assert.equal(compactCards[1].top - compactCards[0].bottom, 6);
+  assert.ok(
+    await page
+      .getByLabel('Name', { exact: true })
+      .evaluate(
+        (input) => input.getBoundingClientRect().left - input.closest('.field').getBoundingClientRect().left >= 180,
+      ),
+    'settled narrow source Left labels remain beside their inputs',
+  );
   assert.equal(await editorFits(), true);
-  const reflow = await page.locator('.form-column').evaluateAll(nodes => nodes.map(node => ({ left: node.getBoundingClientRect().left, top: node.getBoundingClientRect().top })));
-  assert.equal(reflow[0].left, reflow[1].left); assert.ok(reflow[0].top < reflow[1].top && reflow[1].top < reflow[2].top);
+  const reflow = await page
+    .locator('.form-column')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => ({ left: node.getBoundingClientRect().left, top: node.getBoundingClientRect().top })),
+    );
+  assert.equal(reflow[0].left, reflow[1].left);
+  assert.ok(reflow[0].top < reflow[1].top && reflow[1].top < reflow[2].top);
   await page.setViewportSize({ width: 1100, height: 900 });
-  const wrapped = await page.locator('.form-column').evaluateAll(nodes => nodes.map(node => { const { left, top, width } = node.getBoundingClientRect(); return { left, top, width }; }));
-  assert.equal(wrapped[0].top, wrapped[1].top); assert.ok(wrapped[2].top > wrapped[0].top); assert.ok(wrapped[2].width > wrapped[0].width * 1.9);
-  assert.ok(Math.abs(wrapped[0].width / (wrapped[0].width + wrapped[1].width) - 34 / 67) < 0.005, 'wrapped columns retain their source width ratio');
+  const wrapped = await page.locator('.form-column').evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const { left, top, width } = node.getBoundingClientRect();
+      return { left, top, width };
+    }),
+  );
+  assert.equal(wrapped[0].top, wrapped[1].top);
+  assert.ok(wrapped[2].top > wrapped[0].top);
+  assert.ok(wrapped[2].width > wrapped[0].width * 1.9);
+  assert.ok(
+    Math.abs(wrapped[0].width / (wrapped[0].width + wrapped[1].width) - 34 / 67) < 0.005,
+    'wrapped columns retain their source width ratio',
+  );
   assert.ok(wrapped[2].top - wrapped[0].top > 200, 'short wrapped column rows share the native available form height');
   await page.setViewportSize({ width: 1582, height: 1000 });
-  await page.getByRole('tab', { name: 'Matrix', exact: true }).click(); await page.getByLabel('Mounted editor', { exact: true }).waitFor();
-  const matrixShape = () => page.evaluate(() => {
-    const panel = [...document.querySelectorAll('.form-section')].find(section => section.querySelector('h2')?.textContent === 'Matrix');
-    const bounds = selector => { const element = panel.querySelector(selector), rect = element.getBoundingClientRect(); return { left: rect.left, top: rect.top, bottom: rect.bottom, width: rect.width, row: element.style.gridRow }; };
-    return { notes: bounds('#field-x_notes'), quantity: bounds('#field-x_quantity'), measurement: bounds('#field-x_third'), email: bounds('#field-x_right'), phone: bounds('#field-x_hidden'), summary: bounds('#field-x_left'), spacerVisible: [...document.querySelectorAll('.form-spacer')].filter(node => !node.hidden && getComputedStyle(node).display !== 'none').length };
-  });
+  await page.getByRole('tab', { name: 'Matrix', exact: true }).click();
+  await page.getByLabel('Mounted editor', { exact: true }).waitFor();
+  const matrixShape = () =>
+    page.evaluate(() => {
+      const panel = [...document.querySelectorAll('.form-section')].find(
+        (section) => section.querySelector('h2')?.textContent === 'Matrix',
+      );
+      const bounds = (selector) => {
+        const element = panel.querySelector(selector),
+          rect = element.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, bottom: rect.bottom, width: rect.width, row: element.style.gridRow };
+      };
+      return {
+        notes: bounds('#field-x_notes'),
+        quantity: bounds('#field-x_quantity'),
+        measurement: bounds('#field-x_third'),
+        email: bounds('#field-x_right'),
+        phone: bounds('#field-x_hidden'),
+        summary: bounds('#field-x_left'),
+        spacerVisible: [...document.querySelectorAll('.form-spacer')].filter(
+          (node) => !node.hidden && getComputedStyle(node).display !== 'none',
+        ).length,
+      };
+    });
   const wideMatrix = await matrixShape();
-  assert.equal(await page.locator('#field-x_notes').evaluate(node => getComputedStyle(node).resize), 'none', 'memo source row heights cannot be changed through a browser resize grip');
-  assert.equal(wideMatrix.notes.top, wideMatrix.quantity.top); assert.ok(Math.abs(wideMatrix.measurement.top - wideMatrix.quantity.top - 48) <= 1);
-  assert.equal(wideMatrix.email.top, wideMatrix.phone.top); assert.ok(wideMatrix.phone.left > wideMatrix.email.left + wideMatrix.email.width * 1.9);
-  assert.ok(Math.abs(wideMatrix.summary.top - wideMatrix.phone.top - 48) <= 1, 'empty source rows collapse instead of leaving an implicit grid gap');
+  assert.equal(
+    await page.locator('#field-x_notes').evaluate((node) => getComputedStyle(node).resize),
+    'none',
+    'memo source row heights cannot be changed through a browser resize grip',
+  );
+  assert.equal(wideMatrix.notes.top, wideMatrix.quantity.top);
+  assert.ok(Math.abs(wideMatrix.measurement.top - wideMatrix.quantity.top - 48) <= 1);
+  assert.equal(wideMatrix.email.top, wideMatrix.phone.top);
+  assert.ok(wideMatrix.phone.left > wideMatrix.email.left + wideMatrix.email.width * 1.9);
+  assert.ok(
+    Math.abs(wideMatrix.summary.top - wideMatrix.phone.top - 48) <= 1,
+    'empty source rows collapse instead of leaving an implicit grid gap',
+  );
   assert.equal(wideMatrix.spacerVisible, 1, 'only the mixed field/spacer row reserves a horizontal hole');
   await page.evaluate(() => window.Xrm.Page.getControl('x_third').setVisible(false));
   const hiddenMatrix = await matrixShape();
-  assert.ok(hiddenMatrix.email.top < wideMatrix.email.top, 'a script-hidden row collapses without discarding its live control');
+  assert.ok(
+    hiddenMatrix.email.top < wideMatrix.email.top,
+    'a script-hidden row collapses without discarding its live control',
+  );
   await page.evaluate(() => window.Xrm.Page.getControl('x_third').setVisible(true));
   const restoredMatrix = await matrixShape();
-  assert.equal(restoredMatrix.email.top, wideMatrix.email.top); assert.equal(restoredMatrix.measurement.top, wideMatrix.measurement.top);
-  await page.setViewportSize({ width:1100, height:900 });
-  const sectionWidth = await page.locator('.section-fields[data-columns="3"]').evaluate(node => node.getBoundingClientRect().width);
-  assert.ok(sectionWidth > 800 && sectionWidth < 900, 'the open sitemap produces the native narrow matrix section width');
+  assert.equal(restoredMatrix.email.top, wideMatrix.email.top);
+  assert.equal(restoredMatrix.measurement.top, wideMatrix.measurement.top);
+  await page.setViewportSize({ width: 1100, height: 900 });
+  const sectionWidth = await page
+    .locator('.section-fields[data-columns="3"]')
+    .evaluate((node) => node.getBoundingClientRect().width);
+  assert.ok(
+    sectionWidth > 800 && sectionWidth < 900,
+    'the open sitemap produces the native narrow matrix section width',
+  );
   const narrowMatrix = await matrixShape();
-  assert.equal(narrowMatrix.notes.left, narrowMatrix.quantity.left); assert.ok(narrowMatrix.quantity.top >= narrowMatrix.notes.bottom);
-  assert.ok(narrowMatrix.phone.width > 600 && narrowMatrix.summary.width > 600, 'supported matrix inputs expand instead of clipping into three undersized columns');
+  assert.equal(narrowMatrix.notes.left, narrowMatrix.quantity.left);
+  assert.ok(narrowMatrix.quantity.top >= narrowMatrix.notes.bottom);
+  assert.ok(
+    narrowMatrix.phone.width > 600 && narrowMatrix.summary.width > 600,
+    'supported matrix inputs expand instead of clipping into three undersized columns',
+  );
   assert.equal(narrowMatrix.spacerVisible, 0);
   await page.setViewportSize({ width: 390, height: 844 });
   const smallMatrix = await matrixShape();
   assert.ok(smallMatrix.quantity.top > smallMatrix.notes.top && smallMatrix.measurement.top > smallMatrix.quantity.top);
-  assert.equal(smallMatrix.spacerVisible, 0); assert.ok(smallMatrix.notes.left >= 190, 'the native narrow three-column matrix retains its left label column');
-  assert.ok(smallMatrix.notes.left - smallMatrix.email.left >= 180, 'a hidden label still exposes the full narrow field width');
+  assert.equal(smallMatrix.spacerVisible, 0);
+  assert.ok(smallMatrix.notes.left >= 190, 'the native narrow three-column matrix retains its left label column');
+  assert.ok(
+    smallMatrix.notes.left - smallMatrix.email.left >= 180,
+    'a hidden label still exposes the full narrow field width',
+  );
   assert.ok(await editorFits());
-  await page.getByRole('button', { name:'More tabs', exact:true }).click();
-  await page.getByRole('dialog', { name:'Record tabs', exact:true }).getByRole('menuitemradio', { name:'Two columns', exact:true }).click();
-  await page.getByRole('tab', { name:'Two columns', exact:true }).waitFor();
-  assert.equal(await page.getByLabel('Name', { exact:true }).inputValue(), 'Layout edit', 'compact tab overflow preserves source navigation and the saved record');
+  await page.getByRole('button', { name: 'More tabs', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Record tabs', exact: true })
+    .getByRole('menuitemradio', { name: 'Two columns', exact: true })
+    .click();
+  await page.getByRole('tab', { name: 'Two columns', exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel('Name', { exact: true }).inputValue(),
+    'Layout edit',
+    'compact tab overflow preserves source navigation and the saved record',
+  );
   assert.deepEqual(errors, []);
 });

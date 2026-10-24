@@ -27,7 +27,10 @@ test('snippet changes patch fetched HTML fragments while preserving JSON payload
   assert.equal(s.rewriter.patches.length, 1);
   const json = '{"message":"All rights reserved by the agency."}';
   const b = fakeBrowser({
-    [`${ORIGIN}/fragment`]: { headers: { 'content-type': 'text/html' }, body: '<footer>All rights reserved by the agency.</footer>' },
+    [`${ORIGIN}/fragment`]: {
+      headers: { 'content-type': 'text/html' },
+      body: '<footer>All rights reserved by the agency.</footer>',
+    },
     [`${ORIGIN}/data`]: { headers: { 'content-type': 'application/json' }, body: json },
   });
   const tab = b.openTab();
@@ -55,7 +58,10 @@ test('Mirage-rendered pages pass through unchanged while the toolkit panel API r
   t.after(() => local.cleanup());
   local.write('content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html', 'Changed footer text');
   const s = new OverlaySession({ origin: ORIGIN, sourceDir: local.dir, site: structuredClone(SITE), mirage: true });
-  let rewrites = 0, fallbacks = 0, panelPath = null, hit = null;
+  let rewrites = 0,
+    fallbacks = 0,
+    panelPath = null,
+    hit = null;
   const page = { url: () => ORIGIN + '/', isClosed: () => false };
   const request = (address, method = 'GET', type = 'document') => ({
     url: () => address,
@@ -67,17 +73,26 @@ test('Mirage-rendered pages pass through unchanged while the toolkit panel API r
   });
   const route = (address, method, type) => ({
     request: () => request(address, method, type),
-    fallback: async () => { fallbacks++; },
+    fallback: async () => {
+      fallbacks++;
+    },
     fulfill: async () => assert.fail('Mirage responses must not be rewritten or fulfilled by the overlay'),
     abort: async () => assert.fail('Mirage source navigation must not be aborted'),
   });
-  s.rewriter.rewrite = () => { rewrites++; throw new Error('the remote-source rewriter must not run'); };
-  s.on('hit', (entry) => { hit = entry; });
+  s.rewriter.rewrite = () => {
+    rewrites++;
+    throw new Error('the remote-source rewriter must not run');
+  };
+  s.on('hit', (entry) => {
+    hit = entry;
+  });
   await s.route(route(ORIGIN + '/', 'GET', 'document'));
   assert.equal(rewrites, 0);
   assert.equal(fallbacks, 1);
   assert.equal(hit.navigation, true);
-  s.api = async (_route, name) => { panelPath = name; };
+  s.api = async (_route, name) => {
+    panelPath = name;
+  };
   await s.route(route(ORIGIN + '/__paqvilo/api/catalog', 'POST', 'fetch'));
   assert.equal(panelPath, 'catalog');
   assert.equal(fallbacks, 1);
@@ -88,13 +103,20 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
   ownedFixture(t).remove(() => local.cleanup());
   const copy = 'web-pages/home/content-pages/Home.en-US.webpage.copy.html';
   const snippet = 'content-snippets/promo/Promo.en-US.contentsnippet.value.html';
-  local.write(copy, "<p id=\"liquid\">{{ snippets['Promo'] }}</p><span id=\"literal\">Old local greeting</span>");
+  local.write(copy, '<p id="liquid">{{ snippets[\'Promo\'] }}</p><span id="literal">Old local greeting</span>');
   local.write(snippet, 'Old local greeting');
   local.commit();
   local.write(snippet, 'New local greeting');
   const app = await createSimulator({
     sourceDir: local.dir,
-    initial: { version: 1, mappings: {}, tables: {}, permissions: [], settings: { permissionMode: 'permissive' }, simulator: { mode: 'local', pageMode: 'local', identity: { id: 'person', roles: [] }, endpoints: [], live: {} } },
+    initial: {
+      version: 1,
+      mappings: {},
+      tables: {},
+      permissions: [],
+      settings: { permissionMode: 'permissive' },
+      simulator: { mode: 'local', pageMode: 'local', identity: { id: 'person', roles: [] }, endpoints: [], live: {} },
+    },
     watch: false,
   });
   ownedFixture(t).add(() => app.close());
@@ -104,15 +126,33 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
 
   const ordinary = new OverlaySession({ origin: app.url, sourceDir: local.dir, site: structuredClone(SITE) });
   const incorrectlyOverlaid = ordinary.rewriter.rewrite(rendered, '/').html;
-  assert.match(incorrectlyOverlaid, /id="literal">New local greeting/, 'the remote-site markup overlay would rewrite the already-rendered page copy');
+  assert.match(
+    incorrectlyOverlaid,
+    /id="literal">New local greeting/,
+    'the remote-site markup overlay would rewrite the already-rendered page copy',
+  );
 
-  const mirage = new OverlaySession({ origin: app.url, sourceDir: local.dir, site: structuredClone(SITE), mirage: true });
+  const mirage = new OverlaySession({
+    origin: app.url,
+    sourceDir: local.dir,
+    site: structuredClone(SITE),
+    mirage: true,
+  });
   mirage.rewriter.rewrite = () => assert.fail('Mirage HTML must not enter the remote-site markup rewriter');
   const page = { url: () => app.url + '/', isClosed: () => false };
   let fallbacks = 0;
   const route = {
-    request: () => ({ url: () => app.url + '/', method: () => 'GET', resourceType: () => 'document', headers: () => ({}), isNavigationRequest: () => true, frame: () => ({ page: () => page, parentFrame: () => null }) }),
-    fallback: async () => { fallbacks++; },
+    request: () => ({
+      url: () => app.url + '/',
+      method: () => 'GET',
+      resourceType: () => 'document',
+      headers: () => ({}),
+      isNavigationRequest: () => true,
+      frame: () => ({ page: () => page, parentFrame: () => null }),
+    }),
+    fallback: async () => {
+      fallbacks++;
+    },
     fulfill: async () => assert.fail('Mirage responses must be passed through'),
     abort: async () => assert.fail('Mirage navigation must remain available'),
   };
@@ -127,7 +167,7 @@ test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work',
   const detach = await interceptOrigin(b.context, ORIGIN, s.route);
   const read = fs.readFileSync;
   let reads = 0;
-  fs.readFileSync = function(file, ...args) {
+  fs.readFileSync = function (file, ...args) {
     if (path.resolve(String(file)) === path.join(fx.dir, 'web-files/app.js')) reads++;
     return read.call(this, file, ...args);
   };
@@ -153,26 +193,55 @@ test('an external route save does not rebuild the unrelated portal index', () =>
   try {
     const file = path.join(dir, 'external.js');
     fs.writeFileSync(file, 'original');
-    const s = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: { ...SITE, routes: [{ url: '/external.js', file }] }, sourceMaps: false });
+    const s = new OverlaySession({
+      origin: ORIGIN,
+      sourceDir: fx.dir,
+      site: { ...SITE, routes: [{ url: '/external.js', file }] },
+      sourceMaps: false,
+    });
     let reloads = 0;
-    s.model.load = () => { reloads++; };
+    s.model.load = () => {
+      reloads++;
+    };
     s.fileBodies.read(file);
     fs.writeFileSync(file, 'changed');
     s.refresh([file]);
     assert.equal(reloads, 0);
     assert.equal(s.fileBodies.read(file).toString(), 'changed');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('background HTML history deduplicates polling and bounds retained inline bodies', async () => {
   const s = session();
   const page = {};
   const online = 'x'.repeat(1024 * 1024);
-  s.rewriter = { patches: [{}], rewrite: () => ({ html: 'edited', applied: [{ rel: 'snippet', action: 'patched', kind: 'content-snippet' }], notes: [], matched: [{ rel: 'script', online }] }) };
+  s.rewriter = {
+    patches: [{}],
+    rewrite: () => ({
+      html: 'edited',
+      applied: [{ rel: 'snippet', action: 'patched', kind: 'content-snippet' }],
+      notes: [],
+      matched: [{ rel: 'script', online }],
+    }),
+  };
   const route = (suffix) => ({
-    request: () => ({ url: () => `${ORIGIN}/fragment/${suffix}`, method: () => 'GET', resourceType: () => 'fetch', frame: () => ({ page: () => page }), headers: () => ({}) }),
-    fetch: async () => ({ headers: () => ({ 'content-type': 'text/html' }), status: () => 200, text: async () => 'original' }),
-    fulfill: async () => {}, fallback: async () => {}, abort: async () => {},
+    request: () => ({
+      url: () => `${ORIGIN}/fragment/${suffix}`,
+      method: () => 'GET',
+      resourceType: () => 'fetch',
+      frame: () => ({ page: () => page }),
+      headers: () => ({}),
+    }),
+    fetch: async () => ({
+      headers: () => ({ 'content-type': 'text/html' }),
+      status: () => 200,
+      text: async () => 'original',
+    }),
+    fulfill: async () => {},
+    fallback: async () => {},
+    abort: async () => {},
   });
   await s.route(route('same'));
   await s.route(route('same'));
@@ -207,8 +276,14 @@ test('every paused request is answered: also when the handler ignores it or thro
   tab.pause('r1', `${ORIGIN}/_api/things`);
   tab.pause('r2', `${ORIGIN}/_api/things`);
   await tick();
-  assert.deepEqual(b.answers('r1').map((a) => a.method), ['Fetch.continueRequest']);
-  assert.deepEqual(b.answers('r2').map((a) => a.method), ['Fetch.continueRequest']);
+  assert.deepEqual(
+    b.answers('r1').map((a) => a.method),
+    ['Fetch.continueRequest'],
+  );
+  assert.deepEqual(
+    b.answers('r2').map((a) => a.method),
+    ['Fetch.continueRequest'],
+  );
 });
 
 test('a web file is answered from disk and the portal is not asked', async () => {
@@ -226,18 +301,30 @@ test('a web file is answered from disk and the portal is not asked', async () =>
 });
 
 test('a page is fetched online with the request as the browser made it, rewritten, and answered once', async (t) => {
-  const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css', original = fx.read(css);
+  const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css',
+    original = fx.read(css);
   t.after(() => fx.write(css, original));
-  fx.write(css,'.hero {\n  color: blue;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n');
+  fx.write(css, '.hero {\n  color: blue;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n');
   const b = fakeBrowser({
-    [`${ORIGIN}/`]: { headers: { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip', 'content-length': '123', 'set-cookie': 'a=1' }, body: ONLINE_HOME },
+    [`${ORIGIN}/`]: {
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'content-encoding': 'gzip',
+        'content-length': '123',
+        'set-cookie': 'a=1',
+      },
+      body: ONLINE_HOME,
+    },
   });
   const tab = b.openTab();
   const s = session();
   const hits = [];
   s.on('hit', (h) => hits.push(h));
   await interceptOrigin(b.context, ORIGIN, s.route);
-  tab.pause('r1', `${ORIGIN}/`, { type: 'Document', headers: { Cookie: 'session=x', Accept: 'text/html', Host: 'portal.example.com' } });
+  tab.pause('r1', `${ORIGIN}/`, {
+    type: 'Document',
+    headers: { Cookie: 'session=x', Accept: 'text/html', Host: 'portal.example.com' },
+  });
   await tick();
   // cookies come from the browser's own jar, not from the copied header
   assert.deepEqual(b.fetched[0].headers, { accept: 'text/html' });
@@ -249,16 +336,26 @@ test('a page is fetched online with the request as the browser made it, rewritte
   const names = answers[0].responseHeaders.map((h) => h.name.toLowerCase());
   assert.ok(!names.includes('content-encoding'), 'the body is sent decoded');
   assert.ok(names.includes('set-cookie'));
-  assert.equal(answers[0].responseHeaders.find((h) => h.name === 'content-length').value, String(Buffer.byteLength(body)));
+  assert.equal(
+    answers[0].responseHeaders.find((h) => h.name === 'content-length').value,
+    String(Buffer.byteLength(body)),
+  );
   assert.equal(hits[0].navigation, true);
   assert.equal(hits[0].page, tab.page);
 });
 
 test('a form post carries its body to the portal', async () => {
-  const b = fakeBrowser({ [`${ORIGIN}/about-us/`]: { headers: { 'content-type': 'text/html' }, body: '<html><body>saved</body></html>' } });
+  const b = fakeBrowser({
+    [`${ORIGIN}/about-us/`]: { headers: { 'content-type': 'text/html' }, body: '<html><body>saved</body></html>' },
+  });
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('r1', `${ORIGIN}/about-us/`, { type: 'Document', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, postData: 'a=1&b=2' });
+  tab.pause('r1', `${ORIGIN}/about-us/`, {
+    type: 'Document',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    postData: 'a=1&b=2',
+  });
   await tick();
   assert.equal(b.fetched[0].method, 'POST');
   assert.equal(b.fetched[0].timeout, 120_000, 'stalled API work must have a bounded lifetime');
@@ -285,7 +382,11 @@ test('data requests, posts of data and sign-in pages go to the portal untouched'
   tab.pause('r2', `${ORIGIN}/_api/things`, { method: 'POST', postData: '{}' });
   tab.pause('r3', `${ORIGIN}/en-US/SignIn`, { type: 'Document' });
   await tick();
-  for (const id of ['r1', 'r2', 'r3']) assert.deepEqual(b.answers(id).map((a) => a.method), ['Fetch.continueRequest']);
+  for (const id of ['r1', 'r2', 'r3'])
+    assert.deepEqual(
+      b.answers(id).map((a) => a.method),
+      ['Fetch.continueRequest'],
+    );
   assert.equal(b.fetched.length, 0);
 });
 
@@ -295,7 +396,10 @@ test('when the portal cannot be reached a page request goes back to the browser'
   await interceptOrigin(b.context, ORIGIN, session().route);
   tab.pause('r1', `${ORIGIN}/gone/`, { type: 'Document' });
   await tick();
-  assert.deepEqual(b.answers('r1').map((a) => a.method), ['Fetch.continueRequest']);
+  assert.deepEqual(
+    b.answers('r1').map((a) => a.method),
+    ['Fetch.continueRequest'],
+  );
 });
 
 test('the first custom JavaScript file of a page is picked up when it is created', (t) => {
@@ -307,7 +411,10 @@ test('the first custom JavaScript file of a page is picked up when it is created
   fx.write(rel, 'console.log("first script of this page");\n');
   s.refresh([fx.file(rel)]);
   const result = s.rewriter.rewrite(page, '/scripts/');
-  assert.deepEqual(result.applied.map((a) => `${a.action} ${a.rel}`), [`injected (not online yet) ${rel}`]);
+  assert.deepEqual(
+    result.applied.map((a) => `${a.action} ${a.rel}`),
+    [`injected (not online yet) ${rel}`],
+  );
   assert.match(result.html, /first script of this page/);
   fs.rmSync(fx.file(rel));
   s.refresh([fx.file(rel)]);
@@ -341,14 +448,24 @@ test('a failed rewrite preserves a completed form POST response without resubmit
   const b = fakeBrowser({ [`${ORIGIN}/save/`]: { headers: { 'content-type': 'text/html' }, body: original } });
   const tab = b.openTab();
   const s = session();
-  s.rewriter.rewrite = () => { throw new Error('invalid local markup'); };
+  s.rewriter.rewrite = () => {
+    throw new Error('invalid local markup');
+  };
   const faults = [];
   s.on('fault', (err) => faults.push(err.message));
   await interceptOrigin(b.context, ORIGIN, s.route);
-  tab.pause('save', `${ORIGIN}/save/`, { type: 'Document', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, postData: 'save=1' });
+  tab.pause('save', `${ORIGIN}/save/`, {
+    type: 'Document',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    postData: 'save=1',
+  });
   await tick();
   assert.equal(b.fetched.length, 1);
-  assert.deepEqual(b.answers('save').map((a) => a.method), ['Fetch.fulfillRequest']);
+  assert.deepEqual(
+    b.answers('save').map((a) => a.method),
+    ['Fetch.fulfillRequest'],
+  );
   assert.equal(Buffer.from(b.answers('save')[0].body, 'base64').toString(), original);
   assert.deepEqual(faults, ['invalid local markup']);
 });
@@ -357,35 +474,60 @@ test('a form request that fails or times out is aborted without browser resubmis
   const b = fakeBrowser();
   const tab = b.openTab();
   await interceptOrigin(b.context, ORIGIN, session().route);
-  tab.pause('timeout', `${ORIGIN}/save/`, { type: 'Document', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, postData: 'save=1' });
+  tab.pause('timeout', `${ORIGIN}/save/`, {
+    type: 'Document',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    postData: 'save=1',
+  });
   await tick();
   assert.equal(b.fetched.length, 1);
   assert.equal(b.fetched[0].timeout, 120_000);
-  assert.deepEqual(b.answers('timeout').map((a) => a.method), ['Fetch.failRequest']);
+  assert.deepEqual(
+    b.answers('timeout').map((a) => a.method),
+    ['Fetch.failRequest'],
+  );
 });
 
 test('an internal API fault is aborted and never forwarded to the portal', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
   const s = session();
-  s.api = () => { throw new Error('panel failed'); };
+  s.api = () => {
+    throw new Error('panel failed');
+  };
   await interceptOrigin(b.context, ORIGIN, s.route);
   tab.pause('api-fault', `${ORIGIN}/__paqvilo/api/open`, { type: 'Fetch', method: 'POST', postData: '{}' });
   await tick();
-  assert.deepEqual(b.answers('api-fault').map((a) => a.method), ['Fetch.failRequest']);
+  assert.deepEqual(
+    b.answers('api-fault').map((a) => a.method),
+    ['Fetch.failRequest'],
+  );
   assert.equal(b.fetched.length, 0);
 });
 
 test('authentication endpoints stay online even if an explicit local route matches them', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();
-  const s = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: { ...SITE, routes: [{ url: '/**', file: 'web-files/app.js' }] } });
+  const s = new OverlaySession({
+    origin: ORIGIN,
+    sourceDir: fx.dir,
+    site: { ...SITE, routes: [{ url: '/**', file: 'web-files/app.js' }] },
+  });
   await interceptOrigin(b.context, ORIGIN, s.route);
-  for (const [id, url] of [['signin', '/en-US/signin'], ['account', '/account'], ['auth', '/.auth/login']]) {
+  for (const [id, url] of [
+    ['signin', '/en-US/signin'],
+    ['account', '/account'],
+    ['auth', '/.auth/login'],
+  ]) {
     tab.pause(id, `${ORIGIN}${url}`, { type: 'Document' });
   }
   await tick();
-  for (const id of ['signin', 'account', 'auth']) assert.deepEqual(b.answers(id).map((a) => a.method), ['Fetch.continueRequest']);
+  for (const id of ['signin', 'account', 'auth'])
+    assert.deepEqual(
+      b.answers(id).map((a) => a.method),
+      ['Fetch.continueRequest'],
+    );
 });
 
 test('a web file payload created after its metadata is picked up on save', () => {
@@ -431,7 +573,9 @@ test('committing a local edit removes its changed-scope override without another
     await new Promise((resolve) => watcher.once('ready', resolve));
     const changed = new Promise((resolve, reject) => {
       timer = setTimeout(() => reject(new Error('committed baseline was not refreshed')), 10000);
-      s.on('refreshed', (event) => { if (event.baselineChanged) resolve(event); });
+      s.on('refreshed', (event) => {
+        if (event.baselineChanged) resolve(event);
+      });
     });
     local.commit();
     await changed;
@@ -449,15 +593,22 @@ test('startup reconciles markup and URL metadata saved during async source prefe
   t.after(() => local.cleanup());
   const open = fs.promises.open;
   let edited = false;
-  t.mock.method(fs.promises, 'open', async function(file, ...args) {
-    const handle = await open.call(this, file, ...args), read = handle.read.bind(handle);
+  t.mock.method(fs.promises, 'open', async function (file, ...args) {
+    const handle = await open.call(this, file, ...args),
+      read = handle.read.bind(handle);
     handle.read = async (...input) => {
       const result = await read(...input);
       if (!edited && String(file).endsWith('.webpage.custom_css.css')) {
         edited = true;
-        local.write('content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html', 'All rights reserved by the local team.');
+        local.write(
+          'content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html',
+          'All rights reserved by the local team.',
+        );
         const metadata = 'web-pages/scripts/Scripts.webpage.yml';
-        local.write(metadata, local.read(metadata).replace('adx_partialurl: scripts', 'adx_partialurl: updated-scripts'));
+        local.write(
+          metadata,
+          local.read(metadata).replace('adx_partialurl: scripts', 'adx_partialurl: updated-scripts'),
+        );
       }
       return result;
     };
@@ -501,7 +652,9 @@ test('web-only saves prepare bytes without synchronous Git and publish tracking 
   const tracked = s.changedFiles;
   s.fileBodies.read(file);
   local.write('web-files/app.js', 'console.log("fresh local asset");');
-  const scan = t.mock.method(s.baseline, 'changedFiles', () => assert.fail('preparing bytes must not run synchronous Git'));
+  const scan = t.mock.method(s.baseline, 'changedFiles', () =>
+    assert.fail('preparing bytes must not run synchronous Git'),
+  );
   const result = s.refresh([file], { deferChangeTracking: true });
   assert.equal(result.changeTrackingDeferred, true);
   assert.equal(scan.mock.callCount(), 0);
@@ -516,10 +669,15 @@ test('watch readiness reconciles edits made after session creation before first 
   const local = createFixture();
   t.after(() => local.cleanup());
   const s = await OverlaySession.create({ origin: ORIGIN, sourceDir: local.dir, site: SITE });
-  local.write('content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html', 'All rights reserved by the watcher team.');
+  local.write(
+    'content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html',
+    'All rights reserved by the watcher team.',
+  );
   const watcher = watchSources(s, { pages: () => [] }, { log: () => {} });
   try {
     await watcher.ready;
     assert.match(s.rewriter.rewrite(ONLINE_HOME, '/').html, /All rights reserved by the watcher team\./);
-  } finally { await watcher.close(); }
+  } finally {
+    await watcher.close();
+  }
 });

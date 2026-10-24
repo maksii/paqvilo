@@ -12,14 +12,30 @@ import { loadDevTargets, mirageOnlySite, loadCatalogue } from '../lense/config.m
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !/^GIT_/i.test(key)));
-const run = (...args) => withProcessSlot(() => new Promise((resolve) => execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 60_000 }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }))));
+const env = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !/^GIT_/i.test(key)),
+);
+const run = (...args) =>
+  withProcessSlot(
+    () =>
+      new Promise((resolve) =>
+        execFile(
+          process.execPath,
+          [cli, ...args],
+          { env, encoding: 'utf8', windowsHide: true, timeout: 60_000 },
+          (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
+        ),
+      ),
+  );
 
 function fixture(t) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-only-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   fs.mkdirSync(path.join(dir, 'solutions', 'x_core', 'Other'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'solutions', 'x_core', 'Other', 'Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>InventedCore</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>');
+  fs.writeFileSync(
+    path.join(dir, 'solutions', 'x_core', 'Other', 'Solution.xml'),
+    '<ImportExportXml><SolutionManifest><UniqueName>InventedCore</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+  );
   const catalogue = renderTemplate('catalogue', 'model-driven', { id: 'org', root: './solutions/x_core' });
   const file = path.join(dir, 'paqvilo.config.json');
   fs.writeFileSync(file, JSON.stringify(catalogue, null, 2));
@@ -59,9 +75,15 @@ test('portals=all keeps a Mirage-only site out of the Lense targets', async (t) 
   catalogue.sites.portal = { source: './portal', environments: { local: 'http://127.0.0.1:9' } };
   fs.writeFileSync(file, JSON.stringify(catalogue));
   const { targets, initial } = await loadDevTargets({ config: file }, env);
-  assert.deepEqual(targets.map(target => target.siteName), ['portal']);
+  assert.deepEqual(
+    targets.map((target) => target.siteName),
+    ['portal'],
+  );
   assert.equal(initial.siteName, 'portal');
-  await assert.rejects(() => loadDevTargets({ config: file, site: 'org', portals: 'selected' }, env), error => error.code === 'mirage_only_site');
+  await assert.rejects(
+    () => loadDevTargets({ config: file, site: 'org', portals: 'selected' }, env),
+    (error) => error.code === 'mirage_only_site',
+  );
 });
 
 test('portals=all with only Mirage-only sites: list succeeds and names them, the Lense targets refuse', async (t) => {
@@ -69,10 +91,16 @@ test('portals=all with only Mirage-only sites: list succeeds and names them, the
   const catalogue = JSON.parse(fs.readFileSync(file, 'utf8'));
   catalogue.portals = 'all';
   fs.writeFileSync(file, JSON.stringify(catalogue));
-  await assert.rejects(() => loadDevTargets({ config: file }, env), error => error.code === 'mirage_only_site' && /\(org\)/.test(error.message));
+  await assert.rejects(
+    () => loadDevTargets({ config: file }, env),
+    (error) => error.code === 'mirage_only_site' && /\(org\)/.test(error.message),
+  );
   const list = await run('lense', 'list', '--config', file, '--json');
   assert.equal(list.status, 0, list.stdout + list.stderr);
   const listed = JSON.parse(list.stdout);
   assert.equal(listed.ok, true);
-  assert.deepEqual(listed.sites.map(site => [site.name, site.mirageOnly]), [['org', true]]);
+  assert.deepEqual(
+    listed.sites.map((site) => [site.name, site.mirageOnly]),
+    [['org', true]],
+  );
 });

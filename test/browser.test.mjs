@@ -5,18 +5,35 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { chromium } from 'playwright-core';
-import { openBrowser, refreshPages, keepSessionCookies, safeDownloadName, browserProfileDir } from '../lense/browser.mjs';
+import {
+  openBrowser,
+  refreshPages,
+  keepSessionCookies,
+  safeDownloadName,
+  browserProfileDir,
+} from '../lense/browser.mjs';
 import { refreshUrl } from '../lense/navigation.mjs';
 import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-profile.mjs';
 
 const origin = 'https://portal.example.com';
 
-test('CDP attachment rejects a launch debugger port before connecting or opening any browser', async t => {
-  const connect = t.mock.method(chromium, 'connectOverCDP', async () => assert.fail('ambiguous debugger selection must not connect'));
-  const launch = t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
-  for (const cdpUrl of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented', 'https://remote.example.test:9222']) {
-    for (const [browserPort, overrides] of [[9222, {}], [null, { debugPort: 9222 }]]) {
-      await assert.rejects(openBrowser({ browser: { cdpUrl, debugPort: browserPort } }, overrides), error => {
+test('CDP attachment rejects a launch debugger port before connecting or opening any browser', async (t) => {
+  const connect = t.mock.method(chromium, 'connectOverCDP', async () =>
+    assert.fail('ambiguous debugger selection must not connect'),
+  );
+  const launch = t.mock.method(chromium, 'launchPersistentContext', async () =>
+    assert.fail('attachment must not launch'),
+  );
+  for (const cdpUrl of [
+    'http://127.0.0.1:9222',
+    'ws://127.0.0.1:9333/devtools/browser/invented',
+    'https://remote.example.test:9222',
+  ]) {
+    for (const [browserPort, overrides] of [
+      [9222, {}],
+      [null, { debugPort: 9222 }],
+    ]) {
+      await assert.rejects(openBrowser({ browser: { cdpUrl, debugPort: browserPort } }, overrides), (error) => {
         assert.match(error.message, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
         assert.match(error.message, /--debug-port 0/);
         assert.ok(!error.message.includes(cdpUrl), 'endpoint details are not copied into diagnostics');
@@ -28,17 +45,25 @@ test('CDP attachment rejects a launch debugger port before connecting or opening
   assert.equal(launch.mock.callCount(), 0);
 });
 
-test('ordinary CDP attachment and an explicit disabled launch port retain user-owned browser lifetime', async t => {
+test('ordinary CDP attachment and an explicit disabled launch port retain user-owned browser lifetime', async (t) => {
   const context = { close: async () => assert.fail('the attached context belongs to the user') };
   let detached = 0;
   const endpoints = [];
-  t.mock.method(chromium, 'connectOverCDP', async endpoint => {
+  t.mock.method(chromium, 'connectOverCDP', async (endpoint) => {
     endpoints.push(endpoint);
-    return { contexts: () => [context], close: async () => { detached++; } };
+    return {
+      contexts: () => [context],
+      close: async () => {
+        detached++;
+      },
+    };
   });
   t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
   const cdpUrl = 'ws://127.0.0.1:9333/devtools/browser/invented';
-  for (const [debugPort, overrides] of [[null, {}], [9222, { debugPort: 0 }]]) {
+  for (const [debugPort, overrides] of [
+    [null, {}],
+    [9222, { debugPort: 0 }],
+  ]) {
     const browser = await openBrowser({ browser: { cdpUrl, debugPort } }, overrides);
     assert.equal(browser.context, context);
     assert.equal(browser.attached, true);
@@ -52,11 +77,17 @@ test('ordinary CDP attachment and an explicit disabled launch port retain user-o
 test('Edge normal storage fails early with actionable attachment options without reading profile data', () => {
   assert.ok(defaultEdgeDataDirs().length >= 3);
   for (const userDataDir of defaultEdgeDataDirs()) {
-    assert.throws(() => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 2' }), /--profile work.*--cdp-url/);
+    assert.throws(
+      () => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 2' }),
+      /--profile work.*--cdp-url/,
+    );
   }
   assert.doesNotThrow(() => validateBrowserProfile({ kind: 'attached', channel: 'msedge' }));
   assert.doesNotThrow(() => validateBrowserProfile({ kind: 'named', channel: 'msedge' }));
-  assert.deepEqual(defaultEdgeDataDirs({ platform: 'linux', home: '/home/test', env: { XDG_CONFIG_HOME: '/custom' } }), ['microsoft-edge', 'microsoft-edge-beta', 'microsoft-edge-dev'].map(name => path.join('/custom', name)));
+  assert.deepEqual(
+    defaultEdgeDataDirs({ platform: 'linux', home: '/home/test', env: { XDG_CONFIG_HOME: '/custom' } }),
+    ['microsoft-edge', 'microsoft-edge-beta', 'microsoft-edge-dev'].map((name) => path.join('/custom', name)),
+  );
 });
 
 test('external browser storage stays in the selected child without exporting session credentials', async (t) => {
@@ -68,14 +99,19 @@ test('external browser storage stays in the selected child without exporting ses
     pages: () => [],
     cookies: async () => assert.fail('external credentials must remain browser-managed'),
     addCookies: async () => assert.fail('external credentials must never be imported'),
-    close: async () => { closed = true; },
+    close: async () => {
+      closed = true;
+    },
   });
   t.mock.method(chromium, 'launchPersistentContext', async (dir, options) => {
     assert.equal(dir, root);
     assert.ok(options.args.includes('--profile-directory=Profile 2'));
     return context;
   });
-  const browser = await openBrowser({ configDir: root, browser: { channel: 'msedge', userDataDir: root, profileDirectory: 'Profile 2' } }, { headless: false });
+  const browser = await openBrowser(
+    { configDir: root, browser: { channel: 'msedge', userDataDir: root, profileDirectory: 'Profile 2' } },
+    { headless: false },
+  );
   assert.equal(browser.profile.kind, 'external');
   await browser.close();
   assert.equal(closed, true);
@@ -90,14 +126,30 @@ test('owned headed windows normalize old maximization once and retain subsequent
   const launches = [];
   let detached = 0;
   const context = Object.assign(new EventEmitter(), {
-    pages: () => [], newPage: async () => ({}), cookies: async () => [], close: async () => {},
+    pages: () => [],
+    newPage: async () => ({}),
+    cookies: async () => [],
+    close: async () => {},
     newCDPSession: async () => ({
-      send: async (method, params) => { sends.push({ method, params }); return { windowId: 7 }; },
-      detach: async () => { detached++; },
+      send: async (method, params) => {
+        sends.push({ method, params });
+        return { windowId: 7 };
+      },
+      detach: async () => {
+        detached++;
+      },
     }),
   });
-  t.mock.method(chromium, 'launchPersistentContext', async (_dir, options) => { launches.push(options); return context; });
-  const cfg = { configDir: root, siteName: 'test', envName: 'dev', browser: { channel: 'msedge', profileDir: 'profiles' } };
+  t.mock.method(chromium, 'launchPersistentContext', async (_dir, options) => {
+    launches.push(options);
+    return context;
+  });
+  const cfg = {
+    configDir: root,
+    siteName: 'test',
+    envName: 'dev',
+    browser: { channel: 'msedge', profileDir: 'profiles' },
+  };
   await (await openBrowser(cfg, { headless: false })).close();
   assert.deepEqual(sends, [
     { method: 'Browser.getWindowForTarget', params: undefined },
@@ -113,7 +165,12 @@ test('owned headed windows normalize old maximization once and retain subsequent
 });
 
 test('default browser profiles preserve migrated Edge sign-in and isolate Chrome and Chromium', () => {
-  const cfg = { configDir: path.resolve('tool'), browser: { profileDir: '.paqvilo/profiles', channel: 'msedge' }, siteName: 'alpha', envName: 'test' };
+  const cfg = {
+    configDir: path.resolve('tool'),
+    browser: { profileDir: '.paqvilo/profiles', channel: 'msedge' },
+    siteName: 'alpha',
+    envName: 'test',
+  };
   const edge = browserProfileDir(cfg);
   const chrome = browserProfileDir({ ...cfg, browser: { ...cfg.browser, channel: 'chrome' } });
   const chromium = browserProfileDir({ ...cfg, browser: { ...cfg.browser, channel: 'chromium' } });
@@ -123,21 +180,47 @@ test('default browser profiles preserve migrated Edge sign-in and isolate Chrome
 });
 
 test('dev and signed-in verification select the same isolated catalogue profile', () => {
-  const cfg = { configDir: path.resolve('tool'), browser: { profileDir: '.paqvilo/profiles' }, siteName: 'alpha', envName: 'test' };
+  const cfg = {
+    configDir: path.resolve('tool'),
+    browser: { profileDir: '.paqvilo/profiles' },
+    siteName: 'alpha',
+    envName: 'test',
+  };
   assert.equal(browserProfileDir(cfg), path.resolve('tool/.paqvilo/profiles/alpha-test'));
   assert.equal(browserProfileDir({ ...cfg, portals: 'all' }), path.resolve('tool/.paqvilo/profiles/catalogue'));
-  assert.equal(browserProfileDir({ ...cfg, portals: 'all', siteName: 'beta', envName: 'uat' }), browserProfileDir({ ...cfg, portals: 'all' }));
+  assert.equal(
+    browserProfileDir({ ...cfg, portals: 'all', siteName: 'beta', envName: 'uat' }),
+    browserProfileDir({ ...cfg, portals: 'all' }),
+  );
 });
 const page = (url, result = 1) => ({
   url: () => url,
   isClosed: () => false,
   reloads: 0,
   evaluations: 0,
-  async reload() { assert.fail('refresh must never use browser reload, which can repeat POST'); },
-  async goto(target, options) { assert.equal(target, new URL(url).href); assert.equal(options.waitUntil, 'commit'); assert.ok(options.timeout > 0); this.reloads++; },
-  async evaluate() { this.evaluations++; return { links: result, styles: 0 }; },
+  async reload() {
+    assert.fail('refresh must never use browser reload, which can repeat POST');
+  },
+  async goto(target, options) {
+    assert.equal(target, new URL(url).href);
+    assert.equal(options.waitUntil, 'commit');
+    assert.ok(options.timeout > 0);
+    this.reloads++;
+  },
+  async evaluate() {
+    this.evaluations++;
+    return { links: result, styles: 0 };
+  },
 });
-const session = { cfg: { origin }, model: { webFiles: [{ file: 'main.css', url: '/main.css' }, { file: 'other.css', url: '/other.css' }] } };
+const session = {
+  cfg: { origin },
+  model: {
+    webFiles: [
+      { file: 'main.css', url: '/main.css' },
+      { file: 'other.css', url: '/other.css' },
+    ],
+  },
+};
 
 test('refresh only touches pages with the exact portal origin', async () => {
   const valid = page(`${origin}/`);
@@ -161,7 +244,8 @@ test('fragment refresh forces GET while preserving existing query parameters and
   assert.notEqual(refreshUrl(target.href), target.href);
   assert.equal(refreshUrl(`${origin}/result?filter=ready`), `${origin}/result?filter=ready`);
   const emptyFragment = new URL(refreshUrl(`${origin}/result?filter=ready&filter=other#`));
-  assert.ok(emptyFragment.href.endsWith('#')); assert.ok(emptyFragment.searchParams.has('paqvilo'));
+  assert.ok(emptyFragment.href.endsWith('#'));
+  assert.ok(emptyFragment.searchParams.has('paqvilo'));
   assert.deepEqual(emptyFragment.searchParams.getAll('filter'), ['ready', 'other']);
 });
 
@@ -176,7 +260,9 @@ test('linked CSS swaps in place while imported or missing links trigger a reload
 
 test('failed CSS evaluation falls back to a bounded document reload', async () => {
   const tab = page(origin);
-  tab.evaluate = async () => { throw new Error('page navigated'); };
+  tab.evaluate = async () => {
+    throw new Error('page navigated');
+  };
   assert.equal(await refreshPages({ pages: () => [tab] }, session, ['main.css']), 'reload');
   assert.equal(tab.reloads, 1);
 });
@@ -184,7 +270,14 @@ test('failed CSS evaluation falls back to a bounded document reload', async () =
 test('page-specific changes refresh language variants while preserving unrelated tabs', async () => {
   const about = page(`${origin}/en-US/about-us/`);
   const home = page(origin);
-  const s = { ...session, model: { webFiles: [], languageCodes: new Set(['en-us']), inlineSources: [{ file: 'about.js', kind: 'page-js', pageUrl: '/about-us' }] } };
+  const s = {
+    ...session,
+    model: {
+      webFiles: [],
+      languageCodes: new Set(['en-us']),
+      inlineSources: [{ file: 'about.js', kind: 'page-js', pageUrl: '/about-us' }],
+    },
+  };
   const outcomes = new Map();
   assert.equal(await refreshPages({ pages: () => [home, about] }, s, ['about.js'], { outcomes }), 'reload');
   assert.deepEqual([home.reloads, about.reloads], [0, 1]);
@@ -194,8 +287,19 @@ test('page-specific changes refresh language variants while preserving unrelated
 });
 
 test('refresh keeps native short routes distinct from home and exported language variants', async () => {
-  const home = page(`${origin}/`), native = page(`${origin}/it`), localized = page(`${origin}/fr-FR/it`), unknown = page(`${origin}/zz-ZZ/`);
-  const model = { webFiles: [], languageCodes: new Set(['fr-fr']), pagePaths: new Set(['/', '/it', '/ui']), inlineSources: [{ file: 'it.js', kind: 'page-js', pageUrl: '/it' }, { file: 'home.js', kind: 'page-js', pageUrl: '/' }] };
+  const home = page(`${origin}/`),
+    native = page(`${origin}/it`),
+    localized = page(`${origin}/fr-FR/it`),
+    unknown = page(`${origin}/zz-ZZ/`);
+  const model = {
+    webFiles: [],
+    languageCodes: new Set(['fr-fr']),
+    pagePaths: new Set(['/', '/it', '/ui']),
+    inlineSources: [
+      { file: 'it.js', kind: 'page-js', pageUrl: '/it' },
+      { file: 'home.js', kind: 'page-js', pageUrl: '/' },
+    ],
+  };
   const s = { ...session, model };
   const tabs = { pages: () => [home, native, localized, unknown] };
   await refreshPages(tabs, s, ['it.js']);
@@ -206,7 +310,9 @@ test('refresh keeps native short routes distinct from home and exported language
 
 test('failed document GETs are left pending and online mode does not change page styles', async () => {
   const tab = page(origin);
-  tab.goto = async () => { throw new Error('offline'); };
+  tab.goto = async () => {
+    throw new Error('offline');
+  };
   const outcomes = new Map();
   assert.equal(await refreshPages({ pages: () => [tab] }, session, ['app.js'], { outcomes }), 'none');
   assert.equal(outcomes.get(tab).how, 'none');
@@ -221,14 +327,22 @@ test('session cookies restore and save atomically without retaining persistent c
   fs.writeFileSync(file, JSON.stringify(old));
   let restored;
   const context = Object.assign(new EventEmitter(), {
-    addCookies: async (cookies) => { restored = cookies; },
-    cookies: async () => [{ ...old[0], name: 'new' }, { ...old[0], name: 'persistent', expires: 9999999999 }],
+    addCookies: async (cookies) => {
+      restored = cookies;
+    },
+    cookies: async () => [
+      { ...old[0], name: 'new' },
+      { ...old[0], name: 'persistent', expires: 9999999999 },
+    ],
   });
   try {
     const stop = await keepSessionCookies(context, file);
     assert.deepEqual(restored, old);
     await stop();
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).map((c) => c.name), ['new']);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(file, 'utf8')).map((c) => c.name),
+      ['new'],
+    );
     assert.equal(fs.existsSync(`${file}.tmp`), false);
     context.emit('close');
   } finally {
@@ -236,15 +350,42 @@ test('session cookies restore and save atomically without retaining persistent c
   }
 });
 
-test('owned profiles discard obsolete loopback Mirage port cookies while preserving selected runtimes and remote cookies',async t=>{
-  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo-cookie-ports-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
-  const file=path.join(dir,'sessions.json'),cookie=(name,domain='127.0.0.1')=>({name,domain,path:'/',expires:-1,value:'invented'});
-  const cookies=[cookie('paqvilo-mirage-auth-8000'),cookie('paqvilo-mirage-idp-8000'),cookie('paqvilo-mirage-auth-9000'),cookie('paqvilo-mirage-auth-9100'),cookie('session','portal.example.test'),cookie('paqvilo-mirage-auth-8000','portal.example.test')];
-  fs.writeFileSync(file,JSON.stringify(cookies));const removed=[];let restored;
-  const context=Object.assign(new EventEmitter(),{cookies:async()=>cookies,clearCookies:async match=>removed.push(match.name),addCookies:async values=>{restored=values;}});
-  const stop=await keepSessionCookies(context,file,{origins:['http://127.0.0.1:9000','http://127.0.0.1:9100']});await stop();
-  assert.deepEqual(removed,['paqvilo-mirage-auth-8000','paqvilo-mirage-idp-8000']);assert.deepEqual(restored.map(item=>[item.name,item.domain]),[['paqvilo-mirage-auth-9000','127.0.0.1'],['paqvilo-mirage-auth-9100','127.0.0.1'],['session','portal.example.test'],['paqvilo-mirage-auth-8000','portal.example.test']]);
-  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).length,4);
+test('owned profiles discard obsolete loopback Mirage port cookies while preserving selected runtimes and remote cookies', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-cookie-ports-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'sessions.json'),
+    cookie = (name, domain = '127.0.0.1') => ({ name, domain, path: '/', expires: -1, value: 'invented' });
+  const cookies = [
+    cookie('paqvilo-mirage-auth-8000'),
+    cookie('paqvilo-mirage-idp-8000'),
+    cookie('paqvilo-mirage-auth-9000'),
+    cookie('paqvilo-mirage-auth-9100'),
+    cookie('session', 'portal.example.test'),
+    cookie('paqvilo-mirage-auth-8000', 'portal.example.test'),
+  ];
+  fs.writeFileSync(file, JSON.stringify(cookies));
+  const removed = [];
+  let restored;
+  const context = Object.assign(new EventEmitter(), {
+    cookies: async () => cookies,
+    clearCookies: async (match) => removed.push(match.name),
+    addCookies: async (values) => {
+      restored = values;
+    },
+  });
+  const stop = await keepSessionCookies(context, file, { origins: ['http://127.0.0.1:9000', 'http://127.0.0.1:9100'] });
+  await stop();
+  assert.deepEqual(removed, ['paqvilo-mirage-auth-8000', 'paqvilo-mirage-idp-8000']);
+  assert.deepEqual(
+    restored.map((item) => [item.name, item.domain]),
+    [
+      ['paqvilo-mirage-auth-9000', '127.0.0.1'],
+      ['paqvilo-mirage-auth-9100', '127.0.0.1'],
+      ['session', 'portal.example.test'],
+      ['paqvilo-mirage-auth-8000', 'portal.example.test'],
+    ],
+  );
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).length, 4);
 });
 
 test('download names cannot escape Downloads or name a Windows device', () => {
@@ -267,5 +408,7 @@ test('unchanged session cookies do not rewrite credentials and stopping is idemp
     await Promise.all([stop(), stop()]);
     assert.equal(write.mock.callCount(), 0);
     context.emit('close');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

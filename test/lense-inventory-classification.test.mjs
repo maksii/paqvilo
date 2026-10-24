@@ -10,8 +10,13 @@ import { importModelDrivenProject } from '../lense/model-driven.mjs';
 import { writeSolutionAssetEntries } from '../mirage/lib/dataverse-solution-assets.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', windowsHide: true, timeout: 60000,
-  env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_'))) });
+const run = (...args) =>
+  spawnSync(process.execPath, [cli, ...args], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 60000,
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_'))),
+  });
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(tmpdir(), 'lense-inventory-'));
@@ -20,9 +25,13 @@ function fixture(t) {
     'portal/website.yml': 'adx_websiteid: site\nadx_name: Invented',
     'portal/web-pages/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /',
     'portal/web-files/.keep': '',
-    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedLense</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
-    'solution/Other/Customizations.xml': '<ImportExportXml><Entities/><Connectors><Connector><name>x_lenseconnector</name></Connector></Connectors></ImportExportXml>',
-    'solution/CanvasApps/x_lenseapp_DocumentUri.msapp': writeSolutionAssetEntries([{ name: 'Src/App.pa.yaml', data: Buffer.from('App:\n  Properties:\n    OnStart: =1\n') }]),
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>InventedLense</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/Other/Customizations.xml':
+      '<ImportExportXml><Entities/><Connectors><Connector><name>x_lenseconnector</name></Connector></Connectors></ImportExportXml>',
+    'solution/CanvasApps/x_lenseapp_DocumentUri.msapp': writeSolutionAssetEntries([
+      { name: 'Src/App.pa.yaml', data: Buffer.from('App:\n  Properties:\n    OnStart: =1\n') },
+    ]),
   };
   for (const [relative, content] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
@@ -30,16 +39,30 @@ function fixture(t) {
   }
   const catalogue = (mirage) => {
     const file = path.join(root, 'catalogue.yml');
-    fs.writeFileSync(file, YAML.stringify({ sourceRoot: root, sites: { invented: { source: 'portal', environments: { local: 'http://127.0.0.1:8787' }, ...(mirage ? { mirage } : {}) } } }));
+    fs.writeFileSync(
+      file,
+      YAML.stringify({
+        sourceRoot: root,
+        sites: {
+          invented: {
+            source: 'portal',
+            environments: { local: 'http://127.0.0.1:8787' },
+            ...(mirage ? { mirage } : {}),
+          },
+        },
+      }),
+    );
     return file;
   };
   return { root, catalogue };
 }
 
-test('lense list reuses the Solution cache, so a second run parses nothing that did not change', t => {
+test('lense list reuses the Solution cache, so a second run parses nothing that did not change', (t) => {
   const { root, catalogue } = fixture(t);
   const config = catalogue({ solutionRoots: ['solution'] });
-  const inventoryOf = () => JSON.parse(run('lense', 'list', '--json', '--config', config).stdout).sites.find(item => item.name === 'invented').inventory;
+  const inventoryOf = () =>
+    JSON.parse(run('lense', 'list', '--json', '--config', config).stdout).sites.find((item) => item.name === 'invented')
+      .inventory;
   const first = inventoryOf();
   assert.ok(first.cache.misses > 0, JSON.stringify(first));
   assert.ok(fs.existsSync(path.join(root, '.paqvilo', 'simulator', 'cache', 'solution-discovery.json')));
@@ -49,12 +72,12 @@ test('lense list reuses the Solution cache, so a second run parses nothing that 
   assert.deepEqual(second.counts, first.counts);
 });
 
-test('lense list shows Solution inventory kinds with counts, and strict audit is unaffected by them', async t => {
+test('lense list shows Solution inventory kinds with counts, and strict audit is unaffected by them', async (t) => {
   const { root, catalogue } = fixture(t);
   const baseline = JSON.parse(run('lense', 'audit', '--strict', '--json', '--config', catalogue(null)).stdout);
   const config = catalogue({ solutionRoots: ['solution'] });
   const listed = JSON.parse(run('lense', 'list', '--json', '--config', config).stdout);
-  const site = listed.sites.find(item => item.name === 'invented');
+  const site = listed.sites.find((item) => item.name === 'invented');
   assert.equal(site.inventory.level, 'inventory');
   assert.deepEqual(site.inventory.counts, { canvasapp: { inventory: 1 }, connector: { inventory: 1 } });
   const audited = JSON.parse(run('lense', 'audit', '--strict', '--json', '--config', config).stdout);
@@ -64,7 +87,10 @@ test('lense list shows Solution inventory kinds with counts, and strict audit is
   assert.deepEqual(audited.reports[0].totals, baseline.reports[0].totals);
   assert.ok(!JSON.stringify(audited).includes('x_lenseapp'), 'inventory never appears as audited coverage');
 
-  const project = await importModelDrivenProject({ solutionRoots: [path.join(root, 'solution')], solutionOrder: 'explicit' });
+  const project = await importModelDrivenProject({
+    solutionRoots: [path.join(root, 'solution')],
+    solutionOrder: 'explicit',
+  });
   assert.deepEqual(project.inventoryCounts, { canvasapp: { inventory: 1 }, connector: { inventory: 1 } });
-  assert.ok(project.resources.every(resource => !/msapp/i.test(resource.name)));
+  assert.ok(project.resources.every((resource) => !/msapp/i.test(resource.name)));
 });

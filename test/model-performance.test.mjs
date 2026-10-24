@@ -9,14 +9,30 @@ import { createFixture, HOME_ID, ABOUT_ID } from './fixture.mjs';
 import { pageKey } from '../lense/html-rewriter.mjs';
 
 test('enhanced exported site languages resolve exact prefixes and preserve native short routes', (t) => {
-  const fx = createFixture(); t.after(fx.cleanup);
+  const fx = createFixture();
+  t.after(fx.cleanup);
   fs.unlinkSync(fx.file('website.yml'));
   for (const folder of ['web-pages', 'web-files']) fs.rmSync(fx.file(folder), { recursive: true });
-  for (const [id, slug, parent] of [['home', '/', null], ['it', 'it', 'home'], ['ui', 'ui', 'home']]) {
-    const content = { isroot: true, partialurl: slug, ...(parent ? { parentpageid: parent } : {}), customcss: '.test { color: blue; }' };
-    fx.write(`powerpagecomponents/${id}/powerpagecomponent.xml`, `<powerpagecomponent powerpagecomponentid="${id}"><name>${id}</name><powerpagecomponenttype>2</powerpagecomponenttype><content><![CDATA[${JSON.stringify(content)}]]></content></powerpagecomponent>`);
+  for (const [id, slug, parent] of [
+    ['home', '/', null],
+    ['it', 'it', 'home'],
+    ['ui', 'ui', 'home'],
+  ]) {
+    const content = {
+      isroot: true,
+      partialurl: slug,
+      ...(parent ? { parentpageid: parent } : {}),
+      customcss: '.test { color: blue; }',
+    };
+    fx.write(
+      `powerpagecomponents/${id}/powerpagecomponent.xml`,
+      `<powerpagecomponent powerpagecomponentid="${id}"><name>${id}</name><powerpagecomponenttype>2</powerpagecomponenttype><content><![CDATA[${JSON.stringify(content)}]]></content></powerpagecomponent>`,
+    );
   }
-  fx.write('powerpagesitelanguages.xml', '<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="fr"><name>French - France</name><content><![CDATA[{"languagecode":"fr-FR","lcid":1036}]]></content></powerpagesitelanguage></powerpagesitelanguages>');
+  fx.write(
+    'powerpagesitelanguages.xml',
+    '<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="fr"><name>French - France</name><content><![CDATA[{"languagecode":"fr-FR","lcid":1036}]]></content></powerpagesitelanguage></powerpagesitelanguages>',
+  );
   const model = new PortalModel(fx.dir);
   assert.deepEqual([...model.languageCodes], ['fr-fr']);
   assert.equal(pageKey('/it', model), '/it');
@@ -31,7 +47,10 @@ test('async model startup matches synchronous indexing and bounds concurrent met
   t.after(() => fx.cleanup());
   for (let i = 0; i < 40; i++) {
     fx.write(`web-files/extra-${i}.js`, String(i));
-    fx.write(`web-files/extra-${i}.js.webfile.yml`, `adx_name: extra-${i}.js\nadx_partialurl: extra-${i}.js\nadx_parentpageid: ${HOME_ID}\n`);
+    fx.write(
+      `web-files/extra-${i}.js.webfile.yml`,
+      `adx_name: extra-${i}.js\nadx_partialurl: extra-${i}.js\nadx_parentpageid: ${HOME_ID}\n`,
+    );
   }
   const sync = new PortalModel(fx.dir);
   const original = fs.promises.readFile;
@@ -40,7 +59,11 @@ test('async model startup matches synchronous indexing and bounds concurrent met
   t.mock.method(fs.promises, 'readFile', async function (...args) {
     active++;
     peak = Math.max(peak, active);
-    try { return await original.apply(this, args); } finally { active--; }
+    try {
+      return await original.apply(this, args);
+    } finally {
+      active--;
+    }
   });
   const asyncModel = await PortalModel.create(fx.dir);
   assert.ok(peak > 1 && peak <= 16, `bounded parallel reads, observed ${peak}`);
@@ -113,7 +136,10 @@ test('targeted Git changes preserve other edits and handle reversions, deletion 
   assert.equal(baseline.changedFiles({ files: [fx.file('web-files')] }).has(other), true);
   const isolated = baseline.changedFiles({ files: [path.resolve(fx.dir, '..', 'outside.js')] });
   isolated.clear();
-  assert.ok(baseline.changedFiles({ files: [path.resolve(fx.dir, '..', 'outside.js')] }).has(literal), 'returned sets do not mutate the internal snapshot');
+  assert.ok(
+    baseline.changedFiles({ files: [path.resolve(fx.dir, '..', 'outside.js')] }).has(literal),
+    'returned sets do not mutate the internal snapshot',
+  );
 });
 
 test('baseline changes invalidate a targeted snapshot and stale async checks cannot revert a newer scan', async (t) => {
@@ -128,7 +154,11 @@ test('baseline changes invalidate a targeted snapshot and stale async checks can
   fx.commit();
   fx.write('web-files/not-in-scoped-save.js', 'new file after commit');
   const changed = baseline.changedFiles({ files: [fx.file('web-files/app.js')] });
-  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.dir, encoding: 'utf8', windowsHide: true }).trim();
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: fx.dir,
+    encoding: 'utf8',
+    windowsHide: true,
+  }).trim();
   assert.equal(changed.has(fx.file('web-files/not-in-scoped-save.js')), true, 'new baseline forces a complete scan');
   await pending;
   assert.equal(baseline.commit, commit);

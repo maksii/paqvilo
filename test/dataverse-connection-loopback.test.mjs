@@ -10,8 +10,13 @@ const PRODUCTION_ENV = 'https://orgsim.example.test';
 process.env.PAQVILO_TEST_LOOPBACK_SECRET = 'invented-test-secret';
 
 const connection = (environmentUrl, extra = {}) => ({
-  schemaVersion: 1, environmentUrl, tenantId: TENANT, clientId: CLIENT,
-  credentialSource: 'environment', secretEnvironmentVariable: 'PAQVILO_TEST_LOOPBACK_SECRET', ...extra,
+  schemaVersion: 1,
+  environmentUrl,
+  tenantId: TENANT,
+  clientId: CLIENT,
+  credentialSource: 'environment',
+  secretEnvironmentVariable: 'PAQVILO_TEST_LOOPBACK_SECRET',
+  ...extra,
 });
 
 function recordingFetch(calls) {
@@ -23,7 +28,10 @@ function recordingFetch(calls) {
 
 test('a loopback authorityHost is used only when loopback is allowed', async () => {
   const calls = [];
-  const token = tokenProvider(connection(LOOPBACK_ENV, { authorityHost: 'http://127.0.0.1:4010' }), { fetchImpl: recordingFetch(calls), allowLoopback: true });
+  const token = tokenProvider(connection(LOOPBACK_ENV, { authorityHost: 'http://127.0.0.1:4010' }), {
+    fetchImpl: recordingFetch(calls),
+    allowLoopback: true,
+  });
   assert.equal(await token(), 'x');
   assert.equal(calls[0].url, `http://127.0.0.1:4010/${TENANT}/oauth2/v2.0/token`);
   assert.equal(calls[0].scope, `${LOOPBACK_ENV}/.default`, 'the scope resource stays the environment origin');
@@ -31,16 +39,30 @@ test('a loopback authorityHost is used only when loopback is allowed', async () 
 
 test('a loopback authorityHost is ignored, and a loopback environment rejected, without allowLoopback', async () => {
   const calls = [];
-  const token = tokenProvider(connection(PRODUCTION_ENV, { authorityHost: 'http://127.0.0.1:4010' }), { fetchImpl: recordingFetch(calls) });
+  const token = tokenProvider(connection(PRODUCTION_ENV, { authorityHost: 'http://127.0.0.1:4010' }), {
+    fetchImpl: recordingFetch(calls),
+  });
   await token();
   assert.equal(calls[0].url, `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`);
-  assert.throws(() => tokenProvider(connection(LOOPBACK_ENV), { fetchImpl: recordingFetch([]) }), /Environment must be an HTTPS organisation origin/);
+  assert.throws(
+    () => tokenProvider(connection(LOOPBACK_ENV), { fetchImpl: recordingFetch([]) }),
+    /Environment must be an HTTPS organisation origin/,
+  );
 });
 
 test('a non-loopback authorityHost is rejected even when loopback is allowed', () => {
-  for (const authorityHost of ['https://evil.example', 'http://localhost.evil.example', 'https://127.0.0.1:4010/path', 'not a url']) {
+  for (const authorityHost of [
+    'https://evil.example',
+    'http://localhost.evil.example',
+    'https://127.0.0.1:4010/path',
+    'not a url',
+  ]) {
     assert.throws(
-      () => tokenProvider(connection(LOOPBACK_ENV, { authorityHost }), { fetchImpl: recordingFetch([]), allowLoopback: true }),
+      () =>
+        tokenProvider(connection(LOOPBACK_ENV, { authorityHost }), {
+          fetchImpl: recordingFetch([]),
+          allowLoopback: true,
+        }),
       /authorityHost must be a loopback origin/,
       authorityHost,
     );

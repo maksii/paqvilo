@@ -14,14 +14,21 @@ function holdCommand(t, command) {
   let active = 0;
   let peak = 0;
   const commands = [];
-  const gate = new Promise((resolve) => { release = resolve; });
-  const started = new Promise((resolve) => { reached = resolve; });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise((resolve) => {
+    reached = resolve;
+  });
   const mock = t.mock.method(childProcess, 'execFile', function (file, args, options, callback) {
     commands.push(args);
     active++;
     peak = Math.max(peak, active);
     return original.call(this, file, args, options, (err, stdout, stderr) => {
-      const deliver = () => { active--; callback(err, stdout, stderr); };
+      const deliver = () => {
+        active--;
+        callback(err, stdout, stderr);
+      };
       if (!held && args.includes(command)) {
         held = true;
         reached();
@@ -30,8 +37,19 @@ function holdCommand(t, command) {
     });
   });
   syncBuiltinESMExports();
-  t.after(() => { release(); mock.mock.restore(); syncBuiltinESMExports(); });
-  return { started, release, commands, get peak() { return peak; } };
+  t.after(() => {
+    release();
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  });
+  return {
+    started,
+    release,
+    commands,
+    get peak() {
+      return peak;
+    },
+  };
 }
 
 test('async change scans preserve scoped edits, remove reversions and fully rescan a new baseline', async (t) => {
@@ -180,7 +198,10 @@ test('repeated ref changes bound async scan retries and recover without exposing
     });
   });
   syncBuiltinESMExports();
-  t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+  t.after(() => {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  });
 
   const result = await baseline.changedFilesAsync({ refreshRef: false });
   assert.equal(scans, 3);
@@ -192,7 +213,10 @@ test('repeated ref changes bound async scan retries and recover without exposing
 
   assert.equal(await baseline.checkForUpdate(), true, 'a subsequent poll restores the settled ref');
   fx.write('web-files/recovered.js', 'saved after Git activity settled');
-  assert.deepEqual(await baseline.changedFilesAsync({ refreshRef: false }), new Set([fx.file('web-files/recovered.js')]));
+  assert.deepEqual(
+    await baseline.changedFilesAsync({ refreshRef: false }),
+    new Set([fx.file('web-files/recovered.js')]),
+  );
   assert.equal(baseline.available, true);
   assert.equal(baseline.error, null);
 });

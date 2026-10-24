@@ -6,28 +6,52 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
 let browser;
-before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+before(async () => {
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
 after(() => browser?.close());
 
-test('step announcers and postback success messages preserve text without interpreting markup', async t => {
-  const scripts = new Map(await Promise.all(['crmentityformview', 'webforms'].map(async name =>
-    [`/${name}.js`, await fs.readFile(new URL(`../lib/${name}-compat.js`, import.meta.url))])));
+test('step announcers and postback success messages preserve text without interpreting markup', async (t) => {
+  const scripts = new Map(
+    await Promise.all(
+      ['crmentityformview', 'webforms'].map(async (name) => [
+        `/${name}.js`,
+        await fs.readFile(new URL(`../lib/${name}-compat.js`, import.meta.url)),
+      ]),
+    ),
+  );
   const server = http.createServer((req, res) => {
-    if (scripts.has(req.url)) { res.setHeader('content-type', 'text/javascript'); return res.end(scripts.get(req.url)); }
+    if (scripts.has(req.url)) {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(scripts.get(req.url));
+    }
     res.setHeader('content-type', 'text/html');
-    res.end('<!doctype html><html><body><div id="steps"><ol class="progress"><li class="list-group-item active"></li></ol></div><form id="form"><div id="EntityFormPanel"><fieldset></fieldset></div></form><script src="/webforms.js"></script><script src="/crmentityformview.js"></script></body></html>');
+    res.end(
+      '<!doctype html><html><body><div id="steps"><ol class="progress"><li class="list-group-item active"></li></ol></div><form id="form"><div id="EntityFormPanel"><fieldset></fieldset></div></form><script src="/webforms.js"></script><script src="/crmentityformview.js"></script></body></html>',
+    );
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
-  const page = await browser.newPage(), errors = []; t.after(() => page.context().close());
-  page.on('pageerror', error => errors.push(error.message));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const page = await browser.newPage(),
+    errors = [];
+  t.after(() => page.context().close());
+  page.on('pageerror', (error) => errors.push(error.message));
   const hostile = 'Step <img src=x onerror="window.injected=true"> & details';
-  await page.addInitScript(message => {
+  await page.addInitScript((message) => {
     sessionStorage.setItem('paqvilo-mirage:form-success:/', JSON.stringify({ form: 'form', message, hideForm: false }));
-    document.addEventListener('DOMContentLoaded', () => {
-      document.querySelector('.active').textContent = message;
-      document.getElementById('form').__ppConfig = { messagePanel: { className: 'alert alert-success', closeButton: { name: 'form$btnCloseMessage' } } };
-    }, { once: true });
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        document.querySelector('.active').textContent = message;
+        document.getElementById('form').__ppConfig = {
+          messagePanel: { className: 'alert alert-success', closeButton: { name: 'form$btnCloseMessage' } },
+        };
+      },
+      { once: true },
+    );
   }, hostile);
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   assert.equal(await page.locator('#steps [aria-live="assertive"]').textContent(), hostile);
@@ -40,46 +64,84 @@ test('step announcers and postback success messages preserve text without interp
 });
 
 test('readonly links and grid frames reject executable URLs; the published sample PCF renders formatted values as text', async (t) => {
-  const files = new Map(await Promise.all([
-    ['form.js', new URL('../lib/crmentityformview-compat.js', import.meta.url)],
-    ['grid.js', new URL('../lib/entity-grid-compat.js', import.meta.url)],
-    ['pcf.js', new URL('../../examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js', import.meta.url)],
-  ].map(async ([name, file]) => [name, await fs.readFile(file)])));
+  const files = new Map(
+    await Promise.all(
+      [
+        ['form.js', new URL('../lib/crmentityformview-compat.js', import.meta.url)],
+        ['grid.js', new URL('../lib/entity-grid-compat.js', import.meta.url)],
+        [
+          'pcf.js',
+          new URL(
+            '../../examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js',
+            import.meta.url,
+          ),
+        ],
+      ].map(async ([name, file]) => [name, await fs.readFile(file)]),
+    ),
+  );
   const requests = [];
   const server = http.createServer((req, res) => {
     requests.push(req.url);
     const body = files.get(req.url.slice(1));
-    if (body) { res.setHeader('content-type', 'text/javascript'); return res.end(body); }
+    if (body) {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(body);
+    }
     res.setHeader('content-type', 'text/html');
     if (req.url === '/frame') return res.end('<form id="EntityFormControl">Local form</form>');
-    res.end('<!doctype html><html><body><div class="entity-form" id="form"></div><div class="modal" id="modal"><div class="form-loading"></div><iframe src="about:blank"></iframe></div><div id="pcf"></div><script src="/form.js"></script><script src="/grid.js"></script><script src="/pcf.js"></script></body></html>');
+    res.end(
+      '<!doctype html><html><body><div class="entity-form" id="form"></div><div class="modal" id="modal"><div class="form-loading"></div><iframe src="about:blank"></iframe></div><div id="pcf"></div><script src="/form.js"></script><script src="/grid.js"></script><script src="/pcf.js"></script></body></html>',
+    );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
-  const page = await browser.newPage(), errors = [], external = []; t.after(() => page.context().close());
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const page = await browser.newPage(),
+    errors = [],
+    external = [];
+  t.after(() => page.context().close());
   page.on('pageerror', (error) => errors.push(error.message));
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.route('**/*', (route) => {
-    if (new URL(route.request().url()).origin !== origin) { external.push(route.request().url()); return route.abort(); }
+    if (new URL(route.request().url()).origin !== origin) {
+      external.push(route.request().url());
+      return route.abort();
+    }
     return route.continue();
   });
   await page.addInitScript(() => {
-    window.ComponentFramework = { registerControl(_name, constructor) { window.SampleControl = constructor; } };
-    document.addEventListener('DOMContentLoaded', () => {
-      const form = document.getElementById('form');
-      if (!form) return;
-      for (const [id, type, value] of [
-        ['bad', 'url', 'javascript:window.linkInjected=true'],
-        ['encoded', 'url', 'java\nscript:window.linkInjected=true'],
-        ['data', 'url', 'data:text/html,<script>alert(1)</script>'],
-        ['good', 'url', '/details'], ['ftp', 'url', 'ftp://fixture.invalid/file'],
-        ['email', 'email', 'reader@example.invalid'],
-      ]) {
-        const wrapper = document.createElement('div'), input = document.createElement('input');
-        input.id = id; input.type = type; input.readOnly = true; input.value = value;
-        wrapper.append(input); form.append(wrapper);
-      }
-    }, { once: true });
+    window.ComponentFramework = {
+      registerControl(_name, constructor) {
+        window.SampleControl = constructor;
+      },
+    };
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        const form = document.getElementById('form');
+        if (!form) return;
+        for (const [id, type, value] of [
+          ['bad', 'url', 'javascript:window.linkInjected=true'],
+          ['encoded', 'url', 'java\nscript:window.linkInjected=true'],
+          ['data', 'url', 'data:text/html,<script>alert(1)</script>'],
+          ['good', 'url', '/details'],
+          ['ftp', 'url', 'ftp://fixture.invalid/file'],
+          ['email', 'email', 'reader@example.invalid'],
+        ]) {
+          const wrapper = document.createElement('div'),
+            input = document.createElement('input');
+          input.id = id;
+          input.type = type;
+          input.readOnly = true;
+          input.value = value;
+          wrapper.append(input);
+          form.append(wrapper);
+        }
+      },
+      { once: true },
+    );
   });
   await page.goto(origin + '/page');
   for (const id of ['bad', 'encoded', 'data']) {
@@ -87,31 +149,74 @@ test('readonly links and grid frames reject executable URLs; the published sampl
     assert.equal(await page.locator(`#${id}`).isVisible(), true);
   }
   assert.equal(await page.locator('#good').locator('..').locator('a').getAttribute('href'), origin + '/details');
-  assert.equal(await page.locator('#ftp').locator('..').locator('a').getAttribute('href'), 'ftp://fixture.invalid/file');
-  assert.equal(await page.locator('#email').locator('..').locator('a').getAttribute('href'), 'mailto:reader@example.invalid');
-  for (const value of ['javascript:window.frameInjected=true', 'data:text/html,<script>alert(1)</script>', 'https://fixture.invalid/form']) {
-    await page.evaluate((src) => window.__portalSimulation.nativeGrid.EntityGrid.prototype.openFormModal.call({}, document.getElementById('modal'), src), value);
+  assert.equal(
+    await page.locator('#ftp').locator('..').locator('a').getAttribute('href'),
+    'ftp://fixture.invalid/file',
+  );
+  assert.equal(
+    await page.locator('#email').locator('..').locator('a').getAttribute('href'),
+    'mailto:reader@example.invalid',
+  );
+  for (const value of [
+    'javascript:window.frameInjected=true',
+    'data:text/html,<script>alert(1)</script>',
+    'https://fixture.invalid/form',
+  ]) {
+    await page.evaluate(
+      (src) =>
+        window.__portalSimulation.nativeGrid.EntityGrid.prototype.openFormModal.call(
+          {},
+          document.getElementById('modal'),
+          src,
+        ),
+      value,
+    );
     assert.equal(await page.locator('#modal iframe').getAttribute('src'), 'about:blank');
   }
-  await page.evaluate(() => window.__portalSimulation.nativeGrid.EntityGrid.prototype.openFormModal.call({}, document.getElementById('modal'), '/frame'));
+  await page.evaluate(() =>
+    window.__portalSimulation.nativeGrid.EntityGrid.prototype.openFormModal.call(
+      {},
+      document.getElementById('modal'),
+      '/frame',
+    ),
+  );
   await page.locator('#modal iframe').contentFrame().getByText('Local form').waitFor();
   const result = await page.evaluate(() => {
     const hostile = '<img src=x onerror="window.pcfInjected=true">';
     const context = { parameters: { controlValue: { raw: 2, formatted: hostile } } };
-    const control = new window.SampleControl(); let notifications = 0;
+    const control = new window.SampleControl();
+    let notifications = 0;
     const container = document.getElementById('pcf');
     control.init(context, () => notifications++, {}, container);
     const first = container.querySelector('label').textContent;
     control.updateView({ parameters: { controlValue: { raw: 43, formatted: hostile } } });
     const second = container.querySelector('label').textContent;
     const images = container.querySelectorAll('img').length;
-    const input = container.querySelector('input'); input.value = '33'; input.dispatchEvent(new Event('input'));
-    const output = control.getOutputs(), label = container.querySelector('label').textContent;
-    control.destroy(); input.dispatchEvent(new Event('input'));
-    return { first, second, images, output, label, notifications, injected: window.pcfInjected || window.frameInjected || window.linkInjected };
+    const input = container.querySelector('input');
+    input.value = '33';
+    input.dispatchEvent(new Event('input'));
+    const output = control.getOutputs(),
+      label = container.querySelector('label').textContent;
+    control.destroy();
+    input.dispatchEvent(new Event('input'));
+    return {
+      first,
+      second,
+      images,
+      output,
+      label,
+      notifications,
+      injected: window.pcfInjected || window.frameInjected || window.linkInjected,
+    };
   });
-  assert.equal(result.images, 0); assert.ok(result.first.startsWith('<img')); assert.equal(result.second, result.first);
-  assert.deepEqual(result.output, { controlValue: 33 }); assert.equal(result.label, '33'); assert.equal(result.notifications, 1);
-  assert.equal(result.injected, undefined); assert.deepEqual(errors, []); assert.deepEqual(external, []);
+  assert.equal(result.images, 0);
+  assert.ok(result.first.startsWith('<img'));
+  assert.equal(result.second, result.first);
+  assert.deepEqual(result.output, { controlValue: 33 });
+  assert.equal(result.label, '33');
+  assert.equal(result.notifications, 1);
+  assert.equal(result.injected, undefined);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(external, []);
   assert.ok(requests.includes('/frame'));
 });

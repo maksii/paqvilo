@@ -16,21 +16,42 @@ import { startGate, clientCredentialsToken } from '../harness.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const project = path.join(here, 'Gate', 'Gate.csproj');
 const exe = path.join(here, 'Gate', 'bin', 'Release', 'net10.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
-const ORG_CURRENT = ["/api/data/v9.0/RetrieveCurrentOrganization(AccessType='Default')", '/api/data/v9.0/RetrieveCurrentOrganization(AccessType=%27Default%27)'];
+const ORG_CURRENT = [
+  "/api/data/v9.0/RetrieveCurrentOrganization(AccessType='Default')",
+  '/api/data/v9.0/RetrieveCurrentOrganization(AccessType=%27Default%27)',
+];
 const SOAP_PATH = '/XRMServices/2011/Organization.svc/web';
 const WIDGET_WEB_API = /^(POST|PATCH|DELETE|GET) \/api\/data\/v9\.\d+\/widgets/;
 
 // Steps that must report ok in each pass. The raw Web API probes run only in the soap pass.
-const SOAP_STEPS = ['construct', 'org', 'create', 'retrieve', 'update', 'query', 'delete', 'whoami_webapi',
-  'soap_crud', 'soap_query_paging', 'soap_fetch', 'soap_associate', 'soap_execute_multiple', 'soap_execute_transaction',
-  'soap_whoami', 'soap_callerid', 'soap_fault_missing'];
+const SOAP_STEPS = [
+  'construct',
+  'org',
+  'create',
+  'retrieve',
+  'update',
+  'query',
+  'delete',
+  'whoami_webapi',
+  'soap_crud',
+  'soap_query_paging',
+  'soap_fetch',
+  'soap_associate',
+  'soap_execute_multiple',
+  'soap_execute_transaction',
+  'soap_whoami',
+  'soap_callerid',
+  'soap_fault_missing',
+];
 const WEBAPI_STEPS = ['construct', 'org', 'webapi_crud', 'soap_retrieve_entity', 'soap_retrieve_entity_attributes'];
 
 // Pending steps: each regex must match the step's failure detail, so a different failure still fails the gate.
 const PASSES = [
   { name: 'soap', useWebApi: 'false', steps: SOAP_STEPS, pending: {} },
   {
-    name: 'webapi', useWebApi: 'true', steps: WEBAPI_STEPS,
+    name: 'webapi',
+    useWebApi: 'true',
+    steps: WEBAPI_STEPS,
     pending: {},
   },
 ];
@@ -53,74 +74,124 @@ function runGate(env) {
     const child = spawn(exe, [], { env: { ...process.env, ...env }, windowsHide: true });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
     const timer = setTimeout(() => child.kill(), 300_000);
     child.on('error', reject);
-    child.on('close', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    });
   });
 }
 
-test('Microsoft.PowerPlatform.Dataverse.Client (ServiceClient) gate against the simulator', { timeout: 600_000, skip: dotnetSkip }, async (t) => {
-  const port = await probePort80();
-  if (!port.free) {
-    t.skip(`port 80 is unavailable (${port.reason}): ServiceClient drops the port, so the simulator must bind :80`);
-    return;
-  }
+test(
+  'Microsoft.PowerPlatform.Dataverse.Client (ServiceClient) gate against the simulator',
+  { timeout: 600_000, skip: dotnetSkip },
+  async (t) => {
+    const port = await probePort80();
+    if (!port.free) {
+      t.skip(`port 80 is unavailable (${port.reason}): ServiceClient drops the port, so the simulator must bind :80`);
+      return;
+    }
 
-  const buildStarted = Date.now();
-  const build = spawnSync('dotnet', ['build', project, '-c', 'Release', '-nologo'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  const buildMs = Date.now() - buildStarted;
-  assert.equal(build.status, 0, `dotnet build failed:\n${`${build.stdout}${build.stderr}`.slice(-4000)}`);
-  assert.ok(fs.existsSync(exe), `built executable not found: ${exe}`);
-  t.diagnostic(`dotnet build: ${buildMs} ms`);
-
-  const gate = await startGate({ port: 80 });
-  t.after(() => gate.close());
-  assert.equal(gate.origin, 'http://127.0.0.1', `simulator origin must carry no port, got ${gate.origin}`);
-  const token = await clientCredentialsToken(gate);
-
-  // CallerId target: an extra systemuser beside the application user the simulator already holds, so impersonation resolves a real principal.
-  const impersonatedId = randomUUID();
-  await gate.store.transact(() => {
-    (gate.store.state.tables.systemuser ??= []).push({ systemuserid: impersonatedId, fullname: 'Gate Impersonated User', domainname: 'impersonated@sdkgate.test', isdisabled: false });
-  });
-
-  const failures = [];
-  for (const pass of PASSES) {
-    const before = gate.requests().length;
-    const runStarted = Date.now();
-    const run = await runGate({
-      SIM_ORG: gate.origin, SIM_ORG_ID: gate.organizationId, SIM_TOKEN: token, SIM_IMPERSONATE_ID: impersonatedId, SIM_USE_WEBAPI: pass.useWebApi,
+    const buildStarted = Date.now();
+    const build = spawnSync('dotnet', ['build', project, '-c', 'Release', '-nologo'], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
     });
-    t.diagnostic(`${pass.name} pass: ${Date.now() - runStarted} ms, exit ${run.status}`);
+    const buildMs = Date.now() - buildStarted;
+    assert.equal(build.status, 0, `dotnet build failed:\n${`${build.stdout}${build.stderr}`.slice(-4000)}`);
+    assert.ok(fs.existsSync(exe), `built executable not found: ${exe}`);
+    t.diagnostic(`dotnet build: ${buildMs} ms`);
 
-    const steps = run.stdout.split(/\r?\n/).filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
-    t.diagnostic(`${pass.name} pass steps:\n${steps.map((s) => `${s.step}: ${s.ok ? 'ok' : 'FAIL'} ${s.detail}`).join('\n')}`);
+    const gate = await startGate({ port: 80 });
+    t.after(() => gate.close());
+    assert.equal(gate.origin, 'http://127.0.0.1', `simulator origin must carry no port, got ${gate.origin}`);
+    const token = await clientCredentialsToken(gate);
 
-    const passRequests = gate.requests().slice(before).map((entry) => `${entry.method} ${entry.path} ${entry.status}`);
-    t.diagnostic(`${pass.name} pass simulator requests (${passRequests.length}):\n${passRequests.join('\n')}`);
+    // CallerId target: an extra systemuser beside the application user the simulator already holds, so impersonation resolves a real principal.
+    const impersonatedId = randomUUID();
+    await gate.store.transact(() => {
+      (gate.store.state.tables.systemuser ??= []).push({
+        systemuserid: impersonatedId,
+        fullname: 'Gate Impersonated User',
+        domainname: 'impersonated@sdkgate.test',
+        isdisabled: false,
+      });
+    });
 
-    for (const name of pass.steps) assert.ok(steps.some((s) => s.step === name && s.pass === pass.name), `${pass.name}: step "${name}" missing; exit ${run.status}\n${run.stderr.slice(-2000)}`);
+    const failures = [];
+    for (const pass of PASSES) {
+      const before = gate.requests().length;
+      const runStarted = Date.now();
+      const run = await runGate({
+        SIM_ORG: gate.origin,
+        SIM_ORG_ID: gate.organizationId,
+        SIM_TOKEN: token,
+        SIM_IMPERSONATE_ID: impersonatedId,
+        SIM_USE_WEBAPI: pass.useWebApi,
+      });
+      t.diagnostic(`${pass.name} pass: ${Date.now() - runStarted} ms, exit ${run.status}`);
 
-    // A pending step passes only when it fails with the signature its `pending` regex names; anything else is a real failure.
-    for (const step of steps.filter((s) => !s.ok)) {
-      const expected = pass.pending[step.step];
-      if (expected && expected.test(step.detail)) t.diagnostic(`${pass.name}: ${step.step} pending (TODO above): ${step.detail}`);
-      else failures.push({ pass: pass.name, ...step });
+      const steps = run.stdout
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('{'))
+        .map((line) => JSON.parse(line));
+      t.diagnostic(
+        `${pass.name} pass steps:\n${steps.map((s) => `${s.step}: ${s.ok ? 'ok' : 'FAIL'} ${s.detail}`).join('\n')}`,
+      );
+
+      const passRequests = gate
+        .requests()
+        .slice(before)
+        .map((entry) => `${entry.method} ${entry.path} ${entry.status}`);
+      t.diagnostic(`${pass.name} pass simulator requests (${passRequests.length}):\n${passRequests.join('\n')}`);
+
+      for (const name of pass.steps)
+        assert.ok(
+          steps.some((s) => s.step === name && s.pass === pass.name),
+          `${pass.name}: step "${name}" missing; exit ${run.status}\n${run.stderr.slice(-2000)}`,
+        );
+
+      // A pending step passes only when it fails with the signature its `pending` regex names; anything else is a real failure.
+      for (const step of steps.filter((s) => !s.ok)) {
+        const expected = pass.pending[step.step];
+        if (expected && expected.test(step.detail))
+          t.diagnostic(`${pass.name}: ${step.step} pending (TODO above): ${step.detail}`);
+        else failures.push({ pass: pass.name, ...step });
+      }
+      for (const step of steps.filter((s) => s.ok && pass.pending[s.step]))
+        t.diagnostic(`${pass.name}: ${step.step} now passes; drop its TODO`);
+
+      const paths = passRequests.map((line) => line.split(' ')[1]);
+      assert.ok(
+        paths.includes(SOAP_PATH),
+        `${pass.name}: simulator should record the SOAP request ${SOAP_PATH}; saw ${JSON.stringify(paths)}`,
+      );
+      if (pass.useWebApi === 'true') {
+        assert.ok(
+          passRequests.some((line) => WIDGET_WEB_API.test(line)),
+          `webapi pass: CRUD should reach the Web API for widgets; saw ${JSON.stringify(passRequests)}`,
+        );
+      }
+      // The executable exits 1 when any step reports a failure, pending ones included.
+      assert.equal(
+        run.status,
+        steps.some((s) => !s.ok) ? 1 : 0,
+        `${pass.name}: Gate exit code ${run.status}\n${run.stderr.slice(-2000)}`,
+      );
     }
-    for (const step of steps.filter((s) => s.ok && pass.pending[s.step])) t.diagnostic(`${pass.name}: ${step.step} now passes; drop its TODO`);
 
-    const paths = passRequests.map((line) => line.split(' ')[1]);
-    assert.ok(paths.includes(SOAP_PATH), `${pass.name}: simulator should record the SOAP request ${SOAP_PATH}; saw ${JSON.stringify(paths)}`);
-    if (pass.useWebApi === 'true') {
-      assert.ok(passRequests.some((line) => WIDGET_WEB_API.test(line)), `webapi pass: CRUD should reach the Web API for widgets; saw ${JSON.stringify(passRequests)}`);
-    }
-    // The executable exits 1 when any step reports a failure, pending ones included.
-    assert.equal(run.status, steps.some((s) => !s.ok) ? 1 : 0, `${pass.name}: Gate exit code ${run.status}\n${run.stderr.slice(-2000)}`);
-  }
-
-  assert.deepEqual(failures, [], 'every ServiceClient step outside the pending list must succeed');
-  const paths = gate.requests().map((entry) => entry.path);
-  assert.ok(paths.some((p) => ORG_CURRENT.includes(p)), `simulator should record RetrieveCurrentOrganization; saw ${JSON.stringify(paths)}`);
-});
+    assert.deepEqual(failures, [], 'every ServiceClient step outside the pending list must succeed');
+    const paths = gate.requests().map((entry) => entry.path);
+    assert.ok(
+      paths.some((p) => ORG_CURRENT.includes(p)),
+      `simulator should record RetrieveCurrentOrganization; saw ${JSON.stringify(paths)}`,
+    );
+  },
+);
