@@ -72,7 +72,19 @@ export function buildPreflightReport({
     resolution = null,
     message = null,
     surface = null,
-  }) => rows.push({ id, kind, source, status, reason, resolution, message, ...(surface ? { surface } : {}) });
+    details = null,
+  }) =>
+    rows.push({
+      id,
+      kind,
+      source,
+      status,
+      reason,
+      resolution,
+      message,
+      ...(surface ? { surface } : {}),
+      ...(details ? { details } : {}),
+    });
   for (const row of graph?.requirements?.() ?? [])
     push({
       id: row.id,
@@ -90,6 +102,7 @@ export function buildPreflightReport({
               : null,
       message: row.dependent ? `Required by ${row.dependent}.` : (row.message ?? null),
       surface: row.surface,
+      details: row.details,
     });
   for (const item of operations) {
     const status = operationStatus(item);

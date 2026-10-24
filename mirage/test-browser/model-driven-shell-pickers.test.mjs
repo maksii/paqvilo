@@ -57,8 +57,38 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
   assert.equal(await apps.evaluate((node) => document.activeElement === node), true);
   await apps.click();
   await page.getByRole('searchbox', { name: 'Search my apps' }).fill('Review');
+  let releaseMetadata, metadataRequested;
+  const metadataGate = new Promise((resolve) => {
+    releaseMetadata = resolve;
+  });
+  const pendingMetadata = new Promise((resolve) => {
+    metadataRequested = resolve;
+  });
+  t.after(() => releaseMetadata());
+  await page.route('**/_apps/api/metadata/x_item', async (route) => {
+    metadataRequested();
+    await metadataGate;
+    await route.continue();
+  });
   await card.click();
   await page.waitForURL(/appname=x_review/);
+  await pendingMetadata;
+  assert.equal(
+    await page.getByRole('button', { name: 'Copper', exact: true }).count(),
+    0,
+    'Previous route data is retired before metadata loads.',
+  );
+  assert.equal(
+    await page.getByRole('button', { name: 'View', exact: true }).count(),
+    0,
+    'Previous route commands cannot receive keyboard focus.',
+  );
+  const refreshedMetadata = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/_apps/api/metadata/x_item',
+  );
+  releaseMetadata();
+  await (await refreshedMetadata).finished();
+  await page.unroute('**/_apps/api/metadata/x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   const views = page.getByRole('button', { name: 'View', exact: true });
   await views.focus();
@@ -361,10 +391,66 @@ test('new required owner controls default to the active organization staff princ
   const user = await response.json();
   await page.getByRole('button', { name: 'Staff profile', exact: true }).click();
   await page.getByLabel('Organization staff', { exact: true }).selectOption(user.systemuserid);
+  let releaseIdentity, identityRequested, releaseOldSession, oldSessionRequested;
+  const identityGate = new Promise((resolve) => {
+    releaseIdentity = resolve;
+  });
+  const pendingIdentity = new Promise((resolve) => {
+    identityRequested = resolve;
+  });
+  const oldSessionGate = new Promise((resolve) => {
+    releaseOldSession = resolve;
+  });
+  const pendingOldSession = new Promise((resolve) => {
+    oldSessionRequested = resolve;
+  });
+  let holdOldSession = true;
+  t.after(() => releaseIdentity());
+  t.after(() => releaseOldSession());
+  await page.route('**/_sim/api/dataverse/session', async (route) => {
+    if (route.request().method() === 'GET' && holdOldSession) {
+      holdOldSession = false;
+      const response = await route.fetch();
+      oldSessionRequested();
+      await oldSessionGate;
+      return route.fulfill({ response });
+    }
+    if (route.request().method() === 'POST') {
+      identityRequested();
+      await identityGate;
+    }
+    await route.continue();
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await pendingOldSession;
   await page.getByRole('button', { name: 'Use identity', exact: true }).click();
+  await pendingIdentity;
+  assert.equal(
+    await page.getByRole('button', { name: 'New', exact: true }).count(),
+    0,
+    'The old principal cannot start a new record during identity change.',
+  );
+  assert.equal(
+    await page.getByLabel('Owner', { exact: true }).count(),
+    0,
+    'The previous form is retired after accepting the dirty guard.',
+  );
+  releaseIdentity();
   await page.getByRole('button', { name: 'New', exact: true }).click();
   await page.getByLabel('Owner', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('Owner', { exact: true }).inputValue(), 'Invented record owner');
+  const staleResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' && new URL(response.url()).pathname === '/_sim/api/dataverse/session',
+  );
+  releaseOldSession();
+  await (await staleResponse).finished();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.match(
+    await page.getByRole('button', { name: 'Staff profile', exact: true }).getAttribute('title'),
+    /^Invented record owner/,
+    'A staff-session read started before switching cannot restore the old identity.',
+  );
   await page.getByLabel('Name', { exact: true }).fill('Owned by selected staff');
   const submitted = page.waitForRequest(
     (request) => request.method() === 'POST' && new URL(request.url()).pathname === '/_apps/api/tables/x_item',

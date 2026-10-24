@@ -33,8 +33,7 @@ async function solutionFixture(t) {
     projectRoot: root,
     port: 0,
     watch: false,
-    // A state file, not dry-run: the bus table is a schema the dry-run level refuses to create.
-    stateFile: path.join(root, 'state.json'),
+    simulation: { level: 'dry-run' },
     dataverse: { enabled: true, tls: false, tds: { enabled: false } },
     providers: { messaging: { endpoints: { [ENDPOINT]: 'local/x-queue' } } },
   });
@@ -42,7 +41,7 @@ async function solutionFixture(t) {
   return sim;
 }
 
-test('a contract 2 step reaches /_sim/api/messages through a running standalone host', async (t) => {
+test('a contract 2 step reaches /_sim/api/messages through a dry-run standalone host without a state file', async (t) => {
   const sim = await solutionFixture(t);
   const { store } = sim;
   const messageId = store.tableRows('sdkmessage').find((row) => row.name === 'Create').sdkmessageid;

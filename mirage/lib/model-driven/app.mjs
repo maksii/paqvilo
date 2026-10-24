@@ -48,6 +48,8 @@ let catalogue,
   commandObserver,
   staffIdentity,
   staffSession,
+  staffSessionGeneration = 0,
+  switchingStaff = false,
   staffSessionError = '';
 let recent = storage.get('recent', []),
   pinned = storage.get('pinned', []);
@@ -192,11 +194,11 @@ async function api(path = '', options = {}) {
   }
   return body;
 }
-async function ensureMetadata(entity, { signal } = {}) {
+async function ensureMetadata(entity, { signal, refresh = false } = {}) {
   const owner = catalogue;
   if (!Object.hasOwn(owner.tables, entity)) return undefined;
   const candidate = owner.tables[entity];
-  if (!candidate || candidate.metadata !== 'lazy') return candidate;
+  if (!candidate || (!refresh && candidate.metadata !== 'lazy')) return candidate;
   const result = await api('/metadata/' + encodeURIComponent(entity), { signal });
   // Only replace an imported own entry; defining its data property cannot invoke
   // an inherited setter for a route- or client-supplied table name.
@@ -235,18 +237,24 @@ function renderStaffSession(session) {
   profile.title = `${session.current?.name ?? 'Local administrator'} · ${session.current?.kind === 'staff' ? (session.current.roles ?? []).join(', ') || 'No roles' : 'Explicit local development administrator'}`;
 }
 async function loadStaffSession() {
+  const token = ++staffSessionGeneration;
   try {
     const session = await staffRequest();
+    if (token !== staffSessionGeneration) return false;
     renderStaffSession(session);
+    return true;
   } catch (error) {
+    if (token !== staffSessionGeneration) return false;
     staffSession = undefined;
     staffIdentity = undefined;
     staffSessionError = error.message;
     $('#staff-profile').title = 'Staff session unavailable. Select an identity explicitly.';
     notice(error.message, true);
+    return false;
   }
 }
 async function staffProfile() {
+  if (switchingStaff) return;
   await loadStaffSession();
   const body = document.createElement('div');
   body.innerHTML = `<p><strong>${esc(staffSession?.current?.name ?? 'Staff session unavailable')}</strong></p><p>${esc(staffSessionError || (staffSession?.current?.roles ?? []).join(', ') || 'No roles')}</p><p>Staff roles and field security apply to model-driven reads and changes. Local administrator is an explicit development bypass. Portal personas and API application tokens are separate.</p><label for="staff-actor">Organization staff</label>`;
@@ -272,13 +280,8 @@ async function staffProfile() {
         if (!selection) return;
         closeDialog();
         if (!(await canLeave())) return;
-        renderStaffSession(
-          await staffRequest(
-            selection === 'local-admin'
-              ? { method: 'DELETE' }
-              : { method: 'POST', body: JSON.stringify({ userId: selection }) },
-          ),
-        );
+        switchingStaff = true;
+        const token = ++staffSessionGeneration;
         generation++;
         disposeClient();
         dirty = false;
@@ -288,8 +291,22 @@ async function staffProfile() {
         $('#commands').replaceChildren();
         $('#content').replaceChildren();
         $('#navigation').replaceChildren();
-        catalogue = await api();
-        await loadRoute();
+        contentLoading('Switching staff identity…');
+        try {
+          const session = await staffRequest(
+            selection === 'local-admin'
+              ? { method: 'DELETE' }
+              : { method: 'POST', body: JSON.stringify({ userId: selection }) },
+          );
+          if (token !== staffSessionGeneration) return;
+          renderStaffSession(session);
+          catalogue = await api();
+          await loadRoute({ identityChange: true });
+        } catch (error) {
+          loadFailed(error, staffProfile);
+        } finally {
+          switchingStaff = false;
+        }
       },
       true,
     ],
@@ -299,7 +316,8 @@ async function staffProfile() {
 // staff session's mode, syncs and lists the queue, conflicts and sync errors. Scripts see the mode through
 // Xrm.WebApi.offline and globalContext.client; the shell's grids, forms and subgrids read and write the same copy.
 let offlineState = null,
-  offlineTimer;
+  offlineTimer,
+  offlineGeneration = 0;
 const offlineApi = (body) => api('/offline', { method: 'POST', body: JSON.stringify({ app: app.id, ...body }) });
 function offlineHost() {
   if (!app?.offlineProfiles?.length) return undefined;
@@ -344,20 +362,29 @@ function renderOffline() {
     );
 }
 async function loadOffline() {
+  const token = ++offlineGeneration,
+    owner = app;
   if (!app?.offlineProfiles?.length) {
     offlineState = null;
     renderOffline();
     return;
   }
   try {
-    offlineState = await api('/offline?app=' + encodeURIComponent(app.id));
+    const result = await api('/offline?app=' + encodeURIComponent(owner.id));
+    if (token !== offlineGeneration || owner !== app) return;
+    offlineState = result;
   } catch (error) {
+    if (token !== offlineGeneration || owner !== app) return;
     offlineState = { error: error.message };
   }
   renderOffline();
 }
 async function offlineAction(body) {
-  offlineState = await offlineApi(body);
+  const token = ++offlineGeneration,
+    owner = app;
+  const result = await offlineApi(body);
+  if (token !== offlineGeneration || owner !== app) return result;
+  offlineState = result;
   renderOffline();
   return offlineState;
 }
@@ -872,6 +899,7 @@ async function navigate(
   entity,
   { id, view, application = app, replace = false, defaults, form, area, grid, navigation } = {},
 ) {
+  if (switchingStaff) return;
   if (!(await canLeave())) return;
   if (area) storage.set(`area.${application.uniqueName}`, area);
   $('#sidebar').classList.remove('mobile-open');
@@ -1080,7 +1108,7 @@ function renderCommands(mode) {
       );
     commands.append(
       button('↻ Refresh', async () => {
-        if (await canLeave()) await loadRoute();
+        if (await canLeave()) await loadRoute({ preserveContent: true });
       }),
       button('Check Access', null, {
         iconName: 'key',
@@ -1196,7 +1224,7 @@ function renderCommands(mode) {
                 : undefined,
         },
       ),
-      button('↻ Refresh', () => loadGrid()),
+      button('↻ Refresh', () => refreshGrid()),
     );
     commands.append(
       button('Visualize this view', null, { disabled: true, title: 'Power BI is not supported locally.' }),
@@ -1375,6 +1403,22 @@ function gridCell(source, row, name) {
   });
   return cell;
 }
+async function refreshGrid() {
+  // Refresh only this list's metadata; open dialogs retain their draft context.
+  const owner = table,
+    token = ++generation;
+  $('#commands').replaceChildren();
+  contentLoading('Refreshing table metadata…');
+  try {
+    const next = await ensureMetadata(owner.entity, { refresh: true });
+    if (token !== generation || table !== owner) return;
+    table = next;
+    if (!appViews().some((view) => view.id === query.view)) query.view = appViews()[0]?.id;
+    await loadGrid();
+  } catch (error) {
+    if (token === generation) loadFailed(error, refreshGrid);
+  }
+}
 async function loadGrid() {
   if (table.grid?.pagination === false) query.page = 1;
   history.replaceState({ ...history.state, grid: gridSnapshot() }, '', location.href);
@@ -1389,6 +1433,7 @@ async function loadGrid() {
     renderCommands('grid');
     renderGrid();
     contentLoaded();
+    return true;
   } catch (error) {
     if (token === generation) loadFailed(error, loadGrid);
   }
@@ -2962,7 +3007,7 @@ function createShellClient(selectedForm) {
       );
     },
     save: (close) => saveRecord(close),
-    refresh: () => loadRoute(),
+    refresh: () => loadRoute({ preserveContent: true }),
     close: returnToGrid,
     openForm: (options) => {
       if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.');
@@ -3895,10 +3940,15 @@ const sidePanes = {
   getPane: (paneId) => panes.find((pane) => pane.paneId === paneId),
   getSelectedPane: () => selectedPane,
 };
-async function loadRoute() {
+async function loadRoute({ identityChange = false, preserveContent = false } = {}) {
+  if (switchingStaff && !identityChange) return;
+  const routeGeneration = ++generation,
+    routeCatalogue = catalogue;
   disposeClient();
   // The form or grid context is gone until the route renders again (a mode switch reloads from the other data source).
-  document.documentElement.dataset.mirageAppState = 'loading';
+  $('#commands').replaceChildren();
+  if (!preserveContent) $('#content').replaceChildren();
+  contentLoading('Loading application…');
   dirty = false;
   touchedFields.clear();
   notice('');
@@ -3912,6 +3962,7 @@ async function loadRoute() {
   $('#apps').title = 'Select an app';
   $('#source-label').textContent = app.name ?? app.uniqueName;
   await loadOffline();
+  if (routeGeneration !== generation || routeCatalogue !== catalogue) return;
   if (params.get('pagetype') === 'webresource')
     return renderWebResourcePage(params.get('webresourceName'), params.get('data'));
   if (params.get('pagetype') === 'dashboard') return renderDashboardPage(params.get('id'));
@@ -3922,13 +3973,11 @@ async function loadRoute() {
         ['entityName', 'recordId'].filter((key) => params.get(key)).map((key) => [key, params.get(key)]),
       ),
     );
-  const entity = params.get('etn') ?? firstEntity(app),
-    routeGeneration = ++generation,
-    routeCatalogue = catalogue;
+  const entity = params.get('etn') ?? firstEntity(app);
   contentLoading('Loading table metadata…');
   let nextTable;
   try {
-    nextTable = await ensureMetadata(entity);
+    nextTable = await ensureMetadata(entity, { refresh: true });
     if (!nextTable)
       throw new Error('No table metadata is available for this application. Import its solution and local mappings.');
   } catch (error) {
@@ -3982,7 +4031,7 @@ async function loadRoute() {
       restore =
         saved?.application === app.id && saved?.entity === entity && saved?.query?.view === view ? saved.query : {};
     query = { page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}), ...restore, view };
-    await loadGrid();
+    if (!(await loadGrid())) return;
     remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
     // A list page has its own client: the closed form's Xrm.Page never answers here, and getPageContext says entitylist.
     if (!clientRuntime) clientRuntime = createShellClient({ clientEvents: [], tabs: [] });
@@ -4015,11 +4064,11 @@ $('#staff-profile').addEventListener('click', () => runButton($('#staff-profile'
 let checkingStaff = false;
 window.addEventListener('focus', () =>
   run(async () => {
-    if (!catalogue || checkingStaff) return;
+    if (!catalogue || checkingStaff || switchingStaff) return;
     checkingStaff = true;
     try {
       const previous = JSON.stringify(staffSession?.current);
-      await loadStaffSession();
+      if (!(await loadStaffSession()) || switchingStaff) return;
       if (previous === JSON.stringify(staffSession?.current)) return;
       generation++;
       disposeClient();

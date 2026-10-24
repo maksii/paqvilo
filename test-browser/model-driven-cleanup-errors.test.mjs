@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import run from '../lense/commands/model-driven.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
+import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
 
 async function fixture(t, { resetDocument = false } = {}) {
   const owner = ownedFixture(t);
@@ -122,6 +124,185 @@ async function fixture(t, { resetDocument = false } = {}) {
     blockDiscovery,
   };
 }
+
+test(
+  'model-driven startup deadline disposes a late owned browser context and leaves its sibling usable',
+  { timeout: 15000 },
+  async (t) => {
+    const setup = await fixture(t);
+    const browser = await chromium.launch({
+      channel: setup.channel === 'chromium' ? undefined : setup.channel,
+      headless: true,
+    });
+    setup.owner.add(() => browser.close());
+    const sibling = await browser.newContext(),
+      siblingPage = await sibling.newPage();
+    await siblingPage.setContent('<input value="sibling draft">');
+    let late, closed;
+    const lateClosed = new Promise((resolve) => {
+      closed = resolve;
+    });
+    t.mock.method(chromium, 'launchPersistentContext', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      late = await browser.newContext();
+      late.once('close', closed);
+      return late;
+    });
+    await assert.rejects(
+      run(null, {
+        project: setup.project,
+        url: setup.origin,
+        headless: true,
+        browser: setup.channel,
+        'startup-timeout': '1000',
+      }),
+      (error) => error.code === 'startup_timeout' && error.phase === 'browser setup',
+    );
+    await Promise.race([
+      lateClosed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Late owned context was not closed')), 5000)),
+    ]);
+    assert.ok(late);
+    assert.equal(await siblingPage.locator('input').inputValue(), 'sibling draft');
+    assert.equal(browser.isConnected(), true);
+  },
+);
+
+test(
+  'paired local-simulation panel opens on Mirage and stops without owning the underlying runtime',
+  { timeout: 20000 },
+  async (t) => {
+    const setup = await fixture(t);
+    const runtime = await createStandaloneRuntime({
+      runtime: { kind: 'model-driven' },
+      simulation: { level: 'dry-run' },
+      solutionRoots: [path.join(setup.directory, 'solution')],
+      modelDriven: { trustedExtensions: true },
+      projectRoot: setup.directory,
+    });
+    setup.owner.add(() => runtime.close());
+    const launch = chromium.launchPersistentContext.bind(chromium);
+    let opened;
+    const requests = [];
+    const browserOpened = new Promise((resolve) => {
+      opened = resolve;
+    });
+    t.mock.method(chromium, 'launchPersistentContext', async (profile, options) => {
+      const context = await launch(profile, { ...options, ...setup.network });
+      context.on('request', (request) => requests.push(request.url()));
+      opened(context);
+      return context;
+    });
+    const running = run(null, {
+      project: setup.project,
+      url: runtime.url,
+      headless: true,
+      browser: setup.channel,
+      'local-simulation': true,
+      timeout: '2000',
+    });
+    const context = await browserOpened;
+    const page = context.pages()[0];
+    await page.waitForSelector('#paqvilo-panel', { state: 'attached' });
+    await page.waitForFunction(() =>
+      document.querySelector('#paqvilo-panel')?.shadowRoot?.textContent.includes('Local simulation'),
+    );
+    const availability = await page.evaluate(modelDrivenActionAvailability, {
+      origin: runtime.url,
+      actions: [
+        { id: 'environment', requirements: ['environment'] },
+        { id: 'privileges', requirements: ['privileges'] },
+      ],
+    });
+    assert.equal(availability[0].available, false);
+    assert.match(availability[0].reason, /local simulator has none/);
+    assert.equal(availability[1].available, false);
+    assert.match(availability[1].reason, /security role privileges/);
+    assert.equal(await running, 0);
+    assert.equal((await fetch(runtime.url + '/_sim/api/status')).status, 200);
+    assert.ok(requests.length > 0);
+    assert.ok(requests.every((value) => new URL(value).origin === runtime.url));
+  },
+);
+
+test(
+  'startup cancellation closes its owned page before draining stalled inspector initialization',
+  { timeout: 10000 },
+  async (t) => {
+    const setup = await fixture(t),
+      launch = chromium.launchPersistentContext.bind(chromium);
+    let frameTrees = 0,
+      stalled = false,
+      closed = false;
+    t.mock.method(chromium, 'launchPersistentContext', async (profile, options) => {
+      const context = await launch(profile, { ...options, ...setup.network });
+      context.once('close', () => {
+        closed = true;
+      });
+      const attach = context.newCDPSession.bind(context);
+      context.newCDPSession = async (page) => {
+        const cdp = await attach(page),
+          send = cdp.send.bind(cdp);
+        cdp.send = (method, params) => {
+          if (method === 'Page.getFrameTree' && ++frameTrees === 2) {
+            stalled = true;
+            return new Promise((_, reject) =>
+              page.once('close', () => reject(new Error('Owned page closed during inspector setup'))),
+            );
+          }
+          return send(method, params);
+        };
+        return cdp;
+      };
+      return context;
+    });
+    await assert.rejects(
+      run(null, {
+        project: setup.project,
+        url: setup.origin,
+        headless: true,
+        browser: setup.channel,
+        'startup-timeout': '1500',
+      }),
+      (error) => error.code === 'startup_timeout' && error.phase === 'interception and inspector setup',
+    );
+    assert.equal(stalled, true);
+    assert.equal(closed, true);
+  },
+);
+
+test(
+  'initial document deadline detaches an external CDP browser and preserves its existing draft',
+  { timeout: 15000 },
+  async (t) => {
+    const setup = await fixture(t, { resetDocument: true });
+    const portServer = net.createServer();
+    await new Promise((resolve) => portServer.listen(0, '127.0.0.1', resolve));
+    const port = portServer.address().port;
+    await new Promise((resolve) => portServer.close(resolve));
+    const external = await chromium.launchPersistentContext(path.join(setup.directory, 'external-profile'), {
+      channel: setup.channel === 'chromium' ? undefined : setup.channel,
+      headless: true,
+      ...setup.network,
+      args: [...setup.network.args, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'],
+    });
+    setup.owner.add(() => external.close());
+    const sibling = external.pages()[0];
+    await sibling.setContent('<input value="external draft">');
+    await assert.rejects(
+      run(null, {
+        project: setup.project,
+        url: setup.origin,
+        headless: true,
+        'cdp-url': `http://127.0.0.1:${port}`,
+        'startup-timeout': '1500',
+      }),
+      (error) => error.code === 'startup_timeout' && error.phase === 'document navigation',
+    );
+    assert.equal(external.pages().length, 1);
+    assert.equal(await sibling.locator('input').inputValue(), 'external draft');
+  },
+);
 
 test(
   'actual model-driven CLI reports unsuccessful cleanup while preserving its final overlay receipt',

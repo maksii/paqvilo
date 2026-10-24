@@ -5,10 +5,59 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createSimulator } from '../api.mjs';
+import { createSimulator, preflight } from '../api.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
 const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
+
+test('Solution canvas metadata, payload and metadata-only overlay agree between host and both preflights', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-fidelity-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const payload = writeSolutionAssetEntries([{ name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(HOME) }]);
+  for (const [relative, bytes] of Object.entries({
+    'first/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>First</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'first/CanvasApps/x_app.meta.xml':
+      '<CanvasApp><Name>x_app</Name><CanvasAppId>77777777-7777-4777-8777-777777777777</CanvasAppId></CanvasApp>',
+    'first/CanvasApps/x_app_DocumentUri.msapp': payload,
+    'later/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>Later</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'later/CanvasApps/x_app.meta.xml':
+      '<CanvasApp><Name>x_app</Name><CanvasAppId>77777777-7777-4777-8777-777777777777</CanvasAppId></CanvasApp>',
+  })) {
+    const file = path.join(root, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, bytes);
+  }
+  const options = {
+    runtime: { kind: 'dataverse-api' },
+    solutionRoots: [path.join(root, 'first'), path.join(root, 'later')],
+    solutionOrder: 'explicit',
+    projectRoot: root,
+    port: 0,
+    watch: false,
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+  };
+  const offline = await preflight({
+    ...options,
+    strict: true,
+    scenario: { id: 'logic', requires: ['canvas:app/x_app'] },
+  });
+  const sim = await createSimulator(options);
+  ownedFixture(t).add(() => sim.close());
+  const listing = await (await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } })).json();
+  assert.equal(listing.apps.length, 1);
+  assert.equal(listing.apps[0].screens, 1);
+  assert.equal(listing.apps[0].level, 'behaviour');
+  const running = await sim.preflight({ strict: true, scenario: { id: 'logic', requires: ['canvas:app/x_app'] } });
+  for (const report of [offline, running]) {
+    assert.ok(report.requirements.some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
+    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'placeholder'));
+    assert.ok(!report.requirements.some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
+  }
+});
 
 async function start(t, canvas, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));

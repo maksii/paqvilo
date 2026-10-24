@@ -318,6 +318,32 @@ test('source-card refresh restores a nonzero existing content scroll position', 
     { data, report, elementSources },
   );
   assert.equal(await page.locator('#paqvilo-xray .card .content').evaluate((node) => node.scrollTop), 120);
+  const updatedSources = elementSources.flatMap((source) => [
+    { ...source, name: source.name.replace('Invented', 'Updated') },
+    { ...source, selector: '#notes', name: source.name.replace('Invented', 'Notes') },
+  ]);
+  await page.evaluate(
+    ({ data, report, elementSources }) =>
+      document.getElementById('paqvilo-xray').__px.update(data, { ...report, elementSources }),
+    { data, report, elementSources: updatedSources },
+  );
+  assert.match(await page.locator('#paqvilo-xray .card .content').innerText(), /Updated source 0/);
+  assert.equal(
+    await page.locator('#paqvilo-xray .card .content').evaluate((node) => node.scrollTop),
+    120,
+    'changed report refresh preserves this selection scroll',
+  );
+  await pick(page, page.frameLocator('#first').locator('#notes'));
+  assert.match(await page.locator('#paqvilo-xray .card .content').innerText(), /Notes source 0/);
+  assert.equal(
+    await page.locator('#paqvilo-xray .card .content').evaluate((node) => node.scrollHeight > node.clientHeight + 120),
+    true,
+  );
+  assert.equal(
+    await page.locator('#paqvilo-xray .card .content').evaluate((node) => node.scrollTop),
+    0,
+    'a new pick starts at its selected evidence',
+  );
 });
 
 test('selected frame assets resolve relative URLs against the embedded document base', async (t) => {

@@ -188,6 +188,18 @@ function exportIndex(portal, metadata, indexStore = null) {
       pageReferenced: false,
     };
   });
+  // Quick-view documents can identify a system form directly, independently
+  // of an opener's include graph or a basic-form record.
+  for (const form of metadata.forms ?? [])
+    if (!forms.some((item) => norm(item.id) === norm(form.id)))
+      forms.push({
+        id: form.id,
+        name: form.name,
+        entity: form.entity,
+        kind: 'FormXml',
+        sourceFile: form.file,
+        pageReferenced: false,
+      });
   const lists = (portal.lists ?? []).map((list) => ({
     id: list.id,
     recordId: list.id,
@@ -310,6 +322,40 @@ export async function inspectionSources(cfg) {
 /** Fixed, bounded DOM read. Do not collect text, values, credentials or query parameters. */
 export function inspectRenderedPage() {
   const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle, #paqvilo-xray');
+  const definitionContext = (address, base) => {
+    try {
+      const url = new URL(address, base);
+      if (url.origin !== location.origin) return {};
+      const params = [...url.searchParams].map(([key, value]) => [key.toLowerCase(), value]);
+      const declarations = (keys) =>
+        params.filter(([key, value]) => keys.includes(key) && value).map(([, value]) => value);
+      const forms = declarations(['entityformid', 'formid']),
+        tables = declarations(['entityname', 'tablename', 'etn', 'typename']);
+      const normalize = (value) => value.replace(/[{}]/g, '').toLowerCase();
+      const formConflict = new Set(forms.map(normalize)).size > 1;
+      const tableConflict = new Set(tables.map(normalize)).size > 1;
+      const repeatedFormConflict = ['entityformid', 'formid'].some(
+        (key) => new Set(declarations([key]).map(normalize)).size > 1,
+      );
+      const conflict = formConflict || tableConflict;
+      return {
+        formId: conflict ? '' : (forms[0] ?? ''),
+        entity: tableConflict ? '' : (tables[0] ?? ''),
+        conflict,
+        // A DOM-only read cannot establish whether the two definition keys name
+        // one exported basic form and its FormXml. Defer only that exact case.
+        ...(formConflict && !tableConflict && !repeatedFormConflict
+          ? {
+              aliasCandidates: [...new Map(forms.map((id) => [normalize(id), id])).values()]
+                .slice(0, 2)
+                .map((id) => id.slice(0, 160)),
+            }
+          : {}),
+      };
+    } catch {
+      return {};
+    }
+  };
   const pathname = (value) => {
     try {
       const url = new URL(value, location.href);
@@ -330,23 +376,30 @@ export function inspectRenderedPage() {
     } catch {
       /* Optional inspection or cleanup failure must not interrupt the owning operation. */
     }
-    let frameForm = '';
+    let frameAddress = node.getAttribute('src');
     if (node.localName === 'iframe')
       try {
-        const url = new URL(node.getAttribute('src'), node.ownerDocument.baseURI);
-        if (url.origin === location.origin) frameForm = url.searchParams.get('entityformid') ?? '';
+        const current = node.contentDocument?.URL;
+        if (current && /^https?:/i.test(current)) frameAddress = current;
       } catch {
-        /* Optional inspection or cleanup failure must not interrupt the owning operation. */
+        /* Inaccessible frames remain boundaries. */
       }
+    const frameContext = node.localName === 'iframe' ? definitionContext(frameAddress, node.ownerDocument.baseURI) : {};
     return {
       tag: node.tagName.toLowerCase(),
       id: node.id.slice(0, 160),
       name: (node.getAttribute('name') ?? '').slice(0, 160),
       type: (node.getAttribute('type') ?? '').slice(0, 40),
       entity: String(
-        node.getAttribute('data-entityname') ?? node.getAttribute('data-entity') ?? layout.EntityName ?? '',
+        node.getAttribute('data-entityname') ??
+          node.getAttribute('data-entity') ??
+          layout.EntityName ??
+          frameContext.entity ??
+          '',
       ).slice(0, 160),
-      formId: String(node.getAttribute('data-formid') ?? layout.Id ?? frameForm).slice(0, 160),
+      formId: String(node.getAttribute('data-formid') ?? layout.Id ?? frameContext.formId ?? '').slice(0, 160),
+      ...(frameContext.conflict ? { definitionConflict: true } : {}),
+      ...(frameContext.aliasCandidates ? { definitionAliasCandidates: frameContext.aliasCandidates } : {}),
       viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160),
       listId: (
         node.getAttribute('data-listid') ??
@@ -412,14 +465,13 @@ export function inspectRenderedPage() {
       controlsSeen++;
       if (controls.length < 300) {
         const control = addControl(node);
-        if (!control.formId)
-          try {
-            const url = new URL(node.ownerDocument.URL);
-            if (url.origin === location.origin)
-              control.formId = (url.searchParams.get('entityformid') ?? '').slice(0, 160);
-          } catch {
-            /* Optional inspection or cleanup failure must not interrupt the owning operation. */
-          }
+        if (!control.formId) {
+          const context = definitionContext(node.ownerDocument.URL);
+          if (context.conflict) control.definitionConflict = true;
+          if (context.aliasCandidates) control.definitionAliasCandidates = context.aliasCandidates;
+          control.formId = String(context.formId ?? '').slice(0, 160);
+          control.entity ||= String(context.entity ?? '').slice(0, 160);
+        }
         controls.push(control);
       }
     }
@@ -1083,6 +1135,22 @@ export async function enrichInspection(
     forms: whole.forms.map((form) => ({ ...form, formXml: form.formXml ? { ...form.formXml } : null })),
     lists: whole.lists.map((list) => ({ ...list })),
   };
+  rendered = {
+    ...rendered,
+    controls: (rendered.controls ?? []).map((control) => {
+      if (!control.definitionConflict || !Array.isArray(control.definitionAliasCandidates)) return control;
+      const matches = whole.forms.filter(
+        (form) =>
+          control.definitionAliasCandidates.length === 2 &&
+          control.definitionAliasCandidates.every((id) =>
+            [form.id, form.formXml?.id].some((candidate) => norm(candidate) === norm(id)),
+          ) &&
+          (!control.formId || [form.id, form.formXml?.id].some((id) => norm(id) === norm(control.formId))) &&
+          (!control.entity || norm(form.entity) === norm(control.entity)),
+      );
+      return matches.length === 1 ? { ...control, definitionConflict: false, formId: matches[0].id } : control;
+    }),
+  };
   if (report.page && page) {
     report.page.entityFormId = page.formId ?? portalField(page.metadata ?? {}, 'entityform') ?? null;
     report.page.listId = page.listId ?? portalField(page.metadata ?? {}, 'entitylist') ?? null;
@@ -1104,6 +1172,7 @@ export async function enrichInspection(
   }
   // Runtime component IDs can resolve a dynamic Liquid reference without guessing its value.
   for (const control of rendered.controls ?? []) {
+    if (control.definitionConflict) continue;
     const form = control.formId && portal.forms.find((row) => norm(row.id) === norm(control.formId));
     const existing = form && (report.forms ?? []).find((row) => norm(row.id) === norm(form.id));
     if (existing) existing.evidence = 'rendered-component-id';
@@ -1117,7 +1186,9 @@ export async function enrichInspection(
         mode: form.mode,
         formName: form.formName,
         sourceFile: form.metadata?._file,
-        formXml: schema?.sourceFile ? { name: schema.formName, sourceFile: schema.sourceFile } : null,
+        formXml: schema?.sourceFile
+          ? { id: schema.formId, name: schema.formName, sourceFile: schema.sourceFile }
+          : null,
         evidence: 'rendered-component-id',
       });
       for (const field of schema?.fields ?? [])
@@ -1454,6 +1525,8 @@ export async function enrichInspection(
     }
   }
   report.renderedControls = unique(rendered.controls ?? [], (row) => JSON.stringify(row)).map((row) => {
+    if (row.definitionConflict)
+      return { ...row, sourceFile: null, field: null, candidates: [], evidence: 'rendered-conflict' };
     const candidates = (report.columns ?? []).filter(
       (column) => (column.name === row.id || column.name === row.name) && (!row.entity || column.entity === row.entity),
     );

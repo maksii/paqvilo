@@ -30,16 +30,19 @@ node scripts/runtime-performance.mjs --standalone  # the same without a portal
 node scripts/runtime-performance.mjs --quick       # one 16-table, 1,000-record case
 node scripts/runtime-performance.mjs --large       # 256 tables x 40 forms (10,498 XML files), 20,000 records
 node scripts/runtime-performance.mjs --large --standalone
+node scripts/runtime-performance.mjs --tables 64 --forms-per-table 40 --records 10000 --startup-budget 60000 --restart-budget 45000 --journal-budget 60000 --catalogue-budget 30000 --heartbeat-budget 1500 --data-budget 1500
 ```
 
 Each case runs a fresh state, an unchanged restart and a restart after the journal grew. It measures startup, cold and warm catalogue reads with concurrent status heartbeats, the first grid and record reads, state bytes and process memory, and checks that a local journal edit survives the restart. Budgets: 30,000 ms per startup and per catalogue response, 1,000 ms per status heartbeat and first grid or record read. The default matrix stops at the first missed budget; `--large` records misses under `findings`, prints the full report and exits nonzero when there are any. All starts share one process, so filesystem and module caches are warm after the first.
 
-The ordinary test suite uses smaller fixtures and checks invariants instead of elapsed time: a single state restore, bounded metadata payloads, cooperative response ordering, cancellation, and linear ID reads when input doubles.
+These defaults are declared budgets for invented fixtures, not universal export or hardware guarantees. Set the budgets for the complete selected sources and the intended machine before comparing runs. `--tables` accepts a comma-separated scale series; vary `--forms-per-table` with fixed records to isolate metadata growth, then vary `--records` with fixed tables/forms to isolate data growth. The report names Node, architecture, CPU count and memory, separates the first status response from catalogue heartbeats, and records event-loop delay, RSS snapshots and process peak RSS. Peak RSS is cumulative for the same process, rather than an isolated peak for each phase. No API response establishes that a visible application is usable: measure browser sign-in, first usable controls and refresh separately.
+
+The ordinary test suite uses smaller fixtures and checks invariants instead of elapsed time: a single state restore, bounded metadata payloads, cooperative response ordering, cancellation, bounded metadata inventories per read, detached composition ownership and linear ID reads when input doubles. Unchanged composition omits checkpoint writes; isolated composition uses its committed graph as the rollback copy while keeping a separate working graph.
 
 ## Limits
 
 - Large Solutions are memory-heavy. On the `--large` fixture, process RSS reaches roughly 1–2.5 GB, and startup takes several seconds.
-- The simulation write still serializes the complete runtime file on each transaction.
+- Full checkpoints serialize the runtime state. Journaled row transactions append row changes and changed sections; broad transactions can still require whole-state comparison and serialization. Unchanged startup composition writes neither a checkpoint nor a journal entry.
 - Runtime CreateMultiple and UpsertMultiple cost a few milliseconds per row, mostly in the rollup module's write hooks, which read every table's field definitions on each write.
 - Single-record Web API GET reads the table's rows once in the response formatter (for the ETag and lookup names): O(rows), without copying them.
 

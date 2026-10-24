@@ -276,6 +276,7 @@ export async function createStandaloneRuntime(options = {}) {
     stateFile,
     simulation,
     sources: {
+      readMetadata: (fn) => overlay.withReadEpoch(fn),
       plugins: () => sources.metadata.plugins,
       workflows: () => sources.workflows,
       layers: () => sources.solutionData.layers,
@@ -494,6 +495,8 @@ export async function createStandaloneRuntime(options = {}) {
     await organizationHost.loadCanvas();
     await store.replaceState(applySolutionData(store.state, sources.solutionData, solutionDataOptions(sources)), {
       returnSnapshot: false,
+      cloneInput: false,
+      skipSaveIfUnchanged: true,
     });
     bootstrapTimings.stateCompositionMs = Math.round(performance.now() - stageAt);
     stageAt = performance.now();

@@ -9,8 +9,10 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { assertAcceptanceCapabilities, runAcceptance } from '../acceptance.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { composeHostDescription } from '../lib/organization-host.mjs';
+import { fixedClock } from '../testing.mjs';
 
-async function standalone(t) {
+async function standalone(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-capabilities-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
@@ -27,6 +29,7 @@ async function standalone(t) {
     watch: false,
     simulation: { level: 'dry-run' },
     dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+    ...options,
   });
   ownedFixture(t).add(() => sim.close());
   return sim;
@@ -63,6 +66,30 @@ async function portal(t) {
 const operationLevel = (report, module, operation) =>
   report.modules.find((record) => record.name === module)?.operations.find((entry) => entry.name === operation)?.level;
 
+function assertCoreSeams(report) {
+  for (const name of ['store', 'scheduler', 'loopback-network', 'providers.messaging'])
+    assert.ok(
+      report.modules.some((record) => record.name === name && record.level === 'behaviour'),
+      name,
+    );
+  assert.deepEqual(
+    report.diagnostics.filter((entry) => entry.code === 'CAPABILITY_REQUIRES_UNREGISTERED'),
+    [],
+  );
+}
+
+test('offline host descriptions resolve installed core seams and retain absent provider diagnostics', async (t) => {
+  const host = await composeHostDescription({
+    runtime: { kind: 'dataverse-api' },
+    config: { providers: { messaging: { missing: { kind: 'pack:absent/bus' } } } },
+  });
+  t.after(() => host.close());
+  const report = await host.preflight();
+  assertCoreSeams(report);
+  assert.equal(host.registry.get('provider:messaging/missing').level, 'inventory');
+  assert.equal(report.requirements.find((row) => row.id === 'provider:messaging/missing')?.status, 'missing');
+});
+
 test('standalone status carries the registry summary and report; preflight answers over HTTP and on the handle', async (t) => {
   const sim = await standalone(t);
   const status = sim.status();
@@ -94,6 +121,7 @@ test('standalone status carries the registry summary and report; preflight answe
   assert.deepEqual(report.scope.requires, ['dataverse-hierarchy/query:*']);
   assert.equal(report.summary.blocking, 0);
   const direct = await sim.preflight();
+  assertCoreSeams(direct);
   assert.equal(direct.kind, 'paqvilo.mirage.preflight');
   assert.ok(direct.modules.some((record) => record.name === 'provider:storage/local' && record.level === 'behaviour'));
 });
@@ -113,7 +141,47 @@ test('portal state carries the registry summary; preflight answers over HTTP and
   assert.equal(response.status, 200);
   assert.equal((await response.json()).runtime.kind, 'power-pages');
   assert.equal((await sim.preflight({ strict: true })).scope.strict, true);
+  assertCoreSeams(await sim.preflight());
 });
+
+for (const persistent of [false, true])
+  test(`${persistent ? 'persistent' : 'dry-run'} host supports first-send, scheduled delivery and outbox with explicit restart semantics`, async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-messaging-lifetime-'));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    const clock = fixedClock();
+    const options = {
+      clock,
+      stateFile: path.join(root, 'state.json'),
+      simulation: { level: persistent ? 'simulation' : 'dry-run' },
+    };
+    const sim = await standalone(t, options);
+    const { bus } = sim.organization.providers.messaging;
+    await bus.send('fixture', { first: true });
+    const [message] = await bus.receive('fixture');
+    assert.ok(message.lockToken);
+    await bus.complete(message.lockToken);
+    assert.equal(bus.peek('fixture').length, 0);
+    await bus.send('fixture', { scheduled: true }, { scheduledEnqueueTime: clock.now() + 1000 });
+    assert.deepEqual(await bus.receive('fixture'), []);
+    clock.advance(1000);
+    const [scheduled] = await bus.receive('fixture');
+    assert.deepEqual(scheduled.body, { scheduled: true });
+    await bus.complete(scheduled.lockToken);
+    await bus.send('fixture', { retained: true });
+    await sim.organization.providers.outbox.capture({
+      channel: 'email',
+      to: ['fixture@example.invalid'],
+      body: 'local capture',
+    });
+    const captured = await (await fetch(`${sim.url}/_sim/api/outbox`)).json();
+    assert.equal(captured.entries.length, 1);
+    await sim.close();
+    const restarted = await standalone(t, options);
+    assert.equal(restarted.organization.providers.messaging.bus.peek('fixture').length, persistent ? 1 : 0);
+    const after = await (await fetch(`${restarted.url}/_sim/api/outbox`)).json();
+    assert.equal(after.entries.length, persistent ? 1 : 0);
+    if (!persistent) await assert.rejects(fs.stat(options.stateFile), { code: 'ENOENT' });
+  });
 
 test('strict acceptance refuses a required capability that is not executable before any browser starts', async (t) => {
   const sim = await portal(t);

@@ -82,6 +82,98 @@ async function fixture(t) {
   };
 }
 
+for (const attached of [false, true]) {
+  test(
+    `a failed new target preserves two healthy drafts, the agent and retry (${attached ? 'attached' : 'owned'})`,
+    { timeout: 30000 },
+    async (t) => {
+      const { owner, origin, context, selection } = await fixture(t);
+      const logs = [];
+      let stopped = false;
+      const runtime = await startDevSessions(context, selection, {
+        attached,
+        stop: () => {
+          stopped = true;
+        },
+        log: (line) => logs.push(line),
+      });
+      owner.add(() => runtime.close());
+      const healthy = [await context.newPage(), await context.newPage()];
+      for (const [index, page] of healthy.entries()) {
+        await page.goto(origin);
+        await page.waitForLoadState('networkidle');
+        await page.evaluate((value) => {
+          const input = document.createElement('input');
+          input.id = 'draft';
+          input.value = value;
+          document.body.append(input);
+        }, `unsaved-${index}`);
+      }
+      const original = context.newCDPSession.bind(context);
+      let injected = false;
+      let retryReady;
+      const retrySetup = new Promise((resolve) => {
+        retryReady = resolve;
+      });
+      t.mock.method(context, 'newCDPSession', async (page) => {
+        const cdp = await original(page);
+        if (!injected && !healthy.includes(page)) {
+          injected = true;
+          const send = cdp.send.bind(cdp);
+          cdp.send = (method, params) =>
+            method === 'Page.getFrameTree'
+              ? Promise.reject(new Error('Page.getFrameTree did not answer within 10000 ms'))
+              : method === 'Fetch.disable' && !attached
+                ? new Promise(() => {})
+                : send(method, params);
+        } else if (injected && !healthy.includes(page)) {
+          const send = cdp.send.bind(cdp);
+          cdp.send = async (method, params) => {
+            const result = await send(method, params);
+            if (method === 'Fetch.enable') retryReady();
+            return result;
+          };
+        }
+        return cdp;
+      });
+      const failed = await context.newPage();
+      if (attached) await failed.waitForFunction(() => document.title === 'Local preview unavailable');
+      else if (!failed.isClosed()) await failed.waitForEvent('close');
+      assert.equal(stopped, false);
+      assert.equal(runtime.failure, undefined);
+      assert.equal(runtime.active.size, 1);
+      assert.ok(logs.some((line) => line.includes('Healthy tabs remain active')));
+      for (const [index, page] of healthy.entries()) {
+        assert.equal(await page.locator('#draft').inputValue(), `unsaved-${index}`);
+        assert.match(
+          await page.evaluate(() => fetch('/scripts/app.js').then((response) => response.text())),
+          /console\.log\("app"\)/,
+        );
+      }
+      const record = runtime.active.get(origin);
+      if (!attached) {
+        const discovery = JSON.parse(await fs.readFile(record.agent.discoveryFile, 'utf8'));
+        const status = await fetch(`${record.agent.endpoint}/v1/session`, {
+          headers: { authorization: `Bearer ${discovery.token}` },
+        });
+        assert.equal(status.status, 200);
+        await status.body.cancel();
+      }
+      const retry = await context.newPage();
+      await retrySetup;
+      await retry.goto(origin);
+      assert.match(
+        await retry.evaluate(() => fetch('/scripts/app.js').then((response) => response.text())),
+        /console\.log\("app"\)/,
+      );
+      assert.equal(
+        healthy.every((page) => !page.isClosed()),
+        true,
+      );
+    },
+  );
+}
+
 for (const multiple of [false, true]) {
   test(
     `development teardown exposes actual agent filesystem failure and drains remaining owners (${multiple ? 'multiple causes' : 'single cause'})`,

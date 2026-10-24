@@ -2,8 +2,64 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 const chrome = sharedBrowser();
+
+test('grid Refresh reloads selected-table form metadata before opening New', async (t) => {
+  const { origin, sim, solutionDir } = await modelDrivenFixture(t);
+  const page = await chrome.page(t),
+    requests = [];
+  page.on('request', (request) => requests.push(new URL(request.url()).pathname));
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  const source = path.join(solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  await fs.writeFile(
+    source,
+    (await fs.readFile(source, 'utf8')).replace('description="Name"', 'description="Renamed field"'),
+  );
+  await sim.reload();
+  requests.length = 0;
+  let releaseMetadata, metadataRequested;
+  const metadataGate = new Promise((resolve) => {
+    releaseMetadata = resolve;
+  });
+  const pendingMetadata = new Promise((resolve) => {
+    metadataRequested = resolve;
+  });
+  t.after(() => releaseMetadata());
+  await page.route('**/_apps/api/metadata/x_item', async (route) => {
+    metadataRequested();
+    await metadataGate;
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await pendingMetadata;
+  assert.equal(
+    await page.getByRole('button', { name: 'New', exact: true }).count(),
+    0,
+    'New cannot open a form from metadata being refreshed.',
+  );
+  const refreshedMetadata = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/_apps/api/metadata/x_item',
+  );
+  releaseMetadata();
+  await (await refreshedMetadata).finished();
+  await page.unroute('**/_apps/api/metadata/x_item');
+  await page.locator('#app-loading').waitFor({ state: 'detached' });
+  assert.ok(requests.includes('/_apps/api/metadata/x_item'));
+  await page.getByRole('button', { name: 'New', exact: true }).click();
+  await page.getByLabel('Renamed field', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Name', { exact: true }).count(), 0);
+  await page.getByLabel('Renamed field', { exact: true }).fill('Unsaved draft survives');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Unsaved changes' })
+    .getByRole('button', { name: 'Cancel', exact: true })
+    .click();
+  assert.equal(await page.getByLabel('Renamed field', { exact: true }).inputValue(), 'Unsaved draft survives');
+});
 
 test('new record URL defaults accept rendered columns and ignore arbitrary property names', async (t) => {
   const { origin } = await modelDrivenFixture(t);

@@ -401,7 +401,7 @@ test('all-attributes returns every non-null column and attribute aliases rename 
 
 test('an identical repeated attribute is selected once; conflicting aliases still fail', async () => {
   const s = await store();
-  // Exported Sample templates (for example the ePI public details query) repeat
+  // Exported Sample templates repeat
   // an attribute inside one link-entity and render on the live site.
   const repeated = s.fetchXml(
     '<fetch><entity name="contact"><attribute name="fullname"/><attribute name="fullname"/><order attribute="fullname"/><link-entity name="account" from="accountid" to="parentcustomerid" alias="a"><attribute name="name"/><attribute name="name"/></link-entity></entity></fetch>',

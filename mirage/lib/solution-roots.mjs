@@ -162,7 +162,7 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
         Boolean(stats?.isFile()) &&
         !(
           /^(?:controls|webresources)$/i.test(segments[0])
-            ? /\.(?:xml|json|js|css|resx|png|jpe?g|svg|woff2?)$/i
+            ? /\.(?:xml|json|map|js|css|resx|png|jpe?g|svg|woff2?)$/i
             : /^(?:powerpagecomponents)$/i.test(segments[0])
               ? /\.(?:xml|js|sl)$/i
               : /\.(?:xml|json|ya?ml)$/i

@@ -476,6 +476,8 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
   const xray = page.locator('#paqvilo-xray'),
     details = xray.getByRole('button', { name: 'Details', exact: true });
   assert.equal(await details.getAttribute('aria-pressed'), 'true');
+  assert.equal(await xray.locator('.api-context').getAttribute('open'), null);
+  await xray.locator('.api-context > summary').click();
   const text = await xray.locator('.content').innerText();
   for (const expected of [
     'fx.Widget',
@@ -945,4 +947,477 @@ test('viewport candidates survive early offscreen matches and limit notes appear
         .textContent.includes('Candidate limit reached'),
   );
   assert.equal(await page.locator('#paqvilo-xray .mark').count(), 20);
+});
+
+test('selected sources precede bounded secondary context and disclosure choices survive picks', async (t) => {
+  const { page } = await fixture(t, '<button id="one">One</button><button id="two">Two</button>', {
+    elementSources: hints('<button id="one">One</button><button id="two">Two</button>', 'Selected source'),
+    apiReferences: Array.from({ length: 100 }, (_, index) => ({
+      name: 'fx_table' + index,
+      entity: 'table' + index,
+      ref: 'api' + index + '.js',
+    })),
+    permissionRules: Array.from({ length: 100 }, (_, index) => ({
+      name: 'Rule' + index,
+      entity: 'table0',
+      ref: 'rule' + index + '.yml',
+    })),
+  });
+  const pick = (id) =>
+    page.evaluate((id) => document.getElementById('paqvilo-xray').__px.select(document.getElementById(id)), id);
+  await pick('one');
+  const context = page.locator('#paqvilo-xray .api-context');
+  assert.equal(await context.getAttribute('open'), null);
+  assert.equal(await context.locator('.binding').count(), 8);
+  const ordering = await page.evaluate(() => {
+    const content = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.content');
+    return content.innerHTML.indexOf('Selected source') < content.innerHTML.indexOf('api-context');
+  });
+  assert.equal(ordering, true);
+  await context.locator('summary').click();
+  await pick('two');
+  assert.equal(await context.getAttribute('open'), '');
+  await context.locator('summary').click();
+  await pick('one');
+  assert.equal(await context.getAttribute('open'), null);
+  await context.locator('summary').click();
+  await context.locator('[data-context="api"]').getByText('Next', { exact: true }).click();
+  assert.match(await context.innerText(), /fx_table8/);
+  assert.doesNotMatch(await context.innerText(), /\/_api\/fx_table0\b/);
+  await pick('two');
+  assert.equal(await page.locator('#paqvilo-xray .content').evaluate((node) => node.scrollTop), 0);
+});
+
+test('declared custom-grid columns keep exact grid contexts without invoking data getters', async (t) => {
+  const { page, identify } = await fixture(
+    t,
+    '<table id="first" data-paqvilo-table="item"><thead><tr><th>Hidden</th><th id="header">Title</th></tr></thead><tbody><tr><td id="first-cell"><b>Rendered</b></td></tr></tbody></table>' +
+      '<table id="second" data-paqvilo-table="other"><tr><td id="second-cell" data-paqvilo-column="demo_name">Other</td></tr></table>' +
+      '<table><tr><td id="unbound" data-paqvilo-column="demo_name">Unknown</td></tr></table>',
+    {
+      columns: [
+        { entity: 'item', name: 'demo_name' },
+        { entity: 'other', name: 'demo_name' },
+      ],
+    },
+  );
+  await page.evaluate(() => {
+    const cell = document.getElementById('first-cell');
+    cell._DT_CellIndex = { row: 99, column: 1 };
+    const config = {
+      nTable: document.getElementById('first'),
+      aoColumns: [{ sName: 'hidden' }, { sName: 'demo_name', nTh: document.getElementById('header') }],
+    };
+    for (const object of [config, ...config.aoColumns]) {
+      for (const key of ['aoData', 'mData', 'mRender', 'data'])
+        Object.defineProperty(object, key, {
+          get() {
+            throw new Error('Business data getter invoked');
+          },
+        });
+    }
+    window.jQuery = { fn: { dataTable: { settings: [config] } } };
+  });
+  for (const selector of ['#first-cell', '#first-cell b', '#header'])
+    assert.equal((await identify(selector)).sub, 'item.demo_name');
+  assert.equal((await identify('#second-cell')).sub, 'other.demo_name');
+  assert.equal((await identify('#unbound')).title, 'Ambiguous column');
+  await page.locator('#second-cell').evaluate((node) => node.setAttribute('data-paqvilo-column', 'unknown_name'));
+  assert.equal((await identify('#second-cell')).title, 'unknown_name');
+  assert.match((await identify('#second-cell')).sub, /definition unavailable/);
+});
+
+test('same-origin frame shortcuts activate while off, survive navigation and stop after disposal', async (t) => {
+  const { page } = await fixture(t, '<input id="main"><iframe src="/first"></iframe>', {});
+  await page.evaluate(() => document.getElementById('paqvilo-xray').__px.toggle(false));
+  const frame = page.frames().find((frame) => frame.parentFrame());
+  await frame.evaluate(() => (document.body.innerHTML = '<input id="field"><textarea></textarea>'));
+  await frame.locator('#field').press('Alt+Shift+X');
+  assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), true);
+  await page.evaluate(() => {
+    document.getElementById('paqvilo-xray').__px.toggle(false);
+    document.querySelector('iframe').src = '/second';
+  });
+  await page.waitForFunction(
+    () =>
+      document.querySelector('iframe').contentDocument.URL.endsWith('/second') &&
+      document.querySelector('iframe').contentDocument.body,
+  );
+  await frame.evaluate(() => (document.body.innerHTML = '<iframe src="/nested"></iframe>'));
+  await page.waitForFunction(() =>
+    document.querySelector('iframe').contentDocument.querySelector('iframe')?.contentDocument?.URL.endsWith('/nested'),
+  );
+  const nested = page.frames().find((frame) => frame.url().endsWith('/nested'));
+  await nested.waitForLoadState('domcontentloaded');
+  await nested.evaluate(() => (document.body.innerHTML = '<div contenteditable="true" id="editable"></div>'));
+  await nested.locator('#editable').press('Alt+Shift+X');
+  assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), true);
+  await page.evaluate(() => document.getElementById('paqvilo-xray').__px.dispose());
+  assert.equal(
+    await nested.evaluate(() => {
+      const event = new KeyboardEvent('keydown', {
+        code: 'KeyX',
+        altKey: true,
+        shiftKey: true,
+        cancelable: true,
+        bubbles: true,
+      });
+      document.getElementById('editable').dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+    false,
+  );
+});
+
+test('dynamic modal and quick-view frame identities merge complete export sources and disambiguate repeated fields', async (t) => {
+  const { page } = await fixture(
+    t,
+    '<input id="demo_code"><iframe id="modal" src="/modal?EntityFormId=F&recordid=private"></iframe><iframe id="quick" src="/quick?formid=Q&entityname=OTHER"></iframe>',
+    {
+      forms: [{ id: 'F', entity: 'item', name: 'Partial referenced form' }],
+      componentIndex: {
+        forms: [
+          {
+            id: 'F',
+            entity: 'item',
+            name: 'Modal',
+            formXml: { id: 'XML', ref: 'Modal.FormXml.xml', name: 'Modal XML' },
+          },
+          { id: 'Q', entity: 'other', name: 'Quick', kind: 'FormXml', ref: 'Quick.FormXml.xml' },
+        ],
+      },
+      columns: [
+        { entity: 'item', name: 'demo_code' },
+        { entity: 'other', name: 'demo_code' },
+      ],
+    },
+  );
+  const inspect = (id) =>
+    page.evaluate((id) => {
+      const target = document.getElementById(id).contentDocument;
+      target.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
+      const api = document.getElementById('paqvilo-xray').__px;
+      const row = api.identify(target.querySelector('input'));
+      api.select(target.querySelector('input'));
+      return {
+        sub: row.sub,
+        forms: row.b.forms,
+        conflict: row.b.conflict,
+        html: document.getElementById('paqvilo-xray').shadowRoot.querySelector('.content').innerHTML,
+      };
+    }, id);
+  const modal = await inspect('modal');
+  assert.equal(modal.sub, 'item.demo_code');
+  assert.equal(modal.forms[0].formXml.id, 'XML');
+  assert.match(modal.html, /Modal.FormXml.xml/);
+  assert.doesNotMatch(modal.html, /private/);
+  assert.equal((await inspect('quick')).sub, 'other.demo_code');
+  await page.evaluate(() =>
+    document.getElementById('quick').contentDocument.querySelector('input').setAttribute('data-entityname', 'item'),
+  );
+  const conflict = await page.evaluate(
+    () =>
+      document
+        .getElementById('paqvilo-xray')
+        .__px.identify(document.getElementById('quick').contentDocument.querySelector('input')).b.conflict,
+  );
+  assert.equal(conflict, true);
+});
+
+test('rich-text attribute hosts preserve field and form provenance through repeated nested editor IDs', async (t) => {
+  const { page, identify, data } = await fixture(
+    t,
+    '<form data-formid="F"><div id="demo_notes_Container"><div id="demo_notes_ControlView"><iframe id="designer-one"></iframe></div></div><div id="demo_summary_Container"><iframe id="designer-two"></iframe></div></form><div id="demo_notes_Container"><iframe id="unbound-editor"></iframe></div>',
+    {
+      forms: [{ id: 'F', name: 'Native form', entity: 'item', formXml: { id: 'XML', ref: 'Form.xml' } }],
+      columns: [
+        { entity: 'item', name: 'demo_notes', ref: 'Notes.xml' },
+        { entity: 'item', name: 'demo_summary', ref: 'Summary.xml' },
+      ],
+    },
+  );
+  assert.equal((await identify('#demo_notes_ControlView')).sub, 'item.demo_notes');
+  assert.equal((await identify('#demo_summary_Container')).sub, 'item.demo_summary');
+  const result = await page.evaluate(() => {
+    const api = document.getElementById('paqvilo-xray').__px;
+    return ['designer-one', 'designer-two', 'unbound-editor'].map((id) => {
+      const doc = document.getElementById(id).contentDocument;
+      doc.body.innerHTML = '<iframe id="internal"></iframe>';
+      const inner = doc.querySelector('iframe').contentDocument;
+      inner.body.id = 'editor';
+      inner.body.contentEditable = 'true';
+      const row = api.identify(inner.body);
+      return { sub: row.sub, fields: row.b.fields, form: row.b.forms[0]?.id };
+    });
+  });
+  assert.equal(result[0].sub, 'item.demo_notes');
+  assert.equal(result[1].sub, 'item.demo_summary');
+  assert.equal(result[0].form, 'F');
+  assert.deepEqual(result[2].fields, []);
+  await page.evaluate(
+    ({ data }) => document.getElementById('paqvilo-xray').__px.update(data, { forms: [], columns: [] }),
+    { data },
+  );
+  assert.deepEqual((await identify('#demo_notes_ControlView')).fields, []);
+});
+
+test('grid clones require explicit binding and redraws, reordering and nested grids retain separate declarations', async (t) => {
+  const { page, identify } = await fixture(
+    t,
+    '<table id="original" data-paqvilo-table="item"><tr><td id="outer" data-paqvilo-column="demo_name"><table data-paqvilo-table="other"><tr><td id="inner" data-paqvilo-column="demo_name">Inner</td></tr></table></td></tr></table>' +
+      '<table id="clone" data-paqvilo-grid="original"><tr><th id="cloned" data-dt-column="1">Cloned</th></tr></table>',
+    {
+      columns: [
+        { entity: 'item', name: 'demo_name' },
+        { entity: 'other', name: 'demo_name' },
+      ],
+    },
+  );
+  await page.evaluate(
+    () =>
+      (window.jQuery = {
+        fn: {
+          dataTable: {
+            settings: [
+              {
+                nTable: document.getElementById('original'),
+                aoColumns: [{ sName: 'hidden_name' }, { sName: 'demo_name' }],
+              },
+            ],
+          },
+        },
+      }),
+  );
+  assert.equal((await identify('#cloned')).sub, 'item.demo_name');
+  assert.equal((await identify('#inner')).sub, 'other.demo_name');
+  await page.locator('#clone').evaluate((node) => node.removeAttribute('data-paqvilo-grid'));
+  assert.deepEqual((await identify('#cloned')).fields, []);
+  await page
+    .locator('#inner')
+    .evaluate((node) => (node.outerHTML = '<td id="inner" data-paqvilo-column="demo_name">Redrawn</td>'));
+  assert.equal((await identify('#inner')).sub, 'other.demo_name');
+});
+
+test('current frame navigation supersedes stale src declarations and conflicting definition bindings stay explicit', async (t) => {
+  const { page, identify } = await fixture(t, '<iframe id="frame" src="/form?entityformid=F"></iframe>', {
+    componentIndex: {
+      forms: [
+        { id: 'F', name: 'First', entity: 'item', formXml: { id: 'XML' } },
+        { id: 'S', name: 'Second', entity: 'other' },
+      ],
+    },
+    columns: [
+      { entity: 'item', name: 'demo_code' },
+      { entity: 'other', name: 'demo_code' },
+    ],
+  });
+  assert.equal((await identify('#frame')).title, 'First');
+  await page.evaluate(() => {
+    const doc = document.getElementById('frame').contentDocument;
+    doc.defaultView.history.replaceState(null, '', '/form?entityformid=S&entityname=OTHER');
+    doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
+  });
+  assert.equal((await identify('#frame')).title, 'Second');
+  await page.locator('#frame').evaluate((node) => node.setAttribute('data-formid', 'F'));
+  assert.equal((await identify('#frame')).title, 'Conflicting table context');
+  await page.locator('#frame').evaluate((node) => {
+    node.removeAttribute('data-formid');
+    node.contentDocument.defaultView.history.replaceState(null, '', '/form');
+  });
+  assert.deepEqual((await identify('#frame')).forms, [], 'an old src is not current form evidence after navigation');
+});
+
+test('rich-text editor internal column-like IDs cannot replace host attribution above discovery bounds', async (t) => {
+  const { page } = await fixture(
+    t,
+    '<div style="height:1px">' +
+      '<i></i>'.repeat(900) +
+      '</div><form data-formid="F"><div id="demo_notes_Container"><iframe id="designer"></iframe></div></form>',
+    {
+      forms: [{ id: 'F', name: 'Native form', entity: 'item' }],
+      columns: [
+        { entity: 'item', name: 'demo_notes' },
+        { entity: 'item', name: 'editor' },
+      ],
+      elementSources: hints('<i></i>', 'Repeated'),
+    },
+  );
+  const result = await page.evaluate(() => {
+    const doc = document.getElementById('designer').contentDocument;
+    doc.body.innerHTML = '<textarea id="editor" disabled></textarea>';
+    const api = document.getElementById('paqvilo-xray').__px;
+    const before = api.identify(doc.querySelector('textarea'));
+    doc.querySelector('textarea').setAttribute('data-fieldname', 'editor');
+    const conflicting = api.identify(doc.querySelector('textarea'));
+    return { sub: before.sub, conflict: conflicting.b.conflict };
+  });
+  assert.equal(result.sub, 'item.demo_notes');
+  assert.equal(result.conflict, true);
+});
+
+test('frame shortcuts discover late open-shadow frames while off and restore realm hooks on disposal', async (t) => {
+  const { page } = await fixture(t, '<div id="root-host"></div><iframe id="outer" src="/outer"></iframe>', {});
+  const result = await page.evaluate(async () => {
+    const api = document.getElementById('paqvilo-xray').__px;
+    api.toggle(false);
+    const topHook = Element.prototype.attachShadow;
+    const parentDoc = document.getElementById('outer').contentDocument;
+    const frameHook = parentDoc.defaultView.Element.prototype.attachShadow;
+    const embedding = parentDoc.createElement('div');
+    parentDoc.body.append(embedding);
+    const root = embedding.attachShadow({ mode: 'open' });
+    root.innerHTML = '<iframe></iframe>';
+    await new Promise((resolve) => setTimeout(resolve));
+    const doc = root.querySelector('iframe').contentDocument;
+    doc.body.innerHTML = '<input id="field">';
+    const typing = new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', cancelable: true, bubbles: true });
+    doc.querySelector('input').dispatchEvent(typing);
+    const event = new KeyboardEvent('keydown', {
+      code: 'KeyX',
+      altKey: true,
+      shiftKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    doc.querySelector('input').dispatchEvent(event);
+    const enabled = api.enabled;
+    api.dispose();
+    return {
+      enabled,
+      typingPrevented: typing.defaultPrevented,
+      intercepted: event.defaultPrevented,
+      restored: Element.prototype.attachShadow !== topHook,
+      frameRestored: parentDoc.defaultView.Element.prototype.attachShadow !== frameHook,
+    };
+  });
+  assert.deepEqual(result, {
+    enabled: true,
+    typingPrevented: false,
+    intercepted: true,
+    restored: true,
+    frameRestored: true,
+  });
+});
+
+test('contradictory repeated and aliased frame definition parameters remain conflicts without collecting other queries', async (t) => {
+  const { page, identify } = await fixture(
+    t,
+    '<iframe id="frame" src="/quick?formid=Q&amp;entityname=item&amp;etn=other&amp;recordid=private"></iframe>',
+    {
+      componentIndex: {
+        forms: [
+          { id: 'Q', name: 'Quick', entity: 'item' },
+          { id: 'S', name: 'Second', entity: 'item' },
+        ],
+      },
+      columns: [{ entity: 'item', name: 'demo_code' }],
+    },
+  );
+  for (const query of [
+    'formid=Q&entityname=item&etn=other',
+    'formid=Q&entityname=item&ENTITYNAME=other',
+    'formid=Q&formid=S&entityname=item',
+  ]) {
+    await page.evaluate(
+      (query) =>
+        document
+          .getElementById('frame')
+          .contentDocument.defaultView.history.replaceState(null, '', '/quick?' + query + '&recordid=private'),
+      query,
+    );
+    assert.equal((await identify('#frame')).title, 'Conflicting table context', query);
+    const rendered = await page.evaluate(inspectRenderedPage);
+    assert.equal(rendered.controls.find((row) => row.id === 'frame').definitionConflict, true);
+    assert.doesNotMatch(JSON.stringify(rendered), /private/);
+  }
+});
+
+test('an independently identified inner form prevents its outer rich-text host from taking column ownership', async (t) => {
+  const { page } = await fixture(
+    t,
+    '<form data-formid="F"><div id="demo_notes_Container"><iframe id="inner" src="/form?formid=Q"></iframe></div></form>',
+    {
+      componentIndex: {
+        forms: [
+          { id: 'F', name: 'Outer', entity: 'item' },
+          { id: 'Q', name: 'Inner', entity: 'other' },
+        ],
+      },
+      columns: [
+        { entity: 'item', name: 'demo_notes' },
+        { entity: 'other', name: 'demo_notes' },
+        { entity: 'other', name: 'demo_code' },
+      ],
+    },
+  );
+  const result = await page.evaluate(() => {
+    const doc = document.getElementById('inner').contentDocument;
+    doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
+    const row = document.getElementById('paqvilo-xray').__px.identify(doc.querySelector('input'));
+    return { sub: row.sub, forms: row.b.forms.map((form) => form.id) };
+  });
+  assert.deepEqual(result, { sub: 'other.demo_code', forms: ['Q'] });
+});
+
+test('duplicate clone binding IDs never silently select one grid configuration', async (t) => {
+  const { page, identify } = await fixture(
+    t,
+    '<table id="duplicate" data-paqvilo-table="item"></table><div id="duplicate"></div><table data-paqvilo-grid="duplicate"><tr><th id="header" data-dt-column="0">Header</th></tr></table>',
+    {
+      columns: [{ entity: 'item', name: 'demo_name' }],
+    },
+  );
+  await page.evaluate(
+    () =>
+      (window.DataTable = {
+        settings: [{ nTable: document.querySelector('table'), aoColumns: [{ sName: 'demo_name' }] }],
+      }),
+  );
+  assert.deepEqual((await identify('#header')).fields, []);
+});
+
+test('verified basic-form and FormXml URL aliases retain one identity while repeated parameters still conflict', async (t) => {
+  const { page, identify } = await fixture(
+    t,
+    '<iframe id="frame" src="/form?formid=XML&amp;entityformid=F&amp;entityname=ITEM"></iframe>',
+    {
+      componentIndex: {
+        forms: [
+          { id: 'F', name: 'Basic form', entity: 'item', formXml: { id: 'XML', ref: 'Form.xml' } },
+          { id: 'XML', name: 'System form', entity: 'item', kind: 'FormXml' },
+        ],
+      },
+      columns: [{ entity: 'item', name: 'demo_code' }],
+    },
+  );
+  assert.equal((await identify('#frame')).title, 'Basic form');
+  const field = await page.evaluate(() => {
+    const doc = document.getElementById('frame').contentDocument;
+    doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
+    const row = document.getElementById('paqvilo-xray').__px.identify(doc.querySelector('input'));
+    return { sub: row.sub, forms: row.b.forms.map((form) => form.id), conflict: row.b.conflict };
+  });
+  assert.deepEqual(field, { sub: 'item.demo_code', forms: ['F'], conflict: false });
+  await page.evaluate(() =>
+    document
+      .getElementById('frame')
+      .contentDocument.defaultView.history.replaceState(null, '', '/form?formid=F&formid=XML'),
+  );
+  assert.equal((await identify('#frame')).title, 'Conflicting table context');
+  await page.evaluate(() =>
+    document
+      .getElementById('frame')
+      .contentDocument.defaultView.history.replaceState(null, '', '/form?entityformid=F&formid=Missing'),
+  );
+  assert.equal((await identify('#frame')).title, 'Conflicting table context');
+  await page.evaluate(() =>
+    document
+      .getElementById('frame')
+      .contentDocument.defaultView.history.replaceState(null, '', '/form?entityformid=F&entityformid=f&formid=Missing'),
+  );
+  const rendered = await page.evaluate(inspectRenderedPage);
+  assert.deepEqual(
+    rendered.controls.find((row) => row.id === 'frame').definitionAliasCandidates.map((id) => id.toLowerCase()),
+    ['f', 'missing'],
+  );
 });

@@ -101,7 +101,7 @@ in those metadata layers, and later declared resources override earlier ones.
 
 An entry named `<Library>@<version>.js` is a PCF platform library file, not a Solution
 layer; it is served under `/_apps/controls/platform/`. A list with only library files
-keeps ordinary Solution discovery for the other client assets. A misnamed `.js` entry
+imports only those files. A misnamed `.js` entry
 reports `MODEL_PCF_PLATFORM_LIBRARY_INVALID`.
 Omitting `clientSources` preserves ordinary Solution discovery; `[]` imports no
 client extensions. Selection grants no execution trust. Imported WebResources
@@ -239,12 +239,66 @@ Start dev with a free `--debug-port 9222` to attach DevTools or VS Code. Local
 JavaScript without an existing source map receives a file-backed identity map;
 existing compiled maps are preserved. ZIP-only resources have no physical local
 file map. Breakpoints can be set in the served bundle when its original map is
-unavailable. Mapping a PCF bundle does not make missing TypeScript sources or
-source-map sidecars available. Confirm the debugger port in agent status.
+unavailable. A resource map can explicitly admit a physical source-map sidecar:
+
+```json
+{
+  "version": 1,
+  "resources": [
+    {
+      "path": "/WebResources/demo_bundle.js",
+      "resource": "demo_bundle.js",
+      "sourceMap": { "path": "/WebResources/demo_bundle.js.map", "file": "bundle.js.map" }
+    }
+  ]
+}
+```
+
+`sourceMap.file` is relative to the declared script's physical directory and must
+stay inside it after resolving symlinks. Map/source names use simple relative
+paths without traversal, URL schemes, percent escapes or whitespace. Only the
+explicit sidecar URL is served; original source files are never exposed. Embed
+`sourcesContent` in a valid version 3 map to debug original files without another
+server. Indexed maps and nonempty `sourceRoot` are refused. Missing, malformed or
+oversized maps report `MODEL_SOURCE_MAP_INVALID` while the bundle keeps running;
+an overlay budget refusal reports `MODEL_SOURCE_MAP_LIMIT`. Existing inline maps
+remain unchanged. Each script has at most one sidecar. Sidecar requests are
+reported separately and do not count as executable-resource applications.
+Confirm both the served map and a bound breakpoint before claiming original-source
+debugging. Confirm the debugger port in agent status.
 Generated maps are admitted before allocation: at most 16 MiB for a mapped asset
 and 64 MiB of generated map bytes per overlay revision. A map that exceeds these
 budgets is omitted with `MODEL_SOURCE_MAP_LIMIT`; the original script still runs.
 This avoids expanding newline-heavy bundles into very large debug payloads.
+
+`model-driven dev --startup-timeout 120000` sets a separate 1,000–600,000 ms
+startup budget, starting before project/source loading and ending after the
+initial document and assets settle. It covers browser attachment, interception,
+watcher setup and initial assets; failures name the active phase. Async waits
+are interrupted at the deadline; synchronous filesystem/parsing work observes
+it when control returns to an async boundary. It is not a process watchdog for
+blocked native code. Late browser acquisitions are disposed, only the owned app
+tab is closed in an attached browser, and the attached browser remains running.
+Ctrl+C cancels pending startup. Cleanup drains owned resources separately from
+the startup budget. `--timeout` starts after startup and limits session lifetime.
+
+### Pair the panel with a standalone local app
+
+Keep the standalone Mirage process running, then open a separate panel browser:
+
+```sh
+paqvilo mirage start --project ./project.yml --port 8787
+paqvilo lense model-driven dev --project ./project.yml --url http://127.0.0.1:8787 --local-simulation --debug-port 9222
+```
+
+The project must explicitly enable `modelDriven.trustedExtensions`. The panel
+shows **Local simulation**, exposes only that loopback target and uses the same
+Actions, Inspect, X-ray and debugger tools. APIs the simulator does not expose,
+such as a native environment ID or native effective privilege inspection, remain
+unavailable with their reasons. Source saves retain the normal trust and reload
+rules. Stopping this overlay closes its owned browser or tab and leaves the
+independently started Mirage runtime running. Plain standalone `mirage dev`
+continues to open the app directly; a debugger port alone does not enable the panel.
 
 Reloads use an explicit GET and never replay the document's POST. Source saves
 coalesce to one active import and one pending refresh. `--no-reload` starts with

@@ -534,3 +534,68 @@ test('600 source reports survive A/B/A and unchanged refresh without reparsing m
   assert.equal(elementSourceHintCacheStats().parses, parses + 1);
   assert.ok(changed.report.elementSources.some((item) => item.selector === '#changed590'));
 });
+
+test('whole-export form inventory preserves dynamic FormXml and native quick-view identity through source refresh', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(
+    path.join(fx.portal, 'basic-forms/Dynamic.basicform.yml'),
+    'adx_entityformid: dynamic\nadx_name: Dynamic form\nadx_entityname: fx_widget\nadx_formname: Widget form',
+  );
+  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } });
+  const first = (await inspector.inspect('/other/')).report;
+  const form = first.componentIndex.forms.find((row) => row.id === 'dynamic');
+  assert.ok(form, 'unreferenced basic forms are available without an opener include');
+  assert.equal(form.formXml?.id, 'widget-form');
+  assert.match(form.formXml?.sourceFile ?? '', /widget-form.xml$/);
+  const system = first.componentIndex.forms.find((row) => row.id === 'widget-form');
+  assert.equal(system?.entity, 'fx_widget');
+  assert.equal(system?.kind, 'FormXml');
+  fs.writeFileSync(
+    path.join(fx.portal, 'basic-forms/Dynamic.basicform.yml'),
+    'adx_entityformid: dynamic\nadx_name: Renamed dynamic\nadx_entityname: fx_widget\nadx_formname: Widget form',
+  );
+  inspector.invalidate();
+  const refreshed = (await inspector.inspect('/other/')).report;
+  assert.equal(refreshed.componentIndex.forms.find((row) => row.id === 'dynamic').name, 'Renamed dynamic');
+});
+
+test('conflicting rendered frame definitions never acquire a source verdict from an otherwise matching field', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } });
+  const { report } = await inspector.inspect('/', {
+    controls: [{ id: 'fx_title', entity: 'fx_widget', formId: 'widget-edit', definitionConflict: true }],
+  });
+  const control = report.renderedControls[0];
+  assert.equal(control.evidence, 'rendered-conflict');
+  assert.equal(control.field, null);
+  assert.equal(control.sourceFile, null);
+  assert.deepEqual(control.candidates, []);
+});
+
+test('rendered basic-form and system-form alias candidates resolve only through a unique verified export link', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: fx.project } });
+  const control = {
+    id: 'fx_title',
+    entity: 'FX_WIDGET',
+    formId: '',
+    definitionConflict: true,
+    definitionAliasCandidates: ['widget-edit', 'widget-form'],
+  };
+  const resolved = (await inspector.inspect('/other/', { controls: [control] })).report;
+  assert.equal(resolved.renderedControls[0].definitionConflict, false);
+  assert.equal(resolved.renderedControls[0].formId, 'widget-edit');
+  assert.ok(resolved.forms.some((form) => form.id === 'widget-edit'));
+  for (const overrides of [
+    { definitionAliasCandidates: ['widget-edit', 'missing'] },
+    { formId: 'conflicting-form' },
+    { entity: 'other' },
+  ]) {
+    const report = (await inspector.inspect('/other/', { controls: [{ ...control, ...overrides }] })).report;
+    assert.equal(report.renderedControls[0].evidence, 'rendered-conflict');
+    assert.equal(report.renderedControls[0].field, null);
+  }
+});

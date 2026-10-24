@@ -57,6 +57,12 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
   const resolve = (base = {}, state = {}) => {
     const epoch = readEpoch.getStore();
     const reusable = epoch && !epoch.closed && epoch.valid();
+    if (epoch && !reusable) epoch.resolved = false;
+    if (reusable && epoch.revision) {
+      const revision = epoch.revision();
+      if (epoch.lastRevision !== revision) epoch.resolved = false;
+      epoch.lastRevision = revision;
+    }
     if (reusable && epoch.resolved && epoch.base === base && epoch.state === state) return epoch.value;
     const finish = (value) => {
       if (reusable) {
@@ -304,14 +310,34 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
   // across cooperative yields; the next request always establishes a new epoch.
   // Staff grants and field permissions remain live checks, never epoch-cached.
   return Object.assign(resolve, {
-    withReadEpoch: (fn, { valid = () => true } = {}) => {
-      const epoch = { resolved: false, valid };
-      return readEpoch.run(epoch, async () => {
+    withReadEpoch: (fn, options = {}) => {
+      const { valid = () => true, revision } = options;
+      const inherited = readEpoch.getStore();
+      if (inherited && !inherited.closed && !Object.keys(options).length) return fn();
+      const parent = inherited && !inherited.closed ? inherited : null;
+      // Explicit nested boundaries may narrow validity or change the revision
+      // source. Never let an outer snapshot bypass either restriction, or reuse
+      // its pre-boundary projection after an inner write.
+      if (parent) parent.resolved = false;
+      const epoch = {
+        resolved: false,
+        valid: () => (!parent || parent.valid()) && valid(),
+        revision: parent?.revision || revision ? () => JSON.stringify([parent?.revision?.(), revision?.()]) : undefined,
+      };
+      const close = () => {
+        epoch.closed = true;
+        epoch.value = undefined;
+        if (parent) parent.resolved = false;
+      };
+      return readEpoch.run(epoch, () => {
         try {
-          return await fn();
-        } finally {
-          epoch.closed = true;
-          epoch.value = undefined;
+          const result = fn();
+          if (result && typeof result.then === 'function') return Promise.resolve(result).finally(close);
+          close();
+          return result;
+        } catch (error) {
+          close();
+          throw error;
         }
       });
     },

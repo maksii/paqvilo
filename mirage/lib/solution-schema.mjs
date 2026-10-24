@@ -23,6 +23,7 @@ import {
   missingDependencies,
   connectionReferenceFacts,
   mergeInventory,
+  mergeCanvasLayers,
   inventoryCode,
   canvasMsappRecord,
   inventoryRecord,
@@ -1275,13 +1276,39 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
   }
   const ordered = orderSolutionLayers(layers, { order, diagnostics });
   ordered.forEach((layer, index) => (layer.index = index));
+  const effectiveInventory = mergeCanvasLayers(ordered.flatMap((layer) => layerInventory(layer, diagnostics)));
+  const canvas = effectiveInventory.filter((record) => record.component === 'canvasapp');
+  // A metadata-only layer may rely on another selected layer's executable
+  // payload. Diagnose the effective app rather than contradicting its host.
+  for (let index = diagnostics.length - 1; index >= 0; index--) {
+    const diagnostic = diagnostics[index];
+    if (diagnostic.code === 'SOLUTION_CANVAS_INVENTORY') diagnostics.splice(index, 1);
+    else if (
+      diagnostic.code === 'SOLUTION_CANVAS_MSAPP_MISSING' &&
+      canvas.some((record) => record.name === diagnostic.name && record.msapp)
+    )
+      diagnostics.splice(index, 1);
+  }
+  for (const layer of ordered) {
+    const records = canvas.filter((record) => record.layer === layer.index && record.level === 'inventory');
+    if (records.length)
+      diagnostics.push({
+        code: 'SOLUTION_CANVAS_INVENTORY',
+        inventory: true,
+        component: 'canvasapp',
+        layer: layer.name,
+        count: records.length,
+        names: records.slice(0, 20).map((record) => record.name),
+        message: `${records.length} canvasapp component(s) are listed as inventory; their executable source is not available.`,
+      });
+  }
   return {
     inputs,
     layers: ordered,
     diagnostics,
     cache,
     order,
-    inventory: ordered.flatMap((layer) => layerInventory(layer, diagnostics)),
+    inventory: effectiveInventory,
   };
 }
 

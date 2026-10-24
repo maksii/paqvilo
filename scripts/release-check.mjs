@@ -38,6 +38,7 @@ const MODEL_DRIVEN_FILES = new Set(
     'power-pages.mjs',
     'providers.mjs',
     'solution.mjs',
+    'view-prerequisites.mjs',
     'style.css',
   ].map((name) => `mirage/lib/model-driven/${name}`),
 );

@@ -101,7 +101,8 @@ Agent session access
                     mirage.solutionRoots, else unpacked solutions next to the portal repository)
   --resource-map <file> model-driven: JSON version 1 resources [{path,resource}] binding
                     observed native PCF paths to declared Solution component resources
-  --startup-timeout <ms> mirage: readiness deadline (default: 120000)
+  --local-simulation model-driven: loopback-only panel workflow; no remote targets
+  --startup-timeout <ms> mirage/model-driven dev: startup deadline (default: 120000)
   --allow-live-writes mirage dev/start: let the runtime send create, update and delete
                     requests to the live environment once _sim's live-writes switch is on
                     (default: off; without it no live write can leave the runtime)
@@ -172,6 +173,7 @@ try {
       'apply-configuration': { type: 'boolean' },
       'solution-root': { type: 'string', multiple: true },
       'startup-timeout': { type: 'string' },
+      'local-simulation': { type: 'boolean' },
       'allow-live-writes': { type: 'boolean' },
       out: { type: 'string' },
       force: { type: 'boolean' },
@@ -372,6 +374,8 @@ try {
       'url',
       'path',
       'resource-map',
+      'local-simulation',
+      'startup-timeout',
       'headless',
       'headed',
       'no-reload',

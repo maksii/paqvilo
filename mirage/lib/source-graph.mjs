@@ -7,6 +7,7 @@ import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { pcfAdmission } from './model-driven/pcf-runtime.mjs';
 import { customPageResolution, dashboardPage } from './model-driven/solution.mjs';
 import { hierarchicalIn, offlineProfileGaps } from './model-driven/offline.mjs';
+import { viewColumnPrerequisites } from './model-driven/view-prerequisites.mjs';
 
 const SURFACES = { portal: 'portalRendering', 'model-driven': 'staff', canvas: 'canvas' }; // host surface of each hostSurfaceNodes kind
 const SECRET_TYPE = 100000005; // environmentvariabledefinition type Secret (secret-resolver.mjs SECRET_TYPE)
@@ -50,6 +51,7 @@ export function buildSourceGraph({
     level = 'behaviour',
     dependencies = [],
     alias = null,
+    variants = 1,
     ...extra
   }) => {
     const id = `${kind}:${canonical(key)}`;
@@ -68,10 +70,10 @@ export function buildSourceGraph({
     };
     const current = nodes.get(id);
     if (current && (current.layer ?? -1) > (layer ?? -1)) {
-      current.variants++;
+      current.variants += variants;
       return current;
     }
-    node.variants = (current?.variants ?? 0) + 1;
+    node.variants = (current?.variants ?? 0) + variants;
     nodes.set(id, node);
     return node;
   };
@@ -164,6 +166,9 @@ export function buildSourceGraph({
       reason: record.reason,
       componentType: record.componentType,
       inventory: true,
+      variants: record.variants ?? 1,
+      ...(record.sources ? { sources: record.sources } : {}),
+      ...(record.contributions ? { contributions: record.contributions } : {}),
       sourceMissing: record.sourceMissing === true,
       diagnostics: [...(record.diagnostics ?? []), ...(record.canvas?.diagnostics ?? [])],
     });
@@ -180,6 +185,22 @@ export function buildSourceGraph({
       ? Object.keys(mappings)
       : [...Object.keys(schema.tables ?? {}), ...Object.keys(metadata.entities ?? {})],
   });
+  for (const gap of viewColumnPrerequisites({ metadata, mappings }))
+    add({
+      kind: 'model-driven',
+      key: `view-column/${gap.app}/${gap.view}/${gap.entity}/${gap.column}`,
+      name: `${gap.app}: ${gap.viewName ?? gap.view} requires ${gap.entity}.${gap.column}`,
+      source: gap.source,
+      level: 'behaviour',
+      requirement: {
+        status: 'missing',
+        reason: 'MD_VIEW_COLUMN_MISSING',
+        level: 'behaviour',
+        ...gap,
+        details: gap,
+        message: `App ${gap.app}, table ${gap.table}, view ${gap.viewName ?? gap.view} requires missing column ${gap.entity}.${gap.column}.`,
+      },
+    });
 
   const missing = layers.flatMap((layer) =>
     (layer.solution?.missingDependencies ?? []).map((dependency) => ({ layer, ...dependency })),

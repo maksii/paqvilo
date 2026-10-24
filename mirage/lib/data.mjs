@@ -1173,7 +1173,9 @@ export class DataStore {
       const previousRows = this.rowTransaction;
       this.rowTransaction = rowTransaction;
       const boundary = {
-        backup: lazyReadSnapshot || rowTransaction ? null : clone(this.state),
+        // The committed graph is already the rollback copy of an isolated
+        // working graph. A second whole-state clone cannot improve isolation.
+        backup: isolated ? this._state : lazyReadSnapshot || rowTransaction ? null : clone(this.state),
         independentCommit: false,
         eventCount: 0,
       };
@@ -1629,7 +1631,14 @@ export class DataStore {
   /** Runtime composition may omit an unused result; inputs and default snapshots remain detached. */
   async replaceState(
     state,
-    { expectedSnapshot, expectedDigest, expectedRevision, returnSnapshot = true, cloneInput = true } = {},
+    {
+      expectedSnapshot,
+      expectedDigest,
+      expectedRevision,
+      returnSnapshot = true,
+      cloneInput = true,
+      skipSaveIfUnchanged = false,
+    } = {},
   ) {
     return this.transact(
       () => {
@@ -1661,7 +1670,7 @@ export class DataStore {
         this.state = next;
         return returnSnapshot ? this.state : undefined;
       },
-      { cloneResult: returnSnapshot, lazyReadSnapshot: true },
+      { cloneResult: returnSnapshot, lazyReadSnapshot: true, skipSaveIfUnchanged },
     );
   }
   /**

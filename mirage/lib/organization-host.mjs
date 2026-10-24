@@ -1019,6 +1019,28 @@ function hostRegistry(c) {
     if (c.canvas.enabled) add(describeCanvasRuntime({ evaluatorLevel: providers.powerFx?.describe?.().level }));
     for (const record of MODEL_DRIVEN_CAPABILITY_RECORDS) add(record);
     const api = c.organization?.api ?? null;
+    const connectors = providers.connectors.describe();
+    // Register the actual shared seams before modules and packs can claim their names.
+    // The offline description installs the same organization over an in-memory store.
+    if (c.store) add({ name: 'store', kind: 'provider', level: 'behaviour', stateOwner: 'DataStore', operations: [] });
+    if (api?.scheduler)
+      add({ name: 'scheduler', kind: 'provider', level: 'behaviour', operations: [], stateOwner: 'organization' });
+    if (connectors.some((record) => record.name === 'http'))
+      add({
+        name: 'loopback-network',
+        kind: 'provider',
+        level: 'behaviour',
+        operations: [],
+        reason: 'Loopback-only HTTP transport; remote addresses require an explicit local rewrite.',
+      });
+    if (providers.messaging?.bus)
+      add({
+        name: 'providers.messaging',
+        kind: 'provider',
+        level: 'behaviour',
+        operations: [],
+        requires: [providers.messaging.bus.descriptor.name],
+      });
     for (const entry of c.installed)
       add(
         entry.describe?.(api) ?? {
@@ -1041,8 +1063,7 @@ function hostRegistry(c) {
           diagnostic({ code: 'CAPABILITY_RECORD_INVALID', name: item.key, message: error.message });
         }
       }
-    for (const record of providers.connectors.describe())
-      add({ ...record, name: `connector:${record.name}`, kind: 'provider' });
+    for (const record of connectors) add({ ...record, name: `connector:${record.name}`, kind: 'provider' });
     for (const record of providerRecords(providers)) add(record);
     for (const record of providers.serviceFixtures?.describe?.() ?? []) add({ ...record, kind: 'service' });
     if (api?.flowRuns?.describe) add(api.flowRuns.describe());
@@ -1140,6 +1161,7 @@ function hostLifecycle(c) {
         change,
         schema,
         metadataFields,
+        readMetadata: c.sources.readMetadata,
         log,
         extensions: c.extensions,
         providers,
@@ -1322,17 +1344,18 @@ function hostReports(c) {
       return structuredClone(c.topologyMemo.value);
     },
     /** Status payload fields: the legacy boolean summary and the registry report. */
-    capabilityStatus: () => {
-      const current = c.registry(),
-        capabilities = current.summary();
-      // The app surfaces report their fidelity level under their legacy keys, not a boolean.
-      // A surface switched off in the configuration (canvas.enabled false) reports 'disabled'.
-      for (const name of Object.keys(APP_SURFACES)) {
-        const record = current.get(name);
-        capabilities[name] = record?.enabled === false ? 'disabled' : (record?.level ?? capabilities[name]);
-      }
-      return { capabilities, capabilityReport: current.report() };
-    },
+    capabilityStatus: () =>
+      (c.sources.readMetadata ?? ((fn) => fn()))(() => {
+        const current = c.registry(),
+          capabilities = current.summary();
+        // The app surfaces report their fidelity level under their legacy keys, not a boolean.
+        // A surface switched off in the configuration (canvas.enabled false) reports 'disabled'.
+        for (const name of Object.keys(APP_SURFACES)) {
+          const record = current.get(name);
+          capabilities[name] = record?.enabled === false ? 'disabled' : (record?.level ?? capabilities[name]);
+        }
+        return { capabilities, capabilityReport: current.report() };
+      }),
     /**
      * The preflight report (capability-report.mjs) of this running host: its live operations (with /_sim/ overrides), packs,
      * registry, local-service probes and storage readiness. graph: the source graph rebuilt with the active profile bindings.
@@ -1404,8 +1427,8 @@ function hostReports(c) {
 
 /**
  * composeHostDescription(options) → description: the listener-free composition the offline preflight shares with the running
- * hosts. It runs composeOrganizationHost over an in-memory store (no state directory, no organization, no backend, no
- * listener), so the host surfaces, organization modules, operations, connectors, providers (pack factories included), outbox,
+ * hosts. It installs the organization over an in-memory store (no state directory, backend or listener), so the host
+ * surfaces, organization modules, operations, connectors, providers (pack factories included), outbox,
  * service fixtures, inventory (with project canvas.sources) and storage readiness are the facts a running host of the same
  * configuration reports. Options:
  *   sources: loadOrganizationSources output ({ scan, metadata, solutionData, workflows, inventory, ... }); portal: the imported

@@ -54,19 +54,26 @@ export function xrayUi(data) {
       target.addEventListener(type, fn, { ...options, signal: lifetime.signal });
   const viewListeners = [],
     frameViews = new Map(),
-    frameElements = new Map();
+    frameElements = new Map(),
+    frameAnimationHooks = new Map(),
+    frameShadowHooks = new Map();
   const listenViews = (type, fn, options = {}) => {
     listen(window, type, fn, options);
     viewListeners.push([type, fn, options]);
   };
   const watchFrame = (doc) => {
-    if (frameViews.has(doc)) return;
-    const controller = new AbortController();
-    for (const [type, fn, options] of viewListeners)
-      doc.defaultView.addEventListener(type, fn, { ...options, signal: controller.signal });
-    const release = hookAnimationView(doc.defaultView);
-    if (release) controller.signal.addEventListener('abort', release, { once: true });
-    frameViews.set(doc, controller);
+    if (!frameViews.has(doc)) {
+      const controller = new AbortController();
+      for (const [type, fn, options] of viewListeners)
+        doc.defaultView.addEventListener(type, fn, { ...options, signal: controller.signal });
+      frameViews.set(doc, controller);
+      const release = hookShadowView(doc.defaultView);
+      if (release) frameShadowHooks.set(doc, release);
+    }
+    if (enabled && !frameAnimationHooks.has(doc)) {
+      const release = hookAnimationView(doc.defaultView);
+      if (release) frameAnimationHooks.set(doc, release);
+    }
   };
   // Input guards never wait for a report or the geometry scan: walk documents, open shadow roots and same-origin frames synchronously.
   // The guard observer is separate from the geometry observer, so scan budgets and reconnects never narrow guarding.
@@ -74,6 +81,10 @@ export function xrayUi(data) {
     for (const [doc, controller] of frameViews)
       if (!frameOf(doc)?.isConnected || frameDocument(frameOf(doc)) !== doc) {
         controller.abort();
+        frameAnimationHooks.get(doc)?.();
+        frameAnimationHooks.delete(doc);
+        frameShadowHooks.get(doc)?.();
+        frameShadowHooks.delete(doc);
         frameViews.delete(doc);
       }
     for (const [embedding, controller] of frameElements)
@@ -88,7 +99,7 @@ export function xrayUi(data) {
       for (const node of record.addedNodes) if (node.nodeType === 1 && !own(node)) watchFrames(node);
   });
   const watchFrames = (surface = document, depth = 0) => {
-    if (!enabled || disposed || depth > 40) return;
+    if (disposed || depth > 40) return;
     if (surface.nodeType !== 1) guardObserver.observe(surface, { subtree: true, childList: true });
     for (const node of [surface, ...surface.querySelectorAll('*')]) {
       if (node.shadowRoot && !own(node)) {
@@ -135,6 +146,10 @@ export function xrayUi(data) {
   ui.tabIndex = -1;
   const releaseFrames = () => {
     for (const controller of [...frameViews.values(), ...frameElements.values()]) controller.abort();
+    for (const release of frameAnimationHooks.values()) release();
+    frameAnimationHooks.clear();
+    for (const release of frameShadowHooks.values()) release();
+    frameShadowHooks.clear();
     frameViews.clear();
     frameElements.clear();
   };
@@ -256,7 +271,60 @@ export function xrayUi(data) {
         ) ?? null)
       : (labelNode?.querySelector('input,select,textarea,output') ?? null);
   };
-  const binding = (node) => {
+  // Read only declared configuration data. Never invoke grid APIs, renderers,
+  // accessors or business-value getters during passive inspection.
+  const ownData = (object, key) => {
+    try {
+      return object && Object.getOwnPropertyDescriptor(object, key)?.value;
+    } catch {
+      return undefined;
+    }
+  };
+  const gridColumn = (node) => {
+    const cell = node.closest('td,th,[data-paqvilo-column]'),
+      table = cell?.closest('table');
+    if (!table) return null;
+    // A scroll-head clone can opt into the original grid by ID. Do not guess
+    // from a shared wrapper, column name or page-wide requests.
+    const boundId = table.getAttribute('data-paqvilo-grid');
+    const boundMatches = boundId ? [...table.getRootNode().querySelectorAll('#' + CSS.escape(boundId))] : [table];
+    const boundTable = boundMatches.length === 1 ? boundMatches[0] : null;
+    if (!boundTable || boundTable.localName !== 'table') return null;
+    const declared = cell.getAttribute('data-paqvilo-column');
+    const view = table.ownerDocument.defaultView,
+      jq = ownData(view, 'jQuery'),
+      settings =
+        ownData(ownData(ownData(jq, 'fn'), 'dataTable'), 'settings') ?? ownData(ownData(view, 'DataTable'), 'settings');
+    let config;
+    if (Array.isArray(settings))
+      for (let index = 0; index < Math.min(settings.length, 200); index++) {
+        const item = ownData(settings, index);
+        if (ownData(item, 'nTable') === boundTable) {
+          config = item;
+          break;
+        }
+      }
+    const columns = ownData(config, 'aoColumns');
+    const cellIndex = ownData(ownData(cell, '_DT_CellIndex'), 'column');
+    const headerIndex = /^\d+$/.test(cell.getAttribute('data-dt-column') ?? '')
+      ? Number(cell.getAttribute('data-dt-column'))
+      : null;
+    let column;
+    if (Array.isArray(columns)) {
+      for (let index = 0; index < Math.min(columns.length, 500); index++) {
+        const item = ownData(columns, index);
+        if (ownData(item, 'nTh') === cell) {
+          column = item;
+          break;
+        }
+      }
+      column ??= ownData(columns, Number.isInteger(cellIndex) ? cellIndex : headerIndex);
+    }
+    const name = declared || ownData(column, 'sName') || ownData(column, 'mData');
+    if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name)) return null;
+    return { name: name.toLowerCase(), table: boundTable.getAttribute('data-paqvilo-table') ?? '' };
+  };
+  const binding = (node, resolveHost = true) => {
     if (report?.modelDriven) {
       const context = report.modelDriven,
         catalogue = context.catalogue;
@@ -360,28 +428,65 @@ export function xrayUi(data) {
     }
     const labelled = labelledControl(node);
     const chain = lineage(labelled ?? node);
+    // Native rich-text hosts name the attribute, while inner editor IDs are
+    // shared by every instance. Carry that host through accessible frame chains.
+    const richHost =
+      resolveHost &&
+      chain.find((item) => {
+        const name = /^(.*)_(?:ControlView|Container)$/i.exec(item.id)?.[1];
+        return name && (report?.columns ?? []).some((column) => norm(column.name) === norm(name));
+      });
     // The containing frame may supply its form ID; host-page forms are a separate context.
     if (node.ownerDocument !== document) {
-      const boundary = chain.findIndex((item) => item.localName === 'iframe');
+      const boundary = chain.findIndex(
+        (item, index) => item.localName === 'iframe' && (!richHost || index > chain.indexOf(richHost)),
+      );
       if (boundary >= 0) chain.splice(boundary + 1);
     }
-    const documentForm = (doc) => {
+    const documentContext = (doc) => {
       try {
         const url = new URL(doc.URL);
-        return url.origin === location.origin ? (url.searchParams.get('entityformid') ?? '') : '';
+        if (url.origin !== location.origin) return {};
+        const params = [...url.searchParams].map(([key, value]) => [key.toLowerCase(), value]);
+        const declarations = (keys) =>
+          params.filter(([key, value]) => keys.includes(key) && value).map(([, value]) => value);
+        const forms = declarations(['entityformid', 'formid']),
+          tables = declarations(['entityname', 'tablename', 'etn', 'typename']);
+        const repeatedFormConflict = ['entityformid', 'formid'].some(
+          (key) => new Set(declarations([key]).map(norm)).size > 1,
+        );
+        const sameDefinition = forms.every(
+          (id) =>
+            norm(id) === norm(forms[0]) ||
+            allForms.some(
+              (form) =>
+                [form.id, form.formXml?.id].some((value) => norm(value) === norm(id)) &&
+                [form.id, form.formXml?.id].some((value) => norm(value) === norm(forms[0])),
+            ),
+        );
+        return {
+          formId: declarations(['entityformid'])[0] ?? forms[0] ?? '',
+          entity: tables[0] ?? '',
+          conflict: repeatedFormConflict || !sameDefinition || new Set(tables.map(norm)).size > 1,
+        };
       } catch {
-        return '';
+        return {};
       }
     };
+    const documentForm = (doc) => documentContext(doc).formId ?? '';
     const compact = (value) =>
       norm(value)
         .replace(/-/g, '')
         .replace(/[^a-z0-9_]/g, '_');
+    const indexedForms = report?.componentIndex?.forms ?? [];
     const allForms = [
-      ...(report?.forms ?? []),
-      ...(report?.componentIndex?.forms ?? []).filter(
-        (form) => !(report?.forms ?? []).some((known) => norm(known.id) === norm(form.id)),
-      ),
+      ...(report?.forms ?? []).map((form) => {
+        const matches = indexedForms.filter((item) => norm(item.id) === norm(form.id));
+        const whole =
+          matches.length === 1 && (!form.entity || norm(matches[0].entity) === norm(form.entity)) ? matches[0] : null;
+        return { ...whole, ...form, formXml: form.formXml ?? whole?.formXml };
+      }),
+      ...indexedForms.filter((form) => !(report?.forms ?? []).some((known) => norm(known.id) === norm(form.id))),
     ];
     const pageLists = (report?.components ?? []).filter((item) => item.kind === 'list'),
       allLists = [
@@ -423,18 +528,30 @@ export function xrayUi(data) {
         /* Optional inspection or cleanup failure must not interrupt the owning operation. */
       }
       const value = (name) => current.getAttribute(name) ?? '';
-      const declared = value('data-entityname') || value('data-entity') || String(shape.EntityName ?? '');
+      const scopedFrame = current.localName === 'iframe' ? frameDocument(current) : null;
+      const frameContext = scopedFrame ? documentContext(scopedFrame) : {};
+      if (
+        frameContext.conflict ||
+        (current.ownerDocument !== document && documentContext(current.ownerDocument).conflict)
+      )
+        conflict = true;
+      const tableDeclarations = [
+        value('data-entityname'),
+        value('data-entity'),
+        value('data-paqvilo-table'),
+        shape.EntityName,
+        frameContext.entity,
+      ]
+        .filter(Boolean)
+        .map(norm);
+      const declared = tableDeclarations[0] ?? '';
+      if (new Set(tableDeclarations).size > 1) conflict = true;
       let frameForm = '';
       if (current.localName === 'iframe') {
         try {
           const url = new URL(current.getAttribute('src'), current.ownerDocument.baseURI);
-          if (url.origin === location.origin)
-            frameForm =
-              (node.ownerDocument !== document && current === frameOf(node.ownerDocument)
-                ? documentForm(node.ownerDocument)
-                : '') ||
-              url.searchParams.get('entityformid') ||
-              '';
+          if (scopedFrame && /^https?:/i.test(scopedFrame.URL)) frameForm = frameContext.formId || '';
+          else if (url.origin === location.origin) frameForm = documentContext({ URL: url.href }).formId || '';
         } catch {
           /* Optional inspection or cleanup failure must not interrupt the owning operation. */
         }
@@ -449,6 +566,17 @@ export function xrayUi(data) {
           ? (report?.page?.listId ?? '')
           : '';
       const fid = value('data-formid') || String(shape.Id ?? '') || frameForm || fallbackForm;
+      for (const declaredForm of [value('data-formid'), shape.Id, frameForm, fallbackForm].filter(Boolean)) {
+        if (norm(declaredForm) === norm(fid)) continue;
+        if (
+          !allForms.some(
+            (form) =>
+              [form.id, form.formXml?.id].some((id) => norm(id) === norm(fid)) &&
+              [form.id, form.formXml?.id].some((id) => norm(id) === norm(declaredForm)),
+          )
+        )
+          conflict = true;
+      }
       let vid = value('data-viewid') || value('data-selected-view');
       if (!vid && current.hasAttribute('data-view-layouts'))
         try {
@@ -501,15 +629,20 @@ export function xrayUi(data) {
       ];
       const inferred = entities.length === 1 ? entities[0] : '';
       // A different enclosing table/component is a boundary, not the selected control's owner.
-      if (entity && ((declared && declared !== entity) || (inferred && inferred !== entity))) break;
+      if (entity && ((declared && norm(declared) !== norm(entity)) || (inferred && norm(inferred) !== norm(entity)))) {
+        // An explicit frame declaration disagreeing with its resolved form is a
+        // conflict, never permission to substitute a parent table.
+        if (current.localName === 'iframe' || (nextForms.length && (fid || nativeForms.length))) conflict = true;
+        break;
+      }
       if (
         entities.length > 1 ||
-        (declared && inferred && declared !== inferred) ||
-        (value('data-entityname') && shape.EntityName && value('data-entityname') !== shape.EntityName)
+        (declared && inferred && norm(declared) !== norm(inferred)) ||
+        (value('data-entityname') && shape.EntityName && norm(value('data-entityname')) !== norm(shape.EntityName))
       )
         conflict = true;
       scope.push(current);
-      entity ||= declared || inferred;
+      entity ||= norm(declared || inferred);
       if (!context && (declared || nextFamily)) context = label(current);
       if (nextFamily) family = nextFamily;
       if (!formId && fid) formId = fid;
@@ -535,11 +668,30 @@ export function xrayUi(data) {
     ];
     const explicit = scope.find((item) => fieldAttributes.some((name) => item.hasAttribute(name)));
     const control = labelled ?? scope.find((item) => item.matches('input,select,textarea,output'));
+    const grid = gridColumn(node);
     const names = explicit
       ? fieldAttributes.map((key) => explicit.getAttribute(key)).filter(Boolean)
-      : control
-        ? [control.id, control.getAttribute('name')].filter(Boolean)
-        : [];
+      : grid
+        ? [grid.name]
+        : control
+          ? [control.id, control.getAttribute('name')].filter(Boolean)
+          : [];
+    const hostContext = richHost ? binding(richHost, false) : null;
+    const hostAgrees =
+      hostContext &&
+      !hostContext.conflict &&
+      (!entity || norm(entity) === norm(hostContext.entity)) &&
+      (!forms.length ||
+        forms.some((form) => hostContext.forms.some((hostForm) => norm(hostForm.id) === norm(form.id))));
+    if (richHost && hostAgrees && (entity || forms.length)) {
+      const hostName = /^(.*)_(?:ControlView|Container)$/i.exec(richHost.id)[1];
+      if (explicit && names.some((name) => norm(name) !== norm(hostName))) conflict = true;
+      names.splice(0, names.length, hostName);
+    }
+    if (grid?.table) {
+      if (entity && norm(grid.table) !== norm(entity)) conflict = true;
+      else entity = norm(grid.table);
+    }
     if (control && entity) for (const name of [...names]) if (name.includes('$')) names.push(name.split('$').at(-1));
     const cell = control?.closest('.cell,.form-group,td,[data-fieldname]');
     if (cell) {
@@ -563,7 +715,10 @@ export function xrayUi(data) {
     }
     const fields = conflict
       ? []
-      : (report?.columns ?? []).filter((item) => names.includes(item.name) && (!entity || item.entity === entity));
+      : (report?.columns ?? []).filter(
+          (item) =>
+            names.some((name) => norm(name) === norm(item.name)) && (!entity || norm(item.entity) === norm(entity)),
+        );
     // A grid's table is a binding boundary, but its enclosing form still owns the
     // FormXml control. Resolve ownership separately from the selected row's table.
     const ownerForms =
@@ -617,6 +772,7 @@ export function xrayUi(data) {
       conflict,
       formCertain,
       listCertain,
+      grid,
     };
   };
   const framework =
@@ -847,6 +1003,19 @@ export function xrayUi(data) {
           `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}${item.lines?.length ? ':' + item.lines.join(', ') : item.line ? ':' + Number(item.line) : ''}</div>${item.evidenceLabel || evidence ? `<div class="note">${esc(item.evidenceLabel ?? evidence)}</div>` : ''}${item.ref ? `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}" data-line="${Number(item.line) || ''}" data-find="${esc(item.fieldPath && /powerpagecomponent\.xml$/i.test(item.ref) ? '"' + item.fieldPath + '":' : (item.find ?? ''))}">Open source ↗</button><button data-action="copy" data-copy="${esc(item.path ?? item.sourceFile ?? item.ref)}">Copy path</button>${item.depth ? `<button data-action="source-region" data-selector="${esc(item.selector)}">Select source region</button>` : ''}</div>` : ''}</div>`,
       )
       .join('');
+  const disclosureState = new Map(),
+    contextPages = new Map();
+  const pageRows = (key, rows, render) => {
+    const size = 8,
+      pages = Math.max(1, Math.ceil(rows.length / size));
+    const page = Math.min(contextPages.get(key) ?? 0, pages - 1);
+    return (
+      render(rows.slice(page * size, (page + 1) * size)) +
+      (pages > 1
+        ? `<div class="actions"><button data-action="context-page" data-context="${esc(key)}" data-page="${page - 1}" ${page ? '' : 'disabled'}>Previous</button><span class="note">${page + 1} / ${pages} · ${rows.length} entries</span><button data-action="context-page" data-context="${esc(key)}" data-page="${page + 1}" ${page < pages - 1 ? '' : 'disabled'}>Next</button></div>`
+        : '')
+    );
+  };
   const identify = (node) => {
     const b = binding(node),
       matches = sourceMatches(node).filter((item) => item.kind !== 'script');
@@ -868,6 +1037,14 @@ export function xrayUi(data) {
         matches,
       };
     }
+    if (b.grid && !b.fields.length)
+      return {
+        title: b.grid.name,
+        kind: 'Declared grid column',
+        sub: b.entity ? `${b.entity}.${b.grid.name} · definition unavailable` : 'Table binding unknown',
+        b,
+        matches,
+      };
     if (b.code.length === 1) {
       const item = b.code[0];
       return { title: item.schemaName ?? item.name, kind: 'Code component', sub: item.entity ?? '', b, matches };
@@ -1048,10 +1225,7 @@ export function xrayUi(data) {
         .join('');
     if (b.code.length) out += `<div class="section"><h3>Code component</h3>${codeHtml(b.code)}</div>`;
     else if (report?.codeComponents?.length)
-      out += `<details class="pcf-context"><summary>Page code components (${report.codeComponents.length})</summary><p class="note">Exported page references; no component-to-element binding is asserted.</p>${codeHtml(report.codeComponents)}</details>`;
-    const api = (report?.apiReferences ?? []).filter((item) => !b.entity || item.entity === b.entity);
-    if (api.length)
-      out += `<details class="api-context" open><summary>Web API ${b.entity ? 'table context' : 'page context'}</summary><p class="note">${b.entity ? 'Exported table context; request ownership is not inferred.' : 'Page references; no request-to-element binding is asserted.'}</p>${api.map((item) => `<div class="binding"><strong>/_api/${esc(item.name)}</strong><p class="note">${esc(item.entity ?? 'Table unresolved')} · ${item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference'}</p></div>${sourceRows([item, ...(item.sources ?? [])], 'Web API source')}${sourceRows((report?.permissionRules ?? []).filter((rule) => item.entity && rule.entity === item.entity).map((rule) => ({ ...rule, kind: 'permission', evidenceLabel: `${rule.scope} · ${(rule.operations ?? []).join?.(', ') ?? ''} · effective access ${rule.effective ?? 'unknown'}` })))}`).join('')}</details>`;
+      out += `<details class="pcf-context" data-disclosure="pcf-context" ${disclosureState.get('pcf-context') ? 'open' : ''}><summary>Page code components (${report.codeComponents.length})</summary><p class="note">Exported page references; no component-to-element binding is asserted.</p>${pageRows('pcf', report.codeComponents, codeHtml)}</details>`;
     if (markup.length) {
       // Retain distinct evidence within a source too: an enclosing unique ID must
       // remain inspectable beside a nearer class match from the same file.
@@ -1104,16 +1278,41 @@ export function xrayUi(data) {
       out += `<p class="note">Showing 60 source matches; ${matches.omitted} additional candidates are omitted from these details.</p>`;
     if (scripts.length)
       out += `<details><summary>Related script references (${scripts.length})</summary>${sourceRows(scripts, 'Literal selector reference; event ownership is not inferred')}</details>`;
+    const api = (report?.apiReferences ?? []).filter((item) => !b.entity || norm(item.entity) === norm(b.entity));
+    if (api.length)
+      out += `<details class="api-context" data-disclosure="api-context" ${disclosureState.get('api-context') ? 'open' : ''}><summary>Web API ${b.entity ? 'table context' : 'page context'} (${api.length})</summary><p class="note">${b.entity ? 'Exported table context; request ownership is not inferred.' : 'Page references; no request-to-element binding is asserted.'}</p>${pageRows(
+        'api',
+        api,
+        (items) =>
+          items
+            .map(
+              (item) =>
+                `<div class="binding"><strong>/_api/${esc(item.name)}</strong><p class="note">${esc(item.entity ?? 'Table unresolved')} · ${item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference'}</p></div>${pageRows('api-source-' + item.name, [item, ...(item.sources ?? [])], (rows) => sourceRows(rows, 'Web API source'))}${pageRows(
+                  'api-permission-' + item.name,
+                  (report?.permissionRules ?? [])
+                    .filter((rule) => item.entity && norm(rule.entity) === norm(item.entity))
+                    .map((rule) => ({
+                      ...rule,
+                      kind: 'permission',
+                      evidenceLabel: `${rule.scope} · ${(rule.operations ?? []).join?.(', ') ?? ''} · effective access ${rule.effective ?? 'unknown'}`,
+                    })),
+                  (rows) => sourceRows(rows),
+                )}`,
+            )
+            .join(''),
+      )}</details>`;
     const page = report?.page;
-    out += `<details class="page-context"><summary>Page context${page ? ' · ' + esc(page.pageName ?? page.name ?? '') : ''}</summary><dl class="details"><dt>Page</dt><dd>${esc(page?.pageName ?? page?.name ?? 'Not in selected export')}</dd><dt>Template</dt><dd>${esc(page?.pageTemplateName ?? report?.pageTemplate?.name ?? 'Unresolved')}</dd></dl>${sourceRows(report?.pageSources ?? [])}${sourceRows(
+    out += `<details class="page-context" data-disclosure="page-context" ${disclosureState.get('page-context') ? 'open' : ''}><summary>Page context${page ? ' · ' + esc(page.pageName ?? page.name ?? '') : ''}</summary><dl class="details"><dt>Page</dt><dd>${esc(page?.pageName ?? page?.name ?? 'Not in selected export')}</dd><dt>Template</dt><dd>${esc(page?.pageTemplateName ?? report?.pageTemplate?.name ?? 'Unresolved')}</dd></dl>${pageRows('page-sources', report?.pageSources ?? [], sourceRows)}${pageRows(
+      'page-assets',
       (report?.assets ?? []).map((item) => ({
         ...item,
         kind: item.kind ?? (/\.css(?:$|\?)/i.test(item.url ?? item.ref ?? '') ? 'Stylesheet' : 'script'),
       })),
-      'Page asset; element ownership and applied CSS rules are not established',
-    )}${sourceRows(
+      (rows) => sourceRows(rows, 'Page asset; element ownership and applied CSS rules are not established'),
+    )}${pageRows(
+      'page-templates',
       (report?.webTemplates ?? []).map((item) => ({ ...item, kind: 'template' })),
-      'Page dependency; element ownership not established',
+      (rows) => sourceRows(rows, 'Page dependency; element ownership not established'),
     )}</details>`;
     if (!report)
       out = `<div class="empty"><b>${esc(d.inspectionError || (d.inspection?.active === false ? d.inspection.error : '') || 'Reading local sources…')}</b><p class="note">Use Refresh to retry source inspection.</p></div>`;
@@ -1121,11 +1320,15 @@ export function xrayUi(data) {
   };
   const renderCard = (preserve = false, measuredRect) => {
     if (!enabled) return;
+    // details.toggle is queued by the browser; capture the actual disclosure
+    // state before replacing a card, even if the next pick arrives first.
+    for (const item of card.querySelectorAll('details[data-disclosure]'))
+      disclosureState.set(item.dataset.disclosure, item.open);
     // Read portal geometry before revealing or rebuilding the overlay. Otherwise
     // the first selection synchronously lays out both the old and new card.
     const selectedRect = selected ? (measuredRect ?? visibleRect(selected) ?? selected.getBoundingClientRect()) : null;
     renderProgress();
-    const scroll = card.querySelector('.content')?.scrollTop ?? 0,
+    const scroll = preserve ? (card.querySelector('.content')?.scrollTop ?? 0) : 0,
       open = preserve
         ? [...card.querySelectorAll('details[open]')].map((item) => item.querySelector('summary')?.textContent)
         : [];
@@ -1278,22 +1481,28 @@ export function xrayUi(data) {
     releaseAnimationHook = null;
   function watchShadowRoots() {
     if (releaseShadowHook) return;
-    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'attachShadow');
+    releaseShadowHook = hookShadowView(window);
+  }
+  function hookShadowView(view) {
+    const prototype = view.Element.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'attachShadow');
     if (!descriptor?.value || !descriptor.configurable) return;
     const wrapped = function (...args) {
       const surface = descriptor.value.apply(this, args);
-      if (enabled && !disposed && surface.mode === 'open' && !own(this)) {
+      if (!disposed && surface.mode === 'open' && !own(this)) {
         shadowRoots.add(surface);
         watchFrames(this);
-        needsScan = true;
-        schedule();
+        if (enabled) {
+          needsScan = true;
+          schedule();
+        }
       }
       return surface;
     };
-    Object.defineProperty(Element.prototype, 'attachShadow', { ...descriptor, value: wrapped });
-    releaseShadowHook = () => {
-      if (Object.getOwnPropertyDescriptor(Element.prototype, 'attachShadow')?.value === wrapped)
-        Object.defineProperty(Element.prototype, 'attachShadow', descriptor);
+    Object.defineProperty(prototype, 'attachShadow', { ...descriptor, value: wrapped });
+    return () => {
+      if (Object.getOwnPropertyDescriptor(prototype, 'attachShadow')?.value === wrapped)
+        Object.defineProperty(prototype, 'attachShadow', descriptor);
     };
   }
   function watchAnimations() {
@@ -1596,14 +1805,14 @@ export function xrayUi(data) {
       animate();
     } else {
       oneShot = false;
-      releaseShadowHook?.();
-      releaseShadowHook = null;
       releaseAnimationHook?.();
       releaseAnimationHook = null;
+      for (const release of frameAnimationHooks.values()) release();
+      frameAnimationHooks.clear();
       resizeObserver.disconnect();
       observer.disconnect();
-      guardObserver.disconnect();
-      releaseFrames();
+      // Keep same-origin frame shortcut discovery alive while inspection is
+      // off. Every activation guard checks enabled; dispose owns teardown.
       selected = null;
       hover = null;
       ctrl = false;
@@ -1811,6 +2020,7 @@ export function xrayUi(data) {
     'keydown',
     (event) => {
       if (event.altKey && event.shiftKey && event.code === 'KeyX') {
+        if (event.ctrlKey || event.metaKey || event.repeat) return;
         event.preventDefault();
         event.stopImmediatePropagation();
         toggle();
@@ -1977,10 +2187,23 @@ export function xrayUi(data) {
       schedule();
     }
   });
+  listen(
+    root,
+    'toggle',
+    (event) => {
+      const key = event.target.dataset?.disclosure;
+      if (key) disclosureState.set(key, event.target.open);
+    },
+    { capture: true },
+  );
   listen(root, 'click', async (event) => {
     const button = event.target.closest('[data-action]');
     if (!button) return;
     const action = button.dataset.action;
+    if (action === 'context-page' && !button.disabled) {
+      contextPages.set(button.dataset.context, Math.max(0, Number(button.dataset.page) || 0));
+      renderCard(true);
+    }
     if (action === 'refresh' && !button.disabled) {
       setStatus('Refreshing local source inspection…');
       dispatch('refresh');
@@ -2078,6 +2301,8 @@ export function xrayUi(data) {
       animate();
     }
   });
+  watchShadowRoots();
+  watchFrames();
   host.__px = {
     toggle,
     select,
@@ -2125,10 +2350,10 @@ export function xrayUi(data) {
         report = currentReport;
         needsScan = true;
         if (!report) candidates = [];
-        renderCard();
+        renderCard(true);
         if (selected) notifySelection(true);
         schedule();
-      } else if (previousError !== d.inspectionError) renderCard();
+      } else if (previousError !== d.inspectionError) renderCard(true);
       if (enabled) renderProgress();
       if (next.ui?.hidden && enabled) toggle(false);
     },

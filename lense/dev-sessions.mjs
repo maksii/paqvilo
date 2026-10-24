@@ -205,7 +205,34 @@ export async function startDevSessions(
       },
       {
         bypassCSP: Boolean(initial.browser.bypassCSP),
+        onTargetError: async (error, page) => {
+          log(
+            `ERROR       Isolated tab interception failed (${error.phase}): ${error.message}. Healthy tabs remain active; retry in a new tab.`,
+          );
+          // An attached browser stays user-owned. Replace only the affected tab
+          // with an explicit failure page; preserve its shared browser context.
+          if (page.isClosed()) return;
+          try {
+            if (attached) {
+              await page.goto('about:blank', { waitUntil: 'commit', timeout: 5000 });
+              await page.setContent(
+                '<!doctype html><title>Local preview unavailable</title><h1>Local preview unavailable</h1><p>This tab could not install development interception. Healthy tabs remain active. Open a new tab to retry.</p>',
+                { timeout: 5000 },
+              );
+            } else await page.close({ runBeforeUnload: false });
+          } catch (isolationError) {
+            log(
+              `ERROR       Failed tab could not be isolated: ${isolationError.message}. This tab is not a verified local preview.`,
+            );
+          }
+        },
         onError: (error) => {
+          if (error.scope === 'target') {
+            log(
+              `ERROR       Target interception cleanup failed (${error.phase}): ${error.message}. Healthy tabs remain active.`,
+            );
+            return;
+          }
           failure = error;
           log(`ERROR       Portal interception failed: ${error.message}`);
           close()

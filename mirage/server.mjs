@@ -796,7 +796,12 @@ async function createPowerPagesSimulator({
     managementStorage?.materialize(candidate.state);
     // Source composition produced this private detached candidate; normalization
     // can adopt it without cloning the entire business graph again.
-    await store.replaceState(candidate.state, { expectedRevision, returnSnapshot: false, cloneInput: false });
+    await store.replaceState(candidate.state, {
+      expectedRevision,
+      returnSnapshot: false,
+      cloneInput: false,
+      skipSaveIfUnchanged: true,
+    });
     appliedPermissionModel = candidate.model;
   };
   if (!['data-only', 'apply'].includes(presetConfiguration))
@@ -883,6 +888,7 @@ async function createPowerPagesSimulator({
     stateFile,
     simulation,
     sources: {
+      readMetadata: (fn) => solutionMetadataOverlay.withReadEpoch(fn),
       plugins: () => solutionMetadata.plugins,
       workflows: () => operationWorkflows,
       layers: () => solutionData?.layers ?? [],
@@ -6309,15 +6315,19 @@ async function createPowerPagesSimulator({
     });
     const invocation = organizationHost
       .run(() =>
-        runWithRequest(requestContext, () =>
-          trace.run(context, async () => {
-            // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
-            // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
-            // site application user, so a refused administration request leaves no side effect.
-            if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? ''))
-              await store.portalAuthorization?.prepare(currentIdentity());
-            return handle(req, res);
-          }),
+        solutionMetadataOverlay.withReadEpoch(
+          () =>
+            runWithRequest(requestContext, () =>
+              trace.run(context, async () => {
+                // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
+                // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
+                // site application user, so a refused administration request leaves no side effect.
+                if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? ''))
+                  await store.portalAuthorization?.prepare(currentIdentity());
+                return handle(req, res);
+              }),
+            ),
+          { valid: () => !store.inTransaction() || store.isUnmodifiedRead(), revision: () => store.dataRevision() },
         ),
       )
       .catch((err) => {

@@ -163,6 +163,7 @@ export async function importModelDrivenResources(
     for (const file of libraryFiles) {
       const match = /^([A-Za-z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
       try {
+        budget.take('entries', 1);
         if (!match)
           throw new Error(`Platform library files are named <Library>@<version>.js (${path.basename(file)}).`);
         const real = await fs.realpath(file),
@@ -181,7 +182,6 @@ export async function importModelDrivenResources(
       }
     }
     clientSources = clientSources.filter((source) => !libraryFiles.includes(source));
-    if (!clientSources.length && libraryFiles.length) clientSources = undefined;
   }
   if (clientSources !== undefined) {
     try {

@@ -73,7 +73,7 @@ export function modelDrivenTargets(project, args = {}) {
 export async function readTargetMappings(targets, imported) {
   const result = new Map();
   for (const target of targets) {
-    const mappings = await readModelDrivenResourceMap(target.mapFile);
+    const mappings = await readModelDrivenResourceMap(target.mapFile, { assets: imported.assets });
     const names = new Set([...imported.assets.values()].map((asset) => asset.name));
     const routes = new Map();
     for (const { path: route, resource } of [

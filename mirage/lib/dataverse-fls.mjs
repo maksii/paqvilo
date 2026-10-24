@@ -530,7 +530,7 @@ export const fieldSecurity = {
       organizationId: () => organizationRecord(store)?.organizationid,
       diagnostic: api.diagnostic ?? null,
     });
-    fls.assertSecurable();
+    (api.readMetadata ?? ((fn) => fn()))(() => fls.assertSecurable());
     api.fieldSecurity = {
       mask: fls.mask,
       maskValue: fls.maskValue,

@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { standardTable } from './solution-standard.mjs';
 import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { guidKey } from './dataverse-values.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 export const ACCESS_RIGHTS = {
   Read: 1,
@@ -242,7 +244,7 @@ const TABLE_DEFS = {
 
 export const baseCurrencyId = (organizationId) => uuidV5(organizationId, 'transactioncurrency:base');
 
-const key = (value) => String(value ?? '').toLowerCase();
+const key = (value) => guidKey(value) ?? String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
 const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -453,12 +455,26 @@ function rowsOf(store, logical) {
     const index = new Map();
     for (const row of rows) {
       const id = key(row[def.id]);
-      if (!index.has(id)) index.set(id, row);
+      const existing = index.get(id);
+      if (existing && !isDeepStrictEqual(seedIdentity(existing), seedIdentity(row)))
+        throw new DataError(
+          `Conflicting equivalent IDs in security table ${logical}.`,
+          409,
+          'SecuritySeedIdentityConflict',
+        );
+      if (!existing) index.set(id, row);
     }
     seedRows.set(rows, index);
     frame.push(rows);
   }
   return rows;
+}
+// Compare reference IDs too, while retaining every administrator-controlled value.
+function seedIdentity(value) {
+  if (Array.isArray(value)) return value.map(seedIdentity);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, seedIdentity(item)]));
+  return guidKey(value) ?? value;
 }
 function withSeedIndexes(store, fn) {
   if (seedFrames.has(store)) return fn();

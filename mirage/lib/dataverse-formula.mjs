@@ -230,7 +230,7 @@ function install(api, options = {}) {
       computeColumn(state, {}, api.store.resolveMapping(logical), row, column, formulaColumnsOf(api, logical)[column]),
   };
   api.store.setComputedColumns('dataverse-formula', state.provider);
-  reportSecuredInputs(api, state);
+  (api.readMetadata ?? ((fn) => fn()))(() => reportSecuredInputs(api, state));
   api.recordHooks.add('beforeWrite', (c, mapping, { operation, data }) => {
     if (operation === 'delete' || !data) return;
     const formulas = formulaColumnsOf(api, mapping.logicalName);

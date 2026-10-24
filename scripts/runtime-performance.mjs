@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
+import { parseArgs } from 'node:util';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createSimulator } from '../mirage/server.mjs';
 import { performanceFixture } from '../mirage/test/runtime-performance-fixture.mjs';
 
@@ -16,6 +18,55 @@ export const LARGE_PERFORMANCE_OPTIONS = Object.freeze({
   heartbeatBudgetMs: 1000,
   strictBudgets: false,
 });
+
+/** Budgets belong to the selected synthetic workload and machine, not every exported organization. */
+export function performanceOptionsFromArgs(args) {
+  const { values } = parseArgs({
+    args,
+    options: {
+      quick: { type: 'boolean' },
+      large: { type: 'boolean' },
+      standalone: { type: 'boolean' },
+      tables: { type: 'string' },
+      records: { type: 'string' },
+      'forms-per-table': { type: 'string' },
+      'startup-budget': { type: 'string' },
+      'restart-budget': { type: 'string' },
+      'journal-budget': { type: 'string' },
+      'catalogue-budget': { type: 'string' },
+      'heartbeat-budget': { type: 'string' },
+      'data-budget': { type: 'string' },
+    },
+  });
+  if (values.quick && values.large) throw Error('Choose --quick or --large, not both.');
+  const positive = (value, name) => {
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))
+      throw Error(`--${name} must be a positive safe integer.`);
+    return Number(value);
+  };
+  const options = {
+    portal: !values.standalone,
+    ...(values.quick ? { scales: [16], records: 1000 } : {}),
+    ...(values.large ? LARGE_PERFORMANCE_OPTIONS : {}),
+  };
+  if (values.tables !== undefined) options.scales = values.tables.split(',').map((value) => positive(value, 'tables'));
+  for (const [flag, property] of Object.entries({
+    records: 'records',
+    'forms-per-table': 'formsPerTable',
+    'catalogue-budget': 'catalogueBudgetMs',
+    'heartbeat-budget': 'heartbeatBudgetMs',
+    'data-budget': 'dataBudgetMs',
+  }))
+    if (values[flag] !== undefined) options[property] = positive(values[flag], flag);
+  options.startupBudgets = { ...options.startupBudgets };
+  for (const [flag, phase] of Object.entries({
+    'startup-budget': 'fresh',
+    'restart-budget': 'unchanged',
+    'journal-budget': 'journal-grown',
+  }))
+    if (values[flag] !== undefined) options.startupBudgets[phase] = positive(values[flag], flag);
+  return options;
+}
 
 /** Sequential loopback probe: never consumes an external portal or business data. */
 export async function runtimePerformance({
@@ -45,7 +96,7 @@ export async function runtimePerformance({
     const fixture = await performanceFixture({ tables, records, formsPerTable, columns });
     const fixtureMs = Math.round(performance.now() - fixtureStarted);
     onProgress({ tables, phase: 'fixture-created', fixtureMs, inventory: fixture.inventory });
-    let sim;
+    let sim, loopDelay;
     try {
       const stateFile = path.join(fixture.root, 'state.json');
       const options = {
@@ -59,6 +110,8 @@ export async function runtimePerformance({
         persistence: { journalThresholdBytes: 0 },
       };
       for (const phase of phases) {
+        loopDelay = monitorEventLoopDelay({ resolution: 10 });
+        loopDelay.enable();
         const before = fixture.generated(),
           started = performance.now(),
           memoryBefore = process.memoryUsage();
@@ -72,6 +125,27 @@ export async function runtimePerformance({
         });
         const startupMs = performance.now() - started;
         onProgress({ tables, run: phase, phase: 'startup-complete', elapsedMs: Math.round(startupMs) });
+        const statusStarted = performance.now();
+        let firstStatusError;
+        try {
+          const firstStatus = await fetch(sim.url + '/_sim/api/status', {
+            signal: AbortSignal.timeout(catalogueBudgetMs),
+          });
+          if (!firstStatus.ok) throw Error(`Status ${firstStatus.status}`);
+          await firstStatus.arrayBuffer();
+        } catch (error) {
+          if (strictBudgets) throw error;
+          firstStatusError = { name: error.name, message: error.message };
+          findings.push({
+            tables,
+            phase,
+            stage: 'first status request',
+            error: error.name,
+            budgetMs: catalogueBudgetMs,
+          });
+        }
+        const firstStatusMs = performance.now() - statusStarted;
+        checkBudget(firstStatusMs, heartbeatBudgetMs, { tables, phase, stage: 'first status response' });
         const catalogue = [];
         for (const warmth of ['cold', 'warm']) {
           const started = performance.now();
@@ -209,12 +283,22 @@ export async function runtimePerformance({
           .reduce((total, [, rows]) => total + rows.length, 0);
         if (actualRecords !== records) throw Error('Imported fixture record count changed');
         const startupBudgetMs = startupBudgets[phase] ?? budgetMs;
+        const memoryAfter = process.memoryUsage(),
+          peakRssBytes = process.resourceUsage().maxRSS * 1024;
         results.push({
           tables,
           formsPerTable,
           phase,
           startupMs: Math.round(startupMs),
           startupBudgetMs,
+          firstStatusMs: Math.round(firstStatusMs),
+          ...(firstStatusError ? { firstStatusError } : {}),
+          eventLoop: {
+            maxMs: loopDelay.max / 1e6,
+            p99Ms: loopDelay.percentile(99) / 1e6,
+            meanMs: Number.isFinite(loopDelay.mean) ? loopDelay.mean / 1e6 : null,
+          },
+          processPeakRssBytes: peakRssBytes,
           generated: fixture.generated() - before,
           preset: status.startupPreset,
           timings: status.bootstrap?.timings,
@@ -228,8 +312,10 @@ export async function runtimePerformance({
           inventory: fixture.inventory,
           fixtureMs,
           memoryBefore,
-          memory: process.memoryUsage(),
+          memory: memoryAfter,
         });
+        loopDelay.disable();
+        loopDelay = null;
         checkBudget(startupMs, startupBudgetMs, { tables, phase, stage: 'startup' });
         if (phase === 'unchanged')
           for (let i = 0; i < 25; i++)
@@ -245,6 +331,7 @@ export async function runtimePerformance({
         sim = null;
       }
     } finally {
+      loopDelay?.disable();
       await sim?.close();
       await fixture.cleanup();
     }
@@ -252,6 +339,7 @@ export async function runtimePerformance({
   return {
     version: 1,
     dataset: 'invented loopback fixture',
+    readiness: 'API payload checks only; visible browser controls and application usability are measured separately.',
     budgetMs,
     startupBudgets,
     catalogueBudgetMs,
@@ -276,13 +364,9 @@ export async function runtimePerformance({
   };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.includes('--quick') && process.argv.includes('--large'))
-    throw Error('Choose --quick or --large, not both.');
   const report = await runtimePerformance({
-    portal: !process.argv.includes('--standalone'),
+    ...performanceOptionsFromArgs(process.argv.slice(2)),
     onProgress: (entry) => console.error(JSON.stringify({ type: 'performance-progress', ...entry })),
-    ...(process.argv.includes('--quick') ? { scales: [16], records: 1000 } : {}),
-    ...(process.argv.includes('--large') ? LARGE_PERFORMANCE_OPTIONS : {}),
   });
   console.log(JSON.stringify(report, null, 2));
   if (report.findings.length) process.exitCode = 1;

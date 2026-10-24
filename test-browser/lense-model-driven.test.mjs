@@ -8,7 +8,8 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
+import { SourceMap } from 'node:module';
+import { createModelDrivenOverlay, readModelDrivenResourceMap } from '../lense/model-driven.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { refreshModelDrivenPage } from '../lense/commands/model-driven.mjs';
 
@@ -19,6 +20,104 @@ before(async () => {
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
 });
 after(() => browser?.close());
+
+test(
+  'an original-source breakpoint resolved through an explicitly served compiled sidecar binds and pauses',
+  { timeout: 15000 },
+  async (t) => {
+    const owner = ownedFixture(t),
+      root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-compiled-map-'));
+    let context, release, cdp;
+    owner.add(() => cdp?.detach());
+    owner.add(() => release?.());
+    owner.add(() => context?.close());
+    owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    const original = 'export function answer(): number {\n  return 42;\n}',
+      compiled = 'globalThis.compiledAnswer = function(){\n  return 42;\n};\n//# sourceMappingURL=bundle.js.map',
+      payload = {
+        version: 3,
+        sources: ['src/original.ts'],
+        sourcesContent: [original],
+        names: [],
+        mappings: 'AAAA;AACA;AACA',
+      },
+      file = path.join(root, 'bundle.js'),
+      mappingFile = path.join(root, 'map.json');
+    await fs.writeFile(file, compiled);
+    await fs.writeFile(path.join(root, 'bundle.js.map'), JSON.stringify(payload));
+    await fs.writeFile(
+      mappingFile,
+      JSON.stringify({
+        version: 1,
+        resources: [
+          {
+            path: '/WebResources/bundle.js',
+            resource: 'bundle.js',
+            sourceMap: { path: '/WebResources/bundle.js.map', file: 'bundle.js.map' },
+          },
+        ],
+      }),
+    );
+    const server = http.createServer((_request, response) =>
+      response
+        .writeHead(200, { 'content-type': 'text/html' })
+        .end('<!doctype html><script src="/WebResources/bundle.js"></script>'),
+    );
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    owner.add(() => {
+      server.closeAllConnections();
+      return new Promise((resolve) => server.close(resolve));
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    context = await browser.newContext();
+    const page = await context.newPage(),
+      imported = {
+        resources: [{ name: 'bundle.js' }],
+        diagnostics: [],
+        assets: new Map([
+          ['bundle', { name: 'bundle.js', file, data: Buffer.from(compiled), mime: 'text/javascript' }],
+        ]),
+      };
+    const overlay = createModelDrivenOverlay({
+      origin,
+      imported,
+      mappings: await readModelDrivenResourceMap(mappingFile, { assets: imported.assets }),
+    });
+    release = await interceptOrigin(context, origin, (route) => overlay.handle(route));
+    cdp = await context.newCDPSession(page);
+    const pauses = [];
+    await cdp.send('Debugger.enable');
+    cdp.on('Debugger.paused', (event) => {
+      pauses.push(event);
+      cdp.send('Debugger.resume').catch(() => {});
+    });
+    await page.goto(origin);
+    const served = await page.evaluate(() => fetch('/WebResources/bundle.js.map').then((response) => response.json()));
+    assert.equal(served.sourcesContent[0], original);
+    const map = new SourceMap(served),
+      requested = { source: 'src/original.ts', line: 1, column: 0 };
+    const binding = compiled
+      .split('\n')
+      .map((_, line) => map.findEntry(line, 0))
+      .find(
+        (entry) =>
+          entry.originalSource === requested.source &&
+          entry.originalLine === requested.line &&
+          entry.originalColumn === requested.column,
+      );
+    assert.ok(binding, 'the requested original-source line has a generated location');
+    const breakpoint = await cdp.send('Debugger.setBreakpointByUrl', {
+      url: origin + '/WebResources/bundle.js',
+      lineNumber: binding.generatedLine,
+      columnNumber: binding.generatedColumn,
+    });
+    assert.equal(breakpoint.locations.length, 1);
+    assert.equal(await page.evaluate(() => globalThis.compiledAnswer()), 42);
+    assert.equal(pauses.length, 1);
+    const paused = pauses[0].callFrames[0].location;
+    assert.equal(map.findEntry(paused.lineNumber, paused.columnNumber).originalLine, requested.line);
+  },
+);
 
 test(
   'model-driven overlay refresh bypasses an existing worker only in its owned tab and restores it on release',

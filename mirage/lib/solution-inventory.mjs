@@ -873,7 +873,24 @@ export function mergeInventory(records) {
     for (const field of ['privileges', 'permissions'])
       if (Array.isArray(record[field]) && record[field].length && !current[field]?.length)
         current[field] = record[field];
-    if (record.level === 'inventory') current.level = 'inventory';
+    if (record.component === 'canvasapp' && (record.msapp || record.canvas || record.tree || current.tree)) {
+      // A metadata declaration completes identity, never downgrades parsed logic.
+      // A subsequent payload remains authoritative, including a failed parse.
+      if (record.msapp || record.canvas) {
+        current.level = record.level;
+        current.reason = record.reason;
+        current.tree = record.tree;
+        current.unsupported = record.unsupported;
+        current.canvas = record.canvas;
+        current.msapp = record.msapp;
+        current.diagnostics = record.diagnostics;
+        current.source = record.source ?? current.source;
+        current.sourceMissing = record.sourceMissing === true;
+      } else if (current.tree) {
+        current.level = 'behaviour';
+        current.reason = null;
+      }
+    } else if (record.level === 'inventory') current.level = 'inventory';
     for (const dependency of record.dependencies)
       if (
         !current.dependencies.some((item) => item.component === dependency.component && item.name === dependency.name)
@@ -905,6 +922,45 @@ export function mergeInventory(records) {
         record.diagnostics = [...(record.diagnostics ?? []), { ...(blocked ?? sdk), severity: 'error' }];
     }
   return [...merged.values()];
+}
+
+/** Canvas payloads and metadata may be supplied by separate selected layers. */
+export function mergeCanvasLayers(records) {
+  const canvas = new Map(),
+    output = [];
+  for (const record of records) {
+    if (record.component !== 'canvasapp') {
+      output.push(record);
+      continue;
+    }
+    const key = record.name.toLowerCase(),
+      current = canvas.get(key);
+    const identity = Object.fromEntries(
+      ['id', 'displayName', 'version', 'componentType']
+        .filter((field) => record[field] != null && record[field] !== '')
+        .map((field) => [field, record[field]]),
+    );
+    canvas.set(
+      key,
+      current
+        ? {
+            ...mergeInventory([current, record])[0],
+            ...identity,
+            layer: record.layer,
+            solution: record.solution,
+            variants: (current.variants ?? 1) + (record.variants ?? 1),
+            contributions: [
+              ...(current.contributions ?? [
+                { layer: current.layer, solution: current.solution, source: current.source },
+              ]),
+              ...(record.contributions ?? [{ layer: record.layer, solution: record.solution, source: record.source }]),
+            ],
+            sources: [...new Set([...(current.sources ?? [current.source]), record.source].filter(Boolean))],
+          }
+        : record,
+    );
+  }
+  return [...output, ...canvas.values()];
 }
 
 /** Diagnostic code of an inventory-level component kind (once per kind per layer). */

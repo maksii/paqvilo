@@ -13,6 +13,154 @@ import { createSimulator } from '../server.mjs';
 import { performanceFixture, performanceId } from './runtime-performance-fixture.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
+import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+
+test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  for (const count of [32, 4096]) {
+    const state = emptyState();
+    state.tables.x_item = Array.from({ length: count }, (_, index) => ({
+      x_itemid: `item-${index}`,
+      value: 'local edit',
+    }));
+    const store = await new DataStore({
+      file: path.join(directory, `${count}.json`),
+      state,
+      persistence: { journalThresholdBytes: 0 },
+    }).init();
+    await store.save();
+    const bytes = await fs.readFile(store.file),
+      revision = store.revision;
+    let saves = 0,
+      graphClones = 0;
+    store.onSave = () => saves++;
+    const clone = structuredClone,
+      candidate = clone(store.state);
+    const mock = t.mock.method(globalThis, 'structuredClone', (value, ...args) => {
+      if (value?.tables?.x_item?.length === count) graphClones++;
+      return clone(value, ...args);
+    });
+    try {
+      await store.transact(() => undefined, { isolated: true, cloneResult: false, skipSaveIfUnchanged: true });
+      assert.equal(graphClones, 1, `Only one business graph clone for ${count} rows.`);
+      graphClones = 0;
+      await store.replaceState(candidate, { cloneInput: false, returnSnapshot: false, skipSaveIfUnchanged: true });
+      assert.equal(graphClones, 0, 'The detached composition candidate is adopted directly.');
+      assert.equal(saves, 0);
+      assert.equal(store.revision, revision);
+      assert.deepEqual(await fs.readFile(store.file), bytes, 'Unchanged composition appends no journal bytes.');
+      assert.equal(store.state.tables.x_item.length, count);
+      assert.equal(store.state.tables.x_item.at(-1).value, 'local edit');
+    } finally {
+      mock.mock.restore();
+    }
+  }
+});
+
+test('metadata inventory work scales with metadata once per read, independent of business-row count', () => {
+  for (const forms of [8, 256]) {
+    let scans = 0,
+      revision = 0;
+    const state = {
+      tables: {
+        systemform: Array.from({ length: forms }, (_, index) => ({
+          formid: `f-${index}`,
+          get name() {
+            scans++;
+            return `Form ${index}`;
+          },
+          settings: { title: 'original' },
+        })),
+      },
+      dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } },
+    };
+    const base = {
+        forms: state.tables.systemform.map((row) => ({ id: row.formid, entity: 'x_item', xml: '<form/>' })),
+      },
+      overlay = createSolutionMetadataOverlay();
+    const counts = [];
+    for (const businessRows of [16, 4096]) {
+      scans = 0;
+      const result = overlay.withReadEpoch(() => {
+        const first = overlay(base, state);
+        for (let row = 0; row < businessRows; row++) assert.equal(overlay(base, state), first);
+        return first;
+      });
+      assert.equal(typeof result.then, 'undefined', 'Synchronous status consumers remain synchronous.');
+      counts.push(scans);
+    }
+    assert.ok(
+      counts.every((count) => count <= forms * 2),
+      `${forms} forms read ${counts} times.`,
+    );
+    overlay.withReadEpoch(
+      () => {
+        const first = overlay(base, state);
+        state.tables.systemform[0].settings.title = 'changed';
+        revision++;
+        assert.notEqual(overlay(base, state), first, 'A committed metadata revision expires the current scope.');
+      },
+      { revision: () => revision },
+    );
+  }
+});
+
+test('built-in startup metadata scans are bounded across tables and trusted extensions still see direct edits', async (t) => {
+  const state = emptyState();
+  let scans = 0;
+  const forms = 16;
+  state.tables.systemform = Array.from({ length: forms }, (_, index) => ({ formid: `f-${index}`, name: 'Invented' }));
+  state.dataverse = { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } };
+  for (let index = 0; index < 64; index++) {
+    const entity = `x_table${index}`;
+    state.mappings[entity] = {
+      logicalName: entity,
+      entitySet: `${entity}s`,
+      idColumn: `${entity}id`,
+      nameColumn: 'x_name',
+    };
+    state.tables[entity] = [];
+  }
+  const store = new DataStore({ state }),
+    overlay = createSolutionMetadataOverlay(),
+    base = {
+      entities: {},
+      forms: Array.from({ length: forms }, (_, index) => ({ id: `f-${index}`, entity: 'x_table0', xml: '<form/>' })),
+    };
+  for (const row of store.state.tables.systemform) row.settings = { marker: 'metadata-probe' };
+  const stringify = JSON.stringify;
+  const mock = t.mock.method(JSON, 'stringify', (value, ...args) => {
+    if (value?.marker === 'metadata-probe') scans++;
+    return stringify(value, ...args);
+  });
+  const organization = await createOrganizationRuntime({
+    store,
+    settings: dataverseSettings({ enabled: false }),
+    metadataFields: (logical) => overlay(base, store.state).entities?.[logical]?.fields,
+    readMetadata: (fn) => overlay.withReadEpoch(fn),
+    extensions: [
+      ...EXTENSIONS,
+      {
+        install(api) {
+          const first = overlay(base, api.store.state);
+          api.store.state.tables.systemform[0].formxml = '<form><tabs/></form>';
+          assert.notEqual(
+            overlay(base, api.store.state),
+            first,
+            'Arbitrary extension writes do not inherit a stale startup snapshot.',
+          );
+        },
+      },
+    ],
+  });
+  try {
+    assert.ok(scans <= forms * 8, `${scans} source row reads for ${forms} forms and 64 tables.`);
+  } finally {
+    mock.mock.restore();
+    await organization.close();
+  }
+});
 
 test('organization seeders checkpoint once, keep existing rows and roll back failed composition', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
@@ -203,6 +351,64 @@ test('metadata reuse stops before a potentially mutating read plug-in runs', asy
       },
       { valid: () => store.isUnmodifiedRead() },
     ),
+  );
+});
+
+test('temporarily invalid metadata scopes never restore the cached projection from before a write', () => {
+  const overlay = createSolutionMetadataOverlay(),
+    base = { forms: [{ id: 'f', xml: '<form/>' }] },
+    state = {
+      tables: { systemform: [{ formid: 'f', name: 'Before' }] },
+      dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f': {} } } },
+    };
+  let valid = true;
+  overlay.withReadEpoch(
+    () => {
+      overlay(base, state);
+      valid = false;
+      state.tables.systemform[0].name = 'After';
+      assert.equal(overlay(base, state).forms[0].name, 'After');
+      valid = true;
+      assert.equal(overlay(base, state).forms[0].name, 'After');
+    },
+    { valid: () => valid },
+  );
+});
+
+test('explicit nested metadata boundaries enforce both validity and revisions and expire the outer snapshot', () => {
+  const overlay = createSolutionMetadataOverlay(),
+    base = { forms: [{ id: 'f', xml: '<form/>' }] },
+    state = {
+      tables: { systemform: [{ formid: 'f', name: 'Before' }] },
+      dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f': {} } } },
+    };
+  let outerValid = true,
+    revision = 0;
+  overlay.withReadEpoch(
+    () => {
+      overlay(base, state);
+      overlay.withReadEpoch(
+        () => {
+          state.tables.systemform[0].name = 'Direct inner write';
+          assert.equal(overlay(base, state).forms[0].name, 'Direct inner write');
+        },
+        { valid: () => false },
+      );
+      assert.equal(overlay(base, state).forms[0].name, 'Direct inner write');
+      overlay.withReadEpoch(
+        () => {
+          overlay(base, state);
+          state.tables.systemform[0].name = 'New revision';
+          revision++;
+          assert.equal(overlay(base, state).forms[0].name, 'New revision');
+          outerValid = false;
+          state.tables.systemform[0].name = 'Invalid parent';
+          assert.equal(overlay(base, state).forms[0].name, 'Invalid parent');
+        },
+        { revision: () => revision },
+      );
+    },
+    { valid: () => outerValid },
   );
 });
 

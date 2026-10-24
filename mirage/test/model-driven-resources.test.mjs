@@ -199,6 +199,28 @@ test('explicit client sources are independent of metadata, ordered, confined and
     );
 });
 
+test('platform-only client sources never fall back to organization roots and consume aggregate entry budget', async (t) => {
+  const metadata = await fixture(t, {
+    'WebResources/excluded.js': 'window.Excluded = true;',
+    'WebResources/excluded.js.data.xml': descriptor('x_/excluded.js', 'WebResources/excluded.js'),
+  });
+  const selected = await fixture(t, {
+    'React@16.14.0.js': 'window.React = {};',
+    'ReactDOM@16.14.0.js': 'window.ReactDOM = {};',
+  });
+  const layers = [{ type: 'directory', dir: metadata }];
+  const clientSources = ['React@16.14.0.js', 'ReactDOM@16.14.0.js'].map((name) => path.join(selected, name));
+  const admitted = await importModelDrivenResources(layers, { clientSources, limits: { entries: 2 } });
+  assert.equal(admitted.resources.length, 0);
+  assert.equal(admitted.pcf.controls.length, 0);
+  assert.equal(admitted.pcf.platformLibraries.length, 2);
+  assert.equal(admitted.assets.size, 2);
+  assert.deepEqual(admitted.diagnostics, []);
+  const rejected = await importModelDrivenResources(layers, { clientSources, limits: { entries: 1 } });
+  assert.equal(rejected.assets.size, 0);
+  assert.equal(rejected.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+});
+
 test('PCF client budgets include manifests, RESX and images and reuse the admitted JS snapshot', async (t) => {
   const files = {
     'Controls/Budget/ControlManifest.xml':

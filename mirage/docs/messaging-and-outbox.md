@@ -129,7 +129,9 @@ Reading and updating entries:
 
 Each producer reads its provider when it runs. When a provider is `null`, Mirage behaves as it did without it.
 
-Both hosts build these providers once (`organization-host.mjs`): the local bus with the validated `providers.messaging` settings and the outbox are always present. The organization backend delivers through `serviceEndpointDelivery(store, { messaging: () => api.providers.messaging })`, the connector runtime's `memory-queue` provider sends to the same bus, and both hosts mount the `/_sim/` routes below before their administration router. A dry-run runtime cannot write the bus table (it is a schema change the dry-run level refuses), so a delivery there fails its job; use a state file.
+Both hosts build these providers once (`organization-host.mjs`): the local bus with the validated `providers.messaging` settings and the outbox are always present. The organization backend delivers through `serviceEndpointDelivery(store, { messaging: () => api.providers.messaging })`, the connector runtime's `memory-queue` provider sends to the same bus, and both hosts mount the `/_sim/` routes below before their administration router.
+
+Startup initializes the internal queue, outbox and flow-run tables in memory, including at the `dry-run` level. Sending a first local message, receiving and settling it, scheduled delivery, outbox capture and flow-run tracking work without a state file. This state is lost when the runtime closes or restarts. Use a persistent simulation level and a state file when those records must survive restart; `dry-run` remains memory-only even if a state-file path is supplied. Outbox capture records an intended delivery locally and does not send email or contact an external recipient.
 
 `api.providers.messaging` has the shape `{ bus, buses?, settings, organizationUri? }`:
 

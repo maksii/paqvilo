@@ -62,7 +62,7 @@ export async function interceptOrigins(
   context,
   origins,
   handler,
-  { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message) } = {},
+  { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message), onTargetError } = {},
 ) {
   const allowed = new Set(origins.map((origin) => new URL(origin).origin));
   if (!allowed.size) throw new Error('At least one portal origin is required');
@@ -91,7 +91,12 @@ export async function interceptOrigins(
       // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
       const step = async (label, action) => {
         if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS)))
-          onError(new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`));
+          onError(
+            Object.assign(
+              new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`),
+              { scope: 'target', phase: label },
+            ),
+          );
       };
       // Abort before disabling interception, so an in-flight POST cannot be resumed and repeated.
       await step('pending requests', () =>
@@ -125,7 +130,10 @@ export async function interceptOrigins(
       cdp = await context.newCDPSession(page);
     } catch (error) {
       if (stopped || page.isClosed()) return;
-      throw new Error(`Could not attach development interception: ${error.message}`, { cause: error });
+      throw Object.assign(new Error(`Could not attach development interception: ${error.message}`, { cause: error }), {
+        scope: 'target',
+        phase: 'CDP attachment',
+      });
     }
     if (stopped || page.isClosed()) {
       await cdp.detach?.().catch(() => {});
@@ -169,7 +177,10 @@ export async function interceptOrigins(
           cdp.send(method, params),
           new Promise((_, reject) => {
             timer = setTimeout(
-              () => reject(new Error(`${method} did not answer within ${CDP_SETUP_MS} ms`)),
+              () =>
+                reject(
+                  Object.assign(new Error(`${method} did not answer within ${CDP_SETUP_MS} ms`), { phase: method }),
+                ),
               CDP_SETUP_MS,
             );
           }),
@@ -194,7 +205,10 @@ export async function interceptOrigins(
       const pageClosed = stopped || record.closed || page.isClosed();
       await release(record);
       if (pageClosed) return;
-      throw new Error(`Could not enable development interception: ${error.message}`, { cause: error });
+      throw Object.assign(new Error(`Could not enable development interception: ${error.message}`, { cause: error }), {
+        scope: 'target',
+        phase: error.phase ?? 'interception setup',
+      });
     }
     if (record.closed || stopped) {
       await release(record);
@@ -223,7 +237,7 @@ export async function interceptOrigins(
           // EventEmitter does not await page handlers. Observe callback failures too, so a
           // reporting callback cannot turn a tab setup error into an unhandled rejection.
           Promise.resolve()
-            .then(() => onError(error))
+            .then(() => (onTargetError ? onTargetError(error, page) : onError(error)))
             .catch(() => {});
         }
       },

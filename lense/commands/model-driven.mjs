@@ -11,6 +11,7 @@ import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
 import { createModelDrivenOverlay, importModelDrivenProject } from '../model-driven.mjs';
 import { modelDrivenTargets, readTargetMappings, modelDrivenTargetSessions } from '../model-driven-targets.mjs';
 import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
+import { startupDeadline } from '../startup-deadline.mjs';
 
 const cleanError = (error) =>
   String(error.message).replace(/https?:\/\/[^\s<>"']+/g, (value) => {
@@ -78,29 +79,65 @@ export function publishModelDrivenReload(overlay, next, mappings) {
 }
 
 export default async function run(_cfg, args, [action = 'dev'] = []) {
-  const progress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
+  const originalProgress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
+  const deadline = action === 'dev' ? startupDeadline(args['startup-timeout']) : null;
+  const progress = originalProgress && {
+    phase(name, detail) {
+      deadline.phase(name);
+      originalProgress.phase(name, detail);
+    },
+    complete(detail) {
+      originalProgress.complete(detail);
+    },
+    fail(detail) {
+      originalProgress.fail(detail);
+    },
+    close() {
+      originalProgress.close();
+    },
+  };
   try {
-    return await runModelDriven(args, action, progress);
+    return await runModelDriven(args, action, progress, deadline);
   } catch (error) {
     progress?.fail(cleanError(error));
     throw error;
   } finally {
+    deadline?.close();
     progress?.close();
   }
 }
 
-async function runModelDriven(args, action, progress) {
+async function runModelDriven(args, action, progress, deadline) {
+  const startupWait = (work, disposeLate) => (deadline ? deadline.wait(work, disposeLate) : work);
   if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
+  if (action !== 'dev' && args['startup-timeout'] !== undefined)
+    throw Object.assign(new Error('--startup-timeout is supported only by model-driven dev.'), {
+      code: 'unsupported_option',
+    });
   if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
   if (args.json && action !== 'inspect')
     throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
   progress?.phase('configuration');
-  const project = await loadProjectConfig(args.project);
-  const { targets, selected } = modelDrivenTargets(project, args);
+  const project = await startupWait(loadProjectConfig(args.project));
+  const selection = modelDrivenTargets(project, args),
+    selected = selection.selected;
+  let targets = selection.targets;
+  if (args['local-simulation']) {
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(selected.origin).hostname))
+      throw new Error('--local-simulation requires a loopback target.');
+    targets = [selected];
+    selected.envName = 'Local simulation';
+  }
   progress?.phase('source discovery and Solution resources');
-  let imported = await importModelDrivenProject(project);
+  let imported = await startupWait(importModelDrivenProject(project));
+  if (args['local-simulation'])
+    imported.diagnostics.push({
+      code: 'MODEL_LOCAL_SIMULATION',
+      message:
+        'Local Mirage simulation. Actions use this loopback runtime; native-only APIs remain unavailable when the runtime does not expose them.',
+    });
   progress?.phase('resource mappings');
-  const mappings = await readTargetMappings(targets, imported);
+  const mappings = await startupWait(readTargetMappings(targets, imported));
   const origin = selected.origin;
   let page, targetSessions;
   if (action === 'inspect') {
@@ -110,6 +147,7 @@ async function runModelDriven(args, action, progress) {
       selectedTarget: selected.id,
       targets: targets.map(({ id, origin }) => ({ id, origin })),
       trustedExtensions: project.modelDriven?.trustedExtensions ?? false,
+      localSimulation: Boolean(args['local-simulation']),
     };
     if (args.json) console.log(JSON.stringify(report));
     else
@@ -128,7 +166,10 @@ async function runModelDriven(args, action, progress) {
     throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
   progress?.phase('browser setup');
-  const { context, close, attached, debugPort } = await openBrowser(cfg, { debugPort: cfg.browser.debugPort });
+  const { context, close, attached, debugPort } = await startupWait(
+    openBrowser(cfg, { debugPort: cfg.browser.debugPort }),
+    (opened) => opened.close(),
+  );
   let release,
     watcher,
     timer,
@@ -162,7 +203,9 @@ async function runModelDriven(args, action, progress) {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   try {
-    page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
+    page = attached
+      ? await startupWait(context.newPage(), (late) => late.close())
+      : (context.pages()[0] ?? (await startupWait(context.newPage(), (late) => late.close())));
     page.once('close', stop);
     progress?.phase('interception and inspector setup');
     targetSessions = modelDrivenTargetSessions({
@@ -208,45 +251,48 @@ async function runModelDriven(args, action, progress) {
           },
         }),
     });
-    release = await interceptOrigins(
-      context,
-      targets.map((target) => target.origin),
-      async (route) => {
-        const request = route.request(),
-          targetOrigin = new URL(request.url()).origin;
-        try {
-          if (request.resourceType() === 'document' && !request.frame()?.parentFrame()) {
-            const previous = targetSessions.current();
-            previous?.inspector?.prepareRequest(route);
-            // Chromium cannot answer Page/Runtime teardown commands while its
-            // next main document is Fetch-paused. Continue navigation first;
-            // declared asset routes below wait for the serialized transition.
-            const transition = targetSessions.activate(targetOrigin);
-            void transition.catch((error) => {
-              primaryFailure ??= error;
-              onError(error);
-              stop();
-            });
-            route.removeRequestHeader('x-paqvilo-native-comparison');
-            return route.fallback();
+    release = await startupWait(
+      interceptOrigins(
+        context,
+        targets.map((target) => target.origin),
+        async (route) => {
+          const request = route.request(),
+            targetOrigin = new URL(request.url()).origin;
+          try {
+            if (request.resourceType() === 'document' && !request.frame()?.parentFrame()) {
+              const previous = targetSessions.current();
+              previous?.inspector?.prepareRequest(route);
+              // Chromium cannot answer Page/Runtime teardown commands while its
+              // next main document is Fetch-paused. Continue navigation first;
+              // declared asset routes below wait for the serialized transition.
+              const transition = targetSessions.activate(targetOrigin);
+              void transition.catch((error) => {
+                primaryFailure ??= error;
+                onError(error);
+                stop();
+              });
+              route.removeRequestHeader('x-paqvilo-native-comparison');
+              return route.fallback();
+            }
+            const current = await targetSessions.ready();
+            if (current?.target.origin !== targetOrigin || !current.inspector) {
+              route.removeRequestHeader('x-paqvilo-native-comparison');
+              return route.fallback();
+            }
+            current.inspector.prepareRequest(route);
+            return current.overlay.handle(route);
+          } catch (error) {
+            primaryFailure ??= error;
+            onError(error);
+            stop();
+            return route.abort();
           }
-          const current = await targetSessions.ready();
-          if (current?.target.origin !== targetOrigin || !current.inspector) {
-            route.removeRequestHeader('x-paqvilo-native-comparison');
-            return route.fallback();
-          }
-          current.inspector.prepareRequest(route);
-          return current.overlay.handle(route);
-        } catch (error) {
-          primaryFailure ??= error;
-          onError(error);
-          stop();
-          return route.abort();
-        }
-      },
-      { bypassCSP: cfg.browser.bypassCSP, ownsPage: (candidate) => candidate === page, onError },
+        },
+        { bypassCSP: cfg.browser.bypassCSP, ownsPage: (candidate) => candidate === page, onError },
+      ),
+      (dispose) => dispose(),
     );
-    await targetSessions.activate(origin);
+    await startupWait(targetSessions.activate(origin));
     page.on('framenavigated', onNavigation);
     {
       progress?.phase('source watcher setup');
@@ -272,29 +318,37 @@ async function runModelDriven(args, action, progress) {
         },
       });
       watcher.on('error', onError);
-      await new Promise((resolve, reject) => {
-        const ready = () => {
-          clearTimeout(deadline);
-          watcher.off('error', fail);
-          resolve();
-        };
-        const fail = (error) => {
-          clearTimeout(deadline);
-          watcher.off('ready', ready);
-          reject(error);
-        };
-        const deadline = setTimeout(
-          () => fail(new Error('The local Solution watcher did not become ready within 10 seconds.')),
-          10000,
-        );
-        watcher.once('ready', ready);
-        watcher.once('error', fail);
-      });
+      await startupWait(
+        new Promise((resolve, reject) => {
+          const ready = () => {
+            clearTimeout(deadline);
+            watcher.off('error', fail);
+            resolve();
+          };
+          const fail = (error) => {
+            clearTimeout(deadline);
+            watcher.off('ready', ready);
+            reject(error);
+          };
+          const deadline = setTimeout(
+            () => fail(new Error('The local Solution watcher did not become ready within 10 seconds.')),
+            10000,
+          );
+          watcher.once('ready', ready);
+          watcher.once('error', fail);
+        }),
+      );
       reloads = modelDrivenReloadQueue(async () => {
         if (stopping) return;
         try {
           const next = await importModelDrivenProject(project),
             maps = await readTargetMappings(targets, next);
+          if (args['local-simulation'])
+            next.diagnostics.push({
+              code: 'MODEL_LOCAL_SIMULATION',
+              message:
+                'Local Mirage simulation. Actions use this loopback runtime; native-only APIs remain unavailable when the runtime does not expose them.',
+            });
           // Preserve the same importer failure admission as the one-target runner.
           publishModelDrivenReload({ replace() {} }, next, []);
           await targetSessions.replace(next, maps);
@@ -327,20 +381,23 @@ async function runModelDriven(args, action, progress) {
         }, 150);
       });
     }
-    if (timeout) timer = setTimeout(stop, timeout);
     console.log(
-      `Opening model-driven app at ${origin}. Local scripts are overlaid in this browser; app actions use the selected environment.`,
+      `Opening model-driven app at ${origin}. ${args['local-simulation'] ? 'Local Mirage simulation; app actions use this loopback runtime.' : 'Local scripts are overlaid in this browser; app actions use the selected environment.'}`,
     );
     console.log(
       'Close the dedicated browser or press Ctrl+C to stop. Resource queries and credentials are omitted from the report.',
     );
     let loaded;
     try {
-      loaded = await waitForStartupPage(page, url.href, { progress, stopped });
+      loaded = await startupWait(waitForStartupPage(page, url.href, { progress, stopped }));
     } catch (error) {
-      // eslint-disable-next-line preserve-caught-error -- Raw browser errors can contain credential/query values; retain only the redacted message.
-      throw new Error(`Could not open the model-driven app: ${cleanError(error)}`);
+      throw Object.assign(new Error(`Could not open the model-driven app: ${cleanError(error)}`), {
+        code: error.code,
+        phase: error.phase,
+      });
     }
+    deadline?.finish();
+    if (timeout) timer = setTimeout(stop, timeout);
     if (loaded)
       console.log(
         'Model-driven overlay installed; document and initial resources loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.',
@@ -361,6 +418,23 @@ async function runModelDriven(args, action, progress) {
     page?.off('close', stop);
     page?.off('framenavigated', onNavigation);
     const cleanupFailures = [];
+    let browserReleased = false;
+    if (['startup_timeout', 'startup_cancelled'].includes(primaryFailure?.code)) {
+      // Closing the owned target first releases paused CDP setup commands.
+      // Inspector retirement otherwise queues behind the very startup work
+      // whose deadline just expired. close() only detaches an attached browser.
+      try {
+        if (page && !page.isClosed()) await page.close({ runBeforeUnload: false });
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      try {
+        await close();
+        browserReleased = true;
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
     // Finish every cleanup step even if a disconnected browser rejects one.
     for (const cleanup of [
       () => watcher?.close(),
@@ -368,7 +442,7 @@ async function runModelDriven(args, action, progress) {
       () => targetSessions?.close(),
       () => release?.(),
       () => (attached && page && !page.isClosed() ? page.close() : undefined),
-      close,
+      () => (browserReleased ? undefined : close()),
     ]) {
       try {
         await cleanup();
@@ -380,6 +454,7 @@ async function runModelDriven(args, action, progress) {
     const report =
       targetSessions?.report() ??
       createModelDrivenOverlay({ origin, imported, mappings: mappings.get(selected.id) }).report();
+    report.localSimulation = Boolean(args['local-simulation']);
     try {
       if (args.output) {
         const file = path.resolve(args.output);

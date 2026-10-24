@@ -14,7 +14,13 @@ import {
 } from '../lib/solution-schema.mjs';
 import { importSolutionData, applySolutionData } from '../lib/solution-data.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
-import { INVENTORY_FOLDERS, inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
+import {
+  INVENTORY_FOLDERS,
+  inventoryEntry,
+  mergeInventory,
+  mergeCanvasLayers,
+  canvasMsappRecord,
+} from '../lib/solution-inventory.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 
 const CONNECTOR_ID = '77777777-7777-4777-8777-777777777772';
@@ -39,6 +45,63 @@ const msapp = () =>
     { name: 'Src/App.pa.yaml', data: Buffer.from(PA_YAML) },
     { name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(SCREEN) },
   ]);
+
+test('canvas metadata and payload fidelity agree through either order and metadata-only layers', async () => {
+  const payload = await canvasMsappRecord(msapp(), { name: 'x_app' });
+  const metadata = {
+    component: 'canvasapp',
+    level: 'inventory',
+    reason: 'CANVAS_HOST_NOT_IMPLEMENTED',
+    name: 'x_app',
+    id: 'app-id',
+    dependencies: [],
+  };
+  for (const records of [
+    [metadata, payload],
+    [payload, metadata],
+  ]) {
+    const [record] = mergeInventory(records);
+    assert.equal(record.level, 'behaviour');
+    assert.equal(record.reason, null);
+    assert.equal(record.id, 'app-id');
+    assert.equal(record.tree.screens.length, 1);
+    const layered = mergeCanvasLayers([
+      { ...record, displayName: 'Before', layer: 0, solution: 'Base', source: 'base/app.msapp' },
+      {
+        ...metadata,
+        displayName: 'Latest metadata',
+        layer: 1,
+        solution: 'Extension',
+        source: 'extension/app.meta.xml',
+      },
+    ]);
+    assert.equal(layered.length, 1);
+    assert.equal(layered[0].level, 'behaviour');
+    assert.equal(layered[0].displayName, 'Latest metadata');
+    const graph = buildSourceGraph({ scan: { inventory: layered } });
+    const app = graph.resolve('canvasapp', 'x_app');
+    assert.equal(app.variants, 2, 'Effective payload merging retains the selected layer contributions.');
+    assert.deepEqual(app.contributions, [
+      { layer: 0, solution: 'Base', source: 'base/app.msapp' },
+      { layer: 1, solution: 'Extension', source: 'extension/app.meta.xml' },
+    ]);
+    assert.deepEqual(app.sources, ['base/app.msapp', 'extension/app.meta.xml']);
+    assert.ok(graph.requirements().some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
+    assert.ok(!graph.requirements().some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
+    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_NOT_RENDERED'));
+  }
+  const broken = await canvasMsappRecord(Buffer.from('invalid'), { name: 'x_app' });
+  const [failed] = mergeInventory([payload, broken, metadata]);
+  assert.equal(failed.level, 'inventory');
+  assert.ok(failed.reason);
+  assert.equal(failed.tree, undefined);
+  const oversized = await canvasMsappRecord(Buffer.from('x'), { name: 'x_app', size: 100_000_000 });
+  const [bounded] = mergeCanvasLayers([payload, oversized, metadata]);
+  assert.equal(bounded.level, 'inventory');
+  assert.equal(bounded.tree, undefined, 'An oversized newer payload cannot keep older executable logic.');
+  assert.equal(bounded.canvas, undefined);
+  assert.ok(bounded.diagnostics.some((diagnostic) => diagnostic.code === 'SOLUTION_CANVAS_MSAPP_TOO_LARGE'));
+});
 
 const SOLUTION_XML = `<ImportExportXml><SolutionManifest><UniqueName>InventedInventory</UniqueName><Version>1.2.0.0</Version>
 <RootComponents><RootComponent type="300" schemaName="x_inventedapp_1a2b3" behavior="0"/><RootComponent type="20" schemaName="x_absentrole" behavior="0"/></RootComponents>
@@ -158,8 +221,8 @@ test('an unpacked classic Solution lists every inventory component with dependen
   assert.equal(canvas.solution, 'InventedInventory');
   assert.equal(canvas.layer, 0);
   assert.equal(canvas.format, 'xml');
-  assert.equal(canvas.level, 'inventory');
-  assert.equal(canvas.reason, 'CANVAS_HOST_NOT_IMPLEMENTED');
+  assert.equal(canvas.level, 'behaviour');
+  assert.equal(canvas.reason, null);
   assert.equal(canvas.version, '2026-01-01T00:00:00Z');
   assert.equal(canvas.root, true);
   assert.equal(canvas.msapp.size, CLASSIC['CanvasApps/x_inventedapp_1a2b3_DocumentUri.msapp'].length);
@@ -235,7 +298,6 @@ test('an unpacked classic Solution lists every inventory component with dependen
   // The connector's OpenAPI definition compiles without diagnostics: it runs at contract, so it is not an inventory kind.
   assert.ok(!codes.includes('SOLUTION_CONNECTOR_INVENTORY:connector'));
   for (const code of [
-    'SOLUTION_CANVAS_INVENTORY:canvasapp',
     'SOLUTION_BPF_INVENTORY:businessprocessflow',
     'SOLUTION_DASHBOARD_INVENTORY:dashboard',
     'SOLUTION_CHART_INVENTORY:chart',

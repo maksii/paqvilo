@@ -529,6 +529,50 @@ test('tab closure during attachment or setup stays a harmless race', async () =>
   }
 });
 
+test('a later frame-tree timeout is target-scoped and healthy draft tabs retain interception and retry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const b = fakeBrowser(),
+    healthy = [b.openTab(), b.openTab()];
+  healthy.forEach((tab, index) => {
+    tab.page.draft = `unsaved ${index}`;
+  });
+  const errors = [],
+    failed = [];
+  const dispose = await interceptOrigins(b.context, [ORIGIN], (route) => route.fulfill({ body: 'overlaid' }), {
+    onError: (error) => errors.push(error),
+    onTargetError: (error, page) => {
+      failed.push({ error, page });
+    },
+  });
+  const broken = b.openTab();
+  const send = broken.cdp.send;
+  broken.cdp.send = (method, params) => (method === 'Page.getFrameTree' ? new Promise(() => {}) : send(method, params));
+  b.context.emit('page', broken.page);
+  for (let i = 0; i < 10 && !failed.length; i++) {
+    await setImmediate();
+    t.mock.timers.tick(10000);
+  }
+  await setImmediate();
+  assert.equal(errors.length, 0);
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].page, broken.page);
+  assert.equal(failed[0].error.scope, 'target');
+  assert.equal(failed[0].error.phase, 'Page.getFrameTree');
+  assert.equal(broken.cdp.listenerCount('Fetch.requestPaused'), 0);
+  for (const [index, tab] of healthy.entries()) {
+    assert.equal(tab.page.draft, `unsaved ${index}`);
+    tab.pause(`healthy-${index}`, URL);
+  }
+  const retry = b.openTab();
+  b.context.emit('page', retry.page);
+  await setImmediate();
+  retry.pause('retry', URL);
+  await setImmediate();
+  for (const id of ['healthy-0', 'healthy-1', 'retry']) assert.equal(b.answers(id)[0].method, 'Fetch.fulfillRequest');
+  assert.equal(b.fetched.length, 0);
+  await dispose();
+});
+
 test('inspecting and fulfilling an unchanged response obtains its bytes only once', async () => {
   const b = fakeBrowser({ [URL]: { body: 'original document' } });
   const tab = b.openTab();

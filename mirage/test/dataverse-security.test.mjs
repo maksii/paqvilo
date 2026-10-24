@@ -38,6 +38,7 @@ import {
   uuidV5,
 } from '../lib/dataverse-security.mjs';
 import { seed as seedStandard, standardSchema } from '../lib/dataverse-standard.mjs';
+import { guidKey } from '../lib/dataverse-values.mjs';
 
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
 const APP_ID = '11111111-2222-4333-8444-555555555555';
@@ -87,6 +88,42 @@ async function seeded() {
   await ensureSecurityModel(store, SETTINGS);
   return store;
 }
+
+test('insert-only security seed preserves edited grants across all supported GUID spellings and rejects conflicts', async () => {
+  const original = await seeded();
+  const initial = original.snapshot();
+  const selected = initial.tables.roleprivileges.find(
+    (row) =>
+      row.privilegedepthmask === DEPTH.Global &&
+      initial.tables.privilege.find(
+        (privilege) => guidKey(privilege.privilegeid) === guidKey(row.privilegeid?.id ?? row.privilegeid),
+      )?.canbedeep === true,
+  );
+  assert.ok(selected);
+  const id = selected.roleprivilegeid;
+  for (const decorate of [(id) => id, (id) => id.toUpperCase(), (id) => `{${id.toUpperCase()}}`, (id) => `(${id})`]) {
+    const state = structuredClone(initial),
+      grant = state.tables.roleprivileges.find((row) => row.roleprivilegeid === id);
+    grant.roleprivilegeid = decorate(id);
+    grant.privilegedepthmask = DEPTH.Deep;
+    if (grant.roleid?.id) grant.roleid.id = decorate(grant.roleid.id);
+    if (grant.privilegeid?.id) grant.privilegeid.id = decorate(grant.privilegeid.id);
+    const store = new DataStore({ state });
+    await ensureSecurityModel(store, SETTINGS);
+    await ensureSecurityModel(store, SETTINGS);
+    const matches = store.state.tables.roleprivileges.filter((row) => guidKey(row.roleprivilegeid) === id);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].privilegedepthmask, DEPTH.Deep);
+    assert.equal(store.state.tables.roleprivileges.length, initial.tables.roleprivileges.length);
+  }
+  const state = structuredClone(initial),
+    grant = state.tables.roleprivileges.find((row) => row.roleprivilegeid === id);
+  state.tables.roleprivileges.push({ ...grant, roleprivilegeid: `{${id}}`, privilegedepthmask: DEPTH.Deep });
+  const store = new DataStore({ state }),
+    before = store.snapshot();
+  await assert.rejects(ensureSecurityModel(store, SETTINGS), { code: 'SecuritySeedIdentityConflict' });
+  assert.deepEqual(store.snapshot(), before, 'A conflicting duplicate cannot partially seed security.');
+});
 
 test('the organization row takes auditing, duplicate detection, locale and base currency from the settings', async () => {
   const store = new DataStore({ state: fixtureState() });

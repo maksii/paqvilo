@@ -67,8 +67,9 @@ A record's level is the lowest level among its operations. When a record states 
 
 Each host builds one registry (`organization-host.mjs`), rebuilt with its operation catalogues when the store revision, the sources or the operation overrides change. It holds:
 
-- the host surfaces as `host-surface` records under their status keys: `dataverseApi`, `setup`, `records`, `staff`, `personas`, `liveBridge`, `portalRendering` (with `enabled`), and the app surfaces `canvas` (`inventory`) and `codeApps` (`contract`);
+- the host surfaces as `host-surface` records under their status keys: `dataverseApi`, `setup`, `records`, `staff`, `personas`, `liveBridge`, `portalRendering` (with `enabled`), and the app surfaces `canvas` (`behaviour` for headless logic, with rendering reported separately) and `codeApps` (`contract`);
 - the installed organization modules: `describe(api)` receives the runtime's api, so a module reports what this runtime wired (the hierarchy query operators and the rollup mass recalculation report `behaviour` once wired or scheduled);
+- the installed shared facilities as provider records: `store`, `scheduler`, `loopback-network` and `providers.messaging`. These names resolve module prerequisites against the actual host composition; they do not imply remote network access or external message delivery. A separately declared provider that has no implementation still reports its own missing requirement;
 - the operation catalogue (with the modes saved in `/_sim/`), the connector providers, the storage providers (`provider:storage/<id>`), the message bus, the outbox, the Power Fx seam, local services, service fixtures, the flow run store when present, the Solution inventory and the pack `capabilities` records. A name used twice is kept once, first wins; an invalid record is skipped with `CAPABILITY_RECORD_INVALID`.
 
 The status payload (`simulator.state()`, `GET /_sim/api/state`, standalone `status()`) carries `capabilities`, which is `summary()` with `canvas` and `codeApps` set to their record levels (the keys the administration page reads), and `capabilityReport`, which is `report()`.
