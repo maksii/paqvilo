@@ -18,7 +18,7 @@ import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-sol
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { unsupportedControls } from './canvas-controls.mjs';
 
-export const CANVAS_SCHEMA_VERSIONS = Object.freeze(['3.0']);
+const CANVAS_SCHEMA_VERSIONS = Object.freeze(['3.0']);
 const TOP_LEVEL = new Set(['App', 'Screens', 'ComponentDefinitions', 'DataSources', 'EditorState']);
 const SRC = /^src\//i;
 const PA_YAML = /\.pa\.ya?ml$/i;
@@ -315,7 +315,7 @@ export function canvasInventoryRecord(
 }
 
 /** Screens and components with their control trees, the start-screen order and the source format (canvas-runtime.mjs input). */
-export const canvasTree = (source) => ({
+const canvasTree = (source) => ({
   format: source.app.format ?? 'pa.yaml',
   screensOrder: source.app.screensOrder ?? null,
   screens: source.screens.map(({ name, controls }) => ({ name, controls })),

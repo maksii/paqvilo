@@ -47,7 +47,7 @@ async function profilesOf(folder) {
  * app ({ type: 'codeApp', name }: power.config.json), deployment profiles ({ type: 'profiles', files }) or a sample data
  * module folder ({ type: 'pack' }: pack.mjs).
  */
-export async function folderKind(folder, entries = null) {
+async function folderKind(folder, entries = null) {
   try {
     entries ??= await fs.readdir(folder, { withFileTypes: true });
   } catch {
@@ -97,7 +97,7 @@ export async function folderKind(folder, entries = null) {
  * node_modules and build output are skipped; a found export is not searched inside.
  * ponytail: bounded breadth-first walk (depth 4, 4000 folders); a project with exports deeper than that types the path.
  */
-export async function scanExports(root, { maxDepth = 4, maxFolders = 4000 } = {}) {
+async function scanExports(root, { maxDepth = 4, maxFolders = 4000 } = {}) {
   const found = { portals: [], solutions: [], packs: [], canvas: [], codeApps: [] };
   let queue = [[path.resolve(root), 0]],
     visited = 0;

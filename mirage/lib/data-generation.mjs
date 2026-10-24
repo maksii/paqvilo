@@ -310,7 +310,7 @@ export async function runDataCommand(subcommands, args) {
  * `data generate`: load the pack, generate the profile, merge into --state and
  * write --out (default: --state, in place) with lock/digest/atomic replace.
  */
-export async function generateDataCommand({
+async function generateDataCommand({
   pack: packId,
   profile = 'deep',
   state: statePath,

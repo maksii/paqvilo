@@ -19,7 +19,7 @@ const hasOwn = (object, key) => object != null && typeof object === 'object' && 
  * The public library contains generic presets only. Project packs are supplied
  * explicitly to the portal library; never import adjacent project code at startup.
  */
-export const defaultPacks = Object.freeze(await discoverPacks());
+const defaultPacks = Object.freeze(await discoverPacks());
 
 /**
  * Compatibility library: generic presets plus every discovered pack, without
@@ -217,4 +217,4 @@ export function listPresets({ state = {}, library = {} } = {}) {
   });
 }
 
-export { genericPresets, presetDescriptor };
+export { presetDescriptor };

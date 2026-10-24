@@ -26,7 +26,7 @@ const ENUMS = Object.freeze({
   DisplayMode: enumOf('Edit', 'View', 'Disabled'),
   ScreenTransition: enumOf('None', 'Fade', 'Cover', 'CoverRight', 'UnCover', 'UnCoverRight'),
 });
-export const CANVAS_DATA_ROW_LIMIT = 500;
+const CANVAS_DATA_ROW_LIMIT = 500;
 const BEHAVIOUR_PROPERTY = /^On[A-Z]/;
 const MAX_LOG = 200;
 const MAX_CONNECTOR_CALLS = 50; // distinct connector answers one behaviour formula may wait for
@@ -134,7 +134,7 @@ const literal = (raw) =>
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
 
 /** A JSON-safe copy of a formula value for snapshots and API answers. */
-export function observable(value, depth = 0) {
+function observable(value, depth = 0) {
   if (value === undefined || value === null) return null;
   // An exact decimal (exact-numeric.mjs) stays exact: canvas-http.mjs writes it with stringifyExactJson, every digit kept.
   if (isExactNumeric(value)) return value;

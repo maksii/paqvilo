@@ -3,7 +3,7 @@ import { portalField } from './importer.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 
 /** Host service behavior is evidence-backed per site; the pinned reference stays the default. */
-export function observedLiquidServiceTags(options = {}) {
+function observedLiquidServiceTags(options = {}) {
   return (options.observed ?? options.config?.observed ?? options.portal?.observed)?.liquidServiceTags === 'observed';
 }
 

@@ -87,6 +87,25 @@ async function saveForm(page, form) {
     .waitFor();
 }
 
+test('background preview polling preserves an unsaved settings draft', async (t) => {
+  const work = await temporary(t);
+  await prepareProject(work, { name: 'draft-poll', noPack: true });
+  const server = await startSetupServer({ directory: work, processEnv: {} });
+  t.resources.push(() => server.close());
+  const page = await newPage(t);
+  await allSettings(page);
+  await page.goto(server.url + '#settings');
+  await page.waitForFunction(() => document.querySelector('#content')?.getAttribute('aria-busy') === null);
+  const input = page.locator('form[data-form=settings] [name=sourceRoot]');
+  await input.fill('./unsaved-draft');
+  const response = page.waitForResponse((item) => item.url().endsWith('/_setup/api/preview'));
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await (await response).finished();
+  // Allow the response handlers and their paint to finish before reading the draft.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await input.inputValue(), './unsaved-draft');
+});
+
 test(
   'setup UI configures a demo and an independent scaffold with two local Git exports and validates Mirage flows',
   { timeout: 120000 },

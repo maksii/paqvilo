@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { parseCookies } from './auth-session.mjs';
 
-export const VISITOR_COOKIE = 'paqvilo-mirage-visitor';
+const VISITOR_COOKIE = 'paqvilo-mirage-visitor';
 
 /** The visitor cookie name of a runtime listening on `port` (paqvilo-mirage-visitor without one). */
 export const visitorCookieName = (port) => (port ? `${VISITOR_COOKIE}-${port}` : VISITOR_COOKIE);

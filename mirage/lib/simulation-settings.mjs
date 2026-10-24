@@ -1,6 +1,6 @@
 /** Explicit simulation levels apply to every local mutation surface. Omission
  * retains existing ignored-state persistence for older project configurations. */
-export const SIMULATION_LEVELS = Object.freeze(['dry-run', 'simulation', 'deep']);
+const SIMULATION_LEVELS = Object.freeze(['dry-run', 'simulation', 'deep']);
 
 export function simulationSettings(value, label = 'simulation') {
   if (value === undefined || value === null) return null;

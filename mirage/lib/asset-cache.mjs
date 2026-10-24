@@ -72,7 +72,7 @@ function safeOrigin(origin) {
 }
 export const isResourceManagerPath = (value) =>
   /^\/_portal\/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}\/Resources\/ResourceManager$/i.test(value);
-export const isPcfWebResourcePath = (value) =>
+const isPcfWebResourcePath = (value) =>
   /^\/_pcfwebresource\/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value);
 export const isAspNetResourcePath = (value) => {
   try {

@@ -7,7 +7,7 @@ export const digest = (value) =>
   createHash('sha256')
     .update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value))
     .digest('hex');
-export const label = (text, language) => ({ LocalizedLabels: [{ Label: text, LanguageCode: language }] });
+const label = (text, language) => ({ LocalizedLabels: [{ Label: text, LanguageCode: language }] });
 const TYPES = new Set([
   'string',
   'memo',
@@ -332,7 +332,7 @@ export async function readManifest(file) {
   return manifest;
 }
 
-export function attributePayload(column, language) {
+function attributePayload(column, language) {
   const type = column.type ?? 'string';
   const metadata = {
     string: 'String',
@@ -385,7 +385,7 @@ export function attributePayload(column, language) {
   return result;
 }
 
-export function tablePayload(table, language) {
+function tablePayload(table, language) {
   return {
     '@odata.type': 'Microsoft.Dynamics.CRM.EntityMetadata',
     SchemaName: table.schemaName ?? table.name,
@@ -403,7 +403,7 @@ export function tablePayload(table, language) {
   };
 }
 
-export function relationshipPayload(r, language) {
+function relationshipPayload(r, language) {
   const menu = { Behavior: 'DoNotDisplay', Group: 'Details', Order: 10000, Label: label(r.name, language) };
   if (r.kind === 'manyToMany')
     return {

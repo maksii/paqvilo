@@ -216,7 +216,7 @@ function operations(api) {
   return { handlers };
 }
 
-export function install(api) {
+function install(api) {
   const { handlers } = operations(api);
   for (const spec of ACTIVE) registerAddon(api, { ...spec, handle: handlers[spec.name], fallback: featureNotEnabled });
   for (const spec of INTERNAL) {

@@ -1,3 +1,4 @@
+import { orderedMap } from './async-map.mjs';
 // Reads a `pac paportal download` extract from disk and builds an index of everything that can be
 // overridden locally: web files (URL -> file) and inline sources (page/form/list JS & CSS, templates).
 import fs from 'node:fs';
@@ -803,37 +804,31 @@ export class PortalModel {
           ),
         ];
     const cache = new Map();
-    let next = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(16, files.length) }, async () => {
-        while (next < files.length) {
-          const file = files[next++];
-          const before = await sourceFileStatAsync(sourceDir, file);
-          if (!before) continue;
-          let text;
-          try {
-            text = await fs.promises.readFile(file, 'utf8');
-          } catch {
-            continue;
-          }
-          const after = await sourceFileStatAsync(sourceDir, file);
-          if (!after || fileStamp(before) !== fileStamp(after)) continue;
-          cache.set(
-            file,
-            enhanced
-              ? { stamp: fileStamp(after), text }
-              : {
-                  stamp: fileStamp(after),
-                  value: parseYaml(
-                    text,
-                    path.basename(file) === 'shortcut.yml' ||
-                      /\.(?:basicformmetadata|advancedformmetadata|weblink|shortcut)\.yml$/.test(file),
-                  ),
-                },
-          );
-        }
-      }),
-    );
+    await orderedMap(files, 16, async (file) => {
+      const before = await sourceFileStatAsync(sourceDir, file);
+      if (!before) return;
+      let text;
+      try {
+        text = await fs.promises.readFile(file, 'utf8');
+      } catch {
+        return;
+      }
+      const after = await sourceFileStatAsync(sourceDir, file);
+      if (!after || fileStamp(before) !== fileStamp(after)) return;
+      cache.set(
+        file,
+        enhanced
+          ? { stamp: fileStamp(after), text }
+          : {
+              stamp: fileStamp(after),
+              value: parseYaml(
+                text,
+                path.basename(file) === 'shortcut.yml' ||
+                  /\.(?:basicformmetadata|advancedformmetadata|weblink|shortcut)\.yml$/.test(file),
+              ),
+            },
+      );
+    });
     // The regular load re-enumerates directories and revalidates every cached file, covering
     // additions, atomic saves and link replacements that happened while prefetch was running.
     return new PortalModel(sourceDir, enhanced ? { xmlCache: cache } : { yamlCache: cache });

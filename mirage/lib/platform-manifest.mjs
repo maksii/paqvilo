@@ -226,7 +226,7 @@ export const PRIVATE_MODE_BANNER = `<div id="privateModeText" class="private-mod
 /** The platform renders the holder empty; scripts fill it from data-url on first use. */
 export const antiForgeryHolder = (url = '/_layout/tokenhtml') =>
   `<div id="antiforgerytoken" data-url="${escapeAttribute(url)}"></div>`;
-export const NATIVE_CONTROLS_ROOT = `<div id="pp-native-controls-react-root"></div>`;
+const NATIVE_CONTROLS_ROOT = `<div id="pp-native-controls-react-root"></div>`;
 
 /**
  * The platform layout's <body data-ckeditor-basepath> value (the platform's rich-text
@@ -291,7 +291,7 @@ const hidden = (name, value) => `<input type="hidden" name="${name}" id="${name}
  * - MicrosoftAjax contributes Date.prototype.format (the format part of date-format-compat.js);
  * - MicrosoftAjaxWebForms (the Sys.* page request manager) has no local equivalent.
  */
-export const LOCAL_ASPNET_SCRIPTS = Object.freeze(
+const LOCAL_ASPNET_SCRIPTS = Object.freeze(
   [
     { id: 'paqvilo-webforms', path: '/WebResource.axd?d=paqvilo-webforms&t=0', local: ['webforms-compat.js'] },
     {
@@ -596,7 +596,7 @@ export function bootstrapVariant(settings = {}) {
     : 'BootstrapV3';
 }
 
-export const PLATFORM_BUNDLE_ROOT = '/resource/powerappsportal/';
+const PLATFORM_BUNDLE_ROOT = '/resource/powerappsportal/';
 /** The platform's default Bootstrap stylesheet, linked when the site has no Head/Bootstrap snippet or bootstrap.min.css content style. */
 export const PLATFORM_BOOTSTRAP_STYLESHEET = '<link rel="stylesheet" href="/css/bootstrap.min.css">';
 const both = (name) => ({ BootstrapV3: name, BootstrapV5: name });

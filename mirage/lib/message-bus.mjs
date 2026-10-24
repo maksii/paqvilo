@@ -815,7 +815,7 @@ export function messagingSettings(value, label = 'providers.messaging') {
 }
 
 /** Pack `messageProviders`: provider kinds mapping to factory functions. */
-export function validateMessageProviders(map) {
+function validateMessageProviders(map) {
   if (!plainObject(map) || Object.values(map).some((factory) => typeof factory !== 'function'))
     throw new TypeError('messageProviders must map provider names to factory functions');
 }

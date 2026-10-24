@@ -38,7 +38,7 @@ export function subgridSettings(portal, definition, schema, gridId) {
   }
 }
 
-export function subgridUsesForm(action) {
+function subgridUsesForm(action) {
   return (
     Boolean(action?.EntityFormId) &&
     (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)

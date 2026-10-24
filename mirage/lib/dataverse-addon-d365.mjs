@@ -8,7 +8,7 @@
 // a rollup query on a missing row does not restrict, and the time window is the goal's own dates (no entityfordateattribute join).
 import { DataError } from './data-error.mjs';
 import { argsOf, idOf, registerAddon } from './dataverse-addon-common.mjs';
-import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { readMessageRecords } from './dataverse-message-context.mjs';
 import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
 import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
 import { parseXmlDocument } from './fetchxml-engine.mjs';
@@ -78,20 +78,7 @@ function operations(api) {
     const path = `/api/data/${c.version}/${mapping.entitySet}`;
     const url = new URL(`${c.origin}${path}`);
     url.searchParams.set('fetchXml', xml);
-    const res = await api.records.handle({
-      method: 'GET',
-      route: parseDataverseRoute(path),
-      url,
-      origin: c.origin,
-      version: c.version,
-      prefer: parsePrefer(undefined),
-      headers: {},
-      user: c.user,
-      caller: c.caller,
-      identity: c.identity,
-      requestId: c.requestId,
-    });
-    return res.body?.value ?? [];
+    return (await readMessageRecords(api, c, url))?.value ?? [];
   }
 
   // The rows a QueryExpression JSON selects. DataSource "retained" selects none (the long-term store is not simulated).
@@ -372,7 +359,7 @@ function operations(api) {
   ];
 }
 
-export function install(api) {
+function install(api) {
   for (const op of operations(api)) registerAddon(api, op);
 }
 

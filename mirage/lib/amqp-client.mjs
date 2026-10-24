@@ -18,11 +18,12 @@ import { ProviderError } from './storage-provider.mjs';
 const TYPE = Symbol('amqp.type');
 const typed = (type) => (value) => ({ [TYPE]: type, value });
 /** Wrappers for values whose AMQP type a JS value cannot carry. */
-export const sym = typed('symbol'),
+const sym = typed('symbol'),
   uint = typed('uint'),
   ulong = typed('ulong'),
   ubyte = typed('ubyte'),
   ushort = typed('ushort');
+export { sym, uint, ulong, ubyte };
 /** A described value; descriptor is a numeric code (encoded as ulong) or a symbol name. */
 export class Described {
   constructor(descriptor, value) {
@@ -254,7 +255,7 @@ function decodeAs(code, b, at) {
 // --- Frames (transport 2.2, 2.3; security 5.2)
 export const AMQP_HEADER = Buffer.from([0x41, 0x4d, 0x51, 0x50, 0, 1, 0, 0]);
 export const SASL_HEADER = Buffer.from([0x41, 0x4d, 0x51, 0x50, 3, 1, 0, 0]);
-export const EMPTY_FRAME = Buffer.from([0, 0, 0, 8, 2, 0, 0, 0]); // a heartbeat: an AMQP frame without a body (2.4.5)
+const EMPTY_FRAME = Buffer.from([0, 0, 0, 8, 2, 0, 0, 0]); // a heartbeat: an AMQP frame without a body (2.4.5)
 /** Descriptor codes used here: performatives (2.7), error (2.8.14), outcomes (3.4), terminus (3.5), SASL (5.3), sections (3.2). */
 export const CODE = Object.freeze({
   open: 0x10,
@@ -365,7 +366,7 @@ const SASL_OUTCOMES = Object.freeze(['ok', 'auth', 'sys', 'sys-perm', 'sys-temp'
 const unavailable = (message, diagnostic, provider) =>
   new ProviderError('Unavailable', message, { provider, diagnostic });
 /** A ProviderError from an AMQP error (condition, description), with the condition as its diagnostic. */
-export function amqpError(error, provider = null, context = '') {
+function amqpError(error, provider = null, context = '') {
   const [condition = 'amqp:internal-error', description = null] = error instanceof Described ? (error.value ?? []) : [];
   const code = CONDITION_CODES[condition] ?? 'Unavailable';
   return new ProviderError(code, `${context}${description ?? 'The broker answered an error'} (${condition}).`, {

@@ -1,9 +1,10 @@
+import { createEditor, releaseEditor, numberValue } from '../shared/editor';
 import { IInputs, IOutputs } from './generated/ManifestTypes';
 
 export class ExampleWholeNumber implements ComponentFramework.StandardControl<IInputs, IOutputs> {
   private _value: number | undefined;
   private _notifyOutputChanged: () => void = () => undefined;
-  private input: HTMLInputElement;
+  private input: HTMLInputElement | HTMLTextAreaElement;
   private readonly onInput = (): void => {
     this._value = this.input.value === '' ? undefined : Number(this.input.value);
     this._notifyOutputChanged();
@@ -17,20 +18,23 @@ export class ExampleWholeNumber implements ComponentFramework.StandardControl<II
   ): void {
     this._notifyOutputChanged = notifyOutputChanged;
     const raw = context.parameters.controlValue.raw;
-    this._value = raw === null || Number.isNaN(raw) ? undefined : raw;
-    this.input = document.createElement('input');
-    this.input.type = 'number';
-    this.input.step = '1';
-    this.input.className = 'ExampleWholeNumber';
-    this.input.value = this._value === undefined ? '' : String(this._value);
-    this.input.addEventListener('input', this.onInput);
-    container.appendChild(this.input);
+    this._value = numberValue(raw);
+    this.input = createEditor(
+      container,
+      'ExampleWholeNumber',
+      this._value === undefined ? '' : String(this._value),
+      this.onInput,
+      'number',
+      '1',
+    );
+    this.input.disabled = context.mode.isControlDisabled;
   }
 
   public updateView(context: ComponentFramework.Context<IInputs>): void {
+    this.input.disabled = context.mode.isControlDisabled;
     if (document.activeElement === this.input) return;
     const raw = context.parameters.controlValue.raw;
-    const next = raw === null || Number.isNaN(raw) ? undefined : raw;
+    const next = numberValue(raw);
     if (next === this._value) return;
     this._value = next;
     this.input.value = next === undefined ? '' : String(next);
@@ -41,6 +45,6 @@ export class ExampleWholeNumber implements ComponentFramework.StandardControl<II
   }
 
   public destroy(): void {
-    this.input.removeEventListener('input', this.onInput);
+    releaseEditor(this.input, this.onInput);
   }
 }

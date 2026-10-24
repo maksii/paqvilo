@@ -18,16 +18,15 @@ const STATUS = Object.freeze({
   Unauthorized: 401,
   Unsupported: 501,
 });
-export const PROVIDER_ERROR_CODES = Object.freeze(Object.keys(STATUS));
 export const STORAGE_OPERATIONS = Object.freeze(['put', 'commit', 'get', 'head', 'delete', 'list', 'sas']);
-export const STORAGE_ROUTES = Object.freeze([
+const STORAGE_ROUTES = Object.freeze([
   'dataverseFiles',
   'annotations',
   'portalWebFiles',
   'portalCloudAttachments',
   'sharepointDocuments',
 ]);
-export const DEFAULT_STORAGE_ROUTES = Object.freeze({
+const DEFAULT_STORAGE_ROUTES = Object.freeze({
   dataverseFiles: 'local',
   annotations: 'local',
   portalWebFiles: 'export',
@@ -35,7 +34,7 @@ export const DEFAULT_STORAGE_ROUTES = Object.freeze({
 });
 const LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];
 
-/** A storage failure. `code` is one of PROVIDER_ERROR_CODES; `provider` names the provider id.
+/** A storage failure. `code` is a recognized provider status name; `provider` names the provider id.
  * Messages never carry a URL query, SAS signature or connection string. `diagnostic` is an optional stable id. */
 export class ProviderError extends DataError {
   constructor(code, message, { provider = null, diagnostic } = {}) {
@@ -358,7 +357,7 @@ export function createStorageRouter({ config, providers = {}, counters = () => n
 }
 
 /** Pack `storageProviders`: provider ids mapping to factory functions. */
-export function validateStorageProviders(map) {
+function validateStorageProviders(map) {
   if (!plain(map) || Object.values(map).some((factory) => typeof factory !== 'function'))
     throw new TypeError('storageProviders must map provider names to factory functions');
 }

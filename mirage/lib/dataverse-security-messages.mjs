@@ -1,3 +1,4 @@
+import { messageCollection } from './dataverse-message-context.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security messages: role privileges, team membership, privilege and share lookups, parent users, the
 // business unit hierarchy, access-team templates and the Microsoft Entra ID user lookups, through the registered operations.
@@ -22,7 +23,7 @@ import {
   uuidV5,
 } from './dataverse-security.mjs';
 import { AUDIT_ACTION, writeAudit } from './dataverse-audit.mjs';
-import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { contextUrl } from './dataverse-odata.mjs';
 
 // PrivilegeDepth enum values: Basic 0, Local 1, Deep 2, Global 3. Accepts the name or the number.
 const DEPTH_ENUM = ['Basic', 'Local', 'Deep', 'Global'];
@@ -319,29 +320,7 @@ function operations(api) {
   });
   // Rows of a collection function, formatted as a GET on the table (the caller's $select, row privileges and lookup columns).
   // `user` is the principal the read runs as: the caller by default, the SYSTEM user for an operation that needs no privilege.
-  const collectionOf = async (c, logical, ids, user = c.user) => {
-    const mapping = store.resolveMapping(logical);
-    if (ids.length === 0)
-      return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, mapping.entitySet), value: [] } };
-    const path = `/api/data/${c.version}/${mapping.entitySet}`;
-    const url = new URL(`${c.origin}${path}`);
-    url.searchParams.set('$filter', ids.map((id) => `${mapping.idColumn} eq ${id}`).join(' or '));
-    if (c.url?.searchParams.has('$select')) url.searchParams.set('$select', c.url.searchParams.get('$select'));
-    const res = await api.records.handle({
-      method: 'GET',
-      route: parseDataverseRoute(path),
-      url,
-      origin: c.origin,
-      version: c.version,
-      prefer: parsePrefer(undefined),
-      headers: {},
-      user,
-      caller: c.caller,
-      identity: c.identity,
-      requestId: c.requestId,
-    });
-    return { status: 200, body: res.body };
-  };
+  const collectionOf = (c, logical, ids, user = c.user) => messageCollection(api, c, logical, ids, user);
   // Privileges a user holds directly or through team roles (team grants report Basic), filtered by a predicate.
   const userPrivileges = (c, name, keep) => {
     need(c, 'prvReadUser', 'systemuser');

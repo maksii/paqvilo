@@ -1,3 +1,4 @@
+import { orderedMap } from './async-map.mjs';
 // Rewrites the HTML the online portal returns so that it reflects the local sources.
 //
 // Two techniques, because the portal renders pages server side and that cannot be reproduced locally:
@@ -693,59 +694,46 @@ export class HtmlRewriter {
     const valid = new Map();
     const stamps = new Map();
     const root = model.sourceDir ? await fs.promises.realpath(model.sourceDir) : null;
-    let next = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(16, files.length) }, async () => {
-        for (let index; (index = next++) < files.length;) {
-          const file = files[index];
-          const key = sourceCacheKey(file);
-          try {
-            const real = await fs.promises.realpath(file);
-            const relative = root ? path.relative(root, real) : null;
-            if (
-              root &&
-              (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
-            )
-              throw new Error('outside source root');
-            const before = await fs.promises.stat(file);
-            if (!before.isFile()) throw new Error('not a regular source file');
-            const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
-            const after = await fs.promises.stat(file);
-            if (!sameStamp(before, after) || (await fs.promises.realpath(file)) !== real)
-              throw new Error('source changed during startup');
-            raw.set(key, text.replace(/^\uFEFF/, ''));
-            valid.set(key, true);
-            stamps.set(key, { file, real, info: after });
-          } catch {
-            // Retry only unstable/unreadable entries through the constructor's normal guarded
-            // read. A save finishing during startup must not leave a permanently cached miss.
-          }
-        }
-      }),
-    );
+    await orderedMap(files, 16, async (file) => {
+      const key = sourceCacheKey(file);
+      try {
+        const real = await fs.promises.realpath(file);
+        const relative = root ? path.relative(root, real) : null;
+        if (
+          root &&
+          (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+        )
+          throw new Error('outside source root');
+        const before = await fs.promises.stat(file);
+        if (!before.isFile()) throw new Error('not a regular source file');
+        const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
+        const after = await fs.promises.stat(file);
+        if (!sameStamp(before, after) || (await fs.promises.realpath(file)) !== real)
+          throw new Error('source changed during startup');
+        raw.set(key, text.replace(/^\uFEFF/, ''));
+        valid.set(key, true);
+        stamps.set(key, { file, real, info: after });
+      } catch {
+        // Retry only unstable/unreadable entries through the constructor's normal guarded
+        // read. A save finishing during startup must not leave a permanently cached miss.
+      }
+    });
     // An early file can be saved while later files are still loading. Revalidate the entire
     // prefetched snapshot once all reads finish; the constructor retries only stale entries.
-    next = 0;
-    const entries = [...stamps];
-    await Promise.all(
-      Array.from({ length: Math.min(16, entries.length) }, async () => {
-        for (let index; (index = next++) < entries.length;) {
-          const [key, stamp] = entries[index];
-          try {
-            if (
-              sameStamp(stamp.info, await fs.promises.stat(stamp.file)) &&
-              (await fs.promises.realpath(stamp.file)) === stamp.real
-            )
-              continue;
-          } catch {
-            /* removed or replaced source */
-          }
-          raw.delete(key);
-          valid.delete(key);
-          stamps.delete(key);
-        }
-      }),
-    );
+    await orderedMap(stamps, 16, async ([key, stamp]) => {
+      try {
+        if (
+          sameStamp(stamp.info, await fs.promises.stat(stamp.file)) &&
+          (await fs.promises.realpath(stamp.file)) === stamp.real
+        )
+          return;
+      } catch {
+        /* removed or replaced source */
+      }
+      raw.delete(key);
+      valid.delete(key);
+      stamps.delete(key);
+    });
     return new HtmlRewriter(options, { raw, valid, changed, stamps });
   }
 

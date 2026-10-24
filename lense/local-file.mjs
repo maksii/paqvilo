@@ -52,8 +52,10 @@ export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, e
   }
 }
 
-export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, encoding } = {}) {
+export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, encoding, expectedRealPath } = {}) {
   const real = fs.realpathSync(file);
+  // An opt-in caller validation boundary also refuses a link inserted before this reader's first realpath.
+  if (expectedRealPath !== undefined && real !== expectedRealPath) throw new Error('Local file changed before reading');
   if (root && !inside(fs.realpathSync(root), real)) throw new Error('Local file is outside its source root');
   const descriptor = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {

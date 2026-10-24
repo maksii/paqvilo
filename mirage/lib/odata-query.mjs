@@ -15,15 +15,15 @@ import {
   equalityKey,
   fieldKind,
   looksLikeDate,
+  lookupColumnValue,
   makeSortKey,
   own,
   parseDateValue,
   scalar,
-  sqlGuidSortKey,
   valuesEqual,
 } from './dataverse-values.mjs';
 
-export const ODATA_LIMITS = Object.freeze({
+const ODATA_LIMITS = Object.freeze({
   navigationDepth: 32,
   conditions: 500,
   aggregateRecords: 50000,
@@ -31,7 +31,7 @@ export const ODATA_LIMITS = Object.freeze({
 });
 export const ODATA_COMPARISON = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
 export const ODATA_STRING_FUNCTIONS = new Set(['contains', 'startswith', 'endswith']);
-export const ODATA_EXTENDED_FUNCTIONS = new Set([
+const ODATA_EXTENDED_FUNCTIONS = new Set([
   'tolower',
   'toupper',
   'trim',
@@ -552,12 +552,7 @@ export function expressionPaths(ast, prefix = [], variables = new Map()) {
 
 /** Read a column value; supports _lookup_value aliases and stored lookups. */
 export function columnValue(row, name) {
-  if (row == null) return undefined;
-  if (own(row, name)) return row[name];
-  const lookup = /^_(.+)_value$/.exec(name);
-  if (lookup && own(row, lookup[1])) return scalar(row[lookup[1]]);
-  if (!lookup && own(row, `_${name}_value`)) return row[`_${name}_value`];
-  return undefined;
+  return lookupColumnValue(row, name);
 }
 const isEmpty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
 
@@ -1160,5 +1155,3 @@ export function evaluateApply(steps, rows, ctx) {
   }
   return { rows: current, grouped };
 }
-
-export { sqlGuidSortKey };

@@ -57,7 +57,7 @@ async function fixture(t) {
     if (req.url === '/virtual.js') {
       res.setHeader('content-type', 'text/javascript');
       res.end(
-        'ComponentFramework.registerControl("Invented.Virtual",class{init(context,notify,state,container){window.virtualInit=arguments.length;}updateView(context){window.virtualSettings=context.userSettings;return React.createElement("span",{value:context.parameters.value.raw});}destroy(){}});',
+        'ComponentFramework.registerControl("Invented.Virtual",class{init(context,notify,state,container){window.virtualInit=arguments.length;}updateView(context){window.virtualSettings=context.userSettings;return React.createElement("span",{value:context.parameters.value.raw});}destroy(){window.virtualDestroys=(window.virtualDestroys||0)+1;}});',
       );
       return;
     }
@@ -676,5 +676,25 @@ test('a virtual PCF mounts through project-supplied React platform libraries and
   await page.waitForFunction(() => document.querySelector('.model-driven-pcf').textContent === 'virtual:Changed');
   await page.evaluate(() => window.control.destroy());
   assert.equal(await page.evaluate(() => window.unmounts), 1);
+  await page.evaluate(
+    ([virtual, platformLibraries]) =>
+      window.mount({
+        pcf: { name: virtual.name, bindings: { value: { field: 'x_name' } } },
+        clientExtensions: { trusted: true, pcf: { controls: [virtual], platformLibraries } },
+      }),
+    [virtual, platformLibraries],
+  );
+  await page.evaluate(() => {
+    window.ReactDOM.unmountComponentAtNode = () => {
+      throw Error('invented unmount failure');
+    };
+    window.control.destroy();
+    window.control.destroy();
+  });
+  assert.equal(
+    await page.evaluate(() => window.virtualDestroys),
+    2,
+    'destroy runs once per mount even when unmount throws',
+  );
   assert.deepEqual(errors, []);
 });

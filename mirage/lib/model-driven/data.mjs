@@ -21,7 +21,7 @@ function validateWebApiQuery(input) {
   )
     throw invalid('WebApi page size must be between 1 and 5000.');
 }
-export function writableField(field, operation) {
+function writableField(field, operation) {
   return controlDescriptor(field)[operation === 'create' ? 'create' : 'update'];
 }
 export function validateValues(table, values, operation) {

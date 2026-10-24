@@ -280,7 +280,7 @@ export function verifySecret(secret, { hash, salt } = {}) {
 
 export const newClientSecret = () => randomBytes(30).toString('base64url');
 
-export function aadError(
+function aadError(
   code,
   { status, description = '', origin, traceId = randomUUID(), correlationId = randomUUID(), now = Date.now() } = {},
 ) {

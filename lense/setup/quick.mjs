@@ -19,7 +19,7 @@ export const PARTS = Object.freeze({
     text: 'A local Dataverse API at its own address, for scripts, integrations and automated tests.',
   },
 });
-export const LEVELS = Object.freeze({
+const LEVELS = Object.freeze({
   'dry-run': [
     'Keep changes only while it runs',
     'Records you add or edit reset when the preview restarts. Your project files never change.',
@@ -571,7 +571,7 @@ const profilesFor = (portal) =>
       }
     : {};
 /** Project names for the chosen websites: one website takes `name`; several are each named after their website or folder. */
-export function websiteNames(name, portals) {
+function websiteNames(name, portals) {
   const used = new Set(),
     own = (portal) =>
       slugName(

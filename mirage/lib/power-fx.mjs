@@ -86,7 +86,6 @@ export class FxError {
   }
 }
 export const fxError = (kind, message) => new FxError([{ Kind: kind, Message: message }]);
-export const isError = (v) => v instanceof FxError;
 // The data source's own refusal (a DataError: privilege, validation, not found) behind an error record.
 export const CAUSE = Symbol('power-fx.cause');
 
@@ -145,8 +144,6 @@ export const isRecord = (v) =>
   typeof v === 'object' &&
   !isExactNumeric(v) &&
   (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
-export const isTable = Array.isArray;
-
 // A host record marked with LAZY (a canvas control whose properties are getters) is used as it is: toFx never reads its
 // properties, so a property is evaluated only when a formula selects it.
 export const LAZY = Symbol.for('power-fx.lazy');
@@ -183,7 +180,7 @@ export function fromFx(value, fx = null) {
 }
 
 /** The DataError a host answers for an error value: 400 PowerFxError with the first Learn error record. */
-export function runtimeError(error) {
+function runtimeError(error) {
   const first = error.errors[0] ?? { Kind: ErrorKind.Unknown, Message: 'Unknown error.' };
   // A refused data-source write answers the data source's own error (the Web API envelope), not a generic formula error.
   if (first[CAUSE]) return first[CAUSE];
@@ -264,7 +261,7 @@ function wallOfParts(year, month, day, hour = 0, minute = 0, second = 0, ms = 0)
     second < 60;
   return valid ? wall : NaN;
 }
-export function parseDateText(text, kind, timeZone) {
+function parseDateText(text, kind, timeZone) {
   const value = String(text).trim();
   if (!value) return null;
   let m =
@@ -385,7 +382,7 @@ export function toNumber(v) {
 // interpret , and . differently"; the language tag argument, else the current user's language): group separators, a
 // currency symbol, a trailing or leading percent sign, an exponent. The language's decimal and group separators come from
 // Intl.NumberFormat parts. Power Fx ignores only the current language's currency symbol; $ € £ ¥ are ignored here.
-export function numberSeparators(language = 'en-US') {
+function numberSeparators(language = 'en-US') {
   let parts;
   try {
     parts = new Intl.NumberFormat(language || 'en-US', { useGrouping: true }).formatToParts(1234567.5);
@@ -464,7 +461,7 @@ export function toBoolean(v) {
   return fxError(ErrorKind.InvalidArgument, 'The value cannot be converted to a Boolean.');
 }
 // General number format: up to 15 significant digits, no grouping.
-export const numberText = (n) => (Number.isInteger(n) ? String(n) : String(round15(n)));
+const numberText = (n) => (Number.isInteger(n) ? String(n) : String(round15(n)));
 export function toText(v, fx = null) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'string') return v;
@@ -643,7 +640,7 @@ function numericOrder(a, b) {
 
 // ---- Lexer
 
-export class FxSyntaxError extends DataError {
+class FxSyntaxError extends DataError {
   constructor(message, position) {
     super(`${message} (position ${position + 1}).`, 400, 'PowerFxSyntaxError', { position });
   }
@@ -1135,7 +1132,7 @@ class FxNameError extends DataError {
 // Evaluation context for one formula: the host, the globals and the scope stack (innermost last). Scope entries are
 // { record, name, source } for record scopes (ThisRecord, As name, the table's identifier) and { vars } for named values
 // (FirstError, AllErrors).
-export class Fx {
+class Fx {
   constructor({ values = {}, host = {} } = {}) {
     this.host = host ?? {};
     this.values = values ?? {};
@@ -1426,7 +1423,7 @@ function arithmetic(fx, op, l, r) {
   return decimalArithmetic(op, a, b);
 }
 
-export class FxFunctionError extends DataError {
+class FxFunctionError extends DataError {
   constructor(message, details = {}) {
     super(message, 400, 'PowerFxFunctionUnsupported', details);
   }

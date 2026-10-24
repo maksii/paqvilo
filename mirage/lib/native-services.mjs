@@ -186,19 +186,6 @@ const ACTION_TYPES = {
   ActivateAction: 18,
   'CrmEntityFormView-CreateRelatedRecordAction': 29,
 };
-export const ACTION_TYPE = Object.freeze({
-  Details: 1,
-  Edit: 2,
-  Insert: 3,
-  Delete: 4,
-  Associate: 5,
-  Disassociate: 6,
-  Workflow: 7,
-  Download: 8,
-  Deactivate: 17,
-  Activate: 18,
-  CreateRelatedRecord: 29,
-});
 
 export function settingsJson(value, label = 'settings') {
   if (value == null || value === '') return {};
@@ -936,7 +923,7 @@ const filterNode = (type, children) => ({
 });
 
 /** Parse "attr ASC, alias.attr DESC" accepting only known view columns. */
-export function parseSortExpression(expression, allowed) {
+function parseSortExpression(expression, allowed) {
   const parts = [];
   for (const part of String(expression ?? '').split(',')) {
     const match = /^\s*([a-z_][\w]*(?:\.[a-z_][\w]*)?)\s*(asc|desc)?\s*$/i.exec(part);
@@ -1548,7 +1535,7 @@ function recordCurrency(context, entity, row, id) {
 }
 
 /** Whether the persona has any read grant for a table (native AccessDenied result). */
-export function readDenied(context, entity) {
+function readDenied(context, entity) {
   const { store, identity } = context;
   if (context.config?.mode === 'live' || typeof store?.rules !== 'function' || identity?.admin) return false;
   let permissive;
@@ -2074,7 +2061,7 @@ async function readNoteBody(req) {
 }
 
 /** The note subject's creation stamp, as the platform writes it: M/d/yyyy h:mm:ss AM UTC. */
-export function noteStamp(date) {
+function noteStamp(date) {
   return (
     date
       .toLocaleString('en-US', {

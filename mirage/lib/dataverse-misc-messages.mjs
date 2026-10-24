@@ -1015,7 +1015,7 @@ function activePath(api, c) {
   return { status: 200, body: { '@odata.context': contextFor(c, 'processstages'), value } };
 }
 
-export function install(api) {
+function install(api) {
   const op = (name, kind, binding, handle, csdl, entity) =>
     api.registry.register({
       name,

@@ -46,8 +46,6 @@ import {
   tagAttributes,
   formatItem,
   formatOutput,
-  isEnumerable,
-  toList,
   LiquidError,
   LiquidSyntaxError,
   LIQUID_PROPERTIES,
@@ -149,7 +147,7 @@ function liquidValue(value) {
   if (typeof value === 'string' && ISO_DATETIME.test(value)) return parseNetDate(value) ?? value;
   return value;
 }
-export function liquidRecord(record, properties = ENTITY_PROPERTIES) {
+function liquidRecord(record, properties = ENTITY_PROPERTIES) {
   if (record == null || typeof record !== 'object' || Array.isArray(record) || isDate(record)) return record;
   const out = {};
   for (const key of Object.getOwnPropertyNames(record)) {
@@ -2061,4 +2059,3 @@ class WebLinkSetsDrop extends LiquidDrop {
     return Object.hasOwn(this.sets, text) ? this.sets[text] : null;
   }
 }
-export { SnippetsDrop, EntitiesDrop, KnowledgeDrop, isEnumerable, toList };

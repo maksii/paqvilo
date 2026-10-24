@@ -8,7 +8,7 @@ const choices = [
 const invalidDuration =
   'The duration must be entered in the following format: x minutes, x hours or x days. Hours and days can also be entered using decimals, for example, x.x hours or x.x days.';
 let nextId = 0;
-export function parseDuration(text) {
+function parseDuration(text) {
   const input = String(text ?? '').trim();
   if (!input) return null;
   const match = /^(\d+(?:\.\d+)?|\.\d+)\s*(minutes?|hours?|days?)?$/i.exec(input);
@@ -18,7 +18,7 @@ export function parseDuration(text) {
   const value = Math.round(amount * (unit.startsWith('day') ? 1440 : unit.startsWith('hour') ? 60 : 1));
   return Number.isSafeInteger(value) ? value : undefined;
 }
-export function formatDuration(value) {
+function formatDuration(value) {
   if (value == null || value === '') return '';
   const unit = value >= 1440 ? 'day' : value >= 60 ? 'hour' : 'minute',
     amount = Number((value / (unit === 'day' ? 1440 : unit === 'hour' ? 60 : 1)).toFixed(2));

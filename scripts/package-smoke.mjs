@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
@@ -52,6 +53,16 @@ fs.writeFileSync(
 );
 console.log(`Consumer dependency evidence: ${dependencyEvidenceFile}`);
 console.log(`Consumer dependency differences: ${JSON.stringify(dependencyEvidence.differences)}`);
+// Resolve every supported entry point from the independent installed consumer.
+// Checkout imports alone cannot detect missing packaged dependencies or exports.
+const consumerRequire = createRequire(path.join(bootstrap, 'package.json'));
+const publicContract = JSON.parse(fs.readFileSync(path.join(root, 'test/fixtures/public-api.json'), 'utf8'));
+for (const [entry, names] of Object.entries(publicContract.surfaces)) {
+  const installedModule = await import(pathToFileURL(consumerRequire.resolve(entry)));
+  for (const name of names)
+    if (!Object.hasOwn(installedModule, name)) throw new Error(`Installed public export is missing: ${entry}: ${name}`);
+}
+console.log(`Installed public API contract passed: ${Object.keys(publicContract.surfaces).length} entry points.`);
 // Load the shipped inspector graph: a file-list check alone misses broken runtime imports.
 const modelInspector = await import(
   pathToFileURL(path.join(bootstrap, 'node_modules/paqvilo/lense/model-driven-inspector.mjs'))

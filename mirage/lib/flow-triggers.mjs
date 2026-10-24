@@ -731,7 +731,7 @@ export function createFlowTriggerRunner({
 // flow has its own random HMAC-SHA256 key, sealed in state.simulator.flowCallbackKeys (flow-vault.mjs), and its URL carries the
 // signature of the flow, trigger and the sp, sv and api-version values as sig. A request without a valid sig answers 401.
 // The native URL shape and signed content are a guess; locally the URL is served under this host's /_sim/api/flow-triggers.
-export const CALLBACK_API_VERSION = '2016-06-01';
+const CALLBACK_API_VERSION = '2016-06-01';
 const callbackId = (processId) =>
   String(processId ?? '')
     .replace(/[{}]/g, '')

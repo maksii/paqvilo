@@ -18,6 +18,7 @@ import {
   foldText,
   guidKey,
   isoUtc,
+  lookupColumnValue,
   makeSortKey,
   own,
   parseDateValue,
@@ -25,7 +26,7 @@ import {
   sqlGuidSortKey,
 } from './dataverse-values.mjs';
 
-export const FETCH_LIMITS = Object.freeze({
+const FETCH_LIMITS = Object.freeze({
   links: 15,
   linksAndFilters: 27,
   conditionsAndLinks: 500,
@@ -591,7 +592,7 @@ export function planFetch(
 }
 
 /** Parse a native paging cookie (raw XML or the Web API wrapper with a double-encoded payload). */
-export function parsePagingCookie(value) {
+function parsePagingCookie(value) {
   if (value == null || String(value).trim() === '') return null;
   let text = String(value).trim();
   let node;
@@ -627,12 +628,7 @@ export function webApiPagingCookie(cookie, page) {
 
 /** Read a column; lookups may be stored by logical name or Web API _x_value name. */
 export function fieldValue(row, attribute) {
-  if (row == null) return undefined;
-  if (own(row, attribute)) return row[attribute];
-  const lookup = /^_(.+)_value$/.exec(attribute);
-  if (lookup && own(row, lookup[1])) return scalar(row[lookup[1]]);
-  if (!lookup && own(row, `_${attribute}_value`)) return row[`_${attribute}_value`];
-  return undefined;
+  return lookupColumnValue(row, attribute);
 }
 const isEmpty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
 const joinKey = (value) => {

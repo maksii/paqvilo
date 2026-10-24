@@ -9,8 +9,11 @@
 (() => {
   'use strict';
   const registry = (window.__ppSimCompat ||= {});
-  if (registry.blockUI) return;
-  registry.blockUI = true;
+  if (registry.blockUI) {
+    registry.blockUI(window.jQuery);
+    return;
+  }
+  registry.blockUI = attach;
 
   function attach($) {
     if (!$ || typeof $.fn?.jquery !== 'string' || $.blockUI?.__ppSimCompat) return;
@@ -273,6 +276,7 @@
   // Pages may install another jQuery later (as the platform bundles do); re-attach to it.
   watchJQuery(registry, attach);
 
+  // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
     (registry.jqueryWatchers ||= new Set()).add(attach);
     if (registry.jqueryWatched) return;
@@ -300,4 +304,5 @@
       // A non-configurable global stays a plain property; repeated includes still re-attach.
     }
   }
+  // END generated jQuery watcher
 })();

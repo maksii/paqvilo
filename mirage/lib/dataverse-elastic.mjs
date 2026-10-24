@@ -12,12 +12,12 @@ const bare = (type) => String(type ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\.
 const flagOf = (value) => (value !== null && typeof value === 'object' ? value.Value === true : value === true);
 const valueOf = (value) => (value !== null && typeof value === 'object' ? value.Value : value);
 
-export const TABLE_TYPES = ['Standard', 'Elastic'];
+const TABLE_TYPES = ['Standard', 'Elastic'];
 export const isElastic = (mapping) => mapping?.tableType === 'Elastic';
 
 // Partition identifiers are opaque, case-sensitive strings. A missing partition addresses only rows created without one.
 export const samePartition = (left, right) => (left ?? null) === (right ?? null);
-export function assertPartition(value) {
+function assertPartition(value) {
   if (value == null) return;
   if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 1024 || /[/<>*%&:\\?+]/.test(value)) {
     throw refuse('partitionid must be a string of at most 1024 bytes without unsupported alternate-key characters.');
@@ -152,13 +152,13 @@ export function expiresAt(row) {
   const base = Date.parse(row.modifiedon ?? row.createdon ?? '');
   return Number.isFinite(base) ? base + Number(ttl) * 1000 : null;
 }
-export const isExpired = (row, now) => {
+const isExpired = (row, now) => {
   const at = expiresAt(row);
   return at !== null && at <= now;
 };
 
 /** Rows of one table with the expired ones removed. Called from DataStore.tableRows, so every reader (Dataverse or portal) sees it. */
-export function liveRows(rows, now) {
+function liveRows(rows, now) {
   return rows.some((row) => isExpired(row, now)) ? rows.filter((row) => !isExpired(row, now)) : rows;
 }
 

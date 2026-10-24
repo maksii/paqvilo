@@ -1,3 +1,4 @@
+import { readRawBody } from './http-body.mjs';
 import { dataverseHttpReaderContext } from './dataverse-scalar-reader.mjs';
 // Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
@@ -10,7 +11,6 @@ import { ownsChange, runOwned, runAtomic } from './dataverse-transaction-context
 import { createRequestContext, currentRequest, runWithRequest } from './request-context.mjs';
 export { runAtomic } from './dataverse-transaction-context.mjs';
 import { createOrganizationRuntime } from './dataverse-organization.mjs';
-export { dataverseOrganizationId } from './dataverse-organization.mjs';
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from 'node:zlib';
@@ -145,17 +145,12 @@ function hostAllowed(value, names) {
 }
 
 // The received bytes, unchanged; callers decode only the bodies they parse as text.
-async function readBody(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > BODY_LIMIT)
-      throw new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' });
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
+const readBody = (req) =>
+  readRawBody(req, {
+    maximum: BODY_LIMIT,
+    tooLarge: () =>
+      new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' }),
+  });
 
 async function readForm(req) {
   const raw = (await readBody(req)).toString('utf8');

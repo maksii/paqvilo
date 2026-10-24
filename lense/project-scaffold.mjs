@@ -27,7 +27,7 @@ async function template(name, values = {}) {
   });
 }
 
-export function projectScripts({ sites, packs, vscode }) {
+function projectScripts({ sites, packs, vscode }) {
   const config = '--config ./paqvilo.config.yml';
   const lense = (command) => `paqvilo lense ${command} ${config}`;
   const mirage = (command) => `paqvilo mirage ${command} ${config}`;
@@ -138,7 +138,8 @@ export async function prepareProject(directory, options = {}) {
       name,
       docs,
       version,
-      node: metadata.engines.node.match(/\d+/)[0],
+      node: metadata.engines.node.match(/\d+\.\d+\.\d+/)[0],
+      nodeMajor: metadata.engines.node.match(/\d+/)[0],
       editorStep: vscode
         ? 'Run `npm run editor:refresh` after configuration changes; inspect any script proposals and edited-file alternatives.'
         : 'Editor generation is disabled; use `paqvilo init --refresh-editor --workspace-only` if you want an ignored workspace file.',

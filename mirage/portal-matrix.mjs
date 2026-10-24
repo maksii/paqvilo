@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+import { observeProcessReadiness } from './lib/process-readiness.mjs';
+import { orderedMap as mapLimit } from '../lense/async-map.mjs';
+import {
+  COMPONENT_KINDS as COMPONENT_TYPES,
+  COMPONENT_TYPE_OF_KIND as TYPE_OF_KIND,
+} from './lib/portal-component-types.mjs';
+import { decodeXml } from './lib/xml-text.mjs';
 /**
  * Portal matrix: one offline validation report across every portal of a Mirage project
  * (or of catalogue sites), side by side.
@@ -54,45 +61,12 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 
 const MIRAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
-export const STAGES = ['import', 'bootstrap', 'liquid', 'webapi', 'sweep', 'scaffold', 'runtime', 'serve'];
-export const PERSONAS = ['anonymous', 'authenticated', 'all-roles'];
-export const SCAFFOLD_PERSONAS = ['anonymous', 'all-roles'];
+const STAGES = ['import', 'bootstrap', 'liquid', 'webapi', 'sweep', 'scaffold', 'runtime', 'serve'];
+const PERSONAS = ['anonymous', 'authenticated', 'all-roles'];
+const SCAFFOLD_PERSONAS = ['anonymous', 'all-roles'];
 const DEFAULT_PERSONAS = ['anonymous'];
 
-/** Site component types Power Pages documents ("Site component type reference"). */
-export const COMPONENT_TYPES = Object.freeze({
-  1: 'publishingstate',
-  2: 'webpage',
-  3: 'webfile',
-  4: 'weblinkset',
-  5: 'weblink',
-  6: 'pagetemplate',
-  7: 'contentsnippet',
-  8: 'webtemplate',
-  9: 'sitesetting',
-  10: 'webpageaccesscontrolrule',
-  11: 'webrole',
-  12: 'websiteaccess',
-  13: 'sitemarker',
-  15: 'basicform',
-  16: 'basicformmetadata',
-  17: 'list',
-  18: 'tablepermission',
-  19: 'advancedform',
-  20: 'advancedformstep',
-  21: 'advancedformmetadata',
-  24: 'pollplacement',
-  26: 'adplacement',
-  27: 'botconsumer',
-  28: 'columnpermissionprofile',
-  29: 'columnpermission',
-  30: 'redirect',
-  31: 'publishingstatetransitionrule',
-  32: 'shortcut',
-  33: 'cloudflow',
-  34: 'uxcomponent',
-});
-const TYPE_OF_KIND = Object.fromEntries(Object.entries(COMPONENT_TYPES).map(([type, kind]) => [kind, Number(type)]));
+export { COMPONENT_KINDS as COMPONENT_TYPES } from './lib/portal-component-types.mjs';
 const STANDARD_KIND_ALIASES = { webpagerule: 'webpageaccesscontrolrule' };
 const SKIPPED_DIRECTORIES = new Set(['.git', '.portalconfig', 'node_modules']);
 
@@ -109,16 +83,6 @@ const normalizeId = (value) =>
     .replace(/[{}]/g, '')
     .toLowerCase();
 const isInactive = (value) => Number(value && typeof value === 'object' ? (value.value ?? value.Value) : value) === 1;
-const decodeXml = (text = '') =>
-  String(text)
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, entity) =>
-      entity[0] === '#'
-        ? String.fromCodePoint(
-            entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1)),
-          )
-        : { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[entity.toLowerCase()],
-    );
 const xmlValue = (xml, tag) => {
   const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`).exec(xml);
   return match ? decodeXml(match[1]) : null;
@@ -130,20 +94,6 @@ const exists = (file) =>
     () => false,
   );
 const elapsed = (started) => Math.round(performance.now() - started);
-
-async function mapLimit(items, limit, mapper) {
-  const results = new Array(items.length);
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
-        results[index] = await mapper(items[index], index);
-      }
-    }),
-  );
-  return results;
-}
 
 async function listFiles(root) {
   const files = [];
@@ -380,6 +330,7 @@ const MODELLED = {
   advancedform: 'advanced forms',
   advancedformstep: 'advanced form steps',
   advancedformmetadata: 'advanced form metadata',
+  serverlogic: 'server logic records',
   columnpermissionprofile: 'column permission profiles (Web API column security)',
   columnpermission: 'column permissions (Web API column security)',
 };
@@ -536,6 +487,7 @@ export function compareImport(census, portal) {
       : undefined,
   );
   row('shortcut', raw('shortcut').active, (portal.shortcuts ?? []).length, duplicates('shortcut'));
+  row('serverlogic', raw('serverlogic').active, (portal.serverLogics ?? []).length, duplicates('serverlogic'));
   row('basicform', raw('basicform').active, (portal.forms ?? []).length, duplicates('basicform'));
   row('list', raw('list').active, (portal.lists ?? []).length, duplicates('list'));
   row('advancedform', raw('advancedform').active, (portal.advancedForms ?? []).length, duplicates('advancedform'));
@@ -684,7 +636,7 @@ export function classifyMissingIncludes(names, webTemplates) {
  * (PAC YAML does not mark it); `solutions` are the sample's own unpacked Solutions, relative to
  * the repository. Every listed repository is MIT licensed.
  */
-export const PUBLIC_SAMPLES = Object.freeze([
+const PUBLIC_SAMPLES = Object.freeze([
   // Microsoft's current code sites (".powerpages-site"); every folder of that name is a sample.
   {
     repo: 'microsoft__power-pages-samples',
@@ -773,7 +725,7 @@ async function codeSiteFolders(dir, depth = 0, found = []) {
 }
 
 /** The public samples present under `root`, with their Solution roots; missing clones are listed, not fatal. */
-export async function publicSampleTargets(root, samples = PUBLIC_SAMPLES) {
+async function publicSampleTargets(root, samples = PUBLIC_SAMPLES) {
   const base = path.resolve(root);
   const isDirectory = (dir) =>
     fs.stat(dir).then(
@@ -1294,7 +1246,7 @@ async function api(simulator, route, { method = 'GET', body } = {}) {
  * persona render-sweep calls all-roles) and sign it in. Returns the role names, the contact and
  * the Cookie header of its paqvilo-mirage-auth session (simulator.signIn, else the session API).
  */
-export async function signInAllRolesPersona(simulator) {
+async function signInAllRolesPersona(simulator) {
   const personas = await api(simulator, '/personas');
   const named = (name) =>
     String(name ?? '')
@@ -1349,7 +1301,7 @@ export async function signInAllRolesPersona(simulator) {
  * setting is true (a select-less read names a column outside Webapi/<table>/fields, 403 90040101),
  * as a same-origin script request (webapi.safeAjax) of a browser, signed in when `cookie` is given.
  */
-export async function probeWebApi(simulator, { cookie = null } = {}) {
+async function probeWebApi(simulator, { cookie = null } = {}) {
   const settings = simulator.portal.settings ?? {};
   const tables = Object.entries(settings)
     .filter(([name, value]) => /^Webapi\/[^/]+\/enabled$/i.test(name) && String(value).trim().toLowerCase() === 'true')
@@ -1485,7 +1437,7 @@ async function runtimeStage(target, context) {
  * render-sweep's `configured` persona signs in as it over the scaffolded rows (its `all-roles`
  * persona would apply the empty-local preset and drop them).
  */
-export async function configureCoverageContact(stateFile, portal) {
+async function configureCoverageContact(stateFile, portal) {
   const { DataStore } = await import('./lib/data.mjs');
   const { portalWebRoles } = await import('./lib/permissions.mjs');
   const store = await new DataStore({ file: stateFile }).init();
@@ -1676,9 +1628,8 @@ async function scaffoldStage(target, context) {
   return result;
 }
 
-/** Spawn `cli.mjs serve --project FILE --port 0 --no-watch` and wait for the printed portal list. */
-async function serveOnce(projectFile, timeoutMs) {
-  const started = performance.now();
+/** Acquire one owned serve child and its exit observation; callers own readiness, reporting and cleanup. */
+function acquireServeProcess(projectFile) {
   const child = spawn(
     process.execPath,
     [path.join(MIRAGE_ROOT, 'cli.mjs'), 'serve', '--project', projectFile, '--port', '0', '--no-watch'],
@@ -1689,37 +1640,22 @@ async function serveOnce(projectFile, timeoutMs) {
     },
   );
   const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
-  let output = '';
-  let errors = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
+  return { child, exited };
+}
+
+/** Spawn `cli.mjs serve --project FILE --port 0 --no-watch` and wait for the printed portal list. */
+async function serveOnce(projectFile, timeoutMs) {
+  const started = performance.now();
+  const { child, exited } = acquireServeProcess(projectFile);
   try {
-    const ready = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`serve did not report its portals within ${timeoutMs} ms`)),
-        timeoutMs,
-      );
-      child.stdout.on('data', (chunk) => {
-        output += chunk;
-        try {
-          const parsed = JSON.parse(output);
-          clearTimeout(timer);
-          resolve(parsed);
-        } catch {
-          /* Partial or missing JSON remains pending or fails the explicit check below. */
-        }
-      });
-      child.stderr.on('data', (chunk) => {
-        errors += chunk;
-      });
-      exited.then(({ code }) => {
-        clearTimeout(timer);
-        reject(new Error(`serve exited with ${code} before it was ready: ${(errors || output).trim().slice(-2000)}`));
-      });
-    });
+    const ready = await observeProcessReadiness(child, { timeoutMs }).promise;
     return { child, exited, ready, startMs: elapsed(started) };
   } catch (error) {
-    await stopServe({ child, exited });
+    try {
+      await stopServe({ child, exited });
+    } catch (cleanupError) {
+      error.cleanupError = cleanupError;
+    }
     throw error;
   }
 }
@@ -1727,7 +1663,8 @@ async function serveOnce(projectFile, timeoutMs) {
 /** Graceful stop (a `stop` line on stdin), forced after 30 s. */
 async function stopServe({ child, exited }) {
   if (child.exitCode != null) return { graceful: true, exitCode: child.exitCode };
-  child.stdin.write('stop\n');
+  if (!child.pid) return { graceful: false, exitCode: null };
+  if (child.stdin.writable && !child.stdin.destroyed) child.stdin.write('stop\n');
   let timer;
   const stopped = await Promise.race([
     exited,
@@ -1779,45 +1716,10 @@ async function serveStage(resolved, context) {
   const check = (name, passed, detail) =>
     checks.push({ name, passed: Boolean(passed), ...(detail === undefined ? {} : { detail }) });
   const started = performance.now();
-  const child = spawn(
-    process.execPath,
-    [path.join(MIRAGE_ROOT, 'cli.mjs'), 'serve', '--project', projectFile, '--port', '0', '--no-watch'],
-    {
-      cwd: MIRAGE_ROOT,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    },
-  );
-  let output = '';
-  let errors = '';
-  const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+  const { child, exited } = acquireServeProcess(projectFile);
   const result = { projectCopy: projectFile, portals: [], checks };
   try {
-    const ready = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`serve did not report its portals within ${context.serveTimeoutMs} ms`)),
-        context.serveTimeoutMs,
-      );
-      child.stdout.setEncoding('utf8');
-      child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (chunk) => {
-        output += chunk;
-        try {
-          const parsed = JSON.parse(output);
-          clearTimeout(timer);
-          resolve(parsed);
-        } catch {
-          /* Partial or missing JSON remains pending or fails the explicit check below. */
-        }
-      });
-      child.stderr.on('data', (chunk) => {
-        errors += chunk;
-      });
-      exited.then(({ code }) => {
-        clearTimeout(timer);
-        reject(new Error(`serve exited with ${code} before it was ready: ${(errors || output).trim().slice(-2000)}`));
-      });
-    });
+    const ready = await observeProcessReadiness(child, { timeoutMs: context.serveTimeoutMs }).promise;
     result.startMs = elapsed(started);
     result.discovery = ready.discovery ?? null;
     const portals = ready.portals ?? [];
@@ -1934,20 +1836,7 @@ async function serveStage(resolved, context) {
     result.error = error.message;
   } finally {
     const stopStarted = performance.now();
-    if (child.exitCode == null) {
-      child.stdin.write('stop\n');
-      let timer;
-      const stopped = await Promise.race([
-        exited,
-        new Promise((resolve) => (timer = setTimeout(() => resolve(null), 30_000))),
-      ]);
-      clearTimeout(timer);
-      if (!stopped) {
-        child.kill();
-        await exited;
-      }
-      result.stop = { graceful: Boolean(stopped), ms: elapsed(stopStarted), exitCode: stopped?.code ?? null };
-    }
+    result.stop = { ...(await stopServe({ child, exited })), ms: elapsed(stopStarted) };
     check('clean stop removes the discovery file', result.discovery ? !(await exists(result.discovery)) : false);
     // Warm restart: the same state directory, now with each portal's state and Solution parse cache.
     if (!result.error)
@@ -2722,7 +2611,7 @@ export function parseArgs(argv) {
   return options;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help || (!options.project && !options.sites && !options.samples && !options.config)) {
     console.log(`Usage: paqvilo mirage portal-matrix ${toolOptionsHelp('portal-matrix')}`);

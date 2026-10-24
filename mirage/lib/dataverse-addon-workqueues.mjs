@@ -273,7 +273,7 @@ function operations(api) {
   ];
 }
 
-export function install(api) {
+function install(api) {
   for (const op of operations(api)) registerAddon(api, op);
 }
 

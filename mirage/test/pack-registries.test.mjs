@@ -7,6 +7,7 @@ import {
   expressionOperators,
   footerLogoClasses,
   headerNotificationQueries,
+  registerExpressionOperators,
 } from '../lib/extensions.mjs';
 import { discoverPacks } from '../lib/preset-registry.mjs';
 import { DataStore } from '../lib/data.mjs';
@@ -20,6 +21,42 @@ const pack = (id, extra = {}) => ({
   ...extra,
 });
 const portal = (name) => ({ website: { name } });
+
+test('legacy direct operator registration remains visible through DataStore evaluation and scoped packs take precedence', async () => {
+  registerExpressionOperators('legacy-contract', { legacyContractOperator: ({ args }) => Number(args[0]) + 1 });
+  const store = await new DataStore({
+    state: {
+      tables: {},
+      mappings: {},
+      permissions: [],
+      plugins: [],
+      settings: { permissionMode: 'permissive' },
+    },
+  }).init();
+  const expression = { op: 'legacyContractOperator', args: [2] };
+  assert.equal(store.evaluate(expression, {}), 3);
+  const explicit = createPackRegistries([
+    pack('explicit-contract', {
+      expressionOperators: { legacyContractOperator: ({ args }) => Number(args[0]) * 4 },
+    }),
+  ]);
+  assert.equal(
+    runWithPackRegistries(explicit, () => store.evaluate(expression, {})),
+    8,
+  );
+  assert.equal(
+    runWithPackRegistries(createPackRegistries(), () => store.evaluate(expression, {})),
+    3,
+  );
+  assert.throws(
+    () =>
+      registerExpressionOperators('another-legacy-pack', {
+        legacyContractOperator: () => 0,
+      }),
+    /already provided by pack legacy-contract/,
+  );
+  assert.equal(store.evaluate(expression, {}), 3);
+});
 
 test('two runtimes with different packs do not see each other operators or shell conventions', async () => {
   const alpha = pack('fx-alpha', {

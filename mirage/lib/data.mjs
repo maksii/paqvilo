@@ -9,7 +9,7 @@ import { currentRequest } from './request-context.mjs';
 import { takeNativeFormContactAssociation } from './native-form-association.mjs';
 import { builtinPresets, resolvePreset, compactBuiltinPresets, applyPresetSections } from './presets.mjs';
 // Preset functions live in presets.mjs; these re-exports keep existing imports working.
-export { builtinPresets, resolvePreset, compactBuiltinPresets };
+export { resolvePreset, compactBuiltinPresets };
 import { expressionOperator } from './extensions.mjs';
 import { createHash } from 'node:crypto';
 
@@ -303,7 +303,7 @@ const insertSorted = (list, value) => {
  * index becomes `linear` and callers scan). The maintenance methods answer false when the
  * owner should drop the index instead of updating it.
  */
-export class RowKeyIndex {
+class RowKeyIndex {
   constructor(rows, keyOf, { frame, wild = false } = {}) {
     this.keyOf = keyOf;
     this.frame = frame;
@@ -528,7 +528,7 @@ export function keysetPage(
   return { before: keyed.length - after, rows: heap.sort(compare).map((entry) => entry.row) };
 }
 /** The text a paging cookie carries for an order-column value: "" for null, a lookup's id, a choice's value, exact digits. */
-export function cursorText(value) {
+function cursorText(value) {
   const raw = isExactNumeric(value)
     ? value.value
     : value !== null && typeof value === 'object'

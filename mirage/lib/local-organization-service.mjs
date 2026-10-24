@@ -12,7 +12,7 @@ const own = (o, k) => o != null && Object.hasOwn(o, k);
 const RESERVED_NAMES = ['constructor', 'prototype', '__proto__'];
 
 /** Preserve typed SDK alternate keys; an elastic primary key is scoped by its opaque partition. */
-export function sdkRecordKey(store, entity, target, partitionId) {
+function sdkRecordKey(store, entity, target, partitionId) {
   const mapping = store.resolveMapping(entity);
   const keys = target && typeof target === 'object' ? target.keyAttributes : null;
   if (keys && Object.keys(keys).length) {

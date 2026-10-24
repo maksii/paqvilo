@@ -5,7 +5,7 @@
  * Exported website language records carry only their name and a portal-language
  * reference, so the URL language code is derived from this catalogue.
  */
-export const PORTAL_LANGUAGES = Object.freeze(
+const PORTAL_LANGUAGES = Object.freeze(
   [
     ['Basque - Basque', 'eu-ES', 1069, 'euskara'],
     ['Bulgarian - Bulgaria', 'bg-BG', 1026, 'български'],

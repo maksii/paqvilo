@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { validateLivePath, decodePagingCookie } from './lib/live.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-export const SCENARIO_KINDS = Object.freeze([
+const SCENARIO_KINDS = Object.freeze([
   'page-dom',
   'page-text',
   'page-shell',
@@ -29,8 +29,8 @@ export const SCENARIO_KINDS = Object.freeze([
   'reference-contracts',
   'webfile-drift',
 ]);
-export const IDENTITIES = Object.freeze(['signed-in', 'anonymous']);
-export const DELTA_CLASSES = Object.freeze([
+const IDENTITIES = Object.freeze(['signed-in', 'anonymous']);
+const DELTA_CLASSES = Object.freeze([
   'runtime-gap',
   'data-difference',
   'source-deployment',
@@ -58,7 +58,7 @@ export const DENIED_ROUTE_PATTERNS = Object.freeze([
 ]);
 
 /** `deniedRoutes` entries ({ pattern, reason }) as case-insensitive expressions. */
-export function compileDeniedRoutes(entries = []) {
+function compileDeniedRoutes(entries = []) {
   if (!Array.isArray(entries)) throw new Error('deniedRoutes must be an array.');
   return entries.map((entry) => {
     if (
@@ -83,7 +83,7 @@ export function compileDeniedRoutes(entries = []) {
 const planDeniedRoutes = new Map();
 const rememberDeniedRoutes = (entries, compiled) =>
   entries.forEach((entry, index) => planDeniedRoutes.set(entry.pattern, compiled[index]));
-export const activePlanDeniedRoutes = () => [...planDeniedRoutes.values()];
+const activePlanDeniedRoutes = () => [...planDeniedRoutes.values()];
 
 const sha256 = (value) =>
   createHash('sha256')
@@ -554,7 +554,7 @@ export async function loadSourceCorpus(sourceDir, { maxFileBytes = 4 * 1024 * 10
  * In-page snapshot. Raw values return to the runner's memory only; they are normalised and
  * redacted before anything is written. Must stay self-contained (serialised to the browser).
  */
-export function semanticSnapshot(options) {
+function semanticSnapshot(options) {
   const roots = options.roots?.length ? options.roots : ['body'];
   const exclude = options.exclude ?? [];
   const opaque = options.opaque ?? [];
@@ -750,7 +750,7 @@ const shapeOf = (node) => {
 };
 
 /** Collapse consecutive siblings with identical structure (data rows) into one template with a count. */
-export function collapseRepeats(kids) {
+function collapseRepeats(kids) {
   const output = [];
   for (const kid of kids) {
     const previous = output[output.length - 1];
@@ -1515,7 +1515,7 @@ const LOADING_SELECTORS = [
   '.loader',
 ];
 /** Same-origin platform paths inventoried from page traffic. */
-export const PLATFORM_PREFIXES = Object.freeze([
+const PLATFORM_PREFIXES = Object.freeze([
   '/_api/',
   '/_services/',
   '/_layout/',
@@ -1606,7 +1606,7 @@ function pageFetch(options) {
  * fails like a blocked request. Synchronous XHR GETs run natively (request interception can
  * stall pages that use them). Must stay self-contained (serialised into every frame).
  */
-export function writeGuard({ origin, fulfil = [] }) {
+function writeGuard({ origin, fulfil = [] }) {
   const report = (entry) => {
     try {
       window.__parityGuard?.(entry);
@@ -1693,7 +1693,7 @@ export function writeGuard({ origin, fulfil = [] }) {
 }
 
 /** In-page counts for structural facts (form controls, grids, notes, editable regions). */
-export function pageFacts(selectors) {
+function pageFacts(selectors) {
   const out = {};
   for (const selector of selectors) {
     try {
@@ -1707,7 +1707,7 @@ export function pageFacts(selectors) {
 }
 
 /** Bound a page evaluation: a busy renderer must not stall the whole suite. */
-export function within(promise, ms, label = 'Page evaluation') {
+function within(promise, ms, label = 'Page evaluation') {
   let timer;
   return Promise.race([
     promise.finally(() => clearTimeout(timer)),
@@ -2883,6 +2883,28 @@ function signInObserved(observation) {
   );
 }
 
+/** Admit page probes before scenario-specific comparison; diagnostics share the same redaction boundary. */
+function admitPageProbe({ live, local, identity, redactor, observations, deltas, rememberTitle = false }) {
+  const parse = (value) => {
+    try {
+      return typeof value === 'string' ? JSON.parse(value) : null;
+    } catch {
+      return null;
+    }
+  };
+  const a = parse(live.probeValue),
+    b = parse(local.probeValue);
+  if (rememberTitle && b?.title) redactor.rememberLocal(normalizeText(b.title));
+  observations.live = pageDiagnostics(live, (value) => redactor.reveal(value));
+  observations.local = pageDiagnostics(local);
+  const reason =
+    identity === 'signed-in' && signInObserved(live)
+      ? 'The reference browser showed a sign-in page; this is not a signed-in comparison.'
+      : captureProblem(identity, live);
+  if (!reason && live.status !== local.status) deltas.push({ kind: 'status', live: live.status, local: local.status });
+  return { a, b, reason };
+}
+
 const GUID_EXACT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Find a comparable record on one side: from a Web API read, or from a link the page renders. */
@@ -3262,7 +3284,7 @@ function hostedResource(value, matches) {
  * /resource/powerappsportal/ path, GUIDs and query values are generalised, and content hashes in
  * bundle names are deployment state (the name and position are compared, not the hash).
  */
-export function resourceKey(item, { origins = [] } = {}) {
+function resourceKey(item, { origins = [] } = {}) {
   return `${item.kind} ${withoutContentHash(redactUrl(platformAsset(item.path), { origins }))}`;
 }
 
@@ -3727,28 +3749,16 @@ async function runScenario(scenario, context) {
     await sleep(context.delayMs);
     trace(scenario.id, 'local shell start');
     const local = await localSide.page(localPath, shellOptions);
-    const parse = (value) => {
-      try {
-        return typeof value === 'string' ? JSON.parse(value) : null;
-      } catch {
-        return null;
-      }
-    };
-    const a = parse(live.probeValue);
-    const b = parse(local.probeValue);
-    if (b?.title) redactor.rememberLocal(normalizeText(b.title));
-    observations.live = pageDiagnostics(live, (value) => redactor.reveal(value));
-    observations.local = pageDiagnostics(local);
-    if (identity === 'signed-in' && signInObserved(live))
-      return {
-        ...result,
-        observations,
-        verdict: 'blocked',
-        reason: 'The reference browser showed a sign-in page; this is not a signed-in comparison.',
-      };
-    const captureIssue = captureProblem(identity, live);
-    if (captureIssue) return { ...result, observations, verdict: 'blocked', reason: captureIssue };
-    if (live.status !== local.status) deltas.push({ kind: 'status', live: live.status, local: local.status });
+    const { a, b, reason } = admitPageProbe({
+      live,
+      local,
+      identity,
+      redactor,
+      observations,
+      deltas,
+      rememberTitle: true,
+    });
+    if (reason) return { ...result, observations, verdict: 'blocked', reason };
     if (!a || !b) deltas.push({ kind: 'shell-unavailable', live: Boolean(a), local: Boolean(b) });
     else {
       const comparison = compareShell(a, b, { origins });
@@ -3775,27 +3785,8 @@ async function runScenario(scenario, context) {
     await sleep(context.delayMs);
     trace(scenario.id, 'local client object start');
     const local = await localSide.page(localPath, objectOptions);
-    const parse = (value) => {
-      try {
-        return typeof value === 'string' ? JSON.parse(value) : null;
-      } catch {
-        return null;
-      }
-    };
-    const a = parse(live.probeValue);
-    const b = parse(local.probeValue);
-    observations.live = pageDiagnostics(live, (value) => redactor.reveal(value));
-    observations.local = pageDiagnostics(local);
-    if (identity === 'signed-in' && signInObserved(live))
-      return {
-        ...result,
-        observations,
-        verdict: 'blocked',
-        reason: 'The reference browser showed a sign-in page; this is not a signed-in comparison.',
-      };
-    const captureIssue = captureProblem(identity, live);
-    if (captureIssue) return { ...result, observations, verdict: 'blocked', reason: captureIssue };
-    if (live.status !== local.status) deltas.push({ kind: 'status', live: live.status, local: local.status });
+    const { a, b, reason } = admitPageProbe({ live, local, identity, redactor, observations, deltas });
+    if (reason) return { ...result, observations, verdict: 'blocked', reason };
     if (!a || !b) deltas.push({ kind: 'client-object-unavailable', live: Boolean(a), local: Boolean(b) });
     else {
       deltas.push(...compareClientObject(a, b));

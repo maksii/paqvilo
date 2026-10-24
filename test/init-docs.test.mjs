@@ -35,6 +35,8 @@ test('generated guides link correctly for single/multi/no-pack variants and agre
     if (!options.noVscode)
       assert.ok(report.next.indexOf('npm run editor:refresh') > report.next.indexOf('npm run configure'));
     const guide = await fs.readFile(path.join(directory, 'README.md'), 'utf8');
+    const minimumNode = manifest.engines.node.match(/\d+\.\d+\.\d+/)[0];
+    assert.ok(guide.includes(`Node **${minimumNode} or later in the ${minimumNode.split('.')[0]}.x LTS line**`));
     for (const phrase of [
       'Node **24',
       'lockfile',

@@ -8,7 +8,7 @@
 import { registerSettingParser } from './config-keys.mjs';
 import { systemClock } from './runtime-clock.mjs';
 
-export const SECRET_TYPE = 100000005;
+const SECRET_TYPE = 100000005;
 const KEY_VAULT_STORE = 0;
 const ARM =
   /^\/subscriptions\/[^/]+\/resourceGroups\/[^/]+\/providers\/Microsoft\.KeyVault\/vaults\/([^/]+)\/secrets\/([^/]+)(?:\/([^/]+))?\/?$/i;
@@ -193,7 +193,7 @@ const rowsOf = (state, logical) => state?.tables?.[logical] ?? [];
 const idOf = (value) => lower(value !== null && typeof value === 'object' ? (value.id ?? value.value) : value);
 
 /** True when a definition holds secret material: the Secret type, or a value kept in a non-Key Vault secret store. */
-export const isSecretDefinition = (row) =>
+const isSecretDefinition = (row) =>
   Number(row?.type) === SECRET_TYPE || Number(row?.secretstore ?? KEY_VAULT_STORE) === 1;
 
 /**

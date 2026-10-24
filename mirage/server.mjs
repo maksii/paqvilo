@@ -1,4 +1,9 @@
 import {
+  dataverseEnvironmentValue,
+  liveDataverseSettings as composeLiveDataverseSettings,
+} from './lib/live-dataverse-settings.mjs';
+import { inspectionSummary } from '../lense/inspection-summary.mjs';
+import {
   createRuntimeAdminRouter,
   ADMIN_CSP,
   adminAssetFile,
@@ -985,20 +990,8 @@ async function createPowerPagesSimulator({
   ];
   // Runtime overrides set in the admin Environment settings (store.state.dataverse.environment). A key the admin never set
   // falls back to the settings value. Auditing and duplicate detection live on the organization row, not here.
-  const environmentValue = (key, fallback) =>
-    Object.hasOwn(store.state.dataverse?.environment ?? {}, key) ? store.state.dataverse.environment[key] : fallback;
-  // Passed to startDataverseApi: these three are read per request through getters, so an override takes effect at once.
-  const liveDataverseSettings = {
-    ...dataverseConfig,
-    gitRemoteDirectory:
-      dataverseConfig.gitRemoteDirectory && path.resolve(projectRoot, dataverseConfig.gitRemoteDirectory),
-    tds: { ...dataverseConfig.tds, enabled: () => environmentValue('tdsEnabled', dataverseConfig.tds.enabled) },
-    serviceProtection: {
-      ...dataverseConfig.serviceProtection,
-      requestsPer300s: () =>
-        environmentValue('requestsPer300s', dataverseConfig.serviceProtection?.requestsPer300s ?? null),
-    },
-  };
+  const environmentValue = (key, fallback) => dataverseEnvironmentValue(() => store, key, fallback);
+  const liveDataverseSettings = composeLiveDataverseSettings(dataverseConfig, projectRoot, () => store);
   // Self-signed CA for the https listener; the default file sits beside the state file (.paqvilo/). Without a state
   // file the CA stays in memory: a shared temp path would let another local user plant a key.
   const dataverseCertificatePath =
@@ -3396,46 +3389,7 @@ async function createPowerPagesSimulator({
       const report = inspectRoute(route, inspectionIdentity(req, route));
       // view=summary: what a tool needs on every navigation; the full report stays on request.
       if (url.searchParams.get('view') === 'summary') {
-        const length = (value) => (Array.isArray(value) ? value.length : 0);
-        return json(res, 200, {
-          path: report.path,
-          view: 'summary',
-          revision: report.revision,
-          permissionMode: report.permissionMode,
-          sourceRoots: report.sourceRoots,
-          page: report.page
-            ? {
-                name: report.page.name,
-                pageName: report.page.pageName ?? null,
-                url: report.page.url,
-                title: report.page.title ?? null,
-                access: {
-                  allowed: report.page.access?.allowed ?? null,
-                  status: report.page.access?.status ?? null,
-                  code: report.page.access?.code ?? null,
-                  reason: report.page.access?.reason ?? null,
-                },
-              }
-            : null,
-          tables: (report.tables ?? []).map((table) => table.logicalName),
-          counts: {
-            accessRules: length(report.page?.access?.rules),
-            templates: length(report.webTemplates),
-            snippets: length(report.snippets),
-            settings: length(report.siteSettings),
-            forms: length(report.forms),
-            views: length(report.views),
-            tables: length(report.tables),
-            columns: length(report.columns),
-            usages: length(report.usages),
-            related:
-              length(report.related?.weblinks) +
-              length(report.related?.sitemarkers) +
-              length(report.related?.redirects) +
-              length(report.related?.shortcuts),
-            unresolved: length(report.unresolved),
-          },
-        });
+        return json(res, 200, inspectionSummary(report));
       }
       return json(res, 200, report);
     }

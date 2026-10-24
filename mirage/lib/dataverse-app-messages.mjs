@@ -1,3 +1,4 @@
+import { idOf, argsOf, rowOf } from './dataverse-message-context.mjs';
 // Simulated Dataverse model-driven app and report messages: RetrieveAppComponents, ValidateApp, RemoveAppComponents,
 // DownloadReportDefinition, GetReportHistoryLimit and SetReportRelated. Report rendering is not simulated:
 // DownloadReportDefinition returns the stored definition text, and nothing runs a report.
@@ -7,22 +8,10 @@ import { privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-securit
 import { contextUrl } from './dataverse-odata.mjs';
 
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
-const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
 const key = (value) => String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
-function idOf(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value.match(GUID)?.[0] ?? null;
-  if (typeof value !== 'object') return null;
-  const direct = value.id ?? value['@odata.id'];
-  if (direct != null) return idOf(direct);
-  return Object.values(value).map(idOf).find(Boolean) ?? null;
-}
+
 const tableOf = (store, logical) => (store.state.tables[logical] ??= []);
-const rowOf = (store, logical, pk, id) =>
-  id == null ? null : (tableOf(store, logical).find((row) => sameId(row[pk], id)) ?? null);
-const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
-const argsOf = (c) => ({ ...body(c), ...(c.params ?? {}) });
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });

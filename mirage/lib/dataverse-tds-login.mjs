@@ -25,7 +25,7 @@
 // Strings: B_VARCHAR (1-byte char count), US_VARCHAR (2-byte char count), UTF-16LE.
 // Constants: TOKEN, DONE_STATUS, FEDAUTH_LIBRARY and ENV_TYPE are exported for callers.
 
-export const TOKEN = Object.freeze({
+const TOKEN = Object.freeze({
   ERROR: 0xaa,
   INFO: 0xab,
   LOGINACK: 0xad,

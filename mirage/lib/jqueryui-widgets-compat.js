@@ -443,8 +443,9 @@
   watchJQuery(compat, attach);
   ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).jqueryUiWidgetsMode = 'local-compatibility';
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
-  function watchJQuery(registry, reattach) {
-    (registry.jqueryWatchers ||= new Set()).add(reattach);
+  // BEGIN generated jQuery watcher
+  function watchJQuery(registry, attach) {
+    (registry.jqueryWatchers ||= new Set()).add(attach);
     if (registry.jqueryWatched) return;
     const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
     if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
@@ -470,4 +471,5 @@
       // A non-configurable global stays a plain property; repeated includes still re-attach.
     }
   }
+  // END generated jQuery watcher
 })();

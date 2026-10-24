@@ -1,3 +1,4 @@
+import { liveDataverseSettings } from './live-dataverse-settings.mjs';
 // Solution-only composition. Power Pages imports, contact sessions and live bridges are absent.
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -227,18 +228,7 @@ export async function createStandaloneRuntime(options = {}) {
     ...(options.dataverse ?? {}),
     localeId: lcid,
   });
-  // Same composition as server.mjs liveDataverseSettings: admin environment overrides are read per request.
-  const environmentValue = (key, fallback) =>
-    Object.hasOwn(store.state.dataverse?.environment ?? {}, key) ? store.state.dataverse.environment[key] : fallback;
-  const liveSettings = {
-    ...settings,
-    gitRemoteDirectory: settings.gitRemoteDirectory && path.resolve(projectRoot, settings.gitRemoteDirectory),
-    tds: { ...settings.tds, enabled: () => environmentValue('tdsEnabled', settings.tds.enabled) },
-    serviceProtection: {
-      ...settings.serviceProtection,
-      requestsPer300s: () => environmentValue('requestsPer300s', settings.serviceProtection?.requestsPer300s ?? null),
-    },
-  };
+  const liveSettings = liveDataverseSettings(settings, projectRoot, () => store);
   if (runtime.kind === 'dataverse-api' && !settings.enabled)
     throw new Error('A dataverse-api runtime requires its HTTP API to be enabled.');
   // The shared organization composition (organization-host.mjs): handler maps, memoised catalogues, providers, backend and API.

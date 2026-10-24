@@ -36,7 +36,7 @@ const NEVER_RECYCLED = new Set([REFERENCE, 'recyclebinconfig']);
 
 // A table is recycled when its recyclebinconfig row is Active and ready; a table with no row of its own takes the
 // 'organization' row (the default). No row at all means the table is not recycled.
-export function recycleBinEnabled(store, logical) {
+function recycleBinEnabled(store, logical) {
   const rows = store.state.tables.recyclebinconfig ?? [];
   const row =
     rows.find((r) => r.name === logical) ??
@@ -98,7 +98,7 @@ export function binRows(store, logical) {
     .filter((entry) => entry.logicalName === logical)
     .map((entry) => structuredClone(entry.row));
 }
-export const retainedRows = (store, logical) => structuredClone(store.state.dataverse?.retained?.[logical] ?? []);
+const retainedRows = (store, logical) => structuredClone(store.state.dataverse?.retained?.[logical] ?? []);
 const eligible = (mapping) =>
   !NEVER_RECYCLED.has(mapping.logicalName) &&
   !/^(?:elastic|virtual)$/i.test(mapping.tableType ?? '') &&

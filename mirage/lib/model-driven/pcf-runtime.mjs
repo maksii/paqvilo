@@ -60,7 +60,7 @@ export const ANONYMOUS_STAFF_CONTEXT = Object.freeze({
 });
 
 /** Minutes to add to UTC for the local time in an IANA zone at a date (getTimeZoneOffsetMinutes). */
-export function timeZoneOffsetMinutes(iana = 'UTC', date = new Date()) {
+function timeZoneOffsetMinutes(iana = 'UTC', date = new Date()) {
   const name =
     new Intl.DateTimeFormat('en-US', { timeZone: iana, timeZoneName: 'longOffset' })
       .formatToParts(date)
@@ -362,6 +362,55 @@ const pcfClient = (options) => {
     isNetworkAvailable: () => true,
   };
 };
+// Services are created per mount: no mutable user settings or proxy state crosses controls.
+function pcfServices(definition, options, staff, active) {
+  return {
+    resources: {
+      getString: (key) => definition.resources?.resx?.[key] ?? key,
+      getResource: () => unsupported('binary resources'),
+    },
+    userSettings: pcfUserSettings(staff),
+    client: pcfClient(options),
+    navigation: new Proxy({}, { get: (_, name) => () => unsupported(`navigation.${String(name)}`) }),
+    webAPI: new Proxy(
+      {},
+      {
+        get:
+          (_, name) =>
+          (...args) => {
+            const api = typeof options.webAPI === 'function' ? options.webAPI() : options.webAPI;
+            if (active() && typeof api?.[name] === 'function') return api[name](...args);
+            return Promise.reject(
+              new Error(`PCF webAPI.${String(name)} is not supported by the configured local model-driven client API.`),
+            );
+          },
+      },
+    ),
+    utils: {
+      hasEntityPrivilege: () => unsupported('utils.hasEntityPrivilege'),
+      getEntityMetadata: () => Promise.reject(new Error('PCF entity metadata API is not supported.')),
+      lookupObjects: () => Promise.reject(new Error('PCF lookup dialog API is not supported.')),
+    },
+    formatting: staffFormatting(staff),
+  };
+}
+
+// Attempt both lifecycle releases even when a component throws while unmounting.
+function releasePcf(instance, view) {
+  for (const release of [() => view?.unmount(), () => instance?.destroy?.()]) {
+    try {
+      release();
+    } catch (error) {
+      console.warn('Local PCF cleanup failed:', error.message);
+    }
+  }
+}
+function pcfError(element, status, error) {
+  status.textContent = error.message;
+  element.replaceChildren(status);
+  element.dataset.pcfState = 'unsupported';
+}
+
 export function renderPcfControl(field, initialValue, options = {}) {
   const element = document.createElement('div');
   element.className = 'model-driven-pcf';
@@ -393,19 +442,12 @@ export function renderPcfControl(field, initialValue, options = {}) {
       mounted = view;
     instance = undefined;
     view = undefined;
-    try {
-      mounted?.unmount();
-      current?.destroy?.();
-    } catch (error) {
-      console.warn('Local PCF cleanup failed:', error.message);
-    }
+    releasePcf(current, mounted);
   };
   const showError = (error) => {
     failed = true;
     cleanup();
-    status.textContent = error.message;
-    element.replaceChildren(status);
-    element.dataset.pcfState = 'unsupported';
+    pcfError(element, status, error);
   };
   if (!admission.definition) {
     showError(new Error(admission.reason));
@@ -467,33 +509,7 @@ export function renderPcfControl(field, initialValue, options = {}) {
         unsupported('fullscreen');
       },
     },
-    resources: {
-      getString: (key) => definition.resources?.resx?.[key] ?? key,
-      getResource: () => unsupported('binary resources'),
-    },
-    userSettings: pcfUserSettings(staff),
-    client: pcfClient(options),
-    navigation: new Proxy({}, { get: (_, name) => () => unsupported(`navigation.${String(name)}`) }),
-    webAPI: new Proxy(
-      {},
-      {
-        get:
-          (_, name) =>
-          (...args) => {
-            const api = typeof options.webAPI === 'function' ? options.webAPI() : options.webAPI;
-            if (!destroyed && !failed && typeof api?.[name] === 'function') return api[name](...args);
-            return Promise.reject(
-              new Error(`PCF webAPI.${String(name)} is not supported by the configured local model-driven client API.`),
-            );
-          },
-      },
-    ),
-    utils: {
-      hasEntityPrivilege: () => unsupported('utils.hasEntityPrivilege'),
-      getEntityMetadata: () => Promise.reject(new Error('PCF entity metadata API is not supported.')),
-      lookupObjects: () => Promise.reject(new Error('PCF lookup dialog API is not supported.')),
-    },
-    formatting: staffFormatting(staff),
+    ...pcfServices(definition, options, staff, () => !destroyed && !failed),
   };
   function refresh(changed = []) {
     // A trusted component may forget to honor isControlDisabled. The host still
@@ -949,19 +965,12 @@ export function renderPcfDataset(cell, options) {
       mounted = view;
     instance = undefined;
     view = undefined;
-    try {
-      mounted?.unmount();
-      current?.destroy?.();
-    } catch (error) {
-      console.warn('Local PCF cleanup failed:', error.message);
-    }
+    releasePcf(current, mounted);
   };
   const showError = (error) => {
     failed = true;
     cleanup();
-    status.textContent = error.message;
-    element.replaceChildren(status);
-    element.dataset.pcfState = 'unsupported';
+    pcfError(element, status, error);
   };
   if (!admission.definition) {
     showError(new Error(admission.reason));
@@ -987,33 +996,7 @@ export function renderPcfDataset(cell, options) {
         unsupported('fullscreen');
       },
     },
-    resources: {
-      getString: (key) => definition.resources?.resx?.[key] ?? key,
-      getResource: () => unsupported('binary resources'),
-    },
-    userSettings: pcfUserSettings(staff),
-    formatting: staffFormatting(staff),
-    client: pcfClient(options),
-    navigation: new Proxy({}, { get: (_, name) => () => unsupported(`navigation.${String(name)}`) }),
-    webAPI: new Proxy(
-      {},
-      {
-        get:
-          (_, name) =>
-          (...args) => {
-            const api = typeof options.webAPI === 'function' ? options.webAPI() : options.webAPI;
-            if (!destroyed && !failed && typeof api?.[name] === 'function') return api[name](...args);
-            return Promise.reject(
-              new Error(`PCF webAPI.${String(name)} is not supported by the configured local model-driven client API.`),
-            );
-          },
-      },
-    ),
-    utils: {
-      hasEntityPrivilege: () => unsupported('utils.hasEntityPrivilege'),
-      getEntityMetadata: () => Promise.reject(new Error('PCF entity metadata API is not supported.')),
-      lookupObjects: () => Promise.reject(new Error('PCF lookup dialog API is not supported.')),
-    },
+    ...pcfServices(definition, options, staff, () => !destroyed && !failed),
   };
   const rerender = () => {
     if (!instance || destroyed || failed || queued) return;

@@ -1,3 +1,4 @@
+import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs';
 // Calculated columns (SourceType 1) in the Dataverse API: computed on read, refused on write.
 //
 // A column is calculated when its metadata says SourceType 1 (exported column facts sit under columnMetadata). On every read
@@ -67,8 +68,6 @@ const OPERATIONS = [
   'DiffInYears',
 ];
 
-const enumValue = (value) => (value !== null && typeof value === 'object' ? value.Value : value);
-const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
 const localName = (name) => String(name).split(':').pop().toLowerCase();
 const elements = (node) => (node?.children ?? []).filter((item) => !item.name.startsWith('#'));
 const attr = (node, name) =>
@@ -298,18 +297,7 @@ function evaluate(node, row, ctx) {
 
 /** Validates a pack's calculatedColumns export: '<table>.<column>' keys mapping to synchronous functions. Returns the map. */
 export function validateCalculatedColumns(map) {
-  if (map === undefined) return {};
-  if (!map || typeof map !== 'object' || Array.isArray(map))
-    throw new TypeError("calculatedColumns must map '<table>.<column>' to functions.");
-  const result = {};
-  for (const [key, fn] of Object.entries(map)) {
-    if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/i.test(key))
-      throw new TypeError(`calculatedColumns key '${key}' must be '<table>.<column>'.`);
-    if (typeof fn !== 'function' || fn.constructor?.name === 'AsyncFunction')
-      throw new TypeError(`calculatedColumns['${key}'] must be a synchronous function (row, ctx) => value.`);
-    result[key.toLowerCase()] = fn;
-  }
-  return result;
+  return validateDerivedColumns(map, 'calculatedColumns');
 }
 
 // ---- Extension
@@ -336,14 +324,7 @@ const report = (state, entry) => state.reporter.report(entry, `${entry.code}\u00
 
 /** The calculated columns of a table as { name: formulaDefinition }. */
 function calculatedColumnsOf(api, logical) {
-  const definitions = api.store.fieldDefinitions(logical, api.metadataFields) ?? {};
-  const result = {};
-  for (const [name, definition] of Object.entries(definitions)) {
-    const column = facts(definition);
-    if (Number(enumValue(column.sourceType ?? column.SourceType)) === CALCULATED)
-      result[name.toLowerCase()] = column.formulaDefinition ?? column.FormulaDefinition ?? '';
-  }
-  return result;
+  return derivedColumnsOf(api, logical, CALCULATED);
 }
 
 // The parent row as a read copy: its own calculated columns read computed (store.withComputed), never stale.

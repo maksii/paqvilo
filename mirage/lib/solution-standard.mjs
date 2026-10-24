@@ -490,7 +490,6 @@ export const STANDARD_LOOKUP_TARGETS = {
   ownerid: ['systemuser', 'team'],
   organizationid: ['organization'],
 };
-export const STANDARD_LOOKUP_REFERENCE = PA + 'account';
 
 /** Columns Dataverse creates on every standard table but never writes into solution XML. */
 export const IMPLICIT_SYSTEM_COLUMNS = {

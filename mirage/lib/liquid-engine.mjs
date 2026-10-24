@@ -127,8 +127,8 @@ class LiquidSymbol {
     this.test = test;
   }
 }
-export class BreakInterrupt extends Error {}
-export class ContinueInterrupt extends Error {}
+class BreakInterrupt extends Error {}
+class ContinueInterrupt extends Error {}
 
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 export const isPlainObject = (value) =>
@@ -237,9 +237,6 @@ export function formatOutput(value) {
   if (value instanceof KeyValuePair) return formatItem(value);
   return ''; // drops (ILiquidizable) render empty
 }
-/** DotLiquid condition truthiness: only nil and false are falsy. */
-export const truthy = (value) => value != null && value !== false;
-
 // ---- Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
 // Scan the whole-template shorthands without overlapping dot/whitespace regex
 // repetitions. Preserve the optional single whitespace and final-newline rules.
@@ -472,7 +469,7 @@ const conditionFrom = (match, preserveParentheses = false) =>
     preserveParentheses ? (match[3] ?? '') : (match[3] ?? '').replace(/\)+$/, ''),
   );
 /** If.PushBlock: expressions are grouped right-to-left; there are no parentheses. */
-export function parseCondition(markup, preserveParentheses = false) {
+function parseCondition(markup, preserveParentheses = false) {
   const help = "Syntax Error in 'if' tag - Valid syntax: if [expression]";
   const expressions = scan(markup, IF_EXPRESSIONS);
   const syntax = expressions.at(-1);
@@ -914,7 +911,7 @@ class RawTag extends RawBlock {
     out.push(...this.nodeList);
   }
 }
-export class CommentTag extends RawBlock {
+class CommentTag extends RawBlock {
   async render() {}
 }
 class LiteralTag extends Block {
@@ -1394,7 +1391,7 @@ class BlockTag extends Block {
   }
 }
 const EXTENDS_SYNTAX = re(`^(${QF})`);
-export class ExtendsTag extends Block {
+class ExtendsTag extends Block {
   parse(tokens) {
     const m = EXTENDS_SYNTAX.exec(this.markup);
     if (!m) throw new LiquidSyntaxError("Syntax Error in 'extends' tag - Valid syntax: extends [template]");
@@ -1463,7 +1460,7 @@ export class Template {
     return out.join('');
   }
 }
-export const STANDARD_TAGS = {
+const STANDARD_TAGS = {
   assign: AssignTag,
   block: BlockTag,
   capture: CaptureTag,

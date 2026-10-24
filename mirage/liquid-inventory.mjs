@@ -52,7 +52,7 @@ const KEYWORDS = new Set([
 const INTERMEDIATE_TAGS = new Set(['else', 'elsif', 'elseif', 'when']);
 
 /** Global objects Power Pages documents ("Available Liquid objects"). */
-export const DOCUMENTED_GLOBALS = [
+const DOCUMENTED_GLOBALS = [
   'ads',
   'blogs',
   'entities',
@@ -73,7 +73,7 @@ export const DOCUMENTED_GLOBALS = [
   'website',
 ];
 /** Tags Power Pages documents (conditional, iteration, variable, template and Dataverse tags). */
-export const DOCUMENTED_TAGS = [
+const DOCUMENTED_TAGS = [
   'assign',
   'block',
   'capture',
@@ -101,7 +101,7 @@ export const DOCUMENTED_TAGS = [
   'webform',
 ];
 /** Filters Power Pages documents ("Available Liquid filters"). */
-export const DOCUMENTED_FILTERS = [
+const DOCUMENTED_FILTERS = [
   'add_query',
   'append',
   'base',
@@ -188,7 +188,7 @@ const CONTEXTUAL_OBJECTS = {
  * Documented properties of objects whose members are a closed set, plus the drop properties
  * of the entity objects (their remaining members are Dataverse attributes).
  */
-export const DOCUMENTED_PROPERTIES = {
+const DOCUMENTED_PROPERTIES = {
   request: ['params', 'path', 'path_and_query', 'query', 'url'],
   sitemap: ['current', 'root'],
   forloop: ['first', 'index', 'index0', 'last', 'length', 'rindex', 'rindex0'],
@@ -250,7 +250,7 @@ function localizedValues(value) {
 }
 
 /** Collect Liquid-bearing sources from imported portal records. */
-export async function collectSources(portal, { includeInactive = false } = {}) {
+async function collectSources(portal, { includeInactive = false } = {}) {
   const sources = [];
   let inactive = 0;
   for (const record of portal.records ?? []) {
@@ -760,7 +760,7 @@ function summarize(report) {
   return lines.join('\n');
 }
 
-export async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const options = parseToolArgs('liquid-inventory', argv);
   if (options.help || !(options.portal || options.config || options.site)) {
     console.log(`Usage: paqvilo mirage liquid-inventory ${toolOptionsHelp('liquid-inventory')}`);

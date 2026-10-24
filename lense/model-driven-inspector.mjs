@@ -80,7 +80,7 @@ export function modelDrivenComparisonAdmission(response, { page, overlay, origin
 /** Native SPA transitions do not emit a document navigation. Keep this key in
  * the browser; no route values or record IDs are returned through the binding.
  */
-export function installModelDrivenContextWatch({ origin, token }) {
+function installModelDrivenContextWatch({ origin, token }) {
   const host = document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector');
   if (location.origin !== origin || host?.__paqModelInspector?.token !== token || host.__paqModelWatch?.token === token)
     return;

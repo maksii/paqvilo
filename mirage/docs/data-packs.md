@@ -45,6 +45,14 @@ in the preset still replace those targets. Reset remains a separate operation.
 
 Expression operators extend declarative local backend rules. Pack endpoints are validated under the local `/__sim/` namespace; they cannot replace live provider authorization. Shell conventions specify project banner/notification rules. Parity fixtures specify project-specific comparison scenarios and denied routes. Keep all these definitions and their tests with the project.
 
+For compatibility, direct imports of `registerExpressionOperators` and
+`registerShellConventions` from `paqvilo/mirage/lib/extensions.mjs` retain
+process-wide registrations for the lifetime of that process. Those registrations
+are visible in every runtime; a scoped pack's operator takes precedence over a
+legacy operator with the same name. Two legacy packs cannot claim the same
+operator. Use explicit pack exports for new integrations so each runtime sees
+only its matched packs; direct registration has no per-runtime disposal contract.
+
 The generic metadata scaffold is available without a pack:
 
 ```sh

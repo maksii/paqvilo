@@ -155,7 +155,7 @@ export function detectTdsMode(chunk) {
   return null;
 }
 
-export function createPreloginTlsAdapter(stream, { raw = false, initial = EMPTY } = {}) {
+function createPreloginTlsAdapter(stream, { raw = false, initial = EMPTY } = {}) {
   return new PreloginTlsAdapter(stream, raw, initial);
 }
 

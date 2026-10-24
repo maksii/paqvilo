@@ -120,7 +120,7 @@ async function requiredMetadata(client, route) {
   }
 }
 
-export async function existingComponent(client, action) {
+async function existingComponent(client, action) {
   const b = action.body;
   if (action.kind === 'publisher') return one(client, `publishers?$filter=uniquename eq '${escape(b.uniquename)}'`);
   if (action.kind === 'solution') return one(client, `solutions?$filter=uniquename eq '${escape(b.uniquename)}'`);

@@ -72,7 +72,7 @@ export function layerStack(layer) {
 export const managedLayerOf = (api, kind, logical, name = null) =>
   api.store.state.dataverse?.managedLayers?.[managedLayerId(api, kind, logical, name)] ?? null;
 /** The solution id of the top managed layer of a component, or null when no managed solution holds a layer of it. */
-export function managedOwner(api, kind, logical, name = null) {
+function managedOwner(api, kind, logical, name = null) {
   return layerStack(managedLayerOf(api, kind, logical, name)).at(-1)?.solutionid ?? null;
 }
 // A managed component may be deleted only by the uninstall or upgrade that owns its layer.
@@ -144,7 +144,7 @@ export function projectManagedFlags(api) {
 // Solution membership. A metadata write that names a solution in the MSCRM.SolutionUniqueName header adds the components it
 // creates to that solution: state.dataverse.solutionComponents[uniqueName] = [{ kind, logical, name }]. The components are
 // the "add" entries the write appended to metadataLog (kinds: entity, attribute, relationship, optionset).
-export const solutionHeaderOf = (headers) =>
+const solutionHeaderOf = (headers) =>
   String(
     Object.entries(headers ?? {}).find(([name]) => lower(name) === 'mscrm.solutionuniquename')?.[1] ?? '',
   ).trim() || null;
@@ -166,7 +166,7 @@ export function addSolutionComponents(api, solution, entries, options) {
 // ponytail: the Default solution row is created on first use with no publisher; the bag above stays the export source.
 export const SOLUTION_COMPONENT_TYPE = { entity: 1, attribute: 2, optionset: 9, relationship: 10, key: 14 };
 export const DEFAULT_SOLUTION = 'Default';
-export const DEFAULT_SOLUTION_ID = 'fd140aaf-4df4-11dd-bd17-0019b9312238'; // the Default solution's fixed id
+const DEFAULT_SOLUTION_ID = 'fd140aaf-4df4-11dd-bd17-0019b9312238'; // the Default solution's fixed id
 /** The solution component id (MetadataId) of a metadata component entry { kind, logical, name } in an organization. */
 export const componentObjectId = (entry, organizationId) =>
   metadataComponentId(organizationId, entry.kind, lower(entry.logical), entry.name == null ? null : lower(entry.name));
@@ -186,7 +186,7 @@ export function solutionRowOf(store, uniquename, { create = false } = {}) {
   }
   return row ?? null;
 }
-export function addSolutionComponentRows(api, solution, entries, { defaultSolution = true } = {}) {
+function addSolutionComponentRows(api, solution, entries, { defaultSolution = true } = {}) {
   const store = api.store;
   const rows = (store.state.tables.solutioncomponent ??= []);
   for (const name of new Set(defaultSolution ? [solution, DEFAULT_SOLUTION] : [solution])) {

@@ -576,7 +576,7 @@ const annotationPatterns = (prefer) => {
 };
 
 /** The HelpLink annotation native sends for a Dataverse code. */
-export const cdsHelpLink = (code) =>
+const cdsHelpLink = (code) =>
   `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`;
 
 const VALIDATION_PLUGIN = 'Microsoft.Crm.ObjectModel.TargetAttributeValidationPlugin';

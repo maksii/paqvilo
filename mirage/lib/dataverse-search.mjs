@@ -659,7 +659,7 @@ function searchInformationOf(api, fetchXml) {
 const searchInformationInvalid = () =>
   new DataError('The FetchXML is not valid.', 400, 'InvalidRequest', { innerCode: '0x80040203' }); // native wording is a guess
 
-export function install(api) {
+function install(api) {
   const { registry } = api;
   registry.register({
     name: 'searchquery',

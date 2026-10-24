@@ -20,21 +20,19 @@ const setting = (portal, name) =>
 const enabled = (portal) =>
   !/^false$/i.test(String(setting(portal, 'Connector/ImplicitGrantFlowEnabled') ?? 'true').trim());
 
-export function tokenLifetime(portal) {
+function tokenLifetime(portal) {
   const value = String(setting(portal, 'ImplicitGrantFlow/TokenExpirationTime') ?? '').trim();
   if (!/^\d+$/.test(value)) return 900;
   return Math.min(Math.max(Number(value), 60), 3600);
 }
 
 /** Sign a compact RS256 JWT with the local site key. */
-export function signIdToken(claims) {
+function signIdToken(claims) {
   const header = base64Url(JSON.stringify({ typ: 'JWT', alg: 'RS256' }));
   const payload = base64Url(JSON.stringify(claims));
   const signature = createSign('RSA-SHA256').update(`${header}.${payload}`).sign(privateKey, 'base64url');
   return `${header}.${payload}.${signature}`;
 }
-
-export const implicitGrantPublicKey = () => PUBLIC_KEY;
 
 function tokenError(res, status, errorId, message) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

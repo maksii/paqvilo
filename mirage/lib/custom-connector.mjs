@@ -19,7 +19,7 @@
 // connector-runtime.mjs); the implicit and password flows answer 501 OperationUnsupported.
 // The managed API id a flow uses for a Solution custom connector is not known, so both the connector name and
 // shared_<name with _ encoded as -5f> are accepted.
-export const SUPPORTED_POLICIES = Object.freeze([
+const SUPPORTED_POLICIES = Object.freeze([
   'setheader',
   'setqueryparameter',
   'routerequesttoendpoint',
@@ -116,7 +116,7 @@ export function compileOpenApi(document) {
 }
 
 /** Policy template instances, in order, as [{ templateId, supported, section, operations, parameters, reason? }]. */
-export function compilePolicies(instances) {
+function compilePolicies(instances) {
   return (Array.isArray(instances) ? instances : []).filter(isMap).map((policy) => {
     const parameters = isMap(policy.parameters) ? policy.parameters : {},
       templateId = String(policy.templateId ?? '');
@@ -440,10 +440,6 @@ export function applyResponsePolicies(connector, operationId, answer, connection
   }
   return { ...answer, headers, body };
 }
-/** The response headers after the operation's Response-section setheader policies. */
-export const responseHeaders = (connector, operationId, headers = {}, connection = {}) =>
-  applyResponsePolicies(connector, operationId, { headers, body: null }, connection).headers;
-
 const MEDIA = /json|^application\/x-www-form-urlencoded$|^multipart\/form-data$/;
 const mediaType = (operation) =>
   (operation.consumes ?? []).map((m) => String(m).split(';')[0].trim().toLowerCase()).find((m) => MEDIA.test(m));

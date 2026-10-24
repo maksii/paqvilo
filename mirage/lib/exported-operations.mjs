@@ -84,7 +84,7 @@ export function assertServerLogicEnabled(portal, diagnostic = () => {}) {
 
 /** Whether HttpClient may call `host` (the original host, before any local rewrite): ServerLogic/AllowNetworkingToAllDomains (default
  * true) and ServerLogic/AllowedDomains (comma or semicolon separated; a domain also allows its subdomains). */
-export function serverLogicDomainAllowed(portal, host) {
+function serverLogicDomainAllowed(portal, host) {
   const domains = String(settingOf(portal, 'ServerLogic/AllowedDomains') ?? '')
     .split(/[;,\s]+/)
     .map((item) =>

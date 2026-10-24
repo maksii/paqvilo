@@ -44,7 +44,7 @@ const tableNavigation = (value) => {
 /** Non-table SubArea destinations, each with a distinct code: web resources and dashboards whose definition the
  * sources hold are hosted (the catalogue resolves the dashboard); custom pages open the headless canvas host of their canvas
  * app (the shell answers a missing one with CustomPageNotFound); external URLs are not hosted. */
-export const DASHBOARD_MISSING_REASON = 'The dashboard definition is not in the sources (MD_NAV_DASHBOARD).';
+const DASHBOARD_MISSING_REASON = 'The dashboard definition is not in the sources (MD_NAV_DASHBOARD).';
 /** A custom page is a canvas app the model-driven app includes (solution component type 300 Canvas App): it resolves
  * only against the app's own type-300 AppModuleComponent and a canvas app the canvas host holds (`canvasApps`: unique
  * names, or null without a canvas host). One rule for the catalogue, the shell (app.customPages) and the source graph.

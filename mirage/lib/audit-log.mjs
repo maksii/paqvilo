@@ -54,7 +54,7 @@ const pathOnly = (value) => {
   }
 };
 const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
-export const AUDIT_KINDS = ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'];
+const AUDIT_KINDS = ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'];
 // Runtime services may add their own lowercase kinds (for example native form services).
 const auditKind = (kind) =>
   AUDIT_KINDS.includes(kind) || (typeof kind === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(kind)) ? kind : 'api';

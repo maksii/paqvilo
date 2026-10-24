@@ -101,7 +101,7 @@ export function withSolutionOperations(portal, supplementary) {
 
 /** `connections` lists every connector call (actions and a Dataverse trigger) with its resolved binding.
  * `principal` is the per-flow override (pack flowIdentities), which takes precedence over a connection principal. */
-export function flowContract(workflow, steps = {}, { connectors, principal } = {}) {
+function flowContract(workflow, steps = {}, { connectors, principal } = {}) {
   const definition = definitionOf(workflow);
   const triggers = Object.values(definition?.triggers ?? {});
   const contract = inspectFlowDefinition(definition, steps, {

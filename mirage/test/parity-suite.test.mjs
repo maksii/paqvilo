@@ -1174,6 +1174,58 @@ test('captures that never settled, or anonymous ones naming a portal user, are b
   assert.equal(report.totals.blocked, 2);
 });
 
+test('shell and client probes both block inadmissible captures and retain status diagnostics', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'parity-probe-admission-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const server = http.createServer((_req, res) => res.end(JSON.stringify({ data: {}, config: {}, status: {} })));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(resolve);
+      }),
+  );
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const scenarios = ['page-shell', 'client-object'].flatMap((kind) =>
+    ['signin', 'unavailable', 'status'].map((mode) => ({
+      id: `${kind}-${mode}`,
+      kind,
+      path: `/probe-${mode}`,
+    })),
+  );
+  const page = (local) => async (target) => ({
+    status: local || target !== '/probe-status' ? 200 : 503,
+    finalPath: !local && target === '/probe-signin' ? '/signin' : target,
+    settled: local || target !== '/probe-unavailable',
+    snapshot: {
+      title: local ? 'Home' : 'Confidential invented specimen title',
+      nodeCount: !local && target === '/probe-unavailable' ? 0 : 10,
+      signInSignals: { passwordInputs: 0 },
+    },
+    probeValue: '{malformed',
+  });
+  const report = await runParitySuite({
+    plan: { version: 1, scenarios },
+    localUrl: origin,
+    origin,
+    delayMs: 0,
+    outDir: directory,
+    sides: { live: { page: page(false) }, local: { page: page(true) } },
+    identity: { use: async () => {}, describe: () => ({ signedIn: true }) },
+  });
+  for (const kind of ['page-shell', 'client-object']) {
+    const row = (mode) => report.scenarios.find((item) => item.id === `${kind}-${mode}`);
+    assert.equal(row('signin').verdict, 'blocked');
+    assert.match(row('signin').reason, /sign-in page/);
+    assert.equal(row('unavailable').verdict, 'blocked');
+    assert.match(row('unavailable').reason, /neither settled/);
+    assert.equal(row('status').verdict, 'delta');
+    assert.ok(row('status').deltas.some((delta) => delta.kind === 'status' && delta.live === 503));
+    assert.equal(row('status').observations.live.title.redacted, true);
+  }
+});
+
 test('client objects compare key presence, key order, value types and empty User values, never values', async () => {
   const { compareClientObject, validatePlan, loadScenarioPlans } = await import('../parity-suite.mjs');
   const entry = (key, type, empty) => (empty === undefined ? { key, type } : { key, type, empty });

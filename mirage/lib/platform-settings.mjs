@@ -20,7 +20,7 @@ const item = (key, type, defaultValue, access, coverage, source, description, ex
 });
 
 /** Curated feature-documented controls, not every writable Organization column. */
-export const PLATFORM_SETTINGS = Object.freeze([
+const PLATFORM_SETTINGS = Object.freeze([
   item(
     'QueryLinkEntityLimit',
     'integer',

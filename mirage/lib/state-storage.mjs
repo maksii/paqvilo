@@ -6,7 +6,7 @@ import { DataError } from './data-error.mjs';
 import { jsonChunks, parseJsonStream, hashStateFile, writeJsonStream } from './state-stream.mjs';
 
 const MAGIC = '{"$paqvilo":"mirage-state-journal-v1"}\n';
-export const DEFAULT_JOURNAL_THRESHOLD = 16 * 1024 * 1024;
+const DEFAULT_JOURNAL_THRESHOLD = 16 * 1024 * 1024;
 const conflict = () =>
   new DataError(
     'Local state changed outside this runtime; restart the simulator from the updated state file before writing',

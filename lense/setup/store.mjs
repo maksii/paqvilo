@@ -61,7 +61,7 @@ const projectDocument = (raw) =>
  * Settings as the structured status carries them: secrets become { kind } markers and connection settings
  * their key names. The verbatim YAML editor (layers.*.text) is the only place a secret reference appears.
  */
-export function redactSettings(mirage) {
+function redactSettings(mirage) {
   if (!plain(mirage)) return mirage;
   const result = { ...mirage };
   if (plain(mirage.secrets))

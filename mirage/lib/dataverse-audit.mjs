@@ -32,7 +32,6 @@ const ACTION = {
   userAccessWeb: 64,
   userAccessWebServices: 65,
 };
-export const AUDIT_OPERATION = OPERATION;
 export const AUDIT_ACTION = ACTION;
 const ATTRIBUTE_DETAIL = '#Microsoft.Dynamics.CRM.AttributeAuditDetail';
 const RELATIONSHIP_DETAIL = '#Microsoft.Dynamics.CRM.RelationshipAuditDetail';

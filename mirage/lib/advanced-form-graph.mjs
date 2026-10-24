@@ -1,6 +1,6 @@
 import { portalField } from './importer.mjs';
 
-export const canonicalStepId = (value) =>
+const canonicalStepId = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .trim()

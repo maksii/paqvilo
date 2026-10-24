@@ -44,7 +44,7 @@ function composeInternalTables(store) {
     store.state.tables[table] ??= [];
   }
 }
-export const DATAVERSE_NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse');
+const DATAVERSE_NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse');
 export const dataverseOrganizationId = (settings) =>
   (settings.organizationId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:organization`)).toLowerCase();
 function seedRegistrations(store, settings, ids, clock) {

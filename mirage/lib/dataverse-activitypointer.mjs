@@ -234,7 +234,7 @@ async function handle(c, api) {
   }
 }
 
-export function install(api) {
+function install(api) {
   api.addRoute(
     (path) => parseDataverseRoute(path)?.set === SET,
     (c) => handle(c, api),

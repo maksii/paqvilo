@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { importPortal } from '../lib/importer.mjs';
+import { importPortal, COMPONENT_KINDS } from '../lib/importer.mjs';
 import {
   COMPONENT_TYPES,
   componentRequests,
@@ -321,6 +321,37 @@ test('enhanced comparison measures every documented component type against the i
   for (const kind of ['redirect', 'websitelanguage', 'columnpermissionprofile', 'webpage', 'webfile'])
     assert.deepEqual(counts(kind), [1, 1, 0], kind);
   assert.deepEqual(comparison.unexplained, []);
+  assert.deepEqual(comparison.unrecognizedComponentTypes, []);
+});
+
+test('enhanced census and importer share every canonical component kind, including flows and server logic', async (t) => {
+  assert.equal(COMPONENT_TYPES, COMPONENT_KINDS);
+  assert.equal(COMPONENT_TYPES[33], 'cloudflowconsumer');
+  assert.equal(COMPONENT_TYPES[35], 'serverlogic');
+  const files = { ...enhancedExport };
+  for (const [type, kind] of Object.entries(COMPONENT_TYPES)) {
+    files[`powerpagecomponents/catalogue-${type}/powerpagecomponent.xml`] = component(
+      `catalogue-${type}`,
+      type,
+      `Catalogue ${kind}`,
+      {},
+    );
+  }
+  const dir = await tree(t, files);
+  const census = await exportCensus(dir),
+    portal = await importPortal(dir);
+  assert.deepEqual(census.unknownTypes, {});
+  for (const [type, kind] of Object.entries(COMPONENT_TYPES)) {
+    assert.ok(census.kinds[kind]?.total > 0, kind);
+    assert.equal(portal.records.find((record) => record.id === `catalogue-${type}`)?.kind, kind);
+  }
+  const comparison = compareImport(census, portal);
+  const logic = comparison.rows.find((row) => row.kind === 'serverlogic');
+  assert.deepEqual([logic.expected, logic.imported, logic.unexplained], [1, 1, 0]);
+  assert.equal(
+    comparison.notModelled.some((row) => row.kind === 'serverlogic'),
+    false,
+  );
   assert.deepEqual(comparison.unrecognizedComponentTypes, []);
 });
 

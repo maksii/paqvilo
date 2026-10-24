@@ -1,3 +1,4 @@
+import { idOf, argsOf, rowOf } from './dataverse-message-context.mjs';
 // Simulated Dataverse time zone and calendar messages: LocalTimeFromUtcTime, GetTimeZoneCodeByLocalizedName,
 // GetAllTimeZonesWithDisplayName, ExpandCalendar, QuerySchedule, Search, RetrieveExchangeAppointments, Book, Reschedule,
 // Validate, AddRecurrence, CreateInstance, CreateException, DeleteOpenInstances and ValidateRecurrenceRule.
@@ -19,7 +20,6 @@ const DAY = 86400000;
 const UTC_CODE = 92;
 const LOCALE_EN_US = 1033;
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
-const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
 const MAX_DAYS = 366 * 100;
 // RecurrencePatternType 0 Daily, 1 Weekly, 2 Monthly, 3 Yearly. PatternEndType 1 No End Date, 2 Occurrences, 3 Pattern End Date.
 const PATTERN = { daily: 0, weekly: 1, monthly: 2, yearly: 3 };
@@ -54,20 +54,9 @@ const ZONE_BY_CODE = new Map(ZONES.map((zone) => [zone.code, zone]));
 const key = (value) => String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
 // A GUID from a string, an object's id or @odata.id, or the first GUID-valued property of a reference object.
-function idOf(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value.match(GUID)?.[0] ?? null;
-  if (typeof value !== 'object') return null;
-  const direct = value.id ?? value['@odata.id'];
-  if (direct != null) return idOf(direct);
-  return Object.values(value).map(idOf).find(Boolean) ?? null;
-}
+
 const tableOf = (store, logical) => (store.state.tables[logical] ??= []);
-const rowOf = (store, logical, pk, id) =>
-  id == null ? null : (tableOf(store, logical).find((row) => sameId(row[pk], id)) ?? null);
-const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
 // Function parameters arrive as c.params and action parameters as the body; a SOAP call carries both.
-const argsOf = (c) => ({ ...body(c), ...(c.params ?? {}) });
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
@@ -1119,7 +1108,7 @@ export function install(api) {
   return api.store.transact(() => seedTimeZones(api.store));
 }
 
-export function reset(api) {
+function reset(api) {
   return api.store.transact(() => seedTimeZones(api.store));
 }
 

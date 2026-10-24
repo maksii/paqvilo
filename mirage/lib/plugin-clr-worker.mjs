@@ -1,3 +1,4 @@
+import { clrOutputFailure, decodeClrMessage } from './plugin-clr-protocol.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
@@ -41,56 +42,28 @@ child.on('exit', (code) => {
 });
 child.stderr.on('data', (chunk) => {
   stderr += chunk.length;
-  if (stderr > 65536)
-    finish({ kind: 'failure', code: 'LocalPluginOutputLimit', message: 'CLR host stderr exceeded 64 KiB.' });
+  const error = clrOutputFailure('stderr', stderr);
+  if (error) finish(error);
 });
 child.stdout.on('data', (chunk) => {
   bytes += chunk.length;
-  if (bytes > 8 * 1024 * 1024)
-    finish({ kind: 'failure', code: 'LocalPluginOutputLimit', message: 'CLR host output exceeded 8 MiB.' });
+  const error = clrOutputFailure('stdout', bytes);
+  if (error) finish(error);
 });
 child.stdin.on('error', () =>
   finish({ kind: 'failure', code: 'LocalPluginProtocol', message: 'CLR host input channel closed unexpectedly.' }),
 );
 readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
   if (complete) return;
-  if (Buffer.byteLength(line) > 4 * 1024 * 1024)
-    return finish({ kind: 'failure', code: 'LocalPluginOutputLimit', message: 'CLR protocol message exceeded 4 MiB.' });
-  let message;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    return finish({
-      kind: 'failure',
-      code: 'LocalPluginProtocol',
-      message: 'CLR host returned an invalid protocol message.',
-    });
-  }
-  if (!message || typeof message !== 'object' || Array.isArray(message))
-    return finish({
-      kind: 'failure',
-      code: 'LocalPluginProtocol',
-      message: 'CLR host returned an invalid protocol message.',
-    });
+  const { message, error } = decodeClrMessage(line, { pending });
+  if (error) return finish(error);
   if (message.kind === 'rpc') {
-    if (pending)
-      return finish({
-        kind: 'failure',
-        code: 'LocalPluginProtocol',
-        message: 'Concurrent CLR SDK calls are unsupported.',
-      });
     pending = true;
     send(message);
   } else if (message.kind === 'trace') send(message);
   else if (['result', 'failure'].includes(message.kind)) {
-    if (pending)
-      return finish({
-        kind: 'failure',
-        code: 'LocalPluginProtocol',
-        message: 'CLR completed with a pending SDK callback.',
-      });
     finish(message);
-  } else finish({ kind: 'failure', code: 'LocalPluginProtocol', message: 'Unknown CLR host message.' });
+  }
 });
 port.on('message', (message) => {
   if (message.kind === 'rpc-answer' && pending && !complete) {

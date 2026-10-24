@@ -88,7 +88,7 @@ export function componentsOf(state, organizationId = organizationRecord(state)?.
 }
 
 // The dependency edges between components: { dependent, required }. Only edges whose ends both exist are kept.
-export function dependenciesOf(state, components = componentsOf(state)) {
+function dependenciesOf(state, components = componentsOf(state)) {
   const byKey = new Map(components.map((c) => [c.key, c]));
   const at = (kind, logical, name = null) => byKey.get(`${kind}|${lower(logical)}|${lower(name ?? '')}`) ?? null;
   const edges = [];
@@ -180,9 +180,9 @@ function requiredClosure(edges, start) {
 // Membership is the solutioncomponent rows under each solution's own id, so a patch holds its own components.
 // The upgrade and uninstall paths remove the definitions a removed managed solution introduced (planRemoval, applyRemoval).
 
-export const HOLDING_SUFFIX = '_Upgrade';
+const HOLDING_SUFFIX = '_Upgrade';
 // asyncoperation.operationtype of the solution jobs; ImportSolutionAsync (203) is in dataverse-solutions.mjs.
-export const OPERATION_TYPE = { export: 202, deleteAndPromote: 207, uninstall: 208, stageAndUpgrade: 211 };
+const OPERATION_TYPE = { export: 202, deleteAndPromote: 207, uninstall: 208, stageAndUpgrade: 211 };
 const VERSION_DEFAULT = '1.0.0.0';
 const tableOf = (store, name) => (store.state.tables[name] ??= []);
 const rowsOf = (store, name) => store.state.tables[name] ?? [];

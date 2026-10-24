@@ -5,6 +5,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { readLocalFile, readLocalFileSync } from '../lense/local-file.mjs';
 
+test('an expected canonical pathname refuses a link inserted after caller validation before opening bytes', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-read-expected-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, 'source'),
+    hidden = path.join(root, '.paqvilo');
+  fs.mkdirSync(source);
+  fs.mkdirSync(hidden);
+  const file = path.join(source, 'file.txt');
+  fs.writeFileSync(file, 'original');
+  fs.writeFileSync(path.join(hidden, 'file.txt'), 'invented private bytes');
+  const expectedRealPath = fs.realpathSync(file);
+  fs.renameSync(source, `${source}-original`);
+  fs.symlinkSync(hidden, source, process.platform === 'win32' ? 'junction' : 'dir');
+  t.mock.method(fs, 'openSync', () => assert.fail('changed canonical path must be refused before opening'));
+  assert.throws(() => readLocalFileSync(file, { root, expectedRealPath }), /changed before reading/);
+});
+
 test('descriptor reads preserve bytes and reject oversize, directories and escaping roots', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-read-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

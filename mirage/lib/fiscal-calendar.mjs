@@ -102,7 +102,7 @@ export function fiscalCalendar(settings = {}) {
 const localMidnight = (year, month, day, offset) => Date.UTC(year, month, day) - offset * 60000;
 
 /** Start (local midnight, as an instant) of fiscal year `year`: its start day in that calendar year. */
-export function fiscalYearStart(calendar, year, offset = 0) {
+function fiscalYearStart(calendar, year, offset = 0) {
   return localMidnight(
     year,
     calendar.startMonth,

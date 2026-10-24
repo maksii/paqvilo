@@ -909,7 +909,7 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
 
 // ---- Run modes for /_sim/
 
-export const RUN_MODES = ['handler', 'placeholder', 'mock', 'disabled'];
+const RUN_MODES = ['handler', 'placeholder', 'mock', 'disabled'];
 const MOCK_STATUSES = [JOB_STATUS.succeeded, JOB_STATUS.failed];
 
 /** The stored override for a run mode. handler is the default and stores none. Throws a DataError outside the contract. */

@@ -1,3 +1,4 @@
+import { validateDerivedColumns } from './derived-columns.mjs';
 // Rollup columns (SourceType 2) in the Dataverse API: the state and date columns are maintained, the value is recalculated on demand.
 //
 // A column is a rollup when its metadata says SourceType 2 (exported column facts sit under columnMetadata). Its FormulaDefinition
@@ -254,7 +255,7 @@ function rollupsSourcedFrom(api, state, child) {
 }
 
 /** The mass recalculation: every rollup column whose state is NotCalculated (0), row by row. Returns the count recalculated. */
-export async function recalculateStale(api) {
+async function recalculateStale(api) {
   let count = 0;
   for (const logical of Object.keys(api.store.state.mappings)) {
     const columns = Object.keys(rollupColumnsOf(api, logical));
@@ -438,18 +439,7 @@ function install(api, options = {}) {
 
 /** Validates a pack's rollups export: '<table>.<column>' keys mapping to synchronous (row, ctx) => value functions. Returns the map. */
 export function validateRollups(map) {
-  if (map === undefined) return {};
-  if (!map || typeof map !== 'object' || Array.isArray(map))
-    throw new TypeError("rollups must map '<table>.<column>' to functions.");
-  const result = {};
-  for (const [key, fn] of Object.entries(map)) {
-    if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/i.test(key))
-      throw new TypeError(`rollups key '${key}' must be '<table>.<column>'.`);
-    if (typeof fn !== 'function' || fn.constructor?.name === 'AsyncFunction')
-      throw new TypeError(`rollups['${key}'] must be a synchronous function (row, ctx) => value.`);
-    result[key.toLowerCase()] = fn;
-  }
-  return result;
+  return validateDerivedColumns(map, 'rollups');
 }
 
 // Reseed: parsed formulas and the once-per-column diagnostics start again (the metadata may have changed).

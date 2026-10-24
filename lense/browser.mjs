@@ -9,7 +9,7 @@ import { interceptOrigin } from './intercept.mjs';
 import { refreshUrl } from './navigation.mjs';
 import { pageKey } from './html-rewriter.mjs';
 import { browserProfileInfo, validateBrowserProfile, validateDebuggerMode } from './browser-profile.mjs';
-export { browserProfileDir, browserProfileInfo } from './browser-profile.mjs';
+export { browserProfileDir } from './browser-profile.mjs';
 
 /**
  * @param {Awaited<ReturnType<import('./config.mjs').loadConfig>>} cfg
@@ -178,7 +178,7 @@ async function restoreBrowserWindow(context, placement) {
 }
 
 /** Normalize old forced-maximized toolkit windows once; then retain the user's placement. */
-export async function initializeBrowserWindow(context, profileDir) {
+async function initializeBrowserWindow(context, profileDir) {
   const page = context.pages()[0] ?? (await context.newPage());
   const cdp = await context.newCDPSession(page);
   try {
@@ -394,7 +394,7 @@ async function bounded(promise, ms, signal) {
  * sources that belong to one page only reload the tabs showing that page, and everything else
  * (web scripts, forms, templates, snippets, unknown files) reloads every tab of the portal.
  */
-export function planRefresh(session, files) {
+function planRefresh(session, files) {
   const plan = { cssUrls: [], styles: [], reloadKeys: new Set(), reloadAll: false };
   const changes = session.rewriter?.blockChanges;
   const disabled = session.disabled ?? new Set();

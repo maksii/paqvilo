@@ -22,13 +22,23 @@ const DECORATED_GUID = new RegExp(`^\\s*(?:\\{(${GUID_BODY})\\}|\\((${GUID_BODY}
 export const scalar = (value) =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value.id ?? value.value ?? value) : value;
 
+/** Read an own field before falling back to its logical/Web API lookup alias. */
+export function lookupColumnValue(row, name) {
+  if (row == null) return undefined;
+  if (own(row, name)) return row[name];
+  const lookup = /^_(.+)_value$/.exec(name);
+  if (lookup && own(row, lookup[1])) return scalar(row[lookup[1]]);
+  if (!lookup && own(row, `_${name}_value`)) return row[`_${name}_value`];
+  return undefined;
+}
+
 /** GUIDs compare case-insensitively with optional braces or parentheses. */
 export function guidKey(value) {
   if (value == null || typeof value === 'object') return null;
   const match = DECORATED_GUID.exec(String(value));
   return match ? (match[1] ?? match[2] ?? match[3]).toLowerCase() : null;
 }
-export const isGuid = (value) => guidKey(value) != null;
+const isGuid = (value) => guidKey(value) != null;
 
 const DIACRITICS = /[̀-ͯ]/g;
 /** English Dataverse databases use a case- and accent-insensitive (_CI_AI) collation. */
@@ -56,7 +66,7 @@ export function equalityKey(value, collation = 'CI_AI') {
   return `j:${JSON.stringify(raw)}`;
 }
 const collators = new Map();
-export function textCollator(collation = 'CI_AI') {
+function textCollator(collation = 'CI_AI') {
   if (!collators.has(collation))
     collators.set(
       collation,
@@ -318,7 +328,7 @@ const booleanLiteral = (value) => {
  * Coerce a condition literal and stored value into one comparable domain.
  * Returns { kind, x, y } or null when the values are not comparable.
  */
-export function coercePair(stored, literal, { kind, collation, timeZoneOffsetMinutes } = {}) {
+function coercePair(stored, literal, { kind, collation, timeZoneOffsetMinutes } = {}) {
   const x = scalar(stored);
   const y = scalar(literal);
   if (x == null || y == null) return null;
@@ -759,7 +769,7 @@ export function localDay(value, { timeZoneOffsetMinutes = 0 } = {}) {
 }
 
 /** SQL DATEPART(week) style week number: Sunday-start weeks with January 1 in week 1. */
-export function weekOfYear(ms, offset = 0) {
+function weekOfYear(ms, offset = 0) {
   const p = localParts(ms, offset);
   const jan1 = new Date(Date.UTC(p.year, 0, 1));
   const dayOfYear = Math.floor((Date.UTC(p.year, p.month, p.day) - jan1.getTime()) / DAY);
@@ -984,7 +994,7 @@ export function formattedValue(value, definition, settings = {}) {
  * column flagged isPrimaryName, Dataverse's <prefix>_name convention for
  * custom and portal tables, then "name". Values fall back to name/fullname.
  */
-export function primaryNameColumn(mapping, logicalName = mapping?.logicalName) {
+function primaryNameColumn(mapping, logicalName = mapping?.logicalName) {
   if (mapping?.nameColumn) return mapping.nameColumn;
   for (const fields of [mapping?.fields, mapping?.fieldMetadata])
     if (fields && typeof fields === 'object')

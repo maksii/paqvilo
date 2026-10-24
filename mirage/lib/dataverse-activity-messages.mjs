@@ -1,3 +1,4 @@
+import { readMessageRecords } from './dataverse-message-context.mjs';
 // Activity, email and queue messages of the simulated Dataverse Web API: AppendRelatedParty and RemoveParent (activities),
 // the email messages (send, delivery, templates, tracking, mailbox folders) and the queue messages (queue items, members,
 // routing). Registered as extension operations (dataverse-operations.mjs), so the unbound ones also answer over SOAP's
@@ -13,7 +14,7 @@ import { DataError } from './data-error.mjs';
 import { parseEntityReference } from './data.mjs';
 import { objectTypeCode } from './dataverse-metadata.mjs';
 import { modelOf } from './dataverse-misc-messages.mjs';
-import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { contextUrl } from './dataverse-odata.mjs';
 import { ownerColumns, teamsOfUser, uuidV5 } from './dataverse-security.mjs';
 import { createThroughPipeline } from './dataverse-files.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
@@ -154,40 +155,14 @@ async function listed(api, ctx, logical, fetchXml = null) {
   const path = `/api/data/${ctx.version}/${entitySet}`;
   const url = new URL(`${ctx.origin}${path}`);
   if (fetchXml != null) url.searchParams.set('fetchXml', fetchXml);
-  const result = await api.records.handle({
-    method: 'GET',
-    route: parseDataverseRoute(path),
-    url,
-    origin: ctx.origin,
-    version: ctx.version,
-    prefer: parsePrefer(undefined),
-    headers: {},
-    user: ctx.user,
-    caller: ctx.caller,
-    identity: ctx.identity,
-    requestId: ctx.requestId,
-  });
-  return result.body?.value ?? [];
+  return (await readMessageRecords(api, ctx, url))?.value ?? [];
 }
 
 // One record as the caller reads it, through the same GET.
 async function formatted(api, ctx, logical, id) {
   const { entitySet } = api.store.resolveMapping(logical);
   const path = `/api/data/${ctx.version}/${entitySet}(${id})`;
-  const result = await api.records.handle({
-    method: 'GET',
-    route: parseDataverseRoute(path),
-    url: new URL(`${ctx.origin}${path}`),
-    origin: ctx.origin,
-    version: ctx.version,
-    prefer: parsePrefer(undefined),
-    headers: {},
-    user: ctx.user,
-    caller: ctx.caller,
-    identity: ctx.identity,
-    requestId: ctx.requestId,
-  });
-  return result.body;
+  return readMessageRecords(api, ctx, new URL(`${ctx.origin}${path}`));
 }
 
 // Creates one email row owned by the caller and returns its id. Outgoing mail starts as a Draft; the caller sets the state
@@ -1150,7 +1125,7 @@ const OPERATIONS = [
   },
 ];
 
-export function install(api) {
+function install(api) {
   api.store.transact(() => seedQueueMembership(api.store));
   for (const op of OPERATIONS) {
     const { csdl, handle, binding = 'unbound', entity, name, kind } = op;
@@ -1166,7 +1141,7 @@ export function install(api) {
 }
 
 // reset runs on every reseed inside the change queue, so it writes through the store only.
-export function reset(api) {
+function reset(api) {
   return api.store.transact(() => seedQueueMembership(api.store));
 }
 

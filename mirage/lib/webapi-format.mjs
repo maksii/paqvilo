@@ -17,7 +17,7 @@ import {
 } from './dataverse-values.mjs';
 
 export const FORMATTED = '@OData.Community.Display.V1.FormattedValue';
-export const ATTRIBUTE_NAME = '@OData.Community.Display.V1.AttributeName';
+const ATTRIBUTE_NAME = '@OData.Community.Display.V1.AttributeName';
 export const LOOKUP_LOGICAL = '@Microsoft.Dynamics.CRM.lookuplogicalname';
 export const NAVIGATION = '@Microsoft.Dynamics.CRM.associatednavigationproperty';
 const SYSTEM_DATES = new Set(['createdon', 'modifiedon', 'overriddencreatedon']);

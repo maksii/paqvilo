@@ -294,7 +294,7 @@ const textOf = (node) =>
 // The hosted React/Fluent bundles inject <style data-merge-styles|data-load-themed-styles|data-fela-type> elements into the
 // live head at run time; they are client-side platform artefacts and would shift every positional head delta.
 const INJECTED_STYLE = /^data-(?:merge-styles|load-themed-styles|fela-type)$/;
-export function withoutInjectedStyles(node) {
+function withoutInjectedStyles(node) {
   const children = adapter.getChildNodes(node) ?? [];
   for (const child of [...children]) {
     if (
@@ -367,7 +367,7 @@ export function diffDom(a, b, out, root = 'dom') {
 }
 
 /** Same-origin frame documents (frames.json, keyed by frame path): presence per path, then the DOM walk under "frame <path>". */
-export function diffFrames(live = {}, mirage = {}, out = []) {
+function diffFrames(live = {}, mirage = {}, out = []) {
   for (const key of new Set([...Object.keys(live), ...Object.keys(mirage)])) {
     if (!(key in mirage) || !(key in live))
       out.push(
@@ -455,7 +455,7 @@ export const normalizeGeneratedIds = (text, origins = []) => {
 // The address composite control's hidden popover container carries a per-render GUID id; only ids of elements
 // with that class are tokenised (in document order), plain text and CSS-escaped selector forms alike.
 const ADDRESS_CONTAINER = /<div\b[^>]*\baddressCompositeControlContainer\b[^>]*>/g;
-export const addressContainerIds = (dom = '') =>
+const addressContainerIds = (dom = '') =>
   [...dom.matchAll(ADDRESS_CONTAINER)]
     .map((m) => /\bid="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i.exec(m[0])?.[1])
     .filter(Boolean);

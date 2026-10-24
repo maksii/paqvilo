@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { registerRuntimeShutdown } from './lib/runtime-shutdown.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -387,18 +388,7 @@ try {
             2,
           ),
         );
-        let stopped = false;
-        stop = async () => {
-          if (stopped) return;
-          stopped = true;
-          await simulator.close();
-          await fs.rm(discovery, { force: true });
-        };
-        process.once('SIGINT', () => stop().then(() => process.exit(0)));
-        process.once('SIGTERM', () => stop().then(() => process.exit(0)));
-        process.stdin.on('data', (data) => {
-          if (String(data).trim() === 'stop') stop().then(() => process.exit(0));
-        });
+        ({ stop } = registerRuntimeShutdown({ close: () => simulator.close(), discovery }));
       }
     } else if (project && command === 'inspect') {
       const selected = args.portal ? project.portals.filter((p) => p.id === args.portal) : project.portals;
@@ -578,18 +568,14 @@ try {
           2,
         ),
       );
-      let stopped = false;
-      stop = async () => {
-        if (stopped) return;
-        stopped = true;
-        await Promise.all(sessions.map(({ simulator }) => simulator.close()));
-        await fs.rm(discovery, { force: true });
-      };
-      process.once('SIGINT', () => stop().then(() => process.exit(0)));
-      process.once('SIGTERM', () => stop().then(() => process.exit(0)));
-      process.stdin.on('data', (data) => {
-        if (String(data).trim() === 'stop') stop().then(() => process.exit(0));
-      });
+      ({ stop } = registerRuntimeShutdown({
+        close: async () => {
+          const results = await Promise.allSettled(sessions.map(({ simulator }) => simulator.close()));
+          const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+          if (errors.length) throw new AggregateError(errors, 'Runtime shutdown failed');
+        },
+        discovery,
+      }));
     } else {
       let sourceDir = args.source,
         origin = args.origin;
@@ -882,18 +868,7 @@ try {
                 2,
               ),
             );
-            let stopped = false;
-            stop = async () => {
-              if (stopped) return;
-              stopped = true;
-              await simulator.close();
-              await fs.rm(discovery, { force: true });
-            };
-            process.once('SIGINT', () => stop().then(() => process.exit(0)));
-            process.once('SIGTERM', () => stop().then(() => process.exit(0)));
-            process.stdin.on('data', (data) => {
-              if (String(data).trim() === 'stop') stop().then(() => process.exit(0));
-            });
+            ({ stop } = registerRuntimeShutdown({ close: () => simulator.close(), discovery }));
           }
         } catch (error) {
           await simulator.close();

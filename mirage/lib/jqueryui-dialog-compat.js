@@ -194,6 +194,7 @@
   ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).jqueryUiDialogMode = 'local-compatibility';
   console.info('Local jQuery UI dialog compatibility active for source-used dialog behavior.');
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
+  // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
     (registry.jqueryWatchers ||= new Set()).add(attach);
     if (registry.jqueryWatched) return;
@@ -221,4 +222,5 @@
       // A non-configurable global stays a plain property; repeated includes still re-attach.
     }
   }
+  // END generated jQuery watcher
 })();

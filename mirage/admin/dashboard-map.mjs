@@ -11,7 +11,7 @@
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const e = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ESCAPES[char]);
 
-export const STATUSES = Object.freeze([
+const STATUSES = Object.freeze([
   'listening',
   'ready',
   'declared',
@@ -83,7 +83,7 @@ export const BANDS = Object.freeze([
 ]);
 
 // Capability groups of the organization and provider layers, in display order.
-export const GROUPS = Object.freeze({
+const GROUPS = Object.freeze({
   tables: { band: 'organization', title: 'Tables & data', icon: 'table', family: 'dataverse' },
   security: { band: 'organization', title: 'Security', icon: 'shield', family: 'dataverse' },
   logic: { band: 'organization', title: 'Business logic', icon: 'logic', family: 'dataverse' },
@@ -301,7 +301,7 @@ const rank = (id) => {
 };
 
 /** A stable DOM id part for a node id: every character outside [A-Za-z0-9-] becomes `_<hex>`, so distinct ids stay distinct. */
-export const nodeKey = (id) => String(id).replace(/[^A-Za-z0-9-]/g, (char) => `_${char.codePointAt(0).toString(16)}`);
+const nodeKey = (id) => String(id).replace(/[^A-Za-z0-9-]/g, (char) => `_${char.codePointAt(0).toString(16)}`);
 
 // Wide-layout geometry. Each band is a label column (`label` px, the band title and health) beside its cards; the connector
 // SVG covers the card area only, so no connector ever crosses a band title. Vertical values are CSS pixels and must match
@@ -888,7 +888,7 @@ function drawRoute(edge, cards, gutters, G) {
 // label is high, so labels on different lanes never meet. Widths are estimated for the narrowest wired card area (696 px:
 // an 880 px map less the label column), so on wider maps the real gaps only grow.
 // The height covers the glyphs and their white halo, so labels on neighbouring lanes (14 px apart) slide apart instead of touching.
-export const LABEL = Object.freeze({ canvas: 696, charWidth: 6.6, pad: 10, height: 17 });
+const LABEL = Object.freeze({ canvas: 696, charWidth: 6.6, pad: 10, height: 17 });
 const labelWidth = (text) => (text.length * LABEL.charWidth + LABEL.pad) / LABEL.canvas;
 function placeLabels(edges) {
   const boxes = [];
@@ -1334,7 +1334,7 @@ export function renderNodeDetail(node, docs, { kit, icons, payload } = {}) {
 }
 
 /** `at` as an ISO string: hosts send epoch milliseconds or ISO text; anything unreadable becomes null. */
-export const isoTime = (at) => {
+const isoTime = (at) => {
   const time =
     at == null || at === '' ? NaN : new Date(typeof at === 'string' && /^\d+$/.test(at) ? Number(at) : at).getTime();
   return Number.isFinite(time) ? new Date(time).toISOString() : null;

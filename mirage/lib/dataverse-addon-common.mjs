@@ -1,3 +1,5 @@
+import { argsOf } from './dataverse-message-context.mjs';
+export { argsOf, idOf } from './dataverse-message-context.mjs';
 // Shared plumbing for the Dataverse add-on families (lib/dataverse-addon-*.mjs and the add-on messages of the other modules).
 //
 // registerAddon(api, spec) registers one message. The router answers a call in this order:
@@ -14,24 +16,9 @@
 //
 // Default errors: aiUnavailable is the documented Predict error (403 0x80048d06), and featureNotEnabled is the web service
 // error 0x80061113. The HTTP status of featureNotEnabled is a guess.
-// ponytail: argsOf, idOf and respond are copies of the helpers in dataverse-app-messages.mjs (not exported there).
 import { DataError } from './data-error.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
-
-const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
-
-export function idOf(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value.match(GUID)?.[0] ?? null;
-  if (typeof value !== 'object') return null;
-  const direct = value.id ?? value['@odata.id'];
-  if (direct != null) return idOf(direct);
-  return Object.values(value).map(idOf).find(Boolean) ?? null;
-}
-
-const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
-export const argsOf = (c) => ({ ...body(c), ...(c.params ?? {}) });
 
 // A response with the native @odata.context for the <name>Response complex type.
 export function respond(c, name, payload) {
@@ -108,7 +95,7 @@ export function registerInternalMessage(api, spec) {
   registerAddon(api, { ...spec, fallback: () => notSimulated(spec.name) });
 }
 
-export function notSimulated(name) {
+function notSimulated(name) {
   return new DataError(`${name} is for internal use only and is not simulated.`, 501, 'NotImplemented', {
     innerCode: '0x80040216',
   });

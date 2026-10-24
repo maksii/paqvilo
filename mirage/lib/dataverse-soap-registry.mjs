@@ -82,7 +82,7 @@ const collectionItem = (type) => /^Collection\((.+)\)$/.exec(type ?? '')?.[1] ??
 
 // Complex types of the registry's CSDL, by name: { base, properties: [{ name, type }] }. Memoized on the registry until its CSDL changes.
 const indexes = new WeakMap();
-export function complexTypesOf(registry) {
+function complexTypesOf(registry) {
   const text = registry.csdlFragments();
   const known = indexes.get(registry);
   if (known?.text === text) return known.types;
@@ -109,7 +109,7 @@ function membersOf(types, name) {
 }
 
 // The declared return type of an operation's own CSDL (for example "mscrm.RetrieveAuditPartitionListResponse").
-export function returnTypeOf(op) {
+function returnTypeOf(op) {
   const schema = parseXml(`<Schema>${op.csdl ?? ''}</Schema>`);
   const declaration = schema.children.find((c) => c.name === 'Function' || c.name === 'Action');
   const ret = declaration?.children.find((c) => c.name === 'ReturnType');

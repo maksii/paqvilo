@@ -378,7 +378,7 @@ const nodeKey = (node) => {
     node.attrs.value;
   return `${node.name}|${lower(id)}`;
 };
-export function mergeSolutionXml(earlier, later) {
+function mergeSolutionXml(earlier, later) {
   const out = structuredClone(earlier);
   Object.assign(out.attrs, later.attrs);
   if (later.text.trim()) out.text = later.text;
@@ -466,7 +466,7 @@ function reflectAppMembers(node, app, state) {
 }
 
 /** Export the current metadata record values while retaining opaque XML siblings. */
-export function reflectSolutionPayloadRows(root, state) {
+function reflectSolutionPayloadRows(root, state) {
   const bag = state.dataverse?.solutionPayloads ?? {};
   const visit = (source) => {
     let node = structuredClone(source);

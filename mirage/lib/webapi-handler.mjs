@@ -1,3 +1,5 @@
+import { readRawBody } from './http-body.mjs';
+import { globalMetadataVersion } from './metadata-version.mjs';
 // Local Power Pages portals Web API (/_api) over the simulator data store.
 //
 // Routes, system query options, annotations, writes and the error envelope
@@ -7,7 +9,6 @@
 // through, the Dataverse Web API.
 import { isExactNumeric } from './exact-numeric.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
-import { createHash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { parseEntityReference, parseKeySegment } from './data.mjs';
 import {
@@ -33,7 +34,7 @@ import {
 } from './webapi-error-details.mjs';
 import { appendObservedWebApiErrorTemplate } from './webapi-error-templates.mjs';
 
-export const WEBAPI_COUNT_LIMIT = 5000;
+const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
 const ROUTE = new RegExp(
   String.raw`^([A-Za-z_]\w*)(?:\(${KEY}\))?(?:/([A-Za-z_]\w*|\$count)(?:\(${KEY}\))?)?(?:/(\$ref|\$value|\$count))?$`,
@@ -733,21 +734,7 @@ const sendText = (t, value) => {
   t.res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...apiHeaders(t.deps.portal) });
   t.res.end(String(value));
 };
-const metadataVersions = new WeakMap();
-/**
- * @Microsoft.Dynamics.CRM.globalmetadataversion: Dataverse publishes an
- * opaque numeric string that changes with metadata. Locally it is a stable
- * number derived from the table mappings (synthetic, never a live value).
- */
-function globalMetadataVersion(store) {
-  if (store.observed?.webApiGlobalMetadataVersion != null) return store.observed.webApiGlobalMetadataVersion;
-  const mappings = store.state.mappings ?? {};
-  if (!metadataVersions.has(mappings)) {
-    const digest = createHash('sha256').update(JSON.stringify(mappings)).digest('hex');
-    metadataVersions.set(mappings, String(parseInt(digest.slice(0, 8), 16)));
-  }
-  return metadataVersions.get(mappings);
-}
+
 /** OData context URL: $metadata#set(select,nav(select)) as the platform publishes it. */
 function contextUrl(t, mapping, params, { entity = false } = {}) {
   const describe = (select, expand) => {
@@ -1471,17 +1458,12 @@ function filePrincipal(t, mapping, operation) {
     grants: [{ entity: mapping.logicalName, operations: [operation] }],
   };
 }
-async function rawBody(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > FILE_BODY_LIMIT)
-      throw new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' });
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
+const rawBody = (req) =>
+  readRawBody(req, {
+    maximum: FILE_BODY_LIMIT,
+    tooLarge: () =>
+      new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' }),
+  });
 async function fileColumnRequest(t) {
   const { mapping, policy, target, method, store, deps, url, req } = t;
   const download = method === 'GET';

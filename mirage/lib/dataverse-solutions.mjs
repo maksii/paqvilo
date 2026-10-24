@@ -66,7 +66,7 @@ import {
 
 const DEFAULT_LCID = 1033;
 // asyncoperation.operationtype of an ImportSolutionAsync job: 203 "Import Solution Async Operation".
-export const IMPORT_SOLUTION_TYPE = 203;
+const IMPORT_SOLUTION_TYPE = 203;
 const lower = (value) => String(value ?? '').toLowerCase();
 const sameGuid = (a, b) => lower(idOf(a)) === lower(idOf(b));
 const idOf = (value) => (value && typeof value === 'object' ? value.id : value);

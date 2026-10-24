@@ -36,7 +36,7 @@ const canonical = (text) => typeof text === 'string' && Buffer.from(text, 'base6
 const states = new WeakMap();
 const requestRows = new WeakMap(); // request context -> logical -> id -> stored row (hydrate)
 // ponytail: one fixed threshold (decoded bytes); add a simulation setting when a project needs another size.
-export const PACK_INLINE_BODY_LIMIT = 64 * 1024;
+const PACK_INLINE_BODY_LIMIT = 64 * 1024;
 const inlineInPack = (api, logical, value) =>
   Boolean(api.store.storageAdapter?.packOwned?.(logical)) &&
   Buffer.byteLength(value, 'base64') <= PACK_INLINE_BODY_LIMIT;

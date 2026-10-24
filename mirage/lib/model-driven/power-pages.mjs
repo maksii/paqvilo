@@ -3,7 +3,7 @@
 import { portalField } from '../importer.mjs';
 import { isDeepStrictEqual } from 'node:util';
 
-export const managementGroups = [
+const managementGroups = [
   [
     'Website',
     [

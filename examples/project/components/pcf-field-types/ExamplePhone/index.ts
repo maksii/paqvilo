@@ -1,3 +1,4 @@
+import { createEditor, releaseEditor } from '../shared/editor';
 import { IInputs, IOutputs } from './generated/ManifestTypes';
 
 export class ExamplePhone implements ComponentFramework.StandardControl<IInputs, IOutputs> {
@@ -17,16 +18,12 @@ export class ExamplePhone implements ComponentFramework.StandardControl<IInputs,
   ): void {
     this._notifyOutputChanged = notifyOutputChanged;
     this._value = context.parameters.controlValue.raw ?? '';
-    const field = document.createElement('input');
-    field.type = 'tel';
-    this.input = field;
-    field.className = 'ExamplePhone';
-    field.value = this._value;
-    field.addEventListener('input', this.onInput);
-    container.appendChild(field);
+    this.input = createEditor(container, 'ExamplePhone', this._value, this.onInput, 'tel');
+    this.input.disabled = context.mode.isControlDisabled;
   }
 
   public updateView(context: ComponentFramework.Context<IInputs>): void {
+    this.input.disabled = context.mode.isControlDisabled;
     if (document.activeElement === this.input) return;
     const next = context.parameters.controlValue.raw ?? '';
     if (next === this._value) return;
@@ -39,6 +36,6 @@ export class ExamplePhone implements ComponentFramework.StandardControl<IInputs,
   }
 
   public destroy(): void {
-    this.input.removeEventListener('input', this.onInput);
+    releaseEditor(this.input, this.onInput);
   }
 }

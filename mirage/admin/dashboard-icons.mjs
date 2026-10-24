@@ -55,8 +55,6 @@ const PATHS = Object.freeze({
   arrowDown: '<path d="M10 4v12M5 11l5 5 5-5"/>',
   minus: '<path d="M5 10h10"/>',
 });
-export const ICON_NAMES = Object.freeze(Object.keys(PATHS));
-
 /** A decorative 20×20 line icon; unknown names fall back to a neutral ring. */
 export function icon(name, className = 'dm-icon') {
   const body = PATHS[name] ?? PATHS.unknown;

@@ -27,7 +27,7 @@ export const DOCUMENT_REQUEST_PATTERN = Object.freeze({
  * frame id (from CDP Page.frameAttached/frameNavigated events). The frame tree cannot be
  * queried while a document request of the page is paused.
  */
-export function withinFrame(frameId, ancestor, parents) {
+function withinFrame(frameId, ancestor, parents) {
   const seen = new Set();
   for (let current = frameId; current && !seen.has(current); current = parents.get(current)) {
     if (current === ancestor) return true;

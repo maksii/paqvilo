@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { redactUrl, normalizeText } from './parity-suite.mjs';
 import { redactCaptureControlEvidence, redactCaptureControlText } from './lib/capture-control-redaction.mjs';
 
-export const SIGN_IN_MARKERS = Object.freeze([
+const SIGN_IN_MARKERS = Object.freeze([
   'form#loginForm',
   "form[action*='/SignIn']",
   "[action*='login.microsoftonline']",
@@ -138,14 +138,6 @@ function redactHeaders(headers, origin = null) {
     }
   }
   return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
-}
-
-/** Resolve `{id:alias}` placeholders from the run's private id map. */
-export function resolvePlaceholders(text, ids = {}) {
-  return String(text ?? '').replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
-    if (!Object.hasOwn(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
-    return String(ids[alias]);
-  });
 }
 
 /**

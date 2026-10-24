@@ -152,7 +152,7 @@ export function maskedOperand() {
 const PRESENCE_AGGREGATES = new Set(['count', 'countcolumn', '$count']);
 
 /** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
-export function createFieldSecurity({
+function createFieldSecurity({
   store,
   principals,
   organizationId,

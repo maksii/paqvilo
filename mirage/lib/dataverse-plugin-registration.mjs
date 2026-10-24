@@ -749,7 +749,7 @@ const triggerServiceEndpointCheck = (api) => ({
   },
 });
 
-export function reset(api) {
+function reset(api) {
   return api.store.transact(() => seed(api));
 }
 

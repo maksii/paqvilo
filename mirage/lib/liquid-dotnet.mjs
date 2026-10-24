@@ -18,8 +18,8 @@ export class LiquidSyntaxError extends LiquidError {
     super(message, 'DotLiquid.Exceptions.SyntaxException');
   }
 }
-export const formatError = () => new LiquidError('Input string was not in a correct format.', 'System.FormatException');
-export const invalidCast = (from, to) =>
+const formatError = () => new LiquidError('Input string was not in a correct format.', 'System.FormatException');
+const invalidCast = (from, to) =>
   new LiquidError(
     from && to ? `Invalid cast from '${from}' to '${to}'.` : 'Specified cast is not valid.',
     'System.InvalidCastException',
@@ -158,8 +158,6 @@ export function decimalModulo(a, b) {
   if (y === 0n) throw divideByZero();
   return fitDecimal(x % y, scale);
 }
-
-export const isNetDecimal = (value) => value instanceof NetDecimal;
 export const isNumber = (value) =>
   (typeof value === 'number' && Number.isFinite(value)) || value instanceof NetDecimal || value instanceof NetDouble;
 /** .NET kind of a numeric runtime value: int (Int32), long (Int64) or decimal. */
@@ -173,13 +171,9 @@ export function numberKind(value) {
 export function toNumber(value) {
   return value instanceof NetDecimal || value instanceof NetDouble ? value.valueOf() : Number(value);
 }
-/** Decimal values that are mathematically integral stay NetDecimal; others become JS numbers. */
-export function normalizeDecimal(result) {
-  return result instanceof NetDecimal ? result : NetDecimal.from(result);
-}
 
 /** Render a JS number without exponent notation. */
-export function plainNumber(value) {
+function plainNumber(value) {
   if (Object.is(value, -0)) return '0';
   const text = String(value);
   if (!/e/i.test(text)) return text;
@@ -210,7 +204,7 @@ export function numberToOutput(value) {
 }
 
 /** Standard Int32 parsing (NumberStyles.Integer, en-US). */
-export function parseInt32(text) {
+function parseInt32(text) {
   const match = /^\s*([+-]?)(\d+)\s*$/.exec(String(text));
   if (!match) throw formatError();
   const value = Number(match[1] + match[2]);
@@ -218,7 +212,7 @@ export function parseInt32(text) {
   return value;
 }
 /** Decimal parsing (NumberStyles.Number: sign, thousands separators, decimal point). */
-export function parseNetDecimal(text) {
+function parseNetDecimal(text) {
   const match = /^\s*([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?\s*$/.exec(String(text));
   if (!match || (!match[2] && !match[3])) throw formatError();
   return NetDecimal.parse(`${match[1]}${(match[2] || '0').replace(/,/g, '')}${match[3] ? '.' + match[3] : ''}`);
@@ -936,7 +930,6 @@ function toInt32Checked(value, target) {
   if (scaled < min || scaled > max) throw overflow();
   return Number(scaled);
 }
-export const valueKind = kindOf;
 
 /** Object.Equals between two values of the same .NET kind. */
 function sameKindEquals(a, b) {

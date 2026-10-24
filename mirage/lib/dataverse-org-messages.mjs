@@ -1,3 +1,4 @@
+import { argsOf, readMessageRecords } from './dataverse-message-context.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse organization, environment variable, license and deployment messages, through the registered operations.
 // Each answers from the store (organization row, solution, systemuser, workflow, environmentvariabledefinition and
@@ -14,7 +15,7 @@ import {
   privilegeName,
   uuidV5,
 } from './dataverse-security.mjs';
-import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { contextUrl } from './dataverse-odata.mjs';
 import { parseEntityReference } from './data.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 
@@ -41,9 +42,7 @@ const sameId = (a, b) => key(a) === key(b);
 const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
 const tableOf = (store, logical) => (store.state.tables[logical] ??= []);
-const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
 // Function parameters arrive as c.params and action parameters as the body; a SOAP call carries both.
-const argsOf = (c) => ({ ...body(c), ...(c.params ?? {}) });
 // Refusal wording is a guess; 0x80040203 (InvalidArgument) is the default code for a rejected argument.
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const notFound = (logical, id) =>
@@ -281,22 +280,7 @@ function operations(api) {
       });
   };
   // The Web API GET of a path as the caller reads it (row privileges, field security, lookup formatting), as the activity module does.
-  const readAsCaller = async (c, path, query = '') => {
-    const result = await api.records.handle({
-      method: 'GET',
-      route: parseDataverseRoute(path),
-      url: new URL(`${c.origin}${path}${query}`),
-      origin: c.origin,
-      version: c.version,
-      prefer: parsePrefer(undefined),
-      headers: {},
-      user: c.user,
-      caller: c.caller,
-      identity: c.identity,
-      requestId: c.requestId,
-    });
-    return result.body;
-  };
+  const readAsCaller = (c, path, query = '') => readMessageRecords(api, c, new URL(`${c.origin}${path}${query}`));
   const authorizeRead = (c, logical, row) =>
     api.principals.authorize({
       user: c.user,

@@ -1,3 +1,4 @@
+import { inspectionSummary } from './inspection-summary.mjs';
 // The dev panel, on the side of the dev loop: what each tab's panel shows, and what its buttons do.
 // The part that runs in the page is panel-ui.mjs.
 import fs from 'node:fs';
@@ -626,37 +627,12 @@ export function enablePanel(context, session, opts = {}) {
     };
   };
   let lastMirageStatus = null;
-  const length = (value) => (Array.isArray(value) ? value.length : 0);
-  /** The summary a Mirage without view=summary support would have sent. */
-  const summarize = (report) => ({
-    path: report.path,
-    page: report.page
-      ? {
-          name: report.page.name,
-          pageName: report.page.pageName ?? null,
-          url: report.page.url,
-          access: { allowed: report.page.access?.allowed ?? null },
-        }
-      : null,
-    tables: (report.tables ?? []).map((table) => table.logicalName ?? table.name).filter(Boolean),
-    counts: {
-      accessRules: length(report.page?.access?.rules),
-      templates: length(report.webTemplates),
-      snippets: length(report.snippets),
-      settings: length(report.siteSettings),
-      forms: length(report.forms),
-      views: length(report.views),
-      tables: length(report.tables),
-      columns: length(report.columns),
-      usages: length(report.usages),
-      related:
-        length(report.related?.weblinks) +
-        length(report.related?.sitemarkers) +
-        length(report.related?.redirects) +
-        length(report.related?.shortcuts),
-      unresolved: length(report.unresolved),
-    },
-  });
+  /** Older runtimes used name for a table's logical name. */
+  const summarize = (report) =>
+    inspectionSummary({
+      ...report,
+      tables: (report.tables ?? []).map((table) => ({ ...table, logicalName: table.logicalName ?? table.name })),
+    });
   const pathOf = (address) => {
     try {
       return new URL(address).pathname;

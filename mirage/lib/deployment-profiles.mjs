@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { jsonErrorLocation } from './json-diagnostics.mjs';
 
-export const PROFILE_SECTIONS = Object.freeze(['pages', 'environmentVariables', 'connectionReferences']);
+const PROFILE_SECTIONS = Object.freeze(['pages', 'environmentVariables', 'connectionReferences']);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const safe = (value) =>
   typeof value === 'string' &&

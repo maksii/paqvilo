@@ -8,7 +8,7 @@ import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-sol
  * Top-level Solution folders that runtime importers read outside the schema scan: workflow XAML and cloud-flow JSON,
  * web resources, custom APIs, duplicate rules, PCF controls, portal components and plug-in assemblies.
  */
-export const SOLUTION_SIDE_FOLDERS =
+const SOLUTION_SIDE_FOLDERS =
   /^(?:workflows|webresources|customapis|fxexpressions|duplicaterules|controls|powerpagecomponents|pluginassemblies)$/i;
 const byName = (left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');

@@ -1,15 +1,6 @@
 // Data-only capabilities shared by catalogue, HTTP validation and browser controls.
 // Registering a renderer alone never makes a new control writable on the server.
-export const CONTROL_TYPES = Object.freeze([
-  'text',
-  'textarea',
-  'number',
-  'boolean',
-  'date',
-  'lookup',
-  'json',
-  'multiselect',
-]);
+const CONTROL_TYPES = Object.freeze(['text', 'textarea', 'number', 'boolean', 'date', 'lookup', 'json', 'multiselect']);
 const dataverseTypes = new Set([
   'nvarchar',
   'ntext',

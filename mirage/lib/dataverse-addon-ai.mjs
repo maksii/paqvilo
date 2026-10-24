@@ -705,7 +705,7 @@ const MESSAGES = [
   },
 ];
 
-export function install(api) {
+function install(api) {
   for (const { params, response, returns, ...spec } of MESSAGES) {
     const signature = response ? { params, response } : { params, returns };
     const base = { ...spec, signature, fallback: aiUnavailable };

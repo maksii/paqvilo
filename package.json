@@ -94,12 +94,13 @@
     "lint:fix": "eslint --config eslint.config.mjs . --fix --max-warnings=0",
     "format": "node scripts/format.mjs",
     "format:check": "prettier . --check",
-    "quality": "npm run format:check && npm run lint && npm run check:workflows",
+    "quality": "npm run format:check && npm run lint && npm run check:workflows && npm run review:code",
     "ci:prepare": "node scripts/ci.mjs prepare",
     "ci:verify": "node scripts/ci.mjs verify",
     "check:workflows": "node scripts/check-workflows.mjs",
     "audit:dependencies": "node scripts/audit-dependencies.mjs",
-    "hooks:push": "node scripts/git-hooks.mjs pre-push"
+    "hooks:push": "node scripts/git-hooks.mjs pre-push",
+    "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check"
   },
   "engines": {
     "node": "^24.22.1"
@@ -136,9 +137,11 @@
     "eslint-plugin-import-x": "4.17.1",
     "eslint-plugin-n": "18.5.0",
     "globals": "17.13.0",
+    "jscpd": "5.4.2",
+    "knip": "6.43.0",
     "prettier": "3.9.10",
-    "typescript-eslint": "8.72.0",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0"
   },
   "devEngines": {
     "runtime": {

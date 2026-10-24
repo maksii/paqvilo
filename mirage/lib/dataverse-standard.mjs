@@ -26,7 +26,7 @@ const deepFreeze = (value) => {
 };
 
 /** The parsed standard file (commit, licence, source, tables, relationships, optionSets), read once and frozen. */
-export function loadStandard() {
+function loadStandard() {
   return (file ??= deepFreeze(JSON.parse(fs.readFileSync(FILE, 'utf8'))));
 }
 

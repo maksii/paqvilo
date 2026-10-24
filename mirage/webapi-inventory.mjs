@@ -172,7 +172,7 @@ function readConcatenation(text, end) {
 }
 
 /** Locate /_api expressions with their literal URL template text. */
-export function extractApiExpressions(text) {
+function extractApiExpressions(text) {
   const results = [];
   const pattern = /\/_api\/[A-Za-z_]/g;
   let match;

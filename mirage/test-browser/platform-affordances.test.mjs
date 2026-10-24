@@ -1,3 +1,4 @@
+import { widgetFormFiles, widgetFormState, CONTACT, ACCOUNT } from '../test/support/widget-form.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,10 +13,6 @@ import { AssetCache } from '../lib/asset-cache.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const require = createRequire(import.meta.url);
-const SITE = '7b2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c3d';
-const CONTACT = 'c2000000-0000-4000-8000-000000000011';
-const ACCOUNT = 'a2000000-0000-4000-8000-000000000011';
-const FORM = '2d000000-0000-4000-8000-000000000011';
 
 let sharedBrowser;
 before(async () => {
@@ -32,98 +29,16 @@ async function fixture(t, { captured = false, currentLookup = false, targetRead 
   const jquery = await fs.readFile(
     path.join(path.dirname(require.resolve('jquery/package.json')), 'dist', 'jquery.min.js'),
   );
-  const files = {
-    'website.yml': `adx_websiteid: ${SITE}\nadx_name: Widgets`,
-    'Home.webpage.yml':
-      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: form',
-    'FormPage.pagetemplate.yml':
-      'adx_pagetemplateid: form\nadx_webtemplateid: formcontent\nadx_usewebsiteheaderandfooter: true',
-    'FormContent.webtemplate.yml': 'adx_webtemplateid: formcontent\nadx_name: Form content',
-    'FormContent.webtemplate.source.html':
-      '<link rel="stylesheet" href="/resource/powerappsportal/dist/preform.BootstrapV5.bundle-e3e84e09a3.css"><link rel="stylesheet" href="/resource/powerappsportal/dist/font-awesome.BootstrapV5.bundle-2ce6efb497.css"><link rel="stylesheet" href="/resource/powerappsportal/dist/privatemode.bundle-049b12b66e.css"><script src="/jquery.min.js"></script><div class="page-header"><h1>Widget</h1></div>{% entityform name: "Widget" %}',
-    'Widget.basicform.yml': `adx_entityformid: ${FORM}\nadx_name: Widget\nadx_entityname: contact\nadx_mode: 100000000\nadx_onsuccess: 756150000\nadx_successmessage: Widget saved.\nadx_hideformonsuccess: false`,
-    'jquery.min.js.webfile.yml':
-      'adx_webfileid: jquery\nadx_name: jquery.min.js\nadx_partialurl: jquery.min.js\nadx_parentpageid: home\nfilename: jquery.min.js',
-    'sitesetting.yml':
-      '- adx_sitesettingid: 5e200000-0000-4000-8000-000000000011\n  adx_name: Site/BootstrapV5Enabled\n  adx_value: "true"',
-  };
+  const files = widgetFormFiles();
+  files['FormPage.pagetemplate.yml'] += '\nadx_usewebsiteheaderandfooter: true';
+  files['FormContent.webtemplate.source.html'] =
+    '<link rel="stylesheet" href="/resource/powerappsportal/dist/preform.BootstrapV5.bundle-e3e84e09a3.css"><link rel="stylesheet" href="/resource/powerappsportal/dist/font-awesome.BootstrapV5.bundle-2ce6efb497.css"><link rel="stylesheet" href="/resource/powerappsportal/dist/privatemode.bundle-049b12b66e.css">' +
+    files['FormContent.webtemplate.source.html'];
   if (currentLookup)
     files['Widget.basicform.yml'] = files['Widget.basicform.yml'].replace('adx_mode: 100000000', 'adx_mode: 100000001');
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(dir, name), body);
   await fs.writeFile(path.join(dir, 'jquery.min.js'), jquery);
-  const initial = {
-    version: 1,
-    mappings: {
-      contact: {
-        entitySet: 'contacts',
-        idColumn: 'contactid',
-        nameColumn: 'fullname',
-        relationships: {
-          parentcustomerid_account: {
-            from: 'parentcustomerid',
-            to: 'accountid',
-            entity: 'account',
-            many: false,
-            schemaName: 'contact_customer_accounts',
-          },
-          managingpartnerid: {
-            from: 'managingpartnerid',
-            to: 'accountid',
-            entity: 'account',
-            many: false,
-            schemaName: 'contact_managingpartner',
-          },
-        },
-      },
-      account: { entitySet: 'accounts', idColumn: 'accountid', nameColumn: 'name' },
-    },
-    tables: { contact: [{ contactid: CONTACT, fullname: 'Grace' }], account: [{ accountid: ACCOUNT, name: 'Acme' }] },
-    permissions: [
-      {
-        id: 'contact',
-        entity: 'contact',
-        scope: 'global',
-        roles: ['Member'],
-        operations: ['read', 'create', 'append', 'appendTo'],
-      },
-      {
-        id: 'account',
-        entity: 'account',
-        scope: 'global',
-        roles: ['Member'],
-        operations: ['read', 'append', 'appendTo'],
-      },
-    ],
-    settings: { permissionMode: 'enforce' },
-    simulator: {
-      mode: 'local',
-      pageMode: 'local',
-      identity: { id: CONTACT, contactId: CONTACT, roles: ['Member'] },
-      live: { origin: null },
-      endpoints: [],
-      componentSchemas: {
-        Widget: {
-          entity: 'contact',
-          mode: 100000000,
-          fields: [
-            { name: 'fullname', label: 'Full name', required: true, maxLength: 100 },
-            { name: 'jobtitle', label: 'Code', readOnly: true },
-            {
-              name: 'preferredcontactmethodcode',
-              label: 'Preferred',
-              dataverseType: 'picklist',
-              options: [
-                { value: 1, label: 'Email' },
-                { value: 2, label: 'Phone' },
-              ],
-            },
-            { name: 'parentcustomerid', label: 'Company', type: 'lookup', lookupTargets: ['account'] },
-            { name: 'managingpartnerid', label: 'Partner', type: 'lookup', lookupTargets: ['account'] },
-          ],
-        },
-      },
-    },
-  };
+  const initial = widgetFormState();
   if (currentLookup) {
     initial.tables.contact[0].parentcustomerid = { id: ACCOUNT, logical_name: 'account', name: 'Acme' };
     initial.simulator.componentSchemas.Widget.mode = 100000001;

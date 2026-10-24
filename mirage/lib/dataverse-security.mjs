@@ -19,7 +19,7 @@ export const ACCESS_RIGHTS = {
   Assign: 524288,
 };
 export const DEPTH = { Basic: 1, Local: 2, Deep: 4, Global: 8 };
-export const PRIVILEGE_PREFIX = {
+const PRIVILEGE_PREFIX = {
   Create: 'prvCreate',
   Read: 'prvRead',
   Write: 'prvWrite',
@@ -643,7 +643,7 @@ const permissionSignature = (store, profileId) =>
     .join('|');
 
 /** Replaces a field security profile's fieldpermission rows and returns its permission signature (the layer's `applied` mark). */
-export function applyProfilePermissions(store, profileId, permissions) {
+function applyProfilePermissions(store, profileId, permissions) {
   const rows = rowsOf(store, 'fieldpermission');
   const profile = rowsOf(store, 'fieldsecurityprofile').find((p) => sameId(p.fieldsecurityprofileid, profileId));
   const ref = { id: profileId, logical_name: 'fieldsecurityprofile', name: profile?.name };
@@ -664,7 +664,7 @@ export function applyProfilePermissions(store, profileId, permissions) {
 }
 
 /** Removes a field security profile row, its fieldpermission rows and its systemuserprofiles/teamprofiles associations. */
-export function removeProfile(store, profileId) {
+function removeProfile(store, profileId) {
   for (const table of ['fieldpermission', 'systemuserprofiles', 'teamprofiles'])
     removeWhere(rowsOf(store, table), (p) => sameId(refId(p.fieldsecurityprofileid), profileId));
   removeWhere(rowsOf(store, 'fieldsecurityprofile'), (p) => sameId(p.fieldsecurityprofileid, profileId));

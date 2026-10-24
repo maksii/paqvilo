@@ -17,7 +17,7 @@ import { importSolutionPlugins, resolvePluginSourceFiles } from './exported-plug
 import { matchingSystemForms, portalFormEligible } from './system-form-selection.mjs';
 import { advancedFormGraph } from './advanced-form-graph.mjs';
 
-export { parseSolutionXml, descendants };
+export { parseSolutionXml };
 
 const norm = (value) =>
   String(value ?? '')

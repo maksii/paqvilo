@@ -1451,7 +1451,7 @@ function layerInventory(layer, diagnostics) {
  * (primary key plus the standard system columns) precedes layers that export only
  * columns or a shell of that table. Ties keep root order, then solution name order.
  */
-export function orderSolutionLayers(layers, { order = 'explicit', diagnostics = [] } = {}) {
+function orderSolutionLayers(layers, { order = 'explicit', diagnostics = [] } = {}) {
   const definitionsOf = (members) => {
     const full = new Set(),
       partial = new Set();
@@ -2150,7 +2150,7 @@ export function tableColumnDefaults(attributes) {
  * next value per `table.column`, the DataStore's autoNumberSequences). Explicit values
  * (including null) are kept. Returns new row arrays.
  */
-export function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} } = {}) {
+function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} } = {}) {
   if (!schema?.tables || !tables) return tables;
   const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const out = {};

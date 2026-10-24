@@ -1,10 +1,10 @@
+import { globalMetadataVersion } from './metadata-version.mjs';
 import { parseDataverseTop } from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
-import { createHash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
@@ -131,18 +131,6 @@ export function createRecordHooks() {
     list: (name) => byName.get(name) ?? [],
     moduleOf: (fn) => modules.get(fn) ?? (fn.name || 'an unnamed record hook'),
   };
-}
-
-// @Microsoft.Dynamics.CRM.globalmetadataversion, copied from webapi-handler (not imported). Synthetic, never a live value.
-const metadataVersions = new WeakMap();
-function globalMetadataVersion(store) {
-  if (store.observed?.webApiGlobalMetadataVersion != null) return store.observed.webApiGlobalMetadataVersion;
-  const mappings = store.state.mappings ?? {};
-  if (!metadataVersions.has(mappings)) {
-    const digest = createHash('sha256').update(JSON.stringify(mappings)).digest('hex');
-    metadataVersions.set(mappings, String(parseInt(digest.slice(0, 8), 16)));
-  }
-  return metadataVersions.get(mappings);
 }
 
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
@@ -295,7 +283,7 @@ const deltaLinkOf = (c, base, token) => linkOf(c, base, '$deltatoken', encodeDel
 
 // An alternate-key duplicate from the store answers the Web API's 412 Entity Key wording. fn may answer a promise (a store write on
 // the asynchronous pipeline, data.mjs createRecordAsync); its rejection is translated the same way.
-export function withKeyViolation(mapping, data, fn) {
+function withKeyViolation(mapping, data, fn) {
   try {
     const result = fn();
     return typeof result?.then === 'function'

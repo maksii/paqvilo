@@ -18,7 +18,7 @@ import { searchTokens } from './dataverse-search.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { siteSetting } from './redirects.mjs';
 
-export const DEFAULT_SEARCH_TABLES = Object.freeze([
+const DEFAULT_SEARCH_TABLES = Object.freeze([
   'knowledgearticle',
   'adx_blog',
   'adx_blogpost',
@@ -86,7 +86,7 @@ function filterClauses(filter) {
 }
 
 /** The tables the site indexes: a view named by Search/IndexQueryName, the default set or additional entities on. */
-export function indexedSearchTables(portal, metadata) {
+function indexedSearchTables(portal, metadata) {
   const viewName = String(setting(portal, 'Search/IndexQueryName') ?? 'Portal Search')
     .trim()
     .toLowerCase();

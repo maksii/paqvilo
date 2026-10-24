@@ -1,3 +1,4 @@
+import { orderedMap } from './async-map.mjs';
 // Plain (anonymous) HTTP access to the online site, used by `map --check`, `status` and the dev panel.
 import fs from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,19 +37,7 @@ export function portalResourceUrl(origin, urlPath) {
 }
 
 /** Runs `fn` over `items` with at most `limit` in flight. Results keep the order of `items`. */
-export async function mapLimit(items, limit, fn) {
-  if (!Number.isInteger(limit) || limit < 1) throw new Error('Concurrency limit must be a positive integer');
-  const results = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
+export const mapLimit = orderedMap;
 
 /** One attempt through a Playwright request context: the browser's own sign-in, no redirects followed. */
 async function fetchWithRequest(request, url, { timeout, readBody }) {

@@ -16,12 +16,7 @@
 import http from 'node:http';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 
-export const SHAREPOINT_CONTRACT_OPERATIONS = Object.freeze([
-  'listChildren',
-  'uploadContent',
-  'createFolder',
-  'deleteItem',
-]);
+const SHAREPOINT_CONTRACT_OPERATIONS = Object.freeze(['listChildren', 'uploadContent', 'createFolder', 'deleteItem']);
 
 export const sharePointContractDescriptor = Object.freeze({
   name: 'sharepoint-contract',
@@ -318,7 +313,7 @@ export function createSharePointContractRoutes({ fixtures, diagnostic, clock = s
 }
 
 /** Answers one request from a route list: the first route whose method and pattern match. */
-export function dispatchSharePointRoute(routes, req) {
+function dispatchSharePointRoute(routes, req) {
   for (const route of routes) {
     if (route.method !== '*' && route.method !== req.method) continue;
     if (route.pattern.test(String(req.url ?? ''))) return route.handle(req);

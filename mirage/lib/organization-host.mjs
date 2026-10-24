@@ -633,7 +633,7 @@ export function hostSurfaces({ host = 'standalone', dataverseApi = false } = {})
 }
 
 /** Whether a host's Dataverse HTTP API is enabled, from the raw `dataverse` option, as each host validates it. */
-export function dataverseApiEnabled({ host = 'standalone', runtime, dataverse = null } = {}) {
+function dataverseApiEnabled({ host = 'standalone', runtime, dataverse = null } = {}) {
   const input = dataverse && typeof dataverse === 'object' && !Array.isArray(dataverse) ? dataverse : null;
   if (host === 'power-pages')
     return dataverseSettings({ ...(input ?? (dataverse === true ? {} : { enabled: false })) }).enabled;
@@ -677,7 +677,7 @@ export const modelDrivenAppsOf = (metadata) =>
  * Canvas apps for /_apps/canvas/ (canvas-http.mjs) from the inventory's canvasapp records; `tree` (canvas-source.mjs
  * canvasTree: screens and components with their controls) is what canvas-runtime.mjs hosts.
  */
-export function canvasAppsOf(records = []) {
+function canvasAppsOf(records = []) {
   return records
     .filter((record) => record.component === 'canvasapp' && record.name)
     .map((record) => ({

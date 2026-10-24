@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import { DataError } from './data-error.mjs';
 import { runtimeCapabilities } from './runtime-config.mjs';
 
-export const CAPABILITY_LEVELS = Object.freeze(['inventory', 'contract', 'behaviour', 'native-qualified']);
-export const CAPABILITY_KINDS = Object.freeze([
+const CAPABILITY_LEVELS = Object.freeze(['inventory', 'contract', 'behaviour', 'native-qualified']);
+const CAPABILITY_KINDS = Object.freeze([
   'organization-module',
   'host-surface',
   'operation',

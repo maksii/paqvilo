@@ -17,7 +17,7 @@ const SITE_KEYS = [
 // Every catalogue mirage key is a row of mirage/lib/config-keys.mjs (the one registration point).
 const MIRAGE_KEYS = catalogueKeys();
 
-export function object(value, name) {
+function object(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} must be a mapping`);
 }
 

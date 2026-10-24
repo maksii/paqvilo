@@ -6,14 +6,7 @@
 import { simulationSettings } from './simulation-settings.mjs';
 import { globMatcher } from './capability-registry.mjs';
 
-export const PREFLIGHT_STATUSES = Object.freeze([
-  'satisfied',
-  'missing',
-  'placeholder',
-  'unsupported',
-  'disabled',
-  'secret',
-]);
+const PREFLIGHT_STATUSES = Object.freeze(['satisfied', 'missing', 'placeholder', 'unsupported', 'disabled', 'secret']);
 const LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];
 
 /** Validates a scenario `{ id, requires: [pattern] }` (glob `*`). */

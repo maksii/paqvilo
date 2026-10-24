@@ -15,7 +15,7 @@ const ordered = (a, b) =>
   (a.order ?? 1000) - (b.order ?? 1000) ||
   String(a.label ?? a.key ?? a.id).localeCompare(String(b.label ?? b.key ?? b.id), 'en', { sensitivity: 'base' }) ||
   String(a.key ?? a.id).localeCompare(String(b.key ?? b.id));
-export const personaCatalogError = (message) =>
+const personaCatalogError = (message) =>
   Object.assign(new Error(message), { code: 'InvalidPersonaCatalog', status: 400 });
 
 export function personaStartPath(value, source = 'Persona startPath') {

@@ -39,7 +39,7 @@ const FLOAT = new Set(['float', 'double']);
 const LOOKUP = new Set(['lookup', 'customer', 'owner']);
 const CHOICE = new Set(['picklist', 'state', 'status', 'optionset']);
 // The stored row a record came from: { table, id }. Lets a record from one table be a lookup value in another.
-export const ROW = Symbol('power-fx.row');
+const ROW = Symbol('power-fx.row');
 
 const typeName = (definition) => String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase();
 const behaviourOf = (definition) =>

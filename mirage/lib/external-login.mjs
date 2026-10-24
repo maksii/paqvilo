@@ -63,7 +63,7 @@ const fieldOf = (fields, name) => {
 };
 
 /** The path of a configured reply URL (absolute URL or site-relative path), else null. */
-export function replyPath(value) {
+function replyPath(value) {
   const raw = text(value);
   if (!raw) return null;
   try {

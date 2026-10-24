@@ -1,3 +1,5 @@
+import { orderedMap } from '../../lense/async-map.mjs';
+import { directoryFiles } from '../../lense/directory-files.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -8,16 +10,10 @@ const FORMAT = 2;
 /** Run an async mapper with bounded concurrency while preserving input order. */
 export async function mapLimit(items, limit, mapper) {
   const list = [...items];
-  const results = new Array(list.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < list.length) {
-      const index = next++;
-      results[index] = await mapper(list[index], index);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), list.length) }, worker));
-  return results;
+  // This legacy adapter clamps non-positive/fractional limits and accepts numeric strings.
+  const workers = Math.floor(Math.min(Math.max(1, limit), list.length));
+  if (!workers) return new Array(list.length);
+  return orderedMap(list, workers, mapper);
 }
 
 const DIGEST_SKIP = new Set(['.git', '.portalconfig', 'node_modules', '.paqvilo']);
@@ -31,28 +27,11 @@ const digestCache = new Map();
  */
 export async function sourceDirectoryDigest(dir) {
   const root = path.resolve(dir);
-  const children = new Map();
-  let level = [root];
-  while (level.length) {
-    const next = [];
-    await mapLimit(level, 32, async (current) => {
-      const entries = (await fs.readdir(current, { withFileTypes: true }))
-        .filter((entry) => !entry.isSymbolicLink() && !DIGEST_SKIP.has(entry.name))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      children.set(current, entries);
-      for (const entry of entries) if (entry.isDirectory()) next.push(path.join(current, entry.name));
-    });
-    level = next;
-  }
-  const files = [];
-  const flatten = (current) => {
-    for (const entry of children.get(current) ?? []) {
-      const file = path.join(current, entry.name);
-      if (entry.isDirectory()) flatten(file);
-      else if (entry.isFile()) files.push(file);
-    }
-  };
-  flatten(root);
+  const files = await directoryFiles(root, {
+    skip: DIGEST_SKIP,
+    sort: (a, b) => a.name.localeCompare(b.name),
+    concurrency: 32,
+  });
   const stamps = await mapLimit(files, 64, async (file) => {
     const stat = await fs.stat(file, { bigint: true });
     return `${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`;

@@ -12,7 +12,7 @@ import { createCanvasHandler } from '../lib/canvas-http.mjs';
 import { buildSourceGraph, canvasRequirementRows } from '../lib/source-graph.mjs';
 import { fixtureApp, organization } from './canvas-runtime-fixture.mjs';
 
-export async function start(t, { principal = 'admin', app = null } = {}) {
+async function start(t, { principal = 'admin', app = null } = {}) {
   const org = await organization(t);
   const entry = app ?? (await fixtureApp());
   const instance = createCanvasApp({
@@ -25,7 +25,7 @@ export async function start(t, { principal = 'admin', app = null } = {}) {
   await instance.start();
   return { org, app: entry, instance };
 }
-export const control = (snapshot, screen, name) =>
+const control = (snapshot, screen, name) =>
   snapshot.screens.find((entry) => entry.name === screen).controls.find((entry) => entry.name === name);
 
 test('OnStart sets a global variable before the start screen shows and runs OnVisible; the app is never rendered', async (t) => {

@@ -9,7 +9,7 @@
 import { DataError } from './data-error.mjs';
 
 /** The org-wide row version: the persisted counter every Dataverse create, update and delete takes the next value of. */
-export const rowVersionOf = (store) => store.state?.rowVersion ?? 0;
+const rowVersionOf = (store) => store.state?.rowVersion ?? 0;
 export function nextRowVersion(store) {
   store.state.rowVersion = rowVersionOf(store) + 1;
   return store.state.rowVersion;

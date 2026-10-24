@@ -28,9 +28,9 @@ import { LiquidHash } from './lib/liquid-engine.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_RULES = path.join(HERE, 'lib', 'liquid-conformance-rules.json');
-export const CATEGORIES = ['platform-unsupported', 'dotliquid-divergence', 'engine-gap'];
+const CATEGORIES = ['platform-unsupported', 'dotliquid-divergence', 'engine-gap'];
 /** DotLiquid reference builds, most relevant first (the engine follows `master`). */
-export const REFERENCES = ['master', '2.0.385', '2.0.64'];
+const REFERENCES = ['master', '2.0.385', '2.0.64'];
 const ERROR_CODES = new Set(['liquid-syntax-error', 'liquid-error', 'liquid-runtime-error']);
 
 const withTimeout = (promise, ms) =>
@@ -264,7 +264,7 @@ function parseArgs(argv) {
   return options;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   const report = await conformance(options);
   const body =

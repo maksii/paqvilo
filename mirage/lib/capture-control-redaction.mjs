@@ -300,6 +300,23 @@ function redactHtmlNonceAttributes(text, collect) {
   }
   return result + text.slice(last);
 }
+function jsonStringSpan(text, start) {
+  let end = start + 1;
+  while (end < text.length) {
+    if (text[end] === '\\') {
+      end += 2;
+      continue;
+    }
+    if (text[end++] === '"') {
+      try {
+        return { end, value: JSON.parse(text.slice(start, end)) };
+      } catch {
+        return { end };
+      }
+    }
+  }
+  return null;
+}
 /** Decode complete JSON strings once so escaped HTML and explicitly named policy headers are covered. */
 function redactCspNonceText(value, depth = 0, collect) {
   const text = redactHtmlNonceAttributes(String(value), collect);
@@ -312,49 +329,24 @@ function redactCspNonceText(value, depth = 0, collect) {
       cursor++;
       continue;
     }
-    const start = cursor++;
-    let closed = false;
-    while (cursor < text.length) {
-      if (text[cursor] === '\\') {
-        cursor += 2;
-        continue;
-      }
-      if (text[cursor++] === '"') {
-        closed = true;
-        break;
-      }
-    }
-    if (!closed) break;
-    const end = cursor;
-    let decoded;
-    try {
-      decoded = JSON.parse(text.slice(start, end));
-    } catch {
-      continue;
-    }
+    const start = cursor,
+      span = jsonStringSpan(text, start);
+    if (!span) break;
+    const end = (cursor = span.end),
+      decoded = span.value;
+    if (decoded === undefined) continue;
     let next = end;
     while (next < text.length && /\s/.test(text[next])) next++;
     if (text[next] === ':' && cspHeader(decoded)) {
       next++;
       while (next < text.length && /\s/.test(text[next])) next++;
       if (text[next] !== '"') continue;
-      const valueStart = next++;
-      let valueClosed = false;
-      while (next < text.length) {
-        if (text[next] === '\\') {
-          next += 2;
-          continue;
-        }
-        if (text[next++] === '"') {
-          valueClosed = true;
-          break;
-        }
-      }
-      if (!valueClosed) break;
-      let policy;
-      try {
-        policy = JSON.parse(text.slice(valueStart, next));
-      } catch {
+      const valueStart = next,
+        policySpan = jsonStringSpan(text, next);
+      if (!policySpan) break;
+      next = policySpan.end;
+      const policy = policySpan.value;
+      if (policy === undefined) {
         cursor = next;
         continue;
       }
@@ -440,25 +432,12 @@ function redactCspNonceEvidence(value) {
         cursor++;
         continue;
       }
-      const start = cursor++;
-      let closed = false;
-      while (cursor < value.length) {
-        if (value[cursor] === '\\') {
-          cursor += 2;
-          continue;
-        }
-        if (value[cursor++] === '"') {
-          closed = true;
-          break;
-        }
-      }
-      if (!closed) break;
-      let decoded;
-      try {
-        decoded = JSON.parse(value.slice(start, cursor));
-      } catch {
-        continue;
-      }
+      const start = cursor,
+        span = jsonStringSpan(value, start);
+      if (!span) break;
+      cursor = span.end;
+      const decoded = span.value;
+      if (decoded === undefined) continue;
       const replacement = token(decoded);
       if (replacement !== decoded) {
         parts.push(value.slice(last, start), JSON.stringify(replacement));

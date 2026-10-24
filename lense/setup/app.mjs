@@ -1240,9 +1240,11 @@ async function pollPreview(silent = false) {
   if (!silent) {
     refreshQuick();
     refreshRun();
-    if (view === 'all' && !state.runtime && liveChanged()) {
+    if (view === 'all' && !state.runtime && !pending && !dirty && Boolean(quickSession()?.ready) !== lastLive) {
       await loadRuntimeInfo();
-      renderPreservingContext();
+      // Polls can finish after editing or saving starts. Keep the live change
+      // pending until a later poll can repaint without discarding a draft.
+      if (!pending && !dirty && liveChanged()) renderPreservingContext();
     }
   }
   pollDashboard();

@@ -46,7 +46,7 @@ const CODES = {
   ProviderTimeout: 504,
   ProviderFailed: 502,
 };
-export const connectorError = (code, message) => new DataError(message, CODES[code], code);
+const connectorError = (code, message) => new DataError(message, CODES[code], code);
 const fail = (code, message) => {
   throw connectorError(code, message);
 };
@@ -951,9 +951,9 @@ const param = (p, key, wrapper) =>
 // Basic "first to respond" rule is applied: the first response completes the approval).
 // A waiting operation answers { suspended: { kind: 'approval', id, timeoutAt, assignedTo } }; only a caller that sets
 // context.canSuspend (the flow run store integration) receives it, any other caller gets 501 FlowSuspendNotWired.
-export const APPROVAL_OPERATIONS = ['CreateAnApproval', 'StartAndWaitForAnApproval', 'WaitForAnApproval'];
+const APPROVAL_OPERATIONS = ['CreateAnApproval', 'StartAndWaitForAnApproval', 'WaitForAnApproval'];
 // Power Automate runs end after 30 days.
-export const DEFAULT_WAIT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_WAIT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 const APPROVAL_STATUS = { Approve: 'Approved', Reject: 'Rejected' };
 const approvalsOf = (store) => ((store.state.simulator ??= {}).approvals ??= {});
 const approvalOutputs = (a) => ({
@@ -1093,7 +1093,7 @@ function approvalsProvider(store, { now, uuid }) {
 // Assumed: the action status codes and that SendMessage/settlement answer an empty body.
 // ponytail: ContentType, Label, CorrelationId, SessionId, To/ReplyTo and TimeToLive are not kept (the bus has body,
 // properties, messageId and schedule only); extend the bus row when a scenario reads them back.
-export const QUEUE_OPERATIONS = [
+const QUEUE_OPERATIONS = [
   'SendMessage',
   'SendMessages',
   'GetMessagesFromQueueWithPeekLock',

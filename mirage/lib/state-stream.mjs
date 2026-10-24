@@ -200,7 +200,3 @@ export function stateDigest(state) {
   for (const chunk of jsonChunks(state)) hash.update(chunk);
   return hash.digest('hex');
 }
-
-export async function readJsonStream(file) {
-  return parseJsonStream(createReadStream(file, { encoding: 'utf8' }));
-}

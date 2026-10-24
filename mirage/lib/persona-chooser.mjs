@@ -81,7 +81,7 @@ export function chooserSelection(report, parameters = new URLSearchParams(), { l
   const offset = Math.min(bounded(parameters.get('offset')), Math.max(0, matching.length - 1));
   return { index, matching, rows: matching.slice(offset, offset + limit), filters, offset, limit, total: index.length };
 }
-export function chooserCard(persona, contexts = new Map()) {
+function chooserCard(persona, contexts = new Map()) {
   const key = personaRowKey(persona),
     label = persona.label ?? persona.name ?? persona.contactId,
     context = contexts.get(persona.context);

@@ -1,7 +1,6 @@
 // Shared harness for SDK verification gates: starts the simulated Dataverse API over an
 // in-memory DataStore with invented tables and one confidential application registration.
 // Gates are opt-in (`npm run test:sdk`); they never run inside `npm run validate`.
-import { randomUUID } from 'node:crypto';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
@@ -13,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 // Certificates live under the ignored .paqvilo/ tree: Mirage fingerprints every other directory at startup.
 const CA_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.paqvilo/sdk-gates/dataverse-ca.pem');
 
-export const GATE_APP_ID = '11111111-1111-1111-1111-111111111111';
+const GATE_APP_ID = '11111111-1111-1111-1111-111111111111';
 const SECRET_VARIABLE = 'PAQVILO_SDK_GATE_SECRET';
 
 export function gateState() {
@@ -162,5 +161,3 @@ export async function clientCredentialsToken(gate, { origin = gate.origin } = {}
   if (!response.ok) throw new Error(`token endpoint ${response.status}: ${body.error} ${body.error_description}`);
   return body.access_token;
 }
-
-export const newId = () => randomUUID();

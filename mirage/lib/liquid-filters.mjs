@@ -40,7 +40,6 @@ import {
   netRegexReplace,
   safeTypeInsensitiveEqual,
   numberToNetString,
-  plainNumber,
 } from './liquid-dotnet.mjs';
 import {
   LiquidHash,
@@ -197,13 +196,13 @@ function cannotConvert(value, target) {
   );
 }
 /** Parameter of type System.String. */
-export function asString(value) {
+function asString(value) {
   if (value == null || typeof value === 'string') return value ?? null;
   if (isConvertible(value)) return changeType(value, 'string');
   throw cannotConvert(value, 'System.String');
 }
 /** Parameter of type System.Int32 (null -> default(int) = 0). */
-export function asInt(value) {
+function asInt(value) {
   if (value == null) return 0;
   if (isConvertible(value)) return toInt32(value);
   throw cannotConvert(value, 'System.Int32');
@@ -1457,4 +1456,3 @@ function netToString(value) {
   if (isDate(value)) return dateToNetString(value);
   return formatItem(value);
 }
-export { plainNumber, KeyValuePair };

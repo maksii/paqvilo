@@ -134,7 +134,7 @@ export function validateVirtualTableProviders(map) {
 }
 
 /** Validates virtualTables declarations (install option or pack export): { '<table>': { dataSourceId?: string, fallback?: 'local' } }. */
-export function validateVirtualTables(map) {
+function validateVirtualTables(map) {
   if (map === undefined) return {};
   if (!isRow(map)) throw new TypeError('virtualTables must map table names to { dataSourceId?, fallback? }.');
   for (const [table, declaration] of Object.entries(map)) {

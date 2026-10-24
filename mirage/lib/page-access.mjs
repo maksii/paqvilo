@@ -245,8 +245,6 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
   return { allowed: true, status: 200, reason: 'public-or-role', diagnostics };
 }
 
-export const checkPageAccess = pageAccess;
-
 /**
  * Read access to a shortcut (navigation only; shortcuts have no URL of their own):
  * with "Disable Target Validation" the parent page decides, otherwise the target page

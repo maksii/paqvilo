@@ -625,16 +625,7 @@ export const create = createAzuriteStorage;
  * The 2020-12-06 field list is inferred from Learn's section headings and the user delegation SAS layout; Azurite's
  * acceptance of these SAS URLs is not verified.
  */
-export function serviceSasStringToSign({
-  sp,
-  st = '',
-  se,
-  accountName,
-  container,
-  key,
-  sv = BLOB_API_VERSION,
-  sr = 'b',
-}) {
+function serviceSasStringToSign({ sp, st = '', se, accountName, container, key, sv = BLOB_API_VERSION, sr = 'b' }) {
   return [sp, st, se, `/blob/${accountName}/${container}/${key}`, '', '', '', sv, sr, '', '', '', '', '', '', ''].join(
     '\n',
   );

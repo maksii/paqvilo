@@ -386,11 +386,6 @@ export function pluginRuntimeDescriptors(packs = []) {
   }
   return new Map([...collected].map(([key, { value }]) => [key, value]));
 }
-export async function preparePluginRuntimes(packs = []) {
-  const runtimes = new Map();
-  for (const [id, descriptor] of pluginRuntimeDescriptors(packs)) runtimes.set(id, await prepareClrRuntime(descriptor));
-  return runtimes;
-}
 const typed = (type, value) => ({ $type: type, value });
 export function recordToSdkEntity(store, entity, row, columns = { allColumns: true }) {
   const mapping = store.resolveMapping(entity),

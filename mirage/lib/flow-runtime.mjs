@@ -158,7 +158,7 @@ export const RECURRENCE_FREQUENCIES = Object.freeze({
   Week: 604800000,
   Month: null,
 });
-export const WEEK_DAYS = Object.freeze(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']);
+const WEEK_DAYS = Object.freeze(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']);
 const zoneFormats = new Map();
 /** The wall-clock parts of an instant in an IANA time zone (month 0-based). */
 export function zoneParts(ms, zone) {
@@ -202,7 +202,7 @@ const knownZone = (zone) => {
     return false;
   }
 };
-export function parseRecurrence(value) {
+function parseRecurrence(value) {
   const errors = [];
   if (!value || typeof value !== 'object' || Array.isArray(value))
     return { errors: ['A recurrence needs { frequency, interval }.'] };

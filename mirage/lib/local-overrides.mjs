@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const COMPAT_ADAPTERS = Object.freeze({
+const COMPAT_ADAPTERS = Object.freeze({
   footerSpacing: 'footer-spacing-compat.js',
   dateFormat: 'date-format-compat.js',
   dateTimePicker: 'datetimepicker-compat.js',

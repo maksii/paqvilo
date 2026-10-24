@@ -11,8 +11,8 @@ import { createHash } from 'node:crypto';
 import { tableFields } from './solution-schema.mjs';
 import { portalWebRoles } from './permissions.mjs';
 
-export const DEFAULT_SCAFFOLD_SEED = 'scaffold-v1';
-export const SCAFFOLD_PROFILES = Object.freeze({
+const DEFAULT_SCAFFOLD_SEED = 'scaffold-v1';
+const SCAFFOLD_PROFILES = Object.freeze({
   // Few rows, required columns only: every page can resolve a record.
   smoke: Object.freeze({ rowsPerTable: 3, optionalColumns: false }),
   // More rows and every writable column: lists page and filters have values.

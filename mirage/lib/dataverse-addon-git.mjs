@@ -190,7 +190,7 @@ function exportFromGit(api, a) {
   return { file: a.Managed ? zips.managed : zips.unmanaged, commitId: head };
 }
 
-export function installGit(api) {
+function installGit(api) {
   const importPriv = (c) => requireMetadataPrivilege(api, c, 'prvImportCustomization', 'solution');
   const exportPriv = (c) => requireMetadataPrivilege(api, c, 'prvExportCustomization', 'solution');
   const op = (spec) => registerAddon(api, { kind: 'action', binding: 'unbound', fallback: noResource, ...spec });

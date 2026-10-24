@@ -478,7 +478,7 @@ export async function compareData(input, { client }) {
   };
 }
 
-export function pageFetchXml(xml, page, count, cookie) {
+function pageFetchXml(xml, page, count, cookie) {
   ensure(/^\s*<fetch\b/i.test(xml) && !/<!(?:DOCTYPE|ENTITY)/i.test(xml), 'invalid FetchXML');
   return xml.replace(/<fetch\b([^>]*)>/i, (_all, attrs) => {
     if (/\btop\s*=/i.test(attrs)) throw new Error('Paged queries cannot use top.');

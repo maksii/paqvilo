@@ -53,12 +53,12 @@ function clientData(document) {
     : null;
 }
 
-export const YAML_INVALID = 'MODERNFLOW_YAML_INVALID';
+const YAML_INVALID = 'MODERNFLOW_YAML_INVALID';
 /**
  * The document of one modernflows/ file: { document } or { invalid } when it does not parse, where invalid is the
  * MODERNFLOW_YAML_INVALID diagnostic naming the file and the parser's line (an unquoted `@` expression is invalid YAML).
  */
-export function parseModernFlowFile(text, file) {
+function parseModernFlowFile(text, file) {
   try {
     return {
       document: /\.json$/i.test(file)

@@ -9,7 +9,7 @@ const credentialHeader =
 const credentialKey =
   /^(access_token|refresh_token|id_token|client_secret|clientsecret|password|authorization|cookie|set-cookie|__requestverificationtoken)$/i;
 const idPattern = /^[a-z0-9][a-z0-9_.:-]{0,199}$/i;
-export const sha256 = (value) =>
+const sha256 = (value) =>
   createHash('sha256')
     .update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value))
     .digest('hex');
@@ -18,7 +18,7 @@ const escapePointer = (text) => text.replaceAll('~', '~0').replaceAll('/', '~1')
 const bodyBytes = (response) => Buffer.from(response.bodyBase64 ?? '', 'base64');
 const credentialError = (message) => Object.assign(Error(message), { code: 'PARITY_CREDENTIAL' });
 
-export function assertNoCredentials(value) {
+function assertNoCredentials(value) {
   function walk(node) {
     if (
       typeof node === 'string' &&
@@ -55,7 +55,7 @@ function assertCredentialSafeText(text) {
     throw credentialError('Credential field in encoded or multipart body');
 }
 
-export function pointer(value, selector) {
+function pointer(value, selector) {
   if (selector === '') return value;
   if (typeof selector !== 'string' || !selector.startsWith('/')) throw Error('Capture selectors must be JSON pointers');
   return selector
@@ -70,7 +70,7 @@ export function pointer(value, selector) {
     );
 }
 
-export function expandTemplate(value, variables) {
+function expandTemplate(value, variables) {
   if (Array.isArray(value)) return value.map((item) => expandTemplate(item, variables));
   if (value && typeof value === 'object')
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expandTemplate(item, variables)]));

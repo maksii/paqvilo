@@ -20,12 +20,7 @@ import path from 'node:path';
  * - "solution-without-site": an unpacked Solution (Other/Solution.xml) without site components.
  * - "unknown": none of the above.
  */
-export const IMPORTED_DIALECTS = Object.freeze([
-  'standard-yaml',
-  'enhanced-solution',
-  'short-key-yaml',
-  'code-site-project',
-]);
+const IMPORTED_DIALECTS = Object.freeze(['standard-yaml', 'enhanced-solution', 'short-key-yaml', 'code-site-project']);
 
 const LABELS = {
   'standard-yaml': 'PAC YAML with adx_ keys',

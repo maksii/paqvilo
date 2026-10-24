@@ -36,13 +36,11 @@ const braced = (value) => {
   return `{${key(value).toUpperCase()}}`;
 };
 
-/** Structural calibration features, not an authorization or admission result.
- * The documented multi-level CDS limitation must be evidenced independently of
- * the successful single-intersect conversion before a caller enables a fault. */
-export function odataPermissionPathFeatures({ table, permissions = [], identity = {}, rules } = {}) {
+// Selection only: graph qualification, bypasses and authorization remain in each consumer.
+function readGrants(permissions, identity, rules) {
   const roleIds = new Set((identity.roleIds ?? []).map(key)),
     roles = new Set(identity.roles ?? []);
-  const selected = (entity) =>
+  return (entity) =>
     rules
       ? rules(entity, 'read', identity)
       : permissions.filter(
@@ -54,6 +52,13 @@ export function odataPermissionPathFeatures({ table, permissions = [], identity 
               ? (grant.roleIds ?? []).some((role) => roleIds.has(key(role)))
               : !grant.roles?.length || grant.roles.some((role) => roles.has(role))),
         );
+}
+
+/** Structural calibration features, not an authorization or admission result.
+ * The documented multi-level CDS limitation must be evidenced independently of
+ * the successful single-intersect conversion before a caller enables a fault. */
+export function odataPermissionPathFeatures({ table, permissions = [], identity = {}, rules } = {}) {
+  const selected = readGrants(permissions, identity, rules);
   const byId = new Map(permissions.map((grant) => [key(grant.id), grant])),
     grants = selected(table),
     paths = [];
@@ -112,7 +117,7 @@ export function odataPermissionPathFeatures({ table, permissions = [], identity 
 
 /** OData's received FetchExpression has a separate compact XmlWriter contract.
  * Attribute insertion order is significant and must not use Liquid's serializer. */
-export function serializeODataPermissionQuery(element) {
+function serializeODataPermissionQuery(element) {
   const attrs = Object.entries(element.attrs)
     .map(([name, value]) => ` ${name}="${xmlEscapeAttribute(value)}"`)
     .join('');
@@ -234,20 +239,7 @@ export function compileODataPermissionQuery(
   const table = root.attrs.name,
     mapping = mappings[table] ?? {};
   const primary = (entity) => mappings[entity]?.idColumn ?? `${entity}id`;
-  const availableRoles = new Set(identity.roles ?? []),
-    availableIds = new Set((identity.roleIds ?? []).map(key));
-  const selected = (entity) =>
-    rules
-      ? rules(entity, 'read', identity)
-      : permissions.filter(
-          (grant) =>
-            grant.enabled !== false &&
-            (grant.entity === entity || grant.entity === '*') &&
-            (grant.operations ?? ['read']).includes('read') &&
-            (identity.roleSource === 'memberships' && (grant.imported || grant.roleIds?.length)
-              ? (grant.roleIds ?? []).some((role) => availableIds.has(key(role)))
-              : !grant.roles?.length || grant.roles.some((role) => availableRoles.has(role))),
-        );
+  const selected = readGrants(permissions, identity, rules);
   const byId = new Map(permissions.map((grant) => [key(grant.id), grant]));
   let grants = selected(table);
   const global = bypass || identity.admin || grants.some((grant) => (grant.scope ?? 'global') === 'global');

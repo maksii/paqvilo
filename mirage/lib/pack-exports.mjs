@@ -205,7 +205,7 @@ export const packCheck = (validate) => (value, packId) => {
 
 const CAPABILITY_LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];
 /** Pack `capabilities`: an array (or a map by name) of capability records with at least { name, kind, level }. */
-export function validatePackCapabilities(value) {
+function validatePackCapabilities(value) {
   if (!Array.isArray(value) && !isMap(value))
     throw new TypeError('capabilities must be an array or a map of capability records');
   for (const record of Array.isArray(value) ? value : Object.values(value)) {

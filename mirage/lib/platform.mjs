@@ -371,8 +371,7 @@ export const PAGES_CLIENT_API_SCRIPT = '/__sim-static/pages-client-api.js';
 export const PAGES_CLIENT_API_FILE = new URL('./pages-client-api.js', import.meta.url);
 const PAGES_CLIENT_API_SOURCE = readFileSync(PAGES_CLIENT_API_FILE, 'utf8').replace(/<\/script/gi, '<\\/script');
 /** Static native platform compatibility scripts served by lib/native-services.mjs. */
-export const NATIVE_GRID_SCRIPT = '/__sim-static/native/entity-grid-compat.js';
-export const NATIVE_FORMS_SCRIPT = '/__sim-static/native/webforms-compat.js';
+const NATIVE_GRID_SCRIPT = '/__sim-static/native/entity-grid-compat.js';
 /**
  * A native form control the platform cannot render aborts the server form's content: the
  * control's output stops at the failed cell (closing the section wrapper, column and tab; a
@@ -383,7 +382,7 @@ export const NATIVE_FORMS_SCRIPT = '/__sim-static/native/webforms-compat.js';
  */
 export const RENDER_ABORT_MARKER = '<!--paqvilo-mirage-render-aborted-->';
 /** A form showing a captcha to the visitor (lib/platform-manifest.mjs registers its script resources). */
-export const CAPTCHA_MARKER = '<!--pp-captcha-->';
+const CAPTCHA_MARKER = '<!--pp-captcha-->';
 const RADCAPTCHA_VERSION = '2026.2.708.462';
 const CAPTCHA_ERROR =
   "<a href='#captcha' onclick='javascript:scrollToAndFocusCapatch();return false;'>Captcha is incorrect, please re-enter captcha.</a>";
@@ -395,7 +394,7 @@ const applicationRoot = (pathname) => '../'.repeat(Math.max(0, String(pathname).
  * ("…$captcha"); the challenge guid is per render. Mirage serves a placeholder image and
  * silent audio and accepts no answer (native-form-submission.mjs rejects a captcha step).
  */
-export function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = false) {
+function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = false) {
   const client = unique.replace(/\$/g, '_');
   const resource = (type) =>
     `${applicationRoot(pathname)}Telerik.Web.UI.WebResource.axd?type=${type}&amp;isc=cust&amp;guid=${guid}`;
@@ -507,7 +506,7 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
 }
 
 /** Use the observed managed CKEditor bytes, binding HTML as the native JSON input. */
-export function clientRichTextRuntime(settings) {
+function clientRichTextRuntime(settings) {
   const data = JSON.stringify(settings).replace(/</g, '\\u003c');
   return `(async()=>{
     const settings=${data},base='/webresources/msdyn_/RichTextEditorControl/';

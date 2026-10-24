@@ -1,3 +1,4 @@
+import { messageCollection } from './dataverse-message-context.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security messages, second set: owner reassignment, owner-to-access team conversion, team business units
 // and group sync, shared links, Entra object id privilege reads, the user hierarchy, team-derived privileges, masked columns,
@@ -7,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { objectTypeCode } from './dataverse-metadata.mjs';
-import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { contextUrl } from './dataverse-odata.mjs';
 import {
   ACCESS_RIGHTS,
   DEPTH,
@@ -147,29 +148,7 @@ export function install(api) {
     body: { '@odata.context': contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...payload },
   });
   // Rows of a table by id, formatted as a GET on the table (the caller's $select, row privileges and lookup columns).
-  const collectionOf = async (c, logical, ids) => {
-    const mapping = store.resolveMapping(logical);
-    if (ids.length === 0)
-      return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, mapping.entitySet), value: [] } };
-    const path = `/api/data/${c.version}/${mapping.entitySet}`;
-    const url = new URL(`${c.origin}${path}`);
-    url.searchParams.set('$filter', ids.map((id) => `${mapping.idColumn} eq ${id}`).join(' or '));
-    if (c.url?.searchParams.has('$select')) url.searchParams.set('$select', c.url.searchParams.get('$select'));
-    const res = await api.records.handle({
-      method: 'GET',
-      route: parseDataverseRoute(path),
-      url,
-      origin: c.origin,
-      version: c.version,
-      prefer: parsePrefer(undefined),
-      headers: {},
-      user: c.user,
-      caller: c.caller,
-      identity: c.identity,
-      requestId: c.requestId,
-    });
-    return { status: 200, body: res.body };
-  };
+  const collectionOf = (c, logical, ids, user = c.user) => messageCollection(api, c, logical, ids, user);
   // The record a shared-link message names, read and checked against the caller's privilege for `operation`.
   const sharedTarget = (c, value, operation) => {
     const { mapping, id } = targetRef(api, value);

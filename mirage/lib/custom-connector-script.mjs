@@ -57,7 +57,7 @@ const untrusted = (connector, script) =>
 // without them on Windows); none of them carries a value of the user's.
 const ENV_ALLOWED = /^(?:PATH|SYSTEMROOT|TEMP|TMP|HOME|USERPROFILE|DOTNET_\w*|NUGET_\w*)$/i;
 const BUILD_ALLOWED = /^(?:APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES|PROGRAMFILES\(X86\))$/i;
-export const hostEnvironment = (source = process.env, { build = false } = {}) => ({
+const hostEnvironment = (source = process.env, { build = false } = {}) => ({
   ...Object.fromEntries(
     Object.entries(source).filter(([name]) => ENV_ALLOWED.test(name) || (build && BUILD_ALLOWED.test(name))),
   ),

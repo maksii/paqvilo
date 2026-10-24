@@ -1,3 +1,4 @@
+import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs';
 // Formula columns (Power Fx) in the Dataverse API: computed on read by a Power Fx evaluator, refused on write.
 //
 // A column is a formula column when its metadata says SourceType 3 (0 simple, 1 calculated, 2 rollup, 3 formula,
@@ -31,12 +32,9 @@ import { parse } from './power-fx.mjs';
 
 const FORMULA = 3;
 const OPERATIONS = ['FormulaColumn', 'FormulaWriteRefused'];
-const KEY = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/i;
 
-const enumValue = (value) => (value !== null && typeof value === 'object' ? value.Value : value);
 const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
 const isThenable = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function';
-const isAsync = (fn) => fn?.constructor?.name === 'AsyncFunction';
 
 // Per-API state: one WeakMap entry per installed API. Never module-global mutable state.
 const states = new WeakMap();
@@ -50,29 +48,12 @@ const report = (state, entry) => state.reporter.report(entry, `${entry.code}\u00
 
 /** Validates the pack formulaColumns export: '<table>.<column>' keys mapping to synchronous (row, ctx) => value. Returns the map. */
 export function validateFormulaColumns(map) {
-  if (map === undefined) return {};
-  if (!map || typeof map !== 'object' || Array.isArray(map))
-    throw new TypeError("formulaColumns must map '<table>.<column>' to functions.");
-  const result = {};
-  for (const [key, fn] of Object.entries(map)) {
-    if (!KEY.test(key)) throw new TypeError(`formulaColumns key '${key}' must be '<table>.<column>'.`);
-    if (typeof fn !== 'function' || isAsync(fn))
-      throw new TypeError(`formulaColumns['${key}'] must be a synchronous function (row, ctx) => value.`);
-    result[key.toLowerCase()] = fn;
-  }
-  return result;
+  return validateDerivedColumns(map, 'formulaColumns');
 }
 
 /** The formula columns of a table as { name: formulaText }. */
 function formulaColumnsOf(api, logical) {
-  const definitions = api.store.fieldDefinitions(logical, api.metadataFields) ?? {};
-  const result = {};
-  for (const [name, definition] of Object.entries(definitions)) {
-    const column = facts(definition);
-    if (Number(enumValue(column.sourceType ?? column.SourceType)) === FORMULA)
-      result[name.toLowerCase()] = column.formulaDefinition ?? column.FormulaDefinition ?? '';
-  }
-  return result;
+  return derivedColumnsOf(api, logical, FORMULA);
 }
 
 function allFormulaColumns(api) {

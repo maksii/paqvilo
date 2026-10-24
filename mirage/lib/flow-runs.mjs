@@ -24,8 +24,6 @@ import { storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
 import { runTrackedFlow, triggerPrincipal } from './flow-runtime.mjs';
 import { runOwned } from './dataverse-transaction-context.mjs';
 import { flowVault } from './flow-vault.mjs';
-
-export const FLOW_RUN_STATUSES = Object.freeze(['Running', 'Waiting', 'Succeeded', 'Failed', 'Cancelled', 'TimedOut']);
 const OPEN = new Set(['Running', 'Waiting']);
 const TERMINAL = new Set(['Succeeded', 'Failed', 'Cancelled', 'TimedOut']);
 const ACTION_STATUSES = new Set(['Succeeded', 'Failed', 'Skipped', 'TimedOut']);

@@ -45,14 +45,7 @@ import { isHtmlDocument } from './lib/source-dependencies.mjs';
 import { inventoryPortal } from './liquid-inventory.mjs';
 
 /** Diagnostics that mean Power Pages would also print an error into the page. */
-export const LIQUID_ERROR_CODES = new Set(['liquid-syntax-error', 'liquid-error', 'liquid-runtime-error']);
-/** Diagnostics that describe Liquid behaviour worth reviewing but rendered as Power Pages does. */
-export const LIQUID_NOTICE_CODES = new Set([
-  'liquid-unknown-filter',
-  'liquid-template-not-found',
-  'liquid-managed-template-source',
-  'liquid-entity-non-guid-key',
-]);
+const LIQUID_ERROR_CODES = new Set(['liquid-syntax-error', 'liquid-error', 'liquid-runtime-error']);
 const PERSONAS = ['anonymous', 'authenticated'];
 /** Coverage persona: a synthetic contact holding every exported web role except Anonymous Users. */
 const COVERAGE_PERSONA = 'all-roles';
@@ -102,7 +95,7 @@ async function isolatedState(stateFile) {
 }
 
 /** The query-string record a form page needs, or null. */
-export function formRecordTarget(portal, store, page) {
+function formRecordTarget(portal, store, page) {
   const pick = (entity, parameter) => {
     if (!entity) return null;
     let mapping;
@@ -309,14 +302,14 @@ export async function resolveTarget(options) {
 }
 
 /** Contact id of the synthetic signed-in personas (a role-override session, no contact row). */
-export const SYNTHETIC_CONTACT_ID = '00000000-0000-4000-8000-00000000a11e';
+const SYNTHETIC_CONTACT_ID = '00000000-0000-4000-8000-00000000a11e';
 
 /**
  * Web-role names a persona signs in with: the exported Authenticated Users role (the flagged
  * role, else the role with that name) or, for the coverage persona, every active exported
  * role except Anonymous Users.
  */
-export function personaRoleNames(portal, { allRoles = false } = {}) {
+function personaRoleNames(portal, { allRoles = false } = {}) {
   const truthy = (value) => value === true || String(value).toLowerCase() === 'true';
   const roles = (portal.records ?? []).filter(
     (record) => record.kind === 'webrole' && Number(record.statecode ?? 0) === 0,
@@ -339,7 +332,7 @@ export function personaRoleNames(portal, { allRoles = false } = {}) {
  * only: the state's rows are never touched. Anonymous requests carry Fetch Metadata without a
  * session; signed-in personas carry the paqvilo-mirage-auth cookie of simulator.signIn().
  */
-export function personaSession(simulator, persona) {
+function personaSession(simulator, persona) {
   if (persona === 'anonymous') return { headers: { 'sec-fetch-site': 'none' }, identity: null, note: null };
   if (typeof simulator.signIn !== 'function')
     return { headers: {}, identity: null, note: 'runtime has no signIn; script requests keep the configured identity' };
@@ -577,7 +570,7 @@ function summarize(report) {
   return lines.join('\n');
 }
 
-export async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help || (!options.site && !options.source && !options.project)) {
     console.log(`Usage: paqvilo mirage render-sweep ${toolOptionsHelp('render-sweep')}`);

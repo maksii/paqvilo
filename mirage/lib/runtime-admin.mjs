@@ -5,20 +5,7 @@ import { platformSettingEntries, validatePlatformOverrides } from './platform-se
 export const ADMIN_CSP =
   "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 // DOM-free mirage/lib modules the admin page imports; every other asset is a flat file of mirage/admin/.
-export const SHARED_ADMIN_MODULES = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
-/** Every /_sim/api prefix createRuntimeAdminRouter can answer; a router lists (router.routes) only those whose callbacks were
- * supplied, which is what a host reports in status `routes`. `/dataverse` includes the staff session route. */
-export const RUNTIME_ADMIN_ROUTES = Object.freeze([
-  '/status',
-  '/state',
-  '/config',
-  '/simulation',
-  '/diagnostics',
-  '/platform-settings',
-  '/dataverse',
-  '/records',
-  '/shutdown',
-]);
+const SHARED_ADMIN_MODULES = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 /** Diagnostic count per code (`OBSERVATION` when a diagnostic has none), for status, diagnostics and the dashboard on both hosts. */
 export const diagnosticsByCode = (entries) => {
   const counts = {};

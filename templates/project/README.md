@@ -6,7 +6,7 @@ no portal. Complete marked choices before selecting a real environment.
 
 ## First checkout
 
-Use Node **{{node}} or newer**, its npm CLI, Git on PATH and the catalogue's browser (Edge
+Use Node **{{node}} or later in the {{nodeMajor}}.x LTS line**, its npm CLI, Git on PATH and the catalogue's browser (Edge
 by default). Install the browser separately; presence is not launch/OS readiness.
 PAC, .NET and source build tools are not generally needed to consume exports;
 project-specific plugin workflows can add them.

@@ -79,7 +79,7 @@ export const ENHANCED_AUTHORIZATION_STATES = Object.freeze({
   2: 'Migration Failed',
   3: 'Enabled',
 });
-export const ENHANCED_AUTHORIZATION_FIDELITY =
+const ENHANCED_AUTHORIZATION_FIDELITY =
   'the privilege depth each table permission scope maps to and the model states 1 and 2 serve are not documented; the records a grant reaches are those its scope selects (portal-authorization.mjs).';
 const MODERN_LIST = /\{%-?\s*include\s+['"]entity_list['"][^%]*?\bisModern\s*:\s*['"]?true\b[^%]*-?%\}/gi;
 

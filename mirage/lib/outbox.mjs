@@ -294,7 +294,7 @@ export async function waitForOutbox(outbox, predicate, { timeoutMs = 5000, clock
 
 const isPlain = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 /** Validates `providers.outbox`: { kind: 'local' | 'pack:<id>' = 'local', retention?: 1..1000000 }. */
-export function outboxSettings(value, label = 'providers.outbox') {
+function outboxSettings(value, label = 'providers.outbox') {
   if (value === undefined) value = {};
   if (!isPlain(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
@@ -312,7 +312,7 @@ export function outboxSettings(value, label = 'providers.outbox') {
 }
 
 /** Pack `outboxHandlers`: handler names mapping to functions. */
-export function validateOutboxHandlers(map) {
+function validateOutboxHandlers(map) {
   if (!isPlain(map) || Object.values(map).some((handler) => typeof handler !== 'function'))
     throw new TypeError('outboxHandlers must map names to functions');
 }

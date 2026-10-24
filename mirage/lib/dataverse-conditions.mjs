@@ -9,7 +9,6 @@ import {
   compareForFilter,
   dateOperatorPredicate,
   fieldKind,
-  foldText,
   guidKey,
   isDateOnlyField,
   likeMatcher,
@@ -92,7 +91,7 @@ export const UNSUPPORTED_FETCH_OPERATORS = UNSUPPORTED_OPERATORS;
  * hierarchy operators also need the table's hierarchical relationship, so they are not in this set. */
 export const dataverseFetchOperator = (operator) =>
   FETCH_OPERATORS.has(operator) || (DATAVERSE_IDENTITY_OPERATORS.has(operator) && !HIERARCHY_OPERATORS.has(operator));
-export const COLUMN_COMPARISON_OPERATORS = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
+const COLUMN_COMPARISON_OPERATORS = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
 
 const nullMessage = (attribute) =>
   `Condition for attribute '${attribute}': null is not a valid value for an attribute. Use 'Null' or 'NotNull' conditions instead.`;
@@ -461,4 +460,3 @@ export function stringFunctionMatcher(name, pattern, collation = 'CI_AI') {
   const like = name === 'contains' ? `%${text}%` : name === 'startswith' ? `${text}%` : `%${text}`;
   return likeMatcher(like, collation);
 }
-export { foldText };

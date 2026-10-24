@@ -1,3 +1,7 @@
+import { orderedMap as mapLimit } from '../../lense/async-map.mjs';
+import { directoryFiles } from '../../lense/directory-files.mjs';
+import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-component-types.mjs';
+import { decodeXml } from './xml-text.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -89,69 +93,9 @@ export async function chooseRecordCopy(copies, { commitTime = committedAt } = {}
   return { record: pool[0], reason: 'it is the first copy in export order' };
 }
 
-const TYPES = {
-  1: 'publishingstate',
-  2: 'webpage',
-  3: 'webfile',
-  4: 'weblinkset',
-  5: 'weblink',
-  6: 'pagetemplate',
-  7: 'contentsnippet',
-  8: 'webtemplate',
-  9: 'sitesetting',
-  10: 'webpageaccesscontrolrule',
-  11: 'webrole',
-  12: 'websiteaccess',
-  13: 'sitemarker',
-  15: 'basicform',
-  16: 'basicformmetadata',
-  17: 'list',
-  18: 'tablepermission',
-  19: 'advancedform',
-  20: 'advancedformstep',
-  21: 'advancedformmetadata',
-  24: 'pollplacement',
-  26: 'adplacement',
-  27: 'botconsumer',
-  28: 'columnpermissionprofile',
-  29: 'columnpermission',
-  30: 'redirect',
-  31: 'publishingstatetransitionrule',
-  32: 'shortcut',
-  33: 'cloudflowconsumer',
-  34: 'uxcomponent',
-  35: 'serverlogic',
-};
-// The documented powerpagecomponenttype choices (learn.microsoft.com/power-apps/developer/
-// data-platform/reference/entities/powerpagecomponent#BKMK_powerpagecomponenttype; 14, 22, 23
-// and 25 are not choices). Record kinds follow the PAC folder tables (adx_cloudflowconsumer,
-// mspp_uxcomponent, adx_serverlogic) and the file suffixes of short-key exports.
-const COMPONENT_TYPE_OF_KIND = Object.fromEntries(Object.entries(TYPES).map(([type, kind]) => [kind, Number(type)]));
-export const COMPONENT_KINDS = Object.freeze({ ...TYPES });
+export { COMPONENT_KINDS } from './portal-component-types.mjs';
 export const DATA_MODELS = Object.freeze(['standard', 'enhanced']);
-export function decodeXml(text = '') {
-  // A missing CDATA terminator must not rescan the same suffix for every opener.
-  const parts = [];
-  let cursor = 0;
-  while (cursor < text.length) {
-    const start = text.indexOf('<![CDATA[', cursor);
-    if (start < 0) break;
-    const end = text.indexOf(']]>', start + 9);
-    if (end < 0) break;
-    parts.push(text.slice(cursor, start), text.slice(start + 9, end));
-    cursor = end + 3;
-  }
-  parts.push(text.slice(cursor));
-  return parts
-    .join('')
-    .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, entity) =>
-      entity[0] === '#'
-        ? String.fromCodePoint(
-            entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1)),
-          )
-        : { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[entity.toLowerCase()],
-    );
-}
+export { decodeXml } from './xml-text.mjs';
 const field = (record, name, fallback = null) =>
   record[`adx_${name}`] ?? record[`mspp_${name}`] ?? record[name] ?? fallback;
 const id = (value) =>
@@ -173,45 +117,8 @@ export const normalizePortalPath = (value) => {
 };
 
 const IO_CONCURRENCY = 32;
-async function mapLimit(items, limit, mapper) {
-  const results = new Array(items.length);
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
-        results[index] = await mapper(items[index], index);
-      }
-    }),
-  );
-  return results;
-}
-/** Directory listing in depth-first readdir order; directories are read concurrently. */
-async function walk(dir) {
-  const children = new Map();
-  let level = [dir];
-  while (level.length) {
-    const next = [];
-    await mapLimit(level, IO_CONCURRENCY, async (current) => {
-      const entries = (await fs.readdir(current, { withFileTypes: true })).filter(
-        (entry) => !entry.isSymbolicLink() && entry.name !== '.git' && entry.name !== '.portalconfig',
-      );
-      children.set(current, entries);
-      for (const entry of entries) if (entry.isDirectory()) next.push(path.join(current, entry.name));
-    });
-    level = next;
-  }
-  const files = [];
-  const flatten = (current) => {
-    for (const entry of children.get(current) ?? []) {
-      const file = path.join(current, entry.name);
-      if (entry.isDirectory()) flatten(file);
-      else if (entry.isFile()) files.push(file);
-    }
-  };
-  flatten(dir);
-  return files;
-}
+/** Preserve source readdir ordering and the importer's existing skip policy. */
+const walk = (dir) => directoryFiles(dir, { skip: new Set(['.git', '.portalconfig']), concurrency: IO_CONCURRENCY });
 // Text sources are prefetched concurrently; reads fall back to disk for other files.
 async function read(file, contents) {
   if (contents?.has(file)) return contents.get(file);

@@ -68,7 +68,7 @@ const canonical = (dir) => {
 };
 
 /** Chrome 136+ refuses remote-debugging pipe/port on its standard user-data directory. */
-export function defaultChromeDataDirs({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
+function defaultChromeDataDirs({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
   if (platform === 'win32') {
     const local = env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local');
     return ['Chrome', 'Chrome Beta', 'Chrome Dev', 'Chrome SxS']

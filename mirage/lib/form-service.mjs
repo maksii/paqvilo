@@ -189,7 +189,7 @@ export function webFormSession({
  * returns to them); a session without progress accepts only the start step. Other steps,
  * and condition and redirect steps, are reached only through the session's own routing.
  */
-export function sessionSteps(session, initialStepId) {
+function sessionSteps(session, initialStepId) {
   const steps = new Set();
   if (session?.current) steps.add(canonical(session.current));
   for (const entry of session?.history ?? []) steps.add(canonical(entry.stepId));
@@ -478,7 +478,7 @@ export function redirectTarget(settings, { portal, recordId, record, requestUrl 
  * A multistep step by id: the imported layout step, or a condition/redirect
  * step synthesized from the exported adx_webformstep record.
  */
-export function advancedFormStep(portal, formSchema, stepId) {
+function advancedFormStep(portal, formSchema, stepId) {
   const id = canonical(stepId);
   if (!id) return null;
   const record = (portal.records ?? []).find((row) => row.kind === 'advancedformstep' && canonical(row.id) === id);

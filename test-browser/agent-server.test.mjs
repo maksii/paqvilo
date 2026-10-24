@@ -1,26 +1,19 @@
-import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+import { once } from 'node:events';
+import { agentBrowserFixture } from './support/agent-fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import http from 'node:http';
-import { once, EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
-import { startAgentServer } from '../lense/agent-server.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 
 test(
   'real browser: agent API inspects DOM/styles/network, resizes, captures and isolates foreign tabs',
   { timeout: 60_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-agent-browser-'));
-    let browser;
-    let agent;
-    const servers = [];
+    const { serve, launch } = agentBrowserFixture(t, 'pp-agent-browser-');
     // Each step's name and duration; printed when the test does not finish, to name a stuck step.
     const trail = [];
     let finished = false;
@@ -39,34 +32,6 @@ test(
           `agent-server steps: ${JSON.stringify(trail.map(({ name, ms }) => ({ name, ms: ms ?? 'unfinished' })))}`,
         );
     });
-    ownedFixture(t).add(async () => {
-      await agent?.close();
-    });
-    ownedFixture(t).add(async () => {
-      await browser?.close();
-    });
-    ownedFixture(t).add(async () => {
-      await drainFixture(
-        [...servers].map((server) => async () => {
-          server.closeAllConnections();
-          await new Promise((resolve) => server.close(resolve));
-        }),
-      );
-    });
-    ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 });
-    });
-    const serve = async (handler) => {
-      const server = http.createServer(handler);
-      server.on('connect', (_request, socket) => {
-        socket.on('error', () => {});
-        socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
-      });
-      server.listen(0, '127.0.0.1');
-      await once(server, 'listening');
-      servers.push(server);
-      return `http://127.0.0.1:${server.address().port}`;
-    };
     const external = await serve((request, response) =>
       request.url.startsWith('/missing')
         ? response.writeHead(404).end('missing fixture asset')
@@ -99,37 +64,7 @@ test(
           `<!doctype html><title>Agent fixture</title><style>tr{color:rgb(1, 2, 3)}#paqvilo-panel{position:fixed;inset:0;background:red;pointer-events:none}</style><body><table><tr><th>Name</th><th>Status</th></tr><tr style="width:100%"><td>Example</td><td>Ready</td></tr></table><input type="password" value="inputSecret"><textarea>textareaSecret</textarea><div contenteditable>editableSecret</div><a href="next?token=linkSecret">Next</a><form id="fixture-post" method="post" action="/chapter/?filter=ready#posted"><button id="submit">Submit to fixture</button></form><div id="paqvilo-panel">Developer panel</div><script>console.error('token=consoleSecret');fetch('/data?token=requestSecret');</script><script src="${external}/missing.js?token=cdnSecret"></script></body>`,
         );
     });
-    const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-    browser = await chromium.launch({
-      channel: channel === 'chromium' ? undefined : channel,
-      headless: true,
-      proxy: { server: origin, bypass: '127.0.0.1,localhost' },
-      args: [
-        '--disable-background-networking',
-        '--disable-component-update',
-        '--disable-sync',
-        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-      ],
-    });
-    const context = await browser.newContext({ serviceWorkers: 'block' });
-    const page = await context.newPage();
-    const session = Object.assign(new EventEmitter(), {
-      cfg: {
-        stateDir: work,
-        origin,
-        sourceDir: work,
-        siteName: 'fixture',
-        envName: 'loopback',
-        site: { scope: 'all' },
-      },
-      baseline: { available: true, spec: 'HEAD', commit: 'abc' },
-      model: { webFileByUrl: new Map(), warnings: [] },
-      rewriter: { activeBlocks: 0, patches: [], unsupported: [] },
-      changedFiles: new Set(),
-      pageHits: new WeakMap(),
-      rel: (file) => path.relative(work, file),
-    });
-    agent = await startAgentServer({ session, context });
+    const { context, page, agent } = await launch(origin);
     const discovery = await readDiscovery(agent.discoveryFile);
     assert.equal(discovery.endpoint, agent.endpoint);
     const call = (url, body) =>

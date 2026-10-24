@@ -14,7 +14,7 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function modelTargetsFixture(t) {
+async function modelTargetsFixture(t) {
   const owner = ownedFixture(t);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-targets-'));
   owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
