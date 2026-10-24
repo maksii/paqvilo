@@ -14,7 +14,7 @@ import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { ProviderError } from './storage-provider.mjs';
 
-// --- Types (types 1.6) ----------------------------------------------------------------------------------------------
+// --- Types (types 1.6)
 const TYPE = Symbol('amqp.type');
 const typed = (type) => (value) => ({ [TYPE]: type, value });
 /** Wrappers for values whose AMQP type a JS value cannot carry. */
@@ -139,7 +139,7 @@ function decodeAs(code, b, at) {
   }
 }
 
-// --- Frames (transport 2.2, 2.3; security 5.2) ----------------------------------------------------------------------
+// --- Frames (transport 2.2, 2.3; security 5.2)
 export const AMQP_HEADER = Buffer.from([0x41, 0x4d, 0x51, 0x50, 0, 1, 0, 0]);
 export const SASL_HEADER = Buffer.from([0x41, 0x4d, 0x51, 0x50, 3, 1, 0, 0]);
 export const EMPTY_FRAME = Buffer.from([0, 0, 0, 8, 2, 0, 0, 0]); // a heartbeat: an AMQP frame without a body (2.4.5)
@@ -171,7 +171,7 @@ export function readFrame(buffer, maxSize) {
   return { type: buffer[5], channel: buffer.readUInt16BE(6), performative, payload: body.subarray(next), size };
 }
 
-// --- Messages (messaging 3.2) ---------------------------------------------------------------------------------------
+// --- Messages (messaging 3.2)
 /** Message bytes from its sections: header (list), annotations (Map with sym keys), properties (list), applicationProperties
  * (object) and body (a Buffer becomes a data section, anything else an amqp-value section). */
 export function encodeMessage({ header = null, annotations = null, properties = null, applicationProperties = null, body = null }) {
@@ -205,7 +205,7 @@ export function decodeMessage(payload) {
   return message;
 }
 
-// --- Errors (transport 2.8.15, messaging 3.4; Service Bus conditions per the Learn AMQP guide) ------------------------
+// --- Errors (transport 2.8.15, messaging 3.4; Service Bus conditions)
 const CONDITION_CODES = Object.freeze({
   'amqp:not-found': 'NotFound', 'amqp:unauthorized-access': 'Unauthorized', 'amqp:not-allowed': 'Unsupported',
   'amqp:not-implemented': 'Unsupported', 'amqp:resource-limit-exceeded': 'Unavailable', 'amqp:link:message-size-exceeded': 'TooLarge',
@@ -219,9 +219,9 @@ export function amqpError(error, provider = null, context = '') {
   return new ProviderError(code, `${context}${description ?? 'The broker answered an error'} (${condition}).`, { provider, diagnostic: condition });
 }
 
-// --- Connection state machine ---------------------------------------------------------------------------------------
+// --- Connection state machine
 const MAX_FRAME = 1 << 20; // our max-frame-size: 1 MiB covers the emulator's 256 KB messages in one frame
-// Session windows; Service Bus "doesn't impose any particular session-level throttling windows" (Learn AMQP guide).
+// Session windows: Service Bus imposes no session-level throttling windows.
 // ponytail: the peer's incoming window is not enforced and ours is re-announced only with each flow; enforce both for a broker that throttles.
 const WINDOW = 5000;
 
@@ -316,7 +316,7 @@ export async function connectAmqp({ host, port = 5672, hostname = host, credenti
         link.remote = f[1];
         byRemote.set(f[1], link);
         if (link.role === 'receiver') link.deliveryCount = f[9] ?? 0;
-        // A refused attach answers a null terminus and then a detach with the error (Learn: "Create message sender (error)").
+        // A refused attach answers a null terminus and then a detach with the error.
         if ((link.role === 'sender' ? f[6] : f[5]) == null) return;
         return answer(`attach:${link.name}`);
       }
@@ -389,8 +389,8 @@ export async function connectAmqp({ host, port = 5672, hostname = host, credenti
     {
       const { user, password } = credentials();
       // security 5.3.3.1 sasl-init; PLAIN initial response is NUL authzid NUL authcid NUL passwd (RFC 4616). Service Bus takes the
-      // shared access rule name as user name and its key as password (Learn AMQP guide, Connections and sessions).
-      // unverified: that the emulator accepts SASL PLAIN over plain TCP without CBS (Learn documents CBS only with ANONYMOUS and TLS for the cloud).
+      // shared access rule name as user name and its key as password.
+      // Assumption: the emulator accepts SASL PLAIN over plain TCP without CBS (the cloud documents CBS only with ANONYMOUS and TLS).
       write(frame(1, 0, described(CODE.saslInit, [sym('PLAIN'), Buffer.concat([bytes(0), Buffer.from(String(user ?? '')), bytes(0), Buffer.from(String(password ?? ''))]), hostname])));
     }
     credentials = null; // the key is not kept after SASL
@@ -465,7 +465,7 @@ export async function connectAmqp({ host, port = 5672, hostname = host, credenti
     },
     /** Up to max deliveries: grant credit, wait up to waitMs for them, then drain (2.6.7) so no credit stays outstanding.
      * Deliveries that arrive after a drain that timed out stay buffered for the next take.
-     * unverified: the emulator answers drain with a flow (link-credit 0); without one the take ends after timeoutMs. */
+     * Assumption: the emulator answers drain with a flow (link-credit 0); without one the take ends after timeoutMs. */
     take(link, max, waitMs) {
       return exclusive(link, async () => {
         live(link);

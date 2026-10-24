@@ -107,7 +107,7 @@ test("like wildcards ([], [^], _ and %) and comparisons use the case- and accent
   assert.deepEqual(run('<condition attribute="name" operator="like" value="[^C]%"/>'), ["A_B Corp", "A[B] Corp", "Fabrikam"]);
   assert.deepEqual(run('<condition attribute="name" operator="begins-with" value="CONT"/>'), ["Contoso Ltd", "contoso ltd (sample)"]);
   assert.deepEqual(run('<condition attribute="name" operator="ends-with" value="corp"/>'), ["A_B Corp", "A[B] Corp"]);
-  assert.deepEqual(run('<condition attribute="name" operator="not-like" value="%o%"/>'), ["A_B Corp", "A[B] Corp", "Café Noir", "Fabrikam"].filter((name) => !/o/i.test(name)));
+  assert.deepEqual(run('<condition attribute="name" operator="not-like" value="%o%"/>'), ["Fabrikam"]);
   assert.deepEqual(run('<condition attribute="name" operator="gt" value="contoso ltd"/>'), ["contoso ltd (sample)", "Fabrikam"]);
 });
 
@@ -154,14 +154,13 @@ test("date operators evaluate whole days and relative ranges", async () => {
   const day = isoDaysAgo(10).slice(0, 10);
   assert.deepEqual(run(`<condition attribute="createdon" operator="on" value="${day}"/>`), ["Café Noir"]);
   assert.deepEqual(run(`<condition attribute="createdon" operator="on-or-before" value="${day}"/>`), ["A_B Corp", "A[B] Corp", "Café Noir"].sort());
+  // last-year is calendar-relative: pin rows just inside and outside the previous calendar year.
   const lastYear = new Date().getUTCFullYear() - 1;
-  assert.deepEqual(
-    run('<condition attribute="createdon" operator="last-year"/>'),
-    fixture()
-      .tables.account.filter((row) => new Date(row.createdon).getUTCFullYear() === lastYear)
-      .map((row) => row.name)
-      .sort(),
-  );
+  const dated = fixture();
+  for (const [index, createdon] of [`${lastYear - 1}-12-31T12:00:00Z`, `${lastYear}-01-01T12:00:00Z`, `${lastYear}-12-31T12:00:00Z`, `${lastYear + 1}-01-01T12:00:00Z`, `${lastYear - 1}-06-01T12:00:00Z`, `${lastYear + 1}-06-01T12:00:00Z`].entries())
+    dated.tables.account[index].createdon = createdon;
+  const calendar = await store(dated);
+  assert.deepEqual(names(calendar.fetchXml(accounts('<condition attribute="createdon" operator="last-year"/>'))).sort(), ["contoso ltd (sample)", "Café Noir"].sort());
 });
 
 test("distinct removes duplicate projections without adding the primary key", async () => {
@@ -230,10 +229,13 @@ test("aggregates name results by alias: count, countcolumn distinct, sum, avg, m
     grouped.entities.map((item) => [item.industry ?? null, item.n]),
     [[null, 2], [2, 2], [1, 2]],
   );
-  const byYear = s.fetchXml(
-    '<fetch aggregate="true"><entity name="account"><attribute name="createdon" alias="year" groupby="true" dategrouping="year"/><attribute name="accountid" alias="n" aggregate="count"/></entity></fetch>',
+  const dated = fixture();
+  for (const [index, createdon] of ["2023-05-01T12:00:00Z", "2023-12-31T12:00:00Z", "2024-01-01T12:00:00Z", "2024-06-01T12:00:00Z", "2024-07-01T12:00:00Z", "2025-02-01T12:00:00Z"].entries())
+    dated.tables.account[index].createdon = createdon;
+  const byYear = (await store(dated)).fetchXml(
+    '<fetch aggregate="true"><entity name="account"><attribute name="createdon" alias="year" groupby="true" dategrouping="year"/><attribute name="accountid" alias="n" aggregate="count"/><order alias="year"/></entity></fetch>',
   );
-  assert.ok(byYear.entities.every((item) => Number.isInteger(item.year) && item.n >= 1));
+  assert.deepEqual(byYear.entities.map(({ year, n }) => [year, n]), [[2023, 2], [2024, 3], [2025, 1]]);
   assert.throws(
     () => s.fetchXml('<fetch aggregate="true"><entity name="account"><attribute name="accountid" aggregate="count"/></entity></fetch>'),
     (error) => error.status === 400,
@@ -344,12 +346,14 @@ test("nested filters and entityname conditions filter after an outer join", asyn
 });
 
 test("eq-userid matches the portal application user's systemuser id", async () => {
-  const s = await store();
+  const state = fixture();
+  state.tables.account[1].ownerid = { id: G(92), logical_name: "systemuser", name: "Someone else" };
+  const s = await store(state);
   const xml = '<fetch><entity name="account"><attribute name="name"/><filter><condition attribute="ownerid" operator="eq-userid"/></filter></entity></fetch>';
   assert.deepEqual(names(s.fetchXml(xml, { systemUserId: G(91) })), ["Contoso Ltd"]);
   assert.deepEqual(names(s.fetchXml(xml, {})), []);
-  const negated = s.fetchXml(xml.replace("eq-userid", "ne-userid"), { systemUserId: G(91) });
-  assert.equal(names(negated).includes("Contoso Ltd"), false);
+  // Rows without an owner match neither operator (SQL null comparison).
+  assert.deepEqual(names(s.fetchXml(xml.replace("eq-userid", "ne-userid"), { systemUserId: G(91) })), ["contoso ltd (sample)"]);
 });
 
 test("returntotalrecordcount caps the total at 5000 and reports when the limit is exceeded", async () => {

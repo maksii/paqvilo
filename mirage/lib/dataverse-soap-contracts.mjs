@@ -1,8 +1,7 @@
 // DataContract layout of the SDK metadata types: own members in DataContract order (DataMember Order, then ordinal name),
-// the contract namespace (suffix of http://schemas.microsoft.com/xrm/) and the base contract. Reflected from
-// Microsoft.Xrm.Sdk 9.0.0.0 in Microsoft.PowerPlatform.Dataverse.Client 1.2.27; see
-// .paqvilo/dataverse-api-research/serviceclient-findings.md. DataContractSerializer reads members forward only, so an
-// element written before an earlier member is skipped.
+// the contract namespace (suffix of http://schemas.microsoft.com/xrm/) and the base contract, as in
+// Microsoft.Xrm.Sdk 9.0.0.0. DataContractSerializer reads members forward only, so an element written before an earlier
+// member is skipped.
 export const DATA_CONTRACTS = {
   AssociatedMenuConfiguration: { ns: "2011/Metadata", base: null, members: ["Behavior","Group","Label","Order","AvailableOffline","Icon","IsCustomizable","MenuId","QueryApi","ViewId"] },
   AttributeMetadata: { ns: "2011/Metadata", base: "MetadataBase", members: ["AttributeOf","AttributeType","CanBeSecuredForCreate","CanBeSecuredForRead","CanBeSecuredForUpdate","CanModifyAdditionalSettings","ColumnNumber","CreatedOn","DeprecatedVersion","Description","DisplayName","EntityLogicalName","ExternalName","InheritsFrom","IsAuditEnabled","IsCustomAttribute","IsCustomizable","IsDataSourceSecret","IsFilterable","IsGlobalFilterEnabled","IsManaged","IsPrimaryId","IsPrimaryName","IsRenameable","IsRequiredForForm","IsRetrievable","IsSearchable","IsSecured","IsSortableEnabled","IsValidForAdvancedFind","IsValidForCreate","IsValidForForm","IsValidForGrid","IsValidForRead","IsValidForUpdate","IsValidODataAttribute","LinkedAttributeId","LogicalName","ModifiedOn","RequiredLevel","SchemaName","Settings","AttributeTypeName","IntroducedVersion","IsLogical","SourceType","AutoNumberFormat"] },
@@ -50,21 +49,21 @@ export const DATA_CONTRACTS = {
 // Members typed as ManagedProperty<T> in the SDK (BooleanManagedProperty, AttributeRequiredLevelManagedProperty), by contract.
 // The SDK reads them only as Value/CanBeChanged/ManagedPropertyLogicalName child elements, so a plain value there is a
 // DataContract error ("Expecting state 'Element' ... Text"). The name is the one attribute-metadata.mjs reports.
-// Only iscustomizable is confirmed by a native capture; the other names are unverified (Microsoft Learn gives the member types, not
-// the managed property logical names). Shared with attribute-metadata.mjs and dataverse-metadata.mjs.
+// Only iscustomizable has been observed; the other logical names are guesses (the docs give only the member types).
+// Shared with attribute-metadata.mjs and dataverse-metadata.mjs.
 export const MANAGED_MEMBERS = {
   AttributeMetadata: {
-    CanModifyAdditionalSettings: "canmodifyadditionalsettings", // unverified: logical name
-    IsAuditEnabled: "canmodifyauditsettings", // unverified: logical name
+    CanModifyAdditionalSettings: "canmodifyadditionalsettings",
+    IsAuditEnabled: "canmodifyauditsettings",
     IsCustomizable: "iscustomizable",
-    IsGlobalFilterEnabled: "canmodifyglobalfiltersettings", // unverified: logical name
-    IsRenameable: "isrenameable", // unverified: logical name
-    IsSortableEnabled: "canmodifyissortablesettings", // unverified: logical name
-    IsValidForAdvancedFind: "canmodifysearchsettings", // unverified: logical name
-    RequiredLevel: "canmodifyrequirementlevelsettings", // unverified: logical name
+    IsGlobalFilterEnabled: "canmodifyglobalfiltersettings",
+    IsRenameable: "isrenameable",
+    IsSortableEnabled: "canmodifyissortablesettings",
+    IsValidForAdvancedFind: "canmodifysearchsettings",
+    RequiredLevel: "canmodifyrequirementlevelsettings",
   },
-  DateTimeAttributeMetadata: { CanChangeDateTimeBehavior: "canmodifydatetimebehavior" }, // unverified: logical name
-  RelationshipMetadataBase: { IsCustomizable: "iscustomizable" }, // iscustomizable: native capture (relationship JSON)
+  DateTimeAttributeMetadata: { CanChangeDateTimeBehavior: "canmodifydatetimebehavior" },
+  RelationshipMetadataBase: { IsCustomizable: "iscustomizable" },
 };
 
 // Enum-typed members of the metadata contracts (non-flags enums), by "Contract.Member", names in enum-value order. A DataContract

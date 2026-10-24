@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -7,18 +7,21 @@ import {chromium} from 'playwright-core';
 import {browserLaunchOptions} from '../lib/browser-launch.mjs';
 import {ownedFixture} from '../testing/owned-fixture.mjs';
 
+let browser;
+before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true}));});
+after(()=>browser?.close());
 const fallback=await fs.readFile(new URL('../lib/platform-chrome.css',import.meta.url),'utf8');
-// Invented Bootstrap-like defaults expose the collisions addressed by the structural fallback.
+// Bootstrap-like defaults expose the collisions addressed by the structural fallback.
 const base=`*{box-sizing:border-box}body{margin:0}.progress{display:flex;height:16px;overflow:hidden;background:#eee}.list-group{display:flex;flex-direction:column;padding:0;list-style:none}.list-group-item{padding:12px;border:1px solid #ccc}.form-control{display:block;width:100%;padding:8px;border:1px solid #777;background:#eee}.section{width:100%}.info label{font-weight:400}`;
 const form=`<div class="crmEntityFormView"><div class="entity-form form-readonly"><table class="section"><tbody><tr><td class="cell"><div class="info"><label for="name">Name</label></div><input id="name" class="form-control" readonly value="First"></td><td class="cell"><div class="info"><label for="code">Code</label></div><input id="code" class="form-control" readonly value="Second"></td><td class="cell zero-cell"></td></tr></tbody></table><label for="choice">Choice</label><select id="choice" class="form-control" disabled><option>Selected</option></select><textarea class="form-control" readonly aria-label="Description">A readable description</textarea></div></div>`;
 async function fixture(t,html,{bootstrap=5}={}){
   const framework=bootstrap===3?base.replaceAll("display:flex", "display:block"):base;
-  const owner=ownedFixture(t);let browser;
+  const owner=ownedFixture(t);let context;
   const server=http.createServer((req,res)=>res.writeHead(200,{'content-type':req.url==='/fallback.css'?'text/css':'text/html'}).end(req.url==='/fallback.css'?fallback:`<!doctype html><html lang="en"><head><style>${framework}</style><link rel="stylesheet" href="/fallback.css"></head><body>${html}</body></html>`));
-  owner.add(()=>browser?.close());owner.add(()=>new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve())));
+  owner.add(()=>context?.close());owner.add(()=>new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve())));
   server.listen(0,'127.0.0.1');await once(server,'listening');
-  browser=await chromium.launch(browserLaunchOptions({headless:true}));
-  const page=await browser.newPage();await page.goto(`http://127.0.0.1:${server.address().port}`);return page;
+  context=await browser.newContext();
+  const page=await context.newPage();await page.goto(`http://127.0.0.1:${server.address().port}`);return page;
 }
 
 test('form cells stack through 767px in frames and retain desktop columns',async t=>{
@@ -36,7 +39,7 @@ test('readonly values and labels remain readable without editable borders or sel
   const page=await fixture(t,form);
   const facts=await page.evaluate(()=>({labels:[...document.querySelectorAll('.info label')].map(n=>Number(getComputedStyle(n).fontWeight)),controls:[...document.querySelectorAll('.form-control')].map(n=>({border:getComputedStyle(n).borderColor,background:getComputedStyle(n).backgroundColor})),appearance:getComputedStyle(document.querySelector('select')).appearance,resize:getComputedStyle(document.querySelector('textarea')).resize}));
   assert.ok(facts.labels.every(weight=>weight>=600));assert.ok(facts.controls.every(control=>control.border==='rgba(0, 0, 0, 0)'&&control.background==='rgba(0, 0, 0, 0)'));assert.equal(facts.appearance,'none');assert.equal(facts.resize,'none');
-  await assert.rejects(()=>page.locator('#name').fill('Changed',{timeout:200}));assert.equal(await page.locator('#name').inputValue(),'First');assert.equal(await page.locator('#choice').isDisabled(),true);
+  await assert.rejects(()=>page.locator('#name').fill('Changed',{timeout:200}),/not editable/);assert.equal(await page.locator('#name').inputValue(),'First');assert.equal(await page.locator('#choice').isDisabled(),true);
 });
 
 test('ordered step indicators expose every label and wrap vertically on narrow screens',async t=>{

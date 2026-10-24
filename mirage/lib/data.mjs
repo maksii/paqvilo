@@ -86,8 +86,6 @@ const clone = (value) => structuredClone(value);
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
-// Query bounds (32 OData navigation levels, 15 FetchXML links, 64 XML levels)
-// live in odata-query.mjs and fetchxml-engine.mjs with their evidence.
 const formattedAnnotation = "@OData.Community.Display.V1.FormattedValue";
 const lookupAnnotation = "@Microsoft.Dynamics.CRM.lookuplogicalname";
 
@@ -1135,8 +1133,7 @@ export class DataStore {
     try { this.onSave?.({ ...this.lastSave }); } catch { /* observer only */ }
   }
   ensureStorage() {
-    // Embedded stores historically bind a file after creating an in-memory
-    // fixture. Preserve that workflow without retaining another file's CAS.
+    // An embedded store may bind a file after starting in memory; never keep the CAS of another file.
     if (!this.storage || this.storage.file !== this.file) {
       this.storage = new StateStorage(this.file, this.persistenceOptions);
       this.persistedDigest = null;
@@ -1365,7 +1362,7 @@ export class DataStore {
    */
   rowPositions(mapping, rows, id, { scoped = false } = {}) {
     const column = mapping.idColumn, linear = () => rows.flatMap((row, index) => (equal(row[column], id) ? [index] : []));
-    // Preserve the existing coercive comparison for non-string identifiers.
+    // Non-string identifiers keep the coercive comparison of the linear scan.
     if (typeof id !== 'string') return linear();
     // A scoped index (uniqueness checks) is rebuilt per transaction, so it never answers a stale miss across writes.
     const name = `${scoped ? 'uid' : 'id'}\u0000${column}`, key = comparable(id);
@@ -1416,7 +1413,7 @@ export class DataStore {
     const joined=this.pluginInTransaction===true,previousBoundary=this.pluginRollbackBoundary,previousRows=this.rowTransaction;
     // A nested RowTransaction is the call's savepoint: it journals the call's row writes instead of copying the
     // whole state first. Handler code that may write arbitrary state promotes it (promoteRowTransaction), which
-    // fills boundary.backup with the complete pre-call copy, as every call took before.
+    // fills boundary.backup with the complete pre-call copy.
     const savepoint=new RowTransaction(this);
     const boundary={backup:null,independentCommit:false,eventCount:this.committedEventCandidates?.length??0,parent:previousBoundary};
     this.pluginRollbackBoundary=boundary;this.rowTransaction=savepoint;
@@ -1665,7 +1662,7 @@ export class DataStore {
     return resolved;
   }
   rules(entity, operation, identity = {}) {
-    // "Disable anonymous access" (Learn, disable-anonymous-access), a tenant governance
+    // "Disable anonymous access", a tenant governance
     // control that the export can't show: observed.anonymousDataAccess "blocked" keeps
     // anonymous visitors from reading Dataverse data even when a table permission grants
     // the Anonymous Users role; they can still write data.
@@ -1709,7 +1706,7 @@ export class DataStore {
    * Whether a table permission can grant anything to a visitor without a contact. The
    * Self, Contact and Account scopes, and parent chains rooted in them, need the
    * signed-in contact, so for anonymous visitors they grant nothing and a table they
-   * alone cover answers 403 90040120. Observed live: a Self grant on the Anonymous
+   * alone cover answers 403 90040120. Natively, a Self grant on the Anonymous
    * Users role still answers 403 to an anonymous contacts read.
    */
   grantsWithoutContact(rule, seen = new Set()) {
@@ -2544,7 +2541,7 @@ export class DataStore {
           ctx,
         ),
       );
-    // Learn define-calculated-fields: ordering on a calculated column over a parent or another calculated column is
+    // Ordering on a calculated column over a parent or another calculated column is
     // ignored without an error.
     const order = parseOrderBy(p.$orderby, queryOptions).filter((spec) => spec.path.length !== 1 || this.sortableColumn(m.logicalName, spec.path[0]));
     const sortOptions = {
@@ -2595,7 +2592,7 @@ export class DataStore {
           tieBreak: false,
         });
       }
-      // observed: parity case query.apply-group; a Dataverse groupby without $orderby answers its single-column groups in ascending key order (false before true).
+      // A Dataverse groupby without $orderby answers its single-column groups in ascending key order (false before true).
       if (!order.length && options.dialect === "dataverse") {
         const groupKeys = steps
           .filter((step) => step.kind === "groupby")
@@ -3464,7 +3461,7 @@ export class DataStore {
     }
     if (options.coerce) this.assertStateStatus(m, row, options);
     // The portal writes as the site's application user: rows it creates carry that user as createdby
-    // (observed.portalApplicationUser; live notes and inserted records). Its id is not exported.
+    // (observed.portalApplicationUser). Its id is not exported.
     const appUser = this.observed?.portalApplicationUser;
     if (appUser && !own(row, "createdby")) row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: "systemuser", name: appUser };
     row[m.idColumn] ??= this.ids.uuid();
@@ -3662,8 +3659,8 @@ export class DataStore {
       this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
     }
     const effects = this.applyPlugins(mapping.logicalName, "update", row, rows[index], identity);
-    // Declarative plugins mutate the row directly, independently of Target.
-    // Include their final changes without revalidating untouched legacy files.
+    // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
+    // attachment policy, so files already stored are not revalidated.
     const effectiveChanges = Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
     assertAttachmentPolicy(this.state, mapping.logicalName, row, { ...target, ...effectiveChanges });
     this.assertAlternateKeys(mapping, row, rows, index);
@@ -4253,9 +4250,8 @@ export class DataStore {
     const count = Number(validated.fetch.attrs.count);
     const plan = elastic ? { ...validated, limits: { ...validated.limits, pageSize: 500, totalRecordCount: 500 },
       pageSize: count ? Math.min(count, 500) : 500, totalRecordCountLimit: 500 } : validated;
-    // Native Liquid preserves omission of returntotalrecordcount in its
-    // exposed query and returns -1. The generic portal planner's historical
-    // injected count is not part of this independently observed transport.
+    // Native Liquid keeps an omitted returntotalrecordcount omitted in its
+    // exposed query and returns -1; no count is injected.
     if(options.portalRequest===true&&options.profile!=='webapi'&&options.permissionQuery&&
       this.observed?.tablePermissionQueryPipeline==='native-classic'&&plan.fetch.attrs.returntotalrecordcount==null)
       plan.returnTotal=false;
@@ -4440,7 +4436,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
   switch (kind) {
     case "string": {
       if (typeof value !== "string") throw conversion("Edm.String");
-      // observed: the Web API rejects a NUL character in text (parity case family values.text).
+      // The Web API rejects a NUL character in text.
       if (options.dataverseWebApi && value.includes("\u0000"))
         throw new DataError(`Invalid character in field '${attribute}': '.', hexadecimal value 0x00, is an invalid character.`, 400, "InvalidValue", { innerCode: "0x80040278" });
       if (value === "") return null;
@@ -4454,7 +4450,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
         );
       // Email is a schema format, independent of the column/table name. Length
       // validation applies to the submitted value before normalization. A memo column's
-      // Email format is an email body (Learn MemoFormatName), not an address: it stays as written.
+      // Email format is an email body (MemoFormatName), not an address: it stays as written.
       const declared = String(definition.dataverseType ?? definition.type ?? "").toLowerCase();
       const email = declared !== "memo" && String(definition.format ?? "").toLowerCase() === "email" || declared === "email";
       return email ? value.trim().toLowerCase() || null : value;
@@ -4487,7 +4483,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
         assertBounds(result,definition,'DecimalValueOutOfRange','0x80044330',{entity,attribute,kind});return result;
       }
       if(isExactNumeric(value)&&kind==='double'&&value.numericType==='Literal')value=Number(value.value);
-      // observed: the Web API parses Infinity text and then rejects it as outside the column's range (parity case family values.double).
+      // The Web API parses Infinity text and then rejects it as outside the column's range.
       if (kind === "double" && options.dataverseWebApi && (value === "Infinity" || value === "-Infinity"))
         throw new DataError(`A validation error occurred for ${entity}.${attribute}. The value ${value === "Infinity" ? "∞" : "-∞"} of type System.Double is outside the valid range(${definition.minValue ?? ""} to ${definition.maxValue ?? ""}).`, 400, "DecimalValueOutOfRange", { innerCode: "0x80044330" });
       if (kind === "double" && typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()))
@@ -4524,20 +4520,20 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       if (typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
       if (typeof raw !== "number" || !Number.isInteger(raw))
         throw conversion("Edm.Int32");
-      // observed: a plain picklist accepts -1 on create and patch and reads it back (parity case family values.choice). State, status and multiselect columns do not.
+      // A plain picklist accepts -1 on create and patch and reads it back. State, status and multiselect columns do not.
       if (options.dataverseWebApi && raw === -1 && String(definition.dataverseType ?? definition.type ?? "").toLowerCase() === "picklist") return raw;
       assertOption(raw, definition, { entity, attribute });
       return raw;
     }
     case "multichoice": {
-      // observed: the Web API takes a comma-separated string of option values; an empty string, an array or a non-integer part is rejected (parity case family values.multiselect).
+      // The Web API takes a comma-separated string of option values; an empty string, an array or a non-integer part is rejected.
       if (options.dataverseWebApi) {
         if (typeof value !== "string") throw conversion("Edm.String");
         if (value.trim() === "") throw new DataError("Edm Object passed should have the options selected. ", 400, "InvalidValue", { innerCode: "0x80060888" });
         const numbers = new Set();
         for (const part of value.split(",")) {
           const text = part.trim();
-          // unverified: the message for an empty part between commas.
+          // Native message for an empty part between commas not known.
           const number = /^[+-]?\d+$/.test(text) ? Number(text) : NaN;
           if (!Number.isInteger(number)) throw new DataError(`The optionset values sent ${text} are not valid integers.`, 400, "InvalidValue", { innerCode: "0x80060888" });
           assertOption(number, definition, { entity, attribute });
@@ -4561,7 +4557,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
     }
     case "datetime": {
       if (typeof value !== "string") throw conversion(options.dataverseWebApi && isDateOnlyField(definition) ? "Edm.Date" : "Edm.DateTimeOffset");
-      // observed: a DateOnly column reads only Edm.Date (yyyy-MM-dd); timestamps and impossible dates fail the OData reader (parity case family values.dateonly).
+      // A DateOnly column reads only Edm.Date (yyyy-MM-dd); timestamps and impossible dates fail the OData reader.
       if (options.dataverseWebApi && isDateOnlyField(definition) && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value)))
         throw conversion("Edm.Date");
       const parsed = parseDateValue(value);

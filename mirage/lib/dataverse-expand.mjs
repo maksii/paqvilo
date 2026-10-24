@@ -4,7 +4,7 @@
 import { DataError } from "./data-error.mjs";
 import { encodeSkipToken, skipTokenQueryValue } from "./dataverse-odata.mjs";
 
-const MAX_EXPAND_OPTIONS = 15; // unverified: docs say "up to 15 $expand options in a query"; counted across nesting levels here
+const MAX_EXPAND_OPTIONS = 15; // documented "up to 15 $expand options in a query"; counting across nesting levels is a guess
 const PAGING_MESSAGE = "Only $select and $filter clause can be provided while doing $expand on many-to-one relationship or nested one-to-many relationship.";
 const UNSUPPORTED_OPTION = /[;(]\s*\$(skip|count|search|levels)\s*=/;
 const OPTION_KEYS = [["$select", "select"], ["$filter", "filter"], ["$orderby", "orderby"], ["$top", "top"]];
@@ -30,7 +30,7 @@ function countOptions(items) {
  */
 export function assertExpand(items, mapping, resolveRelationship) {
   if (countOptions(items) > MAX_EXPAND_OPTIONS)
-    throw invalid(`The number of $expand options exceeded the limit of ${MAX_EXPAND_OPTIONS}.`); // unverified: message text
+    throw invalid(`The number of $expand options exceeded the limit of ${MAX_EXPAND_OPTIONS}.`); // native message text not known
   const nested = items.some((item) => item.expand?.length > 0);
   checkLevel(items, mapping, resolveRelationship, nested);
 }
@@ -44,7 +44,7 @@ function checkLevel(items, mapping, resolveRelationship, nested) {
     if ((hasNested || nested) && rel.intersect)
       throw invalid(`The navigation property '${item.navigation}' cannot be expanded. Only many-to-one relationships are supported for nested expansion.`);
     if (rel.many && nested && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE);
-    if (!rel.many && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE); // unverified: Dataverse may accept paging on a lookup
+    if (!rel.many && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE); // a guess: Dataverse may accept paging on a lookup
     // ponytail: nested children are not checked when the resolver gives no target mapping.
     if (hasNested && rel.target) checkLevel(item.expand, rel.target, resolveRelationship, nested);
   }

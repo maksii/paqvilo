@@ -13,8 +13,8 @@ const hostedRunners=new WeakMap();
 /** The trigger runner of this DataStore's organization (its trigger hosts), or null. */
 export const flowTriggersOf=store=>(store&&hostedRunners.get(store))??null;
 // The next occurrence of a recurrence after now: from startTime (or the time it was armed) in whole intervals. Missed
-// occurrences are not back-filled. unverified: without startTime the first occurrence is one interval after arming
-// (natively a newly saved flow runs at once); Month adds calendar months in UTC.
+// occurrences are not back-filled. Without startTime the first occurrence is one interval after arming, although a newly
+// saved flow natively runs at once; Month adds calendar months in UTC.
 export function nextOccurrence({frequency,interval,start,zone='UTC',schedule=null},now,armedAt=now){
  if(schedule||zone!=='UTC'&&['Day','Week','Month'].includes(frequency))return calendarOccurrence({frequency,interval,start,zone,schedule},now,armedAt);
  const anchor=start??armedAt,step=RECURRENCE_FREQUENCIES[frequency];
@@ -24,15 +24,15 @@ export function nextOccurrence({frequency,interval,start,zone='UTC',schedule=nul
  return at;
 }
 // A Day/Week/Month recurrence with a schedule or a time zone, on wall-clock days in that zone: the first scheduled time after now,
-// no sooner than startTime. Unset hours, minutes, week day and month day come from startTime (or the arming time), as Learn
-// describes (concepts-schedule-automated-recurring-tasks-workflows#start-time; Day/Week examples, monthDays -1 the last day).
-// unverified: Week intervals counted in Monday-based weeks from the anchor's week, seconds 0 with a schedule, a monthDay past
+// no sooner than startTime. Unset hours, minutes, week day and month day come from startTime (or the arming time), as documented
+// (concepts-schedule-automated-recurring-tasks-workflows#start-time; Day/Week examples, monthDays -1 the last day).
+// Guesses: Week intervals counted in Monday-based weeks from the anchor's week, seconds 0 with a schedule, a monthDay past
 // the month's end skipping that month.
 function calendarOccurrence({frequency,interval,start,zone,schedule},now,armedAt){
  const s=schedule??{},anchor=start??armedAt,a=zoneParts(anchor,zone),dayOf=ms=>Math.floor(ms/86400000),week=day=>Math.floor((day+3)/7);
  const anchorDay=dayOf(Date.UTC(a.year,a.month,a.day)),from=zoneParts(Math.max(anchor,now),zone),first=dayOf(Date.UTC(from.year,from.month,from.day));
  const hours=s.hours??[a.hour],minutes=s.minutes??[a.minute],second=schedule?0:a.second;
- // ponytail: a day-by-day scan bounded to 17 years (the Learn maximum Month interval is 16); a closed form is the upgrade if it shows in profiles.
+ // ponytail: a day-by-day scan bounded to 17 years (the documented maximum Month interval is 16); a closed form is the upgrade if it shows in profiles.
  for(let day=first;day<first+6210;day++){
   const date=new Date(day*86400000),y=date.getUTCFullYear(),m=date.getUTCMonth(),d=date.getUTCDate();
   const due=frequency==='Day'?(day-anchorDay)%interval===0
@@ -131,8 +131,8 @@ export function createFlowTriggerRunner({store,items,workflows,identities,diagno
  // parentcatalogid is the catalog, and a catalogassignment row assigns a custom API to the category
  // (https://learn.microsoft.com/power-automate/dataverse/action-trigger,
  // https://learn.microsoft.com/power-apps/developer/data-platform/catalog-catalogassignment). A trigger without catalog and
- // category matches by action name only. unverified: whether the exported catalog and category values are unique names or
- // ids (both are accepted), the stored column of the polymorphic assignment object (object, customapiid or objectid).
+ // category matches by action name only. Not known natively: whether the exported catalog and category values are unique names
+ // or ids (both are accepted), and the stored column of the polymorphic assignment object (object, customapiid or objectid).
  // Catalog rows come from the Solution (source-organization-extensions.mjs: catalogs/ and Assets/catalogassignments.xml).
  // An organization whose catalog table has no row at all (no Solution ships a catalog) cannot be checked: the trigger fires by action
  // name and FLOW_TRIGGER_CATALOG_UNCHECKED says so once per host.
@@ -149,7 +149,7 @@ export function createFlowTriggerRunner({store,items,workflows,identities,diagno
  const drain=()=>jobs.drain();
  const beginClose=sequence=>{closing=true;stopSequence=Math.min(stopSequence,sequence??store.committedEventSequence??0);};
 
- // ---- trigger hosts: Recurrence (behaviour) and pack connector triggers (contract) ----
+ // ---- trigger hosts: Recurrence (behaviour) and pack connector triggers (contract)
  const hosts=new Map(),scheduler=()=>storeScheduler(store),now=()=>Number(store.clock?.now?.()??Date.now());
  const eligible=item=>item.mode==='exported'&&item.configuration?.activation==='local-enabled';
  const candidates=()=>{const result=new Map();for(const item of items())if(item.kind==='cloud-flow'){const workflow=workflows().get(item.processId),definition=definitionOf(workflow);if(!definition)continue;const trigger=inspectFlowTrigger(definition,{connectors});if(['recurrence','connector','http','dataverse-action'].includes(trigger.kind))result.set(item.key,{item,workflow,definition,trigger});}return result;};
@@ -175,8 +175,8 @@ export function createFlowTriggerRunner({store,items,workflows,identities,diagno
   // "When an action is performed": the committed custom API action event (dataverse-customapi.mjs invoke) is staged by stage()
   // as a durable flow-action job for this host; the run's trigger body is the action's InputParameters and OutputParameters
   // (https://learn.microsoft.com/power-automate/dataverse/action-trigger#using-dynamic-content-and-action-inputs--outputs;
-  // body/OutputParameters in https://learn.microsoft.com/power-platform/alm/extend-pipelines#triggers). unverified: the other
-  // body fields of the native notification. The action must be assigned to the trigger's category (cataloged()).
+  // body/OutputParameters in https://learn.microsoft.com/power-platform/alm/extend-pipelines#triggers). The other body fields
+  // of the native notification are not reproduced. The action must be assigned to the trigger's category (cataloged()).
   if(trigger.kind==='dataverse-action'){Object.assign(host,{message:trigger.message,table:trigger.table,catalog:trigger.catalog,category:trigger.category});return;}
   const raw=Object.values(definition.triggers)[0],entry=connectors.flowTriggers(trigger.connectorId,trigger.operationId);Object.assign(host,{connectorId:trigger.connectorId,operationId:trigger.operationId,parameters:raw.inputs?.parameters??{},entry});
   try{host.subscription=await entry.subscribe(context(host));}catch(error){hosts.delete(key);record('FLOW_TRIGGER_SUBSCRIBE_FAILED',{operationKey:key,error:{code:error.code??'FlowTriggerSubscribeFailed',message:error.message}});return;}
@@ -216,7 +216,7 @@ export function createFlowTriggerRunner({store,items,workflows,identities,diagno
 // "When an HTTP request is received" callback URLs (https://learn.microsoft.com/azure/connectors/connectors-native-reqres): each
 // flow has its own random HMAC-SHA256 key, sealed in state.simulator.flowCallbackKeys (flow-vault.mjs), and its URL carries the
 // signature of the flow, trigger and the sp, sv and api-version values as sig. A request without a valid sig answers 401.
-// unverified: the native URL shape and signed content; locally the URL is served under this host's /_sim/api/flow-triggers.
+// The native URL shape and signed content are a guess; locally the URL is served under this host's /_sim/api/flow-triggers.
 export const CALLBACK_API_VERSION='2016-06-01';
 const callbackId=processId=>String(processId??'').replace(/[{}]/g,'').toLowerCase();
 async function callbackKey(store,vault,processId,create){
@@ -242,7 +242,7 @@ export async function verifyFlowCallback({store,vault,processId,triggerName,quer
  return expected.length===given.length&&timingSafeEqual(expected,given);
 }
 
-/** Capability record (ARCH §2.4): Recurrence hosting is behaviour; pack connector trigger hosting is a contract seam. */
+/** Capability record: Recurrence hosting is behaviour; pack connector trigger hosting is a contract seam. */
 export function describe() {
  return {name:'flow-triggers',version:1,kind:'organization-module',level:'behaviour',
   operations:[{name:'dataverseRowTriggers',level:'behaviour'},{name:'recurrence',level:'behaviour'},{name:'httpRequestOnDemand',level:'behaviour'},{name:'httpRequestCallbackUrl',level:'behaviour'},{name:'connectorTriggers',level:'contract'},{name:'recurrenceSchedule',level:'behaviour'},{name:'businessEventsTrigger',level:'behaviour'}],

@@ -7,7 +7,7 @@
 // With an outbox provider (api.providers.outbox, outbox.mjs) SendEmail also captures the message for inspection: delivered for
 // IssueSend false, queued for IssueSend true until BackgroundSendEmail returns the email and marks the entry delivered.
 // Queue membership is the queuemembership intersect table (queue to systemuser), one row per member; a team is expanded to its
-// users when it is added. Email attachments are activitymimeattachment rows of the email. Invented data only.
+// users when it is added. Email attachments are activitymimeattachment rows of the email.
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference } from "./data.mjs";
@@ -23,7 +23,7 @@ import { toFetchXml } from "./dataverse-soap-query.mjs";
 const DRAFT = 1, SENT = 3, RECEIVED = 4, PENDING_SEND = 6;
 // activityparty.participationtypemask: "Related" (13) is the party type AppendRelatedParty adds.
 const PARTICIPATION_RELATED = 13;
-// unverified: live capture (the inner codes; Learn gives none for these messages, so 0x80040203 is the invalid-argument default).
+// The docs give no inner codes for these messages; 0x80040203 (invalid argument) stands in.
 const INVALID = "0x80040203";
 const GUID = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
 const EDM_OBJECT = "EdmEntityObject passed should have the key property value set.";
@@ -148,11 +148,11 @@ async function newEmail(api, ctx, fields) {
 }
 
 // The state a send writes. There is no transport: a pending send waits for the router, which marks it Sent.
-// unverified: live capture (Learn gives no statecode or statuscode for a send; the values are the option set's).
+// The docs give no statecode or statuscode for a send; the values are the option set's.
 const sendState = (issueSend) => (issueSend ? { statecode: 1, statuscode: PENDING_SEND } : { statecode: 1, statuscode: SENT });
 
 // Placeholders {column} or {table.column}, filled from the record's stored columns; an unknown column stays as written.
-// unverified: live capture (the placeholder syntax the template editor writes).
+// The placeholder syntax the template editor writes is a guess.
 const PLACEHOLDER = /\{(?:([a-z_]+)\.)?([a-z_][a-z0-9_]*)\}/gi;
 function fill(text, row, logical) {
   if (typeof text !== "string") return text ?? null;
@@ -186,7 +186,7 @@ function templatedFields(template, regarding) {
 // The address a record receives mail at: a contact-style address, else a user's internal address.
 const addressOf = (row) => row.emailaddress1 ?? row.internalemailaddress ?? row.emailaddress ?? null;
 
-// From must be a user's or a queue's email address (the Learn page: resolvable to a user or queue record).
+// From must be a user's or a queue's email address.
 function senderOf(api, from) {
   const same = (table, column) => api.store.tableRows(table).find((r) => idText(r[column]) === idText(from));
   const user = same("systemuser", "internalemailaddress");
@@ -199,7 +199,7 @@ function senderOf(api, from) {
 const hashOf = (text) => [...text].reduce((h, ch) => (h * 33 + ch.charCodeAt(0)) >>> 0, 5381);
 
 // Shared by CheckIncomingEmail and CheckPromoteEmail: a message is new unless a stored email carries its MessageId.
-// unverified: live capture (ReasonCode values; Learn names the field and gives no values).
+// ReasonCode values are a guess; the docs name the field and give no values.
 async function checkEmail(api, ctx, name, flag) {
   const args = argsOf(ctx);
   const messageId = String(requiredOf(args, "MessageId"));
@@ -209,7 +209,7 @@ async function checkEmail(api, ctx, name, flag) {
   return respond(ctx, name, { ReasonCode: duplicate ? 1 : 0, [flag]: !duplicate });
 }
 
-// ---- Activities -------------------------------------------------------------------------------------------------------
+// ---- Activities
 
 // AppendRelatedParty: adds an activityparty row with the Related participation type. The Activity must be an activity table.
 async function appendRelatedParty(api, ctx) {
@@ -229,7 +229,7 @@ async function appendRelatedParty(api, ctx) {
 }
 
 // RemoveParent: clears the systemuser's parent (parentsystemuserid, the manager column).
-// unverified: live capture (Learn does not name the column that is cleared).
+// The docs do not name the column that is cleared; parentsystemuserid is a guess.
 async function removeParent(api, ctx) {
   const target = refOf(api, requiredOf(argsOf(ctx), "Target"), "Target", new Set(["systemuser"]));
   authorize(api, ctx, "systemuser", "write", rowOf(api, ctx, target));
@@ -237,12 +237,12 @@ async function removeParent(api, ctx) {
   return { status: 204 };
 }
 
-// ---- Email --------------------------------------------------------------------------------------------------------------
+// ---- Email
 
 // BackgroundSendEmail: the pending outgoing emails the caller can read. Query null: every visible email. A FetchExpression runs
 // its FetchXML, and a QueryExpression on email runs as FetchXML (the async path's conversion). Either way only Pending Send (6)
 // rows are returned, and none changes state. HasAttachments says, per returned email, whether it has attachment rows.
-// unverified: whether the platform applies the Pending Send filter itself, and whether a sent row moves to Sending (LC-5).
+// Not known: whether the platform applies the Pending Send filter itself, and whether a sent row moves to Sending.
 async function backgroundSendEmail(api, ctx) {
   const query = argsOf(ctx).Query;
   if (query != null && typeof query !== "object") throw invalid("The Query parameter must be a QueryBase object.");
@@ -324,7 +324,7 @@ async function storeAttachments(api, ctx, emailId, list) {
 }
 
 // DeliverIncomingEmail (bound to the email collection): creates a received email row from the message parts, with its Attachments.
-// unverified: live capture (the refusal when ValidateBeforeCreate finds the MessageId already stored).
+// The native refusal when ValidateBeforeCreate finds the MessageId already stored is not known.
 async function deliverIncomingEmail(api, ctx) {
   const args = argsOf(ctx);
   const messageId = String(requiredOf(args, "MessageId"));
@@ -348,8 +348,8 @@ async function deliverIncomingEmail(api, ctx) {
 }
 
 // DeliverPromoteEmail and DeliverImmediatePromoteEmail (bound to one email): the bound email takes the message parts and its
-// Attachments, and is promoted as received. unverified: live capture (whether the bound row is updated or a new one is created;
-// the two variants differ only in Learn's required markings, so they share this handler). ponytail: DeliverImmediatePromoteEmail's
+// Attachments, and is promoted as received. Updating the bound row (rather than creating a new one) is a guess; the two
+// variants differ only in which parameters the docs mark required, so they share this handler. ponytail: DeliverImmediatePromoteEmail's
 // AttachmentIds, EWSUrl and AttachmentToken are accepted and ignored.
 async function deliverPromoteEmail(api, ctx) {
   const args = argsOf(ctx);
@@ -368,7 +368,7 @@ async function deliverPromoteEmail(api, ctx) {
   return { status: 200, body: await formatted(api, ctx, "email", ctx.target.id) };
 }
 
-// GetTrackingTokenEmail: a token for the subject. unverified: live capture (the token format; Learn says only "a string").
+// GetTrackingTokenEmail: a token for the subject. The token format is a guess (the docs say only "a string").
 async function getTrackingTokenEmail(api, ctx) {
   const subject = textOf(argsOf(ctx), "Subject") ?? "";
   const token = `CRM:${String(hashOf(subject) % 10000).padStart(4, "0")}`;
@@ -393,7 +393,7 @@ async function instantiateTemplate(api, ctx) {
 
 const withoutContext = (body) => Object.fromEntries(Object.entries(body ?? {}).filter(([key]) => !key.startsWith("@")));
 
-// RetrieveMailboxTrackingFolders: the tracking folder mappings of one mailbox. unverified: live capture (the mapping shape).
+// RetrieveMailboxTrackingFolders: the tracking folder mappings of one mailbox. The mapping shape is a guess.
 async function retrieveMailboxTrackingFolders(api, ctx) {
   const mailboxId = String(requiredOf(argsOf(ctx), "MailboxId"));
   const folders = (await listed(api, ctx, "mailboxtrackingfolder")).filter((row) => idText(row.mailboxid) === idText(mailboxId));
@@ -491,7 +491,7 @@ async function sendTemplate(api, ctx) {
   return { status: 204 };
 }
 
-// ---- Queues -------------------------------------------------------------------------------------------------------------
+// ---- Queues
 
 // The queuemembership intersect table (queue to systemuser), read through the queue's queuemembership_association navigation.
 // Insert-only, as the other dataverse-only stand-in tables are (dataverse-duplicates.mjs seedTables).
@@ -586,7 +586,7 @@ async function removeFromQueue(api, ctx) {
 
 // RetrieveUserQueues (bound to one systemuser): the queues the user owns or is a member of (private: owned by a user),
 // and with IncludePublic the queues owned by a team or business unit (public). Rows come back as the caller reads them.
-// unverified: live capture (which owners make a queue public).
+// Which owners make a queue public is a guess.
 async function retrieveUserQueues(api, ctx) {
   const includePublic = flagOf(argsOf(ctx), "IncludePublic");
   const userId = ctx.target.id;
@@ -605,7 +605,7 @@ async function retrieveUserQueues(api, ctx) {
 }
 
 // RouteTo: routes a queue item to a queue (unassigned) or to a systemuser or team (assigned to it).
-// unverified: live capture (QueueItem is required here; Learn does not say what a null QueueItem does).
+// QueueItem is required here; the docs do not say what a null QueueItem does.
 async function routeTo(api, ctx) {
   const args = argsOf(ctx);
   const target = refOf(api, requiredOf(args, "Target"), "Target", new Set(["queue", "systemuser", "team"]));
@@ -621,7 +621,7 @@ async function routeTo(api, ctx) {
   return { status: 204 };
 }
 
-// ---- Registration ---------------------------------------------------------------------------------------------------------
+// ---- Registration
 
 // CSDL per operation: the bound parameter (entity, or the full collection type), parameters and return type. A response is a ComplexType.
 function csdlOf(kind, name, { bound = null, params = [], returns = null, response = null }) {
@@ -639,7 +639,7 @@ function csdlOf(kind, name, { bound = null, params = [], returns = null, respons
 const OPERATIONS = [
   { name: "AppendRelatedParty", kind: "action", handle: appendRelatedParty, csdl: { params: [["Activity", "mscrm.crmbaseentity"], ["Party", "mscrm.crmbaseentity"]] } },
   { name: "RemoveParent", kind: "action", handle: removeParent, csdl: { params: [["Target", "mscrm.crmbaseentity"]] } },
-  // unverified: the native Query is mscrm.QueryBase and Attachments is Collection(mscrm.attachment); neither complex type is declared here, so Edm.Untyped stands in (as misc-messages does for QueryExpression).
+  // The native Query is mscrm.QueryBase and Attachments is Collection(mscrm.attachment); neither complex type is declared here, so Edm.Untyped stands in (as misc-messages does for QueryExpression).
   { name: "BackgroundSendEmail", kind: "action", handle: backgroundSendEmail, csdl: { params: [["Query", "Edm.Untyped"]], response: [["HasAttachments", "Collection(Edm.Boolean)"], ["EntityCollection", "Collection(mscrm.email)"]] } },
   { name: "CheckIncomingEmail", kind: "function", handle: checkIncomingEmail, csdl: { params: [["MessageId", "Edm.String"], ["Subject", "Edm.String"], ["From", "Edm.String"], ["To", "Edm.String"], ["Cc", "Edm.String"], ["Bcc", "Edm.String"]], response: [["ReasonCode", "Edm.Int32"], ["ShouldDeliver", "Edm.Boolean"]] } },
   { name: "CheckPromoteEmail", kind: "function", handle: checkPromoteEmail, csdl: { params: [["MessageId", "Edm.String"], ["Subject", "Edm.String"], ["DirectionCode", "Edm.Int32"]], response: [["ReasonCode", "Edm.Int32"], ["ShouldPromote", "Edm.Boolean"]] } },

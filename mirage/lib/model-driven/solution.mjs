@@ -22,11 +22,10 @@ const tableNavigation = value => {
  * sources hold are hosted (the catalogue resolves the dashboard); custom pages open the headless canvas host of their canvas
  * app (the shell answers a missing one with CustomPageNotFound); external URLs are not hosted. */
 export const DASHBOARD_MISSING_REASON = 'The dashboard definition is not in the sources (MD_NAV_DASHBOARD).';
-/** A custom page is a canvas app the model-driven app includes (Learn "Add a custom page to your model-driven app"; solution
- * component type 300 Canvas App, Learn solutioncomponent): it resolves only against the app's own type-300 AppModuleComponent
- * and a canvas app the canvas host holds (`canvasApps`: unique names, or null without a canvas host). One rule for the
- * catalogue, the shell (app.customPages) and the source graph.
- * unverified: an exported AppModule names a custom page's component by its schemaName (the canvas app's logical name). */
+/** A custom page is a canvas app the model-driven app includes (solution component type 300 Canvas App): it resolves
+ * only against the app's own type-300 AppModuleComponent and a canvas app the canvas host holds (`canvasApps`: unique
+ * names, or null without a canvas host). One rule for the catalogue, the shell (app.customPages) and the source graph.
+ * Assumed: an exported AppModule names a custom page's component by its schemaName (the canvas app's logical name). */
 export function customPageResolution(app, page, canvasApps) {
   const name = String(page ?? '').toLowerCase();
   if (!(app?.components ?? []).some(component => component.type === 300 && component.entity === name))
@@ -38,11 +37,11 @@ export function customPageResolution(app, page, canvasApps) {
 function pageNavigation(attrs) {
   const url = String(attrs.Url ?? '');
   if (attrs.DefaultDashboard || /^\/?main\.aspx\?(?:.*&)?pagetype=dashboard(?:&|$)/i.test(url)) {
-    // unverified: a dashboard SubArea Url names its dashboard as main.aspx?pagetype=dashboard&id=<guid>.
+    // Assumed: a dashboard SubArea Url names its dashboard as main.aspx?pagetype=dashboard&id=<guid>.
     const dashboard = id(attrs.DefaultDashboard ?? new URL(url, 'http://local.invalid/').searchParams.get('id'));
     return { kind: 'dashboard', code: 'MD_NAV_DASHBOARD', ...(dashboard ? { dashboard } : {}), supported: false, reason: DASHBOARD_MISSING_REASON };
   }
-  // unverified: an exported custom-page SubArea carries main.aspx?pagetype=custom&name=<logical name> in Url.
+  // Assumed: an exported custom-page SubArea carries main.aspx?pagetype=custom&name=<logical name> in Url.
   const custom = /^\/?main\.aspx\?(?:.*&)?pagetype=custom(?:&|$)/i.test(url) ? new URL(url, 'http://local.invalid/').searchParams.get('name') : null;
   if (custom !== null) return { kind: 'custom', code: 'MD_NAV_CUSTOM_PAGE', page: custom, ...customPageResolution(null, custom, null) };
   const resource = /^\$webresource:(.+)$/i.exec(url)?.[1];
@@ -101,7 +100,7 @@ export function parseAppDefinitions(root, { lcid = 1033 } = {}) {
 
 const SUBGRID_CLASS = 'e7a81278-8635-4d9e-8d4d-59480b391c5b';
 const DASHBOARD_CONTROL_KINDS = { '9fdf5f91-88b1-47f4-ad53-c11efc01a01d': 'web resource', 'fd2a7985-3187-444e-908d-6624b21f69c0': 'IFRAME' };
-/** Organization-owned dashboards (systemform type 0; Learn understand-dashboards-dashboard-components-formxml) as
+/** Organization-owned dashboards (systemform type 0) as
  * { id, name, components }: a list (sub-grid control with TargetEntityType/ViewId) is a `grid` component the shell renders
  * over the view query engine; a chart (VisualizationId), web resource, IFRAME or any other control is a component with
  * `supported: false` and its reason, listed on the page. Reads `<Dashboard>` elements and type 0 `<systemform>` elements. */
@@ -118,7 +117,7 @@ export function parseDashboards(root, { lcid = 1033 } = {}) {
       if (classid !== SUBGRID_CLASS) return [{ ...base, kind: DASHBOARD_CONTROL_KINDS[classid] ?? 'control', classid, supported: false,
         reason: `${DASHBOARD_CONTROL_KINDS[classid] ?? `Control ${classid}`} components are not rendered on local dashboards.` }];
       const entity = parameter('TargetEntityType')?.toLowerCase(), chart = id(parameter('VisualizationId'));
-      // unverified: without ChartGridMode a component with a VisualizationId opens as its chart; All shows the chart and its list.
+      // Assumed: without ChartGridMode a component with a VisualizationId opens as its chart; All shows the chart and its list.
       const mode = parameter('ChartGridMode') ?? (chart ? 'Chart' : 'Grid');
       return [
         ...(mode !== 'Chart' ? [{ ...base, kind: 'grid', entity, view: id(parameter('ViewId')), pageSize: Number(parameter('RecordsPerPage')) || 10,
@@ -239,7 +238,7 @@ export function compileForm(form, fields, lcid = 1033) {
   }));
   // formContext attributes are the columns bound anywhere on this form (body, header, footer); others are absent.
   const attributes = [...new Set(descendants(root, 'control').map(control => control.attrs.datafieldname?.toLowerCase()).filter(name => name && fields[name]))];
-  // Header and footer cells keep their control names (Learn formContext.getControl: `header_<column>`); the shell does not
+  // Header and footer cells keep their control names (formContext.getControl: `header_<column>`); the shell does not
   // render them, so their state setters refuse by name. Business process flow stage columns are not compiled (BPFs do not run).
   const regionControls = ['header', 'footer'].flatMap(region => descendants(root, region).flatMap(node => descendants(node, 'control')).map(control => ({ region,
     id: control.attrs.id ?? `${region}_${control.attrs.datafieldname?.toLowerCase()}`, name: control.attrs.datafieldname?.toLowerCase() }))).filter(control => control.name && fields[control.name]);
@@ -273,7 +272,7 @@ export function parseRibbonCommands(root) {
     const supported = Boolean(actions.length && actions.every(action => action.type === 'JavaScriptFunction' && action.library && action.functionName && action.parameters.every(parameter => parameter.kind !== 'unsupported' && (parameter.kind !== 'crm' || ['PrimaryControl', 'SelectedControlSelectedItemIds', 'SelectedEntityTypeName'].includes(parameter.value)))) && supportedRules);
     const rawLabel = button.attrs.LabelText ?? button.attrs.Id;
     return { id: button.attrs.Id, label: rawLabel.startsWith('$LocLabels:') ? labels.get(rawLabel.slice(11)) ?? button.attrs.Id : rawLabel,
-      // Ribbon locations identify HomePageGrid, MainTab/Form or SubGrid. The latter is not yet hosted.
+      // Ribbon locations identify HomePageGrid, MainTab/Form or SubGrid; SubGrid is not hosted.
       locations: /SubGrid/i.test(button.attrs.Id) ? [] : /HomePageGrid/i.test(button.attrs.Id) ? ['grid'] : /Form|MainTab/i.test(button.attrs.Id) ? ['form'] : ['form', 'grid'],
       actions, displayRules, enableRules, supported, reason: supported ? undefined : 'This exported ribbon action or rule is outside the local client API support.' };
   });

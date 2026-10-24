@@ -59,10 +59,8 @@ export function guid(name) {
 const braced = (name) => `{${guid(name).toUpperCase()}}`;
 const escape = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// ---------------------------------------------------------------------------
-// Columns of the item table. `kind` selects the form control; `manifest` columns go through the
+// ---- Columns of the item table. `kind` selects the form control; `manifest` columns go through the
 // provisioning manifest, the others are created by the extras script with the raw Web API.
-// ---------------------------------------------------------------------------
 // Columns are written with their full logical name so inventory anchors (`generate.mjs#pqvd_text`) resolve.
 const col = (name, label, kind, manifest, extra = {}) => ({ name, label, kind, manifest, ...extra });
 export const ITEM_COLUMNS = [
@@ -116,7 +114,7 @@ export const ITEM_COLUMNS = [
   col("pqvd_calculated", "Calculated", "text", null, { catalog: "dv.column.calculated", extras: { kind: "calculated", maxLength: 4000, manual: "formula" } }),
   col("pqvd_formula", "Formula", "text", null, { catalog: "dv.column.formula", extras: { kind: "formula", maxLength: 200, formula: `Concatenate(${PREFIX}_name, " / ", ${PREFIX}_code)` } }),
   col("pqvd_file", "File", "file", null, { catalog: "dv.column.file", extras: { kind: "file", maxSizeKb: 1024 } }),
-  // Placed only in the collapsed tab and the unlabelled section: a column placed twice renders once and the platform warns (O17).
+  // Placed only in the collapsed tab and the unlabelled section: a column placed twice renders once and the platform warns.
   col("pqvd_collapsedtext", "Collapsed text", "text", { type: "string", maxLength: 50 }, { catalog: "dv.column.string.text" }),
   col("pqvd_unlabelledtext", "Unlabelled text", "text", { type: "string", maxLength: 50 }, { catalog: "dv.column.string.text" }),
 ];
@@ -124,7 +122,7 @@ export const PARENT_COLUMNS = [
   col("pqvd_code", "Code", "text", { type: "string", maxLength: 20, required: "required" }, { catalog: "dv.column.string.text" }),
   col("pqvd_rank", "Rank", "integer", { type: "integer", min: 0, max: 100 }, { catalog: "dv.column.integer.none" }),
   col("pqvd_description", "Description", "memo", { type: "memo", maxLength: 2000 }, { catalog: "dv.column.memo" }),
-  // Only on "Baseline Parent Reference": a parent column whose control id no item form repeats (O11 fixed variant).
+  // Only on "Baseline Parent Reference": a parent column whose control id no item form repeats (the fixed insert multistep variant).
   col("pqvd_summary", "Summary", "text", { type: "string", maxLength: 100 }, { catalog: "dv.column.string.text" }),
   // Rollup definitions are maker-portal only (Dataverse rejected a scripted FormulaDefinition as "not valid Xaml"; Learn: not supported by code): created by the documented manual procedure, verified by the provisioning script.
   col("pqvd_rollup", "Rollup", "integer", null, { catalog: "dv.column.rollup", extras: { kind: "rollup", manual: true, related: ITEM, lookup: `${PREFIX}_parentid` } }),
@@ -134,9 +132,7 @@ export const CHILD_COLUMNS = [
   col("pqvd_sortorder", "Sort order", "integer", { type: "integer", min: 0, max: 1000 }, { catalog: "dv.column.integer.none" }),
 ];
 
-// ---------------------------------------------------------------------------
-// Manifest
-// ---------------------------------------------------------------------------
+// ---- Manifest
 const manifestColumn = ({ name, label, manifest }) => ({ name, label, ...manifest });
 export function manifest() {
   return {
@@ -168,9 +164,7 @@ export function manifest() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// FormXml builder
-// ---------------------------------------------------------------------------
+// ---- FormXml builder
 const label = (text) => `<labels><label description="${escape(text)}" languagecode="${LCID}" /></labels>`;
 function cell(field, kind, { showlabel = true, colspan, rowspan, label: text, disabled = false, visible = true, control: extraControl = "", id } = {}) {
   const attrs = [`id="${braced(`cell:${id ?? field}`)}"`, `showlabel="${showlabel}"`, colspan ? `colspan="${colspan}"` : "", rowspan ? `rowspan="${rowspan}"` : "", visible ? "" : `visible="false"`].filter(Boolean).join(" ");
@@ -215,7 +209,7 @@ const iframeControl = `<control id="IFRAME_baseline" classid="${CLASSIDS.iframe}
 const byName = (columns, ...names) => names.map((name) => columns.find((c) => c.name === `${PREFIX}_${name}`));
 const NAME = `${PREFIX}_name`;
 
-// quickView false: the stepped insert form (O12). A quick view needs a saved record, and on an insert form with
+// quickView false: the stepped insert form. A quick view needs a saved record, and on an insert form with
 // generated steps the platform throws at its cell after the step postback; the edit forms keep it.
 function itemMainForm({ quickView = true } = {}) {
   const c = (name) => byName(ITEM_COLUMNS, name)[0];
@@ -279,7 +273,7 @@ function parentMainForm() {
   const items = [`<cell id="${braced("cell:subgrid-items")}" showlabel="true" rowspan="8">${label("Items")}${subgridControl("subgrid_items", ITEM, `${PREFIX}_baselineparent_baselineitem`, "{PLATFORM_VIEW:pqvd_baselineitem:2}")}</cell>`];
   return form([tab("general", "General", [section("general", "General", rows), section("items", "Items", items)])]);
 }
-// Read-only reference form of the fixed insert multistep (O11): a multistep step renders it beside the item create form,
+// Read-only reference form of the fixed insert multistep: a multistep step renders it beside the item create form,
 // so it carries no column whose control id the create form repeats (pqvd_name, pqvd_code, ...).
 function parentReferenceForm() {
   const c = (name) => byName(PARENT_COLUMNS, name)[0];
@@ -314,9 +308,7 @@ export const FORMS = [
   { file: "child-main", id: guid("form:child-main"), table: CHILD, name: "Baseline Child", type: 2, build: childMainForm },
 ];
 
-// ---------------------------------------------------------------------------
-// Views
-// ---------------------------------------------------------------------------
+// ---- Views
 function fetch(table, { attributes, order = [], filter = "", links = "", distinct = false }) {
   const attrs = attributes.map((name) => `<attribute name="${name}" />`).join("");
   const orders = order.map(([name, desc]) => `<order attribute="${name}" descending="${desc}" />`).join("");
@@ -353,9 +345,7 @@ export const PLATFORM_VIEW_ADJUSTMENTS = [
   { file: "child-quick-find", id: guid("view:child-quick-find"), table: CHILD, name: "Baseline Child Quick Find", queryType: 4, isQuickFind: true, fetch: () => fetch(CHILD, { attributes: [`${CHILD}id`, NAME, p("sortorder")], order: [[NAME, "false"]], filter: `<filter type="or" isquickfindfields="1"><condition attribute="${NAME}" operator="like" value="{0}" /></filter>` }), layout: () => layout(CHILD, [[NAME, 200], [p("sortorder"), 80]]) },
 ];
 
-// ---------------------------------------------------------------------------
-// Extras: everything the manifest API does not model, applied by provision.mjs after the manifest.
-// ---------------------------------------------------------------------------
+// ---- Extras: everything the manifest API does not model, applied by provision.mjs after the manifest.
 export function extras() {
   const columns = [];
   for (const [table, list] of [[ITEM, ITEM_COLUMNS], [PARENT, PARENT_COLUMNS]]) for (const column of list) if (column.extras) columns.push({ table, name: column.name, label: column.label, ...column.extras, viaManifest: Boolean(column.manifest) });
@@ -374,7 +364,7 @@ export function extras() {
     // Rule schema: { id, table, name, scope: "entity" | "all-forms" | "form", formId? (scope "form"), when: { field, equals | greaterThan | isNull },
     // guard?: { field, notEqual | notNull } (ANDed with when), actions[], otherwise? }. when.field is the rule's only trigger.
     // The rules run as background workflows on live (mode 0) and each write sends the whole record image, which re-triggers
-    // every rule on its fields (O16): a rule that writes must no-op once its target holds the value, hence the guards.
+    // every rule on its fields: a rule that writes must no-op once its target holds the value, hence the guards.
     // Action types: visibility, lock, required, setValue, setDefault, clearValue, error.
     businessRules: [
       { id: guid("br:hide-by-flag"), table: ITEM, name: "Baseline hide by flag", scope: "entity", when: { field: p("flag"), equals: false }, actions: [{ type: "visibility", field: p("hiddenbyrule"), visible: false }], otherwise: [{ type: "visibility", field: p("hiddenbyrule"), visible: true }] },
@@ -390,7 +380,7 @@ export function extras() {
     columnSecurityProfile: { name: "Paqvilo baseline secured columns", columns: [{ table: ITEM, name: p("secret"), read: 0, update: 0, create: 0 }] },
     // A fixture-owned web resource so the form's web resource control has no dependency outside the solution.
     // HTML (type 1): "Render Web Resources Inline" embeds the resource's content, which only an HTML resource has; an image
-    // control is never created inline and its label association throws (O17). Plain forms frame the same resource.
+    // control is never created inline and its label association throws. Plain forms frame the same resource.
     // Predecessors are deleted by provision.mjs once the published form stops naming them.
     webResource: { name: "pqvd_baseline_banner.html", displayName: "Baseline banner", type: 1, content: Buffer.from(BANNER_HTML, "utf8").toString("base64"), retire: ["pqvd_baseline_icon.png", "pqvd_baseline_icon.svg"] },
     // The three fixture tables are exported with every subcomponent so the solution is self-contained.
@@ -398,7 +388,7 @@ export function extras() {
     // Platform components of non-fixture tables the site renders: added to the solution as-is (AddSolutionComponent only,
     // never modified) so the export carries them. Ids are the platform's own; provision.mjs checks name and table.
     // Not here: the managed Contact main form 1fed44d1-ae68-4a41-bd2b-f13acac4acfa (adx_formname Contact). ExportSolution
-    // omits an unmodified managed form and lists it as a MissingDependency, so membership alone cannot export it (O15).
+    // omits an unmodified managed form and lists it as a MissingDependency, so membership alone cannot export it.
     platformComponents: [
       { type: 26, table: "contact", id: "a2d479c5-53e3-4c69-addd-802327e67a0d", name: "Contacts Lookup View", reason: "default lookup view of the item form's contact and customer lookups" },
       { type: 26, table: "account", id: "a9af0ab8-861d-4cfa-92a5-c6281fed7fab", name: "Account Lookup View", reason: "default lookup view of the item form's account, customer and any-record lookups" },

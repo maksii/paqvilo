@@ -6,7 +6,7 @@ import path from "node:path";
 import { inventoryWebApi } from "../webapi-inventory.mjs";
 
 // A site's own Web API client object is named by the caller (--client-wrapper); the inventory has
-// no built-in project wrapper (independent review M3).
+// no built-in project wrapper.
 test("client wrapper calls count as requests only for the wrappers the caller names", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-inventory-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

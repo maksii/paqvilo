@@ -65,7 +65,7 @@ test('diagnostics and native warning/request failure types satisfy the shared Is
     resources: [{name:'x_pcf/bundle.js',unbound:true}], diagnostics:[{code:'INVENTED',message:'Requires an observed mapping.'}],
     problems: [{type:'warning',text:'Native console warning'}, {type:'requestfailed',text:'net::ERR_FAILED'}, {type:'pageerror',text:'Native exception'}] };
   const data = modelDrivenPanelData(state,{cfg:{}});
-  assert.ok(data.notes.every(note=>typeof note.reason==='string'&&note.reason.length>0));
+  assert.deepEqual(data.notes.map(note=>note.reason),['INVENTED: Requires an observed mapping.','x_pcf/bundle.js: an exact observed native resource mapping is required.']);
   assert.deepEqual(data.problems.map(problem=>problem.type),['warning','failed','error']);
 });
 

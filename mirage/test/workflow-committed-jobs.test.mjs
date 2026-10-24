@@ -1,6 +1,6 @@
 // Classic workflow background runs are durable committed jobs (dataverse-workflows.mjs through committed-work.mjs): the
 // Ready asyncoperation row is written inside the triggering commit, a rolled-back write leaves no job, and the store's job
-// runner completes it as a Workflow job (operationtype 10). Invented schema and ids only.
+// runner completes it as a Workflow job (operationtype 10).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -31,7 +31,8 @@ test('a background workflow job commits with its trigger and runs on the job run
   const jobs = () => store.tableRows('asyncoperation').filter(row => row.name === 'Invented background');
 
   // A write that rolls back takes its job row with it.
-  await store.transact(async () => { await store.create('x_widget', { x_name: 'rolled back' }, { admin: true }); throw new Error('invented rollback'); }, { isolated: true }).catch(() => {});
+  await assert.rejects(store.transact(async () => { await store.create('x_widget', { x_name: 'rolled back' }, { admin: true }); throw new Error('invented rollback'); }, { isolated: true }), /invented rollback/);
+  assert.equal(store.tableRows('x_widget').length, 0);
   assert.equal(jobs().length, 0);
 
   // The committed write carries its Ready job row; nothing has run yet.

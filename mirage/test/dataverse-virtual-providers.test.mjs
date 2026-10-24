@@ -1,6 +1,6 @@
 // Virtual tables with external providers (lib/dataverse-virtual-providers.mjs): writes reach the provider and mirror its rows,
 // a failing or incomplete provider refuses the write, a table without a provider answers 501 unless it declares the local
-// fallback, reads query the provider, the validator and describe. Invented x_ schema and GUIDs only.
+// fallback, reads query the provider, the validator and describe.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, validateVirtualTableProviders } from "../lib/dataverse-virtual-providers.mjs";
@@ -107,8 +107,7 @@ test("a provider without the matching operation refuses the write with 501 and s
   assert.equal(diagnostics.filter((entry) => entry.code === "VIRTUAL_PROVIDER_OPERATION_MISSING").length, 1);
 });
 
-// Changed (Task 28): a providerless virtual table no longer stores writes locally with 201. Learn (custom-ve-data-providers):
-// a virtual table's rows come from its data provider, never from a local row; without one the write answers 501.
+// A virtual table's rows come from its data provider, never from a local row; without one the write answers 501.
 test("a virtual table without a provider refuses writes with 501 and reports VIRTUAL_PROVIDER_MISSING once", async (t) => {
   const { request, json, store, diagnostics } = await setup(t);
   await json(await request("POST", "/x_bares", { x_name: "Local one" }), 501);
@@ -126,7 +125,7 @@ test("api.virtualProviders.query returns the provider's rows and passes the quer
   assert.equal(rows.length, 1);
   assert.equal(rows[0].x_thingid, ROW);
   assert.deepEqual(provider.calls[0], ["retrieveMultiple", { select: null, filter: "x_value gt 0", orderby: null, top: 5 }]);
-  assert.equal(typeof api.virtualProviders.for("x_thing").retrieveMultiple, "function");
+  assert.equal(api.virtualProviders.for("x_thing").retrieveMultiple, provider.ops.retrieveMultiple);
   await assert.rejects(api.virtualProviders.query("x_bare", {}), { status: 501, code: "VirtualProviderMissing" });
   assert.equal(diagnostics.filter((entry) => entry.code === "VIRTUAL_PROVIDER_MISSING" && entry.table === "x_bare").length, 1);
 });
@@ -191,7 +190,7 @@ export default { id: "invented-virtual", name: "Invented virtual", description: 
     dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   ownedFixture(t).add(() => sim.close());
   const registered = await fetch(sim.url + "/_sim/api/dataverse/applications", { method: "POST",
-    headers: { "content-type": "application/json", "x-sim-csrf": sim.state().csrf },
+    headers: { "content-type": "application/json", "x-sim-csrf": sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: "Invented client", roles: ["System Administrator"] }) });
   assert.equal(registered.status, 201, await registered.clone().text());
   const { secret } = await registered.json();

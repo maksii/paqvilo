@@ -90,7 +90,7 @@ test('ordinary WOFF2 capture retains its strict MIME contract',async t=>{
   const {cache}=await fixture(t);
   const report=await cache.capturePublic(['/resource/powerappsportal/fonts/ordinary.woff2'],{recursive:false});
   assert.equal(report.captured.length,0);
-  assert.equal(report.failures.length,1);
+  assert.deepEqual(report.failures.map(failure=>failure.code),['ASSET_CONTENT_TYPE']);
   assert.equal(await cache.get('/resource/powerappsportal/fonts/ordinary.woff2'),null);
 });
 

@@ -286,7 +286,8 @@ test("the bootstrap report summarizes tables, grants, routing records and the /_
   await write(dir, { ...portalFiles, "web-files/app.js.webfile.yml": "adx_webfileid: app\nadx_name: app.js\nadx_partialurl: app.js\nadx_parentpageid: home", "web-files/app.js": "fetch('/_api/sample_itemrecords?$top=1'); fetch('/_api/missingsets'); fetch('/_api/cloudflow/v1.0/trigger/x');" });
   await write(solutions, { "Entities/sample_item/Entity.xml": entity("sample_itemrecords") });
   const report = await bootstrapReport({ label: "fixture", sourceDir: dir, solutionRoots: [solutions], order: "explicit", environmentVariables: {}, lcid: 1033 }, { noCache: true });
-  assert.equal(report.summary.tables >= 1, true);
+  assert.equal(report.summary.tables, 1);
+  assert.deepEqual(report.tables.map((table) => table.logicalName), ["sample_item"]);
   assert.deepEqual(report.apiOracle.map((entry) => [entry.entitySet, entry.status]), [["cloudflow", "non-table-endpoint"], ["missingsets", "unresolved"], ["sample_itemrecords", "resolved"]]);
   assert.equal(report.permissions.exported.enabled, 1);
   assert.equal(report.summary.redirects, 1);

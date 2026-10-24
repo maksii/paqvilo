@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent, bootstrapMarkup } from "../lib/platform.mjs";
 
-// Invented "gadget" table rendered by a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
-// contrast, a Bootstrap 3 site. Records, schema and store are local fixtures.
+// A "gadget" table rendered by a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
+// contrast, a Bootstrap 3 site.
 const ID = "b0000000-0000-4000-8000-000000000001";
 const CURRENCY = "c0000000-0000-4000-8000-000000000001";
 const record = {

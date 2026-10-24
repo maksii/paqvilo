@@ -1,6 +1,6 @@
 // A state file written without storage routing (inline file data, note documentbody, attachment body) migrates to the storage
 // provider once on load, is idempotent on the next load, reports one STORAGE_MIGRATED diagnostic with counts, and Web API reads
-// answer as before. Without a router the same file loads unchanged. Invented schema and GUIDs; loopback only.
+// answer as before. Without a router the same file loads unchanged.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

@@ -3,7 +3,7 @@ import { organizationRecord } from './organization-context.mjs';
 // table and column flags, the change history functions, the audit-only delete action, and the writers
 // other modules call: writeAudit (shares, role privileges and role assignments) and recordUserAccess.
 // Writes come from the store's committed events (portal and /_sim/ writes too) and from the
-// afterWrite hook for N:N association. Invented schema and GUIDs only.
+// afterWrite hook for N:N association.
 import { systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
@@ -25,7 +25,7 @@ const BASE_DETAIL = '#Microsoft.Dynamics.CRM.AuditDetail';
 const READ_PRIVILEGES = ['prvReadRecordAuditHistory', 'prvReadAuditSummary'];
 const DELETE_PRIVILEGE = 'prvDeleteRecordChangeHistory';
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
-const DEFAULT_COUNT = 5000; // Default page size of paged queries (Page results using QueryExpression: 5,000 rows).
+const DEFAULT_COUNT = 5000; // Default page size of paged queries.
 const DEFAULT_INTERVAL_HOURS = 4; // Organization.UserAccessAuditingInterval default.
 
 const AUDIT_MAPPING = {
@@ -54,12 +54,11 @@ const schemaOf = (api) => (typeof api.schema === 'function' ? api.schema() : api
 
 // Organization.IsAuditEnabled gates everything; a table and its columns are audited when their flags say so.
 const auditingOn = (store) => flag(organizationOf(store).isauditenabled);
-// The schema's tables are keyed by logical name (solution-schema.mjs buildSolutionSchema).
 function tableAudited(api, mapping) {
   const table = schemaOf(api)?.tables?.[mapping.logicalName];
   return flag(mapping.dataverseMetadata?.IsAuditEnabled ?? table?.isAuditEnabled);
 }
-// Exports keep the flag in columnMetadata; 1.18 reads dataverseMetadata. Absent everywhere means audited.
+// The flag comes from dataverseMetadata, columnMetadata or the field itself; absent everywhere means audited.
 function columnAudited(mapping, column) {
   const field = mapping.fields[column];
   const declared = field.dataverseMetadata?.IsAuditEnabled ?? field.columnMetadata?.isAuditEnabled ?? field.IsAuditEnabled;
@@ -67,7 +66,7 @@ function columnAudited(mapping, column) {
 }
 const auditable = (api, mapping) => mapping.logicalName !== 'audit' && auditingOn(api.store) && tableAudited(api, mapping);
 const auditedColumns = (mapping) => Object.keys(mapping.fields).filter((column) => columnAudited(mapping, column));
-// unverified: ColumnNumber is not in the exports; the field's position in the mapping stands in for it.
+// ColumnNumber is not in the exports; the field's position in the mapping stands in for it.
 const columnNumber = (mapping, column) => Object.keys(mapping.fields).indexOf(column) + 1;
 const isLookup = (mapping, column) => mapping.fields[column]?.dataverseType === 'lookup';
 const pick = (values, columns) => Object.fromEntries(columns.map((column) => [column, values?.[column] ?? null]));
@@ -122,11 +121,11 @@ function eventEntries(api, event, transactionId) {
   const mapping = api.store.state.mappings[event.entity];
   if (!mapping || !auditable(api, mapping) || !OPERATION[event.operation]) return [];
   const audited = auditedColumns(mapping);
+  // Assumption: create rows list every non-null audited column in attributemask.
   const changed = event.operation === 'create'
     ? audited.filter((column) => plain(event.row[column]) !== null)
     : event.operation === 'update' ? audited.filter((column) => !same(event.previous?.[column], event.row[column])) : [];
   if (event.operation === 'update' && changed.length === 0) return [];
-  // unverified: create rows list every non-null audited column in attributemask.
   const action = event.operation === 'delete' ? ACTION.delete
     : event.operation === 'create' ? ACTION.create
       : changed.includes('ownerid') ? ACTION.assign
@@ -159,7 +158,7 @@ async function afterWrite(api, c, mapping, { operation, id, relationship }) {
   try {
     const action = operation === 'associate' ? ACTION.associate : operation === 'disassociate' ? ACTION.disassociate : null;
     if (!action || !auditable(api, mapping)) return;
-    // unverified: Operation recorded for an association (Update assumed).
+    // Assumption: an association is recorded as Operation Update.
     const row = auditRow(api, { entity: mapping.logicalName, id, operation: OPERATION.update, action, identity: c.identity });
     await writeEntries(api.store, [{ row, detail: { relationship: relationship ?? null } }], { nested: true });
   } catch (error) {
@@ -168,8 +167,8 @@ async function afterWrite(api, c, mapping, { operation, id, relationship }) {
 }
 
 // Writer for the modules that change shares, role privileges or role assignments. Rows join the caller's open
-// transaction (nested), as afterWrite does, and a failure is logged, never thrown. operation defaults to Update.
-// unverified: the operation recorded for share and role changes is not in the reference; Update is assumed.
+// transaction (nested), as afterWrite does, and a failure is logged, never thrown.
+// Assumption: share and role changes are recorded as Operation Update (the reference does not say).
 export async function writeAudit(api, { entity, id, action, operation = OPERATION.update, mask = null, identity, detail = null }) {
   try {
     const mapping = api.store.state.mappings[entity];
@@ -183,7 +182,7 @@ export async function writeAudit(api, { entity, id, action, operation = OPERATIO
 
 // User access auditing: Organization.IsUserAccessAuditEnabled (with IsAuditEnabled) writes an Access row per user and
 // channel at most once per UserAccessAuditingInterval hours. channel: 'web' (64) or 'webServices' (65).
-// unverified: the object of a user access row is not in the reference; the user's systemuser record stands in for it.
+// Assumption: the object of a user access row is the user's systemuser record (the reference does not say).
 const lastAccess = new WeakMap();
 export async function recordUserAccess(api, identity = {}, channel = 'web') {
   const org = organizationOf(api.store);
@@ -214,7 +213,7 @@ function beforeWrite(c, mapping) {
   }
 }
 
-// unverified: element-level shape of OldValue/NewValue lookups (annotations below) is from the docs summary.
+// Assumption: the lookup annotations in OldValue/NewValue follow the documented summary, not a live capture.
 function entityValues(mapping, values) {
   const out = {};
   for (const [column, value] of Object.entries(values)) {
@@ -233,8 +232,8 @@ function entityValues(mapping, values) {
 }
 
 // Secured columns (api.fieldSecurity, from the FLS extension) read as null in audit values, as the platform masks them, and a
-// readable one with a masking rule reads masked (Learn create-manage-masking-rules: "Audit log shows masked values in the
-// before-and-after update events"). Every audited column stays present, so a hidden value is null rather than missing.
+// readable one with a masking rule reads masked, as the native audit log shows masked before and after values.
+// Every audited column stays present, so a hidden value is null rather than missing.
 function visibleValues(api, user, mapping, objectId, values) {
   if (!values || !api.fieldSecurity?.mask) return values;
   const masked = api.fieldSecurity.mask(user, mapping.logicalName, { [mapping.idColumn]: objectId, ...values }, { view: { unmask: false, single: false } }) ?? {};
@@ -248,7 +247,7 @@ function attributeDetail(api, user, mapping, detail, objectId) {
     '@odata.type': ATTRIBUTE_DETAIL,
     InvalidNewValueAttributes: [],
     LocLabelLanguageCode: 0,
-    DeletedAttributes: { Count: 0, Keys: [], Values: [] }, // unverified: populated only for deleted attributes
+    DeletedAttributes: { Count: 0, Keys: [], Values: [] }, // assumed populated only for deleted attributes
     OldValue: oldValues ? { '@odata.type': `#Microsoft.Dynamics.CRM.${mapping.logicalName}`, ...entityValues(mapping, oldValues) } : null,
     NewValue: newValues ? { '@odata.type': `#Microsoft.Dynamics.CRM.${mapping.logicalName}`, ...entityValues(mapping, newValues) } : null,
   };
@@ -265,7 +264,7 @@ function detailOf(api, user, row) {
 }
 
 // Target is an entity reference: { '@odata.id': 'widgets(<guid>)' } or the same string.
-// unverified: how the router delivers Target (alias object or string) and the body of the bound action.
+// Both forms are accepted because the router's delivery of Target (alias object or string) is not pinned down.
 function targetOf(store, value) {
   const text = typeof value === 'string' ? value : value?.['@odata.id'];
   const match = /^([^(]+)\((.+)\)$/.exec(String(text ?? ''));
@@ -274,7 +273,7 @@ function targetOf(store, value) {
   return { mapping, id: match[2] };
 }
 
-// unverified: newest-first ordering of the history collection.
+// Assumption: the history collection is ordered newest first.
 const historyOf = (store, entity, id) => rowsOf(store)
   .filter((row) => row.objecttypecode === entity && lower(plain(row.objectid)) === lower(id))
   .reverse()
@@ -288,8 +287,7 @@ function authorizeTarget(api, user, target) {
   if (row) api.principals.authorize({ user, entity: mapping.logicalName, operation: 'read', row, mapping });
 }
 
-// PagingCookie is opaque to callers: a base64url-encoded offset. The Web API returns a bare collection, so no
-// cookie is returned to the caller; a PagingCookie in the request is still honoured.
+// PagingCookie is opaque to callers: a base64url-encoded offset.
 const cookieOf = (offset) => Buffer.from(JSON.stringify({ offset })).toString('base64url');
 function offsetOf(info, count) {
   if (!info.PagingCookie) return Math.max(0, ((Number(info.PageNumber) || 1) - 1) * count);
@@ -305,7 +303,7 @@ function pageOf(params, rows, render) {
   const count = Number(info.Count) > 0 ? Number(info.Count) : DEFAULT_COUNT;
   const offset = offsetOf(info, count);
   const more = offset + count < rows.length;
-  // Native (parity capture): with no further page the cookie is an empty string, and the total is -1 unless the
+  // Native: with no further page the cookie is an empty string, and the total is -1 unless the
   // request sets PagingInfo.ReturnTotalRecordCount.
   return {
     MoreRecords: more,
@@ -322,7 +320,7 @@ function requirePrivileges(api, user, names, entity) {
 }
 
 // CSDL. The shared complex types are emitted once, by the first fragment that needs them (RetrieveRecordChangeHistory).
-// unverified: PagingInfo is also used by dataverse-duplicates.mjs (RetrieveDuplicates), which relies on this fragment.
+// PagingInfo is also used by dataverse-duplicates.mjs (RetrieveDuplicates), which relies on this fragment.
 const CSDL_RECORD_HISTORY = `<ComplexType Name="PagingInfo">
   <Property Name="Count" Type="Edm.Int32" />
   <Property Name="PageNumber" Type="Edm.Int32" />
@@ -387,7 +385,7 @@ const CSDL_DELETE_HISTORY = `<ComplexType Name="DeleteRecordChangeHistoryRespons
   <ReturnType Type="mscrm.DeleteRecordChangeHistoryResponse" Nullable="false" />
 </Action>`;
 
-// unverified: live capture for the element names below (Learn documents the operations, not their response types).
+// Assumption: the response type names below are not captured from a live $metadata.
 const CSDL_DELETE_AUDIT = `<ComplexType Name="DeleteAuditDataResponse" />
 <Action Name="DeleteAuditData">
   <Parameter Name="EndDate" Type="Edm.DateTimeOffset" Nullable="false" />
@@ -425,9 +423,8 @@ const CSDL_PARTITIONS = `<ComplexType Name="AuditPartitionDetail">
 <Function Name="RetrieveAuditPartitionList">
   <ReturnType Type="mscrm.RetrieveAuditPartitionListResponse" Nullable="false" />
 </Function>`;
-// unverified: the privilege DeleteAuditData checks. Learn does not name one; the audit delete privilege in the catalogue is used.
+// The privilege DeleteAuditData checks is not documented; the catalogue's audit delete privilege is a guess.
 const DELETE_AUDIT_PRIVILEGE = 'prvDeleteRecordChangeHistory';
-// unverified: one synthetic partition holds every audit row (the native list names the partitions by number, not id).
 
 function operations(api) {
   const { store } = api;
@@ -489,7 +486,7 @@ function operations(api) {
         requirePrivileges(api, c.user, [DELETE_AUDIT_PRIVILEGE], 'audit');
         const body = typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {});
         const end = Date.parse(body.EndDate);
-        if (body.EndDate == null || !Number.isFinite(end)) throw new DataError('EndDate is required and must be a date and time.', 400, 'InvalidRequest'); // unverified: message text
+        if (body.EndDate == null || !Number.isFinite(end)) throw new DataError('EndDate is required and must be a date and time.', 400, 'InvalidRequest'); // native message text not known
         await api.change(() => store.transact(() => {
           const rows = rowsOf(store), details = detailsOf(store);
           for (let i = rows.length - 1; i >= 0; i--) {
@@ -505,15 +502,15 @@ function operations(api) {
       name: 'GetAuditStorageDetails', kind: 'action', binding: 'unbound', csdl: CSDL_STORAGE,
       handle: async (c) => {
         requirePrivileges(api, c.user, READ_PRIVILEGES, 'audit');
-        // Synthetic facts: the JSON length of each audit row, grouped by the table it audits. unverified: live capture for the sizes.
+        // Synthetic facts: the JSON length of each audit row, grouped by the table it audits.
         const sizes = new Map([['organization', 0]]);
         for (const row of rowsOf(store)) {
           const key = row.objecttypecode ?? 'organization';
           sizes.set(key, (sizes.get(key) ?? 0) + JSON.stringify(row).length);
         }
         const keys = [...sizes.keys()];
-        // The answer is Completed at once: Mirage has no pending calculation. The Result wrapper follows Learn's example.
-        const details = { Count: keys.length, Keys: keys, Values: keys.map((key) => ({ SizeInBytes: sizes.get(key), ObjectTypeCode: 0 })) }; // unverified: ObjectTypeCode
+        // The answer is Completed at once: Mirage has no pending calculation. The Result wrapper follows the documented example.
+        const details = { Count: keys.length, Keys: keys, Values: keys.map((key) => ({ SizeInBytes: sizes.get(key), ObjectTypeCode: 0 })) }; // ObjectTypeCode 0 is a placeholder
         return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.GetAuditStorageDetailsResponse'), Result: { Status: 'Completed', AuditStorageDetails: details } } };
       },
     },
@@ -521,7 +518,7 @@ function operations(api) {
       name: 'RetrieveAuditPartitionList', kind: 'function', binding: 'unbound', csdl: CSDL_PARTITIONS,
       handle: async (c) => {
         requirePrivileges(api, c.user, READ_PRIVILEGES, 'audit');
-        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.RetrieveAuditPartitionListResponse'), AuditPartitionDetailCollection: [{ PartitionNumber: 1, StartDate: null, EndDate: null, Size: 0 }] } }; // unverified: the dates and size of the one partition
+        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.RetrieveAuditPartitionListResponse'), AuditPartitionDetailCollection: [{ PartitionNumber: 1, StartDate: null, EndDate: null, Size: 0 }] } }; // one synthetic partition; its dates and size are placeholders
       },
     },
   ];

@@ -15,7 +15,7 @@ import { authRoute, parseCookies, returnUrlParameter, safeReturnUrl } from "./au
 import { loginPath } from "./redirects.mjs";
 
 /**
- * The portal side of external sign-in (docs/sim-administration.md, "External sign-in").
+ * The portal side of external sign-in.
  *
  * The local adapter reproduces the portal's
  * provider form POSTs /Account/Login/ExternalLogin?returnUrl=... with
@@ -44,7 +44,7 @@ import { loginPath } from "./redirects.mjs";
  * private_key_jwt (TokenEndPointAuthenticatedMethod, PrivateKeyJwt/CertificateObject) and signs
  * in with the token response's id_token. It sends PKCE (S256), as the OWIN OpenID Connect
  * middleware the platform builds on does for the code flow (UsePkce, Katana 4.1); the platform's
- * own request was not observed. With UseUserInfoEndpointforClaims the access token reads the
+ * own request is not known. With UseUserInfoEndpointforClaims the access token reads the
  * UserInfo endpoint for userinfo.<claim> mappings; every UserInfo problem is a warning and
  * sign-in continues (Learn). Prompt, AcrValues and the ExternalLogin request's prompt,
  * login_hint and AllowedDynamicAuthorizationParameters reach the authorize request. The token

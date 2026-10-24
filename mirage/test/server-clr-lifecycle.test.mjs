@@ -16,8 +16,8 @@ test('CLR mode changes reuse owned hosts, close disabled hosts and preserve anot
  const pack={id:'invented-lifecycle',name:'Invented lifecycle',description:'Owned host lifecycle',matches:()=>true,presets:()=>({}),pluginRuntimes:{[pluginId(3)]:descriptor}};
  const make=()=>createSimulator({sourceDir:fixture.portal,solutionRoots:[fixture.solution],initial,watch:false,packs:[pack]});
  const first=await make();t.after(()=>first.close());const second=await make();t.after(()=>second.close());
- const configure=(app,body,method='PATCH')=>fetch(app.url+'/__sim/api/operations/'+encodeURIComponent(key),{method,headers:{'content-type':'application/json','x-sim-csrf':app.state().csrf},...(body?{body:JSON.stringify(body)}:{})});
- const write=app=>fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({fx_title:'Owned original'})});
+ const configure=(app,body,method='PATCH')=>fetch(app.url+'/__sim/api/operations/'+encodeURIComponent(key),{method,headers:{'content-type':'application/json','x-sim-csrf':app.csrf},...(body?{body:JSON.stringify(body)}:{})});
+ const write=app=>fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify({fx_title:'Owned original'})});
  for(const app of [first,second]){assert.equal((await configure(app,{mode:'clr'})).status,200);assert.equal((await write(app)).status,204);}
  const pids=clrHostPoolStatus().map(host=>host.pid).sort();assert.equal(pids.length,2);assert.notEqual(pids[0],pids[1]);
  assert.equal((await configure(first,{mode:'clr'})).status,200);assert.equal((await write(first)).status,204);assert.deepEqual(clrHostPoolStatus().map(host=>host.pid).sort(),pids,'Saving CLR twice reuses the prepared runtime');

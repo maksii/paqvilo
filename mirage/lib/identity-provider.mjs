@@ -6,12 +6,11 @@ import {chooserReport,chooserResults,chooserSearch,CHOOSER_PARAMETERS} from './p
 import {identityProviderSettings,newUserPolicy} from './identity-provider-settings.mjs';
 
 /**
- * Local identity provider for the portal's external sign-in (docs/sim-administration.md,
- * "External sign-in"). Each runtime starts one on its own loopback port, cross-origin to
- * the portal like an online provider. Per configured provider it serves, under the
- * provider's local authority http://<host>:<port>/<slug>/, the endpoints the portal uses
- * for external sign-in: the OpenID Connect discovery document, its signing keys, oauth2/authorize and oauth2/logout; and,
- * for the authorization code flow (Learn, "Set up an OpenID Connect provider"),
+ * Local identity provider for the portal's external sign-in. Each runtime starts one on its
+ * own loopback port, cross-origin to the portal like an online provider. Per configured
+ * provider it serves, under the provider's local authority http://<host>:<port>/<slug>/, the
+ * endpoints the portal uses for external sign-in: the OpenID Connect discovery document, its
+ * signing keys, oauth2/authorize and oauth2/logout; and, for the authorization code flow,
  * oauth2/token (client_secret_post or private_key_jwt, with PKCE) and openid/userinfo.
  *
  * The authorize page lists active local contacts. Its optional "New user" form follows
@@ -36,7 +35,7 @@ const TITLE = "Local identity provider (simulation)";
 const AUTHORIZE_FIELDS = ["client_id", "redirect_uri", "response_type", "scope", "state", "response_mode", "nonce", "ui_locales", "login_hint", "prompt", "acr_values", "code_challenge", "code_challenge_method"];
 /** Fields of the chooser's own forms. */
 const CHOOSER_FIELDS = new Set(["subject", "given_name", "family_name", "email", "phone_number", ...CHOOSER_PARAMETERS]);
-/** Response types the provider answers; Power Pages does not support code token (Learn). */
+/** Response types the provider answers; Power Pages does not support code token. */
 const RESPONSE_TYPES = ["code", "id_token", "code id_token", "id_token token", "code id_token token"];
 const PROMPTS = ["none", "login", "consent", "select_account", "create"];
 const CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -271,7 +270,7 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
     return entry && entry.provider === provider.slug ? entry.user : null;
   };
 
-  // ---- token endpoint: client authentication and the code grant ----
+  // ---- token endpoint: client authentication and the code grant
   /** The client's authentication at the token endpoint, as the provider registration expects; an error message or null. */
   function authenticateClient(provider, form) {
     const method = provider.tokenAuthMethod === "private_key_jwt" ? "private_key_jwt" : "client_secret_post";

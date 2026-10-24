@@ -1,11 +1,13 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions, observePageLifecycle, observeContextLifecycle } from '../acceptance-api.mjs';
 
-async function fixture(t) {
-  const server = http.createServer((req, res) => {
+// The stateless fixture server and the browser are shared; every test observes its own context.
+let server, browser, origin;
+before(async () => {
+  server = http.createServer((req, res) => {
     req.resume();
     if (req.url.startsWith('/pending') || req.url === '/__sim/events') return;
     if (req.url === '/reset') return req.socket.destroy();
@@ -18,11 +20,16 @@ async function fixture(t) {
     res.end('<p>invented lifecycle fixture</p>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const context = await browser.newContext();
+  origin = `http://127.0.0.1:${server.address().port}`;
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
+after(async () => {
+  await browser?.close();
+  server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+});
+
+async function fixture(t) {
+  const context = await browser.newContext(); t.after(() => context.close());
   const page = await context.newPage();
   return { origin, context, page };
 }

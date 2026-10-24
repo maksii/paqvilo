@@ -1,5 +1,5 @@
-// Tasks 63 and 67: a run cancelled while provider 1 is in flight never calls provider 2 and ends Cancelled; Terminate with
-// runStatus Cancelled ends the run Cancelled. Invented pack connector and flow ids.
+// A run cancelled while provider 1 is in flight never calls provider 2 and ends Cancelled; Terminate with
+// runStatus Cancelled ends the run Cancelled.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

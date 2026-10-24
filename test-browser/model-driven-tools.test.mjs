@@ -51,8 +51,9 @@ test('owned action bindings keep native results out of metadata and scope identi
   assert.equal(await other.evaluate(() => typeof window.__paqviloModelAction), 'undefined', 'the binding is not exposed to other tabs');
   assert.deepEqual(await page.evaluate(input => window.__paqviloModelAction({ ...input, token:'retired' }), input), { accepted: false, requestId: 'inspect' });
   assert.deepEqual(await page.evaluate(input => window.__paqviloModelAction({ ...input, requestId: 'invalid', action: 'navigation:open-list', params: { entity: 'PRIVATE INVALID INPUT' } }), input), { accepted: false, requestId: 'invalid', reason: 'invalid-input' });
+  const attached = page.waitForEvent('frameattached');
   await page.evaluate(() => { const frame = document.createElement('iframe'); frame.src = '/frame'; document.body.append(frame); });
-  const frame = page.frames().find(frame => frame !== page.mainFrame()); await frame.waitForLoadState();
+  const frame = await attached; await frame.waitForLoadState();
   assert.equal(await frame.evaluate(() => typeof window.__paqviloModelAction), 'undefined', 'child documents do not receive owned action bindings');
   const start = await page.evaluate(input => window.__paqviloModelIdentity(input), { token, requestId: 'start', objectId });
   assert.deepEqual(start, { accepted: true, requestId: 'start' });

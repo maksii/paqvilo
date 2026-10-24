@@ -1,5 +1,5 @@
 // The organization entries a flow connector calls with an explicit backend profile: store.recordPipeline
-// .fileContentInternal (file column upload and download) and .executeMessageInternal (a custom API action). Invented x_ data.
+// .fileContentInternal (file column upload and download) and .executeMessageInternal (a custom API action).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

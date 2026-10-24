@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import YAML from 'yaml';
 import { PortalModel } from '../lense/portal-model.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
@@ -40,8 +41,7 @@ test('blocked, inactive and disabled are explicit instead of disappearing from t
   const app = report.resources.find((item) => item.id === 'web-files/app.js');
   assert.equal(app.status, 'mapped');
   assert.equal(app.enabled, false);
-  assert.ok(report.totals.disabled >= 3);
-  assert.ok(report.totals.blocked >= 2);
+  assert.deepEqual(report.totals, { resources: 12, mapped: 9, blocked: 2, inactive: 1, deployment: 0, gaps: 0, disabled: 5 });
 });
 
 test('configured file and directory routes account for otherwise unregistered sources', (t) => {
@@ -146,4 +146,16 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
   assert.equal(run('--all', '--strict').status, 1);
   assert.equal(fs.existsSync(fx.file('.paqvilo')), false);
   assert.equal(run('--all', '--site', 'first').status, 1);
+});
+
+test('duplicate active page URLs warn once and inactive single-extension web files stay inactive in dotted source roots',t=>{
+  const fx=createFixture();t.after(fx.cleanup);
+  for(const id of ['a','b'])fx.write(`web-pages/${id}/${id}.webpage.yml`,`adx_webpageid: ${id}\nadx_name: Page ${id}\nadx_partialurl: same\nadx_parentpageid: ${HOME_ID}`);
+  let model=new PortalModel(fx.dir);assert.equal(model.warnings.filter(message=>message.includes('duplicate page URL')).length,1);
+  fx.write('web-pages/b/b.webpage.yml',fx.read('web-pages/b/b.webpage.yml')+'\nadx_statecode: 1');model=new PortalModel(fx.dir);assert.equal(model.warnings.filter(message=>message.includes('duplicate page URL')).length,0);
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo.inactive.audit.'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'web-files'));fs.mkdirSync(path.join(root,'web-pages'));
+  fs.writeFileSync(path.join(root,'website.yml'),'adx_websiteid: site\nadx_name: Invented');fs.writeFileSync(path.join(root,'web-pages/Home.webpage.yml'),'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /');
+  fs.writeFileSync(path.join(root,'web-files/a.css'),'body{}');fs.writeFileSync(path.join(root,'web-files/a.css.webfile.yml'),'adx_webfileid: css\nadx_name: a.css\nadx_partialurl: a.css\nadx_parentpageid: home\nstatecode: 1');
+  const config=path.join(root,'catalogue.yml');fs.writeFileSync(config,YAML.stringify({sourceRoot:root,sites:{sample:{source:'.',environments:{local:'http://127.0.0.1:8787'}}}}));
+  const result=spawnSync(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'audit','--strict','--json','--config',config],{encoding:'utf8',windowsHide:true,timeout:30000,env:Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')))}),report=JSON.parse(result.stdout);assert.equal(result.status,0,JSON.stringify(report));assert.equal(report.reports[0].resources.find(row=>row.relativePath==='web-files/a.css').status,'inactive');
 });

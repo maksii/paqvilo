@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
 
-// Invented compiled standard control: the same public lifecycle a PAC bundle exports.
+const chrome = sharedBrowser();
+
+// A compiled standard control: the same public lifecycle a PAC bundle exports.
 const bundle = `var InventedExports; InventedExports = { Input: class {
   init(context, notify, state, container) { window.lifecycle.push('init'); this.context=context; window.pcfContext=context; this.notify=notify;
     this.input=document.createElement('input'); this.input.setAttribute('aria-label','PCF value');
@@ -22,7 +23,7 @@ async function fixture(t) {
   const server = http.createServer(async (req, res) => {
     if (req.url === '/bundle.js') { scripts++; res.setHeader('content-type', 'text/javascript'); res.end(bundle); return; }
     if (req.url === '/registered.js' || req.url === '/namespace.js') { scripts++; res.setHeader('content-type', 'text/javascript'); res.end(bundle + (req.url === '/registered.js' ? ';ComponentFramework.registerControl("Invented.Input",InventedExports.Input);' : ';window.Invented={Input:InventedExports.Input};')); return; }
-    // Invented UMD stand-ins for project-supplied platform libraries and a virtual component bundle.
+    // UMD stand-ins for project-supplied platform libraries and a virtual component bundle.
     if (req.url === '/react.js') { res.setHeader('content-type', 'text/javascript'); res.end('window.React={createElement:(type,props)=>({type,props})};'); return; }
     if (req.url === '/reactdom.js') { res.setHeader('content-type', 'text/javascript'); res.end('window.ReactDOM={render(view,node){node.textContent="virtual:"+view.props.value;window.renders=(window.renders||0)+1;},unmountComponentAtNode(node){node.textContent="";window.unmounts=(window.unmounts||0)+1;}};'); return; }
     if (req.url === '/virtual.js') { res.setHeader('content-type', 'text/javascript'); res.end('ComponentFramework.registerControl("Invented.Virtual",class{init(context,notify,state,container){window.virtualInit=arguments.length;}updateView(context){window.virtualSettings=context.userSettings;return React.createElement("span",{value:context.parameters.value.raw});}destroy(){}});'); return; }
@@ -35,8 +36,7 @@ async function fixture(t) {
     res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html><head></head><body><main></main></body></html>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const page = await chrome.page(t); const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.evaluate(async () => {
     window.lifecycle = []; window.changes = 0;
@@ -109,7 +109,7 @@ test('namespace and registerControl compiled exports use the same bounded standa
 
 test('PCF unsupported features, property types, missing bindings and incompatible columns fail before code runs', async t => {
   const { page, errors, scriptCount } = await fixture(t);
-  for (const kind of ['feature', 'type', 'required', 'column']) {
+  for (const [kind, reason] of [['feature', /host features that are not implemented locally: Device\.captureImage/], ['type', /Lookup\.Simple/], ['required', /required PCF property missing has no exported binding/], ['column', /incompatible with column x_name/]]) {
     await page.evaluate(async kind => {
       document.querySelector('main').replaceChildren();
       const definition = structuredClone(extensions.pcf.controls[0]);
@@ -120,8 +120,8 @@ test('PCF unsupported features, property types, missing bindings and incompatibl
       control = render(currentField, 'Initial', { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
       document.querySelector('main').append(control.element); await control.ready;
     }, kind);
-    assert.equal(await page.evaluate(() => control.supported), false);
-    assert.ok((await page.locator('main').innerText()).length > 10);
+    assert.equal(await page.evaluate(() => control.supported), false, kind);
+    assert.match(await page.locator('main').innerText(), reason);
   }
   assert.equal(scriptCount(), 0); assert.deepEqual(errors, []);
 });
@@ -227,8 +227,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   await fs.writeFile(formFile, xml);
   const sim = await source.start({ modelDriven: { trustedExtensions: true } }); t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const page = await chrome.page(t); const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${origin}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`);
   await page.getByLabel('PCF value').waitFor();
   assert.equal(await page.getByLabel('PCF value').inputValue(), 'Copper');

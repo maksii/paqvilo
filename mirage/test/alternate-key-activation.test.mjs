@@ -1,4 +1,4 @@
-// Alternate key index jobs (Learn define-alternate-keys-entity#monitor-index-creation-for-alternate-keys).
+// Alternate key index jobs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

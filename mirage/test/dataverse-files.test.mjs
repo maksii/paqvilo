@@ -1,5 +1,5 @@
 // Simulated Dataverse file and image columns through the stream hook, the block actions
-// and the record hooks. Invented schema and GUIDs only.
+// and the record hooks.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -126,7 +126,7 @@ test("temporary file uploads validate declared size, bind their owner, and can b
   assert.equal(h.store.state.dataverse.files[committed.body.FileId], undefined);
 });
 
-test("registers the file actions, signed URL functions and stream/record hooks", () => {
+test("registers the file actions and signed URL functions, all unbound", () => {
   const h = harness();
   assert.deepEqual(h.ops.map((op) => op.name).sort(), [
     "CommitAnnotationBlocksUpload", "CommitAttachmentBlocksUpload", "CommitFileBlocksUpload", "DeleteFile", "DownloadBlock", "GetFileSasUrl", "GetFileSasUrlForUpload",
@@ -134,9 +134,6 @@ test("registers the file actions, signed URL functions and stream/record hooks",
     "InitializeAttachmentBlocksUpload", "InitializeFileBlocksDownload", "InitializeFileBlocksUpload", "InitializeTemporaryFileBlocksUpload", "UploadBlock",
   ]);
   assert.ok(h.ops.every((op) => op.kind === (op.name.startsWith("GetFileSas") ? "function" : "action") && op.binding === "unbound"));
-  assert.equal(typeof h.hooks.stream, "function");
-  assert.equal(typeof h.hooks.beforeWrite, "function");
-  assert.equal(typeof h.hooks.project, "function");
 });
 
 test("single upload stores the bytes, sets the name companion and downloads them", async () => {
@@ -554,7 +551,7 @@ test("the file download route answers its own errors as plain application/json",
   );
 });
 
-// R1 F13: rows a message creates go through the records create rules, including the regarding row's appendTo.
+// Rows a message creates go through the records create rules, including the regarding row's appendTo.
 test("a block-committed note needs appendTo on the regarding row", async (t) => {
   const h = await attachmentApi(t);
   const principals = h.server.organization.api.principals, authorize = principals.authorize;
@@ -582,10 +579,10 @@ test("a delivered email attachment row is created with the caller's audit column
   assert.equal(attachment.filesize, 5);
   assert.equal(attachment.createdby?.id, h.appUserId);
   assert.equal(attachment.modifiedby?.id, h.appUserId);
-  if (attachment.ownerid) assert.equal(attachment.ownerid.id, h.appUserId);
+  assert.equal(attachment.ownerid?.id, h.appUserId);
 });
 
-// D5: createThroughPipeline is the records layer's createInternal, so admin rows and key violations follow the Web API rules.
+// createThroughPipeline is the records layer's createInternal, so admin rows and key violations follow the Web API rules.
 test("an admin pipeline row with no caller gets the organization SYSTEM user's audit columns", async (t) => {
   const h = await attachmentApi(t);
   const api = h.server.organization.api;

@@ -1,4 +1,3 @@
-// ZIP and persistence transport tests use invented package names and bytes. No filesystem extraction or network access.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";

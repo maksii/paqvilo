@@ -14,11 +14,13 @@ test('Lense picker searches 500 personas, combines facets and opens a catalogue 
   const identityUpdate=await fixture.call('/personas/select','POST',{contactId:contactId(499)});assert.equal(identityUpdate.response.status,200,JSON.stringify(identityUpdate.value));
   const browser=await chromium.launch(browserLaunchOptions({headless:true})),context=await browser.newContext({viewport:{width:1400,height:1000}});
   const session=new OverlaySession({sourceDir,origin:app.url,site:structuredClone(SITE),sourceMaps:false,siteName:'Synthetic catalogue',envName:'local',stateDir:fixture.root,browser:{},mirage:true,mirageSourceRoots:[sourceDir]});
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+  const page=await context.newPage(),errors=[];
   const detach=await attachSession(context,session),panel=enablePanel(context,session,{open:async()=>null});
   ownedFixture(t).add(async () => { await panel.dispose(); });
   ownedFixture(t).add(async () => { await detach(); });
   ownedFixture(t).add(async () => { await browser.close(); });
-  const page=await context.newPage(),errors=[];page.on('pageerror',e=>{errors.push(e.message);t.diagnostic(e.message);});await page.goto(app.url);
+  page.on('pageerror',e=>{errors.push(e.message);t.diagnostic(e.message);});await page.goto(app.url);
   const root=page.locator('#paqvilo-panel');await root.locator('.pill').click();await root.locator('[data-act="tab"][data-v="tweaks"]').click();
   await root.locator('[data-panel-persona-count]').filter({hasText:'of 500 personas'}).waitFor();assert.ok(await root.locator('[data-panel-persona-row]').count()<100);
   const defaultSection=root.locator('[data-panel-persona-results]>section').first();assert.equal(await defaultSection.locator('[data-contact]').first().getAttribute('data-contact'),contactId(499));

@@ -1,6 +1,6 @@
 // SDK verification gate: tedious 20.3.8 against the Mirage Dataverse TDS endpoint.
 // Access-token login (FEDAUTH), then real SQL batches: TOP, JOIN, GROUP BY, UNION, security trimming and the read-only refusal.
-// Invented tables and users, loopback only. Opt-in (`npm test` in this folder or `npm run test:sdk`); never part of `npm run validate`.
+// Opt-in (`npm test` in this folder or `npm run test:sdk`); never part of `npm run validate`.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore } from "../../lib/data.mjs";

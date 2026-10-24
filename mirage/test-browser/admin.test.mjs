@@ -1,4 +1,3 @@
-// Admin acceptance uses a disposable loopback API; no portal or environment requests.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -66,7 +65,7 @@ test(
           const url = new URL(req.url, "http://127.0.0.1");
           if (
             url.pathname === "/__sim/" ||
-            // Admin assets by pattern, as both hosts serve them (D1); the two shared lib modules by name.
+            // Admin assets by pattern, as both hosts serve them; the two shared lib modules by name.
             (/^\/__sim\/[a-z0-9-]+\.(?:mjs|css)$/.test(url.pathname) &&
               fs.existsSync(new URL(`../${["persona-search.mjs","persona-picker-view.mjs"].includes(url.pathname.split("/").at(-1))?"lib":"admin"}/${url.pathname.split("/").at(-1)}`, import.meta.url)))
           ) {
@@ -577,7 +576,7 @@ test(
           item.body.cdpUrl === "http://127.0.0.1:9222",
       ),
     );
-    // Capture forms are collapsed task tools (RA-20).
+    // Capture forms are collapsed task tools.
     await page.locator('[data-disclosure="shell-capture"] > summary').click();
     await page
       .getByLabel("Portal page path", { exact: true })

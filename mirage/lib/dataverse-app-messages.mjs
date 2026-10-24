@@ -1,7 +1,6 @@
 // Simulated Dataverse model-driven app and report messages: RetrieveAppComponents, ValidateApp, RemoveAppComponents,
-// DownloadReportDefinition, GetReportHistoryLimit and SetReportRelated. Contracts: the Web API reference pages for each message
-// (read 2026-10-20). Invented data only. Report rendering is not simulated: DownloadReportDefinition returns the stored
-// definition text, and nothing runs a report.
+// DownloadReportDefinition, GetReportHistoryLimit and SetReportRelated. Report rendering is not simulated:
+// DownloadReportDefinition returns the stored definition text, and nothing runs a report.
 import { DataError } from "./data-error.mjs";
 import { componentsOf } from "./dataverse-solution-messages.mjs";
 import { privilegeDeniedError, privilegeName, uuidV5 } from "./dataverse-security.mjs";
@@ -56,13 +55,12 @@ function operations(api) {
       name: "AddAppComponents", kind: "action", binding: "unbound",
       signature: { params: [["AppId", "Edm.Guid"], ["Components", "Collection(mscrm.crmbaseentity)"]] },
       async handle(c) {
-        // https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/addappcomponents
         need(c, "appmodule", "Write");
         const args = argsOf(c), app = appOf(idOf(args.AppId));
         if (!Array.isArray(args.Components)) throw invalid("Components must be a collection.");
         const sourceTypes = { savedquery: 26, workflow: 29, systemform: 60, sitemap: 62 };
         // Validate every source before changing membership. The ids/type codes are platform solution component codes.
-        // unverified: the native validation errors and duplicate-add behavior (local membership is idempotent).
+        // The native validation errors and duplicate-add behavior are not known; local membership is idempotent.
         const selected = args.Components.map((entry) => {
           if (!entry || typeof entry !== "object") throw invalid("Each component must be an entity reference.");
           const logical = String(entry["@odata.type"] ?? "").replace(/^#?Microsoft\.Dynamics\.CRM\./, "");
@@ -100,7 +98,7 @@ function operations(api) {
     {
       name: "RetrieveAppComponents", kind: "function", binding: "unbound",
       signature: { params: [["AppModuleId", "Edm.Guid"]], returns: "Collection(mscrm.crmbaseentity)" },
-      // Learn: returns the components of an app. unverified: live capture (each component is returned as its appmodulecomponent row).
+      // Each component is returned as its appmodulecomponent row (a guess at the native shape).
       handle: (c) => {
         need(c, "appmodule", "Read");
         const app = appOf(idOf(argsOf(c).AppModuleId));
@@ -115,8 +113,7 @@ function operations(api) {
 <ComplexType Name="AppValidationResponse"><Property Name="ValidationSuccess" Type="Edm.Boolean" /><Property Name="ValidationIssueList" Type="Collection(mscrm.ValidationIssue)" /></ComplexType>
 <ComplexType Name="ValidateAppResponse"><Property Name="AppValidationResponse" Type="mscrm.AppValidationResponse" /></ComplexType>
 <Function Name="ValidateApp"><Parameter Name="AppModuleId" Type="Edm.Guid" Nullable="false" /><ReturnType Type="mscrm.ValidateAppResponse" Nullable="false" /></Function>`,
-      // Learn: validates an app. ponytail: no component checks are modelled, so an app with components validates clean. unverified:
-      // live capture (ValidationIssueList is empty for every app).
+      // ponytail: no component checks are modelled, so every app validates clean with an empty ValidationIssueList.
       handle: (c) => {
         need(c, "appmodule", "Read");
         const appId = idOf(argsOf(c).AppModuleId);
@@ -127,7 +124,7 @@ function operations(api) {
     {
       name: "RemoveAppComponents", kind: "action", binding: "unbound",
       signature: { params: [["AppId", "Edm.Guid"], ["Components", "Collection(mscrm.crmbaseentity)"]] },
-      // Removes the components named (by appmodulecomponentid or objectid) from the app. unverified: live capture (the match key).
+      // Removes the components named (by appmodulecomponentid or objectid) from the app. The native match key is a guess.
       handle: async (c) => {
         need(c, "appmodule", "Write");
         const args = argsOf(c);
@@ -152,7 +149,6 @@ function operations(api) {
     {
       name: "DownloadReportDefinition", kind: "function", binding: "entity", entity: "report",
       signature: { response: [["BodyText", "Edm.String"]] },
-      // Learn: returns the report definition (BodyText). Rendering is not simulated.
       handle: (c) => {
         need(c, "report", "Read");
         const row = reportOf(c);
@@ -162,7 +158,7 @@ function operations(api) {
     {
       name: "GetReportHistoryLimit", kind: "function", binding: "entity", entity: "report",
       signature: { response: [["HistoryLimit", "Edm.Int32"]] },
-      // unverified: live capture (the limit is a fixed stand-in of 0; no snapshot history is kept).
+      // A fixed stand-in of 0: no snapshot history is kept.
       handle: (c) => {
         need(c, "report", "Read");
         reportOf(c);
@@ -172,8 +168,7 @@ function operations(api) {
     {
       name: "SetReportRelated", kind: "action", binding: "unbound",
       signature: { params: [["ReportId", "Edm.Guid"], ["Entities", "Collection(Edm.Int32)"], ["Categories", "Collection(Edm.Int32)"], ["Visibility", "Collection(Edm.Int32)"]] },
-      // Learn: links a report to related entities, categories and visibility codes. Categories replace the report's category
-      // rows (reportcategory_categorycode 1 to 4; unverified: live capture). Entities and Visibility are checked but not stored:
+      // Categories replace the report's category rows (reportcategory_categorycode 1 to 4). Entities and Visibility are checked but not stored:
       // reportentity and reportvisibility are absent natively.
       handle: async (c) => {
         need(c, "report", "Write");

@@ -59,10 +59,10 @@ export default {
 
 Call `configure({ app: '<name>' })` before the first call. Use the same host name (`localhost` or `127.0.0.1`) for the dev server and Mirage, so the browser sends the staff-session cookie.
 
-## Unverified
+## Limits
 
-- The wire protocol between `@microsoft/power-apps` and the player (postMessage or HTTP), and what the `pa app run` host on port 8080 serves.
-- The rest of the library surface. The generated service files call internal client APIs, so they are not drop-in compatible with the shim. Code that runs against Mirage calls `dataClient` instead.
-- The exact `connectionReferences` entry shape and the `IGetAllOptions` names. The shim maps `select`, `filter`, `orderBy`, `top` and `skipToken` to OData options.
+- Mirage does not reproduce the player's own wire protocol with `@microsoft/power-apps`, or the `pa app run` host on port 8080.
+- Only the client surface above is shimmed. The generated service files call internal client APIs, so they are not drop-in compatible with the shim; code that runs against Mirage calls `dataClient` instead.
+- The shim maps the `select`, `filter`, `orderBy`, `top` and `skipToken` options to OData query options.
 
-Sources: [overview](https://learn.microsoft.com/power-apps/developer/code-apps/overview), [architecture](https://learn.microsoft.com/power-apps/developer/code-apps/architecture), [get context](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/retrieve-context), [connect to Dataverse](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/connect-to-dataverse), [create an app](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch), [CLI](https://learn.microsoft.com/power-apps/developer/code-apps/reference/cli), [pac code](https://learn.microsoft.com/power-platform/developer/cli/reference/code).
+Microsoft documentation: [overview](https://learn.microsoft.com/power-apps/developer/code-apps/overview), [architecture](https://learn.microsoft.com/power-apps/developer/code-apps/architecture), [get context](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/retrieve-context), [connect to Dataverse](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/connect-to-dataverse), [create an app](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch), [CLI](https://learn.microsoft.com/power-apps/developer/code-apps/reference/cli), [pac code](https://learn.microsoft.com/power-platform/developer/cli/reference/code).

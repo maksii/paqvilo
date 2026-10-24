@@ -1,6 +1,6 @@
 // AI Builder, AI function, Copilot and process-mining messages (lib/dataverse-addon-ai.mjs) over HTTP: every message is in
-// $metadata, the default errors, the capability probes, the feedback-loop row and a trusted pack override. Invented model rows
-// and loopback only; the message and table names are the platform's.
+// $metadata, the default errors, the capability probes, the feedback-loop row and a trusted pack override. The message and
+// table names are the platform's.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -126,12 +126,12 @@ describe("AI add-on messages over HTTP", () => {
     assert.equal(rows[0].msdyn_name, "Invented input");
   });
 
-  it("AIModelPublish (internal-only) answers 501 0x80040216 by default", async () => {
-    const response = await plain.call("AIModelPublish", {
-      body: { ModelId: MODEL, RunConfigurationId: MODEL, ModelName: "Invented", RunConfiguration: "{}", TemplateId: MODEL, CustomConfiguration: "{}" },
-    });
+  it("AIModelPublish (internal-only) answers 501 0x80040216 by default and 204 from a pack handler", async () => {
+    const body = { ModelId: MODEL, RunConfigurationId: MODEL, ModelName: "Invented", RunConfiguration: "{}", TemplateId: MODEL, CustomConfiguration: "{}" };
+    const response = await plain.call("AIModelPublish", { body });
     assert.equal(response.status, 501);
     assert.equal(response.body.error.code, "0x80040216");
+    assert.equal((await withPack.call("AIModelPublish", { body })).status, 204);
   });
 
   it("feedback loop requires model append-to and feedback create privileges", async () => {

@@ -80,8 +80,10 @@ function git(cwd, ...args) {
 }
 
 export function createFixture() {
-  // realpath: os.tmpdir() can be an 8.3 short path on Windows
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-test-')));
+  // realpath: os.tmpdir() can be an 8.3 short path on Windows. The repository gets a parent folder of its own:
+  // Solution root discovery scans the repository's siblings, which would otherwise be every other folder in the temp folder.
+  const container = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-test-')));
+  const dir = path.join(container, path.basename(container));
   for (const [rel, content] of Object.entries(FILES)) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -103,7 +105,7 @@ export function createFixture() {
       git(dir, 'add', '-A');
       git(dir, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-q', '-m', 'more');
     },
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
+    cleanup: () => fs.rmSync(container, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
   };
 }
 

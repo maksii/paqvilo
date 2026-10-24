@@ -1,4 +1,4 @@
-// One capability registry (ARCH decision 4): every organization module, host surface, provider, service fixture,
+// One capability registry: every organization module, host surface, provider, service fixture,
 // operation and inventory component is one normalised record with a fidelity level. Consumers: runtime status
 // (summary()), `mirage preflight` / GET /_sim/api/preflight (capability-report.mjs) and strict acceptance
 // (assertExecutable()). Records never carry configuration values, only names, levels and prerequisites.
@@ -10,7 +10,7 @@ export const CAPABILITY_LEVELS = Object.freeze(['inventory', 'contract', 'behavi
 export const CAPABILITY_KINDS = Object.freeze(['organization-module', 'host-surface', 'operation', 'provider', 'identity', 'service', 'inventory']);
 const LEVEL_ALIASES = Object.freeze({ disabled: 'inventory', placeholder: 'inventory', fixture: 'contract', mock: 'contract' });
 const KIND_ALIASES = Object.freeze({ 'dataverse-extension': 'organization-module' });
-// operation-catalogue / plugin-catalogue `mode` → level (ARCH 2.4).
+// operation-catalogue / plugin-catalogue `mode` → level.
 const MODE_LEVELS = Object.freeze({ placeholder: 'inventory', disabled: 'inventory', mock: 'contract', exported: 'behaviour', handler: 'behaviour', clr: 'behaviour', webhook: 'behaviour' });
 // Optional record fields kept by the normaliser; everything else (functions, fidelity notes, settings) is dropped.
 const KEPT = ['principal', 'stateOwner', 'lifecycle', 'seams', 'reason', 'mode', 'enabled', 'source', 'providerKind', 'component', 'required'];

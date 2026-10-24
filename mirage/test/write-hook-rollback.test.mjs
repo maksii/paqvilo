@@ -1,6 +1,6 @@
 // A Web API write runs its record hooks inside its own transaction. A real-time classic workflow handler may change any
 // row directly, so a throw must roll its edits back and a success must persist them, in memory and in a journal-format
-// state file. The platform rows the hooks write (workflowlog, N:N audit) are journaled. Invented schema and GUIDs only.
+// state file. The platform rows the hooks write (workflowlog, N:N audit) are journaled.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

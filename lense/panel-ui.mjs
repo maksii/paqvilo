@@ -387,7 +387,7 @@ export function panelUi(data) {
     const $ = (sel) => root.querySelector(sel);
     const wrap = $('.wrap');
 
-    // ------------------------------------------------------------------------------ the portal's look
+    // ---- the portal's look
     /**
      * Font, colours and corner radius as the portal's own stylesheet gives them to ordinary
      * elements (a link, a primary button, an input, the alerts), so the panel looks like a part
@@ -477,7 +477,7 @@ export function panelUi(data) {
       for(const button of el.panel.querySelectorAll('[data-act]')){const busy=S.pendingActions.has(button.dataset.act)||mutating&&mutationActions.has(button.dataset.act);if(busy){if(!button.hasAttribute('data-paqvilo-busy'))button.dataset.paqviloBusy=String(button.disabled);button.disabled=true;button.setAttribute('aria-busy','true');}else if(button.hasAttribute('data-paqvilo-busy')){button.disabled=button.dataset.paqviloBusy==='true';delete button.dataset.paqviloBusy;button.removeAttribute('aria-busy');}}
     };
 
-    // ------------------------------------------------------------------------------ feedback
+    // ---- feedback
     let toastTimer = 0;
     const toast = (text, bad = false) => {
       el.toast.textContent = text;
@@ -498,7 +498,7 @@ export function panelUi(data) {
       saveTimer = setTimeout(() => S.d && api('ui', S.ui), 250);
     };
 
-    // ------------------------------------------------------------------------------ placement
+    // ---- placement
     const place = () => {
       const pos = S.ui.open ? S.ui.pos : (S.pillPos ??= {h:'left',v:'bottom',dx:12,dy:12});
       const vw = document.documentElement.clientWidth || window.innerWidth;
@@ -602,7 +602,7 @@ export function panelUi(data) {
     window.addEventListener('scroll', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
     window.addEventListener('scrollend', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
 
-    // ------------------------------------------------------------------------------ pieces
+    // ---- pieces
     const chips = (it) => {
       const env = esc(S.d.env);
       let out = '';
@@ -690,7 +690,7 @@ export function panelUi(data) {
       return out + lists;
     };
 
-    // ------------------------------------------------------------------------------ Mirage: Inspect and Tweaks
+    // ---- Mirage: Inspect and Tweaks
     const FORM_MODE = { 100000000: 'insert', 100000001: 'edit', 100000002: 'read only' };
     const PERMISSION_CHIPS = [['read', 'R'], ['create', 'C'], ['update', 'U'], ['delete', 'D']];
     const RUNTIME_LIMIT = 80;
@@ -1080,7 +1080,7 @@ export function panelUi(data) {
       return head + `<div class="difft">${lines}</div>${f.truncated ? '<div class="empty">The comparison is long; only its beginning is shown.</div>' : ''}`;
     };
 
-    // ------------------------------------------------------------------------------ render
+    // ---- render
     const set = (key, node, html) => {
       if (S.html[key] === html) return false;
       S.html[key] = html;
@@ -1191,7 +1191,7 @@ export function panelUi(data) {
       );
     };
 
-    // ------------------------------------------------------------------------------ actions
+    // ---- actions
     const copy = async (text, what) => {
       try {
         await navigator.clipboard.writeText(text);

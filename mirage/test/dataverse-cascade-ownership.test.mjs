@@ -1,6 +1,5 @@
 // Cascade Assign writes the child's ownership columns through the direct Assign pipeline (dataverse-cascade.mjs
-// ownershipOptions -> principals.systemColumns). Learn (power-apps/developer/data-platform/configure-entity-relationship-
-// cascading-behavior): Assign gives the related rows the referenced row's new owner. Invented x_ tables and GUIDs only.
+// ownershipOptions -> principals.systemColumns): Assign gives the related rows the referenced row's new owner.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION } from "../lib/dataverse-cascade.mjs";
@@ -50,7 +49,7 @@ test("a cascaded Assign to a team sets the child's owningteam and clears owningu
   assert.equal(child().owningbusinessunit?.id, bu);
 });
 
-// RC4b-08: the synchronous drive. A plug-in's own SDK call (local-organization-service.mjs, sync: true) that assigns the
+// The synchronous drive: a plug-in's own SDK call (local-organization-service.mjs, sync: true) that assigns the
 // parent to a team cascades on the same synchronous call: the child carries the team ownership when the call returns.
 test("a cascaded Assign to a team through a synchronous SDK call sets the child's ownership before the call returns", async (t) => {
   const { store, bu, child } = await setup(t);

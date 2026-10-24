@@ -49,10 +49,9 @@ const comparablePath = (value) => String(value ?? "").replace(/\/(?=\?|$)/, "");
 /**
  * How far the runner's record of a request (its Node-side Playwright event) may trail the
  * browser's send (CDP requestWillBeSent wallTime). The in-process runtime delays that event:
- * across 1328 XHR/fetch requests of saved acceptance evidence (batches 9-11) the lag was
- * 19 ms median, 395 ms p90, 1567 ms p99 and 1625 ms at most. The event never precedes the
- * send beyond clock granularity. The bound keeps about three times the observed maximum; a
- * read stays unbound when two aborted copies fall inside it.
+ * the measured lag was 19 ms median, 395 ms p90, 1567 ms p99 and 1625 ms at most. The event
+ * never precedes the send beyond clock granularity. The bound keeps about three times the
+ * observed maximum; a read stays unbound when two aborted copies fall inside it.
  */
 export const REQUEST_EVENT_LAG = Object.freeze({ beforeMs: 100, afterMs: 5000 });
 

@@ -1,5 +1,5 @@
-// Task 64: the Response answers the caller, the run's outcome is its own. A Response 200 followed by a connector 500 leaves the
-// caller with 200 and the run Failed. Invented pack connector and flow id.
+// The Response answers the caller, the run's outcome is its own. A Response 200 followed by a connector 500 leaves the
+// caller with 200 and the run Failed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -25,15 +25,10 @@ const definition = operation => ({ triggers: http, actions: {
   after: { type: 'OpenApiConnection', runAfter: { reply: ['Succeeded'] }, inputs: { host: { apiId: '/providers/Microsoft.PowerApps/apis/x_api', operationId: operation }, parameters: {} } },
 } });
 
-test('a Response 200 then a connector 500: the caller got 200 and the run is Failed', async t => {
-  const { runs, start } = await unit(t, definition('Fail'));
-  assert.deepEqual(await start(), { status: 200, body: 'accepted' });
-  const [run] = runs.list();
-  assert.equal(run.status, 'Failed');
-});
-
-test('a Response 200 then a succeeding connector: the run is Succeeded', async t => {
-  const { runs, start } = await unit(t, definition('Ok'));
-  assert.deepEqual(await start(), { status: 200, body: 'accepted' });
-  assert.equal(runs.list()[0].status, 'Succeeded');
-});
+for (const [operation, connector, outcome] of [['Fail', 'a connector 500', 'Failed'], ['Ok', 'a succeeding connector', 'Succeeded']]) {
+  test(`a Response 200 then ${connector}: the caller got 200 and the run is ${outcome}`, async t => {
+    const { runs, start } = await unit(t, definition(operation));
+    assert.deepEqual(await start(), { status: 200, body: 'accepted' });
+    assert.deepEqual(runs.list().map(run => run.status), [outcome]);
+  });
+}

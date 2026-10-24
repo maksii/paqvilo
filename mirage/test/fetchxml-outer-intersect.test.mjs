@@ -44,6 +44,6 @@ test('structural endpoint projections do not expose arbitrary intersection colum
   const store=new DataStore({state:data});
   const xml='<fetch><entity name="child"><attribute name="childid"/><link-entity name="edge" from="childid" to="childid" link-type="outer" alias="MO"><attribute name="privatevalue"/></link-entity></entity></fetch>';
   const result=store.fetchXml(xml,{roles:['reader']});
-  assert.ok(result.entities.every(row=>row['MO.privatevalue']==null));
+  assert.deepEqual(result.entities.map(row=>[row.childid,row['MO.privatevalue']??null]),[['c1',null],['c2',null]]);
   assert.deepEqual(store.rows('edge',{roles:['reader']}),[]);
 });

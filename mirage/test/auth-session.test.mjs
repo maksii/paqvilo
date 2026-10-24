@@ -312,7 +312,7 @@ test("portal requests are anonymous without a session cookie, whoever the client
 });
 
 test("the sign-in page renders in the site shell; sign-in validates personas and return URLs; sign-out ends the session", async (t) => {
-  const { app, browser, signIn, csrf } = await simulator(t);
+  const { browser, signIn, csrf } = await simulator(t);
   const hop = await browser("/en-US/signin?ReturnUrl=%2Fmembers%2F");
   assert.equal(hop.status, 302);
   assert.equal(hop.headers.get("location"), "/signin?ReturnUrl=%2Fmembers%2F");
@@ -409,7 +409,6 @@ test("the sign-in page renders in the site shell; sign-in validates personas and
     assert.equal(anonymous.headers.get("location"), "/signin?ReturnUrl=%2FAccount%2FLogin%2FLogOff");
     assert.equal(anonymous.headers.get("set-cookie"), null);
   }
-  assert.ok(app.url);
 });
 
 test("the session API signs the calling browser in and out (CSRF-protected) with optional role overrides", async (t) => {

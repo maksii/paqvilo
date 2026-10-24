@@ -177,7 +177,7 @@ export function featureExtAck(features = []) {
   return Buffer.concat(parts);
 }
 
-// InfoDataOffset counts from the CountOfInfoIDs field. The spike verified this against tedious 20.3.8.
+// InfoDataOffset counts from the CountOfInfoIDs field, as the tedious client reads it.
 export function fedAuthInfo({ stsUrl, spn }) {
   const items = [
     [FEDAUTHINFO_STSURL, Buffer.from(String(stsUrl), 'utf16le')],

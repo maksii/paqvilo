@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,6 +8,10 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import http from 'node:http';
 import { ownedFixture } from "../testing/owned-fixture.mjs";
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 test('standard PCF host loads only declared local resources and preserves lifecycle, bound output and disabled context', async t => {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-pcf-browser-'));
@@ -29,8 +33,8 @@ test('standard PCF host loads only declared local resources and preserves lifecy
   for(const[name,text]of Object.entries(files)){const file=path.join(root,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,text);}
   const app=await createSimulator({sourceDir:portal,solutionRoots:[solution],port:0,watch:false,observed:{codeComponents:{[id]:'tst_Synthetic.Editor'},evidence:'Invented fixture manifest and literal tag'}});
   ownedFixture(t).add(()=>app.close());
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));ownedFixture(t).add(()=>browser.close());
-  const page=await browser.newPage(),errors=[],external=[];
+  const context=await browser.newContext();ownedFixture(t).add(()=>context.close());
+  const page=await context.newPage(),errors=[],external=[];
   page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(!request.url().startsWith(app.url))external.push(request.url());});
   await page.goto(app.url);await page.locator('[data-pcf-ready=true]').waitFor();
   assert.equal(await page.locator('input').inputValue(),'Initial');assert.ok(await page.locator('input').isDisabled());
@@ -61,9 +65,9 @@ async function hostFixture(t) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
   await page.goto('http://127.0.0.1:' + server.address().port);
   return { page, requests };
 }
@@ -88,9 +92,9 @@ test('PCF classic SDK bundle resolves its declared export after repeated whitesp
   }
   const app = await createSimulator({ sourceDir: portal, solutionRoots: [solution], port: 0, watch: false });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const page = await browser.newPage(), errors = [], external = [];
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage(), errors = [], external = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (!request.url().startsWith(app.url)) external.push(request.url()); });
   await page.goto(app.url);
@@ -298,9 +302,9 @@ test('exported dataset PCF renders real local rows with paging, sorting, filteri
     tables: { tst_row: ['Alpha', 'Beta', 'Delta', 'Gamma', 'Omega'].map((tst_title, index) => ({ tst_rowid: 'd1000000-0000-4000-8000-' + String(index + 1).padStart(12, '0'), tst_title, tst_when: '2026-01-02T00:00:00Z' })) },
     mappings: { tst_row: { entitySet: 'tst_rows', idColumn: 'tst_rowid', nameColumn: 'tst_title' } }, permissions: [], settings: { permissionMode: 'permissive' },
   } });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => { await browser.close(); await app.close(); await fs.rm(root, { recursive: true, force: true }); });
-  const page = await browser.newPage(), errors = [], external = [];
+  const context = await browser.newContext();
+  t.after(async () => { await context.close(); await app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  const page = await context.newPage(), errors = [], external = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (!request.url().startsWith(app.url)) external.push(request.url()); });
   await page.goto(app.url);

@@ -1,5 +1,5 @@
-// Solution security roles and field security profiles become rows of the security tables (Learn
-// power-platform/alm/how-managed-solutions-merged "Replace behavior for custom security roles").
+// Solution security roles and field security profiles become rows of the security tables; a managed import replaces a
+// custom role's privileges.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -58,8 +58,8 @@ async function seeded(schema) {
 test('role and profile files are read into privileges and permissions, and stay behaviour-level only when read', () => {
   const [role] = inventoryEntry('Roles/Fx Clerk.xml', { text: roleXml([['prvReadfx_item', 'Global'], ['prvCreatefx_item', 'Basic']]), component: 'role', componentName: 'Fx Clerk' });
   assert.deepEqual([role.level, role.reason, role.id, role.privileges], ['behaviour', null, ROLE, [{ name: 'prvReadfx_item', depth: 'Global' }, { name: 'prvCreatefx_item', depth: 'Basic' }]]);
-  // Changed (Task 49): a YAML role is read (Learn solution-source-control-yaml-format: security roles are stored as XML
-  // internally and converted to YAML); only an unreadable file stays inventory.
+  // A YAML role is read (security roles are stored as XML internally and converted to YAML); only an unreadable file
+  // stays inventory.
   const [unread] = inventoryEntry('Roles/Fx Clerk.yml', { text: 'name: [unclosed', component: 'role', componentName: 'Fx Clerk' });
   assert.deepEqual([unread.level, unread.reason], ['inventory', 'ROLE_NOT_IMPORTED']);
 });

@@ -6,7 +6,7 @@ import { customConnectorsOf } from '../lib/custom-connector.mjs';
 import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
 
-// Tasks 53, 54, 42: request bodies by `consumes`, nextLink continuations, OAuth client credentials and response setheader.
+// Request bodies by `consumes`, nextLink continuations, OAuth client credentials and response setheader.
 const NAME = 'x_5ffxreq', AT = `Connectors/${NAME}/`;
 const ok = { 200: { description: 'ok' } };
 const OPENAPI = { swagger: '2.0', info: { title: 'Invented FX requests' }, host: 'api.example.test', basePath: '/v1', schemes: ['https'],
@@ -106,12 +106,12 @@ test('the OAuth client credentials flow acquires and caches a token; other flows
   assert.ok(!JSON.stringify(notes).includes('invented-secret') && !JSON.stringify(notes).includes('invented-token'));
   const code = createConnectorRuntime({ customConnectors: () => compiled(oauth('accessCode')),
     connections: connectionSettings({ [NAME]: { connector: NAME, settings: { rewrites: { 'https://api.example.test/v1/': origin + '/' } } } }) });
-  // Task 42: the authorization code flow runs locally; without a sign-in the call is unauthorized and names the sign-in route.
+  // The authorization code flow runs locally; without a sign-in the call is unauthorized and names the sign-in route.
   await assert.rejects(code.invoke({ connectorId: NAME, operationId: 'ListItems', parameters: {} }), e => e.status === 401 && e.code === 'ConnectionUnauthorized' && /authorize/.test(e.message));
   assert.equal(compiled(oauth('implicit'))[0].blocked.code, 'CONNECTOR_AUTH_UNSUPPORTED');
 });
 
-test('a merged paging result keeps no body continuation when complete and the latest one when truncated (RB1-07)', async () => {
+test('a merged paging result keeps no body continuation when complete and the latest one when truncated', async () => {
   const pack = { id: 'x-pages', connectors: { x_pages: { operations: { List: request => {
     const page = request.nextLink ? Number(request.nextLink.split('=')[1]) : 1;
     return { statusCode: 200, body: { value: [page], nextLink: `https://api.example.test/v1/items?page=${page + 1}`, '@odata.nextLink': `https://api.example.test/v1/items?page=${page + 1}` }, nextLink: `https://api.example.test/v1/items?page=${page + 1}` };
@@ -125,7 +125,7 @@ test('a merged paging result keeps no body continuation when complete and the la
     [[1, 2], ...Array(3).fill('https://api.example.test/v1/items?page=3')]);
 });
 
-test('an Http action nextLink on another origin is refused before its headers are sent there (RB1-05)', async t => {
+test('an Http action nextLink on another origin is refused before its headers are sent there', async t => {
   const other = await serve(t, () => ({ body: { value: [] } }));
   const { seen, origin } = await serve(t, () => ({ body: { value: [1], '@odata.nextLink': other.origin + '/steal' } }));
   const connectors = createConnectorRuntime();

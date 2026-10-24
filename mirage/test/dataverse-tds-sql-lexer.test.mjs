@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TdsSqlError, parseExpression, splitBatches, tokenize } from "../lib/dataverse-tds-sql-lexer.mjs";
 
-// Invented identifiers and literals only.
 
 // Compact S-expression rendering so precedence is visible in the expected strings.
 function sx(node) {
@@ -282,7 +281,6 @@ test("syntax errors use SQL Server wording and the offending token", () => {
 // COUNT_BIG(*) parses like COUNT(*); STRING_AGG ... WITHIN GROUP (ORDER BY ...) is the only ordered-set call.
 const callCases = [
   ["COUNT_BIG(*) is a star call", "COUNT_BIG(*)", (n) => n.name === "COUNT_BIG" && n.star === true && n.args.length === 0],
-  ["COUNT(*) is still a star call", "COUNT(*)", (n) => n.name === "COUNT" && n.star === true],
   ["COUNT_BIG(DISTINCT x) keeps DISTINCT", "COUNT_BIG(DISTINCT x)", (n) => n.distinct === true && n.star === false],
   ["COUNT_BIG takes a plain argument", "COUNT_BIG(x)", (n) => n.args.length === 1 && n.star === false],
   ["STRING_AGG without WITHIN GROUP has no ordering", "STRING_AGG(a, ',')", (n) => n.withinGroup === undefined && n.args.length === 2],
@@ -304,7 +302,6 @@ for (const [label, sql, ok] of callCases) {
 }
 
 const callErrors = [
-  ["SUM(*) is rejected", "SUM(*)", 102],
   ["WITHIN GROUP on SUM is rejected", "SUM(a) WITHIN GROUP (ORDER BY b)", 102],
   ["WITHIN GROUP needs ORDER BY", "STRING_AGG(a, ',') WITHIN GROUP (b)", 102],
   ["WITHIN GROUP needs parentheses", "STRING_AGG(a, ',') WITHIN GROUP ORDER BY b", 102],

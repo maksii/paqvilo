@@ -120,8 +120,8 @@ export function createCanvasHandler({ apps, diagnostic, enabled = () => true, ru
     const { form, csrf: token, action } = await readForm(req);
     if (!csrf() || token !== csrf()) throw failure(403, 'CsrfRequired', 'Missing simulator CSRF token.');
     if (action.action === 'reset' || action.action === 'start') {
-      // Launch parameters (Param) of a new instance: a record of text values; a running instance keeps its own (Learn:
-      // "Parameter values do not change unless the app is reloaded"), so a page that passes new ones resets first.
+      // Launch parameters (Param) of a new instance: a record of text values; a running instance keeps its own (parameter
+      // values do not change until the app reloads), so a page that passes new ones resets first.
       const parameters = action.parameters ?? {};
       if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters) || Object.values(parameters).some(value => !['string', 'number', 'boolean'].includes(typeof value)))
         throw failure(400, 'CanvasParametersInvalid', 'parameters must be an object of text, number or Boolean values.');

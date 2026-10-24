@@ -1,5 +1,5 @@
 // Calculated columns (lib/dataverse-calculated.mjs): computed on read from the FormulaDefinition subset, one parent hop,
-// unsupported formulas read null with one diagnostic, writes refused, pack override wins. Invented x_ schema only.
+// unsupported formulas read null with one diagnostic, writes refused, pack override wins.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, parseCalculatedFormula, validateCalculatedColumns } from "../lib/dataverse-calculated.mjs";

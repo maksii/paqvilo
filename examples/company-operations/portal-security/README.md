@@ -1,18 +1,48 @@
 # Company Operations portal security
 
-`blueprint.mjs` generates thirteen explicitly assigned web roles (twelve business roles and `CO Test Runner`) and 253 relationship-based table permissions from the schema and fixture catalogue. `blueprint.json` is the portable component registry. The merged stress catalogue has 844 records, 479 N:N links and 25 personas; the schema has 73 relationships, including nine N:N relationships. All identifiers are deterministic. The project has one portal component registry: deploying that registry twice into different sites in the same Dataverse environment is unsupported because component GUIDs are globally unique.
+Website roles, table permissions and their deployment tooling for the Company Operations example, plus the tools that
+qualify them on a real, isolated Power Pages site.
 
-Each business root is Contact scoped on its role-specific principal lookup. Parent permissions carry the same role as their root. Scoped Access-to-Account/Employment/Equipment/Directory projections provide multi-organisation access without the Contact home-account shortcut. The IT workforce tree has eleven permission nodes. Shared Contact has only a recorder Self leaf; company directory leaves do not lead to other employments. HR terms, finance and protected plugin evidence have independent rights. Delete is limited to the signed-in contact's disposable probe and a Delete-only equipment leaf under their own TestRun. The nullable `pqvd_canaryrunid` lookup is Behaviour-owned; the plugin also requires reserved canary tagging, Stock state, no current assignment and consistent location ownership. Ordinary equipment has no Delete through business roles. Grants and scope projections cannot be edited through these permissions.
+## What is generated
 
-The recorder's own Contact Self leaf grants **Read, Append and Append To**, with Create/Write/Delete false. Target-site qualification proved that Read plus Append To alone rejected TestRun creation with association error `90040106`, even after a supported configuration-cache refresh; adding scoped Self Append allowed the same Contact-to-TestRun binding. Own Contact and Run GETs already succeeded. This is recorded target-site association behavior, not a claim that every Dataverse binding universally requires both flags.
+`blueprint.mjs` generates thirteen explicitly assigned web roles (the twelve business roles and `CO Test Runner`) and 253
+relationship-based table permissions from the schema and fixture catalogue. `blueprint.json` is the portable component
+registry; all identifiers are deterministic. Because component GUIDs are globally unique, deploy the registry to only one
+site per Dataverse environment.
 
-Own-run Result permissions likewise grant Create/Read/Write/Append/Append To without Delete. The target site rejected Run-to-Result binding with `90040106` when Result lacked Append To; the scoped addition enabled actual Liquid/API artifact persistence. A qualified single-role IT read returned exactly nine asset IDs in both lanes and matched its configured fixture oracle, with four server-observer stages per request. These are bounded observations; they do not attest the remaining persona matrix.
+How the graph grants access:
 
-Own-Contact Probe permissions grant Create/Read/Write/Delete/Append/Append To. Its Contact-to-Probe binding likewise rejected creation with `90040106` when Probe lacked Append To. Disposable equipment binding then required scoped IT Account and Room Append in addition to their existing Read/Append To; Create/Write/Delete on these lookup targets remain false. After those attributed fixes, actual equipment POST and DELETE returned 204, and both read lanes found the created GUID with exact parity. Ordinary equipment DELETE still returned 403. Scalar equipment update and restoration also returned 204, and repeated baseline reads had zero added/removed/changed rows.
+- Each business root is Contact-scoped on its role-specific principal lookup; Parent permissions carry the root's role.
+  Scoped Access-to-Account/Employment/Equipment/Directory projections give multi-organisation access without the Contact
+  home-account shortcut. The IT workforce tree has eleven permission nodes.
+- Power Pages combines privileges across roles: HR in A plus IT in B permits terms in A and asset writes in B, with no
+  scope multiplication.
+- Shared Contact has only the recorder's Self leaf; company directory leaves do not lead to other employments. HR terms,
+  finance and protected plug-in evidence have independent rights. Grants and scope projections cannot be edited through
+  these permissions.
+- Delete is limited to the signed-in Contact's disposable probe and a Delete-only equipment leaf under their own TestRun
+  (the plug-in additionally requires canary tagging, Stock state, no current assignment and consistent location
+  ownership). Ordinary equipment has no Delete through business roles.
+- There are no Global currency or vendor permissions. `reference-projections.mjs` adds two native N:N relationships to Core
+  and derives reference associations from in-scope finance and HR-term records. Six roles get scoped currency/vendor Read
+  leaves; only HR and Procurement get reference Append To. The guarded equipment path also needs scoped Room Read/Append
+  To, which the IT, Company/Branch manager and CTO location grants provide.
 
-Power Pages permissions combine privileges. HR in A plus IT in B therefore permits terms in A and asset writes in B, with no role/scope multiplication. `model-audit.mjs` compares the intended scope contract with independently authored fixture assertions, including the desired denial under an inactive Auditor-parent fault. This offline model does not predict the observed orphan-permission fallback below and does not prove runtime authorization. Deployment and baseline validation now reject active children under an inactive parent.
+Binding rights the recorder needs (each missing flag makes binding fail with `90040106`):
 
-Run from the toolkit checkout, replacing the website GUID with the intended isolated site:
+| Permission | Rights |
+| --- | --- |
+| Own Contact (Self) | Read, Append, Append To |
+| Own runs' Results | Create, Read, Write, Append, Append To |
+| Own Probes | Create, Read, Write, Delete, Append, Append To |
+| Disposable equipment targets (IT Account and Room) | Read, Append, Append To |
+
+`model-audit.mjs` compares the intended scope contract with independently authored fixture assertions. It is an offline
+model and does not prove runtime authorization.
+
+## Deploy
+
+Run from the toolkit checkout against an isolated site:
 
 ```powershell
 node examples/company-operations/portal-security/deploy.mjs --site <website-guid> --connection .paqvilo/dataverse/provisioning.connection.json
@@ -20,45 +50,67 @@ node examples/company-operations/portal-security/deploy.mjs --site <website-guid
 node --test examples/company-operations/test/portal-security.test.mjs
 ```
 
-Without `--apply`, the script reads configuration and saves a plan; it writes no Dataverse records. Apply creates or reconciles only the registered CO components and adds fixture Contact-to-role links. It verifies native component content and actual Contact associations, then requires zero remaining changes. The journal and before/after site snapshots stay in ignored `.paqvilo/portal-security/`. Uncertain writes are not automatically retried; rerun the read-only plan to reconcile component GUIDs first. The app connection is verified against its saved organisation ID.
+- Without `--apply` the script reads configuration and saves a plan; it writes nothing. Apply creates or reconciles only the
+  registered CO components and adds fixture Contact-to-role links, verifies native content and Contact associations, and
+  requires zero remaining changes. The journal and before/after snapshots stay in ignored `.paqvilo/portal-security/`.
+  Uncertain writes are not retried; rerun the plan to reconcile GUIDs first.
+- The site must use the enhanced data model with traditional authorization (`datamodelversion=2.0`,
+  `enhancedauthorization=0`). Web roles and permissions are native `powerpagecomponent` types 11 and 18; role links are read
+  from the component JSON (`adx_entitypermission_webrole`) because the virtual permission-to-role N:N read can come back
+  empty. Contact assignments use `powerpagecomponent_mspp_webrole_contact`.
+- Apply refuses a site with active Parent permissions whose native parent is missing or inactive, anywhere on the site, and
+  any effective default-Authenticated or Anonymous Global business grant: either would contaminate the scoped graph.
 
-The deployment requires the enhanced data model with traditional authorization (`datamodelversion=2.0`, `enhancedauthorization=0`). Native `powerpagecomponent` types 11 and 18 hold web roles and permissions; their JSON content carries `adx_entitypermission_webrole`. In this environment the virtual permission-to-role N:N read returned empty despite these populated native role arrays. Audits therefore use native component content. They also report active Parent permissions with missing or inactive native parents across the whole target site, including components outside the CO registry. Apply refuses these orphans until controlled recovery; inactive archived faults are allowed. Contact assignments use the native `powerpagecomponent_mspp_webrole_contact` relationship. Do not confuse the enhanced data model with preview enhanced authorization.
+**Never deactivate only a parent permission.** With a parent inactive and its children active, both Liquid and the Web API
+returned every targeted fixture record across organisation boundaries. Revoke access through grant principals, projections
+or role membership, and deactivate a complete subtree when removing its parent.
 
-The isolated demo site originally had two sample Contact permissions: a default-Authenticated Global grant and a Contact root lacking a relationship. They were deactivated after preserving private rollback records. Existing legacy demo sites are untouched. Deployment blocks on any effective default/Anonymous Global business grant; such a grant would contaminate the scoped test graph.
+## Deep-chain variant
 
-**Observed security fault:** deactivating only the IT secondary service parent while leaving its children active exposed all targeted fixture records across organisation boundaries: Checklist 62 instead of 9, Inspection and Finding 122 instead of 17, in both Liquid and Web API. The independent oracles correctly failed. The parent and page sources were restored immediately, and the target configuration cache refreshed. No Global permission was added, so a configuration-only Global audit cannot establish effective isolation. Parent-only deactivation is an unsafe negative fault scenario, not a revocation mechanism or a deep-chain qualification method. The generic deployment CLI rejects these variants. Revoke a contact's access through managed grant principals/projections or role membership; keep permission definitions intact. A complete subtree must be deactivated when removing its parent definition.
-
-The baseline graph includes workforce and equipment service routes. Actual single-role IT Liquid XML expanded WorkOrder/Task/Checklist/Inspection/Finding reads to 12/14/16/18/20 links respectively. Checklist, Inspection and Finding Web API reads returned Dataverse `0x8004430d`, confirming the documented 15-link limit; Liquid also reports these failed queries as errors, rather than successful empty results. Record these baseline failures as regression evidence.
-
-For deep-chain qualification, `deep-variant.mjs` disables all six secondary IT service nodes: Request, Order, Task, Checklist, Inspection and Finding. It retains the eleven-node workforce path and changes expected unassigned-equipment service visibility. `configureDeepVariant` supplies that oracle; never use the baseline oracle for variant results. `withDeepVariant` preflights every component and atomically writes the local before-state journal, then conditionally disables nodes **leaf-to-root** and restores **root-to-leaf**. These are sequential Dataverse writes, not an atomic server transaction. Every write has a preceding journal entry and ETag; callback failures still run verified restoration in `finally`. The CLI restores on release-file creation, timeout or handled termination signals. After a power cut or forced process kill, use `--restore-journal`: recovery validates the saved organisation and exact archived site/type/name/content for all six nodes, accepts only known states and restores root-first with current ETags. Missing snapshots or identity/content drift refuses writes. Already-restored recovery is read-only. Historical parent-only journals are accepted for restoration only.
-
-The complete-subtree variant was live-qualified with the actual IT tester: Checklist returned 9 IDs and Inspection/Finding 17 IDs each in both lanes, exactly matching the independently generated oracle. Liquid and plugin-received XML contained 9/10/11 links respectively, with all four observer stages captured for every fragment. All six native permissions and both temporary page sources were subsequently restored and verified. This validates that declared variant; the baseline retains its intended dual-route query-limit findings.
+With both the workforce and equipment-service routes active, the IT persona's Checklist, Inspection and Finding reads exceed
+the 15-link FetchXML limit (`0x8004430d` from the Web API, a query error in Liquid). That is the baseline's expected
+outcome. To test the eleven-node workforce path itself, `deep-variant.mjs` temporarily disables all six secondary IT service
+nodes (Request, Order, Task, Checklist, Inspection, Finding):
 
 ```powershell
 node examples/company-operations/portal-security/deep-variant.mjs --site <website-guid> --connection .paqvilo/dataverse/provisioning.connection.json --timeout-seconds 600 --apply
 node examples/company-operations/portal-security/deep-variant.mjs --site <website-guid> --connection .paqvilo/dataverse/provisioning.connection.json --restore-journal <ignored-lease-journal> --apply
 ```
 
-After activation, refresh only the target site's configuration cache and run the declared deep variant cases. Create the private release-file path printed by the runner when finished; confirm the journal says `restored`, refresh the cache again, and resume baseline CRUD or role-collision tests. Do not overlap this lease with security deployment or other writes to that component.
+- The variant changes expected unassigned-equipment visibility; use `configureDeepVariant`'s oracle, never the baseline one.
+- It journals the before-state, disables leaf-to-root and restores root-to-leaf with ETags. These are sequential writes, not
+  a transaction; restoration runs in `finally`, on the release file, on timeout and on handled signals. After a forced kill,
+  `--restore-journal` validates the organisation and the archived content of all six nodes before restoring; drift refuses
+  writes.
+- Refresh the site's configuration cache after activation, run the variant cases, create the printed release file, confirm
+  the journal says `restored`, and refresh the cache again. Do not overlap the lease with other writes to these components.
 
-The graph has no Global currency/vendor permissions. `reference-projections.mjs` contributes two native N:N relationships to Core and derives reference associations from in-scope finance/HR-term records. Six roles receive scoped currency/vendor Read leaves; only HR and Procurement receive reference Append To. Vendor references never enter operational Account projections, and neither reference leaf has children. HR membership creation still needs a qualified canonical Contact binding route. General business Create cases requiring projection maintenance and invariant enforcement remain blocked until those services are installed. The minimal guarded equipment path also needs scoped Room Read/Append To; the IT, Company/Branch manager and CTO location grants provide those binding rights. Signed-in persona sessions are required for the actual Liquid/Web API permission regression suite; the provisioning application's System Administrator retrievals cannot qualify it.
-
-`package.mjs` creates and reconciles the separate `PaqviloCompanyOperationsPortal` solution after the schema/support/plugin solutions. It discovers environment-specific solution component types, adds the isolated site, its languages and its configuration components, verifies a single site membership, and exports/unpacks into ignored evidence. It includes the original inactive sample grants so the exported site's default roles retain the corrected isolation. Fixture Contact-role memberships are data and are recreated from the catalogue; they are not claimed as portable solution components.
+## Package the portal solution
 
 ```powershell
 node examples/company-operations/portal-security/package.mjs --site <website-guid> --connection .paqvilo/dataverse/provisioning.connection.json --apply --export
 ```
 
-`role-variant.mjs` controls the isolated `P-STRESS` persona's authored 0/1/2/4/8/12 business-role variants while retaining `CO Test Runner` and preserving unrelated assignments. It verifies the actual Contact's seed person code before writing. Run without `--apply` for a read-only plan, or add it for a controlled variant:
+`package.mjs` creates and reconciles `PaqviloCompanyOperationsPortal` after the schema, support and plug-in solutions. It
+discovers the environment's solution component types, adds the site, its languages and configuration components, verifies a
+single site membership and exports/unpacks into ignored evidence. It includes the site's original (inactive) sample grants
+so exported default roles keep the isolation. Contact-role memberships are data, recreated from the catalogue.
+
+## Role variants and a real tester
+
+`role-variant.mjs` switches the `P-STRESS` persona between 0, 1, 2, 4, 8 and 12 business roles, keeping `CO Test Runner` and
+unrelated assignments, after checking the Contact's seed person code:
 
 ```powershell
 node examples/company-operations/portal-security/role-variant.mjs --role-count 2 --connection .paqvilo/dataverse/provisioning.connection.json --apply
 node examples/company-operations/portal-security/role-variant.mjs --role-count 12 --connection .paqvilo/dataverse/provisioning.connection.json --apply
 ```
 
-Restore twelve roles after each experiment. Sign in again or refresh the site's security cache and verify the Liquid role snapshot before interpreting a query-budget result; a successful Dataverse assignment alone does not prove the portal session uses the new roles. Variant journals record every acknowledged association mutation and stay ignored.
+Restore twelve roles afterwards. A successful Dataverse assignment does not mean the portal session uses the new roles:
+sign in again or refresh the security cache and check the Liquid role snapshot before reading a query-budget result.
 
-For a real signed-in tester, `tester-overlay.mjs` builds a private catalogue overlay from a supplied Contact GUID. `bind-tester.mjs` binds that identity to an independent IT appointment, prepares twelve-role stress data with three engagements belonging to that identity, controls role counts, and restores the IT baseline. It never creates or edits the existing Contact and preserves unrelated web-role associations. Real IDs, resolved currency identities, before-state records, role histories and generated query filters stay under ignored `.paqvilo/`; public source contains no environment URLs or real Contact GUIDs.
+For a real signed-in tester, `tester-overlay.mjs` builds a private catalogue overlay from a Contact GUID, and
+`bind-tester.mjs` binds that Contact to an IT appointment, prepares twelve-role stress data, controls role counts and resets:
 
 ```powershell
 node examples/company-operations/portal-security/bind-tester.mjs --contact <contact-guid> --site <website-guid> --mode baseline --connection .paqvilo/dataverse/provisioning.connection.json --apply
@@ -67,41 +119,57 @@ node examples/company-operations/portal-security/bind-tester.mjs --contact <cont
 node examples/company-operations/portal-security/bind-tester.mjs --contact <contact-guid> --site <website-guid> --mode reset --connection .paqvilo/dataverse/provisioning.connection.json --apply
 ```
 
-Without `--apply` these are read-only plans. Use `--out` for an ignored evidence directory, `--catalogue` for a merged fixture catalogue, and `--overlay` to adopt an existing ignored overlay whose actor exactly matches the command. Baseline/stress rows have deterministic private GUIDs and identity-specific business keys; existing scalar/reference drift or extra projection targets causes refusal. All rows and existing projections are preflighted before the first record write. Record before-state and ETags are journalled before mutation. Reset preflights every managed record, resolves principal lookup navigation metadata, journals existing links, conditionally revokes with the observed ETag, removes only authored projection targets and verifies the resulting null principals and empty projections. It restores IT plus Test Runner without deleting captured history or fixture data. Reopening explicitly managed revoked grants requires `--allow-managed-reset`; it only accepts the known Revoked-to-authored transition with previously null principals and uses the observed ETag. Unknown drift is never treated as a reset.
+- Without `--apply` these are read-only plans. `--out` sets an ignored evidence directory, `--catalogue` a merged catalogue
+  and `--overlay` an existing overlay whose actor matches the command.
+- The tool never creates or edits the Contact and preserves unrelated web-role links. Rows are preflighted before the first
+  write; before-state and ETags are journalled. Existing drift or extra projection targets cause refusal.
+- Reset conditionally revokes managed grants, removes only authored projection targets, verifies null principals and empty
+  projections, and restores IT plus Test Runner without deleting history. Reopening revoked grants needs
+  `--allow-managed-reset`.
+- Pass the overlay and resolved IDs to the page compiler to regenerate query filters and persona oracles. Real IDs and
+  histories stay under ignored `.paqvilo/`.
 
-The overlay maps source fixture aliases to private grants/jobs without changing the source personas. Pass the generated overlay and resolved IDs to the page compiler to regenerate literal query filters and persona oracles. For each live role-count variant, supply the selected business roles to that persona's configured oracle, refresh configuration/sign-in, and record the observed Liquid roles. The saved variants are authored expectations until the portal proves the corresponding session state.
+## Native configuration campaign
 
-The actual tester subsequently completed bounded query-budget batches at all six business-role counts, with each role snapshot matching the selected mask. The minimally joined budget case returned one record in both lanes at counts 1/2/4/8; its twelve-role Web API request returned explicit `0x8004430d`, while Liquid reported a query error. Other oversized cases also encountered distinct portal URL/provider errors; preserve their individual HTTP/platform codes rather than calling every failure a link-limit observation. Permission joins did not increase linearly with role count. Afterward the tester was reset to IT plus Test Runner, every original association was independently confirmed, and all eleven temporary grants were revoked with null principals and empty projections. The whole native site audit reported zero active orphan permissions and zero CO configuration drift. These are bounded actual-identity observations, not qualification of all fixture personas.
+`configurationCampaignDomain({ schema, catalogue })` builds 2,251 permission configurations (2,117 from the configuration
+grammar, six roleless-ancestor cases and 128 Equipment lifecycle graphs), a separate denominator from the role-subset read
+campaign. `odataAdmissionCohorts` adds a 14-configuration, 34-cell OData admission domain. Generating either qualifies
+nothing; only native cells compared with Mirage replay do.
 
-Official documentation reviewed: [table permission scopes and child roles](https://learn.microsoft.com/en-us/power-pages/security/table-permissions), [assigning web roles](https://learn.microsoft.com/en-us/power-pages/security/create-web-roles), [enhanced data model](https://learn.microsoft.com/en-us/power-pages/admin/enhanced-data-model), [native site component API](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/powerpagecomponent?view=dataverse-latest), [discovering solution component types](https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-solution-management), [the 15-link FetchXML limit](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/join-tables), and [the multi-level Web API OData issue and FetchXML workaround](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview).
+`runNativeConfigurationCampaign` runs one to 32 configurations per batch under a reversible component, membership and
+Contact Account lease. It needs the public Dataverse client, the source blueprint, schema and catalogue, resolved baseline
+references, organisation, site and controller Contact IDs, an ignored `.paqvilo` directory,
+`allowNativeConfigurationMutation: true`, `baseRoleCampaignFreezeActive: false`, and these adapters (missing ones are an
+error):
 
-### Native configuration qualification campaign
-
-`configurationCampaignDomain({schema,catalogue})` materializes 2,251 distinct graphs: the original 2,117 configuration grammar, six explicit roleless-ancestor addenda and 128 Equipment lifecycle graphs. Their combined denominator is **181,798 actual native cells**, separate from the base 4,096-role-subset read campaign. Neither generation nor loopback tests qualify native cells.
-
-`runNativeConfigurationCampaign` executes a bounded batch of one to 32 configurations, using the existing reversible component/membership/Contact Account lease. Pass the actual public Dataverse client, source blueprint/schema/catalogue, resolved baseline references, organisation/site/controller Contact IDs, an ignored `.paqvilo` directory, `allowNativeConfigurationMutation: true`, and `baseRoleCampaignFreezeActive: false`. The coordinator must supply these execution adapters; absent adapters are a hard error:
-
-| Adapter | Required native behavior |
+| Adapter | Must |
 | --- | --- |
-| `assertExclusiveNativeWriter` | Confirm the sole writer owns this organisation/site/actor and that the base-role campaign is released. |
-| `provisionFixtures` | Create an actor-owned run for lifecycle configurations, then provision planned disposable records/associations with the trusted SDK identity, native metadata, write-ahead journals, conditional versions and exact readbacks. No business guard may be disabled. |
-| `verifyFixtures` | Return actual three-region bindings, immutable fixture snapshot hash, actor and Account GUIDs; lifecycle fixtures also require verified Stock equipment and Contact-owned run. |
-| `prepareCell` | Prepare/reset the isolated operation target and its associated lookup targets before observing its source state. SDK preparation is never portal CRUD credit. |
-| `readSourceWitnesses` | Return all five actual native hashes required by `sealConfigurationWitnesses`. Read afresh before each cell; restored field values do not restore old row versions. |
-| `clearPortalCaches` | Execute both `clearConfig` and `clearCache`; return an `actions` receipt containing both completed controls, including after restoration. |
-| `collectNativeCell` | Execute the specific Liquid/Web API read or actual portal CRUD, preserve every page, native HTTP bytes, server-confirmed identity, before/after graph/settings/registry/membership/data witnesses, checksummed plugin parts and Dataverse operation history. |
-| `replayNativeCell` | Execute the same authored operation locally using the frozen source graph/data, native intent and original DLL. Return actual local HTTP/pages/plugin artifacts, rather than a verdict or copied native response. |
-| `recoverFixtures` | Reconcile journalled pending fixture writes; never repeat an uncertain native mutation blindly or accept unrelated drift. |
-| `cleanupFixtures` | Restore all regions and return `{verified:true,allRegionsRestored:true,snapshotSha256}` from actual native readbacks. |
+| `assertExclusiveNativeWriter` | Confirm the sole writer owns this organisation, site and actor, and the base-role campaign is released. |
+| `provisionFixtures` | Create planned disposable records with the trusted SDK identity, write-ahead journals and exact readbacks, without disabling any guard. |
+| `verifyFixtures` | Return the bindings, fixture snapshot hash, actor and Account GUIDs. |
+| `prepareCell` | Reset the operation target and its lookup targets before reading source state. |
+| `readSourceWitnesses` | Return the five native hashes `sealConfigurationWitnesses` needs, read fresh before each cell. |
+| `clearPortalCaches` | Run both `clearConfig` and `clearCache` and return both receipts. |
+| `collectNativeCell` | Run the Liquid/Web API read or portal CRUD and keep every page, HTTP bytes, identity, witnesses, plug-in parts and history. |
+| `replayNativeCell` | Run the same operation locally with the frozen graph, data and original DLL, returning actual local output. |
+| `recoverFixtures` | Reconcile journalled pending writes without blindly repeating uncertain mutations. |
+| `cleanupFixtures` | Restore all regions and return `{ verified: true, allRegionsRestored: true, snapshotSha256 }` from readbacks. |
 
-Native/local envelopes identify `cellId`, sealed `inputHash`, `controllerContactId`, complete explicit `membershipRoleIds` (including preserved recording/foreign roles), `nativeWitnesses`, completed `cacheActions`, `snapshotReceipt`, immutable `history`, `completePages`, `pages` and checksummed `backendEvents`. Each page retains its page/fragment number, canonical rows, original HTTP `wire` (`status`, MIME and body bytes), and Liquid effective XML where applicable. Snapshot receipts distinguish stable read data from only the declared mutation target changes. CRUD additionally requires verified cleanup and the platform permission boundary to be distinguished from original business guards. Anonymous portal identity is Guid.Empty; the recording controller remains a separate Contact.
+`createNativeConfigurationAdapters` provides concrete implementations over the Dataverse client and the native-browser
+bridge; supply only the sole-writer assertion, cache control, leased Liquid endpoint and replay bootstrap callbacks.
+Credentials stay outside source.
 
-Each read cell has two independent cache-controlled observations. The driver compares native repeat source hashes, membership sets, rows, HTTP outcomes and marker-normalized backend bytes before granting that cell credit. It saves each native/local envelope, sealed input and comparison using exclusive immutable files. Successful collection remains distinct from equality; incomplete, differing, absent-context, SDK-only or guard-ambiguous cells remain gaps.
+Each read cell needs two independent cache-controlled native observations that agree on source hashes, memberships, rows,
+HTTP outcomes and backend bytes before it is compared with replay. Incomplete, differing or ambiguous cells stay gaps.
+After a power cut, run `recoverNativeConfigurationCampaign({ directory, domainHash, client, adapters, organisationId })`: it
+restores pending leases, cleans fixtures, checks readbacks and clears both caches before releasing the writer lock.
 
-A power cut retains the writer lock and pending journals. `recoverNativeConfigurationCampaign({directory,domainHash,client,adapters,organisationId})` is an explicit recovery operation: after exclusive writer ownership is established, it restores pending component/membership/Account leases, reconciles and cleans fixtures, checks all-region readbacks and clears both caches. Foreign locks, source drift or incomplete cleanup prevent lock removal. Run the configuration campaign only after the base-role source freeze is released.
+## References
 
-`createNativeConfigurationAdapters` now binds the public Dataverse client and existing native-browser bridge to concrete journalled fixture writes, complete region/version/projection readbacks, one-shot portal requests, server identity checks, SDK-stamped intents, native source/registry captures, operation-table history and original-DLL replay. Pass only the actual sole-writer assertion, dual-cache control, leased source Liquid endpoint and replay bootstrap callbacks; credentials remain outside source. Unknown Create/Delete responses are retained and reconciled by their exact GUIDs. Power-cut recovery rehydrates cell and fixture journals from disk before parent deletion.
-
-Self Write uses a conditional `firstname` lease on the actual authenticated Contact; credentials, roles and Account bindings stay outside that scalar lease. Anonymous reads use a separate configured anonymous browser/context page and a single fixed source query with escaped SDK-stamped markers; the dispatcher reads no controller recording tables and adds no Global recording grants. Source5 adds second same-account Room/Equipment targets plus an owned cooperating Probe, with the optional Probe equipment lookup using RemoveLink Delete. Its 33 fixture rows are separate from the source4 24-row lifecycle setup. The active source4 manifest/catalogue remain frozen until the native coordinator provisions source5 and supplies new receipts.
-
-`odataAdmissionCohorts` declares a separate 14-configuration, 34-cell (68 independent physical repeats) source domain: direct classic scopes, one-level/reverse/NN paths, mixed and pure 1:N multi-level paths, same-table wrappers and Global/scoped union. Native authoring uses metadata-valid scalar ID/name properties; no outcome is inferred from documentation. This addendum never replaces the original role/read/configuration denominators and starts with zero qualified cells.
+[Table permission scopes and child roles](https://learn.microsoft.com/en-us/power-pages/security/table-permissions),
+[web roles](https://learn.microsoft.com/en-us/power-pages/security/create-web-roles),
+[enhanced data model](https://learn.microsoft.com/en-us/power-pages/admin/enhanced-data-model),
+[native site components](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/powerpagecomponent?view=dataverse-latest),
+[solution component types](https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-solution-management),
+[FetchXML join limit](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/join-tables),
+[multi-level Web API issue](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview).

@@ -1,5 +1,4 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
-// Real browser proof using only loopback fixtures and disposable browser state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,12 +39,14 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   const external = await serve((request, response) => request.url.startsWith('/missing') ? response.writeHead(404).end('missing fixture asset') : response.writeHead(200, { 'content-type': 'text/html' }).end('<h1>Foreign sign-in fixture</h1>'));
   const methods = [];
   const documents = [];
+  let slowSettled;
+  const slowDone = new Promise((resolve) => { slowSettled = resolve; });
   const origin = await serve((request, response) => {
     methods.push(request.method);
     if (request.url.startsWith('/chapter/')) documents.push({ method: request.method, url: request.url });
     if (request.url.startsWith('/data')) return response.writeHead(200, { 'content-type': 'application/json' }).end('{"privateBody":"neverCaptured"}');
     if (request.url === '/redirect') return response.writeHead(302, { location: external }).end();
-    if(request.url==='/slow'){const timer=setTimeout(()=>response.end('<p>Late document</p>'),1000);response.once('close',()=>clearTimeout(timer));return;}
+    if(request.url==='/slow'){const timer=setTimeout(()=>response.end('<p>Late document</p>'),1000);response.once('close',()=>{clearTimeout(timer);slowSettled();});return;}
     if(request.url==='/never')return;
     response.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>Agent fixture</title><style>tr{color:rgb(1, 2, 3)}#paqvilo-panel{position:fixed;inset:0;background:red;pointer-events:none}</style><body><table><tr><th>Name</th><th>Status</th></tr><tr style="width:100%"><td>Example</td><td>Ready</td></tr></table><input type="password" value="inputSecret"><textarea>textareaSecret</textarea><div contenteditable>editableSecret</div><a href="next?token=linkSecret">Next</a><form id="fixture-post" method="post" action="/chapter/?filter=ready#posted"><button id="submit">Submit to fixture</button></form><div id="paqvilo-panel">Developer panel</div><script>console.error('token=consoleSecret');fetch('/data?token=requestSecret');</script><script src="${external}/missing.js?token=cdnSecret"></script></body>`);
   });
@@ -74,7 +75,8 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.equal((await call('/v1/pages/1/unknown')).status,404);
   const beforeTimeout=page.url();
   const timeoutResponse=await call('/v1/pages/1/navigate',{url:'/slow',timeoutMs:150});assert.equal(timeoutResponse.status,504);assert.equal((await timeoutResponse.json()).error.code,'action_timeout');
-  await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(page.url(),beforeTimeout,'timed-out navigation must not commit later');
+  // Either the browser abandons the slow document or it arrives late; neither may commit.
+  await slowDone;await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,100)));assert.equal(page.url(),beforeTimeout,'timed-out navigation must not commit later');
   const command=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','navigate','--session',agent.discoveryFile,'--page-id','1','--path','/never','--timeout','2000'],{windowsHide:true});
   let output='';command.stdout.on('data',chunk=>output+=chunk);const [code]=await once(command,'close');
   const deadlineError=JSON.parse(output);assert.equal(code,1);assert.equal(deadlineError.action,'navigate');assert.equal(deadlineError.error.code,'action_timeout');assert.equal(deadlineError.error.status,504);assert.equal(page.url(),beforeTimeout);

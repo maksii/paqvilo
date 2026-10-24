@@ -1,6 +1,5 @@
-// What the Power Pages and model-driven hosts detect but do not run reaches preflight as requirement rows with a level
-// (Tasks 27, 33, 35, 37, 38, 41), and the offline preflight shares the running host's composition (Task 12 follow-through).
-// Invented portal, Solution and controls only.
+// What the Power Pages and model-driven hosts detect but do not run reaches preflight as requirement rows with a level,
+// and the offline preflight shares the running host's composition.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -25,7 +24,7 @@ async function site(t, authorization, { gap = false } = {}) {
   return dir;
 }
 
-// Learn (security/unify-pages-security-with-dataverse; powerpagesite enhancedauthorization 1-3): the local runtime runs the
+// powerpagesite enhancedauthorization 1-3: the local runtime runs the
 // enhanced model (portal-authorization.mjs) for every non-zero state, so the row is satisfied with the fidelity note.
 test('enhanced authorization states 1, 2 and 3 are satisfied rows with a fidelity note; the legacy model adds no row', async t => {
   for (const state of [1, 2, 3]) {
@@ -77,7 +76,7 @@ test('custom page SubAreas and virtual PCF controls without platform libraries a
   ]);
   const supplied = { pcf: { controls: [control], platformLibraries: [{ name: 'React', version: '16.14.0' }, { name: 'ReactDOM', version: '16.14.0' }] } };
   assert.ok(!buildSourceGraph({ clientResources: supplied }).requirements().length);
-  // RC4a-10: the level follows the shell's rule: the app's own type-300 component with its canvas app in the sources is a
+  // The level follows the shell's rule: the app's own type-300 component with its canvas app in the sources is a
   // behaviour placeholder; an item the parser marked supported but that the app does not include stays unsupported.
   const pageApp = components => ({ modelDrivenApps: [{ uniqueName: 'fx_app', components, navigation: [{ id: 'a', groups: [{ id: 'g', items: [
     { id: 'fx_page', code: 'MD_NAV_CUSTOM_PAGE', kind: 'custom', page: 'x_custompage', supported: true }] }] }] }] });

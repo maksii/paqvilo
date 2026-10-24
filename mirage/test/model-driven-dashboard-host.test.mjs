@@ -13,7 +13,7 @@ const GRID = '{E7A81278-8635-4D9E-8D4D-59480B391C5B}';
 const cell = (label, control) => `<row><cell><labels><label description="${label}" languagecode="1033"/></labels>${control}</cell></row>`;
 const dashboard = (id, name, rows) => `<Dashboard><FormId>{${id}}</FormId><LocalizedNames><LocalizedName description="${name}" languagecode="1033"/></LocalizedNames>
 <FormXml><forms type="dashboard"><systemform><formid>{${id}}</formid><form><tabs><tab><columns><column><sections><section><rows>${rows}</rows></section></sections></column></columns></tab></tabs></form></systemform></forms></FormXml></Dashboard>`;
-// Learn understand-dashboards-dashboard-components-formxml: lists and charts are sub-grid controls (TargetEntityType, ViewId, VisualizationId, ChartGridMode).
+// Dashboard lists and charts are sub-grid controls (TargetEntityType, ViewId, VisualizationId, ChartGridMode).
 const CUSTOMIZATIONS = `<ImportExportXml><Dashboards>
 ${dashboard(MIXED, 'Invented board', cell('Open items', `<control id="grid1" classid="${GRID}"><parameters><TargetEntityType>x_item</TargetEntityType><ViewId>{${VIEW}}</ViewId><RecordsPerPage>4</RecordsPerPage><ChartGridMode>Grid</ChartGridMode></parameters></control>`)
   + cell('Item chart', `<control id="chart1" classid="${GRID}"><parameters><TargetEntityType>x_item</TargetEntityType><ViewId>{${VIEW}}</ViewId><VisualizationId>{${CHART}}</VisualizationId><ChartGridMode>Chart</ChartGridMode></parameters></control>`)

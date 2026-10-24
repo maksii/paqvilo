@@ -1,6 +1,6 @@
 // Server.EnvironmentVariable.get in the exported server-logic worker: non-secret effective values, case-insensitive
 // names, and null plus SECRET_NOT_EXPOSED_TO_SERVER_LOGIC for Secret types. The payload comes from
-// environmentVariablePayload (secret-resolver.mjs). Invented schema and values only.
+// environmentVariablePayload (secret-resolver.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
@@ -40,8 +40,6 @@ test('Server.EnvironmentVariable.get returns the effective value of a String var
 
 test('a Secret variable answers null with a SECRET_NOT_EXPOSED_TO_SERVER_LOGIC diagnostic', async () => {
   const messages = await run("function get() { return Server.EnvironmentVariable.get('fx_Key'); }", environmentVariablePayload(state));
-  assert.equal(messages.at(-1).raw, 'null');
-  assert.deepEqual(messages.filter((m) => m.kind === 'diagnostic').map((m) => m.code), ['SECRET_NOT_EXPOSED_TO_SERVER_LOGIC']);
   assert.deepEqual(messages, [
     { kind: 'diagnostic', code: 'SECRET_NOT_EXPOSED_TO_SERVER_LOGIC', message: 'Secret environment variable fx_Key is not exposed to server logic; bind it to a site setting.' },
     { kind: 'result', raw: 'null' },

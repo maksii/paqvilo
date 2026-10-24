@@ -30,7 +30,7 @@ test('enhanced solution-only server logic is discovered for the selected website
   const selected=items.filter(item=>item.name==='Solution logic');
   assert.equal(selected.length,1);
   assert.equal(selected[0].mode,'placeholder');
-  const configure=await fetch(app.url+'/__sim/api/operations/'+encodeURIComponent(selected[0].key),{method:'PATCH',headers:{'content-type':'application/json','x-sim-csrf':app.state().csrf},body:'{"mode":"exported"}'});
+  const configure=await fetch(app.url+'/__sim/api/operations/'+encodeURIComponent(selected[0].key),{method:'PATCH',headers:{'content-type':'application/json','x-sim-csrf':app.csrf},body:'{"mode":"exported"}'});
   assert.equal(configure.status,200);
   assert.deepEqual(JSON.parse((await (await fetch(app.url+selected[0].path)).json()).data),{fromSolution:true});
   const before=app.state().status.sourceFingerprint;
@@ -42,7 +42,7 @@ test('enhanced solution-only server logic is discovered for the selected website
 
 test('discovered placeholders, automatic declarative flows and editable responses stay local and role guarded', async t => {
   const {app}=await operationFixture(t);
-  const csrf=app.state().csrf;
+  const csrf=app.csrf;
   const admin = (route,method='GET',body) => fetch(app.url+'/__sim/api'+route,{method,headers:{'content-type':'application/json','x-sim-csrf':csrf},body:body===undefined?undefined:JSON.stringify(body)});
   const inventory=await (await admin('/operations')).json();
   assert.equal(inventory.items.length,3);
@@ -66,7 +66,9 @@ test('discovered placeholders, automatic declarative flows and editable response
   const unlinked=(await (await admin('/operations')).json()).items.find(item=>item.processId===standalone);
   assert.equal(unlinked.mode,'mock');
   assert.equal(unlinked.path,null);
-  assert.notEqual((await fetch(app.url+'/_api/cloudflow/v1.0/trigger/'+standalone,{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:csrf},body:'{}'})).status,200);
+  // A mocked flow without a Request trigger still has no route: the trigger answers the local not-implemented error.
+  const unrouted=await fetch(app.url+'/_api/cloudflow/v1.0/trigger/'+standalone,{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:csrf},body:'{}'});
+  assert.equal(unrouted.status,501);assert.equal((await unrouted.json()).error.code,'NotImplemented');
   assert.equal((await admin(route,'PATCH',{mode:'handler'})).status,409);
   assert.equal((await admin('/config','PATCH',{identity:{id:'person',roles:[],roleSource:'override'}})).status,200);
   assert.equal((await trigger({Message:'Blocked'})).status,403);

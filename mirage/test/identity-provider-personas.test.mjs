@@ -11,7 +11,8 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {loadConfig} from '../../lense/config.mjs';
 import {identityProviderAssets} from '../lib/identity-provider-settings.mjs';
-import {chooserSearch,chooserSelection,chooserResults} from '../lib/persona-chooser.mjs';
+import {chooserSearch,chooserSelection,chooserResults,chooserReport} from '../lib/persona-chooser.mjs';
+import {indexPersonaCatalog} from '../lib/persona-search.mjs';
 const nodes=html=>{const all=[];const visit=node=>{all.push(node);for(const child of node.childNodes??[])visit(child);};visit(parse(html));return all;};
 const attr=(node,name)=>node.attrs?.find(a=>a.name===name)?.value;
 
@@ -25,10 +26,13 @@ test('bounded account facets retain a selected value when URL spelling differs i
   }
 });
 
+// Wall time is compared across sizes, never against an absolute budget: 10x the personas may cost at most 30x the time.
+const chooserMs={};
 for(const count of [500,5000])test(`identity chooser bounds markup and search at ${count} personas`,async t=>{
   const {users,report,provider,params}=identityChooserFixture(count);const idp=await startIdentityProvider({providers:()=>[provider],users:()=>users,personaCatalog:()=>report,registration:()=>({registration:false})});t.after(()=>idp.close());
   const url=new URL(idp.authority(provider)+'oauth2/authorize');url.search=new URLSearchParams(params);
-  const started=performance.now(),response=await fetch(url),html=await response.text();assert.equal(response.status,200);assert.ok(performance.now()-started<500,'5000-person response must stay below 500ms');assert.ok(Buffer.byteLength(html)<=150000);
+  const started=performance.now(),response=await fetch(url),html=await response.text();chooserMs[count]=performance.now()-started;assert.equal(response.status,200);assert.ok(Buffer.byteLength(html)<=150000);
+  if(count===5000)assert.ok(chooserMs[5000]<Math.max(30*chooserMs[500],50),`5000 personas took ${chooserMs[5000]}ms, 500 took ${chooserMs[500]}ms`);
   const all=nodes(html);assert.equal(all.filter(n=>n.tagName==='form').length,2);assert.equal(all.filter(n=>n.tagName==='button'&&attr(n,'name')==='subject').length,50);assert.match(html,/Group 19/);assert.match(html,/Show more/);assert.doesNotMatch(html,/id="paqvilo-mirage-idp-create"/);
   url.searchParams.set('q','orsted unique');const filtered=await fetch(url).then(r=>r.text());assert.match(filtered,/1–1 of 1 matching/);assert.match(filtered,/Ørsted Unique/);assert.doesNotMatch(filtered,/name="subject" value="subject-1"/);
   url.searchParams.delete('q');url.searchParams.append('role','Reviewer');url.searchParams.append('tag','special');const narrowed=await fetch(url).then(r=>r.text());assert.match(narrowed,new RegExp(`of ${users.filter((u,i)=>i%2&&i%3===0).length} matching`));
@@ -42,7 +46,7 @@ test('registration modes and presentation settings are explicit and validated',(
   assert.equal(newUserPolicy(identityProviderSettings(),{registration:true,openRegistration:false,invitation:false},{key:'Local'}).allowed,false);
   assert.equal(newUserPolicy(identityProviderSettings({newUser:'always'}),{registration:false},{key:'Local'}).forced,true);
   assert.equal(newUserPolicy(identityProviderSettings({newUser:'never'}),{},{},{prompt:'create'}).allowed,false);
-  for(const value of [{newUser:'maybe'},{presentation:'iframe'},{accentColor:'red;url(x)'},{head:{scripts:['https://external.example/x.js']} ,unexpected:true}])assert.throws(()=>identityProviderSettings(value));
+  for(const [value,message] of [[{newUser:'maybe'},/newUser must be auto, always or never/],[{presentation:'iframe'},/presentation must be page or dialog/],[{accentColor:'red;url(x)'},/six-digit hex color/],[{unexpected:true},/Unknown mirage\.identityProvider\.unexpected/],[{head:{scripts:'x.js'}},/head\.scripts must be an array of project file paths/]])assert.throws(()=>identityProviderSettings(value),message);
 });
 
 test('runtime identity provider receives the effective state/pack catalogue and site registration flags',async t=>{
@@ -50,8 +54,8 @@ test('runtime identity provider receives the effective state/pack catalogue and 
   const settings={'Authentication/Registration/Enabled':'False','Authentication/Registration/LocalLoginEnabled':'False','Authentication/OpenIdConnect/Local/Authority':'https://idp.example.test/tenant/','Authentication/OpenIdConnect/Local/ClientId':'synthetic-client','Authentication/OpenIdConnect/Local/ResponseType':'id_token','Authentication/OpenIdConnect/Local/Scope':'openid profile'};
   const updated=await call('/config','PATCH',{portalOverrides:{settings},identity:{...app.state().config.identity,roles:[]}});assert.equal(updated.response.status,200,JSON.stringify(updated.value));
   const session=await fetch(app.url+'/_sim/api/session').then(r=>r.json()),provider=session.identityProvider.providers[0];assert.ok(provider);
-  const challenge=await fetch(app.url+'/Account/Login/ExternalLogin?returnUrl=%2F',{method:'POST',redirect:'manual',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({provider:provider.id,__RequestVerificationToken:app.state().csrf})});assert.equal(challenge.status,302);
-  const html=await fetch(challenge.headers.get('location')).then(r=>r.text());assert.match(html,/Group 19/);assert.match(html,/Default/);assert.match(html,/500 available/);assert.match(html,/Other contacts/);assert.doesNotMatch(html,/id="paqvilo-mirage-idp-create"/);assert.match(html,/Other contacts/);
+  const challenge=await fetch(app.url+'/Account/Login/ExternalLogin?returnUrl=%2F',{method:'POST',redirect:'manual',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({provider:provider.id,__RequestVerificationToken:app.csrf})});assert.equal(challenge.status,302);
+  const html=await fetch(challenge.headers.get('location')).then(r=>r.text());assert.match(html,/Group 19/);assert.match(html,/Default/);assert.match(html,/500 available/);assert.match(html,/Other contacts/);assert.doesNotMatch(html,/id="paqvilo-mirage-idp-create"/);
 });
 
 test('catalogue/default chooser settings and project-local head assets are validated',async t=>{
@@ -80,4 +84,35 @@ test('chooser pages follow groups and subgroups while the matching default remai
  const selectedOther=nodes(chooserSearch(withOther,followed,'/authorize','')).find(node=>node.tagName==='option'&&attr(node,'value')==='__other');assert.ok(selectedOther);assert.equal(attr(selectedOther,'selected'),'');assert.equal(selectedOther.childNodes[0].value,'Other contacts');
  assert.equal(nodes(chooserSearch({...report,other:[]},new URLSearchParams(),'/authorize','')).some(node=>node.tagName==='option'&&attr(node,'value')==='__other'),false);
  const filtered=chooserResults(report,new URLSearchParams({group:'group-0'}),'/authorize');assert.doesNotMatch(filtered,/<h2>Default<\/h2>/);
+});
+
+test('persona authorize requests reuse an ordered index and invalidate changed contacts',t=>{
+  const report={groups:[{id:'members'}],personas:Array.from({length:5000},(_,i)=>({key:'p'+i,contactId:String(i),label:'Person '+(5000-i),group:'members'})),enabled:true};
+  const users=report.personas.map(persona=>({contactId:persona.contactId,subject:'subject-'+persona.contactId}));
+  const localeCompare=String.prototype.localeCompare,sort=Array.prototype.sort;
+  let catalogueSorts=0;
+  t.mock.method(String.prototype,'localeCompare',function(other,...options){
+    assert.equal(options.length,0,'display comparisons must reuse the module collator rather than supply locales/options per comparison');
+    return localeCompare.call(this,other);
+  });
+  // MockTracker rejects arrays as method targets, including Array.prototype.
+  t.after(()=>{Array.prototype.sort=sort;});
+  Array.prototype.sort=function(...args){
+    if(this.length===5000)catalogueSorts++;
+    return sort.apply(this,args);
+  };
+  const first=chooserReport(report,users),second=chooserReport(report,structuredClone(users));
+  const index=chooserSelection(first).index;
+  assert.equal(first,second);assert.equal(index.length,5000);
+  assert.equal(index,chooserSelection(second,new URLSearchParams('q=Person')).index);
+  assert.equal(index,chooserSelection(structuredClone(first)).index,'equal catalogue contents reuse ordering across report objects');
+  assert.equal(catalogueSorts,1,'unchanged authorize queries sort the catalogue once');
+  users[0].subject='changed';const changed=chooserReport(report,users);assert.notEqual(changed,first);
+  assert.equal(chooserSelection(changed).index.find(entry=>entry.key==='p0').persona.subject,'changed');
+  assert.equal(catalogueSorts,2,'a changed contact invalidates the cached index');
+  const refreshed={...report,personas:report.personas.map(persona=>persona.key==='p0'?{...persona,label:'AAA'}:persona)};
+  assert.equal(chooserSelection(chooserReport(refreshed,users)).index[0].key,'p0');
+  assert.equal(catalogueSorts,3,'a changed catalogue invalidates display ordering');
+  const direct=indexPersonaCatalog(report);
+  assert.deepEqual(direct.slice(0,3).map(entry=>entry.persona.label),['Person 1','Person 10','Person 100']);
 });

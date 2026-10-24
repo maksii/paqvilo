@@ -28,9 +28,9 @@ test('a web file URL is its parent page path plus the partial URL, not the file 
 
 test('URL lookup ignores case, encoding and a trailing slash', () => {
   const model = new PortalModel(fx.dir);
-  assert.ok(model.findWebFile('/SCRIPTS/App.JS'));
-  assert.ok(model.findWebFile('/scripts/app%2Ejs'));
-  assert.ok(model.findWebFile('/logo.svg/'));
+  assert.equal(model.findWebFile('/SCRIPTS/App.JS').file, fx.file('web-files/app.js'));
+  assert.equal(model.findWebFile('/scripts/app%2Ejs').file, fx.file('web-files/app.js'));
+  assert.equal(model.findWebFile('/logo.svg/').file, fx.file('web-files/Site-Logo'));
 });
 
 test('a web file whose parent page is unknown is reported, not mapped', () => {
@@ -90,7 +90,7 @@ test("scope 'changed' overrides only files that differ from the baseline", () =>
   const changed = baseline.changedFiles();
   assert.ok(changed.has(path.resolve(fx.file('web-files/app.js'))));
   assert.ok(changed.has(path.resolve(fx.file('web-files/new.js'))), 'untracked files count as changed');
-  assert.ok(new Resolver(model, SITE, { changed }).resolve('/scripts/app.js'));
+  assert.equal(new Resolver(model, SITE, { changed }).resolve('/scripts/app.js').file, fx.file('web-files/app.js'));
   assert.equal(new Resolver(model, SITE, { changed }).resolve('/Logo.svg'), null);
   assert.equal(baseline.show(fx.file('web-files/app.js')), original);
   assert.equal(baseline.show(fx.file('web-files/new.js')), null);
@@ -130,7 +130,7 @@ test('language metadata supplies page aliases and form usage', (t) => {
   local.write('web-files/language.js.webfile.yml', `adx_name: language.js\nadx_partialurl: language.js\nadx_parentpageid: ${languageId}\n`);
   const model = new PortalModel(local.dir);
   assert.equal(model.pagePath(languageId), '/');
-  assert.ok(model.findWebFile('/language.js'));
+  assert.equal(model.findWebFile('/language.js').file, local.file('web-files/language.js'));
   assert.deepEqual(model.pagesShowing('CONTACT-FORM'), ['/']);
   assert.deepEqual(model.inlineSources.find((s) => s.kind === 'basic-form-js').usedOn, ['/']);
 });
@@ -191,10 +191,10 @@ test('ambiguous web-file URLs disable every duplicate instead of serving an arbi
 test('resolver decodes paths once and honors changed scope on explicit routes', () => {
   const model = new PortalModel(fx.dir);
   assert.equal(new Resolver(model, SITE).resolve('/scripts/app%252Ejs'), null);
-  assert.ok(new Resolver(model, SITE).resolve('/scripts/app%2Ejs'));
+  assert.equal(new Resolver(model, SITE).resolve('/scripts/app%2Ejs').file, fx.file('web-files/app.js'));
   const site = { ...SITE, routes: [{ url: '/special.js', file: 'web-files/app.js' }] };
   assert.equal(new Resolver(model, site, { changed: new Set() }).resolve('/special.js'), null);
-  assert.ok(new Resolver(model, site, { changed: new Set([fx.file('web-files/app.js')]) }).resolve('/special.js'));
+  assert.equal(new Resolver(model, site, { changed: new Set([fx.file('web-files/app.js')]) }).resolve('/special.js').file, fx.file('web-files/app.js'));
 });
 
 test('directory routes preserve wildcard suffixes and cannot escape through junctions', (t) => {

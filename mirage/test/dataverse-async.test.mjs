@@ -1,5 +1,5 @@
 // Simulated Dataverse asynchronous service: BulkDelete jobs, background operations, their state transitions and the
-// system-table write rules. Invented schema and GUIDs only. Jobs are run by a test scheduler on a test clock, so no timers are needed.
+// system-table write rules. Jobs are run by a test scheduler on a test clock, so no timers are needed.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -175,15 +175,6 @@ test("a large selection is collected page by page and deleted in full", async ()
   assert.equal(job(t, JobId).statecode, 3);
   assert.deepEqual(widgetNames(t), ["Keep"]);
   assert.equal(operation(t, JobId).successcount, 5);
-});
-
-test("the job runs under the caller's identity: a caller without delete privilege is refused at submit", async () => {
-  const t = await setup();
-  await t.widget("Old A", 2);
-  const error = await failure(t.submit({ QuerySet: [retire(2)] }, { user: t.basic }));
-  assert.equal(error.status, 403);
-  assert.equal(t.store.state.tables.asyncoperation.length, 0, "no job row is written for a refused submit");
-  assert.equal(widgetNames(t).length, 1);
 });
 
 test("unsupported submissions are refused before any job exists", async () => {
@@ -372,9 +363,10 @@ test("a failed operation is recorded with its error and reported by the monitor"
   await t.flush();
   const id = headers["x-ms-dyn-backgroundoperationid"];
   assert.equal(bgRow(t, id).backgroundoperationstatuscode, 31);
+  assert.equal(bgRow(t, id).errorcode, -2147220970, "the stored errorcode is the Dataverse error number, not the HTTP status");
   const monitored = await t.monitor("GET", id);
   assert.deepEqual(monitored.body, {
-    // The Dataverse error number (0x80040216) of the generic failure, as a signed int; never the HTTP status 500 (P6).
+    // The Dataverse error number (0x80040216) of the generic failure, as a signed int; never the HTTP status 500.
     backgroundOperationStateCode: 3, backgroundOperationStatusCode: 31, backgroundOperationErrorCode: -2147220970, backgroundOperationErrorMessage: "Plug-in failed.",
   });
 });
@@ -462,7 +454,7 @@ function holdDelete(t, nth) {
   return { reached, release: () => open() };
 }
 
-test("P4: the documented cancel PATCH (statecode 2 and statuscode 22) cancels a queued operation; other bodies are refused", async () => {
+test("the documented cancel PATCH (statecode 2 and statuscode 22) cancels a queued operation; other bodies are refused", async () => {
   const t = await setup();
   let ran = 0;
   const op = echoApi(t, () => {
@@ -480,7 +472,7 @@ test("P4: the documented cancel PATCH (statecode 2 and statuscode 22) cancels a 
   assert.equal(bgRow(t, id).backgroundoperationstatuscode, 32);
 });
 
-test("P6: a failure row carries the Dataverse error number, the operation, the query index and the row", async () => {
+test("a failure row carries the Dataverse error number, the operation, the query index and the row", async () => {
   const t = await setup();
   const widgetId = await t.widget("Locked", 2);
   t.api.recordHooks.add("beforeWrite", (c, mapping, { operation: op }) => {
@@ -497,18 +489,7 @@ test("P6: a failure row carries the Dataverse error number, the operation, the q
   assert.equal(failed.orderedqueryindex, 1, "the second query of the QuerySet");
 });
 
-test("P6: a background operation that fails stores a negative Dataverse error number, not the HTTP status", async () => {
-  const t = await setup();
-  const op = echoApi(t, () => {
-    throw new DataError("Plug-in failed.", 500, "Failed");
-  });
-  const id = (await runInBackground(t.api, t.callOf(op), op)).headers["x-ms-dyn-backgroundoperationid"];
-  await t.flush();
-  assert.ok(bgRow(t, id).errorcode < 0, `errorcode ${bgRow(t, id).errorcode}`);
-  assert.notEqual(bgRow(t, id).errorcode, 500);
-});
-
-test("P6: a job that fails stores the Dataverse error number in errorcode", async () => {
+test("a job that fails stores the Dataverse error number in errorcode", async () => {
   const t = await setup();
   await t.widget("Old A", 2);
   const { JobId } = (await t.submit({ QuerySet: [retire(2)] })).body;
@@ -519,7 +500,7 @@ test("P6: a job that fails stores the Dataverse error number in errorcode", asyn
   assert.ok(job(t, JobId).errorcode < 0, "a signed Dataverse error number, not the HTTP status 400");
 });
 
-test("P7: parameters are stored as Key/Value arrays, the monitor flattens them back, and the row records runas", async () => {
+test("parameters are stored as Key/Value arrays, the monitor flattens them back, and the row records runas", async () => {
   const t = await setup();
   const op = echoApi(t);
   const id = (await runInBackground(t.api, t.callOf(op), op)).headers["x-ms-dyn-backgroundoperationid"];
@@ -530,7 +511,7 @@ test("P7: parameters are stored as Key/Value arrays, the monitor flattens them b
   assert.equal((await t.monitor("GET", id)).body.Out, "hi");
 });
 
-test("P8: a cancel that arrives while the operation runs does not replace its result", async () => {
+test("a cancel that arrives while the operation runs does not replace its result", async () => {
   const t = await setup();
   let id;
   const op = echoApi(t, async () => {
@@ -544,7 +525,7 @@ test("P8: a cancel that arrives while the operation runs does not replace its re
   assert.equal((await t.monitor("GET", id)).body.Out, "done");
 });
 
-test("P9: BulkDelete needs prvBulkDelete, which only System Administrator holds", async () => {
+test("BulkDelete needs prvBulkDelete, which only System Administrator holds", async () => {
   const t = await setup();
   await t.widget("Old A", 2);
   const error = await failure(t.submit({ QuerySet: [retire(2)] }, { user: t.basic }));
@@ -554,7 +535,7 @@ test("P9: BulkDelete needs prvBulkDelete, which only System Administrator holds"
   assert.ok((await t.submit({ QuerySet: [retire(2)] })).body.JobId, "the administrator may submit");
 });
 
-test("P16: asyncoperation statecode and statuscode are State and Status columns; background states have no Suspended", async () => {
+test("asyncoperation statecode and statuscode are State and Status columns; background states have no Suspended", async () => {
   const t = await setup();
   const jobFields = t.store.state.mappings.asyncoperation.fields;
   assert.equal(jobFields.statecode.dataverseType, "state");
@@ -569,7 +550,7 @@ test("P16: asyncoperation statecode and statuscode are State and Status columns;
   assert.equal(t.store.state.mappings.asyncoperation.fields.statecode.dataverseType, "state", "an earlier int mapping is corrected");
 });
 
-test("P17: BulkDelete has a CSDL fragment with its QuerySet parameters and the BulkDeleteResponse return type", async () => {
+test("BulkDelete has a CSDL fragment with its QuerySet parameters and the BulkDeleteResponse return type", async () => {
   const t = await setup();
   const csdl = t.api.registry.csdlFragments();
   assert.match(csdl, /<Action Name="BulkDelete">/);
@@ -578,7 +559,7 @@ test("P17: BulkDelete has a CSDL fragment with its QuerySet parameters and the B
   assert.match(csdl, /<ComplexType Name="BulkDeleteResponse"><Property Name="JobId" Type="Edm\.Guid" \/><\/ComplexType>/);
 });
 
-test("P19: a reset while a run is about to delete a row stops the run; the reseeded row is not deleted", async () => {
+test("a reset while a run is about to delete a row stops the run; the reseeded row is not deleted", async () => {
   const t = await setup();
   await t.widget("Old A", 2);
   await t.widget("Old B", 2);
@@ -595,7 +576,7 @@ test("P19: a reset while a run is about to delete a row stops the run; the resee
   assert.deepEqual(widgetNames(t), [waiting.name], "the reseeded row survives the stale run");
 });
 
-test("P20: a Locked bulk delete canceled mid-run ends Canceled (32) and deletes no further rows", async () => {
+test("a Locked bulk delete canceled mid-run ends Canceled (32) and deletes no further rows", async () => {
   const t = await setup();
   await t.widget("Old A", 2);
   await t.widget("Old B", 2);
@@ -613,7 +594,7 @@ test("P20: a Locked bulk delete canceled mid-run ends Canceled (32) and deletes 
   assert.deepEqual(widgetNames(t), [waiting.name]);
 });
 
-test("P21: a recurring run paused mid-run stops at its next row, queues no occurrence, and resumes to exactly one follow-up", async () => {
+test("a recurring run paused mid-run stops at its next row, queues no occurrence, and resumes to exactly one follow-up", async () => {
   const t = await setup();
   await t.widget("Old A", 2);
   const { JobId } = (await t.submit({ QuerySet: [retire(2)], RecurrencePattern: "FREQ=DAILY" })).body;
@@ -802,7 +783,7 @@ test("after a restart, a Locked job whose cancel or pause was requested is finis
   assert.deepEqual(widgetNames(restarted), ["Old A", "Old B"]);
 });
 
-// Cascade job ids, OnBackgroundOperationComplete and the system job helper that dataverse-duplicates uses. Invented GUIDs only.
+// Cascade job ids, OnBackgroundOperationComplete and the system job helper that dataverse-duplicates uses.
 const EMPTY_ID = "00000000-0000-0000-0000-000000000000";
 const BG_ID = "bbbbbbbb-0000-4000-8000-000000000001";
 test("the cascade job ids answer the empty id, and a missing or malformed parameter is refused", async () => {

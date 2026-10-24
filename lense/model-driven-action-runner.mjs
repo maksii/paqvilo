@@ -1,5 +1,5 @@
-// Fixed native operations, informed by Level Up's MIT action vocabulary. No eval,
-// extension runtime or third-party scripts are executed by this module.
+// Fixed native operations only: no eval, extension runtime or third-party scripts are executed
+// by this module.
 
 /** Passive API presence checks. Do not call getId/getValue or read form values here. */
 export function modelDrivenActionAvailability({ origin, actions = [] }) {
@@ -9,10 +9,10 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     navigate: 'This app cannot open addresses (Xrm.Navigation.openUrl).', 'open-form': 'This app cannot open forms from a script (Xrm.Navigation.openForm).',
     'side-panes': 'This app has no side panes (Xrm.App.sidePanes).', 'form-selector': 'This form does not report which form is open (formSelector).',
     'save-events': 'This form does not expose save events.', refresh: 'This form cannot be refreshed from a script.', context: 'This app does not expose its global context.' };
-  const safe = callback => { try { return callback(); } catch { return undefined; } };
-  const xrm = window.Xrm, form = safe(() => xrm?.Page), context = safe(() => xrm?.Utility?.getGlobalContext()), type = safe(() => form?.ui?.getFormType());
   // A bounded client API (or a native getter) may throw for an unsupported member;
   // that member is unavailable, never a failure of every other check.
+  const safe = callback => { try { return callback(); } catch { return undefined; } };
+  const xrm = window.Xrm, form = safe(() => xrm?.Page), context = safe(() => xrm?.Utility?.getGlobalContext()), type = safe(() => form?.ui?.getFormType());
   // The page decides what a form action can work on: the native page context, else the address (pagetype). A list,
   // dashboard or custom page has no form even when the app keeps an Xrm.Page object around.
   const pageType = safe(() => xrm?.Utility?.getPageContext?.()?.input?.pageType) ?? new URLSearchParams(location.search).get('pagetype') ?? undefined;

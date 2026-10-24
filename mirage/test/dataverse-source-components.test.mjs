@@ -136,7 +136,7 @@ test('source flags retain explicit false through layers and expose source owners
 
 async function client(sim, oldSecret) {
   const read = async (response, status = 200) => { const text = await response.text(); assert.equal(response.status, status, text); return text ? JSON.parse(text) : null; };
-  const secret = oldSecret ?? (await read(await fetch(`${sim.url}/_sim/api/dataverse/applications`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ appId: CLIENT, displayName: 'Source component fixture', roles: ['System Administrator'] }) }), 201)).secret;
+  const secret = oldSecret ?? (await read(await fetch(`${sim.url}/_sim/api/dataverse/applications`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify({ appId: CLIENT, displayName: 'Source component fixture', roles: ['System Administrator'] }) }), 201)).secret;
   const token = await read(await fetch(`${sim.dataverse.authority}/oauth2/v2.0/token`, { method: 'POST', body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: secret, scope: `${sim.dataverse.origin}/.default` }) }));
   return { secret, read, api: (method, suffix, body) => fetch(`${sim.dataverse.origin}/api/data/v9.2${suffix}`, { method, headers: { authorization: `Bearer ${token.access_token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }), catalogue: () => fetch(`${sim.url}/_apps/api`).then(read) };
 }
@@ -203,7 +203,7 @@ test('API archive import runs its model app, shares UI/API CRUD, restarts and ex
   assert.equal(app.navigation[0].groups[0].items[0].entity, 'new_runtimeitem');
   assert.equal(catalogue.tables.new_runtimeitem.forms[0].id, formId);
   assert.equal(catalogue.tables.new_runtimeitem.views[0].id, viewId);
-  const created = await connected.read(await fetch(`${fixture.sim.url}/_apps/api/tables/new_runtimeitem`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': fixture.sim.state().csrf }, body: JSON.stringify({ new_name: 'Created in model app' }) }), 201);
+  const created = await connected.read(await fetch(`${fixture.sim.url}/_apps/api/tables/new_runtimeitem`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': fixture.sim.csrf }, body: JSON.stringify({ new_name: 'Created in model app' }) }), 201);
   const recordId = created.row.new_runtimeitemid;
   assert.equal((await connected.read(await connected.api('GET', `/new_runtimeitems(${recordId})`))).new_name, 'Created in model app');
   await connected.read(await connected.api('PATCH', `/new_runtimeitems(${recordId})`, { new_name: 'Changed through API' }), 204);

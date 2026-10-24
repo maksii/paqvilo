@@ -8,8 +8,8 @@
 // Documented surface: getContext() → IContext (https://learn.microsoft.com/power-apps/developer/code-apps/how-to/retrieve-context);
 // generated services create/get/getAll/update/delete resolving to `{ data }`
 // (https://learn.microsoft.com/power-apps/developer/code-apps/how-to/connect-to-dataverse).
-// unverified: the rest of the @microsoft/power-apps surface and the internal client the generated services call; this
-// shim is not a drop-in for generated service files, which must call dataClient (below) when run against Mirage.
+// The rest of the @microsoft/power-apps surface and the internal client the generated services call are not reproduced:
+// this shim is not a drop-in for generated service files, which must call dataClient (below) when run against Mirage.
 
 let base = null;
 let csrf = null;
@@ -45,7 +45,7 @@ export async function getToken(resource) {
 }
 
 const key = id => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
-// unverified: the exact IGetAllOptions names; select/filter/orderBy/top/skipToken map to the OData query options.
+// The IGetAllOptions names are a guess; select/filter/orderBy/top/skipToken map to the OData query options.
 const query = (options = {}) => {
   const params = new URLSearchParams();
   if (options.select) params.set('$select', [options.select].flat().join(','));

@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 
 const key = value => String(value?.id ?? value ?? '').replace(/[{}]/g, '').toLowerCase();
 const node = (name, attrs = {}, children = []) => ({ name, attrs, children, text: '' });
-// XmlWriter shape observed in incoming FetchExpression captures. Unknown
+// XmlWriter shape of native FetchExpression requests. Unknown
 // attributes retain source order after known fields; their native ordering
 // needs qualification when a project introduces a new query contract.
 const attributeOrder = {
@@ -97,9 +97,9 @@ export function compilePermissionFetchXml(xml, {
   };
   if (bypass || identity.admin) return finish(true);
   normalizeQuery = true;
-  // Captured scoped FetchExpression serialization supplies these defaults and
+  // Native scoped FetchExpression serialization supplies these defaults and
   // writes order nodes before filters. Explicit DISTINCT is retained unless
-  // the caller selects the independently qualified scoped portal contract.
+  // the caller selects the scoped portal contract.
   tree.attrs.mapping ??= 'logical';
 
   const rank = { attribute: 0, 'all-attributes': 0, order: 1, filter: 2, 'link-entity': 3 };
@@ -113,9 +113,9 @@ export function compilePermissionFetchXml(xml, {
       ? (grant.roleIds ?? []).some(role => availableIds.has(key(role)))
       : !grant.roles?.length || grant.roles.some(role => availableRoles.has(role))));
   let grants = selected(root.attrs.name, operation);
-  // The independently witnessed Liquid Create right asserts table creation
+  // The Liquid Create right asserts table creation
   // eligibility and executes the authored read without scoped permission joins.
-  // The caller opts into this contract only for its observed Liquid lane.
+  // The caller opts into this contract only for its Liquid lane.
   if(unscopedCreate&&operation==='create'){
     if(grantOrder&&grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
     return finish(grants.length>0,0,grants);
@@ -135,7 +135,7 @@ export function compilePermissionFetchXml(xml, {
     if(grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
     grants=orderedGrants(root.attrs.name,grants);
   }
-  // The evidenced classic API lane constrains each authored linked table using
+  // The classic API lane constrains each authored linked table using
   // existential paths to its principal. Liquid only expands the root grants.
   // These paths come from source permissions, never a recorded query template.
   for (const ordinal of linkedPermissionOrdinals) {

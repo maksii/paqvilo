@@ -1,5 +1,5 @@
 // Cascade actions (lib/dataverse-cascade.mjs): Assign executes per relationship; Share, Unshare, Reparent and Merge are
-// diagnostics only. Invented x_ tables and GUIDs only.
+// diagnostics only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION } from "../lib/dataverse-cascade.mjs";

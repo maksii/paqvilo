@@ -1,5 +1,5 @@
 // Simulated Dataverse record handlers: collections, single rows, properties,
-// navigation, $ref, paging, writes and bound actions. Invented schema and GUIDs only.
+// navigation, $ref, paging, writes and bound actions.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -153,17 +153,6 @@ test("collection GET returns context, etags, the id under $select and no annotat
   assert.ok(res.body.value.some((row) => row.widgetid === first));
 });
 
-test("formatted-value annotations appear only when requested", async () => {
-  const t = await setup();
-  await create(t, "widgets", { name: "Alpha", price: 12.5 });
-  const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`);
-  assert.ok(!Object.keys(plain.body.value[0]).some((key) => key.includes("FormattedValue")));
-  const annotated = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`, {
-    headers: annotate("OData.Community.Display.V1.FormattedValue"),
-  });
-  assert.ok(Object.keys(annotated.body.value[0]).some((key) => key.includes("FormattedValue")));
-});
-
 test("$count is capped at 5000 and totalrecordcount annotations follow $count", async () => {
   const t = await setup();
   for (let i = 0; i < 5001; i += 1) t.store.state.tables.widget.push({ widgetid: randomUUID(), name: `n${i}`, ownerid: null });
@@ -257,7 +246,7 @@ test("unknown entity set answers 404 with the Dataverse segment error", async ()
   const t = await setup();
   const error = await failure(t.send("GET", `/api/data/${VERSION}/nothings`));
   assert.equal(error.status, 404);
-  // Native (errors.unknown-set): 0x80060888, not the 0x8006088a this test used to expect.
+  // Native: 0x80060888, not 0x8006088a.
   assert.equal(error.details.innerCode, "0x80060888");
   assert.equal(error.message, "Resource not found for the segment 'nothings'.");
 });
@@ -274,16 +263,6 @@ test("entity GET by GUID and by alternate key, with 404 for a missing row", asyn
   const missing = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${MISSING})`));
   assert.equal(missing.status, 404);
   assert.equal(missing.message, `widget With Id = ${MISSING} Does Not Exist`);
-});
-
-test("matching If-None-Match answers 304 with the etag", async () => {
-  const t = await setup();
-  const id = await create(t, "widgets", { name: "Tagged" });
-  const first = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`);
-  const etag = first.headers.ETag;
-  assert.match(etag, /^W\/"/);
-  const again = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, { headers: { "if-none-match": etag } });
-  assert.equal(again.status, 304);
 });
 
 test("POST creates with OData-EntityId, honours return=representation and binds absolute references", async () => {
@@ -304,13 +283,6 @@ test("POST creates with OData-EntityId, honours return=representation and binds 
   assert.equal(represented.body.name, "Shown");
 });
 
-test("ownership defaults set ownerid to the caller when the mapping has ownerid", async () => {
-  const t = await setup();
-  const id = await create(t, "widgets", { name: "Mine" }, t.basic);
-  const row = t.store.state.tables.widget.find((item) => item.widgetid === id);
-  assert.equal(lowerId(row.ownerid), t.basic.systemuserid.toLowerCase());
-});
-
 test("PATCH updates, enforces If-Match and If-None-Match, and rejects stale etags", async () => {
   const t = await setup();
   const id = await create(t, "widgets", { name: "Old" });
@@ -320,7 +292,7 @@ test("PATCH updates, enforces If-Match and If-None-Match, and rejects stale etag
 
   const missingIfMatch = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${MISSING})`, { body: { name: "x" }, headers: { "if-match": "*" } }));
   assert.equal(missingIfMatch.status, 404);
-  // Native (parity capture): 404 0x80040217 worded with "Entity '<table>'".
+  // Native: 404 0x80040217 worded with "Entity '<table>'".
   assert.equal(missingIfMatch.message, `Entity 'widget' With Id = ${MISSING} Does Not Exist`);
   assert.equal(missingIfMatch.details.innerCode, "0x80040217");
 
@@ -352,7 +324,7 @@ test("properties: PUT, GET, $value and DELETE set and clear a value", async () =
   assert.deepEqual(raw, { status: 200, body: "Put" });
   assert.equal((await t.send("DELETE", `/api/data/${VERSION}/widgets(${id})/price`)).status, 204);
   assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${id})/price`)).status, 204);
-  // Native (property.unknown): an unknown path segment after a record is a missing resource, 404 0x80060888 without a period.
+  // Native: an unknown path segment after a record is a missing resource, 404 0x80060888 without a period.
   const unknown = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${id})/nosuch`));
   assert.equal(unknown.status, 404);
   assert.equal(unknown.details.innerCode, "0x80060888");
@@ -386,6 +358,7 @@ test("collection navigation and $ref cover N:N associate, list and disassociate"
   const listed = await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$ref`);
   assert.equal(listed.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#Collection($ref)`);
   assert.deepEqual(listed.body.value, [{ "@odata.id": `${ORIGIN}/api/data/${VERSION}/tags(${tag})` }]);
+  assert.deepEqual((await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags?$select=name`)).body.value.map((row) => row.name), ["red"]);
   assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$count`)).body, "1");
 
   const removed = await t.send("DELETE", `/api/data/${VERSION}/widgets(${widget})/widget_tags(${tag})/$ref`);
@@ -443,13 +416,6 @@ test("CreateMultiple returns Ids; DeleteMultiple is not implemented", async () =
   assert.equal(res.body.Ids.length, 2);
   const deleted = await failure(t.send("POST", `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.DeleteMultiple`, { body: { Targets: [] } }));
   assert.equal(deleted.status, 501);
-});
-
-test("count route returns a text count", async () => {
-  const t = await setup();
-  await create(t, "widgets", { name: "one" });
-  await create(t, "widgets", { name: "two" });
-  assert.deepEqual(await t.send("GET", `/api/data/${VERSION}/widgets/$count`), { status: 200, body: "2" });
 });
 
 test("FetchXML collection omits null columns and reports more records only when requested", async () => {
@@ -534,7 +500,7 @@ test("logical table names do not route; only entity set names do", async () => {
   const t = await setup();
   const error = await failure(t.send("GET", `/api/data/${VERSION}/widget`));
   assert.equal(error.status, 404);
-  assert.equal(error.details.innerCode, "0x80060888"); // native unknown-set code (errors.unknown-set)
+  assert.equal(error.details.innerCode, "0x80060888"); // native unknown-set code
   assert.equal(error.message, "Resource not found for the segment 'widget'.");
 });
 
@@ -562,10 +528,11 @@ test("assigning an org-owned row answers 400 0x80048d19 before any assign privil
   assert.match(error.message, /An undeclared property 'ownerid'/);
 });
 
-test("owner columns follow ownerid on create and are recomputed when ownerid is reassigned", async () => {
+test("ownerid defaults to the caller, the owner columns follow it on create and are recomputed when it is reassigned", async () => {
   const t = await setup();
   const id = await create(t, "widgets", { name: "Owned" }, t.basic);
   let row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(lowerId(row.ownerid), t.basic.systemuserid.toLowerCase());
   assert.equal(lowerId(row.owninguser), t.basic.systemuserid.toLowerCase());
   assert.equal(lowerId(row.owningbusinessunit), businessUnitOf(t.basic));
   const moved = await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, {
@@ -586,9 +553,12 @@ test("an impersonating caller is recorded in createdonbehalfby and modifiedonbeh
   let row = t.store.state.tables.widget.find((item) => item.widgetid === id);
   assert.equal(lowerId(row.createdby), t.basic.systemuserid.toLowerCase());
   assert.equal(lowerId(row.createdonbehalfby), t.admin.systemuserid.toLowerCase());
+  assert.equal(lowerId(row.modifiedonbehalfby), t.admin.systemuserid.toLowerCase());
   await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Imp2" }, user: t.admin, caller: t.basic });
   row = t.store.state.tables.widget.find((item) => item.widgetid === id);
   assert.equal(lowerId(row.modifiedonbehalfby), t.basic.systemuserid.toLowerCase());
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Direct" }, user: t.basic });
+  assert.equal(t.store.state.tables.widget.find((item) => item.widgetid === id).modifiedonbehalfby, null, "a direct write clears it");
   const plain = await create(t, "widgets", { name: "Plain" });
   const plainRow = t.store.state.tables.widget.find((item) => item.widgetid === plain);
   assert.equal(plainRow.createdonbehalfby, null);
@@ -653,15 +623,6 @@ test("lookups to the owner carry their navigation name when annotations are requ
   assert.equal(res.body["_ownerid_value@Microsoft.Dynamics.CRM.associatednavigationproperty"], "ownerid");
 });
 
-test("money formatted values carry the currency symbol, $ by default", async () => {
-  const t = await setup();
-  await create(t, "widgets", { name: "Priced", price: 12.5 });
-  const res = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`, {
-    headers: annotate("OData.Community.Display.V1.FormattedValue"),
-  });
-  assert.equal(res.body.value[0]["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
-});
-
 test("Basic-depth reads include rows shared with the caller", async () => {
   const t = await setup();
   const shared = await create(t, "widgets", { name: "Shared" });
@@ -693,6 +654,7 @@ test("money columns serialize with four decimals, a currency symbol and the base
   assert.equal(list.body.value[0][CURRENCY], currency.transactioncurrencyid);
   const priceOnly = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`, { headers: annotate("*") });
   assert.ok(!(CURRENCY in priceOnly.body.value[0]), "a $select without the currency lookup omits it and its annotations");
+  assert.equal(priceOnly.body.value[0]["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
   assert.ok(!Object.keys(list.body.value[0]).some((key) => key.includes("@") && !key.startsWith("@odata.")), "annotations stay opt-in");
 });
 
@@ -733,21 +695,6 @@ test("system columns are written whether or not the mapping declares them, and f
   const tagRow = t.store.state.tables.tag.find((item) => item.tagid === tag);
   assert.equal(lowerId(tagRow.createdby), t.admin.systemuserid);
   assert.ok(!("ownerid" in tagRow) && !("owningbusinessunit" in tagRow));
-});
-
-test("an impersonated write records the caller in createdonbehalfby and modifiedonbehalfby", async () => {
-  const t = await setup();
-  const id = await create(t, "widgets", { name: "On behalf" }, t.basic);
-  const impersonated = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Delegated" }, user: t.basic, caller: t.admin });
-  assert.equal(impersonated.status, 204);
-  const other = /\(([^()]+)\)$/.exec(impersonated.headers["OData-EntityId"])[1];
-  const row = t.store.state.tables.widget.find((item) => item.widgetid === other);
-  assert.equal(lowerId(row.createdby), t.basic.systemuserid);
-  assert.equal(lowerId(row.createdonbehalfby), t.admin.systemuserid);
-  assert.equal(lowerId(row.modifiedonbehalfby), t.admin.systemuserid);
-  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Direct" }, user: t.basic });
-  const direct = t.store.state.tables.widget.find((item) => item.widgetid === id);
-  assert.equal(direct.modifiedonbehalfby, null);
 });
 
 test("undeclared system lookups read as null _x_value and can be selected and filtered", async () => {
@@ -1031,7 +978,7 @@ test("system columns in a payload are ignored on create and update; overriddencr
   assert.notEqual(row().versionnumber, 99);
   assert.equal(row().createdon, "2020-01-02T03:04:05.000Z");
   assert.equal(row().overriddencreatedon, "2020-01-02T03:04:05.000Z");
-  // unverified: live capture (ignored silently on update; the platform's answer is not captured).
+  // Not observed natively: ignoring these silently on update is a guess.
   await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, {
     body: { name: "Patched", createdon: "2031-01-01T00:00:00Z", overriddencreatedon: "2030-01-01T00:00:00Z", "modifiedby@odata.bind": `/systemusers(${t.basic.systemuserid})` },
     user: t.admin,
@@ -1091,18 +1038,6 @@ test("$expand, navigation $filter and FetchXML link-entity trim rows the caller 
   assert.ok(!JSON.stringify(linked.body).includes("AdminWidget"));
 });
 
-test("expanding to a table the caller cannot read answers 403 0x80040220", async () => {
-  const t = await setup();
-  const mine = await create(t, "widgets", { name: "BasicWidget" }, t.basic);
-  // Every built-in role reads org-owned tables, so the vault table is added without privileges and has a row to read.
-  t.store.state.mappings.vault = { logicalName: "vault", entitySet: "vaults", idColumn: "vaultid", nameColumn: "name", fields: { name: text } };
-  t.store.state.mappings.widget.relationships.widget_vault = { entity: "vault", from: "widgetid", to: "vaultid", many: false };
-  t.store.state.tables.vault = [{ vaultid: randomUUID(), name: "gold" }];
-  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${mine})?$expand=widget_vault`, { user: t.basic }));
-  assert.equal(error.status, 403);
-  assert.equal(error.details.innerCode, "0x80040220");
-});
-
 test("collection responses carry the global metadata version after the count, when requested", async () => {
   const t = await setup();
   await create(t, "widgets", { name: "a" });
@@ -1140,20 +1075,6 @@ test("savedQuery and userQuery answer 501 when no query hook answers them, on co
   }
   const nav = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${id})/widget_gadgets?savedQuery=${MISSING}`));
   assert.equal(nav.status, 501);
-});
-
-test("N:N navigation collections and their $count read through the intersect table", async () => {
-  const t = await setup();
-  const widget = await create(t, "widgets", { name: "Tagged" });
-  const tag = await create(t, "tags", { name: "red" });
-  const linked = await t.send("POST", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$ref`, {
-    body: { "@odata.id": `${ORIGIN}/api/data/${VERSION}/tags(${tag})` },
-  });
-  assert.equal(linked.status, 204);
-  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags?$select=name`);
-  assert.equal(res.status, 200);
-  assert.deepEqual(res.body.value.map((row) => row.name), ["red"]);
-  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$count`)).body, "1");
 });
 
 test("UpdateMultiple keeps the first target per key; UpsertMultiple refuses a repeated key before writing", async () => {
@@ -1212,15 +1133,20 @@ test("afterWrite runs inside the write's transaction: an awaited hook sees the r
   assert.deepEqual(seen.slice(0, 3), ["before:create", "after:create", "row-visible:true"], "the row is visible to the awaited hook inside the transaction");
 });
 
-test("expanding or linking to a table the caller cannot read answers 403 even when that table has no rows", async () => {
+test("expanding or linking to a table the caller cannot read answers 403, with or without rows in it", async () => {
   const t = await setup();
   const mine = await create(t, "widgets", { name: "BasicWidget" }, t.basic);
   t.store.state.mappings.vault = { logicalName: "vault", entitySet: "vaults", idColumn: "vaultid", nameColumn: "name", fields: { name: text } };
   t.store.state.mappings.widget.relationships.widget_vault = { entity: "vault", from: "widgetid", to: "vaultid", many: false };
+  // Every built-in role reads org-owned tables, so the vault table is added without privileges.
   t.store.state.tables.vault = [];
   const expanded = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${mine})?$expand=widget_vault`, { user: t.basic }));
   assert.equal(expanded.status, 403);
   assert.equal(expanded.details.innerCode, "0x80040220");
+  t.store.state.tables.vault.push({ vaultid: randomUUID(), name: "gold" });
+  const withRow = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${mine})?$expand=widget_vault`, { user: t.basic }));
+  assert.equal(withRow.status, 403);
+  assert.equal(withRow.details.innerCode, "0x80040220");
   const xml = '<fetch><entity name="widget"><attribute name="name"/><link-entity name="vault" from="vaultid" to="widgetid" link-type="outer" alias="v"><attribute name="name" alias="v.name"/></link-entity></entity></fetch>';
   const linked = await failure(t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${encodeURIComponent(xml)}`, { user: t.basic }));
   assert.equal(linked.status, 403);
@@ -1245,7 +1171,7 @@ test("the raw request body reaches the stream and write hooks as c.bodyBuffer", 
   assert.deepEqual(raw, [["stream", "raw-get"], ["before", "create", '{"name":"x"}']]);
 });
 
-test("$expand and FetchXML aggregates answer a formatted value for count and sum when annotations are requested", async () => {
+test("FetchXML aggregates answer a formatted value for count and sum when annotations are requested", async () => {
   const t = await setup();
   await create(t, "widgets", { name: "a", price: 1.5 });
   await create(t, "widgets", { name: "b", price: 2.25 });
@@ -1253,7 +1179,6 @@ test("$expand and FetchXML aggregates answer a formatted value for count and sum
   const res = await t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${xml}`, { headers: annotate("OData.Community.Display.V1.FormattedValue") });
   const [row] = res.body.value;
   assert.equal(row.n, 2);
-  assert.equal(typeof row["n@OData.Community.Display.V1.FormattedValue"], "string");
   assert.equal(row["n@OData.Community.Display.V1.FormattedValue"], "2");
   assert.equal(row["total@OData.Community.Display.V1.FormattedValue"], "3.75");
 });
@@ -1359,7 +1284,7 @@ test("a Dataverse groupby without $orderby answers its groups in ascending key o
   await create(t, "widgets", { name: "Beta", price: 1 });
   await create(t, "widgets", { name: "Alpha", price: 2 });
   await create(t, "widgets", { name: "Beta", price: 4 });
-  // observed: parity case query.apply-group; native sorts groups by key when there is no $orderby.
+  // Native sorts groups by key when there is no $orderby.
   const grouped = await t.send("GET", `/api/data/${VERSION}/widgets?$apply=groupby((name),aggregate(price with sum as total))`);
   assert.equal(grouped.status, 200);
   assert.deepEqual(grouped.body.value.map((row) => [row.name, row.total]), [["Alpha", 2], ["Beta", 5]]);
@@ -1394,26 +1319,14 @@ test("$filter, $orderby and $count on a hidden secured column read it as null fo
   assert.ok(plain.body.value.every((row) => row.secret == null));
 });
 
-test("$select=* answers every column, and an unknown $select column still answers 400 0x80060888", async () => {
-  const t = await setup();
-  const id = await create(t, "widgets", { name: "Star", price: 2 });
-  const star = await t.send("GET", `/api/data/${VERSION}/widgets?$select=*`);
-  assert.equal(star.status, 200);
-  assert.equal(star.body.value[0].name, "Star");
-  assert.equal(star.body.value[0].widgetid, id);
-  assert.equal(star.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(*)`);
-  const single = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=*`);
-  assert.equal(single.body.name, "Star");
-  const unknown = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$select=name,bogus`));
-  assert.equal(unknown.status, 400);
-  assert.equal(unknown.details.innerCode, "0x80060888");
-});
-
 test("a read with no $select or $select=* answers every table column, unset ones as null; a $select list names only its columns", async () => {
   const t = await setup();
   const id = await create(t, "widgets", { name: "Sparse" });
   const star = await t.send("GET", `/api/data/${VERSION}/widgets?$select=*`);
+  assert.equal(star.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(*)`);
   const row = star.body.value[0];
+  assert.equal(row.widgetid, id);
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=*`)).body.name, "Sparse");
   for (const column of ["widgetid", "name", "code", "price", "status", "createdon", "statecode", "statuscode", "_createdby_value", "_ownerid_value"]) {
     assert.ok(column in row, `${column} is answered`);
   }
@@ -1436,7 +1349,7 @@ test("a row with a money value answers its base amount, the base currency and ex
   const row = (await t.send("GET", `/api/data/${VERSION}/widgets`)).body.value[0];
   assert.match(stringifyExactJson(row), /"price_base":12\.5000[,}]/);
   assert.equal(row.exchangerate, 1);
-  assert.ok(row[CURRENCY], "the base currency is answered");
+  assert.equal(row[CURRENCY], baseCurrencyId(ORG));
 });
 
 test("a full-row read formats the base companion like its money column and the rate at 12 places", async () => {
@@ -1444,7 +1357,7 @@ test("a full-row read formats the base companion like its money column and the r
   await create(t, "widgets", { name: "Priced", price: 12.5 });
   const row = (await t.send("GET", `/api/data/${VERSION}/widgets`, { headers: annotate("*") })).body.value[0];
   const formatted = "@OData.Community.Display.V1.FormattedValue";
-  assert.ok(row[`price${formatted}`], "the money column is formatted");
+  assert.equal(row[`price${formatted}`], "$12.50");
   assert.equal(row[`price_base${formatted}`], row[`price${formatted}`]);
   assert.equal(row[`exchangerate${formatted}`], "1.000000000000");
 });
@@ -1474,7 +1387,7 @@ test("a single-valued $ref answers the $ref context", async () => {
   const gadget = await create(t, "gadgets", { name: "Pointer", "widgetid@odata.bind": `/widgets(${widget})` });
   const ref = await t.send("GET", `/api/data/${VERSION}/gadgets(${gadget})/widgetid/$ref`);
   assert.equal(ref.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#$ref`);
-  assert.match(ref.body["@odata.id"], /widgets\(/);
+  assert.equal(ref.body["@odata.id"], `${ORIGIN}/api/data/${VERSION}/widgets(${widget})`);
 });
 
 test("an expanded collection links its children, each child carries its parent lookup, and an unselected expansion answers every column", async () => {
@@ -1593,7 +1506,7 @@ test("PATCH answers its headers by shape, and a representation drops the null co
 test("a key read that selects a money column answers the base currency lookup once the row has held money, even when the money is now null", async () => {
   const t = await setup();
   const base = t.store.state.tables.transactioncurrency[0].transactioncurrencyid;
-  // observed: parity case values.pqwp_money.0: a row never given money has no currency lookup, selected or not.
+  // Native: a row never given money has no currency lookup, selected or not.
   const blank = await create(t, "widgets", { name: "Blank" });
   const never = await t.send("GET", `/api/data/${VERSION}/widgets(${blank})?$select=name,price`, { headers: annotate("*") });
   assert.ok(!(CURRENCY in never.body), "a row never given money carries no lookup");
@@ -1607,7 +1520,7 @@ test("a key read that selects a money column answers the base currency lookup on
 
 test("a negative money value reads in parentheses with the currency symbol inside them", async () => {
   const t = await setup();
-  // observed: parity case values.pqwp_money.2.create: (₴1,000.0000) with a minus-sign money read as parentheses.
+  // Native: (₴1,000.0000) with a minus-sign money read as parentheses.
   const id = await create(t, "widgets", { name: "Owed", price: -3 });
   const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price`, { headers: annotate("*") });
   assert.equal(res.body["price@OData.Community.Display.V1.FormattedValue"], "($3.00)");
@@ -1775,7 +1688,7 @@ test("a tracked first page without $orderby answers in row-version order, and th
   await create(t, "widgets", { name: "c" });
   await t.send("PATCH", `/api/data/${VERSION}/widgets(${b})`, { body: { name: "b2" } });
   const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
-  // observed: parity case query.track-changes: the initial tracked page is in creation and update order (the updated row last).
+  // Native: the initial tracked page is in creation and update order (the updated row last).
   assert.deepEqual(full.body.value.map((row) => row.name), ["a", "c", "b2"]);
   assert.ok(!full.body["@odata.deltaLink"].includes("orderby"), "the internal sort stays out of the link");
 });

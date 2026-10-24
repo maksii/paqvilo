@@ -1,6 +1,6 @@
 // Connector operations run where the engine calls them (an untaken If branch calls nothing, a taken one calls once and
 // uses the answer; writes before the call happen once), property formulas wait for their connector answer, and the driver
-// API keeps every digit of an exact decimal. Invented connector and data only.
+// API keeps every digit of an exact decimal.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -108,7 +108,7 @@ async function httpStart(t) {
   return { org, sent, instance };
 }
 
-test('a Patch before a connector call commits the id the connector was sent; GUID() keeps its value across the replay (FC3-60)', async t => {
+test('a Patch before a connector call commits the id the connector was sent; GUID() keeps its value across the replay', async t => {
   const { org, sent, instance } = await httpStart(t);
   const { errors, snapshot } = await instance.act({ action: 'run', formula:
     'Set(fxRow, Patch(Widgets, Defaults(Widgets), {fx_name: "Sixty"})); Set(fxG, GUID()); Set(fxReply, Svc.Echo({text: Text(fxRow.fx_widgetid) & "|" & Text(fxG)}).text)' });
@@ -119,7 +119,7 @@ test('a Patch before a connector call commits the id the connector was sent; GUI
   assert.equal(snapshot.variables.fxReply, `echo ${committed[0]}|${snapshot.variables.fxG}`);
 });
 
-test('a connector failure is an error value: IfError sees Kind Network with Details, later statements run, unhandled it is the result (FC3-61)', async t => {
+test('a connector failure is an error value: IfError sees Kind Network with Details, later statements run, unhandled it is the result', async t => {
   const { instance } = await httpStart(t);
   let { errors, snapshot } = await instance.act({ action: 'run', formula:
     'Set(fxKind, IfError(Svc.Fail({text: "x"}).text, FirstError.Kind & "/" & FirstError.Details.HttpStatusCode & "/" & FirstError.Details.HttpResponse)); Set(fxAfter, "ran")' });
@@ -135,7 +135,7 @@ test('a connector failure is an error value: IfError sees Kind Network with Deta
   assert.equal(snapshot.variables.fxAfter3, 'ran');
 });
 
-test('a connector operation that is not simulated is NotSupported (20) without network Details (RC4a-13)', async t => {
+test('a connector operation that is not simulated is NotSupported (20) without network Details', async t => {
   const org = await organization(t);
   const app = await fixtureApp(files);
   const instance = createCanvasApp({ app, evaluator: createPowerFxEvaluator(), principal: org.admin, api: org.api, caller: org.caller, connectors: async () => undefined });

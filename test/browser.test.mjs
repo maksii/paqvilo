@@ -243,7 +243,7 @@ test('owned profiles discard obsolete loopback Mirage port cookies while preserv
   fs.writeFileSync(file,JSON.stringify(cookies));const removed=[];let restored;
   const context=Object.assign(new EventEmitter(),{cookies:async()=>cookies,clearCookies:async match=>removed.push(match.name),addCookies:async values=>{restored=values;}});
   const stop=await keepSessionCookies(context,file,{origins:['http://127.0.0.1:9000','http://127.0.0.1:9100']});await stop();
-  assert.deepEqual(removed,['paqvilo-mirage-auth-8000','paqvilo-mirage-idp-8000']);assert.equal(restored.length,4);
+  assert.deepEqual(removed,['paqvilo-mirage-auth-8000','paqvilo-mirage-idp-8000']);assert.deepEqual(restored.map(item=>[item.name,item.domain]),[['paqvilo-mirage-auth-9000','127.0.0.1'],['paqvilo-mirage-auth-9100','127.0.0.1'],['session','portal.example.test'],['paqvilo-mirage-auth-8000','portal.example.test']]);
   assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).length,4);
 });
 

@@ -333,7 +333,7 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
         message: "The selected solution layers no longer define this table; its imported mapping was reset.",
       });
     }
-  // Complete column metadata for Web API tables (B's 400 InvalidAttribute rule).
+  // Complete column metadata for Web API tables (the 400 InvalidAttribute rule).
   const schema = metadata.schema;
   const apiTables = webApiTables ? new Set([...webApiTables].map((name) => String(name).toLowerCase())) : null;
   for (const [name, mapping] of Object.entries(result.mappings)) {

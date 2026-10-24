@@ -1,8 +1,7 @@
 // Dataverse metadata messages with no table-write semantics of their own: reference checks between tables, autonumber
 // seeds, key activation, language packs, localized labels and translation files. Each is an unbound operation in
-// api.registry, so the Web API and SOAP's generic OrganizationRequest dispatch both reach it. Behaviour follows the Learn
-// pages cited per message; details Learn does not give are marked "unverified". Writes run in one store transaction
-// through api.change. Reads never change state.
+// api.registry, so the Web API and SOAP's generic OrganizationRequest dispatch both reach it. Writes run in one store
+// transaction through api.change. Reads never change state. Refusal messages without a native error code are guesses.
 import { randomUUID } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
@@ -15,9 +14,9 @@ import { handleMetadataWrite, activateKey } from "./dataverse-metadata-tables.mj
 import { zipOf } from "./dataverse-solutions.mjs";
 
 const DEFAULT_LCID = 1033;
-const LABEL_LIMIT = 500; // Learn (import translated text): text over 500 characters fails the import
+const LABEL_LIMIT = 500; // translated text over 500 characters fails the import
 const TABLE_LABELS = ["DisplayName", "DisplayCollectionName", "Description"];
-// Learn (RetrieveLocLabels, SetLocLabels "Supported Tables"): the only attributes these messages accept.
+// The only attributes RetrieveLocLabels and SetLocLabels accept (their documented supported tables).
 const LOC_ATTRIBUTES = {
   dynamicproperty: ["name"],
   dynamicpropertyoptionsetitem: ["dynamicpropertyoptionname", "dynamicpropertyoptiondescription"],
@@ -38,47 +37,46 @@ const xmlUnesc = (value) => value.replace(/&lt;/g, "<").replace(/&gt;/g, ">").re
 // The operation's argument: a JSON body member for actions, a URL parameter for functions.
 const argOf = (c, name) => (c.body?.[name] !== undefined ? c.body[name] : c.params?.[name]);
 const required = (value, name) => {
-  if (value === undefined || value === null || value === "") throw fail(`${name} is required.`); // unverified: message text
+  if (value === undefined || value === null || value === "") throw fail(`${name} is required.`);
   return value;
 };
 const lcidOf = (value, name) => {
   const number = Number(value);
-  if (!Number.isInteger(number) || number <= 0) throw fail(`${name} must be a language code.`); // unverified: message text
+  if (!Number.isInteger(number) || number <= 0) throw fail(`${name} must be a language code.`);
   return number;
 };
 const baseOf = (api) => Number(api.settings?.localeId ?? DEFAULT_LCID);
 const tableOf = (api, name) => api.store.resolveMapping(lower(required(name, "EntityName")));
 const writeState = (api, fn) => api.change(() => api.store.transact(fn));
 
-// ---- Reference checks (Learn: CanBeReferenced, CanBeReferencing, CanManyToMany and the GetValid* functions) ----
-// Intersect tables take no relationships. Elastic tables take no N:N relationship (E1 brief). Elastic detection is
-// unverified: it reads the mapping's TableType, which the metadata reader does not expose yet.
+// ---- Reference checks
+// Intersect tables take no relationships. Elastic tables take no N:N relationship.
 const kindOf = (mapping) => {
   if (mapping.intersect) return "intersect";
   if (mapping.tableType === "Elastic" || mapping.dataverseMetadata?.TableType === "Elastic") return "elastic";
   return "standard";
 };
-const canBeReferenced = (mapping) => kindOf(mapping) !== "intersect"; // unverified: virtual and elastic tables
-const canBeReferencing = (mapping) => kindOf(mapping) !== "intersect"; // unverified: virtual and elastic tables
+const canBeReferenced = (mapping) => kindOf(mapping) !== "intersect"; // assumed true for virtual and elastic tables
+const canBeReferencing = (mapping) => kindOf(mapping) !== "intersect"; // assumed true for virtual and elastic tables
 const canManyToMany = (mapping) => kindOf(mapping) === "standard";
 const namesWhere = (api, test) => Object.values(api.store.state.mappings)
   .filter((mapping) => mapping.logicalName && test(mapping))
   .map((mapping) => mapping.logicalName)
   .sort();
 
-// ---- Autonumber (Learn "Create autonumber columns": seed default 1000, SetAutoNumberSeed, GetNextAutoNumberValue) ----
+// ---- Autonumber (default seed 1000)
 // The counter is the next value, kept in settings.autoNumberSequences exactly where the record writer advances it.
 function autoNumberOf(api, c) {
   const mapping = tableOf(api, argOf(c, "EntityName"));
   const attribute = lower(required(argOf(c, "AttributeName"), "AttributeName"));
   const definition = api.store.fieldDefinitions(mapping.logicalName)[attribute];
-  if (!definition?.autoNumberFormat) throw fail(`The column ${attribute} of ${mapping.logicalName} is not an autonumber column.`); // unverified
+  if (!definition?.autoNumberFormat) throw fail(`The column ${attribute} of ${mapping.logicalName} is not an autonumber column.`);
   const key = `${mapping.logicalName}.${attribute}`;
   const counter = api.store.state.settings?.autoNumberSequences?.[key];
   return { key, seed: Number(definition.autoNumberSeed ?? 1000), next: Number(counter ?? definition.autoNumberSeed ?? 1000) };
 }
 
-// ---- Languages (Learn "Manage languages for your organization") ----
+// ---- Languages
 // The base language is the organization language. Language packs are not installable through the API, so the installed
 // list is the base language plus settings.languagePacks. Provisioned and deprovisioned are kept in state.dataverse.languages.
 function languagesOf(api) {
@@ -96,8 +94,8 @@ const provisionedOf = (languages) => [...new Set([languages.base, ...languages.p
 // The refusals of ProvisionLanguage, checked without writing (ProvisionLanguageAsync checks them before its job).
 function checkProvision(api, lcid) {
   const languages = languagesOf(api);
-  if (lcid === languages.base || languages.provisioned.includes(lcid)) throw fail(`The language ${lcid} is already provisioned.`); // unverified
-  if (!languages.installed.includes(lcid)) throw fail(`The language pack ${lcid} is not installed.`); // unverified
+  if (lcid === languages.base || languages.provisioned.includes(lcid)) throw fail(`The language ${lcid} is already provisioned.`);
+  if (!languages.installed.includes(lcid)) throw fail(`The language pack ${lcid} is not installed.`);
 }
 
 async function provisionLanguage(api, lcid) {
@@ -115,8 +113,8 @@ async function provisionLanguage(api, lcid) {
 
 async function deprovisionLanguage(api, lcid, cleanup) {
   const languages = languagesOf(api);
-  if (lcid === languages.base) throw fail("The base language cannot be deprovisioned."); // unverified
-  if (!languages.provisioned.includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`); // unverified
+  if (lcid === languages.base) throw fail("The base language cannot be deprovisioned.");
+  if (!languages.provisioned.includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`);
   await writeState(api, () => {
     const dv = (api.store.state.dataverse ??= {});
     dv.languages = {
@@ -131,17 +129,17 @@ async function deprovisionLanguage(api, lcid, cleanup) {
   });
 }
 
-// ---- Localized labels (Learn SetLocLabels, RetrieveLocLabels) ----
+// ---- Localized labels
 // Labels live in state.dataverse.locLabels keyed "<table>|<row id>|<attribute>", each { lcid: text }.
 function monikerOf(api, value) {
   const body = value ?? {};
   const typeName = String(body["@odata.type"] ?? "").replace(/^#?Microsoft\.Dynamics\.CRM\./, "");
   const logical = lower(body.LogicalName ?? typeName);
-  if (!logical) throw fail("EntityMoniker is required."); // unverified: message text
+  if (!logical) throw fail("EntityMoniker is required.");
   const mapping = tableOf(api, logical);
   const fromId = /\(([^()]+)\)\s*$/.exec(String(body["@odata.id"] ?? ""))?.[1];
   const id = lower(GUID.exec(String(body[mapping.idColumn] ?? fromId ?? body.Id ?? "").trim())?.[1] ?? "");
-  if (!id) throw fail("EntityMoniker needs a row id."); // unverified: message text
+  if (!id) throw fail("EntityMoniker needs a row id.");
   const rows = api.store.state.tables[mapping.logicalName] ?? [];
   if (!rows.some((row) => lower(row[mapping.idColumn]) === id)) throw fail(`Could not find item '${id}'.`, 404, "NotFound");
   return { mapping, id };
@@ -149,15 +147,15 @@ function monikerOf(api, value) {
 function localizedAttribute(mapping, attribute) {
   const name = lower(required(attribute, "AttributeName"));
   if (!LOC_ATTRIBUTES[mapping.logicalName]?.includes(name)) {
-    throw fail(`The attribute ${name} of ${mapping.logicalName} does not support localized labels.`); // unverified: message text
+    throw fail(`The attribute ${name} of ${mapping.logicalName} does not support localized labels.`);
   }
   return name;
 }
 const labelKey = (mapping, id, attribute) => `${mapping.logicalName}|${id}|${attribute}`;
 
-// ---- Translation files (Learn "Customize labels to support multiple languages": CrmTranslations.xml in a zip) ----
-// Layout: one LocLabel per label. ponytail: the exact CrmTranslations.xml sheets (Information, Display Strings) are not
-// written; the element layout here is unverified and is read back only by this module.
+// ---- Translation files (zip archives)
+// CrmFieldTranslations.xml layout: one LocLabel per label. ponytail: this element layout is a guess and is read back only by
+// this module; match the native file when one is available.
 function readZipFiles(buffer) {
   let eocd = -1;
   for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 65557); i--) {
@@ -166,12 +164,12 @@ function readZipFiles(buffer) {
       break;
     }
   }
-  if (eocd < 0) throw fail("The translation file is not a zip archive."); // unverified: message text
+  if (eocd < 0) throw fail("The translation file is not a zip archive.");
   const count = buffer.readUInt16LE(eocd + 10);
   let p = buffer.readUInt32LE(eocd + 16);
   const files = new Map();
   for (let n = 0; n < count; n++) {
-    if (buffer.readUInt32LE(p) !== 0x02014b50) throw fail("The translation file is not a valid zip archive."); // unverified
+    if (buffer.readUInt32LE(p) !== 0x02014b50) throw fail("The translation file is not a valid zip archive.");
     const method = buffer.readUInt16LE(p + 10);
     const size = buffer.readUInt32LE(p + 20);
     const nameLength = buffer.readUInt16LE(p + 28);
@@ -226,7 +224,7 @@ async function importRows(api, rows) {
       const lcid = String(row.languagecode ?? "");
       if (!/^\d+$/.test(lcid)) continue;
       const text = row.description ?? "";
-      if (text.length > LABEL_LIMIT) throw fail(`A translated label is longer than ${LABEL_LIMIT} characters.`); // unverified: message text
+      if (text.length > LABEL_LIMIT) throw fail(`A translated label is longer than ${LABEL_LIMIT} characters.`);
       if (row.ObjectType === "table") {
         const mapping = api.store.state.mappings[row.Name];
         if (!mapping || !TABLE_LABELS.includes(row.Property)) continue; // labels for components not in this organization are dropped
@@ -246,8 +244,8 @@ function exportFile(rows, root) {
   return zipOf([{ name: `${root}.xml`, data: xml }, { name: "[Content_Types].xml", data: Buffer.from(CONTENT_TYPES, "utf8") }]);
 }
 
-// CrmTranslations.xml (ExportTranslation, ImportTranslation) is SpreadsheetML 2003 with the three sheets Learn names.
-// unverified: the Information sheet's rows, the empty Display Strings sheet, and the Object Type "Record" of a row label.
+// CrmTranslations.xml (ExportTranslation, ImportTranslation) is SpreadsheetML 2003 with the three documented sheets.
+// The Information sheet's rows, the empty Display Strings sheet and the Object Type "Record" of a row label are guesses.
 const TRANSLATION_ZIP = "The translation file is invalid. The compressed file must contain the following files at its root: CrmTranslations.xml, [Content_Types].xml.";
 const TRANSLATION_SCHEMA = "The translations file is invalid or does not confirm to the required schema.";
 const LABEL_COLUMNS = ["Entity Name", "Object Type", "Object Id", "Object Column Name"];
@@ -311,7 +309,7 @@ function translationRows(base64) {
 function fieldRows(base64) {
   const files = readZipFiles(Buffer.from(String(required(base64, "TranslationFile")), "base64"));
   const entry = files.get("CrmFieldTranslations.xml");
-  if (!entry) throw fail("The translation file has no CrmFieldTranslations.xml."); // unverified: message text
+  if (!entry) throw fail("The translation file has no CrmFieldTranslations.xml.");
   return rowsOf(entry.toString("utf8"));
 }
 
@@ -342,18 +340,18 @@ function operations(api) {
   const privilege = (c, name, entity) => requireMetadataPrivilege(api, c, name, entity);
   const solutionRow = (name) => {
     const row = (api.store.state.tables.solution ?? []).find((r) => lower(r.uniquename) === lower(name));
-    if (!row) throw fail(`Solution ${name} does not exist.`, 404, "NotFound"); // unverified: message text
+    if (!row) throw fail(`Solution ${name} does not exist.`, 404, "NotFound");
     return row;
   };
   const key = (mapping, name) => {
     const found = (mapping.alternateKeys ?? []).find((k) => lower(k.name) === lower(name) || lower(k.schemaName) === lower(name));
-    if (!found) throw fail(`Could not find the key ${name} of ${mapping.logicalName}.`, 404, "NotFound"); // unverified: message text
+    if (!found) throw fail(`Could not find the key ${name} of ${mapping.logicalName}.`, 404, "NotFound");
     return found;
   };
   const languageArg = (c) => lcidOf(required(argOf(c, "Language"), "Language"), "Language");
 
   const ops = [
-    // References (Learn: CanBeReferenced, CanBeReferencing, CanManyToMany, GetValid*)
+    // References
     { name: "CanBeReferenced", kind: "action", signature: { params: [["EntityName","Edm.String"]], response: [["CanBeReferenced", "Edm.Boolean"]] }, handle: (c) => reply({ CanBeReferenced: canBeReferenced(tableOf(api, argOf(c, "EntityName"))) }) },
     { name: "CanBeReferencing", kind: "action", signature: { params: [["EntityName","Edm.String"]], response: [["CanBeReferencing", "Edm.Boolean"]] }, handle: (c) => reply({ CanBeReferencing: canBeReferencing(tableOf(api, argOf(c, "EntityName"))) }) },
     { name: "CanManyToMany", kind: "action", signature: { params: [["EntityName","Edm.String"]], response: [["CanManyToMany", "Edm.Boolean"]] }, handle: (c) => reply({ CanManyToMany: canManyToMany(tableOf(api, argOf(c, "EntityName"))) }) },
@@ -362,17 +360,17 @@ function operations(api) {
       name: "GetValidReferencedEntities", kind: "function", signature: { params: [["ReferencingEntityName", "Edm.String"]], response: [["EntityNames", "Collection(Edm.String)"]] },
       handle: async (c) => {
         const referencing = tableOf(api, argOf(c, "ReferencingEntityName"));
-        return reply({ EntityNames: canBeReferencing(referencing) ? namesWhere(api, canBeReferenced) : [] }); // unverified: empty answer
+        return reply({ EntityNames: canBeReferencing(referencing) ? namesWhere(api, canBeReferenced) : [] }); // the empty answer is a guess
       },
     },
     {
       name: "GetValidReferencingEntities", kind: "function", signature: { params: [["ReferencedEntityName", "Edm.String"]], response: [["EntityNames", "Collection(Edm.String)"]] },
       handle: async (c) => {
         const referenced = tableOf(api, argOf(c, "ReferencedEntityName"));
-        return reply({ EntityNames: canBeReferenced(referenced) ? namesWhere(api, canBeReferencing) : [] }); // unverified: empty answer
+        return reply({ EntityNames: canBeReferenced(referenced) ? namesWhere(api, canBeReferencing) : [] }); // the empty answer is a guess
       },
     },
-    // Keys (Learn DeactivateEntityKey, ReactivateEntityKey). indexStatus and asyncJob are read by keysOf (dataverse-metadata.mjs).
+    // Keys: indexStatus and asyncJob are read by keysOf (dataverse-metadata.mjs).
     {
       name: "DeactivateEntityKey", kind: "action", signature: { params: [["EntityKeyLogicalName", "Edm.String"], ["EntityLogicalName", "Edm.String"]] },
       handle: (c) => deactivateKey(c),
@@ -386,9 +384,8 @@ function operations(api) {
     {
       name: "PublishAllXmlAsync", kind: "action", signature: { response: [["AsyncOperationId", "Edm.Guid"]] },
       async handle(c) {
-        // https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/publishallxmlasync
-        // Writes already apply immediately in Mirage. Keep the asynchronous publication lifecycle observable as a system job.
-        privilege(c, "prvWriteEntity", "solution"); // unverified privilege, shared with synchronous publication
+        // Writes already apply immediately in Mirage; the asynchronous publication stays observable as a system job.
+        privilege(c, "prvWriteEntity", "solution"); // privilege is a guess, the same as synchronous publication
         const id = await api.systemJob({ name: "Publish all customizations", operationtype: 204, callerId: c.caller?.systemuserid }, () =>
           handleMetadataWrite({ ...c, method: "POST", api, route: { kind: "function", name: "PublishAllXml" } }));
         return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "Microsoft.Dynamics.CRM.PublishAllXmlAsyncResponse"), AsyncOperationId: id } };
@@ -411,7 +408,7 @@ function operations(api) {
       name: "SetAutoNumberSeed", kind: "action", signature: { params: [...[["EntityName","Edm.String"],["AttributeName","Edm.String"]], ["Value", "Edm.Int64"]] },
       handle: async (c) => {
         const raw = argOf(c, "Value"); const value = Number(isExactNumeric(raw) ? raw.value : raw);
-        if (!Number.isSafeInteger(value) || value < 0) throw fail("Value must be a non-negative whole number."); // unverified: message text
+        if (!Number.isSafeInteger(value) || value < 0) throw fail("Value must be a non-negative whole number.");
         const { key: counterKey } = autoNumberOf(api, c);
         privilege(c, "prvWriteAttribute", "attribute");
         await writeState(api, () => {
@@ -421,7 +418,7 @@ function operations(api) {
         return noContent();
       },
     },
-    // Languages (Learn "Manage languages for your organization")
+    // Languages
     { name: "RetrieveAvailableLanguages", kind: "function", signature: { response: [["LocaleIds", "Collection(Edm.Int32)"]] }, handle: () => reply({ LocaleIds: languagesOf(api).installed }) },
     { name: "RetrieveInstalledLanguagePacks", kind: "function", signature: { response: [["RetrieveInstalledLanguagePacks", "Collection(Edm.Int32)"]] }, handle: () => reply({ RetrieveInstalledLanguagePacks: languagesOf(api).installed }) },
     { name: "RetrieveDeprovisionedLanguages", kind: "function", signature: { response: [["RetrieveDeprovisionedLanguages", "Collection(Edm.Int32)"]] }, handle: () => reply({ RetrieveDeprovisionedLanguages: languagesOf(api).deprovisioned }) },
@@ -430,16 +427,16 @@ function operations(api) {
       name: "RetrieveInstalledLanguagePackVersion", kind: "function", signature: { params: [["Language","Edm.Int32"]], response: [["Version", "Edm.String"]] },
       handle: async (c) => {
         const lcid = languageArg(c);
-        if (!languagesOf(api).installed.includes(lcid)) throw fail(`The language pack ${lcid} is not installed.`); // unverified
-        return reply({ Version: api.settings?.version ?? "" }); // unverified: pack version string
+        if (!languagesOf(api).installed.includes(lcid)) throw fail(`The language pack ${lcid} is not installed.`);
+        return reply({ Version: api.settings?.version ?? "" }); // the pack version string is a guess
       },
     },
     {
       name: "RetrieveProvisionedLanguagePackVersion", kind: "function", signature: { params: [["Language","Edm.Int32"]], response: [["Version", "Edm.String"]] },
       handle: async (c) => {
         const lcid = languageArg(c);
-        if (!provisionedOf(languagesOf(api)).includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`); // unverified
-        return reply({ Version: api.settings?.version ?? "" }); // unverified: pack version string
+        if (!provisionedOf(languagesOf(api)).includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`);
+        return reply({ Version: api.settings?.version ?? "" }); // the pack version string is a guess
       },
     },
     {
@@ -451,7 +448,7 @@ function operations(api) {
       },
     },
     {
-      // Learn: the refusals are checked now; the provisioning runs as a system job (operationtype 209, dataverse-async.mjs).
+      // The refusals are checked in the request; the provisioning runs as a system job (operationtype 209, dataverse-async.mjs).
       name: "ProvisionLanguageAsync", kind: "action", signature: { params: [["Language","Edm.Int32"]], response: [["AsyncOperationId", "Edm.Guid"]] },
       handle: async (c) => {
         privilege(c, "prvWriteOrganization", "organization");
@@ -476,7 +473,7 @@ function operations(api) {
         const { mapping, id } = monikerOf(api, argOf(c, "EntityMoniker"));
         const attribute = localizedAttribute(mapping, argOf(c, "AttributeName"));
         const labels = required(argOf(c, "Labels"), "Labels");
-        if (!Array.isArray(labels)) throw fail("Labels must be a collection of LocalizedLabel."); // unverified
+        if (!Array.isArray(labels)) throw fail("Labels must be a collection of LocalizedLabel.");
         privilege(c, "prvWriteAttribute", "attribute");
         const active = provisionedOf(languagesOf(api));
         await writeState(api, () => {
@@ -486,7 +483,7 @@ function operations(api) {
           const entry = { ...(dv.locLabels[name] ?? {}) };
           for (const item of labels) {
             const lcid = lcidOf(item?.LanguageCode, "LanguageCode");
-            if (!active.includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`); // unverified
+            if (!active.includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`);
             if (item.Label == null || item.Label === "") delete entry[lcid];
             else entry[lcid] = String(item.Label);
           }
@@ -503,11 +500,11 @@ function operations(api) {
         const entry = api.store.state.dataverse?.locLabels?.[labelKey(mapping, id, attribute)] ?? {};
         const localized = Object.entries(entry).map(([lcid, text]) => ({ Label: text, LanguageCode: Number(lcid) }));
         const base = localized.find((label) => label.LanguageCode === baseOf(api)) ?? null;
-        // unverified: IncludeUnpublished has no unpublished labels to add here
+        // IncludeUnpublished adds nothing: labels have no unpublished state here.
         return reply({ Label: { LocalizedLabels: localized, UserLocalizedLabel: base } });
       },
     },
-    // Translations (Learn "Export and import translations")
+    // Translations
     {
       name: "ExportTranslation", kind: "action", binding: "collection", entity: "solution", signature: { params: [["SolutionName", "Edm.String"]], response: [["ExportTranslationFile", "Edm.Binary"]] },
       handle: async (c) => {
@@ -544,12 +541,12 @@ function operations(api) {
       handle: async (c) => {
         privilege(c, "prvWriteEntity", "EntityDefinitions");
         await importRows(api, fieldRows(argOf(c, "TranslationFile")));
-        return reply({ "@odata.type": "Microsoft.Dynamics.CRM.importjob", importjobid: randomUUID() }); // unverified: importjob body
+        return reply({ "@odata.type": "Microsoft.Dynamics.CRM.importjob", importjobid: randomUUID() }); // the importjob body is a guess
       },
     },
   ];
 
-  // unverified: the status after deactivation is Failed, and the privilege is prvWriteAttribute (LC2 on a test key).
+  // Assumed native behavior: deactivation leaves the key Failed, and both key messages need prvWriteAttribute.
   function keyFor(c) {
     const mapping = tableOf(api, argOf(c, "EntityLogicalName") ?? argOf(c, "EntityName"));
     const found = key(mapping, required(argOf(c, "EntityKeyLogicalName") ?? argOf(c, "KeyName"), "EntityKeyLogicalName"));
@@ -567,7 +564,7 @@ function operations(api) {
     return noContent();
   }
 
-  // Learn: "Create index for {0} for table {1}" is the index job's name. The job validates the data again (activateKey): the key
+  // "Create index for {0} for table {1}" is the index job's name. The job validates the data again (activateKey): the key
   // is Active when the values are unique and Failed again while duplicates remain.
   async function reactivateKey(c) {
     const { mapping, found } = keyFor(c);

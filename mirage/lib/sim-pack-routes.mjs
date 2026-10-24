@@ -1,4 +1,4 @@
-// GET /_sim/api/packs: the registered data packs of this runtime (D8): what each exports, its presets and personas, which
+// GET /_sim/api/packs: the registered data packs of this runtime: what each exports, its presets and personas, which
 // DATA files it owns in the current simulation, its export diagnostics and whether it matches the portal. Read-only; module
 // and data file paths are relative to the project root, never absolute.
 import path from 'node:path';

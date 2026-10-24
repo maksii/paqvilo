@@ -108,15 +108,16 @@ test("the fixture server takes its clock and ids from the injected seam", async 
   assert.match(created.id, /^[0-9A-F]{32}$/);
 });
 
-test("routes are usable without a server", () => {
+test("routes answer the same listing in process, without a server", () => {
   const routes = createSharePointContractRoutes({ fixtures });
   const list = routes.find((route) => route.operation === "listChildren");
   assert.equal(list.method, "GET");
   const answer = list.handle({ method: "GET", url: `${base}/root:/x_case:/children`, headers: {} });
   assert.equal(answer.status, 200);
+  assert.deepEqual(answer.body.value.map((item) => item.name).sort(), ["Case one", "Empty"]);
 });
 
-test("validator and descriptor", async () => {
+test("fixture validation refuses undeclared sites, traversal, unknown keys, duplicates and non-loopback hosts; the descriptor is contract level", async () => {
   assert.deepEqual(validateSharePointFixtures(undefined), { sites: {}, drives: {}, items: [] });
   assert.throws(() => validateSharePointFixtures({ drives: { d: { siteId: "nope" } } }), /declared site/);
   assert.throws(() => validateSharePointFixtures({ ...fixtures, items: [{ driveId: "drive-a", path: "../x" }] }), /\.\./);

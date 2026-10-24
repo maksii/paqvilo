@@ -1,6 +1,5 @@
-// Task 44: the HTTP Request trigger's signed callback URL (per-flow HMAC key sealed in state, method restriction, body schema,
-// 401 on a bad signature) and "When an action is performed" matching by catalog and category assignment. Invented flows,
-// catalog rows and loopback only.
+// The HTTP Request trigger's signed callback URL (per-flow HMAC key sealed in state, method restriction, body schema,
+// 401 on a bad signature) and "When an action is performed" matching by catalog and category assignment.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

@@ -1,7 +1,7 @@
-// Virtual table providers in an atomic group (dataverse-virtual-providers.mjs, Transactions). Learn custom-ve-data-providers:
-// provider plug-ins run in stage 30, the operation's core transaction stage. A provider with begin/commit/rollback is enlisted
+// Virtual table providers in an atomic group (dataverse-virtual-providers.mjs, Transactions). Provider plug-ins run in
+// stage 30, the operation's core transaction stage. A provider with begin/commit/rollback is enlisted
 // once per outermost transaction and rolled back with it whatever fails; a provider without the contract keeps its write and the
-// rollback names the row. Invented x_ schema, GUIDs and loopback only.
+// rollback names the row.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, validateVirtualTableProviders } from "../lib/dataverse-virtual-providers.mjs";
@@ -54,7 +54,7 @@ const refusedSecond = [{ method: "PATCH", path: `/x_exts(${A})`, body: { x_name:
 
 test("a transactional provider is enlisted once and rolled back when a later request of the changeset is refused", async (t) => {
   const { external, calls, diagnostics, changeset, local } = await setup(t, { transactional: true });
-  assert.notEqual(await changeset(refusedSecond), 200);
+  assert.equal(await changeset(refusedSecond), 412);
   assert.deepEqual(calls, ["begin:transaction", `update:${A}`, "rollback"]);
   assert.equal(external.get(A).x_name, "Alpha", "the provider rolled its own write back");
   assert.equal(local(A).x_name, "Alpha");
@@ -70,7 +70,7 @@ test("a transactional provider commits once after the changeset commits", async 
 
 test("a provider without the contract keeps its write when a later request is refused, and the rollback names the row", async (t) => {
   const { external, calls, diagnostics, changeset, local } = await setup(t, { transactional: false });
-  assert.notEqual(await changeset(refusedSecond), 200);
+  assert.equal(await changeset(refusedSecond), 412);
   assert.deepEqual(calls, [`update:${A}`]);
   assert.equal(external.get(A).x_name, "A-new");
   assert.equal(local(A).x_name, "Alpha");

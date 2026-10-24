@@ -1,5 +1,4 @@
 // Dataverse SOAP metadata messages: DataContract XML in xrm/2011/Metadata, parsed back with the SOAP codec.
-// Invented tables and loopback-free fixtures only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataError } from "../lib/data-error.mjs";
@@ -29,17 +28,6 @@ const mappings = {
   },
 };
 
-test("entity key AsyncJob is a SOAP EntityReference while its Web API value is a GUID", () => {
-  const state = { mappings: structuredClone(mappings) };
-  state.mappings.invented_widget.alternateKeys = [{ name: "invented_name_key", attributes: ["invented_name"], asyncJob: "aaaaaaaa-bbbb-4000-8000-000000000001" }];
-  const handler = metadataRequests({ ...api, store: { state } }).get("RetrieveEntity");
-  const value = valueOf(handler(new Map([["LogicalName", text("invented_widget")], ["EntityFilters", 2]])), "EntityMetadata");
-  const job = child(child(value, "Keys").children[0], "AsyncJob");
-  assert.equal(typeOfNode(job), "a:EntityReference");
-  assert.equal(textOfChild(job, "Id"), "aaaaaaaa-bbbb-4000-8000-000000000001");
-  assert.equal(textOfChild(job, "LogicalName"), "asyncoperation");
-  assert.equal(job.text, "");
-});
 const api = { settings: { organizationId: ORG }, schema: null, store: { state: { mappings } } };
 const handlers = metadataRequests(api);
 const run = (name, entries) => handlers.get(name) ? handlers.get(name)(new Map(entries)) : assert.fail(`no handler ${name}`);
@@ -55,6 +43,18 @@ const child = (node, name) => node.children.find((c) => c.name === name);
 const names = (node) => node.children.map((c) => c.name);
 const textOfChild = (node, name) => child(node, name)?.text;
 const typeOfNode = (node) => node.attrs.find((a) => a.name === "type")?.value;
+
+test("entity key AsyncJob is a SOAP EntityReference while its Web API value is a GUID", () => {
+  const state = { mappings: structuredClone(mappings) };
+  state.mappings.invented_widget.alternateKeys = [{ name: "invented_name_key", attributes: ["invented_name"], asyncJob: "aaaaaaaa-bbbb-4000-8000-000000000001" }];
+  const handler = metadataRequests({ ...api, store: { state } }).get("RetrieveEntity");
+  const value = valueOf(handler(new Map([["LogicalName", text("invented_widget")], ["EntityFilters", 2]])), "EntityMetadata");
+  const job = child(child(value, "Keys").children[0], "AsyncJob");
+  assert.equal(typeOfNode(job), "a:EntityReference");
+  assert.equal(textOfChild(job, "Id"), "aaaaaaaa-bbbb-4000-8000-000000000001");
+  assert.equal(textOfChild(job, "LogicalName"), "asyncoperation");
+  assert.equal(job.text, "");
+});
 
 test("the six metadata requests are registered by request name", () => {
   assert.deepEqual([...handlers.keys()].filter((name) => name.startsWith("Retrieve")).sort(), [
@@ -90,15 +90,14 @@ test("EntityFilters bits choose the collections: Entity alone omits Attributes, 
 test("Attributes items are AttributeMetadata with xsi:type, base members first, LogicalName before SchemaName", () => {
   const value = valueOf(run("RetrieveEntity", [["LogicalName", text("invented_widget")], ["EntityFilters", 2]]), "EntityMetadata");
   const attributes = child(value, "Attributes");
-  assert.ok(attributes.children.length >= 4);
+  assert.ok(["invented_widgetid", "invented_name", "invented_qty", "invented_ownerid"].every((name) => attributes.children.some((item) => textOfChild(item, "LogicalName") === name)));
   for (const item of attributes.children) {
     assert.equal(item.name, "AttributeMetadata");
     assert.equal(item.ns, METADATA_NS);
     assert.deepEqual(names(item).slice(0, 2), ["MetadataId", "HasChanged"]);
-    assert.ok(names(item).indexOf("LogicalName") < names(item).indexOf("SchemaName"));
-    if (names(item).includes("SchemaName") && names(item).includes("AttributeTypeName")) {
-      assert.ok(names(item).indexOf("SchemaName") < names(item).indexOf("AttributeTypeName"));
-    }
+    const order = names(item);
+    assert.ok(order.indexOf("LogicalName") >= 0 && order.indexOf("LogicalName") < order.indexOf("SchemaName"));
+    assert.ok(order.indexOf("SchemaName") < order.indexOf("AttributeTypeName"));
   }
   const lookup = attributes.children.find((item) => textOfChild(item, "LogicalName") === "invented_ownerid");
   assert.equal(typeOfNode(lookup), "m:LookupAttributeMetadata");
@@ -125,9 +124,9 @@ test("a ManagedProperty<T> member is written as its Value, CanBeChanged and Mana
 
 test("an enum member is written as its DataContract name, not its number (PrivilegeType)", () => {
   const value = valueOf(run("RetrieveEntity", [["LogicalName", text("invented_widget")], ["EntityFilters", 4]]), "EntityMetadata");
-  const privileges = child(value, "Privileges");
-  assert.ok(privileges.children.length > 0);
-  for (const privilege of privileges.children) assert.match(textOfChild(privilege, "PrivilegeType"), /^[A-Za-z]+$/);
+  // The invented table declares no ownership, so it has the six organization-owned rights.
+  assert.deepEqual(child(value, "Privileges").children.map((privilege) => textOfChild(privilege, "PrivilegeType")),
+    ["Create", "Read", "Write", "Delete", "Append", "AppendTo"]);
 });
 
 test("RetrieveAllEntities returns a collection of both invented tables in the contracts namespace", () => {
@@ -143,12 +142,9 @@ test("RetrieveRelationship returns the one-to-many relationship by SchemaName, t
   assert.equal(typeOfNode(value), "m:OneToManyRelationshipMetadata");
   assert.deepEqual(names(value).slice(0, 2), ["MetadataId", "HasChanged"]);
   assert.equal(textOfChild(value, "SchemaName"), "invented_owner_widget");
-  if (names(value).includes("SecurityTypes") && names(value).includes("RelationshipType")) {
-    assert.ok(names(value).indexOf("SecurityTypes") < names(value).indexOf("RelationshipType"));
-  }
-  if (child(value, "CascadeConfiguration")) {
-    assert.equal(names(child(value, "CascadeConfiguration")).at(-1), "RollupView");
-  }
+  const order = names(value);
+  assert.ok(order.indexOf("SecurityTypes") >= 0 && order.indexOf("SecurityTypes") < order.indexOf("RelationshipType"));
+  assert.deepEqual(names(child(value, "CascadeConfiguration")), ["Archive", "Assign", "Delete", "Merge", "Reparent", "Share", "Unshare", "RollupView"]);
 });
 
 test("RetrieveRelationship writes the RelationshipMetadataBase members: SecurityTypes by name, IsCustomizable as a managed property", () => {
@@ -284,7 +280,7 @@ test("CreateAttribute on a table that does not exist fails through the Web API w
   const { session, handlers } = await writeSession();
   await assert.rejects(
     handlers.get("CreateAttribute")(new Map([["EntityName", { type: "string", value: "new_missing" }], ["Attribute", typed(attributeXml("new_Quantity"))]]), session),
-    (error) => error instanceof Error,
+    (error) => error instanceof DataError && error.status === 404,
   );
 });
 

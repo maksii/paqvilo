@@ -1,16 +1,17 @@
 // Calendar lists in a browser: the local calendar client requests the platform templates in the
-// platform order and renders the platform calendar DOM (invented account rows, loopback only).
+// platform order and renders the platform calendar DOM.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { chromium } from "playwright-core";
-import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 import { AssetCache } from "../lib/asset-cache.mjs";
+import { sharedBrowser } from "./shared-browser.mjs";
+
+const chrome = sharedBrowser();
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e70";
 const YEAR = "1b000000-0000-4000-8000-000000000011";
@@ -57,9 +58,8 @@ async function open(t, list, { width = 1200, bootstrapV5 = true, capturedCss = n
   }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const context = await browser.newContext({ timezoneId: "UTC", viewport: { width, height: 900 } });
+  const context = await chrome.browser.newContext({ timezoneId: "UTC", viewport: { width, height: 900 } });
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, CONTACT, { roles: ["Editor"] });
   const page = await context.newPage();
   const requests = [];

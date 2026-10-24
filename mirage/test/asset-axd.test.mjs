@@ -101,16 +101,16 @@ test("AXD capture rejects unobserved requests, query credentials/duplicates, red
       "ASSET_AXD_OBSERVATION",
     );
     assert.equal(live.calls.length, 0);
-    for (const path of [
-      a + "&token=SECRET",
-      a + "&d=anotherhash",
-      a + "&_=123",
-      a.replace("WebResource", "Other"),
-      a.replace("d=", "x="),
-      "/WebResource.axd",
+    for (const [path, code] of [
+      [a + "&token=SECRET", "ASSET_CAPTURE"],
+      [a + "&d=anotherhash", "ASSET_AXD_QUERY"],
+      [a + "&_=123", "ASSET_AXD_QUERY"],
+      [a.replace("WebResource", "Other"), "ASSET_AXD_QUERY"],
+      [a.replace("d=", "x="), "ASSET_AXD_QUERY"],
+      ["/WebResource.axd", "ASSET_AXD_QUERY"],
     ]) {
       assert.equal(isAspNetResourcePath(path), false);
-      await assert.rejects(cache.get(path));
+      await assert.rejects(cache.get(path), (e) => e.code === code, path);
     }
     for (const resource of [
       { status: 302, headers: { location: b }, body: Buffer.from("") },
@@ -144,16 +144,18 @@ test("AXD capture rejects unobserved requests, query credentials/duplicates, red
       assert.equal(result.captured.length, 0);
     }
     assert.equal(cache.manifest().assets.length, 0);
-    for (const src of [
-      "https://foreign.example.test" + a,
-      a + "&token=SECRET",
-      a + "&d=duplicate",
+    for (const [src, code] of [
+      ["https://foreign.example.test" + a, "SHELL_RESOURCE_ORIGIN"],
+      [a + "&token=SECRET", "SHELL_RESOURCE_CREDENTIAL"],
+      [a + "&d=duplicate", "SHELL_ASPNET_RESOURCE"],
     ]) {
       const denied = bridge(
         `<html><body><script src="${src.replaceAll("&", "&amp;")}"></script><script src="${b.replaceAll("&", "&amp;")}"></script></body></html>`,
       );
       await assert.rejects(
         capturePortalAspNetResources(cache, denied, { path: "/native-form/" }),
+        (e) => e.code === code,
+        src,
       );
       assert.deepEqual(denied.calls, ["/native-form/"]);
     }

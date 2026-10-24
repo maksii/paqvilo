@@ -1,4 +1,4 @@
-// Task 42: a custom connector's C# script (script.csx, ScriptBase) runs through the local .NET SDK for its scriptOperations:
+// A custom connector's C# script (script.csx, ScriptBase) runs through the local .NET SDK for its scriptOperations:
 // the host is generated and built once per script hash under the state directory, Context.SendAsync reaches the backend
 // through the connection rewrites (loopback only), and the script's response is the action's. Skipped with a note when
 // `dotnet` is not on PATH; the refusal path without the SDK is tested in custom-connector.test.mjs.
@@ -105,7 +105,7 @@ test('a C# script runs its operation through the .NET SDK and Context.SendAsync 
   assert.equal((await fs.readdir(path.join(stateDirectory, 'connector-scripts'))).length, 1);
 });
 
-// RC4b-01: a trusted script host gets a minimal environment (PATH, SystemRoot, TEMP/TMP, HOME/USERPROFILE, DOTNET_*, NUGET_*),
+// A trusted script host gets a minimal environment (PATH, SystemRoot, TEMP/TMP, HOME/USERPROFILE, DOTNET_*, NUGET_*),
 // never process.env, so another connection's env: secret is invisible to it; it runs in its folder under the state directory.
 const ENV_SCRIPT = `public class Script : ScriptBase
 {

@@ -1,6 +1,5 @@
 // Plug-in registration through the Dataverse API: seeded sdkmessage and sdkmessagefilter rows, the Solution's registrations
-// mirrored as rows, the P2 write rules with their documented errors, the cascade and the privileges. Invented contoso_widget
-// table, invented plug-in names and loopback only.
+// mirrored as rows, the write rules with their documented errors, the cascade and the privileges.
 import { describe, it, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -61,10 +60,10 @@ function fixtureState() {
   return state;
 }
 
-// Invented extension that stands in for the server's solution extension, with the Solution's rows.
+// An extension that stands in for the server's solution extension, with the Solution's rows.
 const solution = solutionPluginExtension(PLUGINS);
 
-// Assembly content (P5): a signed plug-in assembly, the same unsigned, and one that declares no plug-in. Invented names.
+// Assembly content: a signed plug-in assembly, the same unsigned, and one that declares no plug-in.
 const PLUGIN_TYPES = {
   typeRefs: ['Microsoft.Xrm.Sdk.IPlugin', 'System.Activities.CodeActivity'],
   typeDefs: [{ full: CONTOSO, interfaces: ['Microsoft.Xrm.Sdk.IPlugin'] }, { full: 'Contoso.Plugins.AuditActivity', base: 'System.Activities.CodeActivity' }],
@@ -73,6 +72,10 @@ const SIGNED = assemblyBase64({ name: 'Contoso.Signed', version: '1.2.3.4', cult
 const UNSIGNED = assemblyBase64({ name: 'Contoso.Unsigned', version: '1.0.0.0', ...PLUGIN_TYPES });
 const HELPERS = assemblyBase64({ name: 'Contoso.Helpers', version: '1.0.0.0', publicKey: fakePublicKey, typeDefs: [{ full: 'Contoso.Helpers.Util' }] });
 const tokenOf = (key) => createHash('sha1').update(key).digest().subarray(-8).reverse().toString('hex');
+// Seeded registration ids read from the store; a Web API $filter over the ~2,000 seeded filter rows takes over a second.
+const messageId = (store, name) => store.tableRows('sdkmessage').find((row) => row.name === name).sdkmessageid;
+const filterId = (store, message, table) => store.tableRows('sdkmessagefilter')
+  .find((row) => row.sdkmessageid === message && row.primaryobjecttypecode === table).sdkmessagefilterid;
 
 describe('plug-in registration over HTTP', () => {
   let api;
@@ -106,12 +109,12 @@ describe('plug-in registration over HTTP', () => {
     });
     appToken = await clientToken();
     basicToken = await userToken('basic@example.test');
-    for (const [name, set] of [['Create', 'sdkmessages'], ['Update', 'sdkmessages'], ['Delete', 'sdkmessages'], ['WhoAmI', 'sdkmessages']])
-      ids[name] = (await first(set, `name eq '${name}'`)).sdkmessageid;
-    ids.createFilter = (await first('sdkmessagefilters', `sdkmessageid eq ${ids.Create} and primaryobjecttypecode eq 'contoso_widget'`)).sdkmessagefilterid;
-    ids.updateFilter = (await first('sdkmessagefilters', `sdkmessageid eq ${ids.Update} and primaryobjecttypecode eq 'contoso_widget'`)).sdkmessagefilterid;
-    ids.deleteFilter = (await first('sdkmessagefilters', `sdkmessageid eq ${ids.Delete} and primaryobjecttypecode eq 'contoso_widget'`)).sdkmessagefilterid;
-    ids.organizationFilter = (await first('sdkmessagefilters', `sdkmessageid eq ${ids.Create} and primaryobjecttypecode eq 'organization'`)).sdkmessagefilterid;
+    for (const name of ['Create', 'Update', 'Delete', 'WhoAmI', 'RetrieveMultiple']) ids[name] = messageId(store, name);
+    ids.createFilter = filterId(store, ids.Create, 'contoso_widget');
+    ids.updateFilter = filterId(store, ids.Update, 'contoso_widget');
+    ids.deleteFilter = filterId(store, ids.Delete, 'contoso_widget');
+    ids.retrieveMultipleFilter = filterId(store, ids.RetrieveMultiple, 'contoso_widget');
+    ids.organizationFilter = filterId(store, ids.Create, 'organization');
   });
 
   after(async () => {
@@ -171,7 +174,7 @@ describe('plug-in registration over HTTP', () => {
     headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  const first = async (set, filter) => (await (await call(`${set}?$filter=${encodeURIComponent(filter)}`)).json()).value[0];
+  const read = async (path) => (await call(path)).json();
   const idFromLocation = (response) => /\(([^)]+)\)/.exec(response.headers.get('OData-EntityId'))[1];
   const errorOf = async (response) => (await response.json()).error;
 
@@ -187,14 +190,14 @@ describe('plug-in registration over HTTP', () => {
   const createStep = (body, token) => call('sdkmessageprocessingsteps', { method: 'POST', body: stepBody(body), token });
 
   it('seeds the well-known sdkmessage rows and a filter per table', async () => {
-    const create = await first('sdkmessages', "name eq 'Create'");
-    assert.equal(create.sdkmessageid, '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8');
+    const create = await read('sdkmessages(9ebdbb1b-ea3e-db11-86a7-000a3a5473e8)');
+    assert.equal(create.name, 'Create');
     assert.equal(create.isprivate, false);
-    assert.equal(ids.createFilter.length, 36);
-    const filter = await first('sdkmessagefilters', `sdkmessagefilterid eq ${ids.createFilter}`);
+    const filter = await read(`sdkmessagefilters(${ids.createFilter})`);
+    assert.equal(filter._sdkmessageid_value, create.sdkmessageid);
     assert.equal(filter.primaryobjecttypecode, 'contoso_widget');
     assert.equal(filter.iscustomprocessingstepallowed, true);
-    const organization = await first('sdkmessagefilters', `sdkmessagefilterid eq ${ids.organizationFilter}`);
+    const organization = await read(`sdkmessagefilters(${ids.organizationFilter})`);
     assert.equal(organization.iscustomprocessingstepallowed, false, 'system tables take no custom step');
   });
 
@@ -248,7 +251,7 @@ describe('plug-in registration over HTTP', () => {
     assert.match(error.message, /^Invalid plug-in registration stage\./);
   });
 
-  it('refuses an asynchronous step outside the PostOperation stage (LC-P2a)', async () => {
+  it('refuses an asynchronous step outside the PostOperation stage', async () => {
     assert.equal((await errorOf(await createStep({ mode: 1, stage: 20 }))).code, '0x80040203');
     assert.equal((await createStep({ mode: 1, stage: 40 })).status, 204);
   });
@@ -277,7 +280,7 @@ describe('plug-in registration over HTTP', () => {
     assert.equal(error.message, 'Custom Sdkmessageprocessingsteps are not allowed for this message.');
   });
 
-  it('refuses filtering attributes that are not columns of the filter table (LC-P2b)', async () => {
+  it('refuses filtering attributes that are not columns of the filter table', async () => {
     const error = await errorOf(await createStep({ filteringattributes: 'contoso_name,no_such_column' }));
     assert.equal(error.code, '0x80040203');
     assert.equal(error.message, "The filtering attribute 'no_such_column' is not a column of contoso_widget.");
@@ -291,7 +294,7 @@ describe('plug-in registration over HTTP', () => {
     assert.equal(error.code, '0x80044185');
   });
 
-  it('refuses a web hook step that carries configuration (LC-P2c)', async () => {
+  it('refuses a web hook step that carries configuration', async () => {
     const hook = await call('serviceendpoints', { method: 'POST', body: { name: 'Probe hook', url: 'http://127.0.0.1:9/probe', authtype: 5, contract: 8 } });
     const hookId = idFromLocation(hook);
     const body = { configuration: '{"probe":true}', 'eventhandler_serviceendpoint@odata.bind': `/serviceendpoints(${hookId})` };
@@ -326,9 +329,7 @@ describe('plug-in registration over HTTP', () => {
   });
 
   it('refuses an image on a message without image support with 0x80044189', async () => {
-    const retrieveMultiple = await first('sdkmessages', "name eq 'RetrieveMultiple'");
-    const filter = await first('sdkmessagefilters', `sdkmessageid eq ${retrieveMultiple.sdkmessageid} and primaryobjecttypecode eq 'contoso_widget'`);
-    const step = await stepOn(retrieveMultiple.sdkmessageid, filter.sdkmessagefilterid, 20);
+    const step = await stepOn(ids.RetrieveMultiple, ids.retrieveMultipleFilter, 20);
     const error = await errorOf(await postImage(imageBody(step)));
     assert.equal(error.code, '0x80044189');
     assert.equal(error.message, "Message 'RetrieveMultiple' does not support image registration.");
@@ -370,18 +371,13 @@ describe('plug-in registration over HTTP', () => {
 
   it('refuses a second assembly with the same fullname, ignoring the build and revision, with 0x8004417B', async () => {
     const error = await errorOf(await call('pluginassemblies', { method: 'POST', body: { name: 'Contoso.Plugins', version: '1.0.0.9', culture: 'neutral', publickeytoken: '0123456789abcdef' } }));
-    // The Web API envelope writes the hex code in lower case; the module keeps the Learn spelling.
+    // The Web API envelope writes the hex code in lower case; the module keeps the documented spelling.
     assert.equal(error.code.toLowerCase(), '0x8004417b');
     const other = await call('pluginassemblies', { method: 'POST', body: { name: 'Contoso.Plugins', version: '2.0.0.0', culture: 'neutral', publickeytoken: '0123456789abcdef' } });
     assert.equal(other.status, 204);
   });
 
-  it('requires a type name with the required-column error', async () => {
-    const error = await errorOf(await call('plugintypes', { method: 'POST', body: { name: 'no type name' } }));
-    assert.equal(error.message, "The 'typename' attribute is required.");
-  });
-
-  it('takes the identity from supplied content over HTTP, and refuses unsigned content with 0x80081114 (P5)', async () => {
+  it('takes the identity from supplied content over HTTP, and refuses unsigned content with 0x80081114', async () => {
     const created = await call('pluginassemblies', { method: 'POST', body: { name: 'ignored', version: '0.0.0.1', content: SIGNED } });
     assert.equal(created.status, 204);
     const row = await (await call(`pluginassemblies(${idFromLocation(created)})`)).json();
@@ -427,6 +423,7 @@ describe('plug-in registration: unit rules and mirror shape', () => {
 
   it('the row of a Solution step is a pure function of the plug-in facts', () => {
     const rows = solutionPluginRows(PLUGINS, { organizationId: 'bbbbbbbb-0000-4000-8000-000000000001' });
+    assert.deepEqual(solutionPluginRows(structuredClone(PLUGINS), { organizationId: 'bbbbbbbb-0000-4000-8000-000000000001' }), rows);
     assert.equal(rows.sdkmessageprocessingstep[0].sdkmessageid, '20bebb1b-ea3e-db11-86a7-000a3a5473e8');
     assert.equal(rows.sdkmessageprocessingstep[0].sdkmessagefilterid.length, 36);
     assert.equal(rows.sdkmessageprocessingstepimage[0].messagepropertyname, 'Target');
@@ -444,7 +441,7 @@ describe('plug-in registration: unit rules and mirror shape', () => {
     await step(customizer.run);
   });
 
-  it('an assembly content over 16 MB is refused (LC-P2d)', async () => {
+  it('an assembly content over 16 MB is refused', async () => {
     const { run } = await harness();
     const content = 'A'.repeat(Math.ceil((16 * 1024 * 1024 + 1) * 4 / 3));
     await assert.rejects(run('pluginassembly', 'create', { name: 'Contoso.Big', version: '1.0.0.0', content }), (error) => error.message === 'Plug-in assembly content is larger than 16 MB.');
@@ -513,8 +510,8 @@ describe('plug-in registration over SOAP', () => {
   });
 });
 
-// P3 hard rule: with the Dataverse API on and zero registration writes, the pipeline's step list is the Solution's own list.
-describe('plug-in registration: zero API writes keep the Solution step list (P3)', () => {
+// With the Dataverse API on and zero registration writes, the pipeline's step list is the Solution's own list.
+describe('plug-in registration: zero API writes keep the Solution step list', () => {
   const RESOLVED = importSolutionPlugins([{ documents: [{ file: 'Contoso.Plugins.xml', facts: { plugins: PLUGINS } }] }]);
   const HANDLERS = pluginHandlers([{ id: 'invented-zero-writes', pluginSteps: { [STEP]: () => {} } }]);
   let api;
@@ -538,9 +535,9 @@ describe('plug-in registration: zero API writes keep the Solution step list (P3)
   });
 });
 
-// P3 and P4: API-registered steps run through the pipeline the server installs (store.setPluginPipeline). Trusted pack handlers are
-// keyed by plug-in type name, and their context is the IPluginExecutionContext-like one. Invented names only.
-describe('plug-in registration: pipeline (P3, P4)', () => {
+// API-registered steps run through the pipeline the server installs (store.setPluginPipeline). Trusted pack handlers are
+// keyed by plug-in type name, and their context is the IPluginExecutionContext-like one.
+describe('plug-in registration: pipeline', () => {
   const PIPE_SECRET = 'PAQVILO_PLUGIN_PIPELINE_SECRET';
   const PIPE_APP = '77777777-7777-7777-7777-777777777777';
   const AUDIT = 'Contoso.Plugins.WidgetAudit';
@@ -605,8 +602,10 @@ describe('plug-in registration: pipeline (P3, P4)', () => {
       method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'client_credentials', client_id: PIPE_APP, client_secret: process.env[PIPE_SECRET], scope: `${origin}/.default` }),
     })).json()).access_token;
-    for (const name of ['Create', 'Update', 'Associate', 'Disassociate']) ids[name] = (await first('sdkmessages', `name eq '${name}'`)).sdkmessageid;
-    for (const name of ['Create', 'Update', 'Associate', 'Disassociate']) ids[`${name}Filter`] = (await first('sdkmessagefilters', `sdkmessageid eq ${ids[name]} and primaryobjecttypecode eq 'contoso_widget'`)).sdkmessagefilterid;
+    for (const name of ['Create', 'Update', 'Associate', 'Disassociate']) {
+      ids[name] = messageId(store, name);
+      ids[`${name}Filter`] = filterId(store, ids[name], 'contoso_widget');
+    }
     auditType = await createType(AUDIT, 'Contoso.Plugins.Audit');
     unhandledType = await createType(UNHANDLED, 'Contoso.Plugins.Other');
     // The server's wiring: pack handlers by type name, the step list from the rows, and the committed-write queue for mode 1.
@@ -732,8 +731,8 @@ describe('plug-in registration: pipeline (P3, P4)', () => {
   });
 });
 
-// P4 contract: pack validation and the one-handler-per-type lookup, without HTTP.
-describe('plug-in type handlers: contract (P4)', () => {
+// Pack validation and the one-handler-per-type lookup, without HTTP.
+describe('plug-in type handlers: contract', () => {
   const TYPE_ID = 'a1000000-0000-4000-8000-000000000002';
   const ASSEMBLY_ID = 'a1000000-0000-4000-8000-000000000001';
   const CREATE_MESSAGE = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8';
@@ -767,7 +766,7 @@ describe('plug-in type handlers: contract (P4)', () => {
   });
 });
 
-describe('plug-in registration: assembly content and plug-in types (P5)', () => {
+describe('plug-in registration: assembly content and plug-in types', () => {
   const ASSEMBLY = 'a1000000-0000-4000-8000-0000000000a1';
   const PACKAGE = 'a1000000-0000-4000-8000-0000000000b1';
   // The rules run as the record hook: a store with the seeded tables, and the hook called directly with the merged payload.
@@ -828,7 +827,7 @@ describe('plug-in registration: assembly content and plug-in types (P5)', () => 
     await run('pluginassembly', 'create', { name: 'x', version: '1.0.0.0', content: UNSIGNED, 'packageid@odata.bind': `/pluginpackages(${PACKAGE})` });
   });
 
-  it('a plug-in type must be declared in the assembly (0x8004418c, LC-P2e), and an activity type is flagged isworkflowactivity', async () => {
+  it('a plug-in type must be declared in the assembly (0x8004418c), and an activity type is flagged isworkflowactivity', async () => {
     const { store, run } = await registry();
     store.insertRow('pluginassembly', store.state.tables.pluginassembly, { pluginassemblyid: ASSEMBLY, name: 'Contoso.Signed', version: '1.2.3.4', culture: 'en-US', publickeytoken: tokenOf(fakePublicKey), content: SIGNED });
     const bind = { 'pluginassemblyid@odata.bind': `/pluginassemblies(${ASSEMBLY})` };

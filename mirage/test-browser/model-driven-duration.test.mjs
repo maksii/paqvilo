@@ -2,14 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+// Tests that only render controls or read records share one simulator; tests that write own theirs.
+const scope = fileScope();
+let sharedApp;
+const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 
 test('duration choices and typed units preserve numeric minutes, keyboard focus and validation', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');
@@ -65,8 +69,7 @@ test('exported duration formats create the duration control and save whole minut
   const file = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('<Type>int</Type>', '<Type>int</Type><Format>duration</Format><MinValue>0</MinValue><MaxValue>20160</MaxValue>'));
   const sim = await source.start(); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   const duration = page.getByRole('combobox', { name: 'Quantity', exact: true });
   await duration.waitFor(); assert.equal(await duration.inputValue(), '2 minutes');
@@ -90,9 +93,8 @@ test('exported duration formats create the duration control and save whole minut
 });
 
 test('opening duration below a sticky form header restores the field and full popup while keyboard scrolling stays inside the list', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } }); await page.goto(origin + '/main.aspx');
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } }); await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren();
     const root = document.createElement('div'); root.className = 'record-content'; root.style.cssText = 'position:absolute;inset:70px 40px 30px;overflow:auto;display:block';

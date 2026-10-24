@@ -1,14 +1,17 @@
-import test from 'node:test';
+import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { personaFixture, contactId } from '../test/fixtures/persona-catalog.mjs';
 import { createPersonaBrowserContext } from '../testing/personas.mjs';
 
+let browser;
+before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true}));});
+after(()=>browser?.close());
+
 test('persona pickers: search/facets, pinning, shared routes, contact role picker and local metadata editor', {timeout:60000},async t=>{
   const {app}=await personaFixture(t);
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
-  const context=await browser.newContext(),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const context=await browser.newContext();t.after(()=>context.close());const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(app.url+'/_sim/#identity?q=requester&tag=edit');
   const picker=page.locator('#browser-persona-picker');await picker.locator('[data-persona-result-count]').filter({hasText:'1 of 60'}).waitFor();
   assert.equal(await picker.locator('[data-persona-query]').inputValue(),'requester');
@@ -33,20 +36,19 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
 
 test('native grouped sign-in remains usable without JS; browser automation applies context options', {timeout:30000},async t=>{
   const {app}=await personaFixture(t);
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
-  const context=await browser.newContext({javaScriptEnabled:false});const page=await context.newPage();await page.goto(app.url+'/SignIn');
+  const context=await browser.newContext({javaScriptEnabled:false});t.after(()=>context.close());const page=await context.newPage();await page.goto(app.url+'/SignIn');
   await page.locator('[data-persona-group="group-0"]').waitFor();await page.locator('[data-persona-row="person-1"] [name="personaKey"]').first().click();await page.waitForURL(app.url+'/');
   const session=await context.request.get(app.url+'/_sim/api/session').then(r=>r.json());assert.equal(session.contactId,contactId(1));await context.close();
   const opened=await createPersonaBrowserContext(browser,{origin:app.url,personaKey:'person-2',instanceKey:'browser-test'});
   assert.notEqual(opened.origin,app.url);assert.deepEqual(opened.context.pages(),[]);
-  const childPage=await opened.context.newPage();assert.deepEqual(childPage.viewportSize(),{width:1100,height:750});await childPage.goto(opened.url);assert.equal(await childPage.evaluate(()=>navigator.language),'fr-FR');assert.equal(await childPage.locator('h1').textContent(),'Context greeting');await opened.context.close();
+  t.after(()=>opened.context.close());const childPage=await opened.context.newPage();assert.deepEqual(childPage.viewportSize(),{width:1100,height:750});await childPage.goto(opened.url);assert.equal(await childPage.evaluate(()=>navigator.language),'fr-FR');assert.equal(await childPage.locator('h1').textContent(),'Context greeting');await opened.context.close();
 });
 
 
 test('a pending persona launch keeps the picker and its caption bound to the submitted persona', { timeout: 60000 }, async t => {
   const { app } = await personaFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true })); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(10000);
+  const context = await browser.newContext(); t.after(() => context.close());
+  const page = await context.newPage(); page.setDefaultTimeout(10000);
   await page.goto(app.url + '/_sim/#identity');
   const picker = page.locator('#browser-persona-picker'); await picker.locator('[data-persona-result-count]').waitFor();
   const launch = page.locator('[data-persona-launch]'), key = await launch.getAttribute('data-persona-launch'), caption = await launch.innerText();

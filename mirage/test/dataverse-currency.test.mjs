@@ -1,5 +1,5 @@
 // Currency (lib/dataverse-currency.mjs): money columns stamped with the transaction currency, its rate and the base amounts on
-// write; RetrieveExchangeRate (dataverse-predefined.mjs) answers 200 and 404. Invented x_ schema, GUIDs and currency codes only.
+// write; RetrieveExchangeRate (dataverse-predefined.mjs) answers 200 and 404.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION } from "../lib/dataverse-currency.mjs";
@@ -11,9 +11,6 @@ const BARE = "66666666-6666-4666-8666-666666666612";
 const UNKNOWN = "66666666-6666-4666-8666-666666666699";
 const HELD = "66666666-6666-4666-8666-666666666601";
 const HELD_LOST = "66666666-6666-4666-8666-666666666602";
-// The records layer's currencyOnWrite (dataverse-records.mjs, systemColumns) replaces a stored currency lookup with the base
-// currency on any write that gives a money value. Tests that check the lookup itself wait for that seam to be wired.
-
 // The Web API names a lookup through its bind; a plain transactioncurrencyid key is refused before the write.
 const currencyBind = (id) => ({ "transactioncurrencyid@odata.bind": `/transactioncurrencies(${id})` });
 
@@ -50,7 +47,7 @@ async function setup(t) {
   });
   const { store } = fixture;
   // The base currency is seeded at startup and stays the first row (the fallback when the organization names none).
-  // Invented currencies follow it: euro (precision 3, rate 1.3) and a bare one (no precision, rate 3).
+  // Other currencies follow it: euro (precision 3, rate 1.3) and a bare one (no precision, rate 3).
   store.state.tables.transactioncurrency.push(
     { transactioncurrencyid: EURO, currencyname: "Invented euro", isocurrencycode: "XEU", currencysymbol: "E", currencyprecision: 3, exchangerate: 1.3 },
     { transactioncurrencyid: BARE, currencyname: "Invented bare", isocurrencycode: "XBA", currencysymbol: "B", currencyprecision: null, exchangerate: 3 },
@@ -117,15 +114,10 @@ test('invalid money payloads retain the shared OData validation code and roll ba
 test("create with an explicit currency divides by its rate, rounded to the currency precision (not the column's)", async (t) => {
   const { request, json, ledger } = await setup(t);
   await json(await request("POST", "/x_ledgers", { x_name: "Euro", x_price: 100, x_cost: 10, ...currencyBind(EURO) }), 201);
+  assert.equal(ledger("Euro").transactioncurrencyid, EURO);
   assert.equal(ledger("Euro").exchangerate, 1.3);
   assert.equal(ledger("Euro").x_price_base, 76.923);
   assert.equal(ledger("Euro").x_cost_base, 7.692);
-});
-
-test("explicit currency id is stored on create", async (t) => {
-  const { request, json, ledger } = await setup(t);
-  await json(await request("POST", "/x_ledgers", { x_name: "Euro id", x_price: 100, ...currencyBind(EURO) }), 201);
-  assert.equal(ledger("Euro id").transactioncurrencyid, EURO);
 });
 
 test("a currency without a precision rounds each money _base to its column precision", async (t) => {
@@ -137,7 +129,7 @@ test("a currency without a precision rounds each money _base to its column preci
 
 test("a bind naming an unknown currency is refused with the lookup inner code and stores nothing", async (t) => {
   const { request, json, ledger } = await setup(t);
-  // unverified: the Web API resolves the bind before the hook runs and answers 404 (the brief asked for 400 from the hook).
+  // Native code not known: the Web API resolves the bind before the hook runs and answers 404, not the hook's 400.
   const body = await json(await request("POST", "/x_ledgers", { x_name: "Lost", x_price: 1, ...currencyBind(UNKNOWN) }), 404);
   assert.equal(body.error.code, "0x80040217");
   assert.equal(ledger("Lost"), null);
@@ -146,24 +138,19 @@ test("a bind naming an unknown currency is refused with the lookup inner code an
 test("an update of a row whose held currency no longer exists is refused with the lookup inner code and changes nothing", async (t) => {
   const { request, json, store } = await setup(t);
   const before = structuredClone(store.state.tables.x_ledger.find((row) => row.x_ledgerid === HELD_LOST));
-  // unverified: the records layer resolves the stored lookup before the hook and answers 404 (the hook's own guard is 400).
+  // Native code not known: the records layer resolves the stored lookup before the hook and answers 404, not the hook's 400.
   const body = await json(await request("PATCH", `/x_ledgers(${HELD_LOST})`, { x_price: 60 }), 404);
   assert.equal(body.error.code, "0x80040217");
   assert.deepEqual(store.state.tables.x_ledger.find((row) => row.x_ledgerid === HELD_LOST), before);
 });
 
-test("an update that gives a money value keeps the rate of the currency the row holds", async (t) => {
+test("an update that gives a money value keeps the currency the row holds and its rate", async (t) => {
   const { request, json, store } = await setup(t);
   await json(await request("PATCH", `/x_ledgers(${HELD})`, { x_price: 130 }), 200);
   const row = store.state.tables.x_ledger.find((item) => item.x_ledgerid === HELD);
+  assert.equal(row.transactioncurrencyid, EURO);
   assert.equal(row.exchangerate, 1.3);
   assert.equal(row.x_price_base, 100);
-});
-
-test("the currency an update keeps is the one the row holds", async (t) => {
-  const { request, json, store } = await setup(t);
-  await json(await request("PATCH", `/x_ledgers(${HELD})`, { x_price: 130 }), 200);
-  assert.equal(store.state.tables.x_ledger.find((item) => item.x_ledgerid === HELD).transactioncurrencyid, EURO);
 });
 
 test("a table without money columns is untouched: no currency, rate or diagnostic is stamped", async (t) => {

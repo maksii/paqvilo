@@ -1,8 +1,8 @@
 // The four view modules (services, flows, packs, capabilities) inside the real /_sim/ app (index.html + app.mjs) against
-// a stateful fake JSON host (invented data, loopback only): data renders on first entry without a manual refresh
-// (RU2-01), actions show their effect, deep links, doc links from GET /status (RU2-03), the published route list
-// instead of probes (RU2-07, RU2-12), load errors with their status, and visible help on every control (RU2-09).
-import test from "node:test";
+// a stateful fake JSON host: data renders on first entry without a manual refresh, actions show their effect,
+// deep links, doc links from GET /status, the published route list instead of probes, load errors with their
+// status, and visible help on every control.
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import fs from "node:fs/promises";
@@ -71,10 +71,14 @@ async function host(t, { state, status, failPacks = 0 }) {
   return { origin: `http://127.0.0.1:${server.address().port}`, calls };
 }
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 async function open(t, origin, hash) {
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  t.after(() => context.close());
+  const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -83,7 +87,7 @@ async function open(t, origin, hash) {
   return { page, errors };
 }
 const nav = (page, name) => page.locator("#navigation").getByRole("link", { name, exact: true }).click();
-// Every visible form control except the kit's pager tools has visible help tied by aria-describedby (RU2-09).
+// Every visible form control except the kit's pager tools has visible help tied by aria-describedby.
 const undescribed = (page) => page.evaluate(() => [...document.querySelectorAll("#content input, #content select, #content textarea")]
   .filter((node) => node.type !== "hidden" && !node.closest("[hidden]") && !node.matches("[data-table-search], [data-table-size], [data-filter-target]"))
   .filter((node) => !(node.getAttribute("aria-describedby") ?? "").split(/\s+/).some((id) => document.getElementById(id)?.textContent.trim()))

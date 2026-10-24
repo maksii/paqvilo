@@ -1,5 +1,5 @@
 // Formula columns (lib/dataverse-formula.mjs): SourceType 3 columns read through the Power Fx evaluator, pack override wins,
-// one diagnostic per column when the value is not available, writes refused. Invented x_ schema and GUIDs only.
+// one diagnostic per column when the value is not available, writes refused.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, validateFormulaColumns } from "../lib/dataverse-formula.mjs";
@@ -139,9 +139,8 @@ test("describe is contract without an evaluator that answers, behaviour when it 
 
 test("an async evaluator never flips the level to behaviour", async (t) => {
   const engine = createPowerFxEvaluator({ adapter: { evaluate: async () => ({ value: 1 }) } });
-  const { installed } = await setup(t, { evaluator: engine });
+  const { installed, request, json, diagnostics } = await setup(t, { evaluator: engine });
   assert.equal(installed.formulaColumns.describe().level, "contract");
-  const { request, json, diagnostics } = await setup(t, { evaluator: engine });
   await json(await request("GET", `/x_items(${ITEM})`), 200);
   const row = await json(await request("GET", `/x_items(${ITEM})`), 200);
   assert.equal(row.x_total, null);

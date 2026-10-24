@@ -84,7 +84,7 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
     assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
     await fs.rm(resolved, { recursive: true, force: true });
   });
-  const state = await (await fetch(`${app.url}/__sim/api/state`)).json();
+  const state = await (await fetch(`${app.url}/__sim/api/state?summary=1`)).json();
   const call = (route, method = "GET", body, headers = {}) =>
     fetch(app.url + route, {
       method,
@@ -367,7 +367,7 @@ test("HTTP: Liquid AJAX POST reads form parameters without mutating records", as
   });
   assert.equal(response.status, 400);
   // A write without __RequestVerificationToken is a 401 HttpAntiForgeryException
-  // (web-api-http-requests-handle-errors: 90040107).
+  // (90040107).
   response = await fetch(app.url + "/_api/contacts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1025,7 +1025,9 @@ test("HTTP: shutdown requires CSRF, acknowledges before callback and closes idem
   });
   assert.equal(accepted.status, 202);
   assert.deepEqual(await accepted.json(), { accepted: true, message: "Mirage shutdown accepted." });
-  await Promise.race([shutdownDone, new Promise((_, reject) => setTimeout(() => reject(new Error("shutdown callback timed out")), 2000))]);
+  let timer;
+  await Promise.race([shutdownDone, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("shutdown callback timed out")), 2000); })]);
+  clearTimeout(timer);
   assert.equal(shutdownCalls, 1);
   await fixture.app.close();
 });

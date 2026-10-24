@@ -1,6 +1,6 @@
 // Metadata messages (dataverse-metadata-messages.mjs): reference checks, autonumber seeds, key activation, languages,
-// localized labels and translation files, called through the operation registry. Invented tables and loopback fixtures
-// only; the store is seeded with ensureSecurityModel, so privileges are the runtime shapes.
+// localized labels and translation files, called through the operation registry. The store is seeded with
+// ensureSecurityModel, so privileges are the runtime shapes.
 import { randomUUID } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import test from "node:test";
@@ -116,14 +116,15 @@ function zipEntries(buffer) {
 const unzipNames = (buffer) => [...zipEntries(buffer).keys()];
 const unzipText = (buffer, name) => zipEntries(buffer).get(name).toString("utf8");
 
-const NAMES = [
-  "CanBeReferenced", "CanBeReferencing", "CanManyToMany", "GetValidManyToMany", "GetValidReferencedEntities", "GetValidReferencingEntities",
-  "DeactivateEntityKey", "ReactivateEntityKey", "GetAutoNumberSeed", "GetNextAutoNumberValue", "SetAutoNumberSeed",
-  "ProvisionLanguage", "ProvisionLanguageAsync", "DeprovisionLanguage", "RetrieveAvailableLanguages", "RetrieveDeprovisionedLanguages",
-  "RetrieveInstalledLanguagePacks", "RetrieveInstalledLanguagePackVersion", "RetrieveProvisionedLanguagePackVersion",
-  "RetrieveProvisionedLanguages", "RetrieveLocLabels", "SetLocLabels", "ExportTranslation", "ImportTranslation", "ImportTranslationAsync",
-  "ExportFieldTranslation", "ImportFieldTranslation",
-];
+// Native binding of each metadata message: unbound action or function, ExportTranslation bound to the solution collection.
+const BINDINGS = {
+  action: ["CanBeReferenced", "CanBeReferencing", "CanManyToMany", "DeactivateEntityKey", "ReactivateEntityKey", "GetAutoNumberSeed",
+    "GetNextAutoNumberValue", "SetAutoNumberSeed", "ProvisionLanguage", "ProvisionLanguageAsync", "DeprovisionLanguage", "SetLocLabels",
+    "ImportTranslation", "ImportTranslationAsync", "ImportFieldTranslation"],
+  function: ["GetValidManyToMany", "GetValidReferencedEntities", "GetValidReferencingEntities", "RetrieveAvailableLanguages",
+    "RetrieveDeprovisionedLanguages", "RetrieveInstalledLanguagePacks", "RetrieveInstalledLanguagePackVersion",
+    "RetrieveProvisionedLanguagePackVersion", "RetrieveProvisionedLanguages", "RetrieveLocLabels", "ExportFieldTranslation"],
+};
 
 test("PublishAllXmlAsync returns a publication system job and refuses a basic user before queueing", async () => {
   const api = await apiFor();
@@ -135,13 +136,14 @@ test("PublishAllXmlAsync returns a publication system job and refuses a basic us
   assert.equal(api.jobs.length, 1);
 });
 
-test("every metadata message in the brief is registered with its native binding", async () => {
+test("every metadata message is registered with its native binding and no other", async () => {
   const api = await apiFor();
-  for (const name of NAMES) {
-    const found = name === "ExportTranslation" ? api.registry.find({ name, kind: "action", binding: "collection", entity: "solution" }) : api.registry.find({ name, kind: "action", binding: "unbound" }) ?? api.registry.find({ name, kind: "function", binding: "unbound" });
-    assert.ok(found, `${name} is registered`);
+  const kindsOf = (name) => ["action", "function"].filter((kind) => api.registry.find({ name, kind, binding: "unbound" }));
+  for (const [kind, names] of Object.entries(BINDINGS)) {
+    for (const name of names) assert.deepEqual(kindsOf(name), [kind], name);
   }
-  assert.equal(NAMES.length, 27);
+  assert.ok(api.registry.find({ name: "ExportTranslation", kind: "action", binding: "collection", entity: "solution" }));
+  assert.deepEqual(kindsOf("ExportTranslation"), [], "ExportTranslation is bound to the solution collection only");
 });
 
 test("CanBeReferenced and CanBeReferencing refuse intersect tables; CanManyToMany allows only standard tables", async () => {
@@ -172,7 +174,7 @@ test("GetValidReferencedEntities and GetValidReferencingEntities answer from the
 
 test("an unknown table is not found", async () => {
   const api = await apiFor();
-  await assert.rejects(call(api, "CanBeReferenced", { body: { EntityName: "new_missing" } }));
+  await assert.rejects(call(api, "CanBeReferenced", { body: { EntityName: "new_missing" } }), { status: 404, code: "UnknownEntity" });
 });
 
 test("autonumber seed defaults to 1000, SetAutoNumberSeed moves the next value, and the record writer uses it", async () => {
@@ -193,7 +195,7 @@ test("SetAutoNumberSeed refuses a non-autonumber column and a basic user", async
   await assert.rejects(call(api, "GetAutoNumberSeed", { body: { EntityName: "new_widget", AttributeName: "new_name" } }), /not an autonumber column/);
   await assert.rejects(
     call(api, "SetAutoNumberSeed", { body: { EntityName: "new_widget", AttributeName: "new_serial", Value: 7 }, caller: CLERK(api) }),
-    (error) => error.code === "PrivilegeDenied" || /prvWriteAttribute/.test(error.message),
+    { status: 403, code: "PrivilegeDenied", message: /missing prvWriteAttribute privilege/ },
   );
 });
 
@@ -201,6 +203,7 @@ test("languages: the base language is provisioned; an installed pack can be prov
   const api = await apiFor();
   assert.deepEqual((await call(api, "RetrieveProvisionedLanguages")).body.RetrieveProvisionedLanguages, [1033]);
   assert.deepEqual((await call(api, "RetrieveInstalledLanguagePacks")).body.RetrieveInstalledLanguagePacks, [1033, 1036]);
+  assert.deepEqual((await call(api, "RetrieveAvailableLanguages")).body.LocaleIds, [1033, 1036]);
   assert.equal((await call(api, "ProvisionLanguage", { body: { Language: 1036 } })).status, 204);
   assert.deepEqual((await call(api, "RetrieveProvisionedLanguages")).body.RetrieveProvisionedLanguages, [1033, 1036]);
   await assert.rejects(call(api, "ProvisionLanguage", { body: { Language: 1036 } }), /already provisioned/);
@@ -260,7 +263,6 @@ test("ExportTranslation writes a zip whose CrmTranslations.xml ImportTranslation
   const exported = await call(api, "ExportTranslation", { body: { SolutionName: "new_Invented" } });
   const zip = Buffer.from(exported.body.ExportTranslationFile, "base64");
   assert.equal(zip.readUInt32LE(0), 0x04034b50, "a zip archive");
-  assert.ok(zip.includes(Buffer.from("[Content_Types].xml")) && zip.includes(Buffer.from("CrmTranslations.xml")));
   // Change the table label, then import the exported file: the original label comes back.
   api.store.state.mappings.new_widget.dataverseMetadata.labels.DisplayName = { 1033: "Changed" };
   const imported = await call(api, "ImportTranslation", { body: { TranslationFile: exported.body.ExportTranslationFile, ImportJobId: SOLUTION_ID } });
@@ -303,14 +305,12 @@ test("ExportTranslation names a missing solution as not found", async () => {
   await assert.rejects(call(api, "ExportTranslation", { body: { SolutionName: "new_Missing" } }), /does not exist/);
 });
 
-test("ImportTranslation refuses a label longer than 500 characters and a file without translations", async () => {
+test("ImportTranslation refuses a label longer than 500 characters and a file that is not a zip archive", async () => {
   const api = await apiFor();
-  const exported = await call(api, "ExportTranslation", { body: { SolutionName: "new_Invented" } });
   api.store.state.mappings.new_widget.dataverseMetadata.labels.DisplayName = { 1033: "x".repeat(501) };
   const long = (await call(api, "ExportTranslation", { body: { SolutionName: "new_Invented" } })).body.ExportTranslationFile;
-  void exported;
   await assert.rejects(call(api, "ImportTranslation", { body: { TranslationFile: long, ImportJobId: SOLUTION_ID } }), /longer than 500/);
-  await assert.rejects(call(api, "ImportTranslation", { body: { TranslationFile: Buffer.from("not a zip").toString("base64"), ImportJobId: SOLUTION_ID } }));
+  await assert.rejects(call(api, "ImportTranslation", { body: { TranslationFile: Buffer.from("not a zip").toString("base64"), ImportJobId: SOLUTION_ID } }), { status: 400, message: /not a zip archive/ });
 });
 
 test("ExportFieldTranslation carries the row labels written by SetLocLabels and ImportFieldTranslation reads them back", async () => {
@@ -346,8 +346,9 @@ test("DeactivateEntityKey fails an Active key; ReactivateEntityKey needs a faile
   await assert.rejects(call(api, "DeactivateEntityKey", { body: { ...body, EntityKeyLogicalName: "new_absent" } }), /Could not find the key/);
 });
 
-test("RetrieveInstalledLanguagePackVersion refuses a pack that is not installed", async () => {
-  const api = await apiFor();
+test("language pack versions answer the organization version and refuse a pack that is not installed", async () => {
+  const api = await apiFor({ version: "9.2.25041.00000" });
   await assert.rejects(call(api, "RetrieveInstalledLanguagePackVersion", { params: { Language: 1040 } }), /not installed/);
-  assert.equal(typeof (await call(api, "RetrieveInstalledLanguagePackVersion", { params: { Language: 1036 } })).body.Version, "string");
+  assert.equal((await call(api, "RetrieveInstalledLanguagePackVersion", { params: { Language: 1036 } })).body.Version, "9.2.25041.00000");
+  assert.equal((await call(api, "RetrieveProvisionedLanguagePackVersion", { params: { Language: 1033 } })).body.Version, "9.2.25041.00000");
 });

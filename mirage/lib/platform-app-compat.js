@@ -146,11 +146,11 @@
       for (const control of form.querySelectorAll(".lookup[readonly], .picklist[readonly], .MultiSelectPicklist[readonly]")) control.closest(".control")?.setAttribute("tabindex", "0");
     if (document.querySelector("div .info.required, div .table-info.required")) for (const input of all("input.form-control.input-text-box")) input.setAttribute("aria-required", "true");
     // An empty read-only form box shows a muted dash, hidden from assistive technology.
-    // A read-only file column's (hidden) file box gets none (live read-only file cell).
+    // A read-only file column's (hidden) file box gets none.
     // Composite boxes (full name, address) get the tooltip toggle on their control and no dash.
     for (const box of all(".crmEntityFormView [data-composite-control]")) box.closest(".control")?.setAttribute("data-bs-toggle", "tooltip");
     for (const box of all(".crmEntityFormView input[readonly]:not([type='hidden']):not([type='file']):not([data-composite-control]), .crmEntityFormView textarea[readonly]:not([data-composite-control])")) {
-      // A box with a placeholder shows its placeholder instead (live read-only phone boxes).
+      // A box with a placeholder shows its placeholder instead.
       if (box.value || box.placeholder || box.nextElementSibling?.__ppEmptyDash) continue;
       const dash = document.createElement("div");
       dash.__ppEmptyDash = true;
@@ -161,7 +161,7 @@
       box.parentElement.style.position = "relative";
       box.after(dash);
     }
-    // An empty read-only option set is hidden behind the dash (live read-only contact form).
+    // An empty read-only option set is hidden behind the dash.
     for (const select of all(".crmEntityFormView select[readonly]")) {
       if (select.value || select.nextElementSibling?.__ppEmptyDash) continue;
       const dash = document.createElement("div");
@@ -270,7 +270,7 @@
     this.init = () => placement(element, () => all(".poll", element).forEach((poll) => new adx.Poll(poll).init()));
   };
   // File and image columns: the bundle's file control initialises the image value and the size
-  // boxes with an empty value attribute (live DOM; the server response omits it).
+  // boxes with an empty value attribute (the server response omits it).
   ready(() => {
     for (const box of all('input[type="hidden"][id$="hidden_image_size"], input[type="hidden"][id$="hidden_file_size"]')) {
       const field = box.id.replace(/hidden_(?:image|file)_size$/, "");
@@ -280,7 +280,7 @@
     for (const image of all('input[type="file"][accept="image/*"]')) { const box = document.getElementById(image.id + "hidden"); if (box && !box.hasAttribute("value")) box.setAttribute("value", ""); }
   });
   // Bootstrap 5 list filter text boxes: the tooltip plugin moves the title into the original-title
-  // data attribute and the accessible name (live DOM).
+  // data attribute and the accessible name.
   ready(() => {
     for (const box of all(".entitylist-filter-option-text input.has-tooltip[title]")) {
       const title = box.getAttribute("title");
@@ -295,7 +295,7 @@
     for (const element of all(".ad")) new adx.Ad(element).init();
     for (const element of all(".adplacement")) new adx.AdPlacement(element).init();
   });
-  // entityform.js: the record's state hides the state action it rules out (live DOM: the server
+  // entityform.js: the record's state hides the state action it rules out (the server
   // renders both buttons; the inapplicable one gains "hidden" and display: none).
   ready(() => {
     for (const row of all(".form-custom-actions")) {
@@ -304,14 +304,14 @@
       if (state == null || state === "") continue;
       const button = row.querySelector(Number(state) === 1 ? "button.deactivate-link" : "button.activate-link");
       if (!button) continue;
-      // String append like jQuery addClass: the classList API would drop the repeated "btn" (live class).
+      // String append like jQuery addClass: the classList API would drop the repeated "btn".
       if (!button.classList.contains("hidden")) button.className = `${button.className} hidden`;
       button.style.display = "none";
     }
   });
   // Create related record action with a modal target form (entityform.js): the button opens the
   // form dialog of its filter criteria and points the dialog frame at the target form with the
-  // current record and the page language (live: ?id=<record>&entityformid=<form>&languagecode=<lcid>).
+  // current record and the page language (?id=<record>&entityformid=<form>&languagecode=<lcid>).
   document.addEventListener("click", (event) => {
     const button = event.target?.closest?.(".form-custom-actions button.create-related-record-link");
     if (!button) return;
@@ -350,7 +350,7 @@
     const $ = jq();
     if ($?.fn?.modal) $(modal).modal("show");
     else if (window.bootstrap?.Modal) window.bootstrap.Modal.getOrCreateInstance(modal).show();
-    // The shown dialog is labelled by its heading text (live DOM).
+    // The shown dialog is labelled by its heading text.
     modal.setAttribute("aria-label", modal.querySelector(".modal-title")?.textContent ?? "");
   }, true);
 })();

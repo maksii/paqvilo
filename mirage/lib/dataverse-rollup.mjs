@@ -9,8 +9,8 @@
 //      in the write's own transaction, so the mass recalculation picks it up. A reparent or delete marks the parent the row
 //      pointed at before the write too. The flag is a journaled row mutation (store.mutateRow): the parent's versionnumber,
 //      modifiedon and ETag stay, and no Update step, flow, audit or committed event runs for the parent.
-// unverified: the native platform keeps no per-row stale flag; its system job recalculates rollups incrementally. Mirage's
-//   _state = 0 marking only tells its own mass recalculation which rows to visit.
+//      The native platform keeps no per-row stale flag (its system job recalculates rollups incrementally); the _state = 0
+//      marking only tells Mirage's own mass recalculation which rows to visit.
 //   3. recalculate(api, table, id, column): the value is computed over the local child rows and stored with <column>_state = 1
 //      (Calculated) and <column>_date = now. A trusted pack's rollups['<table>.<column>'](row, ctx) wins and supplies the value.
 //      A definition outside the subset reports ROLLUP_UNSUPPORTED once per column and stores null with <column>_state = 2.
@@ -26,13 +26,12 @@
 // count counts the non-null values of the attribute; sum, min, max and avg read numbers and ignore nulls. A row without a
 // statecode value counts as active. Anything else (link-entity, or-filters, other conditions, several attributes) is outside
 // the subset.
-// unverified: the native FormulaDefinition is FetchXML as the existing CalculateRollupField handler reads it (record messages).
-// unverified: SUM over no matching child rows is 0; MIN, MAX and AVG over none are null (SQL-style aggregation assumed).
-// unverified: COUNT over a nullable attribute counts the non-null values (SQL semantics assumed).
-// unverified: state 2 (OverflowError) is written for a definition outside the subset, the nearest documented error state; OtherError
-// (3) describes an internal failure, so the mapping of an unsupported definition to 2 is a choice of this module.
-// unverified: the native refusal of a write to a rollup column reuses the invalid-property shape (0x80048d19) of the calculated module.
-// unverified: the Web API 400 and 404 codes of recalculate reuse the shapes of the CalculateRollupField handler.
+// Assumed native behavior: the FormulaDefinition is FetchXML, as the CalculateRollupField handler reads it; aggregation
+// follows SQL (SUM over no rows is 0, MIN, MAX and AVG over none are null, COUNT counts non-null values).
+// State 2 (OverflowError) for a definition outside the subset is this module's choice: the nearest documented error state, as
+// OtherError (3) describes an internal failure.
+// Guesses: the refusal of a write to a rollup column reuses the calculated module's invalid-property shape (0x80048d19), and the
+// 400 and 404 of recalculate reuse the CalculateRollupField handler's shapes.
 // The rollup columns per table and the child -> parent sources are memoised per store.tablesRevision([]) (it changes on a
 //   metadata commit, a promoted or non-incremental commit and a state replacement, not on an incremental row write) and on reset.
 // ponytail: aggregation runs over all child rows of the table (no index); fine for simulated data sets.
@@ -41,8 +40,7 @@
 // Mass recalculation: when the runtime has a scheduler (api.scheduler), install schedules a recurring "Mass Calculate Rollup
 //   Fields" task every MASS_INTERVAL_MS (the scheduler clamps long timers) that recalculates every stale (_state = 0) rollup
 //   column of every row; describe(api) then reports MassRecalculation at behaviour, otherwise at contract.
-// unverified: the native system job's cadence (Learn describes an hourly incremental job per column; the exact interval and
-//   per-column scheduling are configurable on the platform and not modelled here).
+//   The native job's cadence (hourly and incremental per column, configurable on the platform) is not modelled.
 import { DataError } from "./data-error.mjs";
 import { parseSolutionXml } from "./solution-xml.mjs";
 import { packCheck, registerPackExport } from "./pack-exports.mjs";
@@ -71,10 +69,8 @@ const hasKey = (data, name) => Object.keys(data).some((key) => key.toLowerCase()
 class Unsupported extends Error {}
 const unsupported = (message) => { throw new Unsupported(message); };
 
-// unverified: the Web API shapes of a 400 and a 404 for a row or column that the rollup path cannot use.
 const invalid = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: INVALID });
 const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, "NotFound", { id, innerCode: "0x80040217" });
-// unverified: the native refusal of a write to a rollup column (see the header).
 const writeRefused = (mapping, column) => new DataError(
   `The attribute '${column}' of entity '${mapping.logicalName}' is a rollup field and cannot be set.`,
   400,
@@ -82,7 +78,7 @@ const writeRefused = (mapping, column) => new DataError(
   { innerCode: "0x80048d19" },
 );
 
-// ---- Parser: FormulaDefinition text -> rule ---------------------------------------------------------------------------------
+// ---- Parser: FormulaDefinition text -> rule
 
 // Reads the parts of the rule in order: child and link first, so a rule outside the aggregate subset still names its 1:N source.
 function readFetch(root, rule) {
@@ -139,7 +135,7 @@ export function parseRollupFormula(text) {
   return rule;
 }
 
-// ---- Aggregation ----------------------------------------------------------------------------------------------------------
+// ---- Aggregation
 
 const asNumber = (value) => {
   const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
@@ -160,7 +156,7 @@ function aggregateOf(rule, rows, parentId) {
   return numbers.reduce((total, value) => total + value, 0) / numbers.length;
 }
 
-// ---- Rules of a table -----------------------------------------------------------------------------------------------------
+// ---- Rules of a table
 
 const states = new WeakMap();
 // Pre-images of writes in flight, per request context: the parents the row pointed at before the write (for reparent and delete).

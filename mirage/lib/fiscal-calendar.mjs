@@ -1,37 +1,11 @@
 import { DataError } from "./data-error.mjs";
 
 /*
- * The organisation fiscal calendar behind the fiscal FetchXML operators (this-fiscal-year ...
- * in-or-after-fiscal-period-and-year), the matching Web API query functions and the
- * fiscal-period / fiscal-year date groupings.
+ * The organisation fiscal calendar behind the fiscal FetchXML operators, the matching Web API
+ * query functions and the fiscal-period / fiscal-year date groupings.
  *
- * The calendar model and its period arithmetic are ported from Sql4Cds (MarkMpn/Sql4Cds,
- * MarkMpn.Sql4Cds.Engine/FetchXml2Sql.cs at commit 3abeada31fccff38786a8f95fb563b20916bcfb1:
- * the FiscalPeriodType codes and GetFiscalPeriodNumber, AddFiscalPeriod, SubtractFiscalPeriod
- * and GetFiscalPeriodDates, with the fiscal operator cases that use them). That code is
- * licensed as follows:
- *
- *   MIT License
- *
- *   Copyright (c) 2020 Mark Carrington
- *
- *   Permission is hereby granted, free of charge, to any person obtaining a copy
- *   of this software and associated documentation files (the "Software"), to deal
- *   in the Software without restriction, including without limitation the rights
- *   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- *   copies of the Software, and to permit persons to whom the Software is
- *   furnished to do so, subject to the following conditions:
- *
- *   The above copyright notice and this permission notice shall be included in all
- *   copies or substantial portions of the Software.
- *
- *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- *   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- *   SOFTWARE.
+ * The period arithmetic is ported from SQL 4 CDS (https://github.com/MarkMpn/Sql4Cds,
+ * FetchXml2Sql.cs), MIT License, Copyright (c) 2020 Mark Carrington; see licenses/sql4cds.txt.
  */
 
 /*

@@ -1,8 +1,7 @@
 // One computed-value source for every read: calculated and formula columns compute through the store seam
 // (store.setComputedColumns), so $filter, $orderby, $apply, FetchXML conditions/attributes and the property route read the
-// computed value, never the stale stored one (Learn query-antipatterns: filtering on calculated columns is supported;
-// define-calculated-fields: ordering on a column over a parent or another calculated column is ignored without error).
-// Invented schema and GUIDs only.
+// computed value, never the stale stored one (filtering on calculated columns is supported; ordering on a column over a
+// parent or another calculated column is ignored without error).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION as FORMULA } from "../lib/dataverse-formula.mjs";

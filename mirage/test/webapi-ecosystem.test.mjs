@@ -1,17 +1,15 @@
-// Ecosystem review items (a)-(f) for the Dataverse and Web API runtime :
-// docs/dataverse-parity.md ("Fiscal calendar", "Token failures", "Navigation binding",
-// "Platform changes" and the decisions table) and docs/platform-internals-reference.md 7.9.
+// Dataverse and Web API runtime behaviour described in mirage/docs/dataverse-parity.md ("Fiscal calendar",
+// "Token failures", "Navigation binding", "Platform changes").
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createSimulator } from "../server.mjs";
 import { webApiErrorResponse } from "../lib/webapi-handler.mjs";
 import { DataError } from "../lib/data-error.mjs";
 import { DataStore } from "../lib/data.mjs";
-import { executeFetch, parseXmlDocument, planFetch } from "../lib/fetchxml-engine.mjs";
+import { parseXmlDocument, planFetch } from "../lib/fetchxml-engine.mjs";
 import {
   FISCAL_PERIOD_TYPES,
   fiscalCalendar,
@@ -28,7 +26,6 @@ import { serverLogicUnsupported } from "../lib/server-logic.mjs";
 import { buildSolutionSchema, scanSolutionSources } from "../lib/solution-schema.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-const mirage = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 const utc = (text) => Date.parse(`${text}T00:00:00Z`);
 const iso = (ms) => new Date(ms).toISOString().slice(0, 10);
@@ -89,11 +86,13 @@ async function start(t, { settings = SETTINGS, state = fixture() } = {}) {
   await fs.writeFile(path.join(directory, "sitesetting.yml"), settingsYaml(settings));
   const app = await createSimulator({ sourceDir: directory, initial: state, watch: false });
   ownedFixture(t).add(() => app.close());
+  // app.state() clones the whole state, so read the token once.
+  const csrf = app.csrf;
   const json = async (route, { method = "GET", body, headers = {}, token = true } = {}) => {
     const response = await fetch(app.url + route, {
       method,
       headers: {
-        ...(token ? { __RequestVerificationToken: app.state().csrf } : {}),
+        ...(token ? { __RequestVerificationToken: csrf } : {}),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...headers,
       },
@@ -104,7 +103,7 @@ async function start(t, { settings = SETTINGS, state = fixture() } = {}) {
   return { app, json };
 }
 
-// (a) Fiscal calendar: Sql4Cds' period model (MIT) with the documented corrections.
+// Fiscal calendar: Sql4Cds' period model (MIT) with the documented corrections.
 test("fiscal calendar follows the organisation start and period type, half-open and without drift", () => {
   const july = fiscalCalendar({ fiscalCalendarStart: "2025-07-01", fiscalPeriodType: 2002 });
   assert.deepEqual([july.startMonth, july.startDay, july.type, july.periods, july.name], [6, 1, 2002, 4, "quarterly"]);
@@ -159,7 +158,7 @@ test("fiscal operators: relative years from the current fiscal year, X periods a
   assert.deepEqual(window("next-x-fiscal-periods", ["1"], spring)(["2026-02-28", "2026-03-02", "2026-06-30", "2026-07-01"]), ["2026-03-02", "2026-06-30"]);
   assert.deepEqual(window("last-x-fiscal-years", ["1"], spring)(["2024-06-30", "2024-07-01", "2026-02-28", "2026-03-02"]), ["2024-07-01", "2026-02-28"]);
   assert.deepEqual(window("next-x-fiscal-years", ["1"], spring)(["2026-02-28", "2026-03-02", "2027-06-30", "2027-07-01"]), ["2026-03-02", "2027-06-30"]);
-  // Absolute operators: period, then year; a period outside the year matches nothing (Learn).
+  // Absolute operators: period, then year; a period outside the year matches nothing.
   assert.deepEqual(window("in-fiscal-year", ["2025"])(["2025-06-30", "2025-07-01", "2026-06-30", "2026-07-01"]), ["2025-07-01", "2026-06-30"]);
   assert.deepEqual(window("in-fiscal-period", ["2"])(["2025-10-01", "2025-12-31", "2026-11-15", "2026-01-01"]), ["2025-10-01", "2025-12-31", "2026-11-15"]);
   assert.deepEqual(window("in-fiscal-period", ["5"])(["2025-10-01"]), []);
@@ -199,7 +198,7 @@ test("FetchXML, Web API query functions and fiscal groupings read the calendar f
   assert.deepEqual(new DataStore({ state }).fetchXml('<fetch><entity name="account"><attribute name="name"/><filter><condition attribute="openedon" operator="in-fiscal-period-and-year"><value>3</value><value>2025</value></condition></filter></entity></fetch>', { admin: true }).entities.map((row) => row.name), ["Q1"]);
 });
 
-// (a) filter@hint, Contains, EqualRoleBusinessId and 90040109.
+// filter@hint, Contains, EqualRoleBusinessId and 90040109.
 test("filter hint union is accepted everywhere, never changes rows and reports its documented restrictions", async (t) => {
   const parse = (xml) => planFetch(parseXmlDocument(xml, { root: "fetch" }), { profile: "webapi" });
   const union = '<fetch><entity name="account"><attribute name="name"/><filter type="or" hint="union"><condition attribute="name" operator="eq" value="Q1"/><condition attribute="name" operator="eq" value="Q4"/></filter><order attribute="name"/></entity></fetch>';
@@ -255,7 +254,7 @@ test("Contains answers Dataverse's full-text error and EqualRoleBusinessId is re
   assert.equal(supportOf("odata.crm-function.InFiscalYear").supported, true);
 });
 
-// (c) Token failures and 90040109.
+// Token failures and 90040109.
 test("token failures: no token 401, a wrong token 403, both 90040107; reads ignore tokens and bearer headers", async (t) => {
   const { json } = await start(t);
   const missing = await json("/_api/accounts", { method: "POST", body: { name: "No token" }, token: false });
@@ -266,8 +265,7 @@ test("token failures: no token 401, a wrong token 403, both 90040107; reads igno
   // Microsoft's clients refresh the token on 403 + 90040107 and retry; the retry succeeds.
   const retried = await json("/_api/accounts", { method: "POST", body: { name: "Wrong token" } });
   assert.equal(retried.status, 204);
-  // GETs need no token: a stale token or an invalid bearer header doesn't change a read locally
-  // (proposals B-token-read-invalid-header and B-token-invalid-bearer observe the live answer).
+  // GETs need no token: a stale token or an invalid bearer header doesn't change a read locally.
   for (const headers of [{ __RequestVerificationToken: "stale" }, { Authorization: "Bearer invalid" }]) {
     const read = await json("/_api/accounts?$select=name", { token: false, headers });
     assert.equal(read.status, 200, JSON.stringify(headers));
@@ -282,7 +280,7 @@ test("token failures: no token 401, a wrong token 403, both 90040107; reads igno
   });
 });
 
-// (b) Webapi/<table>/disableodatafilter.
+// Webapi/<table>/disableodatafilter.
 test("disableodatafilter changes no rows and no error", async (t) => {
   const route = `/_api/accounts?$select=name&$filter=${encodeURIComponent("name ne 'Q1'")}&$orderby=name`;
   const results = [];
@@ -298,7 +296,7 @@ test("disableodatafilter changes no rows and no error", async (t) => {
   assert.deepEqual(results[0], ["Next year", "Q2 first day", "Q4"]);
 });
 
-// (d) @odata.bind names a navigation property, case-sensitively.
+// @odata.bind names a navigation property, case-sensitively.
 test("@odata.bind accepts only the exact navigation property name", async (t) => {
   const { app, json } = await start(t);
   const exact = await json("/_api/accounts", { method: "POST", body: { name: "Bound", "new_ProductType@odata.bind": `/new_producttypes(${G(21)})` } });
@@ -306,7 +304,7 @@ test("@odata.bind accepts only the exact navigation property name", async (t) =>
   const created = app.store.snapshot().tables.account.find((row) => row.name === "Bound");
   assert.equal(created.new_producttype.id, G(21));
   // The lookup's logical name and another case of the navigation property are not navigation
-  // properties (troubleshoot web-api-client-errors: parentcustomerid@odata.bind, 0x80048d19).
+  // properties (parentcustomerid@odata.bind, 0x80048d19).
   for (const name of ["new_producttype", "New_ProductType", "NEW_PRODUCTTYPE"]) {
     const rejected = await json("/_api/accounts", { method: "POST", body: { name: "Wrong case", [`${name}@odata.bind`]: `/new_producttypes(${G(21)})` } });
     assert.deepEqual([rejected.status, rejected.body.error.code], [400, "9004010A"], name);
@@ -320,7 +318,7 @@ test("@odata.bind accepts only the exact navigation property name", async (t) =>
   // An unknown write property is refused by the exported field allow-list.
   const unknown = await json("/_api/accounts", { method: "POST", body: { name: "Unknown", "new_widget@odata.bind": `/new_producttypes(${G(21)})` } });
   assert.deepEqual([unknown.status, unknown.body.error.code], [403, "90040101"]);
-  // Learn's example: contact.parentcustomerid binds through parentcustomerid_account.
+  // The documented example: contact.parentcustomerid binds through parentcustomerid_account.
   const customer = await json("/_api/contacts", { method: "POST", body: { fullname: "Bea", "parentcustomerid_account@odata.bind": `/accounts(${G(1)})` } });
   assert.equal(customer.status, 204);
   const logical = await json("/_api/contacts", { method: "POST", body: { fullname: "Cy", "parentcustomerid@odata.bind": `/accounts(${G(1)})` } });
@@ -354,7 +352,7 @@ test("role-less multi-table relationships get the documented <lookup>_<table> na
   );
   const schema = buildSolutionSchema(await scanSolutionSources([root]));
   const navigation = (name) => Object.values(schema.relationships).find((item) => item.schemaName === name).referencingNavigation;
-  // Learn: annotation.objectid navigations are objectid_<table>, document locations regardingobjectid_<table>.
+  // annotation.objectid navigations are objectid_<table>, document locations regardingobjectid_<table>.
   assert.equal(navigation("new_widget_Annotations"), "objectid_new_widget");
   assert.equal(navigation("new_gadget_Annotations"), "objectid_new_gadget");
   assert.equal(navigation("new_widget_SharePointDocumentLocations"), "regardingobjectid_new_widget");
@@ -362,14 +360,14 @@ test("role-less multi-table relationships get the documented <lookup>_<table> na
   assert.equal(navigation("new_widget_new_owner"), "new_OwnerId");
 });
 
-// (e) The server-logic envelope: the runtime and the fact sheet agree on the wire format.
+// The server-logic envelope: the runtime and the fact sheet agree on the wire format.
 test("unsupported exported server logic answers in the camelCase envelope", async () => {
   const answer = serverLogicUnsupported({ serverLogics: [{ name: "Echo" }] }, "echo", "post");
   assert.deepEqual(Object.keys(answer.body), ["requestId", "success", "serverLogicName", "data", "error"]);
   assert.deepEqual([answer.status, answer.body.success, answer.body.serverLogicName, answer.body.data], [501, false, "Echo", null]);
 });
 
-// (f) Platform changes: enhanced authorization, account web roles, modern lists, list OData
+// Platform changes: enhanced authorization, account web roles, modern lists, list OData
 // feeds and table permissions on every form and list.
 test("platform change diagnostics name enhanced authorization, list feeds, unsecured components and modern lists", () => {
   const list = (name, metadata) => ({ name, metadata });
@@ -414,7 +412,7 @@ test("exports surface the platform changes as portal diagnostics", async (t) => 
   const codes = portal.diagnostics.map((diagnostic) => diagnostic.code);
   for (const code of ["LIST_ODATA_FEED_REMOVED", "TABLE_PERMISSIONS_ALWAYS_ENFORCED", "MODERN_LIST_LOCAL_MARKUP"]) assert.ok(codes.includes(code), code);
   assert.equal(portal.diagnostics.find((diagnostic) => diagnostic.code === "TABLE_PERMISSIONS_ALWAYS_ENFORCED").count, 3);
-  // The enhanced site record carries enhancedauthorization (Learn: powerpagesite choices 0-3).
+  // The enhanced site record carries enhancedauthorization (powerpagesite choices 0-3).
   const enhanced = await fs.mkdtemp(path.join(os.tmpdir(), "pp-platform-changes-enhanced-"));
   t.after(() => fs.rm(enhanced, { recursive: true, force: true }));
   const site = (value) => `<powerpagesites><powerpagesite powerpagesiteid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><content>{}</content><name>Enhanced</name>${value == null ? "" : `<enhancedauthorization>${value}</enhancedauthorization>`}<statecode>0</statecode></powerpagesite></powerpagesites>`;
@@ -486,7 +484,7 @@ test("a list with Enable Table Permissions off still reads under table permissio
     (
       await fetch(`${app.url}/_services/entity-grid-data.json/${SITE}`, {
         method: "POST",
-        headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf },
+        headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf },
         body: JSON.stringify({ base64SecureConfiguration: layout.Base64SecureConfiguration, sortExpression: "", search: "", page: 1, pageSize: 5, pagingCookie: "", filter: null, metaFilter: null, nlSearchFilter: "", timezoneOffset: 0, customParameters: [] }),
       })
     ).json();

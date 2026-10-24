@@ -148,7 +148,7 @@ test("events recorded inside a rolled-back outer transaction are never dispatche
   assert.equal(delivered.length, 0);
 });
 
-test("F1: a committed-event consumer's nested transact after the commit is a real commit", async () => {
+test("a committed-event consumer's nested transact after the commit is a real commit", async () => {
   const store = fixture();
   let late;
   store.addCommittedEvents(() => {
@@ -165,7 +165,7 @@ test("F1: a committed-event consumer's nested transact after the commit is a rea
   assert.deepEqual(ids(store), ["a", "b", "late"]);
 });
 
-test("F1: a continuation from a finished isolated transaction reads the committed state, not its old working copy", async () => {
+test("a continuation from a finished isolated transaction reads the committed state, not its old working copy", async () => {
   const store = fixture();
   const reads = [];
   let release;
@@ -188,8 +188,9 @@ test("F1: a continuation from a finished isolated transaction reads the committe
   assert.deepEqual(reads, [["a", "A", "B"]]);
 });
 
-test("F2: an independent plugin commit inside an isolated transaction that later fails stays uncommitted", async () => {
+test("an independent plugin commit inside an isolated transaction that later fails stays uncommitted", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "store-nesting-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, "state.json");
   const state = emptyState();
   state.mappings.note = { logicalName: "note", entitySet: "notes", idColumn: "noteid", nameColumn: "text", fields: { text } };
@@ -209,10 +210,9 @@ test("F2: an independent plugin commit inside an isolated transaction that later
   const persisted = await fs.readFile(file, "utf8");
   assert.equal(persisted.includes('"P"'), false);
   assert.equal(persisted.includes('"M"'), false);
-  await fs.rm(directory, { recursive: true, force: true });
 });
 
-test("F3: a plain transact inside an isolated transaction joins it instead of deadlocking", { timeout: 5000 }, async () => {
+test("a plain transact inside an isolated transaction joins it instead of deadlocking", { timeout: 5000 }, async () => {
   const store = fixture();
   const before = store.revision;
   await store.transact(async () => {
@@ -236,7 +236,7 @@ test("a plain transact inside an isolated transaction joins it and rolls back wi
   assert.deepEqual(ids(store), ["a"]);
 });
 
-test("F4: an isolated count is not leaked when the transaction fails before its body runs", async () => {
+test("an isolated count is not leaked when the transaction fails before its body runs", async () => {
   const store = fixture();
   Object.defineProperty(store, "committedEventCandidates", {
     configurable: true,

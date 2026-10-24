@@ -1,6 +1,6 @@
 // Standard tables through the Dataverse Web API: the seeded account stand-in (reads, creates with the standard defaults,
 // unknown columns), a Solution-mapped account that keeps its own mapping while standard columns still resolve, and the
-// standard navigations of a polymorphic lookup (email.acceptingentityid). Invented site and loopback only.
+// standard navigations of a polymorphic lookup (email.acceptingentityid).
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -72,6 +72,7 @@ describe("standard tables through the Dataverse Web API", () => {
     assert.match(JSON.stringify(await response.json()), /Resource not found for the segment 'Accounts'/);
     const unknown = await dv.call("accounts", { method: "POST", body: { name: "Unknown column", no_such_column: 1 } });
     assert.equal(unknown.status, 400);
+    assert.match(JSON.stringify(await unknown.json()), /no_such_column/);
   });
 
   it("creates an account with the standard defaults", async () => {
@@ -143,14 +144,14 @@ describe("the field merge", () => {
     const thin = { name: { dataverseType: "nvarchar" } };
     const merged = fieldsWithStandard(seeded(thin), "account", thin);
     assert.deepEqual(merged.name, standardFields("account").name);
-    assert.ok(merged.telephone1);
+    assert.deepEqual(merged.telephone1, standardFields("account").telephone1);
   });
   it("a Solution's own definition wins and the standard columns fill the rest", () => {
     const own = { name: { dataverseType: "nvarchar", displayName: "Solution name" } };
     const store = { state: { mappings: { account: { logicalName: "account", fields: own } } } };
     const merged = fieldsWithStandard(store, "account", own);
     assert.equal(merged.name.displayName, "Solution name");
-    assert.ok(merged.telephone1);
+    assert.deepEqual(merged.telephone1, standardFields("account").telephone1);
   });
   it("a table the standard file does not list is returned unchanged", () => {
     const own = { x_tier: { dataverseType: "nvarchar" } };

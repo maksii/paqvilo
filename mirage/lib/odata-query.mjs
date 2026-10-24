@@ -52,8 +52,7 @@ const fail = (message, status = 400, code = "InvalidQuery", details) => {
 };
 const unsupported = (message) => fail(message, 400, "UnsupportedQuery");
 
-// ---------------------------------------------------------------------------
-// Tokenizer
+// ---- Tokenizer
 const TOKEN = new RegExp(
   [
     "(?<string>'(?:[^']|'')*')",
@@ -482,8 +481,7 @@ export function expressionPaths(ast, prefix = [], variables = new Map()) {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Evaluation
+// ---- Evaluation
 
 /** Read a column value; supports _lookup_value aliases and stored lookups. */
 export function columnValue(row, name) {
@@ -800,8 +798,7 @@ export function compileODataPredicate(ast, mapping, ctx) {
   return (row) => predicate(row, mapping, new Map()) === true;
 }
 
-// ---------------------------------------------------------------------------
-// Query options
+// ---- Query options
 
 /** Split on a separator outside parentheses and quoted strings. */
 export function splitTopLevel(text, separator = ",") {

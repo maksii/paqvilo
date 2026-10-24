@@ -1,4 +1,4 @@
-// Browser semantics proof with fulfilled loopback requests and no catalogue/environment access.
+// Browser semantics with fulfilled requests.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

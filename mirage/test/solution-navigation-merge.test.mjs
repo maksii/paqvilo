@@ -1,6 +1,6 @@
 // A Solution relationship added after a configured mapping took its relationships from an earlier import still declares its
 // navigation (the referencing attribute's schema name when the relationship names none), so an @odata.bind on it is not an
-// undeclared property; a mapping that declares its own relationships keeps them. Invented x_ schema only.
+// undeclared property; a mapping that declares its own relationships keeps them.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applySolutionData } from "../lib/solution-data.mjs";
@@ -20,8 +20,8 @@ test("a re-import gives a configured mapping the Solution navigations added sinc
     x_child: { entitySet: "x_children", idColumn: "x_childid", userConfigured: true },
     x_own: { entitySet: "x_owns", idColumn: "x_ownid", userConfigured: true, relationships: {} },
   }, tables: {} };
-  const first = applySolutionData(state, metadataWith({ x_parentid: rel("x_parentid", "x_item_children") })) ?? state;
-  const second = applySolutionData(first, metadataWith({ x_parentid: rel("x_parentid", "x_item_children"), x_otherparentid: rel("x_otherparentid", "x_item_otherchildren") })) ?? first;
+  const first = applySolutionData(state, metadataWith({ x_parentid: rel("x_parentid", "x_item_children") }));
+  const second = applySolutionData(first, metadataWith({ x_parentid: rel("x_parentid", "x_item_children"), x_otherparentid: rel("x_otherparentid", "x_item_otherchildren") }));
   assert.deepEqual(Object.keys(second.mappings.x_child.relationships).sort(), ["x_otherparentid", "x_parentid"]);
   assert.deepEqual(second.mappings.x_own.relationships, {});
   const store = new DataStore({ state: { ...second, tables: { x_item: [{ x_itemid: ITEM }], x_child: [] } } });

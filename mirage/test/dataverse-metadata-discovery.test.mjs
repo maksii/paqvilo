@@ -288,13 +288,15 @@ test("advertised metadata paths and exact source navigation names work over HTTP
     xmlResponse = await get("$metadata");
   assert.equal(xmlResponse.status, 200);
   const nodes = descendants(parseSolutionXml(await xmlResponse.text()));
-  for (const [name, select] of [
-    ["EntityDefinitions", "LogicalName"],
-    ["RelationshipDefinitions", "SchemaName"],
-    ["GlobalOptionSetDefinitions", "Name"],
+  for (const [name, select, expected] of [
+    ["EntityDefinitions", "LogicalName", "sample_node"],
+    ["RelationshipDefinitions", "SchemaName", "sample_node_links"],
+    ["GlobalOptionSetDefinitions", "Name", null],
   ]) {
     assert.ok(document.value.some((entry) => entry.name === name));
-    assert.ok(Array.isArray((await read(name + "?$select=" + select)).value));
+    const values = (await read(name + "?$select=" + select)).value.map((row) => row[select]);
+    assert.ok(Array.isArray(values));
+    if (expected) assert.ok(values.includes(expected), `${name} lists ${expected}: ${values.join(",")}`);
   }
   const activity = nodes.find(
     (node) =>

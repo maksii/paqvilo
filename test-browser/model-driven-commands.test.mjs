@@ -1,19 +1,24 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { installModelDrivenCommands } from '../lense/model-driven-commands.mjs';
 import { verifyModelDrivenIdentity } from '../lense/model-driven-identity.mjs';
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 test('explicit custom commands await async results, keep values browser-only and retire pending work honestly', async t => {
   const server = http.createServer((_request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><div id="paqvilo-model-inspector"></div>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
-  ownedFixture(t).add(async () => { await browser.close(); });
+  const origin = `http://127.0.0.1:${server.address().port}`, context = await browser.newContext();
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
-  const page = await browser.newPage(); await page.goto(origin);
+  const page = await context.newPage(); await page.goto(origin);
   await page.evaluate(() => { const host = document.getElementById('paqvilo-model-inspector'); host.__paqModelInspector = { token: 'invented' }; host.__paqModelActions = { token: 'invented', receive(id, result) { (window.results ??= {})[id] = result; } }; });
   await page.evaluate(installModelDrivenCommands, { origin, token: 'invented' });
   const ack = await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelCommands.run({ requestId: 'async', code: 'await Promise.resolve(); return {zero:0, no:false, value:"PRIVATE_RESULT"};' }));
@@ -33,8 +38,18 @@ test('explicit custom commands await async results, keep values browser-only and
   await page.waitForFunction(() => window.results?.changed && window.cooperativeAbort);
   assert.equal(await page.evaluate(() => window.results.changed.status), 'cancelled');
   assert.equal(await page.evaluate(() => JSON.stringify(window.results.changed).includes('PRIVATE_OLD_TARGET')), false);
-  await page.evaluate(() => { const runtime = document.getElementById('paqvilo-model-inspector').__paqModelCommands; runtime.run({ requestId: 'retired', code: 'await new Promise(r=>setTimeout(r,20)); return "retired-result";' }); runtime.dispose(); });
-  await page.waitForTimeout(50); assert.equal(await page.evaluate(() => Boolean(window.results.retired)), false);
+  // A command disposed before its first microtask never runs.
+  await page.evaluate(async () => { const runtime = document.getElementById('paqvilo-model-inspector').__paqModelCommands; runtime.run({ requestId: 'unstarted', code: 'window.unstartedRan=true; return 1;' }); runtime.dispose(); await new Promise(r=>setTimeout(r,0)); });
+  assert.equal(await page.evaluate(() => Boolean(window.unstartedRan)), false);
+  // Installing again with the same token keeps the existing runtime, so remove the disposed one first.
+  await page.evaluate(() => delete document.getElementById('paqvilo-model-inspector').__paqModelCommands);
+  await page.evaluate(installModelDrivenCommands, { origin, token: 'invented' });
+  // A command already running when the runtime is disposed finishes, but its result is not delivered.
+  await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelCommands.run({ requestId: 'retired', code: 'window.retiredStarted=true; await new Promise(r=>setTimeout(r,20)); window.retiredFinished=true; return "retired-result";' }));
+  await page.waitForFunction(() => window.retiredStarted);
+  await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelCommands.dispose());
+  await page.waitForFunction(() => window.retiredFinished);
+  assert.deepEqual(await page.evaluate(() => [Boolean(window.results.unstarted), Boolean(window.results.retired)]), [false, false]);
 });
 
 test('identity preflight requires the exact native privilege and one enabled server user; no roles-name bypass', async t => {
@@ -45,11 +60,11 @@ test('identity preflight requires the exact native privilege and one enabled ser
     else response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><div id="paqvilo-model-inspector"></div>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
-  ownedFixture(t).add(async () => { await browser.close(); });
+  const origin = `http://127.0.0.1:${server.address().port}`, context = await browser.newContext();
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
-  const page = await browser.newPage(); await page.goto(origin);
+  const page = await context.newPage(); await page.goto(origin);
   await page.evaluate(() => { const host = document.getElementById('paqvilo-model-inspector'); host.__paqModelActions = { token: 'invented', receive(_id, result) { window.result = result; } }; window.privileges = {}; window.Xrm = { Utility: { getGlobalContext: () => ({ getClientUrl: () => location.origin, getVersion: () => '9.2.1.0', userSettings: { roles: [{ name: 'System Administrator' }], getSecurityRolePrivilegesInfo: async () => window.privileges } }) } }; });
   const input = { origin, token: 'invented', objectId, requestId: 'start' };
   assert.equal(await page.evaluate(verifyModelDrivenIdentity, input), false); assert.equal(reads, 0);

@@ -125,7 +125,7 @@ test("explicit mapped native stylesheet is served only while source/cache/origin
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
-test("stylesheet observation failsclosed for unmapped/scripts/nonCSS and never issues writes", async () => {
+test("stylesheet observation fails closed for unmapped/scripts/nonCSS and never issues writes", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-observed-style-"));
   try {
     const file = path.join(dir, "app.js");

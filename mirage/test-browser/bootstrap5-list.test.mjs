@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -10,6 +10,10 @@ import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 const require = createRequire(import.meta.url);
 const SITE = "7c2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c4e";
 const CONTACT = "c3000000-0000-4000-8000-000000000011";
@@ -17,8 +21,8 @@ const LIST = "3d000000-0000-4000-8000-000000000011";
 const CREATE = "3e000000-0000-4000-8000-000000000011";
 const account = (index, extra = {}) => ({ accountid: `a3000000-0000-4000-8000-0000000000${String(index).padStart(2, "0")}`, name: `Account ${index}`, ...extra });
 
-// Invented Bootstrap 5 site (Site/BootstrapV5Enabled) with one account list: three rows per
-// page, search, a create page and item actions. Nothing leaves loopback.
+// A Bootstrap 5 site (Site/BootstrapV5Enabled) with one account list: three rows per
+// page, search, a create page and item actions.
 /** The invented list site in a browser: the page, its grid and the collected page errors. */
 // The create privilege enables the create links (live: without it they render disabled).
 async function launch(t, { search = true, configured = true, operations = ["read", "create", "update", "delete"] } = {}) {
@@ -63,9 +67,8 @@ async function launch(t, { search = true, configured = true, operations = ["read
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();
   const errors = [];

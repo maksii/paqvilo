@@ -89,9 +89,11 @@ test('Liquid empty/no-SDK needs independently recomputed empty roots, real fixtu
   assert.ok(validateLiquidNoReadReceipt(current, native, local).gaps.includes('no-read-unresolved-parent-hypothesis'));
 });
 
-test('all 2251 concrete configurations have an explicit 181798-cell denominator with no unrecorded native credit', async () => {
+test('all 2251 concrete configurations materialize native components and a bounded query contract within an explicit 181798-cell denominator', async () => {
   const schema = JSON.parse(await readFile(new URL('../dataverse/manifest.json', import.meta.url)));
   const catalogue = JSON.parse(await readFile(new URL('../data/stress-catalogue.json', import.meta.url)));
+  // Materializing every variant is the slow part, so the per-configuration
+  // checks of the grammar and the extra cohorts share this one domain build.
   const domain = configurationCampaignDomain({ schema, catalogue });
   assert.equal(domain.configurationsRequired, 2251);
   assert.equal(domain.denominator, 181798);
@@ -100,6 +102,30 @@ test('all 2251 concrete configurations have an explicit 181798-cell denominator 
   assert.equal(domain.equipmentLifecycleConfigurations, 128);
   assert.equal(domain.nativeQualifiedCells, 0);
   assert.equal(domain.universalPermissionParity, false);
+  const grammar = domain.configurations.slice(0, domain.originalGrammarConfigurations);
+  assert.deepEqual(grammar.map(configuration => configuration.variantId), [...scopeHierarchyVariantCases()].map(variant => variant.id));
+  assert.equal(grammar.reduce((count, configuration) => count + configuration.configurationCells.length, 0), 177242);
+  const allComponentIds = grammar.flatMap(configuration => configuration.components.map(component => component.id));
+  assert.equal(new Set(allComponentIds).size, allComponentIds.length);
+  for (const configuration of domain.configurations) {
+    assert.equal(configuration.nativeExecution, false);
+    assert.equal(configuration.nativeQualifiedCells, 0);
+    assert.equal(configuration.configurationCells.length, configuration.nativeCellsPerRepeat);
+    assert.ok(configuration.query.id.length <= 64, 'Operation case IDs fit Dataverse Text(64).');
+    const ids = new Set(configuration.components.map(component => component.id));
+    for (const component of configuration.components.filter(component => component.type === 18)) {
+      assert.ok(schema.tables.some(table => table.name === component.content.entitylogicalname));
+      assert.ok(component.content.scope >= 756150000 && component.content.scope <= 756150004);
+      assert.ok(component.content.adx_entitypermission_webrole.every(id => ids.has(id)));
+      if (component.content.parententitypermission) assert.ok(ids.has(component.content.parententitypermission));
+      if (component.content.scope === 756150002) assert.ok(component.content.accountrelationship);
+      if (component.content.scope === 756150004) assert.equal(component.content.entitylogicalname, 'contact');
+    }
+    const bound = configuration.bindingContract.bindRecordIds(['11111111-2222-4333-8444-555555555555']);
+    assert.deepEqual(bound.fixtureBindings, []);
+    assert.ok(!bound.fetchXml.includes('{{qualificationRecordIdValues}}'));
+    assert.match(bound.fetchXml, /<value>11111111-2222-4333-8444-555555555555<\/value>/);
+  }
 });
 
 test('native driver refuses base-role freeze and missing execution adapters before any mutation', async () => {

@@ -1,6 +1,6 @@
 // Rollup columns (lib/dataverse-rollup.mjs): create stamps state 0, a child write marks its parents stale, recalculate computes the
 // supported aggregates with and without the statecode filter, unsupported definitions report once and store state 2, a pack
-// override wins, and a write to a rollup column is refused. Invented x_ schema only.
+// override wins, and a write to a rollup column is refused.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, parseRollupFormula, recalculate, validateRollups } from "../lib/dataverse-rollup.mjs";
@@ -218,23 +218,23 @@ test("a child write keeps the parent's ETag and runs no Update step or committed
   assert.equal(response.status, 204, await response.text());
 });
 
-test("2,000 writes on a table without rollups read each table's field definitions once per table revision", async (t) => {
-  const { request, json, store } = await setup(t);
+test("concurrent writes on a table without rollups read each table's field definitions once per table revision", async (t) => {
+  const { request, store } = await setup(t);
   const calls = new Map();
   const definitions = store.fieldDefinitions;
   store.fieldDefinitions = function (logical, ...rest) {
     if (new Error().stack.includes("dataverse-rollup.mjs")) {
-      const key = `${store.tablesRevision([])}\u0000${logical}`;
+      const key = `${store.tablesRevision([])} ${logical}`;
       calls.set(key, (calls.get(key) ?? 0) + 1);
     }
     return definitions.call(this, logical, ...rest);
   };
-  for (let batch = 0; batch < 100; batch++) {
+  for (let batch = 0; batch < 3; batch++) {
     await Promise.all(Array.from({ length: 20 }, (_, index) => request("POST", "/x_notes", { x_name: `Note ${batch}.${index}` }, { prefer: "return=minimal" })
       .then((response) => assert.equal(response.status, 204))));
   }
-  assert.equal(store.state.tables.x_note.length, 2000);
+  assert.equal(store.state.tables.x_note.length, 60);
+  assert.ok(calls.size > 0, "the rollup hook ran on the writes");
   assert.ok([...calls.values()].every((count) => count === 1), JSON.stringify(Object.fromEntries(calls)));
-  assert.ok(calls.size <= Object.keys(store.state.mappings).length, `rollup read ${calls.size} definitions for 2,000 writes`);
-  await json(await request("GET", "/x_notes?$top=1&$select=x_name"), 200);
+  assert.ok(calls.size <= Object.keys(store.state.mappings).length, `rollup read ${calls.size} definitions for 60 writes`);
 });

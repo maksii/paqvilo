@@ -65,7 +65,7 @@ test('staff MDA queries, record reads and writes use row privileges, FLS and can
   const deniedField = await service.get('new_staffitem', first.id, actor(0));
   assert.equal(deniedField.row.new_secret, null);
   assert.equal((await service.get('new_staffitem', first.id, actor(2))).row.new_secret, 'Classified fixture');
-  await assert.rejects(service.get('new_staffitem', second.id, actor(0)), error => [403, 404].includes(error.status));
+  await assert.rejects(service.get('new_staffitem', second.id, actor(0)), { status: 403, code: 'AccessDenied' });
   await assert.rejects(service.write({ entity: 'new_staffitem', id: first.id, etag: admin.etag, values: { new_secret: 'Denied' }, ...actor(0) }), error => error.status === 403);
   await assert.rejects(service.write({ entity: 'new_staffitem', id: first.id, etag: first.etag, values: { new_name: 'Stale' }, ...actor(0) }), error => error.status === 412);
   const changed = await service.write({ entity: 'new_staffitem', id: first.id, etag: admin.etag, values: { new_name: 'Changed' }, ...actor(0) });
@@ -169,7 +169,7 @@ test('failed transport startup releases opened listeners and honors organization
   t.mock.method(net.Server.prototype, 'listen', function (...args) { opened.push(this); return listen.apply(this, args); });
   const { core, service } = await fixture(t);
   // Invalid TLS data fails only after HTTP has successfully begun listening.
-  await assert.rejects(startDataverseApi({ organization: core, tls: { key: 'Invented invalid key', cert: 'Invented invalid certificate' } }));
+  await assert.rejects(startDataverseApi({ organization: core, tls: { key: 'Invented invalid key', cert: 'Invented invalid certificate' } }), { code: 'ERR_OSSL_PEM_NO_START_LINE' });
   assert.ok(opened.length);
   assert.ok(opened.every(server => !server.listening));
   assert.equal((await service.write({ entity: 'new_staffitem', values: { new_name: 'External core survives startup failure' } })).row.new_name, 'External core survives startup failure');

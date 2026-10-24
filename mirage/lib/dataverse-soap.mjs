@@ -47,7 +47,7 @@ const primaryOf = (api, logical) => {
   }
 };
 
-// ---- Reading the request tree (dataverse-soap-xml nodes: { ns, name, attrs, children, text, scope }) ----
+// ---- Reading the request tree (dataverse-soap-xml nodes: { ns, name, attrs, children, text, scope })
 const kid = (node, ns, name) => node?.children.find((child) => child.ns === ns && child.name === name);
 const kids = (node, ns, name) => kid(node, ns, name)?.children ?? [];
 const isNilNode = (node) => node.attrs.some((a) => a.ns === NS.i && a.name === "nil" && ["true", "1"].includes(a.value));
@@ -70,7 +70,7 @@ function typeKey(node) {
   return { key: `${canonicalPrefix}:${name}`, name, uri };
 }
 
-// OrganizationRequestCollection is xrm/2011 in the Web API docs, xrm/2012 in the SDK's ExecuteMultiple (captured) and
+// OrganizationRequestCollection is xrm/2011 in the Web API docs, xrm/2012 in the SDK's ExecuteMultiple and
 // possibly xrm/7.1 for ExecuteTransaction. The SDK's prefix is arbitrary, so the match is by namespace URI and local name.
 const REQUEST_COLLECTION_URIS = new Set([NS.a, NS.l, NS.o]);
 
@@ -216,7 +216,7 @@ function byAttributeModel(node) {
   };
 }
 
-// ---- Identity: the router's user and caller, or the SOAP CallerId / CallerObjectId impersonation ----
+// ---- Identity: the router's user and caller, or the SOAP CallerId / CallerObjectId impersonation
 function actingAs(c, api, headers) {
   const objectId = headers.CallerObjectId;
   const byId = headers.CallerId;
@@ -239,7 +239,7 @@ function actingAs(c, api, headers) {
   };
 }
 
-// ---- Web API calls: each message is one call on the record handlers, with the router's context shape ----
+// ---- Web API calls: each message is one call on the record handlers, with the router's context shape
 async function web(s, method, path, { body, query = {}, prefer = "", headers = {} } = {}) {
   const url = new URL(`/api/data/${s.version}/${path}`, s.origin);
   for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
@@ -450,7 +450,7 @@ async function relate(s, target, relationship, related, remove) {
   }
 }
 
-// ---- Messages: each returns { name, responseType, namespace, results: Map of typed values } ----
+// ---- Messages: each returns { name, responseType, namespace, results: Map of typed values }
 const reply = (name, results = new Map(), namespace = NS.a) => ({ name, responseType: `${name}Response`, namespace, results });
 
 // BypassCustomPluginExecution (a request parameter, per item) needs the privilege the HTTP header needs.
@@ -463,7 +463,7 @@ function bypassed(s, params) {
 }
 
 async function runRequest(base, { name, params }) {
-  // UnMaskedData (Learn optional-parameters#return-unmasked-data): request["UnMaskedData"] = true asks the clear value of masked columns.
+  // UnMaskedData: request["UnMaskedData"] = true asks the clear value of masked columns.
   const unmask = [true, "true"].includes(params.get("UnMaskedData")?.value);
   const s = { ...bypassed(base, params), partitionId: params.get("partitionId")?.value, sessionToken: params.get("SessionToken")?.value, unmask };
   const writeReply = (results = new Map()) => {
@@ -524,7 +524,7 @@ async function runRequest(base, { name, params }) {
     case "RetrieveVersion":
       return reply(name, new Map([["Version", { type: "string", value: s.api.settings?.version ?? "" }]]), NS.g);
     case "RetrieveCurrentOrganization": {
-      // OrganizationDetail (xrm/2014) members in DataContract order (alphabetical, SDK docs). Members the simulator
+      // OrganizationDetail (xrm/2014) members in DataContract order (alphabetical). Members the simulator
       // does not model are nil, not invented.
       const dv = s.api.store.state.dataverse ?? {};
       const settings = s.api.settings ?? {};
@@ -659,7 +659,7 @@ function plainOf(s, value) {
 }
 
 // A complex request value this simulator has no typed decoder for: its children by name (repeated names are an array).
-// unverified: the JSON shape a registry handler reads from such a value.
+// The shape a registry handler reads from such a value is assumed.
 function rawPlain(node) {
   if (isNilNode(node)) return null;
   if (!node.children.length) return node.text.trim();
@@ -682,7 +682,7 @@ async function runEach(s, items, { continueOnError, transaction }) {
       throw invalid("An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.");
     }
     try {
-      // The SDK docs: an ExecuteMultipleRequest cannot invoke another; that item faults and the batch goes on as ContinueOnError says.
+      // An ExecuteMultipleRequest cannot invoke another; that item faults and the batch goes on as ContinueOnError says.
       if (!transaction && request.name === "ExecuteMultiple") throw invalid("An ExecuteMultiple request cannot contain another ExecuteMultiple request.");
       outcomes.push({ index, response: await runRequest(s, request) });
     } catch (error) {
@@ -690,7 +690,7 @@ async function runEach(s, items, { continueOnError, transaction }) {
         if (error && typeof error === "object") error.faultedRequestIndex = index;
         throw error;
       }
-      // Without ContinueOnError processing stops at the faulted item, which is still returned (SDK docs response table).
+      // Without ContinueOnError processing stops at the faulted item, which is still returned.
       outcomes.push({ index, error });
       if (!continueOnError) break;
     }

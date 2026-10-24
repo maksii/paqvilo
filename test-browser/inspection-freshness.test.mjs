@@ -1,6 +1,6 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Response ordering and history navigation on an invented loopback document.
-import test from 'node:test';
+// Response ordering and history navigation.
+import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright-core';
 import {browserLaunchOptions} from '../mirage/lib/browser-launch.mjs';
@@ -12,16 +12,19 @@ import {panelUi} from '../lense/panel-ui.mjs';
 import {xrayUi} from '../lense/xray-ui.mjs';
 
 const origin='http://127.0.0.1:11111';
+let browser;
+before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true}));});
+after(()=>browser?.close());
 const report=name=>({page:null,webTemplates:[],forms:[],views:[],columns:[],components:[],tables:[],unresolved:[],elementSources:[{name,selector:'#picked',tag:'button',kind:'template',matchKind:'id',ref:name+'.html'}]});
 async function fixture(t){
   const source=createFixture(),fake=fakeBrowser(),fakeTab=fake.openTab(origin+'/');
   const session=new OverlaySession({origin,sourceDir:source.dir,site:structuredClone(SITE),siteName:'Invented',envName:'loopback',stateDir:source.dir});
   const controller=enablePanel(fake.context,session),state=controller.stateFor(fakeTab.page);
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));
+  const context=await browser.newContext({viewport:{width:1440,height:1000}});
   ownedFixture(t).add(async () => { await controller.dispose(); });
-  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).remove(async () => { source.cleanup(); });
-  const page=await browser.newPage({viewport:{width:1440,height:1000}}),pending=[];
+  const page=await context.newPage(),pending=[];
   page.setDefaultTimeout(5000);
   await page.route('**/*',route=>{
     if(new URL(route.request().url()).pathname==='/__paqvilo/api/inspect'){pending.push({route,body:route.request().postDataJSON()});return;}

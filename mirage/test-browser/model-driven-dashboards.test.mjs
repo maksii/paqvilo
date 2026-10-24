@@ -2,14 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+// Both tests only read the dashboard, so they share one simulator.
+const scope = fileScope();
+let sharedOrigin;
+
 
 const BOARD = '77777777-7777-4777-8777-77777777777d';
 const GRID = '{E7A81278-8635-4D9E-8D4D-59480B391C5B}';
 const cell = (label, control) => `<row><cell><labels><label description="${label}" languagecode="1033"/></labels>${control}</cell></row>`;
-// An exported Customizations.xml dashboard (Learn understand-dashboards-dashboard-components-formxml): a list, a chart and a web resource.
+// An exported Customizations.xml dashboard: a list, a chart and a web resource.
 const CUSTOMIZATIONS = `<ImportExportXml><Dashboards><Dashboard><FormId>{${BOARD}}</FormId><LocalizedNames><LocalizedName description="Invented board" languagecode="1033"/></LocalizedNames>
 <FormXml><forms type="dashboard"><systemform><formid>{${BOARD}}</formid><form><tabs><tab><columns><column><sections><section><rows>
 ${cell('Stocked list', `<control id="list" classid="${GRID}"><parameters><TargetEntityType>x_item</TargetEntityType><ViewId>{items-view}</ViewId><RecordsPerPage>5</RecordsPerPage><ChartGridMode>Grid</ChartGridMode></parameters></control>`)}
@@ -17,15 +22,19 @@ ${cell('Stock chart', `<control id="chart" classid="${GRID}"><parameters><Target
 ${cell('Banner', '<control id="WebResource_banner" classid="{9FDF5F91-88B1-47f4-AD53-C11EFC01A01D}"><parameters><Url>x_/banner.html</Url></parameters></control>')}
 </rows></section></sections></column></columns></tab></tabs></form></systemform></forms></FormXml></Dashboard></Dashboards></ImportExportXml>`;
 
-async function fixture(t) {
-  const initial = await modelDrivenFixture(t); await initial.sim.close();
+async function startDashboardApp() {
+  const initial = await modelDrivenFixture(scope); await initial.sim.close();
   const dir = initial.solutionDir;
   await fs.writeFile(path.join(dir, 'Other/Customizations.xml'), CUSTOMIZATIONS);
   const siteMap = path.join(dir, 'AppModuleSiteMaps/x_example/AppModuleSiteMap.xml');
   await fs.writeFile(siteMap, (await fs.readFile(siteMap, 'utf8')).replace('<SubArea Id="items"', `<SubArea Id="board" DefaultDashboard="{${BOARD}}"><Titles><Title LCID="1033" Title="Overview"/></Titles></SubArea><SubArea Id="items"`));
-  const sim = await initial.start(); const origin = sim.origin ?? sim.url; t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = [];
+  const sim = await initial.start(); scope.after(() => sim.close());
+  return sim.origin ?? sim.url;
+}
+
+async function fixture(t) {
+  const origin = await (sharedOrigin ??= startDashboardApp());
+  const page = await chrome.page(t); const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   return { page, origin, errors };
 }

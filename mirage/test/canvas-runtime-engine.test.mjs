@@ -17,8 +17,7 @@ async function start(t, options = {}) {
 test('a ForAll whose writes are refused records the errors (Basic User, 403) and writes nothing', async t => {
   const { org, instance } = await start(t, { principal: 'basic' });
   const outcome = await instance.act({ action: 'run', formula: 'ForAll(Sequence(2), Patch(Widgets, Defaults(Widgets), {fx_name: "Many"}))' });
-  assert.ok(outcome.errors.length >= 1, JSON.stringify(outcome.errors));
-  assert.ok(outcome.errors.every(error => error.status === 403));
+  assert.deepEqual(outcome.errors.map(error => [error.kind, error.status]), [['CreatePermission', 403], ['CreatePermission', 403]], 'one refusal per iteration');
   assert.ok(!org.store.state.tables.fx_widget.some(row => row.fx_name === 'Many'));
 });
 
@@ -48,7 +47,7 @@ test('a delegable gallery filter pushes down with no warning; a non-delegable on
   const rows = Array.from({ length: 503 }, (_, index) => ({ fx_widgetid: `77777777-7777-4777-8777-${String(index).padStart(12, '0')}`, fx_name: `Widget ${index}` }));
   const { instance } = await start(t, { rows });
   const snapshot = (await instance.act({ action: 'input', control: 'SearchBox', value: 'Widget 50' })).snapshot;
-  // StartsWith is delegable (Learn delegation table): every match, more than one page of the limit would allow.
+  // StartsWith is delegable: every match, more than one page of the limit would allow.
   assert.equal(control(snapshot, 'HomeScreen', 'WidgetGallery').properties.AllItems.length, 4);
   const warnings = delegation(snapshot);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));

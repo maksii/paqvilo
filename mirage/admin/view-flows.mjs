@@ -1,4 +1,4 @@
-// `#flows` view module (D3, D12): cloud flow runs, waits and approvals, and the organization's background work. DOM-free at
+// `#flows` view module: cloud flow runs, waits and approvals, and the organization's background work. DOM-free at
 // module scope; reads GET /__sim/api/flow-runs[/<id>], /flow-waits[?state=] and /dashboard (activity.jobs, asyncOperations,
 // webhooks) through ctx.request (API-relative paths) and answers a wait with POST /__sim/api/flow-waits/<id>.
 import * as kit from './ui-kit.mjs';

@@ -24,9 +24,8 @@ test('HTTP writes journal, report save timing, share queued sessions and reopen 
   };
   await Promise.all([patch(1, 'session-one'), patch(2, 'session-two')]);
   const audit = await (await fetch(app.url + '/__sim/api/audit?method=PATCH')).json();
-  const entries = audit.entries ?? audit.items ?? audit;
-  assert.ok(entries.length >= 2);
-  for (const entry of entries) { assert.ok(entry.saveMs >= 0); assert.equal(entry.saveMode, 'journal'); }
+  assert.equal(audit.items.length, 2);
+  for (const entry of audit.items) { assert.equal(typeof entry.saveMs, 'number'); assert.ok(entry.saveMs >= 0); assert.equal(entry.saveMode, 'journal'); }
   assert.equal((await readStateFile(file)).tables.item[1].name, 'session-two');
   await app.close(); app = await createSimulator(options);
   assert.equal(app.store.state.tables.item[0].name, 'session-one');

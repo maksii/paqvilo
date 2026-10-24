@@ -1,6 +1,6 @@
 // One collation equality key: OData groupby, FetchXML distinct/groupby/countcolumn distinct and TDS DISTINCT, GROUP BY
 // and = fold case and accents under the default CI_AI collation, as $filter equality already does; an _AS collation
-// keeps accented variants apart. Invented schema and GUIDs only.
+// keeps accented variants apart.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { equalityKey } from "../lib/dataverse-values.mjs";

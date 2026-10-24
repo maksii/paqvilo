@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtime.mjs';
 
-// Task 42: a Solution custom connector compiles into a contract-level connector provider.
+// A Solution custom connector compiles into a contract-level connector provider.
 const NAME = 'x_5ffxapi', AT = `Connectors/${NAME}/`;
 const OPENAPI = { swagger: '2.0', info: { title: 'Invented FX API' }, host: 'api.example.test', basePath: '/v1', schemes: ['https'],
   securityDefinitions: { key: { type: 'apiKey', in: 'header', name: 'x-fx-key' } },
@@ -73,7 +73,7 @@ test('a flow action on an imported custom connector reaches a loopback service t
 test('an unsupported policy blocks the connector; a script operation without the .NET SDK refuses naming it', async () => {
   const blocked = customConnectorsOf(mergeInventory([entry(`${NAME}_openapidefinition.json`, OPENAPI), entry(`${NAME}_policytemplateinstances.json`, [{ templateId: 'setqueryparameter', parameters: { 'x-ms-apimTemplate-policySection': 'Response' } }])]))[0];
   assert.equal(blocked.blocked.code, 'CONNECTOR_POLICY_UNSUPPORTED');
-  // Task 42: a script compiles (its text is kept); without dotnet the script operations are a named gap, never a silent default.
+  // A script compiles (its text is kept); without dotnet the script operations are a named gap, never a silent default.
   const script = customConnectorsOf(mergeInventory([entry(`${NAME}_openapidefinition.json`, OPENAPI), inventoryEntry(AT + 'script.csx', { size: 10, text: 'class Script {}', component: 'connector', componentName: NAME })[0]]))[0];
   assert.deepEqual([script.blocked, script.script], [null, { text: 'class Script {}', operations: [] }]);
   const trustedScripts = [{ connector: NAME, sha256: scriptHash('class Script {}') }];
@@ -81,7 +81,7 @@ test('an unsupported policy blocks the connector; a script operation without the
   assert.match(inspectFlowDefinition(flow('GetItem', { id: '1' }), {}, { connectors }).errors.join(' '), /CONNECTOR_SCRIPT_SDK_MISSING/);
   await assert.rejects(async () => connectors.invoke({ connectorId: NAME, operationId: 'GetItem', parameters: { id: '1' } }), e => e.code === 'OperationUnsupported' && /CONNECTOR_SCRIPT_SDK_MISSING.*\.NET SDK/.test(e.message));
   assert.ok(connectors.describe().some(r => r.name === `custom-connector:${NAME}` && r.reason === 'CONNECTOR_SCRIPT_SDK_MISSING' && r.operations.some(o => o.name === 'script' && o.level === 'inventory')));
-  // RC4b-01: a script the project does not register (connectorScripts: connector + SHA-256 of its text) is refused before
+  // A script the project does not register (connectorScripts: connector + SHA-256 of its text) is refused before
   // anything is generated or built, whether or not the SDK is present; the preflight row names it untrusted.
   const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'connector-untrusted-'));
   try {

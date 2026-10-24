@@ -1,4 +1,4 @@
-// Invented canvas app and organization for the canvas runtime tests: pa.yaml sources written with the yaml package (so
+// Canvas app and organization for the canvas runtime tests: pa.yaml sources written with the yaml package (so
 // formulas stay literal), an organization-owned fx_widget table (display name 'Widget Name' on fx_name) and two staff
 // users: a System Administrator and a Basic User, who reads fx_widget but may not create rows.
 import { stringify } from 'yaml';

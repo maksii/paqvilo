@@ -61,15 +61,21 @@ test("capture CLI reports failed assertions without losing completed evidence", 
     ],
   }));
   const script = fileURLToPath(new URL("../baseline-suite.mjs", import.meta.url));
-  for (const [label, only, expected] of [
+  // The three captures are independent processes with their own output directories.
+  const runs = [
     ["failed", "invented/failed,invented/passed", 1],
     ["passed", "invented/passed", 0],
     ["error", "invented/error", 2],
-  ]) {
+  ].map(([label, only, expected]) => {
     const out = path.join(dir, label);
     const child = ownedProcess(t, [script, "capture", "--matrix", matrix, "--source", source,
       "--out", out, "--side", "mirage", "--label", label, "--only", only]);
-    const code = await child.done;
+    // Awaited below in order; the handler only keeps a later run's spawn error from going unhandled meanwhile.
+    child.done.catch(() => {});
+    return { label, expected, out, child, code: child.done };
+  });
+  for (const { label, expected, out, child, code: done } of runs) {
+    const code = await done;
     const run = JSON.parse(await fs.readFile(path.join(out, "run-" + label + ".json"), "utf8"));
     assert.equal(code, expected, JSON.stringify({ label, totals: run.totals, output: child.output().slice(-1000) }));
     if (label === "failed") {

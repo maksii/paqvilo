@@ -1,4 +1,4 @@
-// Core Azurite transport (storage-azurite.mjs): Shared Key signing per Learn, connection strings, loopback-only endpoints,
+// Core Azurite transport (storage-azurite.mjs): Shared Key signing, connection strings, loopback-only endpoints,
 // error mapping with the Azure code, authenticated preflight, SAS URLs the endpoint accepts, and the key kept out of output.
 import test from 'node:test';
 import assert from 'node:assert/strict';

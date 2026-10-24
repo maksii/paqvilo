@@ -46,8 +46,9 @@ test('matching branch channel is disposable but other tags protect their targets
 test('bad keep, missing stable latest, malformed metadata and missing timestamps fail closed', () => {
   const metadata = fixture(['0.9.5', preview('0.9.6', 1)]);
   for (const keep of [0, -1, '3', 1.5, 101, NaN]) assert.throws(() => retentionPlan(metadata, { keep }), /keep/);
-  for (const invalid of [null, {}, { ...metadata, name: 'another-package' }, { ...metadata, versions: [] }, { ...metadata, time: null }, { ...metadata, 'dist-tags': { latest: preview('0.9.6', 1) } }])
-    assert.throws(() => retentionPlan(invalid));
+  for (const invalid of [null, {}, { ...metadata, name: 'another-package' }, { ...metadata, versions: [] }, { ...metadata, time: null }])
+    assert.throws(() => retentionPlan(invalid), /Expected complete paqvilo registry metadata/);
+  assert.throws(() => retentionPlan({ ...metadata, 'dist-tags': { latest: preview('0.9.6', 1) } }), /published stable latest version is required/);
   delete metadata.time[preview('0.9.6', 1)];
   assert.throws(() => retentionPlan(metadata), /publication time/);
 });

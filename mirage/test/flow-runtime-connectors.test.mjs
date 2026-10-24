@@ -30,7 +30,7 @@ test('an exported flow Http action reaches a rewritten loopback URL and failures
     call: { type: 'Http', inputs: { method: 'GET', uri: "https://func.example.test/api/@{triggerBody()?['name']}" } },
     reply: { type: 'Response', runAfter: { call: ['Succeeded', 'Failed'] }, inputs: { body: { status: "@actions('call')?['status']", code: "@outputs('call')?['statusCode']", body: "@outputs('call')?['body']", error: "@outputs('call')?['error']?['code']" } } },
   });
-  // Without a connector runtime the Http action keeps today's placeholder behaviour.
+  // Without a connector runtime the Http action keeps its placeholder behaviour.
   assert.equal(inspectFlowDefinition(d).supported, false);
   assert.equal(inspectFlowDefinition(d, {}, { connectors }).supported, true);
   assert.deepEqual(await executeFlowDefinition({ definition: d, input: { name: 'echo' }, connectors }), { status: 200, body: { status: 'Succeeded', code: 200, body: { path: '/api/echo' }, error: null } });
@@ -90,7 +90,7 @@ test('Dataverse actions behave as before and a connection principal yields to th
   // flowIdentities override with read-only grants takes precedence over the connection principal.
   assert.deepEqual(await run({ input: { name: 'Denied' }, serviceProfile: readOnly }), { status: 200, body: { row: null, error: 'LocalBackendPermissionDenied' } });
   assert.equal(data.snapshot().tables.x_widget.length, 1);
-  // Without a connector runtime the flow keeps today's behaviour: the override alone drives the action.
+  // Without a connector runtime the override alone drives the action.
   const legacy = await executeFlowDefinition({ definition: definition(actions), input: { name: 'Legacy' }, store: data, serviceProfile: profile });
   assert.equal(legacy.body.row.x_name, 'Legacy');
   assert.equal(data.snapshot().tables.x_widget.length, 2);

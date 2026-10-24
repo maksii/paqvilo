@@ -1,4 +1,4 @@
-// Invented loopback fixtures exercise the same policy through actual HTTP hosts.
+// Loopback fixtures exercise the same policy through actual HTTP hosts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -26,7 +26,7 @@ async function pack(t, level) {
   return { file, module, options: { packs: [module], simulation: { level }, dataverse: { enabled: true, tds: { enabled: false } } } };
 }
 async function client(sim) {
-  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf };
+  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf };
   const application = await body(await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST', headers,
     body: JSON.stringify({ appId: CLIENT, displayName: 'Invented simulation client', roles: ['System Administrator'] }) }), 201);
   const token = await body(await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST',

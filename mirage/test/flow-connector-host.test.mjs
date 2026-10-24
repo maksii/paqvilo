@@ -1,6 +1,6 @@
 // Connector runtime in the host (lib/organization-host.mjs): an exported flow's Http action reaches a loopback fixture through
 // the project `connections` entry, from the portal cloud-flow route and from a Dataverse row trigger; flow parameters bound to
-// an environment variable use its effective value. Invented portal, x_ tables, *.example.test origins and loopback only.
+// an environment variable use its effective value.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -65,7 +65,7 @@ async function fixture(t) {
 test('the portal cloud-flow route runs an Http action through the project connection with the effective parameter value', async (t) => {
   const { app, calls } = await fixture(t);
   const response = await fetch(`${app.url}/_api/cloudflow/v1.0/trigger/${PORTAL_FLOW}`, { method: 'POST',
-    headers: { 'content-type': 'application/json', __RequestVerificationToken: app.state().csrf, 'x-ms-correlation-request-id': CORRELATION },
+    headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, 'x-ms-correlation-request-id': CORRELATION },
     body: JSON.stringify({ name: 'echo' }) });
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { path: '/api/echo' });
@@ -79,7 +79,7 @@ test('the portal cloud-flow route runs an Http action through the project connec
 test('a row trigger runs the same connection from committed work and writes the fixture answer back', async (t) => {
   const { app, calls } = await fixture(t);
   await app.store.create('x_widget', { x_title: 'alpha' }, { admin: true });
-  for (let attempt = 0; attempt < 100 && !app.store.tableRows('x_audit').length; attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
+  await app.settle();
   assert.deepEqual(calls, ['/api/row-alpha']);
   assert.deepEqual(app.store.tableRows('x_audit').map((row) => row.x_message), ['/api/row-alpha']);
   const completed = app.state().diagnostics.find((entry) => entry.code === 'FLOW_TRIGGER_COMPLETED');
@@ -89,7 +89,7 @@ test('a row trigger runs the same connection from committed work and writes the 
 test('the _sim environment PUT takes a Key Vault reference for a Secret definition and refuses a plain value', async (t) => {
   const { app } = await fixture(t);
   const put = (value) => fetch(`${app.url}/__sim/api/environment/variables/x_apikey`, { method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, body: JSON.stringify({ value }) });
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf }, body: JSON.stringify({ value }) });
   const refused = await put('plain-invented-value');
   assert.equal(refused.status, 400);
   assert.equal((await refused.json()).error.code, 'SecretValueNotAccepted');

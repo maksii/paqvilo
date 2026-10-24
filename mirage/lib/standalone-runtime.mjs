@@ -288,7 +288,7 @@ export async function createStandaloneRuntime(options = {}) {
         validateOperationOverrides(patch.operations);
         const overrides = patch.operations ?? {};
         for (const key of Object.keys(overrides)) if (!operations().some(item => item.key === key)) throw fail(`Unknown operation ${key}.`, 404, 'OperationNotFound');
-        // A step switched to clr gets its CLR runtime prepared before the choice is stored (01-B4).
+        // A step switched to clr gets its CLR runtime prepared before the choice is stored.
         await organizationHost.applyOperationOverrides(overrides, () => store.transact(() => { store.state.simulator.operations = overrides; }));
         return exposed();
       },
@@ -448,7 +448,7 @@ export async function createStandaloneRuntime(options = {}) {
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };
     startupPhase('listener-ready');
     return { url: localOrigin, origin: localOrigin, adminUrl: `${localOrigin}/_sim/`, port: server.address().port, store, runtime,
-      organization, get dataverse() { return dataverse; }, state: exposed, status, reload, close, preflight, settle: () => organizationHost.settle(),
+      organization, get dataverse() { return dataverse; }, state: exposed, csrf, status, reload, close, preflight, settle: () => organizationHost.settle(),
       live: { status: () => ({ enabled: false, connected: false, liveWrites: 'disabled' }) },
       identityProvider: { available: false, origin: null, port: null } };
   } catch (error) { try { await close(); } catch (cleanupError) { diagnostic({ code: 'CLEANUP_FAILED', message: cleanupError.message }); } throw error; }

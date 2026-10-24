@@ -1,5 +1,5 @@
 // A queue service endpoint (contract 2) step in a running standalone host delivers through providers.messaging, and the
-// message is visible at GET /_sim/api/messages with the organization URI of the Dataverse API. Invented x_ schema only.
+// message is visible at GET /_sim/api/messages with the organization URI of the Dataverse API.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

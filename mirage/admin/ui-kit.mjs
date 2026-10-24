@@ -122,7 +122,7 @@ export const notice = (text, toneName = 'info') => `<p class="ui-notice ui-tone-
 
 const titleCase = path => path.split('/').pop().replace(/\.md$/, '').split('-').map(word => (word ? word[0].toUpperCase() + word.slice(1) : word)).join(' ');
 
-/** Resolve `path[#anchor]` against the D9 docs map (`{ key: { href, path, label } }`); unknown paths get `href: null`. */
+/** Resolve `path[#anchor]` against the docs map (`{ key: { href, path, label } }`); unknown paths get `href: null`. */
 export function docLink(path, docs) {
   const text = String(path ?? '');
   const [file, anchor] = text.split('#');

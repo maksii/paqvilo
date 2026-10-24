@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -11,6 +11,10 @@ import { startSetupServer } from '../../lense/setup/server.mjs';
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = page => page.context().addInitScript(() => { try { localStorage.setItem('paqvilo-setup-view', 'all'); } catch { /* no storage */ } });
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions()); });
+after(() => browser?.close());
+
 const APP = '77777777-7777-4777-8777-777777777777';
 async function capture(page, name) {
   if (!process.env.PAQVILO_UI_SCREENSHOTS) return;
@@ -22,8 +26,8 @@ async function work(t) {
   const root = path.join(container, 'workspace'); await fs.mkdir(root);
   const resources = [];
   t.after(async () => { try { for (const close of resources.reverse()) await close(); } finally { await fs.rm(container, { recursive: true, force: true }); } });
-  const browser = await chromium.launch(browserLaunchOptions()); resources.push(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(10000);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); resources.push(() => context.close());
+  const page = await context.newPage(); page.setDefaultTimeout(10000);
   await allSettings(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   return { root, page, errors, resources };
@@ -380,7 +384,7 @@ test('organization row actions share one lock with nested role forms through ref
   await page.locator('#dv-user-form button[type=submit]').click();
   await page.locator('#notification').filter({ hasText: 'User created.' }).waitFor();
   const row = page.locator('tr[id^=dv-user-row-]').filter({ hasText: 'Pending roles fixture' });
-  // One edit form for the selected user (RA-02): roles and password live in the editor, Disable stays on the row.
+  // One edit form for the selected user: roles and password live in the editor, Disable stays on the row.
   if (!await page.locator('[data-disclosure="dv-users"][open]').count()) await page.locator('[data-disclosure="dv-users"] > summary').click();
   await row.getByRole('button', { name: 'Edit Pending roles fixture', exact: true }).click();
   const editor = page.locator('[data-dv-user-editor]');

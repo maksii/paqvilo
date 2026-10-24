@@ -1,6 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// The dev panel in Mirage mode against a disposable loopback Mirage with a synthetic
-// portal export and Solution root. No portal environment is contacted.
+// The dev panel in Mirage mode with a portal export and Solution root.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -41,7 +40,14 @@ const write = (root, files) => {
     fs.writeFileSync(path.join(root, name), body);
   }
 };
-const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+// Resolves once the panel has asked the editor to open one more source.
+const nextOpen = async (opened, click) => {
+  const before = opened.length;
+  await click();
+  for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(opened.length, before + 1, 'the panel opened one source');
+  return opened.at(-1);
+};
 
 test('Mirage panel inspects permissions, templates, forms and Solution sources, signs this browser in and out, and switches permissions and scenario', { timeout: 180_000 }, async (t) => {
   // Native real paths (no 8.3 short names) are what the Mirage reports and the panel opens.
@@ -77,14 +83,15 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
     sourceDir: portalDir, origin: app.url, site: structuredClone(SITE), sourceMaps: false, siteName: 'fixture Mirage', envName: 'local', stateDir: work, browser: {},
     mirage: true, mirageSourceRoots: [portalDir, solutionDir],
   });
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+  const page = await context.newPage();
   detach = await attachSession(context, session);
   const opened = [];
   panel = enablePanel(context, session, { open: async (...args) => { opened.push(args); return null; } });
-  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
-  // Optional review screenshots (PAQVILO_EVIDENCE_DIR); synthetic fixture data only.
+  // Optional review screenshots (PAQVILO_EVIDENCE_DIR).
   const evidence = async (name) => {
     if (!process.env.PAQVILO_EVIDENCE_DIR) return;
     fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
@@ -132,15 +139,9 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   assert.match(await table.locator('.sub').innerText(), /entity set contacts/);
   await panelLocator('[data-group="runtime-forms"] .row').filter({ hasText: 'Edit contact' }).getByText('basic form · edit · table contact', { exact: false }).waitFor();
   await evidence('panel-inspect-public-page');
-  await panelLocator('[data-group="runtime-forms"] .row').filter({ hasText: 'Solution FormXml' }).locator('button.main').click();
-  await settle();
-  assert.equal(opened.at(-1)[1], path.join(solutionDir, 'Entities', 'contact', 'FormXml', 'main', '{edit-form}.xml'), 'a Solution FormXml opens through the panel');
-  await panelLocator('[data-group="runtime-columns"] .row').filter({ hasText: 'contact.fullname' }).locator('button.main').click();
-  await settle();
-  assert.deepEqual(opened.at(-1).slice(1, 3), [path.join(solutionDir, 'Entities', 'contact', 'Entity.xml'), 12], 'a column opens at its Entity.xml attribute');
-  await panelLocator('[data-group="runtime-settings"] .row').filter({ hasText: 'Feature/Banner' }).locator('button.main').click();
-  await settle();
-  assert.deepEqual(opened.at(-1).slice(1, 3), [path.join(portalDir, 'sitesetting.yml'), 1], 'a setting opens at its record in the shared YAML file');
+  assert.equal((await nextOpen(opened, () => panelLocator('[data-group="runtime-forms"] .row').filter({ hasText: 'Solution FormXml' }).locator('button.main').click()))[1], path.join(solutionDir, 'Entities', 'contact', 'FormXml', 'main', '{edit-form}.xml'), 'a Solution FormXml opens through the panel');
+  assert.deepEqual((await nextOpen(opened, () => panelLocator('[data-group="runtime-columns"] .row').filter({ hasText: 'contact.fullname' }).locator('button.main').click())).slice(1, 3), [path.join(solutionDir, 'Entities', 'contact', 'Entity.xml'), 12], 'a column opens at its Entity.xml attribute');
+  assert.deepEqual((await nextOpen(opened, () => panelLocator('[data-group="runtime-settings"] .row').filter({ hasText: 'Feature/Banner' }).locator('button.main').click())).slice(1, 3), [path.join(portalDir, 'sitesetting.yml'), 1], 'a setting opens at its record in the shared YAML file');
 
   // Tweaks: this browser starts anonymous. Signing in as the member persona runs the portal's
   // sign-in in this page (the local sign-in page: this fixture has no external provider), which
@@ -188,6 +189,7 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await admin.getByRole('heading', { name: 'Request audit', exact: true }).waitFor();
   assert.equal(await admin.getByLabel('Filter audit by path', { exact: true }).inputValue(), '/secure/');
   await admin.waitForFunction(() => document.querySelector('tbody')?.textContent.includes('/secure/'));
+  // The panel would be injected on load; a short quiet period proves it stays absent.
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.equal(await admin.locator('#paqvilo-panel').count(), 0);
   await admin.close();
@@ -263,9 +265,9 @@ test('Mirage panel signs this browser in and out through the site\'s identity pr
     sourceDir: portalDir, origin: app.url, site: structuredClone(SITE), sourceMaps: false, siteName: 'fixture Mirage', envName: 'local', stateDir: work, browser: {},
     mirage: true, mirageSourceRoots: [portalDir],
   });
+  const page = await context.newPage();
   detach = await attachSession(context, session);
   panel = enablePanel(context, session, { open: async () => null });
-  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   // Every document request of the page, redirects included (the end-session hop is a redirect).

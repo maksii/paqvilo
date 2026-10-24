@@ -1,5 +1,5 @@
-// Task 46: concurrent branches. Actions whose runAfter dependencies have settled start together, a join applies its runAfter
-// status sets, the run status follows the final graph, and a Foreach honours concurrency.repetitions. Invented pack connector.
+// Concurrent branches. Actions whose runAfter dependencies have settled start together, a join applies its runAfter
+// status sets, the run status follows the final graph, and a Foreach honours concurrency.repetitions.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -56,7 +56,7 @@ test('a Foreach honours concurrency.repetitions as its degree of parallelism', a
   assert.match(inspectFlowDefinition(writes).errors.join(' '), /runs its iterations concurrently and writes the variable n/);
 });
 
-// RC4b-02: the refusal is Mirage's determinism policy for every Foreach outside a loop (it runs its repetitions concurrently
+// The refusal is Mirage's determinism policy for every Foreach outside a loop (it runs its repetitions concurrently
 // there), also one wrapped in a Scope or an If; a Foreach nested in a loop runs in sequence and is allowed.
 test('a concurrent Foreach inside a Scope or an If that writes a variable is refused; one nested in a loop is allowed', () => {
   const init = { type: 'InitializeVariable', inputs: { variables: [{ name: 'n', type: 'array', value: [] }] } };

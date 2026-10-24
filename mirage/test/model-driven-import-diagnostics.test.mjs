@@ -8,7 +8,7 @@ import { modelDrivenSettings } from '../lib/model-driven-settings.mjs';
 
 const descriptor = (name, file) => `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 
-// An invented unpacked Solution with a PCF control whose manifest cannot be parsed, and a declared WebResource that is missing.
+// An unpacked Solution with a PCF control whose manifest cannot be parsed, and a declared WebResource that is missing.
 async function brokenSolution(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-diagnostics-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -31,11 +31,11 @@ test('broken PCF manifest diagnostics name Solution-relative files and reach the
   const delivered = [];
   const imported = await importModelDrivenResources([{ type: 'directory', dir: solution }], { diagnostic: entry => delivered.push(entry) });
 
-  const pcf = imported.diagnostics.find(entry => entry.code === 'PCF_IMPORT_FAILED' || entry.code === 'PCF_IDENTITY_UNRESOLVED');
-  assert.ok(pcf, JSON.stringify(imported.diagnostics));
-  assert.equal(pcf.file, 'InventedSolution/Controls/Broken/ControlManifest.xml');
+  assert.deepEqual(imported.diagnostics.map(entry => [entry.code, entry.file]), [
+    ['MODEL_WEBRESOURCE_UNRESOLVED', undefined],
+    ['PCF_IMPORT_FAILED', 'InventedSolution/Controls/Broken/ControlManifest.xml'],
+  ]);
   assert.deepEqual(delivered, imported.diagnostics);
-  assert.ok(delivered.some(entry => entry.code === 'MODEL_WEBRESOURCE_UNRESOLVED'));
 
   // No absolute local path (drive letter, root or the temporary directory) survives in any diagnostic.
   const text = JSON.stringify(imported.diagnostics);
@@ -49,7 +49,7 @@ test('broken PCF manifest diagnostics name Solution-relative files and reach the
 test('diagnostic callback is optional and a clean Solution delivers nothing', async t => {
   const { solution } = await brokenSolution(t);
   const result = await importModelDrivenResources([{ type: 'directory', dir: solution }]);
-  assert.ok(result.diagnostics.length > 0);
+  assert.equal(result.diagnostics.length, 2);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-diagnostics-clean-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const delivered = [];

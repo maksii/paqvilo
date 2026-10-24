@@ -1,8 +1,7 @@
 // The portal read path (store.get with portalRequest, which basic forms, advanced form steps and list row merges use)
 // answers what a Dataverse read by the reading principal answers: secured columns through column security and masking
-// rules (Learn create-manage-masking-rules; the standard model reads as the site's application user, Learn
-// unify-pages-security-with-dataverse; the enhanced model as the visitor's mapped user), calculated and formula columns
-// computed, and lookups as references named by the target's primary name. Invented site, tables and data only.
+// rules (the standard model reads as the site's application user, the enhanced model as the visitor's mapped user),
+// calculated and formula columns computed, and lookups as references named by the target's primary name.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

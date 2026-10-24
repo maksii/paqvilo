@@ -28,11 +28,14 @@ function excludedEntry(root, dir, entry, implementation) {
   return implementation && entry.isDirectory() && relative[0] === "test-sdk" && ["bin", "obj"].includes(entry.name);
 }
 
+// A file or folder removed while the walk runs (a test or tool cleaning up) is not part of the fingerprint.
+const gone = (error) => { if (error.code === "ENOENT") return null; throw error; };
+
 async function fingerprint(sourceDir, implementation) {
   sourceDir = path.resolve(sourceDir);
   const hash = createHash("sha256");
   async function walk(dir) {
-    const entries = (await fs.readdir(dir, { withFileTypes: true })).sort(
+    const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? []).sort(
       (a, b) => a.name.localeCompare(b.name),
     );
     for (const entry of entries) {
@@ -40,9 +43,11 @@ async function fingerprint(sourceDir, implementation) {
       const file = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(file);
       else if (entry.isFile()) {
+        const content = await fs.readFile(file).catch(gone);
+        if (!content) continue;
         hash.update(path.relative(sourceDir, file).replaceAll("\\", "/"));
         hash.update("\0");
-        hash.update(await fs.readFile(file));
+        hash.update(content);
         hash.update("\0");
       }
     }

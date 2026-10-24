@@ -1,5 +1,4 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
-// All catalogue/browser traffic in this proof stays on disposable loopback origins.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -240,7 +239,7 @@ test('one catalogue browser isolates lazy portal sessions, environments, panels,
   runtime = null;
   for (const page of [main, popup, betaPage, extraOne, extraTwo, foreignPage]) assert.equal(await page.locator('#paqvilo-panel').count(), 0, 'teardown removes every target panel');
   for (const discovery of discoveries) assert.equal(fs.existsSync(discovery.file), false, 'agent discovery is removed');
-  for (const discovery of discoveries) await assert.rejects(fetch(discovery.endpoint + '/v1/session', { headers: { authorization: `Bearer ${discovery.token}` }, signal: AbortSignal.timeout(1000) }), 'agent API listener is closed');
+  for (const discovery of discoveries) await assert.rejects(fetch(discovery.endpoint + '/v1/session', { headers: { authorization: `Bearer ${discovery.token}` }, signal: AbortSignal.timeout(1000) }), /fetch failed/, 'agent API listener is closed');
   context.off('page', observe);
   assert.equal(context.listenerCount('page'), contextPageListeners, 'session teardown releases catalogue page listeners');
   await main.goto(alphaDev.origin, { waitUntil: 'load' });
@@ -306,10 +305,11 @@ test('all-day navigation retains template edits after commit and recovers a rest
   await nextPage.waitForFunction(() => document.getElementById('work-status')?.textContent === 'Working all day');
   assert.equal(await nextPage.locator('#work-status').textContent(), 'Working all day', 'new pages share the same session baseline');
   assert.equal(record.session.cfg.site.markup.baseline, baseline);
-  await assert.rejects(main.goto(betaServer.origin), 'a missing configured checkout fails visibly');
+  await assert.rejects(main.goto(betaServer.origin), /net::ERR_/, 'a missing configured checkout fails visibly');
   assert.equal(runtime.active.size, 1, 'an unavailable unused portal does not stop the working portal');
   assert.ok(logs.some((line) => line.includes('Restore the checkout and reload')));
   fs.renameSync(hidden, beta.dir);
+  // dev-sessions retries a failed activation only after its 5 s cooldown.
   await new Promise((resolve) => setTimeout(resolve, 5100));
   await main.goto(betaServer.origin);
   await main.waitForFunction(() => window.localSite === 'beta-restored');

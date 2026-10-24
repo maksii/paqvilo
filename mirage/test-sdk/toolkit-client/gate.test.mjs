@@ -1,5 +1,5 @@
-// SDK verification gate #0: the toolkit's own Dataverse client and data loader against the simulated Dataverse API.
-// Opt-in (`npm run test:sdk`); invented tables (widget/gadget) and loopback-only endpoints.
+// SDK verification gate: the toolkit's own Dataverse client and data loader against the simulated Dataverse API.
+// Opt-in (`npm run test:sdk`).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

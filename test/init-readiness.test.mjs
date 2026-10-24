@@ -4,13 +4,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
 import { checkProject, inspectProjectAdoption, inspectProjectPaths, readyProject, scaffoldMarkers } from '../lense/project-check.mjs';
 import { developmentScript, developmentWorkflows } from '../lense/project-workflows.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
-const run = (directory, ...args) => spawnSync(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+// Asynchronous so that independent invocations of one test run concurrently.
+const run = (directory, ...args) => new Promise(resolve => execFile(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 }, (error, stdout, stderr) =>
+  resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr })));
 const secret = 'INVENTED_PROFILE_VALUE_MUST_NOT_APPEAR';
 const write = async (directory, file, body) => { await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true }); await fs.writeFile(path.join(directory, file), body); };
 const configFile = 'paqvilo.config.json';
@@ -38,7 +40,7 @@ const check = (directory, ...args) => run(directory, '--ready', '--config', conf
 
 test('public init --ready composes all sites and classic/enhanced layouts without executing packs or disclosing profile values', async t => {
   const { directory } = await fixture(t);
-  const result = check(directory);
+  const result = await check(directory);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.schemaVersion, 1); assert.equal(report.offline, true); assert.equal(report.ok, true);
@@ -53,7 +55,7 @@ test('completion permits an empty export while readiness rejects it and an empty
   await fs.rm(path.join(directory, 'sources/classic'), { recursive: true }); await fs.mkdir(path.join(directory, 'sources/classic'));
   await fs.rm(path.join(directory, 'sources/enhanced/powerpagecomponents/home'), { recursive: true });
   assert.equal(checkProject(directory, { config: configFile, processEnv: {} }).ok, true);
-  const result = check(directory), report = JSON.parse(result.stdout);
+  const result = await check(directory), report = JSON.parse(result.stdout);
   assert.equal(result.status, 1); assert.equal(report.completion.ok, true);
   assert.ok(report.paths.diagnostics.some(item => item.site === 'classic' && item.code === 'PORTAL_LAYOUT_UNSUPPORTED'));
   assert.ok(report.doctor.sites.some(site => site.site === 'enhanced' && site.diagnostics.some(item => item.code === 'PORTAL_PAGES_MISSING')));
@@ -63,7 +65,7 @@ test('all mapped profile files including nonselected files, empty Solution roots
   const { directory } = await fixture(t);
   await fs.rm(path.join(directory, 'other.json')); await fs.rm(path.join(directory, 'pack.mjs'));
   await fs.rm(path.join(directory, 'sources/solution/Other'), { recursive: true });
-  const result = check(directory), report = JSON.parse(result.stdout);
+  const result = await check(directory), report = JSON.parse(result.stdout);
   assert.equal(result.status, 1);
   for (const site of ['classic', 'enhanced']) for (const code of ['PROFILE_FILE_MISSING', 'PACK_MODULE_MISSING', 'SOLUTION_LAYOUT_MISSING']) assert.ok(report.paths.diagnostics.some(item => item.site === site && item.code === code), `${site}: ${code}`);
   assert.ok(report.paths.diagnostics.filter(item => item.code === 'PROFILE_FILE_MISSING').every(item => item.profile === 'other'));
@@ -72,7 +74,7 @@ test('all mapped profile files including nonselected files, empty Solution roots
 test('nonselected invalid profile gates project readiness while preserving the existing doctor verdict and parser privacy', async t => {
   const { directory } = await fixture(t);
   await write(directory, 'other.json', `{"credential":"${secret}",}`);
-  const result = check(directory), report = JSON.parse(result.stdout);
+  const result = await check(directory), report = JSON.parse(result.stdout);
   assert.equal(result.status, 1); assert.equal(report.paths.ok, true); assert.equal(report.doctor.ok, false);
   assert.ok(report.doctor.sites.every(site => site.profiles.some(profile => profile.id === 'other' && profile.code === 'PROFILE_INVALID')));
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(secret + '|credential'));
@@ -88,7 +90,7 @@ test('adoption diagnoses missing wiring read-only and leaves unrelated existing 
   const files = ['package.json', configFile, '.gitignore', 'pack.mjs'];
   const before = await Promise.all(files.map(file => fs.readFile(path.join(directory, file))));
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = check(directory), report = JSON.parse(result.stdout);
+    const result = await check(directory), report = JSON.parse(result.stdout);
     assert.equal(result.status, 1); assert.equal(report.adoption.ok, false);
     for (const code of ['PAQVILO_DEPENDENCY_MISSING', 'PROJECT_SCRIPT_MISSING', 'PRIVATE_IGNORE_REVIEW', 'DEVELOPMENT_SCRIPT_DRIFT']) assert.ok(report.adoption.diagnostics.some(item => item.code === code));
     assert.doesNotMatch(result.stdout, /PRIVATE_SCRIPT_VALUE/);
@@ -172,7 +174,7 @@ test('completion excludes Windows case aliases of private paths while retaining 
 test('readiness validates project-owned paths without importing project packs', async t => {
   const { directory, config, save } = await fixture(t);
   config.sites.classic.mirage.project = './project.json'; await save();
-  let result = check(directory), report = JSON.parse(result.stdout);
+  let result = await check(directory), report = JSON.parse(result.stdout);
   assert.equal(result.status, 1); assert.ok(report.paths.diagnostics.some(item => item.code === 'PROJECT_FILE_MISSING'));
   await write(directory, 'project.json', JSON.stringify({ version: 2, portals: [{ id: 'local', path: './sources/classic', deploymentProfiles: { profiles: { alternative: { environmentVariables: './absent-project-profile.json' } } } }], solutions: ['./sources/solution'], dataPacks: [{ id: 'project-pack', module: './absent-project-pack.mjs' }] }));
   const paths = await inspectProjectPaths(directory, { config: configFile, processEnv: {} });
@@ -186,19 +188,26 @@ test('readiness validates project-owned paths without importing project packs', 
 
 test('public readiness errors and mode conflicts are structured and do not create a project', async t => {
   const { directory } = await fixture(t);
-  for (const args of [['--ready', '--check'], ['--ready', '--refresh-editor'], ['--ready', '--site', 'other']]) {
-    const result = run(directory, ...args, '--json');
-    assert.equal(result.status, 1); assert.equal(JSON.parse(result.stdout).ok, false);
+  const conflicts = [[['--ready', '--check'], /separate operations/], [['--ready', '--refresh-editor'], /separate operations/], [['--ready', '--site', 'other'], /Generation options cannot be combined/]];
+  const malformed = ['{"SECRET_INPUT":', 'true', '[]'];
+  for (const [index, contents] of malformed.entries()) await write(directory, `malformed-${index}.json`, contents);
+  const absent = path.join(directory, 'not-created');
+  const [missing, unavailable, ...results] = await Promise.all([
+    run(absent, '--ready', '--json'), run(directory, '--ready', '--config', 'missing.json', '--json'),
+    ...conflicts.map(([args]) => run(directory, ...args, '--json')),
+    ...malformed.map((_contents, index) => run(directory, '--ready', '--config', `malformed-${index}.json`, '--json')),
+  ]);
+  for (const [index, [args, message]] of conflicts.entries()) {
+    const result = results[index];
+    assert.equal(result.status, 1, args.join(' ')); assert.equal(JSON.parse(result.stdout).ok, false); assert.match(JSON.parse(result.stdout).error.message, message);
   }
-  for (const contents of ['{"SECRET_INPUT":', 'true', '[]']) {
-    await write(directory, configFile, contents);
-    const result = check(directory); assert.equal(result.status, 1); assert.equal(JSON.parse(result.stdout).ok, false);
+  for (const [index, contents] of malformed.entries()) {
+    const result = results[conflicts.length + index];
+    assert.equal(result.status, 1, contents); assert.equal(JSON.parse(result.stdout).ok, false, contents);
     assert.doesNotMatch(result.stdout + result.stderr, /SECRET_INPUT|node:internal/);
   }
-  await fs.rm(path.join(directory, configFile));
-  const result = check(directory); assert.equal(result.status, 1); assert.ok(JSON.parse(result.stdout).adoption.diagnostics.some(item => item.code === 'CATALOGUE_MISSING'));
-  const absent = path.join(directory, 'not-created');
-  const missing = run(absent, '--ready', '--json'); assert.equal(missing.status, 1); assert.equal(JSON.parse(missing.stdout).ok, false);
+  assert.equal(unavailable.status, 1); assert.ok(JSON.parse(unavailable.stdout).adoption.diagnostics.some(item => item.code === 'CATALOGUE_MISSING'));
+  assert.equal(missing.status, 1); assert.equal(JSON.parse(missing.stdout).ok, false);
   await assert.rejects(fs.access(absent), { code: 'ENOENT' });
 });
 

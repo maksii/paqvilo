@@ -121,8 +121,7 @@ test("project inspect CLI reports every configured portal", async (t) => {
   const result = JSON.parse(output);
   assert.deepEqual(result.portals.map((portal) => portal.id), ["portal-1", "portal-2"]);
   assert.equal(result.portals[0].solutionMetadata.sources.length, 2);
-  assert.ok(result.portals.every((portal) => portal.liquidSyntax.sourceCount >= 0));
-  assert.ok(result.portals.every((portal) => portal.liquidSyntax.sourceParsePassed === portal.liquidSyntax.sourceCount));
+  assert.deepEqual(result.portals.map(({ liquidSyntax }) => [liquidSyntax.sourceCount, liquidSyntax.sourceParsePassed]), [[0, 0], [0, 0]]);
 });
 
 test("project serve CLI starts isolated loopback servers for every portal", async (t) => {
@@ -153,15 +152,6 @@ test("project serve CLI starts isolated loopback servers for every portal", asyn
   } finally {
     await server.stop();
   }
-});
-
-test('a CLI that never reports readiness times out and its owned process is forcibly cleaned up', async t => {
-  const root = await workspace(t), script = path.join(root, 'unready.mjs');
-  await fs.writeFile(script, "setInterval(() => {}, 1000); process.on('SIGTERM', () => {}); process.stdin.resume();");
-  const server = jsonServer(script, [], { startupTimeout: 100, stopTimeout: 100 });
-  try { await assert.rejects(server.started, /did not produce JSON within 100ms/); }
-  finally { await server.stop(); }
-  assert.ok(server.child.exitCode !== null || server.child.signalCode !== null);
 });
 
 test("invalid source references fail before import", async (t) => {

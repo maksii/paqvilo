@@ -23,10 +23,12 @@ async function fixture(t,mode) {
     }}},tables:{probe:[{probeid:id,title:'Original',quantity:2}]},settings:{permissionMode:'permissive'},
   }});
   ownedFixture(t).add(()=>app.close());
+  // app.state() clones the whole state, so send() reads the token once per runtime.
+  app.csrf=app.csrf;
   return app;
 }
 async function send(app,raw,{method='PATCH',contentType='application/json'}={}) {
-  const response=await fetch(app.url+'/_api/probes'+(method==='POST'?'':'('+id+')'),{method,headers:{'content-type':contentType,__RequestVerificationToken:app.state().csrf},body:raw});
+  const response=await fetch(app.url+'/_api/probes'+(method==='POST'?'':'('+id+')'),{method,headers:{'content-type':contentType,__RequestVerificationToken:app.csrf},body:raw});
   return {status:response.status,body:response.status===204?null:await response.json()};
 }
 

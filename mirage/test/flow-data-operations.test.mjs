@@ -4,7 +4,7 @@ import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtim
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { PACK_EXPORTS } from '../lib/pack-exports.mjs';
 
-// Task 46: built-in data operations, Until and concurrent branches.
+// Built-in data operations, Until and concurrent branches.
 const manual = { manual: { type: 'Request', kind: 'Button', inputs: { schema: {} } } };
 const flow = (actions, last) => ({ triggers: manual, actions: { ...actions, Reply: { type: 'Response', runAfter: { [last]: ['Succeeded', 'Failed', 'TimedOut'] }, inputs: { statusCode: 200, body: { status: `@actions('${last}')['status']`, body: `@outputs('${last}')` } } } } });
 const run = (definition, extra = {}) => executeFlowDefinition({ definition, input: {}, ...extra });
@@ -86,13 +86,13 @@ test('independent branches run in definition order and the run status follows ev
     Reply: { type: 'Response', runAfter: { Left: ['Succeeded'], Right: ['Succeeded'] }, inputs: { statusCode: 200, body: { log: "@variables('log')", right: "@outputs('Right')" } } },
   } };
   assert.deepEqual(await run(definition, { diagnostic: n => notes.push(n) }), { status: 200, body: { log: ['left'], right: 'right' } });
-  // Task 46: branches start together (synchronous ones in definition order); there is no sequential-fallback note any more.
+  // Branches start together (synchronous ones in definition order).
   assert.equal(notes.filter(n => n.code === 'FLOW_PARALLEL_SEQUENTIAL').length, 0);
   const order = notes.filter(n => n.code === 'FLOW_ACTION').map(n => n.action);
   assert.ok(order.indexOf('Left') < order.indexOf('Right'));
   // A failed branch fails the run even when the other branch succeeds.
   definition.actions.Right = { type: 'Terminate', runAfter: { Init: ['Succeeded'] }, inputs: { runStatus: 'Failed', runError: { message: 'invented' } } };
-  // RB1-09: a Terminate Failed ends the run with its runError message.
+  // A Terminate Failed ends the run with its runError message.
   await assert.rejects(async () => run(definition), { code: 'LocalFlowTerminated', message: 'invented' });
 });
 

@@ -1,6 +1,5 @@
-// _sim administration features against a disposable loopback simulator. A synthetic live
-// bridge stands in for a reference browser; nothing contacts a portal environment.
-import test from "node:test";
+// A synthetic live bridge stands in for a reference browser.
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -52,6 +51,10 @@ const initial = () => ({
   simulator: { mode: "local", pageMode: "local", permissionSource: "configured", identity: { roles: [] }, contactRoles: [{ contactId: "alex", roleId: "member" }], live: {}, endpoints: [] },
 });
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-admin-workspace-"));
   for (const [name, body] of Object.entries(FILES)) {
@@ -59,13 +62,12 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
     await fs.writeFile(path.join(directory, name), body);
   }
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, "state", "state.json"), watch: false, initial: initial(), ...(liveBridge ? { liveBridge } : {}), ...(project ? { project } : {}), ...(observed ? { observed } : {}), ...(allowLiveWrites ? { allowLiveWrites } : {}) });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  const context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: true, viewport: { width: 1360, height: 900 } });
   t.after(async () => {
-    await browser.close();
+    await context.close();
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });
   });
-  const context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: true, viewport: { width: 1360, height: 900 } });
   await context.route("**/*", (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
   const page = await context.newPage();
   // Generous: these end-to-end flows share the machine with other browser suites.
@@ -85,7 +87,7 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
       throw cause;
     }
   };
-  // Optional review screenshots (PAQVILO_MIRAGE_EVIDENCE_DIR); synthetic fixture data only.
+  // Optional review screenshots (PAQVILO_MIRAGE_EVIDENCE_DIR).
   const evidence = async (name) => {
     if (!process.env.PAQVILO_MIRAGE_EVIDENCE_DIR) return;
     await fs.mkdir(process.env.PAQVILO_MIRAGE_EVIDENCE_DIR, { recursive: true });
@@ -202,7 +204,7 @@ test("scenario drafts keep focus and selection when delayed persona and contact 
   });
   await page.goto(`${app.url}/_sim/#scenarios`, { waitUntil: 'commit' });
   await personas.arrived;
-  // "Save a scenario" is a collapsed section (RA-24).
+  // "Save a scenario" is a collapsed section.
   await page.locator('[data-disclosure="scenario-save"] > summary').click();
   const name = page.getByLabel('Scenario name', { exact: true });
   await name.focus();

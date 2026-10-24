@@ -490,7 +490,7 @@ test("portal responses carry only HTTP/* site-setting headers; web files use the
 
 test("web files are served inline or as attachments from their Content-Disposition choice, in standard and enhanced exports", async (t) => {
   // adx_contentdisposition (enhanced content: contentdisposition): 756150000 inline (the form
-  // default), 756150001 attachment, no value inline (Learn, Web File table reference).
+  // default), 756150001 attachment, no value inline.
   const standard = await simulator(t, {
     "web-files/numeric-inline.css.webfile.yml": "adx_webfileid: wf-inline\nadx_name: Numeric inline\nadx_partialurl: numeric-inline.css\nadx_parentpageid: home\nadx_contentdisposition: 756150000\nfilename: numeric-inline.css",
     "web-files/numeric-inline.css": "a{}",
@@ -613,7 +613,7 @@ test("site header settings: one header per HTTP/* setting, nonce policies and co
   assert.equal(headers.vary, "Accept-Encoding");
   assert.equal(webFileHeaders({ body: "x", fileName: "a.pdf", caching: "revalidate" })["cache-control"], "no-cache");
   assert.equal(webFileHeaders({ body: "x", fileName: "a.pdf", caching: "revalidate" }).expires, undefined);
-  // adx_contentdisposition: 756150001 attachment; 756150000 or no value inline (Learn, Web File).
+  // adx_contentdisposition: 756150001 attachment; 756150000 or no value inline.
   assert.deepEqual(
     [webFileDisposition({ adx_contentdisposition: 756150001 }), webFileDisposition({ adx_contentdisposition: "756150000" }), webFileDisposition({ adx_contentdisposition: 756150000 }), webFileDisposition({}), webFileDisposition({ contentdisposition: 756150001 }), webFileDisposition({ contentdisposition: 756150000 }), webFileDisposition({ mspp_contentdisposition: 756150001 })],
     ["attachment", "inline", "inline", "inline", "attachment", "inline", "attachment"],

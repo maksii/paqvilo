@@ -35,42 +35,45 @@ async function fixture(root,site='portal'){
 
 test('untouched source-free pack tests and smoke remain lightweight; strict requires declared executed cases',async t=>{
   const root=await project(t);
-  const unit=await run(root,['--test','pack/test/pack.test.mjs']);
+  const [unit,starter,strict]=await Promise.all([run(root,['--test','pack/test/pack.test.mjs']),run(root),run(root,['tools/test-browser.mjs','--strict'])]);
   assert.equal(unit.code,0,unit.output);
-  assert.equal((await run(root)).code,0);
-  const strict=await run(root,['tools/test-browser.mjs','--strict']);
+  assert.equal(starter.code,0,starter.output);
   assert.equal(strict.code,1,strict.output);assert.match(strict.output,/Missing: portal/);
   await fixture(root);
-  const smoke=await run(root);assert.equal(smoke.code,0,smoke.output);
-  assert.equal((await run(root,['tools/test-browser.mjs','--strict'])).code,1,'HTTP 200 does not count as meaningful acceptance');
+  const [smoke,smokeStrict]=await Promise.all([run(root),run(root,['tools/test-browser.mjs','--strict'])]);
+  assert.equal(smoke.code,0,smoke.output);
+  assert.equal(smokeStrict.code,1,'HTTP 200 does not count as meaningful acceptance');assert.match(smokeStrict.output,/Missing: portal/);
   assert.deepEqual((await fs.readdir(path.join(root,'test-browser/fixtures/portal'))).sort(),['.gitkeep','Home.webpage.copy.html','Home.webpage.yml','website.yml','web-pages'].sort(),'smoke state stays outside fixture sources');
 });
 
 test('strict reporter counts structured successful site cases and rejects skips, TODOs, filters and current-catalogue drift',async t=>{
-  const root=await project(t,{noPack:true}),file=path.join(root,'test-browser/declared.test.mjs');
+  const declared=root=>path.join(root,'test-browser/declared.test.mjs'),root=await project(t,{noPack:true}),file=declared(root);
   const body=options=>`import assert from 'node:assert/strict'; import {acceptanceTest} from '../support/site.mjs'; acceptanceTest('portal','synthetic assertion',()=>assert.equal(2+2,4),${options});`;
-  for(const options of ['{skip:true}','{todo:true}']){
-    await fs.writeFile(file,body(options));const result=await run(root,['tools/test-browser.mjs','--strict']);
-    assert.equal(result.code,1,result.output);assert.match(result.output,/Missing: portal/);
-  }
+  const unexecuted=Promise.all(['{skip:true}','{todo:true}'].map(async options=>{
+    const other=await project(t,{noPack:true});await fs.writeFile(declared(other),body(options));
+    return [options,await run(other,['tools/test-browser.mjs','--strict'])];
+  }));
   await fs.writeFile(file,body('{}'));
-  let result=await run(root,['tools/test-browser.mjs','--strict']);assert.equal(result.code,0,result.output);
-  result=await run(root,['tools/test-browser.mjs','--strict','--test-name-pattern=unmatched-case']);assert.equal(result.code,1,result.output);
+  let [result,filtered]=await Promise.all([run(root,['tools/test-browser.mjs','--strict']),run(root,['tools/test-browser.mjs','--strict','--test-name-pattern=unmatched-case'])]);
+  assert.equal(result.code,0,result.output);assert.equal(filtered.code,1,filtered.output);
+  for(const [options,skipped] of await unexecuted){assert.equal(skipped.code,1,options+skipped.output);assert.match(skipped.output,/Missing: portal/,options);}
   // Effective personal catalogue changes must join the gate without regeneration.
   await fs.writeFile(path.join(root,'paqvilo.config.local.yml'),YAML.stringify({sites:{extra:{source:'missing',environments:{local:'http://127.0.0.1:1'}}}}));
   result=await run(root,['tools/test-browser.mjs','--strict']);assert.equal(result.code,1,result.output);assert.match(result.output,/Missing: extra/);
   await fs.appendFile(file,"\nacceptanceTest('extra','second owned assertion',()=>assert.ok('content'.includes('tent')));\n");
-  result=await run(root,['tools/test-browser.mjs','--strict']);assert.equal(result.code,0,result.output);
-  result=await run(root,['tools/test-browser.mjs','--strict','--test-reporter=tap']);assert.notEqual(result.code,0);assert.match(result.output,/owns the test reporter/);
+  const [both,tap]=await Promise.all([run(root,['tools/test-browser.mjs','--strict']),run(root,['tools/test-browser.mjs','--strict','--test-reporter=tap'])]);
+  assert.equal(both.code,0,both.output);
+  assert.notEqual(tap.code,0);assert.match(tap.output,/owns the test reporter/);
   await fs.rm(file);await fs.rm(path.join(root,'test-browser/smoke.test.mjs'));
-  assert.equal((await run(root)).code,0,'empty discovery remains valid for starter checks');
-  assert.equal((await run(root,['tools/test-browser.mjs','--strict'])).code,1,'empty discovery cannot pass strict');
+  const [empty,emptyStrict]=await Promise.all([run(root),run(root,['tools/test-browser.mjs','--strict'])]);
+  assert.equal(empty.code,0,'empty discovery remains valid for starter checks');
+  assert.equal(emptyStrict.code,1,'empty discovery cannot pass strict');
 });
 
 test('a malformed nonempty fixture fails rather than silently skipping in lightweight or strict validation',async t=>{
   const root=await project(t,{noPack:true});
   await fs.writeFile(path.join(root,'test-browser/fixtures/portal/website.yml'),'adx_websiteid: [broken');
-  for(const args of [[],['--strict']]){const result=await run(root,['tools/test-browser.mjs',...args]);assert.notEqual(result.code,0,result.output);assert.match(result.output,/fail 1|failed|malformed|parse/i);}
+  for(const result of await Promise.all([[],['--strict']].map(args=>run(root,['tools/test-browser.mjs',...args])))){assert.notEqual(result.code,0,result.output);assert.match(result.output,/fail 1|failed|malformed|parse/i);}
 });
 
 test('site-bound recipe applies distinct platform and deployment defaults and attaches intended configured or dynamic origins',async t=>{

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { checkProject as inspectProject, scaffoldWarning } from '../lense/project-check.mjs';
@@ -23,7 +23,10 @@ async function project(t) {
 const read = (directory, name) => fs.readFile(path.join(directory, name), 'utf8');
 const readJson = async (directory, name) => JSON.parse(await read(directory, name));
 const checkProject = (directory, options = {}) => inspectProject(directory, { processEnv: {}, ...options });
-const run = (directory, ...args) => spawnSync(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 20000 });
+// Asynchronous so that independent invocations of one test run concurrently.
+const node = (args, options = {}) => new Promise(resolve => execFile(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 30000, ...options }, (error, stdout, stderr) =>
+  resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr })));
+const run = (directory, ...args) => node([cli, 'init', directory, ...args]);
 
 test('defaults generate a complete empty project, valid catalogue and bound offline pack', async t => {
   const directory = await project(t);
@@ -273,7 +276,7 @@ test('generated browser runner ignores empty pack folders and propagates real te
 });
 
 test('generated smoke exercises enhanced and code-site exports instead of silently skipping them', async t => {
-  for (const format of ['enhanced', 'code-site']) {
+  await Promise.all(['enhanced', 'code-site'].map(async format => {
     const directory = await project(t);
     await prepareProject(directory, { name: 'fixture', noPack: true, noVscode: true });
     const destination = path.join(directory, 'test-browser/fixtures/portal');
@@ -281,11 +284,11 @@ test('generated smoke exercises enhanced and code-site exports instead of silent
     await assert.rejects(fs.access(path.join(destination, 'website.yml')), { code: 'ENOENT' });
     await fs.mkdir(path.join(directory, 'node_modules'));
     await fs.symlink(fileURLToPath(new URL('../', import.meta.url)), path.join(directory, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
-    const result = spawnSync(process.execPath, ['tools/test-browser.mjs'], { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /pass 1/);
-    assert.match(result.stdout, /skipped 0/);
-  }
+    const result = await node(['tools/test-browser.mjs'], { cwd: directory });
+    assert.equal(result.status, 0, format + result.stdout + result.stderr);
+    assert.match(result.stdout, /pass 1/, format);
+    assert.match(result.stdout, /skipped 0/, format);
+  }));
 });
 
 test('CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths', async t => {
@@ -293,15 +296,29 @@ test('CLI help, JSON errors and exclusive writes protect unrelated content and s
   const unrelated = path.join(directory, 'project');
   await fs.mkdir(unrelated);
   await fs.writeFile(path.join(unrelated, 'package.json'), '{"keep":true}\n');
-  let result = run(unrelated, '--name', 'sample', '--json');
+  const invalid = [
+    [['--name', '../escape'], /--name must be a lowercase slug/], [['--site', 'con'], /--site must be a lowercase slug/], [['--site', 'x', '--site', 'x'], /--site values must be unique/],
+    [['--pack', 'a', '--no-pack'], /--no-pack cannot be combined with --pack/], [['--browser', 'firefox'], /--browser must be msedge, chrome or chromium/],
+    [['--workspace-only'], /--workspace-only requires --refresh-editor/], [['--check', '--refresh-editor'], /separate operations/], [['--wat'], /Unknown option '--wat'/],
+  ];
+  const [help, rootHelp, ...rejected] = await Promise.all([run(directory, '--help'), node([cli, '--help']), ...invalid.map(([args]) => run(path.join(directory, 'invalid'), ...args, '--json'))]);
+  for (const [index, [args, message]] of invalid.entries()) {
+    assert.equal(rejected[index].status, 1, args.join(' '));
+    const report = JSON.parse(rejected[index].stdout);
+    assert.equal(report.ok, false, args.join(' ')); assert.match(report.error.message, message);
+  }
+  await assert.rejects(fs.access(path.join(directory, 'invalid')), { code: 'ENOENT' });
+  assert.match(help.stdout, /Unlike mirage init/);
+  assert.match(rootHelp.stdout, /paqvilo init/);
+  let result = await run(unrelated, '--name', 'sample', '--json');
   assert.equal(result.status, 1);
   assert.equal(JSON.parse(result.stdout).ok, false);
   assert.equal(await read(unrelated, 'package.json'), '{"keep":true}\n');
-  result = run(unrelated, '--name', 'sample', '--into-existing', '--json');
+  result = await run(unrelated, '--name', 'sample', '--into-existing', '--json');
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).skipped, ['package.json']);
   const before = await read(unrelated, 'paqvilo.config.yml');
-  result = run(unrelated, '--name', 'sample', '--into-existing', '--json');
+  result = await run(unrelated, '--name', 'sample', '--into-existing', '--json');
   assert.equal(JSON.parse(result.stdout).created.length, 0);
   assert.equal(await read(unrelated, 'paqvilo.config.yml'), before);
   const linked = path.join(directory, 'linked');
@@ -313,19 +330,13 @@ test('CLI help, JSON errors and exclusive writes protect unrelated content and s
   await fs.symlink(unrelated, path.join(nested, 'pack'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(prepareProject(nested, { name: 'sample', intoExisting: true }), /symbolic links/);
   assert.deepEqual(await fs.readdir(nested), ['pack'], 'preflight refuses before writing any files');
-  for (const args of [['--name', '../escape'], ['--site', 'con'], ['--site', 'x', '--site', 'x'], ['--pack', 'a', '--no-pack'], ['--browser', 'firefox'], ['--workspace-only'], ['--check', '--refresh-editor'], ['--wat']]) {
-    assert.equal(run(path.join(directory, 'invalid'), ...args, '--json').status, 1, args.join(' '));
-  }
-  assert.match(run(directory, '--help').stdout, /Unlike mirage init/);
-  const rootHelp = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8', windowsHide: true });
-  assert.match(rootHelp.stdout, /paqvilo init/);
 });
 
 test('completion checks report schema, packs, origins, paths and markers without writing or importing packs', async t => {
   const directory = await project(t);
   const plan = await prepareProject(directory, { name: 'sample' });
   const before = new Map(await Promise.all(plan.created.map(async name => [name, await read(directory, name)])));
-  const fresh = run(directory, '--check', '--json');
+  const fresh = await run(directory, '--check', '--json');
   assert.equal(fresh.status, 1);
   assert.equal(JSON.parse(fresh.stdout).todo.filter(item => item.kind === 'marker').length, 7);
   for (const [name, body] of before) assert.equal(await read(directory, name), body);
@@ -347,11 +358,12 @@ test('completion checks report schema, packs, origins, paths and markers without
   await fs.writeFile(path.join(directory, '.paqvilo/discovery.json'), 'TODO(paqvilo-init): do not read\n');
   assert.equal(checkProject(directory).ok, true);
   assert.equal(scaffoldWarning(directory), null);
-  assert.equal(run(directory, '--check', '--json').status, 0);
-  const doctor = spawnSync(process.execPath, [cli, 'lense', 'doctor', '--config', path.join(directory, 'paqvilo.config.yml'), '--all', '--json'], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const doctorArgs = [cli, 'lense', 'doctor', '--config', path.join(directory, 'paqvilo.config.yml'), '--all', '--json'];
+  const [complete, doctor] = await Promise.all([run(directory, '--check', '--json'), node(doctorArgs)]);
+  assert.equal(complete.status, 0, complete.stdout);
   assert.equal(JSON.parse(doctor.stdout).warnings, undefined);
   await fs.appendFile(path.join(directory, 'README.md'), '\nTODO(paqvilo-init): complete this\n');
-  const warned = spawnSync(process.execPath, [cli, 'lense', 'doctor', '--config', path.join(directory, 'paqvilo.config.yml'), '--all', '--json'], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const warned = await node(doctorArgs);
   assert.match(JSON.parse(warned.stdout).warnings[0], /init --check/);
   assert.equal(warned.status, doctor.status, 'guidance does not alter doctor readiness');
 });

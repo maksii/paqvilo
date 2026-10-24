@@ -187,24 +187,18 @@ test(
       JSON.stringify(exported),
       /DO_NOT_RETAIN|WRITE_BODY_MUST_NOT_RETAIN/,
     );
-    if (process.env.PAQVILO_MIRAGE_EVIDENCE_DIR) {
-      await fs.mkdir(process.env.PAQVILO_MIRAGE_EVIDENCE_DIR, { recursive: true });
-      await page.screenshot({
-        path: path.join(process.env.PAQVILO_MIRAGE_EVIDENCE_DIR, "audit-desktop.png"),
-        fullPage: true,
-      });
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.screenshot({
-        path: path.join(process.env.PAQVILO_MIRAGE_EVIDENCE_DIR, "audit-mobile.png"),
-        fullPage: true,
-      });
-      assert.equal(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-        true,
-      );
+    const evidence = process.env.PAQVILO_MIRAGE_EVIDENCE_DIR;
+    if (evidence) {
+      await fs.mkdir(evidence, { recursive: true });
+      await page.screenshot({ path: path.join(evidence, "audit-desktop.png"), fullPage: true });
     }
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (evidence) await page.screenshot({ path: path.join(evidence, "audit-mobile.png"), fullPage: true });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+      "the audit view fits a 390 px viewport",
+    );
     await page
       .getByRole("button", { name: "Clear audit", exact: true })
       .click();

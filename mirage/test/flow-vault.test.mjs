@@ -1,4 +1,4 @@
-// RC4b-03: the vault key file is readable by the current user only (on Windows an icacls ACL without inheritance, verified)
+// The vault key file is readable by the current user only (on Windows an icacls ACL without inheritance)
 // and a concurrent first use never reads an empty or partial key: every creator links a complete key file or reads the winner's.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { flowVault, VAULT_KEY_FILE } from '../lib/flow-vault.mjs';
+import { flowVault, restrictToCurrentUser, VAULT_KEY_FILE } from '../lib/flow-vault.mjs';
 
 const temporary = async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-vault-'));
@@ -47,4 +47,19 @@ test('concurrent first uses in separate threads agree on one complete key', asyn
   const vault = flowVault(directory);
   assert.deepEqual(answers.map(answer => vault.open(answer.sealed)), Array.from({ length: 8 }, (_, worker) => ({ worker })), 'every thread sealed under the one key on disk');
   assert.deepEqual((await fs.readdir(directory)).sort(), [VAULT_KEY_FILE], 'no temporary file is left');
+});
+
+test('a private vault ACL removes explicit process-default grants as well as inheritance', { skip: process.platform !== 'win32' && 'icacls applies on Windows only' }, async t => {
+  const file = path.join(await temporary(t), 'empty key fixture.txt');
+  await fs.writeFile(file, '');
+  const tool = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe');
+  const grant = spawnSync(tool, [file, '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(grant.status, 0, grant.stderr);
+  assert.match(restrictToCurrentUser(file), /\\[^\\:]+:\(F\)$/, 'the helper answers its current-user ACL entry');
+  const shown = spawnSync(tool, [file], { encoding: 'utf8', windowsHide: true });
+  assert.equal(shown.status, 0, shown.stderr);
+  const entries = shown.stdout.split(/\r?\n/).map(line => line.replace(file, '').trim()).filter(line => /:\(.*\)$/.test(line));
+  assert.equal(entries.length, 1, shown.stdout);
+  assert.match(entries[0], /\\[^\\:]+:\(F\)$/);
+  assert.equal((await fs.stat(file)).size, 0, 'no key bytes are needed to establish the final private ACL');
 });

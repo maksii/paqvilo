@@ -110,7 +110,8 @@ export async function readClrDependency(root, relative) {
   const rel = path.relative(realRoot, candidate);
   if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
     fail('CLR source escaped its declared root.');
-  const handle = await fs.open(candidate, 'r');
+  // The relative name only: the local path stays out of configuration responses.
+  const handle = await fs.open(candidate, 'r').catch(error => fail(`CLR dependency ${relative} cannot be read (${error.code ?? 'error'}).`));
   try {
     const stat = await handle.stat({ bigint: true });
     let current = realRoot;

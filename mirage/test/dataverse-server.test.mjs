@@ -27,7 +27,7 @@ async function start(t, options = {}) {
   const admin = async (route, { method = "GET", body } = {}) => {
     const response = await fetch(`${app.url}/_sim/api${route}`, {
       method,
-      headers: { "x-sim-csrf": app.state().csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { "x-sim-csrf": app.csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();
@@ -54,34 +54,26 @@ async function clientCredentials(dataverse, secret) {
   return { status: response.status, body: await response.json() };
 }
 
-test("enabled runtime exposes the Dataverse origin separately from the portal", async (t) => {
-  const { app } = await start(t, { dataverse: { enabled: true } });
+test("enabled runtime serves Dataverse on its own origin, lists the seeded security rows and shows the managed identity header once", async (t) => {
+  const { app, admin } = await start(t, { dataverse: { enabled: true } });
   assert.equal(app.state().dataverse.enabled, true);
   assert.notEqual(app.state().dataverse.origin, app.url);
   assert.equal(app.dataverse.origin, app.state().dataverse.origin);
-});
-
-test("admin listing shows roles and the SYSTEM user", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
   const listing = await admin("/dataverse");
   assert.equal(listing.status, 200);
-  assert.ok(listing.body.roles.some((role) => role.name === "System Administrator"));
-  assert.ok(listing.body.users.some((user) => user.fullname === "SYSTEM"));
+  assert.deepEqual(listing.body.roles.map((role) => role.name), ["System Administrator", "System Customizer", "Basic User"]);
+  assert.deepEqual(listing.body.users.map((user) => user.fullname), ["SYSTEM"]);
+  assert.equal(listing.body.managedIdentity.endpoint, `${app.dataverse.origin}/msi/token`);
+  assert.match(listing.body.managedIdentity.header, /^[0-9a-f]{48}$/);
+  assert.equal((await admin("/dataverse")).body.managedIdentity.header, null);
+  assert.equal(app.state().dataverse.managedIdentity.header, null);
+  // The portal origin does not route the Dataverse Web API.
+  const portal = await fetch(`${app.url}/api/data/v9.2/WhoAmI`);
+  assert.equal(portal.status, 404);
+  assert.equal((await portal.text()).includes("UserId"), false);
 });
 
-test("an application secret is returned once and never listed", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  const created = await createApplication(admin);
-  assert.ok(created.secret);
-  const listing = await admin("/dataverse");
-  const entry = listing.body.applications.find((item) => item.appId === APP_ID);
-  assert.ok(entry);
-  assert.equal(entry.secrets[0].hint, created.secret.slice(0, 3));
-  assert.doesNotMatch(JSON.stringify(listing.body), /"(hash|salt)"/);
-  assert.equal(JSON.stringify(listing.body).includes(created.secret), false);
-});
-
-test("a client-credentials token authenticates WhoAmI as the created application user", async (t) => {
+test("a client-credentials token authenticates WhoAmI as the created application user, logged without authorization material", async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);
   const issued = await clientCredentials(app.dataverse, created.secret);
@@ -91,20 +83,17 @@ test("a client-credentials token authenticates WhoAmI as the created application
   });
   assert.equal(whoami.status, 200);
   assert.equal((await whoami.json()).UserId, created.systemuserid);
-});
-
-test("the request log records WhoAmI without authorization material", async (t) => {
-  const { app, admin } = await start(t, { dataverse: { enabled: true } });
-  const created = await createApplication(admin);
-  const issued = await clientCredentials(app.dataverse, created.secret);
-  await fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`, { headers: { authorization: `Bearer ${issued.body.access_token}` } });
   const { body } = await admin("/dataverse/requests");
   assert.ok(body.requests.some((entry) => entry.path.endsWith("WhoAmI")));
   for (const entry of body.requests) assert.equal(Object.keys(entry).some((key) => key.toLowerCase() === "authorization"), false);
+  assert.equal(JSON.stringify(body).includes(issued.body.access_token), false);
 });
 
-test("users can be created, disabled and given new roles", async (t) => {
+test("users are created with an integer accessmode only, then disabled and given new roles", async (t) => {
   const { admin } = await start(t, { dataverse: { enabled: true } });
+  const refused = await admin("/dataverse/users", { method: "POST", body: { fullname: "Mode User", domainname: "mode@example.test", roles: ["Basic User"], accessmode: "read-write" } });
+  assert.equal(refused.status, 400);
+  assert.equal((await admin("/dataverse/users", { method: "POST", body: { fullname: "Mode User", domainname: "mode@example.test", roles: ["Basic User"], accessmode: 0 } })).status, 201);
   const created = await admin("/dataverse/users", {
     method: "POST",
     body: { fullname: "Maker User", domainname: "maker@example.test", objectId: OBJECT_ID, roles: ["System Customizer"] },
@@ -121,19 +110,10 @@ test("users can be created, disabled and given new roles", async (t) => {
   assert.deepEqual(user.roles, ["Basic User"]);
 });
 
-test("reset keeps application registrations", async (t) => {
-  const { app, admin } = await start(t, { dataverse: { enabled: true } });
-  await createApplication(admin);
-  const reset = await fetch(`${app.url}/_sim/api/reset`, { method: "POST", headers: { "x-sim-csrf": app.state().csrf } });
-  assert.equal(reset.status, 200);
-  const listing = await admin("/dataverse");
-  assert.ok(listing.body.applications.some((item) => item.appId === APP_ID));
-});
-
-test("reset re-seeds the security rows so an application created before it still authenticates", async (t) => {
+test("reset keeps application registrations and re-seeds the security rows, so an application created before it still authenticates", async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);
-  const reset = await fetch(`${app.url}/_sim/api/reset`, { method: "POST", headers: { "x-sim-csrf": app.state().csrf } });
+  const reset = await fetch(`${app.url}/_sim/api/reset`, { method: "POST", headers: { "x-sim-csrf": app.csrf } });
   assert.equal(reset.status, 200);
   const issued = await clientCredentials(app.dataverse, created.secret);
   assert.equal(issued.status, 200);
@@ -143,54 +123,49 @@ test("reset re-seeds the security rows so an application created before it still
   assert.equal(whoami.status, 200);
   assert.equal((await whoami.json()).UserId, created.systemuserid);
   const listing = await admin("/dataverse");
+  assert.deepEqual(listing.body.applications.map((item) => item.appId), [APP_ID]);
   assert.equal(listing.body.users.filter((user) => user.fullname === "SYSTEM").length, 1);
   assert.equal(listing.body.roles.length, 3);
 });
 
-test("a registered certificate reports its SHA-1 and SHA-256 thumbprints", async (t) => {
+test("a certificate registered by public key or certificate PEM reports SHA-1 and SHA-256 thumbprints and is removed by either", async (t) => {
   const { admin } = await start(t, { dataverse: { enabled: true } });
   await createApplication(admin);
+  const route = `/dataverse/applications/${APP_ID}/certificates`;
   const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const der = publicKey.export({ type: "spki", format: "der" });
-  const created = await admin(`/dataverse/applications/${APP_ID}/certificates`, {
-    method: "POST",
-    body: { publicKeyPem: publicKey.export({ type: "spki", format: "pem" }) },
-  });
-  assert.equal(created.status, 201);
-  assert.equal(created.body.thumbprint, createHash("sha1").update(der).digest("hex").toUpperCase());
-  assert.equal(created.body.thumbprint256, createHash("sha256").update(der).digest("hex").toUpperCase());
-  const listing = await admin("/dataverse");
-  const entry = listing.body.applications.find((item) => item.appId === APP_ID);
-  assert.deepEqual(entry.certificates, [{ thumbprint: created.body.thumbprint, thumbprint256: created.body.thumbprint256 }]);
-});
-
-test("a registered certificate PEM keeps the certificate's fingerprints as its thumbprints", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  await createApplication(admin);
+  const key = await admin(route, { method: "POST", body: { publicKeyPem: publicKey.export({ type: "spki", format: "pem" }) } });
+  assert.equal(key.status, 201);
+  assert.equal(key.body.thumbprint, createHash("sha1").update(der).digest("hex").toUpperCase());
+  assert.equal(key.body.thumbprint256, createHash("sha256").update(der).digest("hex").toUpperCase());
   const { cert } = createSelfSignedCertificate({ commonName: "Invented client certificate", hosts: [] });
   const x509 = new X509Certificate(cert);
-  const created = await admin(`/dataverse/applications/${APP_ID}/certificates`, { method: "POST", body: { certificatePem: cert } });
-  assert.equal(created.status, 201);
-  assert.equal(created.body.thumbprint, x509.fingerprint.replaceAll(":", ""));
-  assert.equal(created.body.thumbprint256, x509.fingerprint256.replaceAll(":", ""));
-  const rejected = await admin(`/dataverse/applications/${APP_ID}/certificates`, { method: "POST", body: { certificatePem: "not a pem" } });
-  assert.equal(rejected.status, 400);
+  const pem = await admin(route, { method: "POST", body: { certificatePem: cert } });
+  assert.equal(pem.status, 201);
+  assert.equal(pem.body.thumbprint, x509.fingerprint.replaceAll(":", ""));
+  assert.equal(pem.body.thumbprint256, x509.fingerprint256.replaceAll(":", ""));
+  assert.equal((await admin(route, { method: "POST", body: { certificatePem: "not a pem" } })).status, 400);
+  const certificates = async () => (await admin("/dataverse")).body.applications.find((item) => item.appId === APP_ID).certificates;
+  assert.deepEqual(await certificates(), [key.body, pem.body].map(({ thumbprint, thumbprint256 }) => ({ thumbprint, thumbprint256 })));
+
+  assert.equal((await admin(`${route}/ABCDEF0123456789ABCDEF0123456789ABCDEF01`, { method: "DELETE" })).status, 404);
+  assert.equal((await admin(`${route}/${key.body.thumbprint}`, { method: "DELETE" })).status, 204);
+  assert.equal((await admin(`${route}/${key.body.thumbprint}`, { method: "DELETE" })).status, 404);
+  assert.equal((await admin(`${route}/${pem.body.thumbprint256}`, { method: "DELETE" })).status, 204);
+  assert.deepEqual(await certificates(), []);
 });
 
 test("enabling Dataverse leaves the portal Web API answers for an unrelated table unchanged", async (t) => {
   const plain = await start(t);
   const withDataverse = await start(t, { dataverse: { enabled: true } });
   // A standard table (accounts) is seeded on Dataverse sites and answers 404 9004010C there; see dataverse-standard-portal.test.mjs.
-  for (const route of ["/_api/invented_things?$select=name"]) {
-    const answers = [];
-    for (const { app } of [plain, withDataverse]) {
-      const response = await fetch(`${app.url}${route}`);
-      const body = await response.json().catch(() => null);
-      answers.push({ status: response.status, code: body?.error?.code ?? null });
-    }
-    assert.deepEqual(answers[1], answers[0], route);
-    assert.notEqual(answers[0].code, null, route);
+  const answers = [];
+  for (const { app } of [plain, withDataverse]) {
+    const response = await fetch(`${app.url}/_api/invented_things?$select=name`);
+    answers.push({ status: response.status, error: (await response.json()).error });
   }
+  assert.equal(answers[0].status, 400);
+  assert.deepEqual(answers[1], answers[0]);
 });
 
 test("Dataverse tables follow the portal's site settings and table permissions", async (t) => {
@@ -233,14 +208,6 @@ test("Dataverse tables follow the portal's site settings and table permissions",
   assert.ok(users.body.value.some((row) => row.fullname === "SYSTEM" && row._businessunitid_value));
 });
 
-test("the portal origin does not answer Dataverse Web API routes", async (t) => {
-  const { app } = await start(t, { dataverse: { enabled: true } });
-  const response = await fetch(`${app.url}/api/data/v9.2/WhoAmI`);
-  const text = await response.text();
-  assert.notEqual(response.status, 200);
-  assert.equal(text.includes("UserId"), false);
-});
-
 test("disabled HTTP transport keeps the headless organization available to local administration", async (t) => {
   const { app, admin } = await start(t);
   assert.equal(app.state().dataverse.enabled, false);
@@ -251,13 +218,6 @@ test("disabled HTTP transport keeps the headless organization available to local
   assert.equal(response.body.organizationAvailable, true);
   assert.ok(response.body.users.some(user => user.fullname === 'SYSTEM'));
   assert.ok(response.body.roles.some(role => role.name === 'System Administrator'));
-});
-
-test("close stops the Dataverse listener", async (t) => {
-  const { app } = await start(t, { dataverse: { enabled: true } });
-  const origin = app.dataverse.origin;
-  await app.close();
-  await assert.rejects(fetch(`${origin}/api/data/v9.2/WhoAmI`));
 });
 
 // Minimal https client that trusts only the runtime's certificate file.
@@ -279,7 +239,7 @@ async function certificatePath(t) {
   return path.join(directory, "dataverse-ca.pem");
 }
 
-test("the https listener serves discovery, token and WhoAmI with the certificate file", async (t) => {
+test("the https listener serves discovery, token and WhoAmI with the certificate file, a second runtime reuses that file, and close stops both listeners", async (t) => {
   const certificateFile = await certificatePath(t);
   const { app, admin } = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
   const { tlsOrigin, certificateFile: reported, certificateFingerprint } = app.state().dataverse;
@@ -301,18 +261,18 @@ test("the https listener serves discovery, token and WhoAmI with the certificate
   const whoami = await httpsRequest(`${tlsOrigin}/api/data/v9.2/WhoAmI`, { ca, headers: { authorization: `Bearer ${JSON.parse(issued.body).access_token}` } });
   assert.equal(whoami.status, 200);
   assert.equal(JSON.parse(whoami.body).UserId, created.systemuserid);
-});
 
-test("a second runtime reuses the certificate file", async (t) => {
-  const certificateFile = await certificatePath(t);
-  const first = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
   const second = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
-  assert.ok(first.app.state().dataverse.certificateFingerprint);
-  assert.equal(second.app.state().dataverse.certificateFingerprint, first.app.state().dataverse.certificateFingerprint);
+  assert.equal(second.app.state().dataverse.certificateFingerprint, certificateFingerprint);
+
+  await app.close();
+  await assert.rejects(httpsRequest(`${tlsOrigin}/api/data/v9.2/WhoAmI`, { ca }), { code: /^(ECONNREFUSED|ECONNRESET)$/ });
+  await assert.rejects(fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`), TypeError);
 });
 
-test("passwords are hashed, reported as passwordSet and never echoed", async (t) => {
+test("passwords are hashed, reported as passwordSet and never echoed; the state export keeps only each secret's hint and expiry", async (t) => {
   const { admin } = await start(t, { dataverse: { enabled: true } });
+  await createApplication(admin);
   const password = "correct horse battery";
   const created = await admin("/dataverse/users", {
     method: "POST",
@@ -333,64 +293,20 @@ test("passwords are hashed, reported as passwordSet and never echoed", async (t)
   const serialised = JSON.stringify({ ...listing.body, grantTypes: undefined });
   assert.equal(serialised.includes(password), false);
   assert.doesNotMatch(serialised, /"(password|hash|salt)"/);
-  const patched = await admin(`/dataverse/users/${plain.body.systemuserid}`, { method: "PATCH", body: { password: "another password" } });
-  assert.equal(patched.status, 200);
-  assert.equal(patched.body.passwordSet, true);
-  assert.equal(JSON.stringify(patched.body).includes("another password"), false);
-});
 
-test("close also stops the https listener", async (t) => {
-  const certificateFile = await certificatePath(t);
-  const { app } = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
-  const { tlsOrigin } = app.state().dataverse;
-  const ca = await fs.readFile(certificateFile);
-  await app.close();
-  await assert.rejects(httpsRequest(`${tlsOrigin}/api/data/v9.2/WhoAmI`, { ca }));
-  await assert.rejects(fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`));
+  const exported = await admin("/state/export");
+  assert.equal(exported.status, 200);
+  const application = exported.body.dataverse.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual(Object.keys(application.secrets[0]).sort(), ["expiresOn", "hint", "id"]);
+  assert.equal(exported.body.dataverse.passwords, undefined);
+  assert.equal(JSON.stringify(exported.body).includes(password), false);
+  assert.doesNotMatch(JSON.stringify(exported.body), /"(hash|salt)"/);
 });
 
 test("without a state file the https listener keeps its CA in memory", async (t) => {
   const { app } = await start(t, { dataverse: { enabled: true, tls: true } });
   assert.match(app.state().dataverse.tlsOrigin, /^https:\/\/127\.0\.0\.1:\d+$/);
   assert.ok(!app.state().dataverse.certificateFile);
-});
-
-test("state export carries no password hashes and only the hint and expiry of each secret", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  await createApplication(admin);
-  const user = await admin("/dataverse/users", {
-    method: "POST",
-    body: { fullname: "Export User", domainname: "export@example.test", objectId: OBJECT_ID, roles: ["Basic User"], password: "export password" },
-  });
-  assert.equal(user.status, 201);
-  const exported = await admin("/state/export");
-  assert.equal(exported.status, 200);
-  const app = exported.body.dataverse.applications.find((item) => item.appId === APP_ID);
-  assert.deepEqual(Object.keys(app.secrets[0]).sort(), ["expiresOn", "hint", "id"]);
-  assert.equal(exported.body.dataverse.passwords, undefined);
-  assert.equal(JSON.stringify(exported.body).includes("export password"), false);
-  assert.doesNotMatch(JSON.stringify(exported.body), /"(hash|salt)"/);
-});
-
-test("registration refuses non-http redirect URIs and unknown grants, and stores nothing for them", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  for (const extra of [{ redirectUris: ["javascript:alert(1)"] }, { allowedGrants: ["teleport"] }]) {
-    const refused = await admin("/dataverse/applications", { method: "POST", body: { appId: APP_ID, displayName: "Strict client", ...extra } });
-    assert.equal(refused.status, 400);
-  }
-  const accepted = await admin("/dataverse/applications", {
-    method: "POST",
-    body: { appId: APP_ID, displayName: "Strict client", redirectUris: ["https://client.example.test/callback"], allowedGrants: ["client_credentials", GRANT_TYPES.on_behalf_of] },
-  });
-  assert.equal(accepted.status, 201);
-});
-
-test("user accessmode must be an integer when it is set", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  const refused = await admin("/dataverse/users", { method: "POST", body: { fullname: "Mode User", domainname: "mode@example.test", roles: ["Basic User"], accessmode: "read-write" } });
-  assert.equal(refused.status, 400);
-  const accepted = await admin("/dataverse/users", { method: "POST", body: { fullname: "Mode User", domainname: "mode@example.test", roles: ["Basic User"], accessmode: 0 } });
-  assert.equal(accepted.status, 201);
 });
 
 test("importing a state re-seeds security rows, even when it has no Dataverse section, and a missing grants list shows every grant", async (t) => {
@@ -419,8 +335,8 @@ const PUBLIC_JWKS = { keys: [{ kty: "RSA", kid: "k1", n: "AQAB", e: "AQAB" }] };
 const MI_CLIENT_ID = "55555555-5555-4555-8555-555555555555";
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-test("federated credentials keep the issuer's public keys and are removed by issuer and subject", async (t) => {
-  const { app, admin } = await start(t, { dataverse: { enabled: true } });
+test("federated credentials keep the issuer's public keys once, are listed per application and are removed by issuer and subject", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
   await createApplication(admin);
   const route = `/dataverse/applications/${APP_ID}/federated-credentials`;
   const body = { issuer: ISSUER, subject: SUBJECT, audiences: [AUDIENCE], jwks: PUBLIC_JWKS };
@@ -435,42 +351,19 @@ test("federated credentials keep the issuer's public keys and are removed by iss
   const twoAudiences = await admin(route, { method: "POST", body: { ...body, subject: "repo:two", audiences: [AUDIENCE, "api://other"] } });
   assert.equal(twoAudiences.status, 400);
   assert.equal((await admin(`/dataverse/applications/${MI_CLIENT_ID}/federated-credentials`, { method: "POST", body })).status, 404);
+  const second = await admin(route, { method: "POST", body: { issuer: ISSUER, subject: "repo:second", jwks: PUBLIC_JWKS } });
+  assert.deepEqual(second.body.audiences, [AUDIENCE], "the default audience applies");
 
   const exported = (await admin("/state/export")).body.dataverse;
   assert.deepEqual(exported.federatedIssuers, [{ issuer: ISSUER, jwks: PUBLIC_JWKS }]);
-  assert.deepEqual(exported.applications.find((item) => item.appId === APP_ID).federatedCredentials, [created.body]);
+  assert.deepEqual(exported.applications.find((item) => item.appId === APP_ID).federatedCredentials, [created.body, second.body]);
+  const listed = async () => (await admin("/dataverse")).body.applications.find((item) => item.appId === APP_ID).federatedCredentials;
+  assert.deepEqual(await listed(), [created.body, second.body]);
 
   const removed = await admin(route, { method: "DELETE", body: { issuer: ISSUER, subject: SUBJECT } });
   assert.equal(removed.status, 204);
   assert.equal((await admin(route, { method: "DELETE", body: { issuer: ISSUER, subject: SUBJECT } })).status, 404);
-  assert.equal(app.state().dataverse.enabled, true);
-});
-
-test("a managed identity becomes an application user with the default role and is listed with its clientId", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  const created = await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: MI_CLIENT_ID, displayName: "Sample app service" } });
-  assert.equal(created.status, 201);
-  assert.equal(created.body.clientId, MI_CLIENT_ID);
-  assert.match(created.body.systemuserid, GUID);
-  const listing = await admin("/dataverse");
-  const user = listing.body.users.find((item) => item.systemuserid === created.body.systemuserid);
-  assert.equal(user.applicationid, MI_CLIENT_ID);
-  assert.deepEqual(user.roles, ["Basic User"]);
-
-  assert.equal((await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: MI_CLIENT_ID, displayName: "Again" } })).status, 409);
-  assert.equal((await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: "not-a-guid", displayName: "Bad" } })).status, 400);
-  const badRole = await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: "66666666-6666-4666-8666-666666666666", displayName: "Role", roles: ["No such role"] } });
-  assert.equal(badRole.status, 400);
-  assert.equal(badRole.body.error.code, "DATAVERSE_ROLE_NOT_FOUND");
-});
-
-test("the managed identity endpoint is reported and its header is shown once by the admin status read", async (t) => {
-  const { app, admin } = await start(t, { dataverse: { enabled: true } });
-  const first = await admin("/dataverse");
-  assert.equal(first.body.managedIdentity.endpoint, `${app.dataverse.origin}/msi/token`);
-  assert.match(first.body.managedIdentity.header, /^[0-9a-f]{48}$/);
-  assert.equal((await admin("/dataverse")).body.managedIdentity.header, null);
-  assert.equal(app.state().dataverse.managedIdentity.header, null);
+  assert.deepEqual((await listed()).map((item) => item.subject), ["repo:second"]);
 });
 
 test("the arc mode reports the IMDS origin without a header, and an unknown mode is refused", async (t) => {
@@ -495,7 +388,7 @@ test("Solution custom APIs are seeded into the customapi tables and re-seeded af
   assert.deepEqual(seeded.tables.customapi.map((row) => row.uniquename), ["sample_Unbound"]);
   assert.equal(seeded.mappings.customapi.dataverseOnly, true);
 
-  const reset = await fetch(`${app.url}/_sim/api/reset`, { method: "POST", headers: { "x-sim-csrf": app.state().csrf } });
+  const reset = await fetch(`${app.url}/_sim/api/reset`, { method: "POST", headers: { "x-sim-csrf": app.csrf } });
   assert.equal(reset.status, 200);
   const after = (await admin("/state/export")).body;
   assert.deepEqual(after.tables.customapi.map((row) => row.uniquename), ["sample_Unbound"]);
@@ -505,9 +398,15 @@ test("Solution custom APIs are seeded into the customapi tables and re-seeded af
 const MISSING_APP_ID = "99999999-9999-4999-8999-999999999999";
 const PRINCIPAL_ID = "66666666-6666-4666-8666-666666666666";
 const SETTINGS_IDENTITY_ID = "77777777-7777-4777-8777-777777777777";
+const DEFAULT_ROLE_CLIENT_ID = "88888888-8888-4888-8888-888888888888";
 
 test("registration keeps grants, the client type and redirect URIs; PATCH edits them with the same validation", async (t) => {
   const { admin } = await start(t, { dataverse: { enabled: true } });
+  // Refused registrations store nothing: the same appId registers afterwards.
+  for (const extra of [{ redirectUris: ["javascript:alert(1)"] }, { allowedGrants: ["implicit"] }]) {
+    const refused = await admin("/dataverse/applications", { method: "POST", body: { appId: APP_ID, displayName: "Strict client", ...extra } });
+    assert.equal(refused.status, 400, JSON.stringify(extra));
+  }
   const created = await admin("/dataverse/applications", {
     method: "POST",
     body: { appId: APP_ID, displayName: "Invented client", roles: ["System Administrator"], allowedGrants: ["authorization_code", "refresh_token"], publicClient: true, redirectUris: ["https://client.test/callback"] },
@@ -538,8 +437,11 @@ test("registration keeps grants, the client type and redirect URIs; PATCH edits 
   assert.equal(badRedirect.body.error.message, "redirectUris must be http(s) URLs.");
   assert.equal((await admin(`/dataverse/applications/${APP_ID}`, { method: "PATCH", body: { publicClient: "yes" } })).status, 400);
   assert.equal((await admin(`/dataverse/applications/${MISSING_APP_ID}`, { method: "PATCH", body: { displayName: "Nobody" } })).status, 404);
-  assert.equal((await admin("/dataverse/applications", { method: "POST", body: { appId: "88888888-8888-4888-8888-888888888888", displayName: "Bad grant", allowedGrants: ["implicit"] } })).status, 400);
   assert.equal((await entryOf()).displayName, "Renamed client");
+  // The grant list also takes the OAuth grant_type URN form.
+  const urn = await admin(`/dataverse/applications/${APP_ID}`, { method: "PATCH", body: { allowedGrants: ["client_credentials", GRANT_TYPES.on_behalf_of] } });
+  assert.equal(urn.status, 200);
+  assert.deepEqual((await entryOf()).allowedGrants, ["client_credentials", GRANT_TYPES.on_behalf_of]);
 });
 
 test("the admin payload lists grant names, federated credentials and the Connect values, never a secret hash or salt", async (t) => {
@@ -549,32 +451,32 @@ test("the admin payload lists grant names, federated credentials and the Connect
   assert.equal((await admin(`/dataverse/applications/${APP_ID}/federated-credentials`, { method: "POST", body: credential })).status, 201);
   const listing = await admin("/dataverse");
   assert.deepEqual(listing.body.grantTypes, Object.keys(GRANT_TYPES));
-  assert.deepEqual(listing.body.applications.find((item) => item.appId === APP_ID).federatedCredentials, [{ issuer: ISSUER, subject: SUBJECT, audiences: [AUDIENCE] }]);
+  const entry = listing.body.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual(entry.federatedCredentials, [{ issuer: ISSUER, subject: SUBJECT, audiences: [AUDIENCE] }]);
+  assert.equal(entry.secrets[0].hint, created.secret.slice(0, 3));
   assert.equal(listing.body.origin, app.dataverse.origin);
   assert.equal(listing.body.authority, app.dataverse.authority);
-  assert.ok("tdsPort" in listing.body);
+  assert.equal(listing.body.tdsPort, app.dataverse.tdsPort);
   const text = JSON.stringify(listing.body);
   assert.doesNotMatch(text, /"(hash|salt|jwks)"/);
   assert.equal(text.includes(created.secret), false);
 });
 
-test("federated credentials are listed per application and removed by issuer and subject", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  await createApplication(admin);
-  const route = `/dataverse/applications/${APP_ID}/federated-credentials`;
-  await admin(route, { method: "POST", body: { issuer: ISSUER, subject: SUBJECT, audiences: [AUDIENCE], jwks: PUBLIC_JWKS } });
-  await admin(route, { method: "POST", body: { issuer: ISSUER, subject: "repo:second", jwks: PUBLIC_JWKS } });
-  const listed = (await admin("/dataverse")).body.applications.find((item) => item.appId === APP_ID).federatedCredentials;
-  assert.deepEqual(listed.map((item) => item.subject), [SUBJECT, "repo:second"]);
-  assert.deepEqual(listed[1].audiences, [AUDIENCE], "the default audience applies");
+test("a managed identity added here becomes an application user, is listed as runtime and removed with that user; settings identities are refused", async (t) => {
+  const { app, admin } = await start(t, { dataverse: { enabled: true, managedIdentities: [{ clientId: SETTINGS_IDENTITY_ID, principalId: PRINCIPAL_ID, displayName: "Settings identity" }] } });
+  const plain = await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: DEFAULT_ROLE_CLIENT_ID, displayName: "Default role" } });
+  assert.equal(plain.status, 201);
+  assert.equal(plain.body.clientId, DEFAULT_ROLE_CLIENT_ID);
+  assert.match(plain.body.systemuserid, GUID);
+  const plainUser = (await admin("/dataverse")).body.users.find((item) => item.systemuserid === plain.body.systemuserid);
+  assert.equal(plainUser.applicationid, DEFAULT_ROLE_CLIENT_ID);
+  assert.deepEqual(plainUser.roles, ["Basic User"]);
+  assert.equal((await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: DEFAULT_ROLE_CLIENT_ID, displayName: "Again" } })).status, 409);
+  assert.equal((await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: "not-a-guid", displayName: "Bad" } })).status, 400);
+  const badRole = await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: MISSING_APP_ID, displayName: "Role", roles: ["No such role"] } });
+  assert.equal(badRole.status, 400);
+  assert.equal(badRole.body.error.code, "DATAVERSE_ROLE_NOT_FOUND");
 
-  assert.equal((await admin(route, { method: "DELETE", body: { issuer: ISSUER, subject: SUBJECT } })).status, 204);
-  const after = (await admin("/dataverse")).body.applications.find((item) => item.appId === APP_ID).federatedCredentials;
-  assert.deepEqual(after.map((item) => item.subject), ["repo:second"]);
-});
-
-test("a managed identity added here is listed as runtime, removed with its application user, and settings identities are refused", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true, managedIdentities: [{ clientId: SETTINGS_IDENTITY_ID, principalId: PRINCIPAL_ID, displayName: "Settings identity" }] } });
   const created = await admin("/dataverse/managed-identities", { method: "POST", body: { clientId: MI_CLIENT_ID, principalId: PRINCIPAL_ID, displayName: "Sample app service", roles: ["System Customizer"] } });
   assert.equal(created.status, 201);
   let listing = await admin("/dataverse");
@@ -582,8 +484,8 @@ test("a managed identity added here is listed as runtime, removed with its appli
     clientId: MI_CLIENT_ID, principalId: PRINCIPAL_ID, displayName: "Sample app service", roles: ["System Customizer"], source: "runtime",
   });
   assert.equal(listing.body.managedIdentities.find((item) => item.clientId === SETTINGS_IDENTITY_ID).source, "settings");
-  let exported = (await admin("/state/export")).body;
-  assert.ok(exported.tables.managedidentity.some((row) => row.applicationid === MI_CLIENT_ID));
+  const stored = () => app.store.tableRows("managedidentity").some((row) => row.applicationid === MI_CLIENT_ID);
+  assert.equal(stored(), true);
 
   const settings = await admin(`/dataverse/managed-identities/${SETTINGS_IDENTITY_ID}`, { method: "DELETE" });
   assert.equal(settings.status, 409);
@@ -594,24 +496,7 @@ test("a managed identity added here is listed as runtime, removed with its appli
   listing = await admin("/dataverse");
   assert.equal(listing.body.managedIdentities.some((item) => item.clientId === MI_CLIENT_ID), false);
   assert.equal(listing.body.users.some((user) => user.applicationid === MI_CLIENT_ID), false);
-  exported = (await admin("/state/export")).body;
-  assert.equal(exported.tables.managedidentity.some((row) => row.applicationid === MI_CLIENT_ID), false);
-});
-
-test("a certificate is removed by its SHA-1 or SHA-256 thumbprint", async (t) => {
-  const { admin } = await start(t, { dataverse: { enabled: true } });
-  await createApplication(admin);
-  const first = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" });
-  const second = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" });
-  const one = (await admin(`/dataverse/applications/${APP_ID}/certificates`, { method: "POST", body: { publicKeyPem: first } })).body;
-  const two = (await admin(`/dataverse/applications/${APP_ID}/certificates`, { method: "POST", body: { publicKeyPem: second } })).body;
-  assert.equal((await admin(`/dataverse/applications/${APP_ID}/certificates/ABCDEF0123456789ABCDEF0123456789ABCDEF01`, { method: "DELETE" })).status, 404);
-
-  assert.equal((await admin(`/dataverse/applications/${APP_ID}/certificates/${one.thumbprint}`, { method: "DELETE" })).status, 204);
-  assert.equal((await admin(`/dataverse/applications/${APP_ID}/certificates/${one.thumbprint}`, { method: "DELETE" })).status, 404);
-  assert.equal((await admin(`/dataverse/applications/${APP_ID}/certificates/${two.thumbprint256}`, { method: "DELETE" })).status, 204);
-  const entry = (await admin("/dataverse")).body.applications.find((item) => item.appId === APP_ID);
-  assert.deepEqual(entry.certificates, []);
+  assert.equal(stored(), false);
 });
 
 // Runtime environment settings and user passwords (admin PATCH routes), each checked for its effect on the API.
@@ -709,14 +594,14 @@ test("switching auditing off in the environment stops audit rows for writes", as
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ name }),
     });
-  const auditRows = async () => ((await admin("/state/export")).body.tables.audit ?? []).length;
+  const auditRows = () => app.store.tableRows("audit").length;
 
   assert.equal((await admin("/dataverse/environment", { method: "PATCH", body: { auditing: true } })).status, 200);
   assert.equal((await create("On")).status, 204);
-  assert.equal(await auditRows(), 1, "a write with auditing on adds an audit row");
+  assert.equal(auditRows(), 1, "a write with auditing on adds an audit row");
   assert.equal((await admin("/dataverse/environment", { method: "PATCH", body: { auditing: false } })).status, 200);
   assert.equal((await create("Off")).status, 204);
-  assert.equal(await auditRows(), 1, "a write with auditing off adds no audit row");
+  assert.equal(auditRows(), 1, "a write with auditing off adds no audit row");
 });
 
 // Same login path as dataverse-tds-integration.test.mjs: TLS with ALPN tds/8.0, PRELOGIN, then LOGIN7 with a FEDAUTH token.

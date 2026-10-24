@@ -76,7 +76,7 @@ acceptanceTest(site, 'invented content, authenticated data and anonymous denial'
     initial.simulator.contactRoles = [{ contactId: 'fixture-contact', roleId: 'reader' }];
     simulator = await mirage.createSimulator({ initial, stateFile: path.join(directory, 'state.json'), port: 0, watch: false });
     const blocked = new Set();
-    const result = await runAcceptance({ localUrl: simulator.url, outputDir: path.join(directory, 'evidence'), timeout: 3000,
+    const result = await runAcceptance({ localUrl: simulator.url, outputDir: path.join(directory, 'evidence'),
       prepareContext: async context => {
         // Apply before any page opens. Unexpected HTTP(S) assets cannot escape CI.
         await context.route('**/*', route => {

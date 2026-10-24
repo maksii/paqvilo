@@ -99,6 +99,8 @@ test('a missing simulator CSRF token fails closed: no header, or no token to com
   const resumed = [];
   const { call, scheduler, connectors, approvalId } = await fixture(t, { csrf: () => undefined, resumeRun: (id) => { resumed.push(id); } });
   assert.equal((await call('POST', `/_sim/api/flow-waits/${approvalId}`, { outcome: 'Approve' })).status, 403);
+  for (const token of ['undefined', ''])
+    assert.equal((await call('POST', `/_sim/api/flow-waits/${approvalId}`, { outcome: 'Approve' }, { 'x-sim-csrf': token })).status, 403, `header ${JSON.stringify(token)}`);
   await scheduler.runDue();
   assert.deepEqual(resumed, []);
   assert.equal(connectors.approvals.get(approvalId).status, 'Pending');

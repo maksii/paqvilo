@@ -10,13 +10,13 @@ import { xmlEscapeAttribute } from "./fetchxml-engine.mjs";
 const esc = (value) => xmlEscapeAttribute(String(value));
 const notSimulated = (type) => new DataError(`A registry result of type ${type ?? "(untyped)"} is not simulated for SOAP.`, 501, "NotImplemented", { innerCode: "0x80040216" });
 
-// Contract namespaces, reflected from ServiceClient 1.2.27 (Microsoft.Xrm.Sdk.dll, Microsoft.Crm.Sdk.Proxy.dll): the
+// Contract namespaces of the SDK assemblies (Microsoft.Xrm.Sdk.dll, Microsoft.Crm.Sdk.Proxy.dll): the
 // Microsoft.Crm.Sdk.Messages classes (RolePrivilege, AuditDetailCollection, every *Response) use crm/2011 (NS.g), and the
 // Microsoft.Xrm.Sdk classes use xrm/2011 (NS.a). A name neither list covers has no SDK class: the Dynamics CLR namespace
-// is the DataContract default (unverified).
+// is assumed as its DataContract default.
 const CRM_TYPES = new Set(["AuditDetail", "AuditDetailCollection", "AttributeAuditDetail", "RelationshipAuditDetail", "AuditPartitionDetail", "RolePrivilege", "PrivilegeDepth"]);
 const XRM_TYPES = new Set(["Entity", "EntityCollection", "EntityReference", "OptionSetValue", "Money", "AliasedValue", "OrganizationResponse"]);
-const DYNAMICS_NS = "http://schemas.datacontract.org/2004/07/Microsoft.Dynamics.CRM"; // unverified: DataContract default for a Dynamics type
+const DYNAMICS_NS = "http://schemas.datacontract.org/2004/07/Microsoft.Dynamics.CRM"; // assumed DataContract default for a Dynamics type
 const namespaceOf = (name) => {
   if (CRM_TYPES.has(name) || name.endsWith("Response")) return NS.g;
   if (XRM_TYPES.has(name)) return NS.a;

@@ -1,5 +1,5 @@
-// /_sim/api/environment on the standalone host (sim-environment-routes.mjs, D11): definitions, local overrides that survive
-// a source reload, the secret reference rule, CSRF, and deployment profiles answered as unsupported. Invented data only.
+// /_sim/api/environment on the standalone host (sim-environment-routes.mjs): definitions, local overrides that survive
+// a source reload, the secret reference rule, CSRF, and deployment profiles answered as unsupported.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +31,7 @@ test('standalone environment routes edit local overrides and report deployment p
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [solution], projectRoot: root, port: 0, watch: false,
     stateFile: path.join(root, 'state.json'), dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   ownedFixture(t).add(() => sim.close());
-  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf };
+  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf };
   const variable = (name, method, body) => fetch(`${sim.url}/_sim/api/environment/variables/${name}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
 
   const listing = await json(await fetch(`${sim.url}/_sim/api/environment`));

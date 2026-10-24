@@ -91,7 +91,7 @@ test("a directory failure occurs after listener shutdown and cannot retain its p
   });
   try {
     await assert.rejects(hooks[0], (error) => error === failure);
-    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }));
+    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
     assert.ok((await fs.stat(root)).isDirectory());
   } finally {
     server.closeAllConnections();

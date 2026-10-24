@@ -1,5 +1,3 @@
-// Action vocabulary informed by Level Up for Dynamics 365 (MIT), reviewed at
-// rajyraman/Levelup-for-Dynamics-CRM@7cec0f8. Execution is Paqvilo's bounded contract.
 const table = { name: 'entity', label: 'Table logical name', type: 'table', required: true };
 const guid = { name: 'id', label: 'Record ID', type: 'guid', required: true };
 const definitions = [

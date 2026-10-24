@@ -1,5 +1,5 @@
 // Dataverse Web API write-value rules (dataverseWebApi) against the portal's coercion, which keeps its
-// lenient rules. Invented schema and GUIDs only.
+// lenient rules.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -164,7 +164,7 @@ test("multiselect takes a comma-separated string of option values", async () => 
   assert.equal(array.details.innerCode, "0x80048d19");
   const id = await create(t, { contoso_name: "Tags", contoso_tags: "10,20" });
   assert.equal((await t.send("GET", `${rowPath(id)}?$select=contoso_tags`)).body.contoso_tags, "10,20");
-  // A repeated option is stored once, in first-seen order (native values.pqwp_choices.4).
+  // A repeated option is stored once, in first-seen order (as native does).
   const repeated = await create(t, { contoso_name: "Tags", contoso_tags: "20,10,20" });
   assert.equal((await t.send("GET", `${rowPath(repeated)}?$select=contoso_tags`)).body.contoso_tags, "20,10");
   const patch = await failure(t.send("PATCH", rowPath(id), { contoso_tags: "" }));
@@ -175,7 +175,7 @@ test("multiselect takes a comma-separated string of option values", async () => 
 
 test("a plain picklist accepts -1 on create and patch; state and option validation still apply", async () => {
   const t = await setup();
-  // observed: Dataverse accepts -1 on a plain picklist and reads it back (parity case family values.choice).
+  // Dataverse accepts -1 on a plain picklist and reads it back.
   const id = await create(t, { contoso_name: "Choice", contoso_priority: -1 });
   assert.equal((await t.send("GET", `${rowPath(id)}?$select=contoso_priority`)).body.contoso_priority, -1);
   assert.equal((await t.send("PATCH", rowPath(id), { contoso_priority: -1 })).status, 204);

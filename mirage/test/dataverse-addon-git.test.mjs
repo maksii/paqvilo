@@ -1,5 +1,5 @@
-// Git source control messages (lib/dataverse-addon-git.mjs) over the Web API. Invented schema (new_samplesolution, contoso
-// organization), loopback servers only, and a temporary directory as the Git remote (no network, no git binary).
+// Git source control messages (lib/dataverse-addon-git.mjs) over the Web API, with a temporary directory as the Git remote
+// (no git binary).
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";

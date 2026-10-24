@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { compileForm } from '../lib/model-driven/solution.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 
-// An invented form: x_name in the body, x_status in the header; the table also has x_secret and its primary id.
+// A form: x_name in the body, x_status in the header; the table also has x_secret and its primary id.
 const fields = { x_itemid: { name: 'x_itemid', type: 'text', isPrimaryId: true }, x_name: { name: 'x_name', type: 'text' }, x_status: { name: 'x_status', type: 'number', options: [{ value: 1, label: 'Open' }] }, x_secret: { name: 'x_secret', type: 'text' } };
 const xml = '<form><header><rows><row><cell><control id="header_x_status" datafieldname="x_status"/></cell></row></rows></header><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="x_name" datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>';
 

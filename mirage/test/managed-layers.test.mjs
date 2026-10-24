@@ -1,5 +1,5 @@
-// Managed layer stacks (Learn power-platform/alm/solution-layers-alm, update-solutions#overwrite-customizations-option).
-import test from 'node:test';
+// Managed layer stacks and the overwrite customizations option.
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
@@ -15,13 +15,13 @@ const tableBody = (schema) => ({ '@odata.type': '#Microsoft.Dynamics.CRM.EntityM
   Description: label(''), OwnershipType: 'OrganizationOwned', IsActivity: false, HasActivities: false, HasNotes: false, Attributes: [column('fx_Name', { IsPrimaryName: true, MaxLength: 100 })] });
 
 let counter = 0;
-async function server(t) {
+async function server(owner) {
   const variable = `PAQ_LAYER_SECRET_${process.pid}_${++counter}`; process.env[variable] = 'invented-secret';
   const store = await new DataStore({ state: emptyState() }).init();
   const settings = dataverseSettings({ enabled: true, tds: { enabled: false }, applications: [{ appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] }] });
   const captured = {};
   const api = await startDataverseApi({ store, settings, extensions: [...EXTENSIONS, { name: 'capture', install(value) { captured.api = value; } }], log: () => {} });
-  t.after(async () => { delete process.env[variable]; await api.close(); });
+  owner.after(async () => { delete process.env[variable]; await api.close(); });
   const token = (await (await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: APP, client_secret: 'invented-secret', scope: `${api.origin}/.default` }) })).json()).access_token;
   const request = async (method, path, body, headers = {}) => {
@@ -34,8 +34,11 @@ async function server(t) {
 }
 
 // fx_base (managed) brings fx_widget with fx_code MaxLength 20; fx_ext is the same archive renamed with MaxLength 200.
-async function archives(t) {
-  const src = await server(t);
+// Both are exported once per file; each test imports them into its own organization.
+let base, ext;
+before(async () => {
+  const closers = [];
+  const src = await server({ after: (fn) => closers.push(fn) });
   const publisher = await src.request('POST', '/publishers', { uniquename: 'fx_pub', friendlyname: 'Fx', customizationprefix: 'fx', customizationoptionvalueprefix: 10000 });
   assert.equal(publisher.status, 204);
   const pub = (await src.request('GET', "/publishers?$select=publisherid&$filter=uniquename eq 'fx_pub'")).json.value[0].publisherid;
@@ -43,12 +46,12 @@ async function archives(t) {
   const H = { 'MSCRM.SolutionUniqueName': 'fx_base' };
   assert.equal((await src.request('POST', '/EntityDefinitions', tableBody('fx_widget'), H)).status, 204);
   assert.equal((await src.request('POST', "/EntityDefinitions(LogicalName='fx_widget')/Attributes", column('fx_Code', { MaxLength: 20 }), H)).status, 204);
-  const base = Buffer.from((await src.request('POST', '/ExportSolution', { SolutionName: 'fx_base', Managed: true })).json.ExportSolutionFile, 'base64');
-  const ext = zipOf(readSolutionZip(base).map((entry) => ({ name: entry.name, data: Buffer.from(entry.xml != null
+  base = Buffer.from((await src.request('POST', '/ExportSolution', { SolutionName: 'fx_base', Managed: true })).json.ExportSolutionFile, 'base64');
+  ext = zipOf(readSolutionZip(base).map((entry) => ({ name: entry.name, data: Buffer.from(entry.xml != null
     ? entry.xml.replace(/<UniqueName>fx_base<\/UniqueName>/g, '<UniqueName>fx_ext</UniqueName>').replace(/(<attribute PhysicalName="fx_Code">[\s\S]*?<MaxLength>)20(<\/MaxLength>)/i, '$1200$2')
     : entry.read()) })));
-  return { base, ext };
-}
+  for (const close of closers) await close();
+});
 
 const importZip = (dst, zip, overwrite = false) => dst.request('POST', '/ImportSolution', { CustomizationFile: zip.toString('base64'), OverwriteUnmanagedCustomizations: overwrite });
 const maxLength = async (dst) => (await dst.request('GET', "/EntityDefinitions(LogicalName='fx_widget')/Attributes(LogicalName='fx_code')/Microsoft.Dynamics.CRM.StringAttributeMetadata?$select=MaxLength")).json.MaxLength;
@@ -63,7 +66,6 @@ async function uninstall(dst, name) {
 }
 
 test('uninstalling an upper managed layer restores the lower managed definition', async (t) => {
-  const { base, ext } = await archives(t);
   const dst = await server(t);
   assert.equal((await importZip(dst, base)).status, 204);
   assert.equal((await importZip(dst, ext, true)).status, 204);
@@ -75,7 +77,6 @@ test('uninstalling an upper managed layer restores the lower managed definition'
 });
 
 test('a second managed layer becomes active without OverwriteUnmanagedCustomizations when no unmanaged layer is on top', async (t) => {
-  const { base, ext } = await archives(t);
   const dst = await server(t);
   await importZip(dst, base);
   assert.equal((await importZip(dst, ext, false)).status, 204);
@@ -83,7 +84,6 @@ test('a second managed layer becomes active without OverwriteUnmanagedCustomizat
 });
 
 test('an unmanaged customization stays on top across a managed import without overwrite and is replaced with overwrite', async (t) => {
-  const { base, ext } = await archives(t);
   const dst = await server(t);
   await importZip(dst, base);
   const id = (await dst.request('GET', "/EntityDefinitions(LogicalName='fx_widget')/Attributes(LogicalName='fx_code')?$select=MetadataId")).json.MetadataId;
@@ -100,7 +100,6 @@ test('an unmanaged customization stays on top across a managed import without ov
 });
 
 test('a legacy single-entry managed layer reads as a one-entry stack and still uninstalls', async (t) => {
-  const { base } = await archives(t);
   const dst = await server(t);
   await importZip(dst, base);
   const solutionid = dst.store.state.tables.solution.find((s) => s.uniquename === 'fx_base').solutionid;
@@ -116,12 +115,10 @@ test('a legacy single-entry managed layer reads as a one-entry stack and still u
   assert.equal(Object.values(dst.store.state.dataverse.managedLayers ?? {}).length, 0);
 });
 
-// A Solution role carried by two managed solutions: uninstalling the upper one restores the lower one's privileges (Learn
-// solution-layers-alm: "If you uninstall a managed solution, the managed solution below it takes effect"); the last
-// layer removes the role row and its grants.
+// A Solution role carried by two managed solutions: uninstalling the upper one restores the lower one's privileges (the
+// managed solution below takes effect); the last layer removes the role row and its grants.
 test('uninstalling the upper managed layer of a Solution role restores the lower privileges; the last removes the role', async (t) => {
   const ROLE = '77777777-7777-4777-8777-777777777781';
-  const { base } = await archives(t);
   const withRole = (unique, privileges) => zipOf([...readSolutionZip(base).map((entry) => ({ name: entry.name, data: Buffer.from(entry.xml != null
     ? entry.xml.replace(/<UniqueName>fx_base<\/UniqueName>/g, `<UniqueName>${unique}</UniqueName>`) : entry.read()) })),
   { name: 'Roles/Fx Clerk.xml', data: Buffer.from(`<Role id="{${ROLE}}" name="Fx Clerk"><RolePrivileges>${privileges.map((name) => `<RolePrivilege name="${name}" level="Global" />`).join('')}</RolePrivileges></Role>`) }]);
@@ -142,7 +139,6 @@ test('uninstalling the upper managed layer of a Solution role restores the lower
 // associations, and the role with its user/team role associations.
 test('uninstalling Solution field security profile and role layers restores the lower layer, then removes them with their associations', async (t) => {
   const ROLE = '77777777-7777-4777-8777-777777777781', FSP = '77777777-7777-4777-8777-777777777782';
-  const { base } = await archives(t);
   const profile = (canupdate) => `<FieldSecurityProfiles><FieldSecurityProfile fieldsecurityprofileid="{${FSP}}" name="Fx Code Readers"><FieldPermissions><FieldPermission entityname="fx_widget" attributelogicalname="fx_code" canread="4" cancreate="0" canupdate="${canupdate}" /></FieldPermissions></FieldSecurityProfile></FieldSecurityProfiles>`;
   const variant = (unique, canupdate) => zipOf([...readSolutionZip(base).map((entry) => ({ name: entry.name, data: Buffer.from(entry.xml != null
     ? entry.xml.replace(/<UniqueName>fx_base<\/UniqueName>/g, `<UniqueName>${unique}</UniqueName>`).replace(/<\/ImportExportXml>\s*$/, (end) => /customizations\.xml$/i.test(entry.name) ? `${profile(canupdate)}${end}` : end)

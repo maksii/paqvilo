@@ -26,7 +26,7 @@ const HEADER_TRANSACTION_DESCRIPTOR = 0x0002;
 const PROC_ID_SWITCH = 0xffff;
 const SP_EXECUTESQL = 10;
 
-// Error number and text for a write statement; the spike report gives no number, so these are the PoC's values.
+// Error number and text for a write statement: no native number is documented, so both are guesses.
 export const READ_ONLY_ERROR = { number: 40000, message: "The request is read-only." };
 
 class Reader {

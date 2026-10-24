@@ -1,7 +1,6 @@
-// RC4a-01: Associate/Disassociate outside a plug-in run on the asynchronous drive (Learn use-webhooks: a synchronous web hook
-// runs inside its operation). A flow Relate/Unrelate rows action (with and without an organization) and a Web API $ref post a
+// Associate/Disassociate outside a plug-in run on the asynchronous drive (a synchronous web hook runs inside its
+// operation). A flow Relate/Unrelate rows action (with and without an organization) and a Web API $ref post a
 // synchronous web hook step in process, so timers keep running while the step waits and a receiver in this process answers.
-// Invented x_ tables, GUIDs and loopback endpoints.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

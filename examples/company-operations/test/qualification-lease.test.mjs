@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
 import { highRiskNativeConfigurations, equipmentLifecycleConfigurations } from '../portal-security/qualification-priority.mjs';
@@ -77,9 +78,10 @@ function fakeClient(plan, { failCommittedCreate = false } = {}) {
 }
 
 async function withJournal(callback) {
-  const base = path.resolve('examples/company-operations/.paqvilo/qualification-tests'); await mkdir(base, { recursive: true });
-  const directory = await mkdtemp(path.join(base, 'lease-'));
-  try { return await callback(path.join(directory, 'journal.json')); } finally { await rm(directory, { recursive: true, force: true }); }
+  // The lease refuses journals outside an ignored .paqvilo directory.
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'qualification-lease-')), state = path.join(directory, '.paqvilo');
+  await mkdir(state);
+  try { return await callback(path.join(state, 'journal.json')); } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
 test('priority pilots explicitly add six roleless-ancestor graphs without silently expanding the original grammar', () => {

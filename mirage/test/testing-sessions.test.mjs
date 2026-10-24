@@ -34,8 +34,8 @@ test('ten cookie-isolated visitors read and write through real portal handlers w
   {id:'read',run:async session=>{const response=await session.json('/_api/widgets?$select=widgetid,name');assert.equal(response.status,200);assert.deepEqual(response.body.value.map(row=>row.widgetid),[guid(Number(session.id.slice(-12))+100)]);return{actor:session.id,count:response.body.value.length};}},
   {id:'update',run:async session=>{const expected=guid(Number(session.id.slice(-12))+100),response=await session.json(`/_api/widgets(${expected})`,{method:'PATCH',body:{name:'Changed '+session.id}});assert.equal(response.status,204);return{actor:session.id,status:response.status};}}];
  const report=await runSessionMatrix({sessions,cases,concurrency:10});assert.equal(report.completed,30,JSON.stringify(report.results.filter(row=>row.state!=='completed')));assert.equal(report.failed,0);assert.equal(report.peakConcurrency,10);assert.deepEqual(report.results.slice(0,10).map(row=>row.sessionId),contacts.map(contact=>contact.contactid));
- const before=app.store.state.tables.widget;for(const [index,row]of before.entries())assert.equal(row.name,'Changed '+contacts[index].contactid);
- const denied=await sessions[0].json(`/_api/widgets(${guid(102)})`,{method:'PATCH',body:{name:'Cross visitor'}});assert.equal(denied.status,403);assert.equal(before[1].name,'Changed '+contacts[1].contactid);
+ assert.deepEqual(app.store.tableRows('widget').map(row=>row.name),contacts.map(contact=>'Changed '+contact.contactid));
+ const denied=await sessions[0].json(`/_api/widgets(${guid(102)})`,{method:'PATCH',body:{name:'Cross visitor'}});assert.equal(denied.status,403);assert.equal(app.store.tableRows('widget')[1].name,'Changed '+contacts[1].contactid);
  const description=await sessions[0].session();assert.equal(description.contactId,contacts[0].contactid);assert.equal(Object.hasOwn(description,'cookie'),false);assert.doesNotMatch(JSON.stringify(sessions[0]),/cookie|csrf/);
  const readEvidence=await sessions[1].json('/_api/widgets?$select=widgetid');assert.ok(readEvidence.traceId);
  const audit=await runtime.audit({correlationId:readEvidence.traceId,contactId:contacts[1].contactid});assert.ok(audit.items.length);assert.ok(audit.items.every(item=>item.identity.contactId===contacts[1].contactid));
@@ -64,7 +64,7 @@ test('documented identity scopes preserve cookie precedence and configured fallb
   assert.equal(await actor(), contacts[0].contactid);
   const session = app.signIn(contacts[1].contactid);
   assert.equal(await actor({ cookie: session.cookieHeader }), contacts[1].contactid);
-  const signedOut = await fetch(`${app.url}/_sim/api/session/sign-out`, { method: 'POST', headers: { cookie: session.cookieHeader, 'x-sim-csrf': app.state().csrf, 'content-type': 'application/json' }, body: '{}' });
+  const signedOut = await fetch(`${app.url}/_sim/api/session/sign-out`, { method: 'POST', headers: { cookie: session.cookieHeader, 'x-sim-csrf': app.csrf, 'content-type': 'application/json' }, body: '{}' });
   assert.equal(signedOut.status, 200);
   assert.equal(await actor({ cookie: signedOut.headers.get('set-cookie').split(';', 1)[0] }), '');
   assert.equal(await actor(), contacts[0].contactid);

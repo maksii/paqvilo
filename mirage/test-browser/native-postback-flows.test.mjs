@@ -1,6 +1,6 @@
 // Browser flows over the default WebForms postback: state actions, the attach-file control's
-// multipart post, rich text and auto-generated steps (invented loopback fixture, "sample" table).
-import test from 'node:test';
+// multipart post, rich text and auto-generated steps ("sample" table).
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -11,6 +11,10 @@ import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 
 const ID = '00000000-0000-4000-8000-000000000001';
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-postback-flows-'));
@@ -48,9 +52,8 @@ async function fixture(t) {
     settings: { permissionMode: 'permissive' },
     simulator: { componentSchemas: { entry: { entity: 'sample', fields: [fields[0]] }, stepped: { entity: 'sample', fields, layout: [tab('first', 'title'), tab('second', 'description')] }, attach: { entity: 'sample', fields: [fields[0]] } } },
   } });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => { await browser.close(); await app.close(); await fs.rm(root, { recursive: true, force: true }); });
   const context = await browser.newContext();
+  t.after(async () => { await context.close(); await app.close(); await fs.rm(root, { recursive: true, force: true }); });
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage(), errors = [], posts = [];
   page.on('pageerror', error => errors.push(error.message));

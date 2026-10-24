@@ -1,4 +1,4 @@
-// Calendar lists: markup shell, language table and the event feed (invented account rows).
+// Calendar lists: markup shell, language table and the event feed.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

@@ -278,8 +278,7 @@ async function walkFiles(dir, accept = () => true, failures = []) {
   return files.sort(compare);
 }
 
-// ---------------------------------------------------------------------------
-// Parsing (pure; results are JSON-serializable and cached per file)
+// ---- Parsing (pure; results are JSON-serializable and cached per file)
 
 // <Descriptions><Description description=".." languagecode=".."/></Descriptions> keyed by LCID.
 function descriptionsOf(node) {
@@ -682,8 +681,7 @@ export function parseSchemaDocument(text, info = {}) {
   return facts;
 }
 
-// ---------------------------------------------------------------------------
-// ZIP (in memory; no archive path is written to disk)
+// ---- ZIP (in memory; no archive path is written to disk)
 
 export function readSolutionZip(buffer) {
   if (buffer.length > 256 * 1024 * 1024) throw new Error("Solution archive exceeds the 256 MiB limit.");
@@ -748,8 +746,7 @@ export function readSolutionZip(buffer) {
   return documents;
 }
 
-// ---------------------------------------------------------------------------
-// Scan: inputs -> layers -> parsed schema documents (cached)
+// ---- Scan: inputs -> layers -> parsed schema documents (cached)
 
 /**
  * Discover and parse the schema-relevant files of the selected solution roots.
@@ -1056,8 +1053,7 @@ export function orderSolutionLayers(layers, { order = "explicit", diagnostics = 
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Merge layers into one schema
+// ---- Merge layers into one schema
 
 // Documented columns read by portal code (Microsoft Dataverse table reference pages).
 const ENVIRONMENT_TABLE_COLUMNS = {

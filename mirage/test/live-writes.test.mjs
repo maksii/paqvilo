@@ -6,9 +6,8 @@ import os from "node:os";
 import { LiveBridge } from "../lib/live.mjs";
 import { createSimulator } from "../server.mjs";
 
-// Live writes are impossible unless the runtime was started with --allow-live-writes
-// (independent review docs/runtime-evidence.md, M1). Every live write (portal
-// routes in live page mode, /_api in live data mode, native form saves and subgrid actions)
+// Live writes are impossible unless the runtime was started with --allow-live-writes.
+// Every live write (portal routes in live page mode, /_api in live data mode, native form saves and subgrid actions)
 // goes through LiveBridge.request, which refuses writes without the runtime permission.
 
 const origin = "https://portal.example.test";

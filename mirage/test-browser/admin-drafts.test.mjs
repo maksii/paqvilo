@@ -1,6 +1,6 @@
 // Unsaved admin form input must survive asynchronous re-renders (lazy contact loading,
-// workspace refreshes). Uses a disposable loopback simulator; no portal requests.
-import test from "node:test";
+// workspace refreshes).
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,6 +8,10 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-admin-drafts-"));
@@ -29,13 +33,12 @@ async function fixture(t) {
       simulator: { mode: "local", pageMode: "local", identity: { roles: [] }, live: {}, endpoints: [] },
     },
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  const context = await browser.newContext({ serviceWorkers: "block" });
   t.after(async () => {
-    await browser.close();
+    await context.close();
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });
   });
-  const context = await browser.newContext({ serviceWorkers: "block" });
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors = [];

@@ -1,5 +1,5 @@
 // The canvas host language is the staff user's UI language (usersettings uilanguageid, else the organization's base
-// language), so Language() and Value/Decimal/Float without a tag follow it (RC4a-11). Invented organization only.
+// language), so Language() and Value/Decimal/Float without a tag follow it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';

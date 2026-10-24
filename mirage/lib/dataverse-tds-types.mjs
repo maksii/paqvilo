@@ -102,7 +102,7 @@ export function decodeRow(columns, buffer, offset = 0) {
   return { values, next: p };
 }
 
-// ---- column descriptors ----
+// ---- column descriptors
 
 function describe(columns, values) {
   if (columns.length !== values.length) throw new RangeError(`expected ${columns.length} values, got ${values.length}`);
@@ -181,7 +181,7 @@ function parseTypeInfo(b, o) {
   return { d, next };
 }
 
-// ---- values ----
+// ---- values
 
 const isNull = (v) => v === null || v === undefined;
 
@@ -364,7 +364,7 @@ function decodeNvarchar(d, b, o) {
   return { value: body.toString('utf16le'), next: p + 4 };
 }
 
-// ---- helpers ----
+// ---- helpers
 
 // Parses a decimal string into an unscaled BigInt with `scale` fraction digits.
 function parseDecimal(v, scale) {

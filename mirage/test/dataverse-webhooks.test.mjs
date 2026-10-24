@@ -1,7 +1,7 @@
-// Web hooks (P6): a step whose eventhandler is a contract 8 service endpoint POSTs the RemoteExecutionContext to a loopback URL.
-// The shared receiver is a separate test process; one test uses a receiver in the test's own process, which the asynchronous
-// pipeline (store.create) awaits. Invented contoso_widget table, invented step names and loopback endpoints only.
-import { describe, it, afterEach, mock } from 'node:test';
+// Web hooks: a step whose eventhandler is a contract 8 service endpoint POSTs the RemoteExecutionContext to a loopback URL.
+// The shared receiver is a separate test process (one per file; each test posts under its own path prefix and reads only its
+// own entries); one test uses a receiver in the test's own process, which the asynchronous pipeline (store.create) awaits.
+import { describe, it, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import childProcess from 'node:child_process';
@@ -16,17 +16,18 @@ import { install as installRegistration, overlayRegisteredSteps } from '../lib/d
 import { isLoopbackUrl, loopbackFetch, serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { createLocalMessageBus } from '../lib/message-bus.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
+import { createCounters } from '../lib/runtime-counters.mjs';
 import { pluginCatalogue, pluginPhaseRequiresCheckpoint, pluginStepMatchesEntity, runPluginPhase } from '../lib/exported-plugins.mjs';
 
 const WIDGET = 'bbbbbbbb-0000-4000-8000-000000000021';
 const ENDPOINT = 'cccccccc-0000-4000-8000-000000000021';
 const STEP = 'dddddddd-0000-4000-8000-000000000021';
 const KEY = 'invented-key-7f3a';
-// Learn's 27 RemoteExecutionContext properties, in the order of the documented sample.
+// The 27 documented RemoteExecutionContext properties, in the order of the documented sample.
 const PROPERTIES = ['BusinessUnitId', 'CorrelationId', 'Depth', 'InitiatingUserId', 'InputParameters', 'IsExecutingOffline', 'IsInTransaction', 'IsOfflinePlayback', 'IsolationMode', 'MessageName', 'Mode', 'OperationCreatedOn', 'OperationId', 'OrganizationId', 'OrganizationName', 'OutputParameters', 'OwningExtension', 'ParentContext', 'PostEntityImages', 'PreEntityImages', 'PrimaryEntityId', 'PrimaryEntityName', 'RequestId', 'SecondaryEntityName', 'SharedVariables', 'Stage', 'UserId'];
 
-// The receiver runs as its own Node process. /status/<code> answers that code; /flaky answers 503 once and then 200.
-// /__log returns what it received (not itself recorded).
+// The receiver runs as its own Node process. A path ending /status/<code> answers that code; one ending /flaky answers 503 once
+// and then 200. /__log returns what it received (not itself recorded).
 const RECEIVER = `
 import { createServer } from 'node:http';
 const log = [];
@@ -39,7 +40,7 @@ const server = createServer((req, res) => {
     const text = Buffer.concat(chunks).toString('utf8');
     const earlier = log.filter((entry) => entry.path === url.pathname).length;
     log.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers, body: text ? JSON.parse(text) : null });
-    const status = url.pathname === '/flaky' ? (earlier === 0 ? 503 : 200) : Number(url.pathname.split('/').at(-1));
+    const status = url.pathname.endsWith('/flaky') ? (earlier === 0 ? 503 : 200) : Number(url.pathname.split('/').at(-1));
     res.writeHead(status); res.end('{"ignored":true}');
   });
 });
@@ -58,7 +59,7 @@ async function startReceiver() {
   });
   return {
     origin: `http://127.0.0.1:${port}`,
-    log: async () => (await fetch(`http://127.0.0.1:${port}/__log`)).json(),
+    log: async (prefix) => (await (await fetch(`http://127.0.0.1:${port}/__log`)).json()).filter((entry) => entry.path.startsWith(`${prefix}/`)),
     async stop() { child.kill(); await fs.rm(dir, { recursive: true, force: true }); },
   };
 }
@@ -101,6 +102,13 @@ async function world({ mode = 0, delivery = webhookDelivery } = {}) {
   return { store, api, runner, diagnostics, endpoint, close: async () => { await runner.close(); await api.close(); } };
 }
 
+let receiver;
+before(async () => { receiver = await startReceiver(); });
+after(() => receiver?.stop());
+let routes = 0;
+// A path prefix of the shared receiver that no other test uses.
+const route = () => `/t${++routes}`;
+
 const create = (store, name = 'alpha') => store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: name }, { admin: true });
 const rowsOf = (store) => store.tableRows('contoso_widget');
 
@@ -113,21 +121,20 @@ describe('loopback guard (shared with TriggerServiceEndpointCheck)', () => {
 
 describe('synchronous web hooks', () => {
   let session;
-  let receiver;
-  afterEach(async () => { mock.restoreAll(); await session?.close(); await receiver?.stop(); session = receiver = null; });
+  afterEach(async () => { mock.restoreAll(); await session?.close(); session = null; });
 
   it('posts the documented RemoteExecutionContext with the header authentication, and its 200 lets the create commit', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world();
     await session.endpoint({
-      url: `${receiver.origin}/status/200`, authtype: 5,
+      url: `${receiver.origin}${at}/status/200`, authtype: 5,
       authvalue: `<settings><setting name="x-contoso-key" value="${KEY}" /></settings>`,
     });
     await create(session.store);
     assert.equal(rowsOf(session.store).length, 1, 'the create committed');
-    const [entry] = await receiver.log();
+    const [entry] = await receiver.log(at);
     assert.equal(entry.method, 'POST');
-    assert.equal(entry.path, '/status/200');
+    assert.equal(entry.path, `${at}/status/200`);
     assert.equal(entry.headers['x-contoso-key'], KEY);
     assert.equal(entry.headers['content-type'], 'application/json');
     assert.equal(entry.headers['x-ms-dynamics-entity-name'], 'contoso_widget');
@@ -146,38 +153,38 @@ describe('synchronous web hooks', () => {
   });
 
   it('sends a WebhookKey as the code query string', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world();
-    await session.endpoint({ url: `${receiver.origin}/status/200`, authtype: 4, authvalue: KEY });
+    await session.endpoint({ url: `${receiver.origin}${at}/status/200`, authtype: 4, authvalue: KEY });
     await create(session.store);
-    const [entry] = await receiver.log();
+    const [entry] = await receiver.log(at);
     assert.equal(entry.query.code, KEY);
   });
 
   it('a 500 fails the create with the endpoint fault and rolls it back', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world();
-    await session.endpoint({ url: `${receiver.origin}/status/500` });
+    await session.endpoint({ url: `${receiver.origin}${at}/status/500` });
     await assert.rejects(create(session.store), (error) => error.status === 400 && error.message === 'Endpoint unavailable' && error.details?.innerCode === '0x80040265');
     assert.equal(rowsOf(session.store).length, 0, 'the create rolled back');
-    assert.equal((await receiver.log()).length, 1, 'the endpoint was called once');
+    assert.equal((await receiver.log(at)).length, 1, 'the endpoint was called once');
   });
 
   it('retries a 503 once, as Learn documents, and the second answer decides', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world();
-    await session.endpoint({ url: `${receiver.origin}/flaky` });
+    await session.endpoint({ url: `${receiver.origin}${at}/flaky` });
     await create(session.store);
     assert.equal(rowsOf(session.store).length, 1);
-    assert.equal((await receiver.log()).length, 2);
+    assert.equal((await receiver.log(at)).length, 2);
   });
 
   it('a payload over 256 KB drops ParentContext, InputParameters, PreEntityImages and PostEntityImages and says so in a header', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world();
-    await session.endpoint({ url: `${receiver.origin}/status/200` });
+    await session.endpoint({ url: `${receiver.origin}${at}/status/200` });
     await create(session.store, 'x'.repeat(300 * 1024));
-    const [entry] = await receiver.log();
+    const [entry] = await receiver.log(at);
     assert.equal(entry.headers['x-ms-dynamics-msg-size-exceeded'] !== undefined, true);
     for (const removed of ['ParentContext', 'InputParameters', 'PreEntityImages', 'PostEntityImages']) assert.equal(Object.hasOwn(entry.body, removed), false, removed);
     assert.equal(entry.body.MessageName, 'Create');
@@ -187,6 +194,7 @@ describe('synchronous web hooks', () => {
     session = await world();
     const secret = 'invented-authvalue-9d2c';
     await session.endpoint({ url: 'https://hooks.contoso.invalid/hook?code=invented-query-secret', authtype: 4, authvalue: secret });
+    session.store.counters = createCounters();
     const fetchSpy = mock.method(globalThis, 'fetch');
     await create(session.store);
     assert.equal(rowsOf(session.store).length, 1, 'the create committed');
@@ -197,10 +205,7 @@ describe('synchronous web hooks', () => {
     assert.equal(diagnostic.host, 'hooks.contoso.invalid');
     // An uncontacted step never counts or reports as delivered.
     assert.doesNotMatch(diagnostic.message, /treated as delivered/);
-    if (session.store.counters) {
-      assert.equal(session.store.counters.snapshot()['webhooks.delivered'] ?? 0, 0);
-      assert.equal(session.store.counters.snapshot()['webhooks.notContacted'], 1);
-    }
+    assert.deepEqual(session.store.counters.snapshot(), { 'webhooks.notContacted': 1 });
     const text = JSON.stringify(session.diagnostics);
     assert.equal(text.includes(secret), false, 'the authvalue is in no diagnostic');
     assert.equal(text.includes('invented-query-secret'), false, 'the URL path and query are in no diagnostic');
@@ -234,17 +239,16 @@ describe('synchronous web hooks', () => {
 
 describe('asynchronous web hooks', () => {
   let session;
-  let receiver;
-  afterEach(async () => { mock.restoreAll(); await session?.close(); await receiver?.stop(); session = receiver = null; });
+  afterEach(async () => { mock.restoreAll(); await session?.close(); session = null; });
 
   it('is delivered after commit and its asyncoperation row ends Succeeded', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world({ mode: 1 });
-    await session.endpoint({ url: `${receiver.origin}/status/200`, authtype: 5, authvalue: `<settings><setting name="x-contoso-key" value="${KEY}" /></settings>` });
+    await session.endpoint({ url: `${receiver.origin}${at}/status/200`, authtype: 5, authvalue: `<settings><setting name="x-contoso-key" value="${KEY}" /></settings>` });
     await create(session.store);
     await session.runner.drain();
     assert.equal(rowsOf(session.store).length, 1);
-    const [entry] = await receiver.log();
+    const [entry] = await receiver.log(at);
     assert.equal(entry.body.PrimaryEntityId, WIDGET);
     assert.equal(entry.body.Mode, 1);
     assert.equal(entry.headers['x-contoso-key'], KEY);
@@ -255,9 +259,9 @@ describe('asynchronous web hooks', () => {
   });
 
   it('a 500 ends the System Job Failed with the fault code and its message', async () => {
-    receiver = await startReceiver();
+    const at = route();
     session = await world({ mode: 1 });
-    await session.endpoint({ url: `${receiver.origin}/status/500` });
+    await session.endpoint({ url: `${receiver.origin}${at}/status/500` });
     await create(session.store);
     await session.runner.drain();
     assert.equal(rowsOf(session.store).length, 1, 'the create is not rolled back');
@@ -267,8 +271,8 @@ describe('asynchronous web hooks', () => {
     assert.equal(Number.isInteger(job.errorcode), true);
   });
 
-  // Changed: an uncontacted endpoint no longer ends Succeeded (30), which reported a delivery that never happened; the job is
-  // Canceled (32), as for an endpoint contract the simulator does not deliver.
+  // An uncontacted endpoint ends Canceled (32), as for an endpoint contract the simulator does not deliver; Succeeded (30)
+  // would report a delivery that never happened.
   it('a non-loopback URL is never contacted and its job is Canceled, with the not-contacted diagnostic', async () => {
     session = await world({ mode: 1 });
     await session.endpoint({ url: 'https://hooks.contoso.invalid/hook' });
@@ -298,10 +302,7 @@ describe('asynchronous web hooks', () => {
   });
 });
 
-describe('TriggerServiceEndpointCheck still probes loopback endpoints only', () => {
-  let receiver;
-  afterEach(async () => { await receiver?.stop(); receiver = null; });
-
+describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
   function action() {
     const ops = [];
     installRegistration({ store: new DataStore({ state: emptyState() }), recordHooks: { add() {} }, registry: { register: (op) => ops.push(op) }, principals: {}, settings: {} });
@@ -310,15 +311,15 @@ describe('TriggerServiceEndpointCheck still probes loopback endpoints only', () 
   const probe = (row) => action().handle({ target: { id: 'row', row }, body: {}, user: { systemuserid: 'x' } });
 
   it('answers 204 for a loopback contract 8 endpoint that accepts the probe, and refuses the others', async () => {
-    receiver = await startReceiver();
-    assert.deepEqual(await probe({ contract: 8, url: `${receiver.origin}/status/200` }), { status: 204 });
+    const at = route();
+    assert.deepEqual(await probe({ contract: 8, url: `${receiver.origin}${at}/status/200` }), { status: 204 });
     await assert.rejects(probe({ contract: 8, url: 'https://hooks.contoso.invalid/hook' }), (error) => error.status === 400);
-    await assert.rejects(probe({ contract: 2, url: `${receiver.origin}/status/200` }), (error) => error.status === 400);
-    assert.equal((await receiver.log()).length, 1, 'only the loopback probe reached the receiver');
+    await assert.rejects(probe({ contract: 2, url: `${receiver.origin}${at}/status/200` }), (error) => error.status === 400);
+    assert.equal((await receiver.log(at)).length, 1, 'only the loopback probe reached the receiver');
   });
 });
 
-describe('loopback guard by address (R1 F7)', () => {
+describe('loopback guard by resolved address', () => {
   afterEach(() => mock.restoreAll());
 
   it('refuses a *.localhost name that resolves to a routable address, without a connection', async () => {
@@ -334,7 +335,7 @@ describe('loopback guard by address (R1 F7)', () => {
   });
 });
 
-describe('service endpoint bus steps (R1 F15)', () => {
+describe('service endpoint bus steps', () => {
   let session;
   afterEach(async () => { await session?.close(); session = null; });
 

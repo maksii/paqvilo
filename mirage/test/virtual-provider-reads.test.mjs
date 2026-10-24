@@ -1,6 +1,6 @@
-// Virtual table reads (Task 28): collection and single Web API reads call the provider's retrieveMultiple/retrieve with the
+// Virtual table reads: collection and single Web API reads call the provider's retrieveMultiple/retrieve with the
 // documented request shape and answer through the shared read path; a providerless virtual table answers 501 unless it
-// declares fallback 'local'. Invented x_ schema and GUIDs only.
+// declares fallback 'local'.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION } from "../lib/dataverse-virtual-providers.mjs";
@@ -24,8 +24,7 @@ async function setup(t) {
     retrieveMultiple: async (request, ctx) => { calls.push(["retrieveMultiple", request, ctx.operation]); return rows; },
     retrieve: async (id) => { calls.push(["retrieve", id]); return rows.find((row) => row.x_extid === id) ?? null; },
   };
-  // A provider with the optional synchronous reads the SDK uses (Learn custom-ve-data-providers: Retrieve and RetrieveMultiple
-  // are served by the provider).
+  // A provider with the optional synchronous reads the SDK uses (Retrieve and RetrieveMultiple are served by the provider).
   const syncRows = [{ x_syncid: A, x_name: "Sync alpha" }];
   const syncProvider = {
     retrieveSync: (ctx, id) => { calls.push(["retrieveSync", id, ctx.operation]); return syncRows.find((row) => row.x_syncid === id) ?? null; },

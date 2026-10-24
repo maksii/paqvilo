@@ -1,4 +1,4 @@
-// Task 70: contains() on an array compares values (exact numerics by value, strings and objects by value); on a string it
+// contains() on an array compares values (exact numerics by value, strings and objects by value); on a string it
 // finds a substring and on an object a key.
 import test from 'node:test';
 import assert from 'node:assert/strict';

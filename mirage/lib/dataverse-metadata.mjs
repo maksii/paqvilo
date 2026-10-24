@@ -1,8 +1,7 @@
 import {METADATA_ENTITY_SETS,METADATA_ENTITY_TYPE_CSDL,METADATA_ENTITY_SET_CSDL} from './dataverse-metadata-contracts.mjs';
 // Dataverse metadata for the simulated Web API: EntityDefinitions, Attributes, Keys,
 // RelationshipDefinitions and GlobalOptionSetDefinitions. A Solution schema table wins over the
-// store mapping of the same name; virtual tables are read-only fallbacks. Shapes follow
-// webapi-contract.md section 1 ($metadata CSDL) and section 8 (RetrieveMetadataChanges).
+// store mapping of the same name; virtual tables are read-only fallbacks.
 import { isDateOnlyField } from "./dataverse-values.mjs";
 import { createHash } from "node:crypto";
 import { attributeMetadata } from "./attribute-metadata.mjs";
@@ -53,25 +52,25 @@ const TYPES = {
 const COMPACT_TYPES = new Set(["file", "image", "virtual", "partylist", "managedproperty"]);
 // EntityFilters flags (RetrieveEntity): Default and Entity are 1, All is 15.
 const ENTITY_FILTERS = { default: 1, entity: 1, attributes: 2, privileges: 4, relationships: 8, all: 15 };
-// DeletedMetadataFilters flags (Web API enum: no Entity member, Default stands for entities; Microsoft Learn cache-schema-data).
+// DeletedMetadataFilters flags (Web API enum: no Entity member, Default stands for entities).
 const DELETED_FILTERS = { default: 1, attribute: 2, relationship: 4, label: 8, optionset: 16, all: 31 };
 // Deleted kinds in filter order: [DeletedMetadata key, filter bit, change-log kind].
 const DELETED_KINDS = [["Default", 1, "entity"], ["Attribute", 2, "attribute"], ["Relationship", 4, "relationship"], ["OptionSet", 16, "optionset"]];
 // SecurityPrivilegeMetadata.PrivilegeType by right; the rights of a table follow dataverse-security.mjs (organization-owned: no Assign or Share).
 const PRIVILEGE_TYPE = { Create: 1, Read: 2, Write: 3, Delete: 4, Assign: 5, Share: 6, Append: 7, AppendTo: 8 };
 const ORGANIZATION_RIGHTS = ["Create", "Read", "Write", "Delete", "Append", "AppendTo"];
-// Organization.ExpireSubscriptionsInDays, default 90 (Microsoft Learn cache-schema-data). The simulator does not read the org setting.
+// Organization.ExpireSubscriptionsInDays, default 90. The simulator does not read the org setting.
 const EXPIRE_DAYS = 90;
 const DAY_MS = 86400000;
 // ServerVersionStamp / ClientVersionStamp text: "<seq>!MM/dd/yyyy HH:mm:ss" (UTC).
 const STAMP = /^(\d+)!(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/;
 const CHANGE_TRACKING = "Org.OData.Capabilities.V1.ChangeTracking";
-// RelationshipMetadataBase properties (Microsoft Learn RelationshipMetadataBase EntityType, with MetadataBase's MetadataId and
-// HasChanged): what an uncast RelationshipDefinitions query returns.
+// RelationshipMetadataBase properties (with MetadataBase's MetadataId and HasChanged): what an uncast RelationshipDefinitions
+// query returns.
 const RELATIONSHIP_BASE = ["MetadataId", "HasChanged", "IntroducedVersion", "IsCustomizable", "IsCustomRelationship", "IsManaged", "IsValidForAdvancedFind", "RelationshipType", "SchemaName", "SecurityTypes"];
-// SecurityTypes (flags enum, Learn) by RelationshipBehavior. Native captures show exactly these pairs: 0 None, 1 Append, 2 ParentChild.
+// SecurityTypes (flags enum) by RelationshipBehavior. Native answers exactly these pairs: 0 None, 1 Append, 2 ParentChild.
 const RELATIONSHIP_SECURITY = ["None", "Append", "ParentChild"];
-// Native AssociatedMenuConfiguration of one relationship (unverified: a single live sample; Behavior and Order vary by relationship).
+// AssociatedMenuConfiguration as native returns it for one relationship; natively Behavior and Order vary by relationship.
 const associatedMenu = () => ({ Behavior: "DoNotDisplay", Group: "Details", Label: { LocalizedLabels: [], UserLocalizedLabel: null }, Order: null, AvailableOffline: true, Icon: null, IsCustomizable: false, MenuId: null, QueryApi: null, ViewId: "00000000-0000-0000-0000-000000000000" });
 // Shape keys a mapping's dataverseMetadata may not replace.
 const OVERRIDE_SKIP = new Set(["@odata.type", "MetadataId", "LogicalName", "EntityLogicalName", "AttributeType", "AttributeTypeName", "HasChanged", "IsAuditEnabled", "IsSecured"]);
@@ -102,7 +101,7 @@ const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1
 const own = (object, key) => (object && Object.hasOwn(object, key) ? object[key] : null);
 const listOf = (value) => (value == null ? [] : (Array.isArray(value) ? value : String(value).split(","))).map((item) => String(item).trim()).filter(Boolean);
 const castName = (cast) => String(cast).replace(/^#/, "").replace(/^Microsoft\.Dynamics\.CRM\./, "");
-// Casts accepted on Attributes: the AttributeMetadata derived EntityTypes of the captured CSDL (metadata.xml). The leaf types
+// Casts accepted on Attributes: the AttributeMetadata derived EntityTypes of the native CSDL. The leaf types
 // this module emits (TYPES stems) match by exact type; the Enum base matches its enum stems; the base matches every column.
 // Owner and Customer have no derived type in the CSDL (their columns are LookupAttributeMetadata), so casting to them is unknown.
 // ponytail: a stem added to TYPES is accepted here automatically; a CSDL type this module never emits matches no column.
@@ -170,13 +169,12 @@ function uuidV5(namespace, name) {
 /**
  * The MetadataId of a metadata component, the one id every caller uses: the metadata reader, solution membership
  * (solutioncomponent.objectid), AddSolutionComponent and the component messages, dependencies, managed layers and
- * import/export. Learn (AddSolutionComponentRequest.ComponentId): for solution components that derive from MetadataBase the
- * component id is the MetadataId. Entity `entity:<table>`, column `attribute:<table>:<column>`, key `key:<table>:<key>`,
+ * import/export (for solution components that derive from MetadataBase the component id is the MetadataId). Entity `entity:<table>`, column `attribute:<table>:<column>`, key `key:<table>:<key>`,
  * local choice `optionset:<table>:<column>`, global choice `optionset:<name>`, relationship `relationship:<schema name>`
  * in lower case (relationship schema names match case-insensitively).
  */
 export function metadataComponentId(organizationId, kind, logical, name = null) {
-  // Every part is lower case: logical names, key names and global choice names match case-insensitively (RC4a-17).
+  // Every part is lower case: logical names, key names and global choice names match case-insensitively.
   const parts = (kind === "relationship" ? [name ?? logical] : [logical, name]).filter((part) => part != null).map((part) => String(part).toLowerCase());
   return uuidV5(organizationId, `${kind}:${parts.join(":")}`).toLowerCase();
 }
@@ -532,7 +530,8 @@ const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" Incl
 
 // changeLog: the metadataLog array (or a function returning it), see the entry shape above. extraCsdl: CSDL text appended to $metadata
 // (the registry's csdlFragments()). clock: ms epoch; the seeded stamp (seq 0) is dated at creation, and expiry is measured from it.
-export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables, globalOptionSets, changeLog, extraCsdl, clock = () => Date.now() }) {
+// revision: optional key that changes whenever the tables may have changed; with it, $metadata is built once per revision.
+export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables, globalOptionSets, changeLog, extraCsdl, clock = () => Date.now(), revision }) {
   const read = (source) => (typeof source === "function" ? source() : source) ?? null;
   const schemaRoot = () => read(schema);
   const mappingRoot = () => read(mappings) ?? {};
@@ -557,7 +556,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const m = mapping ?? virtual?.mapping ?? null;
     if (!s && !m) return null;
     const std = standardTable(logical);
-    // Standard file (standard-tables-plan 3.1): Solution export > standard file > mapping. Its fields go under the Solution's.
+    // Standard file: Solution export > standard file > mapping. Its fields go under the Solution's.
     const def = standardTableDef(logical);
     const thin = { ...m?.fields, ...m?.fieldMetadata };
     for (const name of Object.keys(m?.fieldMetadata ?? {})) if (m?.fields?.[name] && typeof m.fields[name] === 'object')
@@ -623,19 +622,19 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       IsValidForAdvancedFind: true,
       IsPrivate: false,
       HasChanged: null,
-      // Labels the 1.9 writer stores are dataverseMetadata.labels = { DisplayName, DisplayCollectionName, Description } of lcid maps.
+      // Labels the table writer (dataverse-metadata-tables.mjs) stores are dataverseMetadata.labels = { DisplayName, DisplayCollectionName, Description } of lcid maps.
       DisplayName: labelBlock(src.s?.labels ?? src.def?.labels ?? dm.labels?.DisplayName, src.m?.label ?? capitalize(src.logical), lcid),
       DisplayCollectionName: labelBlock(src.s?.collectionLabels ?? src.def?.collectionLabels ?? dm.labels?.DisplayCollectionName, src.m?.collectionLabel ?? capitalize(src.entitySet), lcid),
       Description: labelBlock(dm.labels?.Description ?? null, null, lcid),
-      // Opt-in per table (Microsoft Learn use-change-tracking): the flag marks the entity set in $metadata when annotations=true.
+      // Opt-in per table: the flag marks the entity set in $metadata when annotations=true.
       ChangeTrackingEnabled: boolOf(src.s?.changeTrackingEnabled ?? src.m?.changeTrackingEnabled ?? false),
-      // Microsoft Learn optimistic-concurrency: enabled by default for custom tables. System-table support varies;
+      // Optimistic concurrency is enabled by default for custom tables. System-table support varies;
       // a supplied Solution/mapping fact wins and an unknown system table is not asserted enabled or disabled.
       IsOptimisticConcurrencyEnabled: src.s?.isOptimisticConcurrencyEnabled ?? src.m?.isOptimisticConcurrencyEnabled
         ?? (PREFIX.test(src.logical) && !src.isVirtual && !elastic ? true : null),
-      IsAuditEnabled: auditFlag(dm.IsAuditEnabled ?? false, true, "isauditenabled"), // unverified: table default when the mapping says nothing
+      IsAuditEnabled: auditFlag(dm.IsAuditEnabled ?? false, true, "isauditenabled"), // the default when the mapping says nothing is a guess
     };
-    // Elastic tables take no charts, duplicate detection or N:N relationships (Learn, create-edit-elastic-tables).
+    // Elastic tables take no charts, duplicate detection or N:N relationships.
     if (elastic) Object.assign(shape, { CanCreateCharts: false, IsDuplicateDetectionEnabled: false, CanManyToMany: false });
     const result = withOverrides(shape, dm);
     // EntityMetadata.IsManaged: true while a managed layer holds the table (dataverse-metadata-relationships.mjs projectManagedFlags).
@@ -661,7 +660,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       HasChanged: null,
       IsCustomAttribute: custom,
       IsCustomizable: { Value: true, CanBeChanged: custom, ManagedPropertyLogicalName: "iscustomizable" },
-      // unverified: defaults and logical names are not in Microsoft Learn (only the property types); native capture not yet taken for columns.
+      // The defaults and logical names below are guesses: only the property types are documented.
       IsRenameable: { Value: true, CanBeChanged: custom, ManagedPropertyLogicalName: "isrenameable" },
       IsSortableEnabled: { Value: false, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyissortablesettings" },
       IsGlobalFilterEnabled: { Value: false, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyglobalfiltersettings" },
@@ -686,7 +685,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       Object.assign(meta, {
         Format: isDateOnlyField(def) ? "DateOnly" : "DateAndTime",
         DateTimeBehavior: { Value: def.dateTimeBehavior ?? "UserLocal" },
-        // Custom, changeable columns only (Learn: CreatedOn/ModifiedOn report False). unverified: logical name.
+        // Custom, changeable columns only (CreatedOn/ModifiedOn report False). The logical name is a guess.
         CanChangeDateTimeBehavior: { Value: custom && !readOnly, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifydatetimebehavior" },
       });
     }
@@ -727,12 +726,12 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const custom = PREFIX.test(name);
     const dm = def.dataverseMetadata ?? {};
     if (def.managedLayer === true) meta.IsManaged = true; // a managed layer holds the column (projectManagedFlags)
-    // unverified: file default size and mapping keys (maxSizeInKB, canStoreFullImage, isPrimaryImage, globalOptionSet) are assumed, not documented.
+    // The file default size and mapping keys (maxSizeInKB, canStoreFullImage, isPrimaryImage, globalOptionSet) are guesses.
     if (type === "file") meta.MaxSizeInKB = facts.maxSizeInKB ?? null;
     if (type === "image") Object.assign(meta, { MaxSizeInKB: facts.maxSizeInKB ?? 10240, CanStoreFullImage: facts.canStoreFullImage ?? false, IsPrimaryImage: facts.isPrimaryImage ?? null });
     meta.IsSecured = boolOf(dm.IsSecured ?? facts.isSecured ?? meta.IsSecured ?? false);
     meta.IsAuditEnabled = { CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyauditsettings", ...meta.IsAuditEnabled, Value: boolOf(dm.IsAuditEnabled ?? meta.IsAuditEnabled?.Value ?? false) };
-    // Global binding: the mapping's globalOptionSet, or the 1.9 writer's columnMetadata.optionSet ({ isGlobal, name }).
+    // Global binding: the mapping's globalOptionSet, or the column writer's columnMetadata.optionSet ({ isGlobal, name }).
     const globalName = def.globalOptionSet ?? (facts.optionSet?.isGlobal ? facts.optionSet.name : null);
     if (globalName) meta.GlobalOptionSet = globalNamed(globalName);
     if (meta.GlobalOptionSet) meta.OptionSet = meta.GlobalOptionSet;
@@ -826,19 +825,19 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     return { ...labels, type: "1:N", schemaName, referencedEntity: logical, referencedAttribute: rel.from, referencingEntity: rel.entity, referencingAttribute: rel.to, referencedNav: nav, referencingNav: rel.partner ?? null, cascade: rel.cascade, hierarchical: rel.hierarchical === true };
   }
 
-  // unverified: relationship labels are not RelationshipMetadataBase properties in Microsoft Learn; they are carried as DisplayName/Description
+  // Relationship labels are not documented RelationshipMetadataBase properties; they are carried as DisplayName/Description
   // when the relationship writer stored them, and the uncast base projection leaves them out.
   const relationshipLabels = (r) => (r.displayLabels || r.descriptionLabels
     ? { DisplayName: labelBlock(r.displayLabels, null, lcid), Description: labelBlock(r.descriptionLabels, null, lcid) }
     : {});
 
-  // RelationshipMetadataBase members (Learn), as native returns them. Native IsCustomizable is { Value: true, CanBeChanged: true }
-  // on every relationship sampled, system and custom alike.
+  // RelationshipMetadataBase members, as native returns them. Native IsCustomizable is { Value: true, CanBeChanged: true }
+  // on system and custom relationships alike.
   function relationshipBaseOf(r, { custom, type, security }) {
     return {
       MetadataId: metadataIdOf("relationship", r.schemaName),
       HasChanged: null,
-      IntroducedVersion: r.introducedVersion ?? "1.0.0.0", // fallback unverified for definitions without an exported version
+      IntroducedVersion: r.introducedVersion ?? "1.0.0.0", // guessed fallback for definitions without an exported version
       IsCustomizable: { Value: r.isCustomizable ?? true, CanBeChanged: true, ManagedPropertyLogicalName: "iscustomizable" },
       IsCustomRelationship: r.isCustomRelationship ?? custom,
       IsManaged: r.isManaged ?? false,
@@ -873,7 +872,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       IsHierarchical: r.hierarchical === true,
       AssociatedMenuConfiguration: menuShape(r.associatedMenu),
       CascadeConfiguration: { Assign: cascade.assign ?? "NoCascade", Delete: cascade.delete ?? "RemoveLink", Archive: cascade.archive ?? "NoCascade", Merge: cascade.merge ?? "NoCascade", Reparent: cascade.reparent ?? "NoCascade", Share: cascade.share ?? "NoCascade", Unshare: cascade.unshare ?? "NoCascade", RollupView: cascade.rollupView ?? "NoCascade" },
-      DenormalizedAttributeName: null, // unverified: native null on the samples taken
+      DenormalizedAttributeName: null, // assumed always null natively
       EntityKey: null,
       IsDenormalizedLookup: null,
       IsRelationshipAttributeDenormalized: false,
@@ -935,7 +934,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
 
   // Solution global sets first, then the sets created through the Web API (state.dataverse.globalOptionSets) that the schema does not name.
   // Two stored shapes are read: the Web API one (Name, DisplayName, OptionSetType, Options [{ Value, Label }]) and the relationship/option-set
-  // writer's (name, displayLabels, descriptionLabels, type 'picklist', options [{ value, label, labels }]). // unverified: the writer's shape
+  // writer's (name, displayLabels, descriptionLabels, type 'picklist', options [{ value, label, labels }]).
   const storedSetOf = (set) => {
     const name = set.Name ?? set.name;
     const block = (value, fallback) => (value && typeof value === "object" ? value : labelBlock(null, value ?? fallback, lcid));
@@ -991,6 +990,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     return GUID.test(String(key)) && String(item.MetadataId).toLowerCase() === String(key).toLowerCase();
   };
 
+  let csdlCache = null;
   // $metadata: EDMX 4.0 from the same tables as the metadata shapes. Annotations are opt-in.
   function csdlDocument(annotations) {
     const names = logicalNames();
@@ -1160,7 +1160,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   // ClientVersionStamp -> the sequence it names. Expired (0x80044352): before the log start, after the server's sequence, or older than EXPIRE_DAYS.
   function sinceOf(text) {
     const m = STAMP.exec(String(text ?? "").trim());
-    if (!m) throw new DataError("ClientVersionStamp is not a version stamp.", 400, "InvalidRequest"); // unverified: message
+    if (!m) throw new DataError("ClientVersionStamp is not a version stamp.", 400, "InvalidRequest");
     const [, seqText, mo, d, y, h, mi, s] = m;
     const at = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
     const seqs = logOf().map((e) => e.seq);
@@ -1309,7 +1309,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     },
 
     // RetrieveEntity(EntityFilters=@f,LogicalName=@n,MetadataId=@m,RetrieveAsIfPublished=@r) → { EntityMetadata }; key is a name, Name= text or MetadataId.
-    // The filter bits pick the collections: Attributes (+ Keys), Relationships, Privileges (4). // unverified: Keys under the Attributes bit.
+    // The filter bits pick the collections: Attributes (+ Keys), Relationships, Privileges (4). Keys under the Attributes bit is a guess.
     retrieveEntityResponse(key, entityFilters, { labelLanguages } = {}) {
       const src = sourceFor(key);
       if (!src) return null;
@@ -1388,7 +1388,10 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     selectMetadata,
 
     csdl(_origin, { annotations = false } = {}) {
-      return csdlDocument(annotations);
+      if (!revision) return csdlDocument(annotations);
+      const key = `${revision()}|${annotations}|${read(extraCsdl) ?? ""}`;
+      if (csdlCache?.key !== key) csdlCache = { key, document: csdlDocument(annotations) };
+      return csdlCache.document;
     },
 
     // RetrieveMetadataChanges(Query=@q,ClientVersionStamp=@s,DeletedMetadataFilters=@d). No stamp: every table, all children (a full read).
@@ -1397,7 +1400,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       const serverVersionStamp = stampOf();
       const since = clientVersionStamp == null || String(clientVersionStamp) === "" ? null : sinceOf(clientVersionStamp);
       const index = changeIndex(since);
-      // Privileges come back whenever they are named, even for an unchanged table (Microsoft Learn retrieve-detect-changes-metadata).
+      // Privileges come back whenever they are named, even for an unchanged table.
       const wantsPrivileges = listOf(query?.Properties?.PropertyNames).includes("Privileges");
       // Mutable metadata is normalized once per request, never cached across schema updates.
       let relationships;

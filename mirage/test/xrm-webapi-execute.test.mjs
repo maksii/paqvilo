@@ -38,7 +38,7 @@ test('Xrm.WebApi.execute runs functions, custom API actions and CRUD through the
   assert.equal(whoAmI.ok, true); assert.equal(whoAmI.status, 200);
   assert.equal((await whoAmI.json()).UserId, uuidV5(sim.organization.organizationId, 'systemuser:SYSTEM'));
   const action = await xrm.execute(request({ boundParameter: null, parameterTypes: {}, operationType: 0, operationName: 'x_Echo' }));
-  assert.equal(action.ok, true); assert.ok([200, 204].includes(action.status));
+  assert.equal(action.ok, true); assert.equal(action.status, 204);
   const created = await xrm.execute(request({ boundParameter: null, parameterTypes: {}, operationType: 2, operationName: 'Create' }, { etn: 'x_item', payload: { x_name: 'Invented' } }));
   assert.equal(created.status, 204);
   const id = rows().find(row => row.x_name === 'Invented').x_itemid;
@@ -68,7 +68,7 @@ test('function parameters become aliases and executeMultiple runs a change set a
   assert.deepEqual(done.map(item => item.status), [204, 204]);
   assert.deepEqual(rows().map(row => row.x_name).sort(), ['First', 'Second']);
   // The second write exceeds the column length: the change set rolls back the first.
-  // Learn executeMultiple: the rejection carries the failing request's Dataverse error (code 0x80044331, its message).
+  // executeMultiple: the rejection carries the failing request's Dataverse error (code 0x80044331, its message).
   await assert.rejects(xrm.executeMultiple([[create('Third'), create('This name is far longer than twenty')]]),
     error => error.status === 400 && error.errorCode === 0x80044331 && /x_name/.test(error.message));
   assert.deepEqual(rows().map(row => row.x_name).sort(), ['First', 'Second']);

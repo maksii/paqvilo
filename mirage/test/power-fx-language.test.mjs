@@ -1,6 +1,6 @@
 // Power Fx language conformance for the core engine (lib/power-fx.mjs, lib/power-fx-functions.mjs): grammar, operators,
 // coercion, error values, date/time zone semantics on a fixed clock, and at least one case per function of the table (the
-// Learn example where the function's page gives one). The fixed clock is Learn's DateAdd/DateDiff example instant,
+// documented example where the function's page gives one). The fixed clock is the documented DateAdd/DateDiff example instant,
 // July 15, 2013 1:02 PM in Pacific Daylight Time.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,39 +10,39 @@ const NOW = Date.UTC(2013, 6, 15, 20, 2);
 const hostOf = (extra = {}) => ({ now: () => NOW, timeZone: 'America/Los_Angeles', variables: {}, context: {}, ...extra });
 const run = (formula, host = hostOf(), values = {}) => powerFxEngine.evaluateSync(formula, { host, values }).value;
 
-// [formula, expected]: Learn examples are marked by the page they come from.
+// [formula, expected]: documented examples are marked by the page they come from.
 const CASES = [
-  // Grammar and operators (Learn "Operators and Identifiers", "Expression grammar")
+  // Grammar and operators ("Operators and Identifiers", "Expression grammar")
   ['1 + 2 * 3', 7], ['-2^2', -4], ['2^3^2', 64], ['20%', 0.2], ['"a" & 1 & true', 'a1true'], ['0.1 + 0.2', 0.3],
   ['"The ""quoted"" text"', 'The "quoted" text'], ['$"Sum: {1 + 2} {{x}}"', 'Sum: 3 {x}'], ['/* c */ 1 // x', 1], ["With({'a b': 2}, 'a b' * 3)", 6],
   ['Not(false) And !false', true], ['true Or false && false', true], ['"The" in "The keyboard"', true], ['"the" exactin "The keyboard"', false],
   ['2 in [1, 2, 3]', true], ['{a: 1}.a', 1], ['[1, 2].Value', [{ Value: 1 }, { Value: 2 }]], ['Blank() = Blank()', true], ['Blank() + 1', 1],
-  // Logical (Learn "If and Switch", "And, Or, and Not")
+  // Logical ("If and Switch", "And, Or, and Not")
   ['If(1 > 2, "a", "b")', 'b'], ['If(false, 1, false, 2, 3)', 3], ['Switch(2, 1, "one", 2, "two", "other")', 'two'],
   ['And(true, 1 = 1)', true], ['Or(false, false)', false], ['Not(true)', false],
-  // Errors (Learn "Error, IfError, IsError, IsBlankOrError")
+  // Errors ("Error, IfError, IsError, IsBlankOrError")
   ['IfError(1, 2)', 1], ['IfError(1/0, 2)', 2], ['IfError(10, 20, 30)', 30], ['IfError(10, 11, 20, 21, 300)', 300], ['IsError(1/0)', true],
   ['IsError(Blank())', false], ['IsBlankOrError(Blank())', true], ['IfError(1/0, FirstError.Kind)', 13], ['IfError(1/0, CountRows(AllErrors))', 1],
   ['With({a: 1, b: 0}, IfError(a/b, If(FirstError.Kind <> ErrorKind.Div0, Error(FirstError), -1)))', -1],
   ['IfError(Error({Kind: ErrorKind.Validation, Message: "bad"}), FirstError.Message)', 'bad'], ['IfError(Error("custom"), FirstError.Kind)', 1000],
   ['IsError(Mid("abc", 0, 1))', true],
-  // Blank (Learn "Blank, Coalesce, IsBlank, and IsEmpty")
+  // Blank ("Blank, Coalesce, IsBlank, and IsEmpty")
   ['IsBlank(Blank())', true], ['IsBlank("")', true], ['Coalesce(Blank(), "", "a")', 'a'], ['IsEmpty(Filter([1, 2], Value > 5))', true],
-  // Numbers (Learn "Abs, Exp, Ln, Power, Sqrt", "Round", "Mod", "Value", "Aggregates", "Sequence")
+  // Numbers ("Abs, Exp, Ln, Power, Sqrt", "Round", "Mod", "Value", "Aggregates", "Sequence")
   ['Abs(-1) + Exp(0) + Ln(1) + Sqrt(4) + Power(2, 3)', 12], ['IsError(Sqrt(-1))', true], ['Round(1.005, 2)', 1.01], ['Round(-2.5, 0)', -3],
   ['RoundUp(2.1, 0)', 3], ['RoundDown(-2.9, 0)', -2], ['Int(-2.5)', -3], ['Trunc(-2.5)', -2], ['Mod(-3, 2)', 1], ['IsError(Mod(1, 0))', true],
   ['Value("10%")', 0.1], ['Value("$ 12.34")', 12.34], ['Value("1,234.5")', 1234.5], ['IfError(Value("abc"), -1)', -1], ['Decimal("1.5") + Float("2")', 3.5],
   ['Boolean("TRUE")', true], ['Sum([1, 2, 3], Value)', 6], ['Sum(1, 2, 3)', 6], ['Average(1, 2, 3, Blank())', 2], ['IsError(Average(Blank()))', true],
   ['Max(1, 5, 3)', 5], ['Min([4, 2, 8], Value * 2)', 4], ['Concat(Sequence(4, 0, 5), Value, ",")', '0,5,10,15'],
-  // Decimal is exact, Float is a double (Learn "Create formula columns with decimal, whole number, float, and choice data types")
+  // Decimal is exact, Float is a double ("Create formula columns with decimal, whole number, float, and choice data types")
   ['0.1 + 0.2 = 0.3', true], ['Sum(0.1, 0.2, 0.3) = 0.6', true], ['Value("0.1") + Value("0.2") = 0.3', true], ['Text(9007199254740992 + 1)', '9007199254740993'],
   ['Text(1/3)', '0.3333333333333333333333333333'],
-  // Numeric overflow is an error value IfError handles (RC1-10); invalid date text is an error, not a roll-over (RC1-09);
-  // a failed ForAll element makes ForAll an error value (RC1-03)
+  // Numeric overflow is an error value IfError handles; invalid date text is an error, not a roll-over;
+  // a failed ForAll element makes ForAll an error value
   ['IfError(1e300 * 1e300, 0)', 0], ['IfError(Value("1e400"), -1)', -1], ['IfError(1e400, 2)', 2], ['IsError(DateValue("2023-02-30"))', true],
   ['IsError(DateValue("13/01/2024"))', true], ['IsError(TimeValue("25:00"))', true], ['IsError(ForAll([1, 0], 1/Value))', true],
   ['IfError(ForAll([1, 0], 1/Value), FirstError.Kind)', 13], ['Float(0.1) + Float(0.2) = 0.3', false], ['Text(Mod(10.5, 3))', '1.5'], ['Round(1.23456789012345678901234567, 25) > 1.234567890123', true],
-  // Text (Learn "Text", "Left, Mid, Right", "Len", "Lower, Upper, Proper", "Trim", "Replace and Substitute", "Find", "Split", "Char")
+  // Text ("Text", "Left, Mid, Right", "Len", "Lower, Upper, Proper", "Trim", "Replace and Substitute", "Find", "Split", "Char")
   ['Text(1234.5678, "#,##0.00")', '1,234.57'], ['Text(0.123, "0.0%")', '12.3%'], ['Text(123, "#")', '123'], ['Text(5, "00")', '05'],
   ['Concatenate(Text(123, "#"), "ab")', '123ab'], ['Concat(Concatenate(["a", "b"], "!"), Value)', 'a!b!'],
   ['Left("Hello", 2) & Mid("Hello", 2, 3) & Right("Hello", 2)', 'Heelllo'], ['Len("Hello")', 5], ['Trim("  a   b  ")', 'a b'], ['TrimEnds("  a   b  ")', 'a   b'],
@@ -50,14 +50,14 @@ const CASES = [
   ['Substitute("Quarter 1, 2018", "1", "2", 1)', 'Quarter 2, 2018'], ['Replace("abcdef", 2, 3, "X")', 'aXef'], ['Find("b", "abcb", 3)', 4],
   ['IsBlank(Find("z", "abc"))', true], ['Concat(Split("a,b,c", ","), Value, "-")', 'a-b-c'], ['Char(65)', 'A'],
   ['StartsWith("Hello", "he") && EndsWith("Hello", "LO")', true],
-  // Regular expressions (Learn "IsMatch, Match, and MatchAll")
+  // Regular expressions ("IsMatch, Match, and MatchAll")
   ['IsMatch("joan@contoso.com", Match.Email)', true], ['IsMatch("986", "\\d+")', true], ['IsMatch("111-111-111", "\\d{3}-\\d{2}-\\d{4}", MatchOptions.Complete)', false],
   ['IsMatch("123", Match.MultipleDigits & Match.Period & Match.OptionalDigits, MatchOptions.Complete)', false],
   ['Match("Bob Jones <bob.jones@contoso.com>", "<(?<email>" & Match.Email & ")>").email', 'bob.jones@contoso.com'],
   ['Match("Bob Jones <bob.jones@contoso.com>", "<(?<email>" & Match.Email & ")>").StartMatch', 11],
   ['Match("The quick brown fox jumps over the lazy dog.", "THE", MatchOptions.IgnoreCase).StartMatch', 1],
   ['CountRows(MatchAll("The quick brown fox jumps over the lazy dog.", "the", MatchOptions.IgnoreCase))', 2], ['IsError(IsMatch("a", "("))', true],
-  // Tables (Learn "Filter, LookUp", "Sort, SortByColumns", "First, Last, Index", "CountRows, CountIf", "Distinct", "AddColumns...",
+  // Tables ("Filter, LookUp", "Sort, SortByColumns", "First, Last, Index", "CountRows, CountIf", "Distinct", "AddColumns...",
   // "ForAll", "Table", "With")
   ['CountRows(Filter([1, 2, 3, 4], Value > 2))', 2], ['LookUp([{a: 1, b: "x"}, {a: 2, b: "y"}], a = 2).b', 'y'], ['LookUp([{a: 1, b: "x"}], a = 1, b & "!")', 'x!'],
   ['Concat(Sort([3, 1, 2], Value, SortOrder.Descending), Value)', '321'], ['Concat(SortByColumns([{n: "b"}, {n: "a"}], "n"), n)', 'ab'],
@@ -69,13 +69,13 @@ const CASES = [
   ['Concat(ForAll(Sequence(2) As Rank, Concat(ForAll(Sequence(2) As File, If(Mod(Rank.Value + File.Value, 2) = 1, "X", ".")), Value) & "|"), Value)', '.X|X.|'],
   ['With({x: 2}, x * ThisRecord.x)', 4], ['CountRows(Table({a: 1}, {a: 2}))', 2], ['Concat(Filter([{v: 1}, {v: 2}] As R, R.v > 1), v)', '2'],
   ['Sum(Filter([{v: 1}, {v: 5}], v > 1), v)', 5],
-  // JSON (Learn "JSON", "ParseJSON")
+  // JSON ("JSON", "ParseJSON")
   ['JSON({a: 1, b: [1, 2]}, JSONFormat.FlattenValueTables)', '{"a":1,"b":[1,2]}'], ['JSON(Date(2019, 3, 31))', '"2019-03-31"'],
   ['Value(ParseJSON("{""a"": {""b"": 5}}").a.b) + 1', 6], ['Text(Index(ParseJSON("[""x"",""y""]"), 2))', 'y'], ['CountRows(Table(ParseJSON("[1,2,3]")))', 3],
   ['IsError(ParseJSON("{"))', true], ['Boolean(ParseJSON("true"))', true],
-  // GUID and host values (Learn "GUID", "Language")
+  // GUID and host values ("GUID", "Language")
   ['GUID("77777777-7777-4777-8777-777777777777") = GUID("{77777777777747778777777777777777}")', true], ['Len(Text(GUID()))', 36], ['Language()', 'en-US'],
-  // Dates and time zones (Learn "DateAdd, DateDiff, TimeZoneOffset", "Now, Today, IsToday, UTCNow...", "Date and Time", "Weekday", "WeekNum")
+  // Dates and time zones ("DateAdd, DateDiff, TimeZoneOffset", "Now, Today, IsToday, UTCNow...", "Date and Time", "Weekday", "WeekNum")
   ['Text(DateAdd(Now(), 3), "dd-mm-yyyy hh:mm")', '18-07-2013 13:02'], ['Text(DateAdd(Now(), 4, TimeUnit.Hours), "dd-mm-yyyy hh:mm")', '15-07-2013 17:02'],
   ['Text(DateAdd(Today(), 1, TimeUnit.Months), "dd-mm-yyyy hh:mm")', '15-08-2013 00:00'], ['Text(DateAdd(Now(), -30, TimeUnit.Minutes), "dd-mm-yyyy hh:mm")', '15-07-2013 12:32'],
   ['DateDiff(Now(), DateValue("1/1/2014"))', 170], ['DateDiff(Now(), DateValue("1/1/2014"), TimeUnit.Months)', 6], ['DateDiff(Now(), Today(), TimeUnit.Minutes)', -782],
@@ -88,7 +88,7 @@ const CASES = [
   ['ISOWeekNum(Date(2021, 1, 1))', 53], ['WeekNum(Date(2021, 1, 3))', 2], ['Text(DateTimeValue("2024-01-02T03:04:05Z"), DateTimeFormat.UTC)', '2024-01-02T03:04:05.000Z'],
   ['Hour(DateTimeValue("2024-01-02T03:04:05Z"))', 19], ['Text(Date(2024, 3, 5), "mmmm d, yyyy")', 'March 5, 2024'], ['Text(Time(14, 5, 0), "h:mm AM/PM")', '2:05 PM'],
   ['Text(Date(2024, 3, 5), DateTimeFormat.LongDate)', 'Tuesday, March 5, 2024'],
-  // Behaviour (Learn "Set", "Collect, Clear, ClearCollect", "Patch", "Remove and RemoveIf", "UpdateContext", "Defaults")
+  // Behaviour ("Set", "Collect, Clear, ClearCollect", "Patch", "Remove and RemoveIf", "UpdateContext", "Defaults")
   ['Set(x, 5); x * 2', 10], ['Collect(c, {a: 1}); Collect(c, {a: 2}); CountRows(c)', 2], ['ClearCollect(c, {a: 9}); First(c).a', 9],
   ['Collect(c, {a: 1}); Clear(c); CountRows(c)', 0], ['Patch({a: 1, b: 2}, {b: 3}).b', 3], ['Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a', 5],
   ['Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)', '2'], ['Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)', 1],
@@ -147,14 +147,14 @@ test('a LAZY host record is not read until a formula selects a property', () => 
   assert.deepEqual(reads, ['Text']);
 });
 
-test('date/time + 1 and DateAdd(…, 1, Days) agree across a daylight-saving change (RC1-11)', () => {
+test('date/time + 1 and DateAdd(…, 1, Days) agree across a daylight-saving change', () => {
   const amsterdam = hostOf({ timeZone: 'Europe/Amsterdam' });
   assert.equal(run('Text(DateTimeValue("2023-03-25T12:00:00") + 1, "yyyy-mm-dd hh:mm")', amsterdam), '2023-03-26 12:00');
   assert.equal(run('Text(DateAdd(DateTimeValue("2023-03-25T12:00:00"), 1, TimeUnit.Days), "yyyy-mm-dd hh:mm")', amsterdam), '2023-03-26 12:00');
 });
 
 test('Value, Decimal and Float read text in the language tag, else the host language (Learn "Decimal, Float, and Value functions")', () => {
-  // Learn's example rows (user language en-US).
+  // The documented example rows (user language en-US).
   for (const [formula, expected] of [['Value("123.456")', 123.456], ['Value("123.456", "es-ES")', 123456], ['Value("123,456")', 123456],
     ['Value("123,456", "es-ES")', 123.456], ['Decimal("123,456", "es-ES")', 123.456], ['Decimal("123.456", "es-ES")', 123456], ['Float("123,456", "es-ES")', 123.456],
     ['Value("12.34%")', 0.1234], ['Value("$ 12.34")', 12.34], ['Value("24e3")', 24000], ['Value(true)', 1], ['Float("1e100")', 1e100],
@@ -165,7 +165,7 @@ test('Value, Decimal and Float read text in the language tag, else the host lang
   assert.equal(run('Value("1.234,5")', hostOf({ language: 'de-DE' })), 1234.5);
   assert.equal(run('Value("1,500", "en-US")', hostOf({ language: 'de-DE' })), 1500);
   assert.equal(run('IfError(Value("1", "x-invalid-@"), FirstError.Kind)'), 25);
-  // RC4a-12: the language's group widths (en-IN 12,34,567), a currency symbol at either end, the exact Decimal bound.
+  // The language's group widths (en-IN 12,34,567), a currency symbol at either end, the exact Decimal bound.
   assert.equal(run('Value("12,34,567.5", "en-IN")'), 1234567.5);
   assert.equal(run('IfError(Value("1,23"), FirstError.Kind)'), 25);
   assert.equal(run('Value("1.234 €", "de-DE")'), 1234);

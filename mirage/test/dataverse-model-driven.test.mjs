@@ -35,6 +35,9 @@ test('model-driven record service shares organization hooks, lookup validation, 
   assert.equal(get().x_parentid.id, parentId);
   assert.equal(get().createdby.id, user.systemuserid);
   assert.deepEqual(events[0], ['x_item', 'create', user.systemuserid]);
+  const missingParent = '44444444-4444-4444-8444-444444444444';
+  await assert.rejects(write({ entity: 'x_item', values: { x_name: 'Orphan', x_parentid: missingParent } }), { status: 404, message: /x_parent With Id = 44444444-4444-4444-8444-444444444444 Does Not Exist/ });
+  assert.equal(store.state.tables.x_item.some(row => row.x_name === 'Orphan'), false);
   const firstVersion = store.etag(get());
   await write({ entity: 'x_item', id: created.id, values: { x_name: 'Updated' }, etag: firstVersion });
   assert.equal(get().x_name, 'Updated');

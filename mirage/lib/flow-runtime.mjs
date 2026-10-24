@@ -20,7 +20,7 @@ export const FLOW_MAX_DEPTH=16;
 class FlowSuspended extends Error{constructor(actionPath,wait){super('The flow run is waiting.');this.actionPath=actionPath;this.wait=wait;}}
 // Wait action delay (Workflow Definition Language Wait: inputs.interval { count, unit } or inputs.until.timestamp).
 const UNIT_MS={Second:1000,Minute:60000,Hour:3600000,Day:86400000,Week:604800000};
-// Without an explicit connector runtime only the built-in Dataverse provider is routed (unchanged synchronous behaviour).
+// Without an explicit connector runtime only the built-in Dataverse provider is routed, synchronously.
 const legacyRuntime=createConnectorRuntime();
 // The connector call an action or trigger makes, or null for built-in actions.
 const connectorCall=action=>action?.type==='Http'?{connectorId:'http',operationId:'Http',connectionName:null}:action?.type==='Workflow'?{connectorId:CHILD_FLOW_CONNECTOR,operationId:'RunChildFlow',connectionName:null}:['OpenApiConnection','OpenApiConnectionWebhook'].includes(action?.type)&&action.inputs?.host?.apiId?{connectorId:connectorOf(action.inputs.host.apiId),operationId:action.inputs.host.operationId??null,connectionName:action.inputs.host.connectionName??null}:null;
@@ -44,7 +44,7 @@ const responseStatus=code=>Number.isInteger(code)&&code>=200&&code<=599&&(code<3
 // Recurrence (https://learn.microsoft.com/azure/connectors/connectors-native-recurrence#add-the-recurrence-trigger): frequency
 // Second..Month, interval, optional startTime and timeZone, and a schedule of hours and minutes (Day, Week, Month), weekDays
 // (Week) and monthDays (Month, -1 the last day: #workflow-definition---recurrence). timeZone is an IANA name resolved through
-// Intl (no time-zone table): a startTime without Z or offset is wall-clock time in it; with Z the zone is ignored (Learn).
+// Intl (no time-zone table): a startTime without Z or offset is wall-clock time in it; with Z the zone is ignored.
 export const RECURRENCE_FREQUENCIES=Object.freeze({Second:1000,Minute:60000,Hour:3600000,Day:86400000,Week:604800000,Month:null});
 export const WEEK_DAYS=Object.freeze(['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']);
 const zoneFormats=new Map();
@@ -54,7 +54,7 @@ export function zoneParts(ms,zone){
  const p=Object.fromEntries(format.formatToParts(ms).map(x=>[x.type,Number(x.value)]));return {year:p.year,month:p.month-1,day:p.day,hour:p.hour,minute:p.minute,second:p.second};
 }
 /** The instant of a wall-clock time in a zone. A time in a daylight-saving gap keeps the offset before the change and a repeated
- * time takes its first instant, as the Learn DST tables show (concepts-schedule-automated-recurring-tasks-workflows). */
+ * time takes its first instant, as the documented DST tables show (concepts-schedule-automated-recurring-tasks-workflows). */
 export function zonedInstant({year,month,day,hour=0,minute=0,second=0},zone){
  const wall=Date.UTC(year,month,day,hour,minute,second),offset=at=>{const p=zoneParts(at,zone);return Date.UTC(p.year,p.month,p.day,p.hour,p.minute,p.second)-Math.floor(at/1000)*1000;};
  const first=wall-offset(wall),second2=wall-offset(first);if(second2===first)return first;
@@ -67,7 +67,7 @@ export function parseRecurrence(value){
  if(!own(RECURRENCE_FREQUENCIES,value.frequency))errors.push('Recurrence frequency must be Second, Minute, Hour, Day, Week or Month.');
  const interval=Number(value.interval??1);if(!Number.isInteger(interval)||interval<1)errors.push('Recurrence interval must be a positive integer.');
  // An IANA name Intl knows is used as is; a Windows id maps through the CLDR windowsZones table (windows-time-zones.mjs).
- // unverified: 'Coordinated Universal Time' (a Windows display name) as UTC.
+ // 'Coordinated Universal Time' (a Windows display name) is assumed to mean UTC.
  const named=value.timeZone===undefined||value.timeZone==='Coordinated Universal Time'?'UTC':String(value.timeZone);
  const zone=knownZone(named)?named:WINDOWS_TIME_ZONES[named]??named;
  if(!knownZone(zone))errors.push('Recurrence timeZone '+value.timeZone+' is neither a Windows time-zone id in the CLDR table nor an IANA time zone the local Intl database knows.');
@@ -99,7 +99,7 @@ export function inspectFlowTrigger(definition,{connectors}={}){
  const ownRecurrence=trigger.type==='Recurrence'||['OpenApiConnectionWebhook','OpenApiConnection'].includes(trigger.type)&&!dataverse&&!performed;
  const settingErrors=unsupportedTriggerSettings.filter(key=>own(trigger,key)&&!(key==='recurrence'&&ownRecurrence)).map(key=>'Unsupported source trigger setting: '+key);
  const requestInputs=allowed=>{for(const key of Object.keys(trigger.inputs??{}))if(!allowed.includes(key))settingErrors.push('Unsupported Request trigger input: '+key);};
- // unverified: the child flow's manual trigger kind (Button); the child needs a Response to answer its parent.
+ // The child flow's manual trigger kind (Button) is a guess; the child needs a Response to answer its parent.
  if(trigger.type==='Request'&&trigger.kind==='Button'){requestInputs(['schema']);return {supported:!settingErrors.length,kind:'manual',errors:settingErrors};}
  if(trigger.type==='Request'&&trigger.kind==='powerpages'){requestInputs(['schema']);return {supported:!settingErrors.length,kind:'powerpages',errors:settingErrors};}
  // A plain HTTP Request trigger runs on demand (/_sim/api/flow-triggers/<flowId>) and from its signed callback URL
@@ -108,8 +108,8 @@ export function inspectFlowTrigger(definition,{connectors}={}){
  if(trigger.type==='Recurrence'){const recurrence=parseRecurrence(trigger.recurrence);settingErrors.push(...recurrence.errors);return {supported:!settingErrors.length,kind:'recurrence',recurrence:recurrence.errors.length?null:{frequency:recurrence.frequency,interval:recurrence.interval,start:recurrence.start,zone:recurrence.zone,schedule:recurrence.schedule},errors:settingErrors};}
  // "When an action is performed" (https://learn.microsoft.com/connectors/commondataserviceforapps/#when-an-action-is-performed,
  // https://learn.microsoft.com/power-automate/dataverse/action-trigger): catalog, category, entityname, sdkmessagename; it fires
- // each time the action completes. unverified: the exported parameter keys (the connector reference keys, optionally with the
- // subscriptionRequest/ prefix of the row trigger) and 'none' for an unbound action's table.
+ // each time the action completes. The exported parameter keys (the connector reference keys, optionally with the
+ // subscriptionRequest/ prefix of the row trigger) and 'none' for an unbound action's table are guesses.
  if(performed&&trigger.type==='OpenApiConnectionWebhook'){
   const p={};for(const[key,value]of Object.entries(trigger.inputs?.parameters??{})){const field=key.replace(/^subscriptionRequest\//,'');if(!['catalog','category','entityname','sdkmessagename'].includes(field)||own(p,field))settingErrors.push('Unsupported Dataverse action trigger parameter: '+key);else p[field]=value;}
   if(typeof p.sdkmessagename!=='string'||!/^[A-Za-z_][\w.]*$/.test(p.sdkmessagename))settingErrors.push('The Dataverse action trigger needs an action name (sdkmessagename).');
@@ -169,9 +169,9 @@ export function inspectFlowDefinition(definition,steps={},{connectors,connection
    if(action.type==='InitializeVariable'&&depth>0)errors.push('InitializeVariable requires the workflow global level: '+key);
    if(action.type==='Response'){const raw=action.inputs?.statusCode??200;if((typeof raw!=='string'||!raw.startsWith('@'))&&!responseStatus(Number(raw)))errors.push('Response requires a 2xx, 4xx or 5xx status code: '+key);}
    for(const setting of ['runtimeConfiguration','retryPolicy','operationOptions','limit','staticResults'])if(own(action,setting)&&!(setting==='runtimeConfiguration'&&(connector&&runtimeConfigurationOk(action.runtimeConfiguration,dataverse)||action.type==='Foreach'&&foreachConcurrencyOk(action.runtimeConfiguration)))&&!(setting==='operationOptions'&&operationOptionsOk(action,connector))&&!(setting==='limit'&&action.type==='Until'))errors.push('Unsupported action setting '+key+'/'+setting+'; configure an explicit mock or disable it.');
-   // Mirage determinism policy (Learn logic-apps-control-flow-loops only says such writes "might return unpredictable
-   // results"): a Foreach outside any loop runs its repetitions concurrently (frame.loops empty, also inside a Scope, If or
-   // Switch), so iterations that write a variable are refused, as concurrent branches that do are.
+   // Determinism policy (natively such writes "might return unpredictable results"): a Foreach outside any loop runs its
+   // repetitions concurrently (frame.loops empty, also inside a Scope, If or Switch), so iterations that write a variable are
+   // refused, as concurrent branches that do are.
    if(action.type==='Foreach'&&!inLoop&&(action.runtimeConfiguration?.concurrency?.repetitions??1)>1&&!String(action.operationOptions??'').includes('Sequential')){const written=[];const walk=m=>{for(const[n,a]of Object.entries(m??{})){if(!a||typeof a!=='object'||['mock','disabled'].includes(steps[key+'/'+n]?.mode))continue;if(WRITES.has(a.type)&&typeof a.inputs?.name==='string')written.push(a.inputs.name);walk(a.actions);walk(a.else?.actions);walk(a.default?.actions);for(const c of Object.values(a.cases??{}))walk(c?.actions);}};walk(action.actions);
     if(written.length)errors.push('Foreach '+key+' runs its iterations concurrently and writes the variable '+[...new Set(written)].join(', ')+'; Mirage refuses concurrent variable writes because their result depends on the interleaving: set concurrency to 1 or configure an explicit workflow mock.');}
    // A retry policy applies to provider calls only; on a built-in action or with invalid values it is a bad request.
@@ -187,7 +187,7 @@ export function inspectFlowDefinition(definition,steps={},{connectors,connection
    if(connector&&dataverse){const op=action.inputs.host.operationId,spec=dataverseParameters(op);for(const parameter of Object.keys(action.inputs.parameters??{}))if(!spec?.allowed(parameter))errors.push('Unsupported Dataverse parameter '+key+'/'+parameter);}
    // Perform a changeset request (https://learn.microsoft.com/power-automate/dataverse/change-set): a scope of Add, Update and
    // Delete row actions on one Dataverse connection, without dependencies between them, run as one transaction.
-   // unverified: the exported definition shape (type ChangeSet with nested actions).
+   // The exported definition shape (type ChangeSet with nested actions) is a guess.
    if(action.type==='ChangeSet'){const inner=Object.entries(action.actions??{}),names=new Set(inner.map(([,a])=>a?.inputs?.host?.connectionName??null));if(!inner.length)errors.push('A changeset needs at least one action: '+key);if(names.size>1)errors.push('Changeset actions must share one Dataverse connection: '+key);
     for(const[n,a]of inner){const call=connectorCall(a);if(a?.type!=='OpenApiConnection'||call?.connectorId!==DATAVERSE_CONNECTOR||!CHANGESET_OPERATIONS.includes(call.operationId))errors.push('A changeset holds only Dataverse Add, Update, Upsert and Delete row actions: '+key+'/'+n);if(Object.keys(a?.runAfter??{}).length)errors.push('Changeset actions cannot depend on each other: '+key+'/'+n);if(steps[key+'/'+n])errors.push('Changeset actions run together; configure the changeset, not '+key+'/'+n);}}
   }
@@ -306,7 +306,7 @@ function typedParameter(text,type){
  if(['object','array'].includes(kind)){try{return parseExactJson(text);}catch{return text;}}
  return text;
 }
-/** Flow parameters (02-B7): one bound to an environment variable (metadata.schemaName) takes its effective value (Solution value
+/** Flow parameters: one bound to an environment variable (metadata.schemaName) takes its effective value (Solution value
  * plus profile, project and _sim overrides) over the exported defaultValue; Secret ones are listed for the resolver, never read here. */
 function flowParameters(definition,store){
  const effective=store?.state?effectiveEnvironmentVariables(store.state):{},values={},secrets=[];
@@ -382,8 +382,8 @@ export function executeFlowDefinition({definition,input,store,serviceProfile,ste
   const override=own(replayed,at)?{mode:'mock',status:replayed[at].status,outputs:replayed[at].outputs}:steps[key];let outputs={},status='Succeeded',error,called=false;
   // One failure rule for every provider-backed action (connector, Http, child flow, pack action): an answer of 400 or above
   // fails the action with ActionFailed and keeps { statusCode, headers, body } as its outputs. Thrown provider errors and an
-  // exhausted retry fail it too (catch below). unverified: a child flow Response of 4xx/5xx failing the parent action is
-  // inferred from the documented ActionFailed causes (https://learn.microsoft.com/power-automate/error-reference).
+  // exhausted retry fail it too (catch below). A child flow Response of 4xx/5xx failing the parent action is inferred from
+  // the documented ActionFailed causes (https://learn.microsoft.com/power-automate/error-reference).
   const failedAnswer=()=>{if(Number.isInteger(outputs?.statusCode)&&outputs.statusCode>=400){status='Failed';error={code:'ActionFailed',message:'The action answered status '+outputs.statusCode+'.'};}};
   const iteration=(i,value)=>({items:value===undefined?frame.items:[...frame.items,{name,value}],loops:[...frame.loops,i],results:Object.create(frame.results)});
   try{
@@ -414,7 +414,7 @@ export function executeFlowDefinition({definition,input,store,serviceProfile,ste
     case 'ChangeSet':{const requests=Object.entries(action.actions??{}).map(([n,a])=>({name:n,operationId:a.inputs.host.operationId,parameters:resolve(a.inputs.parameters??{})}));called=true;
      outputs=yield {action:Object.values(action.actions)[0],key,at,inputs:{parameters:{requests}},operationId:'ExecuteChangeset'};failedAnswer();break;}
     case 'Until':{const limit=action.limit??{},count=limit.count??60,timeout=durationMs(limit.timeout??'PT1H'),started=Date.now();let met=false;
-     // unverified: reaching limit.count without the expression ends the loop Succeeded (the native default); the timeout ends it TimedOut.
+     // Assumed native default: reaching limit.count without the expression ends the loop Succeeded; the timeout ends it TimedOut.
      for(let i=0;i<count&&!stopped();i++){const f=iteration(i);if(!(yield* run(action.actions,key+'/',f)))status='Failed';if(stopped())break;const test=condition(action.expression,scope(f));if(typeof test!=='boolean')fail('Until expression must be boolean.');if(test){met=true;break;}if(Date.now()-started>=timeout){status='TimedOut';break;}}
      outputs={conditionMet:met};break;}
     case 'Wait':{const wait=delay(resolve(action.inputs));if(!canSuspend())fail('A Wait action needs a flow run that can suspend; mock or disable this action.',501,'FlowSuspendNotWired');throw new FlowSuspended(at,wait);}
@@ -428,7 +428,7 @@ export function executeFlowDefinition({definition,input,store,serviceProfile,ste
    error=cause;status=signal?.aborted&&called?'Cancelled':cause.status===504?'TimedOut':'Failed';outputs={error:{code:cause.code??'LocalFlowError',message:cause.message}};}
   record(frame,name,{status,outputs,...(error?.code==='ActionFailed'?{error:{code:error.code,message:error.message}}:called&&error?{error:{code:'ActionFailed',message:error.message,cause:{code:error.code??'LocalFlowError'}}}:{})},ctl.local);trace(key,action,status,error);
   // A changeset's actions share its outcome: each answers its own response, or all fail when it rolled back.
-  // unverified: the native status and error of the actions of a rolled-back changeset.
+  // The native status and error of the actions of a rolled-back changeset are a guess.
   if(action.type==='ChangeSet')for(const[n,a]of Object.entries(action.actions??{})){const answer=status==='Succeeded'?(outputs?.body?.responses??[]).find(r=>r.name===n):null;
    record(frame,n,answer?{status:'Succeeded',outputs:{statusCode:answer.statusCode,body:answer.body}}:{status:status==='Skipped'?'Skipped':'Failed',outputs:{error:{code:'ChangeSetRolledBack',message:'The changeset did not commit.'}}});trace(key+'/'+n,a,frame.results[n].status);}
   if(called&&journal&&status!=='Cancelled')journal(at,{status,outputs:clone(outputs),secure:secure(action),...(attempts.has(at)?{attempts:attempts.get(at)}:{})});attempts.delete(at);
@@ -484,7 +484,7 @@ export function executeFlowDefinition({definition,input,store,serviceProfile,ste
   if(answersWithout){if(!succeeded)fail('Local triggered flow actions failed.',400,'LocalFlowFailed');return {status:'Succeeded',actions:clone(state.results)};}fail('Local flow completed without a Response.',400,'LocalFlowFailed');})(),call);
 }
 
-// ---- tracked runs (flow-runs.mjs) -------------------------------------------------------------------------------------
+// ---- tracked runs (flow-runs.mjs)
 
 const canonicalId=value=>String(value??'').replace(/[{}]/g,'').toLowerCase();
 /** The run store's definition fingerprint: a resume refuses a definition that changed since the run started. */
@@ -499,14 +499,14 @@ export function triggerPrincipal(connectors,definition,connectionReferences){
  * mocks), execute inside wrap(fn) (the caller's transaction), journal the executed connector actions, then suspend on a
  * waiting action or complete Succeeded/Failed. Run store writes happen outside wrap, so a failed transaction keeps them.
  * flowOf(processId) answers a child flow's { definition, mode, steps, serviceProfile, connectors, connectionReferences, secrets }
- * (organization-host.mjs cloudFlow). Without runs this is executeFlowDefinition inside wrap, exactly as before.
+ * (organization-host.mjs cloudFlow). Without runs this is executeFlowDefinition inside wrap.
  * A Waiting answer carries runId; onRun(runId) is called once the run is started or resumed.
  */
 export async function runTrackedFlow({runs=null,processId,trigger=null,wrap=fn=>fn(),flowOf=runs?.flowOf??null,depth=0,resume=null,onRun=null,...args}){
  if(!runs)return wrap(()=>executeFlowDefinition(args));
  const definitionHash=flowDefinitionHash(args.definition);let runId,steps=args.steps??{},input=args.input,correlationId=args.context?.correlationId??null,parameters,replay=[];
  // The non-secret parameter values are frozen at run start; a resume replays them instead of the current environment
- // variable values. unverified: that a native run binds its parameter values once per run.
+ // variable values (assumed: a native run binds its parameter values once per run).
  // An on-demand run (context.background: no Response needed) keeps that context across a resume.
  let replayJournal={},background=Boolean(args.context?.background);
  // A resume replays the journal by iteration key (context.journal); the steps are the ones configured at start, so a first-iteration mock never stands in for a later iteration.

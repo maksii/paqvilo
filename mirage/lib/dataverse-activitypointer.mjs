@@ -13,7 +13,7 @@ const LOGICAL = "activitypointer";
 const SET = "activitypointers";
 const PAGE_CAP = 5000;
 const invalid = (message, innerCode = "0x80060888") => new DataError(message, 400, "InvalidRequest", { innerCode });
-// unverified: live capture (refusal text and inner code for a write to activitypointers).
+// Native refusal text and inner code for a write to activitypointers are not known; this answer is a guess.
 const readOnly = () =>
   new DataError(`${LOGICAL} is a read-only view of the activity tables; create, update and delete the activity itself instead.`, 400, "InvalidRequest", {
     innerCode: "0x80040203",
@@ -46,8 +46,8 @@ function pick(row, select) {
   return Object.fromEntries(Object.entries(row).filter(([key]) => select.has(key) || select.has(baseName(key))));
 }
 
-// One read through records for one source table. A missing row is no answer (null); a denial (403) reaches the caller.
 const PAGE_PREFER = (c) => ({ ...c.prefer, annotations: null, maxPageSize: null, maxPageSizeInvalid: false });
+// One read through records for one source table. A missing row is no answer (null); a denial (403) reaches the caller.
 async function callSource(c, api, pathname, search = "", prefer = PAGE_PREFER(c)) {
   const url = new URL(c.url.href);
   url.pathname = pathname;

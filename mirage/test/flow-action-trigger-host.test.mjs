@@ -1,6 +1,5 @@
-// RB1-02 / Task 44 end to end through the Dataverse Web API: "When an action is performed" (BusinessEventsTrigger) starts a
-// tracked run for a committed custom API action, and never for one inside a $batch changeset that rolls back. Invented
-// x_ Solution, loopback only.
+// End to end through the Dataverse Web API: "When an action is performed" (BusinessEventsTrigger) starts a
+// tracked run for a committed custom API action, and never for one inside a $batch changeset that rolls back.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -28,12 +27,12 @@ test('a committed custom API action starts one run; the same action in a rolled-
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   ownedFixture(t).add(() => sim.close());
-  const simApi = async (method, suffix, payload) => { const r = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'x-sim-csrf': sim.state().csrf, ...(payload ? { 'content-type': 'application/json' } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}) }); return { status: r.status, body: await r.text() }; };
+  const simApi = async (method, suffix, payload) => { const r = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'x-sim-csrf': sim.csrf, ...(payload ? { 'content-type': 'application/json' } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}) }); return { status: r.status, body: await r.text() }; };
   assert.equal((await simApi('PATCH', '/config', { operations: { [`cloud-flow:${FLOW}`]: { mode: 'exported', activation: 'local-enabled' } } })).status, 200);
   const { secret } = JSON.parse((await simApi('POST', '/dataverse/applications', { appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] })).body);
   const token = await (await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST', body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: secret, scope: sim.dataverse.origin + '/.default' }) })).json();
   const auth = { authorization: `Bearer ${token.access_token}` }, base = sim.dataverse.origin + '/api/data/v9.2/';
-  const runs = async () => { for (let i = 0; i < 50; i++) await new Promise(resolve => setTimeout(resolve, 10)); return (sim.store.state.tables.flowrun ?? []).filter(row => String(row.workflowid).toLowerCase() === FLOW).map(row => [row.status, row.triggertype]); };
+  const runs = async () => { await sim.settle(); return (sim.store.state.tables.flowrun ?? []).filter(row => String(row.workflowid).toLowerCase() === FLOW).map(row => [row.status, row.triggertype]); };
 
   const b = 'batch_inv', c = 'changeset_inv';
   const batch = [`--${b}`, `Content-Type: multipart/mixed; boundary=${c}`, '',

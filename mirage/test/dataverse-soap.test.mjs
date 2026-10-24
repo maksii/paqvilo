@@ -1,4 +1,4 @@
-// SOAP Organization service over the record handlers. Invented schema and loopback origin only.
+// SOAP Organization service over the record handlers.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -31,7 +31,7 @@ const SETTINGS = {
 const text = { dataverseType: "nvarchar" };
 const lookup = { dataverseType: "lookup" };
 
-// Invented tables: widget (org-owned, alternate key, a date), gadget (user-owned, lookup to widget), tag, widget_tag.
+// Tables: widget (org-owned, alternate key, a date), gadget (user-owned, lookup to widget), tag, widget_tag.
 function fixtureState() {
   const state = emptyState();
   state.mappings.widget = {
@@ -272,6 +272,7 @@ test("RetrieveMultiple runs a FetchExpression as written", async () => {
   const res = await t.send(execOne("RetrieveMultipleRequest", "RetrieveMultiple", [pair("Query", query)]));
   assert.equal(res.status, 200, res.body);
   assert.equal(rowCount(res.body), 1);
+  assert.equal(attrText(res.body, "name"), "beta");
 });
 
 test("Associate and Disassociate write and remove the relationship row", async () => {
@@ -433,7 +434,7 @@ test("a privilege the caller lacks is a fault with the 0x80040220 code", async (
   const res = await t.send(execOne("CreateRequest", "Create", [pair("Target", entityValue("tag", [pair("name", str("nope"))]))]), { user: t.basic });
   assert.equal(res.status, 500);
   assert.equal(errorCode(res.body), -2147220960);
-  assert.match(res.body, /missing prvCreate privilege|is missing/);
+  assert.match(res.body, /is missing prvCreateTag privilege/);
 });
 
 test("a malformed envelope and an invalid date are faults, not exceptions", async () => {
@@ -530,20 +531,22 @@ test("BypassCustomPluginExecution needs the bypass privilege and reaches the rec
   assert.deepEqual(seen, [true, false]);
 });
 
-test("a metadata request is answered by the metadata handlers", async () => {
+test("a metadata request is answered by the metadata handlers with the table's EntityMetadata", async () => {
   const t = await setup();
   const res = await t.send(execOne("RetrieveEntityRequest", "RetrieveEntity", [pair("LogicalName", str("widget"))]));
   assert.equal(res.status, 200, res.body);
-  assert.match(res.body, /RetrieveEntityResponse/);
+  assert.match(res.body, /i:type="r:RetrieveEntityResponse"/);
+  assert.match(res.body, /<b:key>EntityMetadata<\/b:key><b:value i:type="m:EntityMetadata"/);
+  assert.match(res.body, /<m:LogicalName>widget<\/m:LogicalName>/);
 });
 
-// Captured from the real ServiceClient SDK gate (capture-soap.jsonl line 27), unmodified.
+// Captured from the real ServiceClient SDK, unmodified.
 const CAPTURED_SDK_RETRIEVE = `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Header><UserType xmlns="http://schemas.microsoft.com/xrm/2011/Contracts">CrmUser</UserType><SdkClientVersion xmlns="http://schemas.microsoft.com/xrm/2011/Contracts">9.2.49.17970</SdkClientVersion><x-ms-client-request-id xmlns="http://schemas.microsoft.com/xrm/2011/Contracts">7f17a6de-aa76-4f28-ad58-f0e5f1ad22c8</x-ms-client-request-id></s:Header><s:Body><Execute xmlns="http://schemas.microsoft.com/xrm/2011/Contracts/Services"><request i:type="a:RetrieveRequest" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><a:Parameters xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic"><a:KeyValuePairOfstringanyType><b:key>Target</b:key><b:value i:type="a:EntityReference"><a:Id>d5b774b6-ced1-41fa-9833-9f3e163e47ab</a:Id><a:KeyAttributes xmlns:c="http://schemas.microsoft.com/xrm/7.1/Contracts"/><a:LogicalName>gadget</a:LogicalName><a:Name i:nil="true"/><a:RowVersion i:nil="true"/></b:value></a:KeyValuePairOfstringanyType><a:KeyValuePairOfstringanyType><b:key>ColumnSet</b:key><b:value i:type="a:ColumnSet"><a:AllColumns>false</a:AllColumns><a:AttributeExpressions/><a:Columns xmlns:c="http://schemas.microsoft.com/2003/10/Serialization/Arrays"><c:string>widgetid</c:string></a:Columns></b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestId>7f17a6de-aa76-4f28-ad58-f0e5f1ad22c8</a:RequestId><a:RequestName>Retrieve</a:RequestName></request></Execute></s:Body></s:Envelope>`;
 
-// Captured from the real ServiceClient SDK gate (capture-soap.jsonl line 28), unmodified.
+// Captured from the real ServiceClient SDK, unmodified.
 const CAPTURED_SDK_EXECUTE_MULTIPLE = `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Header><UserType xmlns="http://schemas.microsoft.com/xrm/2011/Contracts">CrmUser</UserType><SdkClientVersion xmlns="http://schemas.microsoft.com/xrm/2011/Contracts">9.2.49.17970</SdkClientVersion></s:Header><s:Body><Execute xmlns="http://schemas.microsoft.com/xrm/2011/Contracts/Services"><request i:type="a:ExecuteMultipleRequest" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><a:Parameters xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic"><a:KeyValuePairOfstringanyType><b:key>Requests</b:key><b:value i:type="c:OrganizationRequestCollection" xmlns:c="http://schemas.microsoft.com/xrm/2012/Contracts"><c:OrganizationRequest i:type="a:CreateRequest"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>Target</b:key><b:value i:type="a:Entity"><a:Attributes><a:KeyValuePairOfstringanyType><b:key>name</b:key><b:value i:type="d:string" xmlns:d="http://www.w3.org/2001/XMLSchema">soap-EM-1</b:value></a:KeyValuePairOfstringanyType></a:Attributes><a:EntityState i:nil="true"/><a:FormattedValues/><a:Id>00000000-0000-0000-0000-000000000000</a:Id><a:KeyAttributes xmlns:d="http://schemas.microsoft.com/xrm/7.1/Contracts"/><a:LogicalName>widget</a:LogicalName><a:RelatedEntities/><a:RowVersion i:nil="true"/></b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestId i:nil="true"/><a:RequestName>Create</a:RequestName></c:OrganizationRequest><c:OrganizationRequest i:type="a:DeleteRequest"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>Target</b:key><b:value i:type="a:EntityReference"><a:Id>8e0a8ce4-0557-4faf-bdb8-96039e5242aa</a:Id><a:KeyAttributes xmlns:d="http://schemas.microsoft.com/xrm/7.1/Contracts"/><a:LogicalName>widget</a:LogicalName><a:Name i:nil="true"/><a:RowVersion i:nil="true"/></b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestId i:nil="true"/><a:RequestName>Delete</a:RequestName></c:OrganizationRequest><c:OrganizationRequest i:type="a:CreateRequest"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>Target</b:key><b:value i:type="a:Entity"><a:Attributes><a:KeyValuePairOfstringanyType><b:key>name</b:key><b:value i:type="d:string" xmlns:d="http://www.w3.org/2001/XMLSchema">soap-EM-3</b:value></a:KeyValuePairOfstringanyType></a:Attributes><a:EntityState i:nil="true"/><a:FormattedValues/><a:Id>00000000-0000-0000-0000-000000000000</a:Id><a:KeyAttributes xmlns:d="http://schemas.microsoft.com/xrm/7.1/Contracts"/><a:LogicalName>widget</a:LogicalName><a:RelatedEntities/><a:RowVersion i:nil="true"/></b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestId i:nil="true"/><a:RequestName>Create</a:RequestName></c:OrganizationRequest></b:value></a:KeyValuePairOfstringanyType><a:KeyValuePairOfstringanyType><b:key>Settings</b:key><b:value i:type="c:ExecuteMultipleSettings" xmlns:c="http://schemas.microsoft.com/xrm/2012/Contracts"><c:ContinueOnError>true</c:ContinueOnError><c:ReturnResponses>true</c:ReturnResponses></b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestId>e3934a15-df20-4d88-9f65-2a90c65f99fc</a:RequestId><a:RequestName>ExecuteMultiple</a:RequestName></request></Execute></s:Body></s:Envelope>`;
 
-// The real SDK sends Requests as OrganizationRequestCollection in xrm/2012 (ExecuteMultiple). Before the namespace fix the batch decoded empty.
+// The real SDK sends Requests as OrganizationRequestCollection in xrm/2012 (ExecuteMultiple).
 test("the captured SDK ExecuteMultiple runs every request of its xrm/2012 OrganizationRequestCollection", async () => {
   const t = await setup();
   const res = await t.send(CAPTURED_SDK_EXECUTE_MULTIPLE);
@@ -566,8 +569,9 @@ test("the captured SDK Retrieve decodes its ColumnSet and reaches the record loo
   assert.equal(errorCode(res.body), -2147220969);
 });
 
-// ExecuteMultiple and ExecuteTransaction both read Requests; the SDK's prefix is arbitrary, so each namespace must decode.
-for (const prefix of ["a", "l", "o"]) {
+// ExecuteMultiple and ExecuteTransaction both read Requests; the SDK's prefix is arbitrary, so each namespace must decode. The a:
+// prefix is the one the tests above send.
+for (const prefix of ["l", "o"]) {
   for (const [type, name] of [["ExecuteMultipleRequest", "ExecuteMultiple"], ["ExecuteTransactionRequest", "ExecuteTransaction"]]) {
     test(`${name} decodes a Requests collection in the ${prefix}: and runs every item`, async () => {
       const t = await setup();
@@ -588,7 +592,7 @@ for (const prefix of ["a", "l", "o"]) {
 }
 
 // ---- Registry operations over SOAP: declared response shapes, bound routing and the CSDL that $metadata lists ----
-// Invented operations with the native shape of their named messages (the CSDL below is test-local).
+// Operations with the native shape of their named messages (the CSDL below is test-local).
 const PARTITION_CSDL = `<ComplexType Name="AuditPartitionDetail">
   <Property Name="PartitionNumber" Type="Edm.Int32" />
   <Property Name="StartDate" Type="Edm.DateTimeOffset" />

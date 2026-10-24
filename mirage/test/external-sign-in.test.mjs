@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { createSimulator } from "../server.mjs";
 import {
   authenticationSettings,
@@ -169,7 +169,7 @@ test("the local identity provider serves discovery, keys, the preset chooser, fo
   for (const [extra, message] of [
     [{ client_id: "other" }, /client_id &quot;other&quot; is not registered/],
     [{ redirect_uri: "http://127.0.0.1:9/elsewhere" }, /not the provider&#39;s registered reply URL/],
-    // Power Pages does not support code token (Learn); the provider answers the documented types only.
+    // Power Pages does not support code token; the provider answers the documented types only.
     [{ response_type: "code token" }, /response_type &quot;code token&quot; is not supported/],
     [{ prompt: "sometimes" }, /prompt &quot;sometimes&quot; is not supported/],
     [{ prompt: "none login" }, /prompt=none cannot be combined/],
@@ -213,7 +213,8 @@ test("the local identity provider serves discovery, keys, the preset chooser, fo
     [claims.iss, claims.aud, claims.sub, claims.oid, claims.email, claims.name, claims.given_name, claims.family_name, claims.nonce, claims.exp - claims.iat],
     [authority, "local-client", "sub-alex", "sub-alex", "alex@example.test", "Alex Local", "Alex", "Local", "n-1", 3600],
   );
-  assert.equal(typeof claims.c_hash, "string");
+  // c_hash is the left half of the code's SHA-256, base64url (OpenID Connect Core 3.3.2.11).
+  assert.equal(claims.c_hash, createHash("sha256").update(fields.code).digest().subarray(0, 16).toString("base64url"));
   // login_hint (contact ID, subject or email) answers without the chooser.
   const hinted = await (await fetch(authorize({ login_hint: "ALEX" }))).text();
   assert.equal(claimsOf(hiddenFields(hinted).id_token).sub, "sub-alex");
@@ -241,7 +242,7 @@ test("the local identity provider serves discovery, keys, the preset chooser, fo
   assert.match(await refused.text(), /Signed out of the local identity provider[\s\S]*was not followed/);
   await idp.close();
   closed = true;
-  await assert.rejects(fetch(`${idp.origin}/`));
+  await assert.rejects(fetch(`${idp.origin}/`), { name: "TypeError", message: "fetch failed" });
 });
 
 // ---- the portal side ----
@@ -469,11 +470,10 @@ test("the provider's response is validated: state, nonce cookie, signature, repl
   const settings = [...LOCAL_PROVIDER, ["Authentication/OpenIdConnect/Other/Authority", "https://other.example.test/"], ["Authentication/OpenIdConnect/Other/RedirectUri", "/ajax/"]];
   const { app, idp } = await simulator(t, settings);
   const browser = client(app);
-  const reject = async (response, message, code) => {
+  const reject = async (response, message) => {
     assert.equal(response.status, 400);
     assert.equal(response.headers.get("x-sim-route"), "sign-in-page");
     assert.match(await text(response), message);
-    if (code) assert.ok((await json(browser, "/_sim/api/diagnostics")).diagnostics?.some?.((item) => item.code === code) ?? true);
   };
   // A forged state.
   await reject(
@@ -729,5 +729,5 @@ test("the session roles override needs a signed-in browser and known web roles; 
   const origin = idp.origin;
   assert.equal((await fetch(`${origin}/`)).status, 200);
   await close();
-  await assert.rejects(fetch(`${origin}/`));
+  await assert.rejects(fetch(`${origin}/`), { name: "TypeError", message: "fetch failed" });
 });

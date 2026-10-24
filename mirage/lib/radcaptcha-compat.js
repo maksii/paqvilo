@@ -91,7 +91,7 @@
         if (captcha) initAudio(captcha);
       } else if (type === "hiddenField") createHiddenField(form, id, content);
       // The startup block (the "new image is ready" announcement) stays unrun: the page content
-      // security policy blocks the script the platform injects without a nonce (live refresh).
+      // security policy blocks the script the platform injects without a nonce.
     }
   };
   const refreshCaptcha = (form, target, panel) => {

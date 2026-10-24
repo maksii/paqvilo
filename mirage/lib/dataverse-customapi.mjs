@@ -3,7 +3,7 @@ import {dataverseScalarCause} from './dataverse-scalar-reader.mjs';
 // operations for unbound, entity-bound and collection-bound functions and actions. A pack handler answers an API; without
 // one, responses carry each response property at its type default.
 //
-// Power Fx-backed operations (Learn: functions-overview, low-code-plug-ins; customapi.FxExpressionId):
+// Power Fx-backed operations (customapi.FxExpressionId):
 // - a custom API whose fxexpressionid names an fxexpression row (a Dataverse Function, formerly an instant low-code
 //   plug-in) and has no pack handler evaluates that expression through api.providers.powerFx (the core Power Fx engine of
 //   power-fx.mjs, or a pack adapter) with the typed inputs as values and the caller's Dataverse tables as data sources
@@ -16,7 +16,7 @@ import {dataverseScalarCause} from './dataverse-scalar-reader.mjs';
 //   automated plug-in reports POWERFX_AUTOMATED_NOT_EVALUATED once per expression and the write answers the same 501.
 // describeCustomApis(api) is their capability record (behaviour while an evaluator answers) and
 // powerFxRequirements(store, powerFx) their preflight rows (power-fx:evaluator only while the engine is disabled).
-// unverified: the automated plug-in stage. The row carries no stage (the Accelerator registers a step); pre-operation is assumed.
+// The fxexpression row carries no stage, so automated plug-ins are assumed to run pre-operation.
 // ponytail: automated plug-ins run inside the record write hooks, not as sdkmessageprocessingstep rows of the plug-in
 // pipeline; registering them as steps of exported-plugins.mjs is the upgrade path when post-operation timing matters.
 import { readFile, readdir } from 'node:fs/promises';
@@ -52,7 +52,7 @@ const typeOf = (code) => TYPES[Number(code)];
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const int32 = (v) => Number.isInteger(v) && v >= -2147483648 && v <= 2147483647;
-// unverified: the value check for each type is this simulator's reading of the type name.
+// Assumed: the value check for each type follows the type name; native checks are not known.
 const CHECKS = {
   Boolean: (v) => typeof v === 'boolean',
   DateTime: (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v)),
@@ -65,7 +65,7 @@ const CHECKS = {
 };
 
 const defaultOf = (type) => (type === 'StringArray' || type === 'EntityCollection' ? [] : (DEFAULTS[type] ?? null));
-// unverified: the entity type used when logicalentityname is empty.
+// Assumed: crmbaseentity is the entity type when logicalentityname is empty.
 function edmOf(property) {
   const type = typeOf(property.type);
   if (EDM[type]) return EDM[type];
@@ -92,7 +92,7 @@ export function parseCustomApiFiles(files, { organizationId, fxexpressions = [] 
   const textOf = (node, name) => childText(node, name) || null;
   // customapi.FxExpressionId (a Dataverse Function): <fxexpressionid> holds the id, or a nested <fxexpressionid> id or
   // <uniquename> of an fxexpression of the same Solution (fxexpressions/, parseFxExpressionFiles), as <plugintypeid> does
-  // for a plug-in type (Learn: create-custom-api-solution). unverified: the exported element layout of this lookup.
+  // for a plug-in type. The exported element layout of this lookup is assumed.
   const fxReference = (root) => {
     const node = child(root, 'fxexpressionid');
     if (!node) return undefined;
@@ -154,8 +154,8 @@ const fxExpressionIdOf = (ns, name) => uuidV5(ns, `fxexpression:${key(name)}`);
 /**
  * Parses the Solution's fxexpression components (the Power Fx of a Dataverse Function or an automated low-code plug-in).
  * Each file is { path, text } relative to the fxexpressions folder: <name>/fxexpression.xml, root <fxexpression uniquename>
- * with the fxexpression columns as child elements (Learn: fxexpression table reference). Returns { fxexpression: rows }.
- * unverified: the exported folder and file layout; nothing was captured live, so it follows the customapis layout.
+ * with the fxexpression columns as child elements. Returns { fxexpression: rows }.
+ * The exported folder and file layout is assumed to follow the customapis layout.
  */
 export function parseFxExpressionFiles(files, { organizationId } = {}) {
   const ns = organizationId ?? FIXED_NAMESPACE;
@@ -198,14 +198,14 @@ const SEEDED = {
     set: 'customapis', id: 'customapiid',
     fields: { customapiid: GUID, uniquename: TEXT, name: TEXT, displayname: TEXT, description: TEXT, bindingtype: INT, boundentitylogicalname: TEXT, isfunction: BOOL, isprivate: BOOL, allowedcustomprocessingsteptype: INT, executeprivilegename: TEXT, workflowsdkstepenabled: BOOL, fxexpressionid: LOOKUP },
     // Navigation properties of the documented deep insert (CustomAPIRequestParameters, CustomAPIResponseProperties), and the
-    // fxexpression lookup of a Dataverse Function (Learn, customapi: fxexpression_customapi, navigation fxexpression).
+    // fxexpression lookup of a Dataverse Function (fxexpression_customapi, navigation fxexpression).
     relationships: {
       fxexpression: { schemaName: 'fxexpression_customapi', entity: 'fxexpression', from: 'fxexpressionid', to: 'fxexpressionid', many: false },
       CustomAPIRequestParameters: { schemaName: 'customapi_customapirequestparameter', entity: 'customapirequestparameter', from: 'customapiid', to: 'customapiid', many: true },
       CustomAPIResponseProperties: { schemaName: 'customapi_customapiresponseproperty', entity: 'customapiresponseproperty', from: 'customapiid', to: 'customapiid', many: true },
     },
   },
-  // unverified: entity set names of the two child tables.
+  // Assumed: entity set names of the two child tables.
   customapirequestparameter: {
     set: 'customapirequestparameters', id: 'customapirequestparameterid',
     fields: { customapirequestparameterid: GUID, uniquename: TEXT, name: TEXT, displayname: TEXT, description: TEXT, type: INT, logicalentityname: TEXT, isoptional: BOOL, customapiid: LOOKUP },
@@ -264,7 +264,7 @@ function checkParameters(store, row, c) {
     if (value === undefined || value === null) {
       // A function's URL must name every required parameter; without one native finds no resource (404 0x80060888).
       if (!p.isoptional && row.isfunction) throw notFound(row.uniquename);
-      // unverified: message text of the missing-parameter error.
+      // Native message text of the missing-parameter error not known.
       if (!p.isoptional) throw new DataError(`Required parameter '${p.uniquename}' is missing.`, 400, 'InvalidRequest', { innerCode: '0x80040203' });
       typed[p.uniquename] = value;
       continue;
@@ -280,7 +280,7 @@ function checkParameters(store, row, c) {
 function responseBody(c, row, properties, outputs = {}) {
   const single = properties.length === 1 && SINGLE.has(typeOf(properties[0].type)) ? properties[0] : null;
   if (single) {
-    // unverified: @odata.context and body of a lone Entity or EntityCollection response.
+    // Assumed: @odata.context and body of a lone Entity or EntityCollection response.
     const body = { '@odata.context': contextUrl(c.origin, c.version, edmOf(single)) };
     const value = outputs[single.uniquename];
     if (typeOf(single.type) === 'EntityCollection') return { ...body, value: Array.isArray(value) ? value : [] };
@@ -313,7 +313,7 @@ async function runHandler(api, handler, ctx, plugin, timeoutMs) {
   }
 }
 
-// P4: a custom API whose plugintypeid names a plug-in type with a pluginTypes handler runs that handler as its main operation.
+// A custom API whose plugintypeid names a plug-in type with a pluginTypes handler runs that handler as its main operation.
 // A customApis entry for the API wins. The plug-in's name for messages is the type's typename.
 function typeRegistration(store, row, pluginTypes) {
   const typeId = row.plugintypeid?.id ?? row.plugintypeid;
@@ -335,7 +335,7 @@ async function invoke(api, name, c, { handlers, pluginTypes = new Map(), timeout
     throw privilegeDeniedError(c.user, row.executeprivilegename, row.boundentitylogicalname ?? row.uniquename);
   const inputs = checkParameters(store, row, c);
   const properties = propertiesOf(store, row);
-  // unverified: a function must have a response property, so without one it is absent and its plug-in never runs.
+  // Assumed: a function must have a response property, so without one it is absent and its plug-in never runs.
   if (!properties.length && row.isfunction) throw notFound(name);
   const registration = handlers.get(key(name)) ?? typeRegistration(store, row, pluginTypes);
   // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes.
@@ -347,24 +347,23 @@ async function invoke(api, name, c, { handlers, pluginTypes = new Map(), timeout
     trace: (text) => plugin.traces.push(String(text)),
   };
   // A Function (fxexpressionid, no pack handler) evaluates its Power Fx expression; without an evaluator it answers 501.
-  // Neither a handler nor an fxexpression: the platform still runs the API and answers each response property's default
-  // (Learn, https://learn.microsoft.com/power-apps/developer/data-platform/custom-api#use-a-plug-in-to-include-logic-in-your-custom-api).
+  // Neither a handler nor an fxexpression: the platform still runs the API and answers each response property's default.
   const outputs = registration ? (await runHandler(api, registration.handler, ctx, plugin, timeoutMs))?.outputs ?? {}
     : fxIdOf(row) ? await fxOutputs(api, row, inputs, properties, c) : {};
-  // "When an action is performed" (https://learn.microsoft.com/power-automate/dataverse/action-trigger) is a business event of
+  // The flow trigger "When an action is performed" is a business event of
   // the committed action: a committed event (operation 'action') that the flow-trigger commit stager (flow-triggers.mjs) turns
   // into a durable job, so an action inside a changeset that rolls back never starts a flow. Outside a transaction the event
   // commits in its own one, which saves nothing unless a job was staged.
   const performed = () => store.recordCommittedEvent('', 'action', {}, [], { message: row.uniquename, table: row.bindingtype ? row.boundentitylogicalname : null, inputs, outputs });
   if (store.inTransaction?.()) performed();
   else await api.change(() => store.transact(performed, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }));
-  // unverified: an action with no response properties returns 204.
+  // Assumed: an action with no response properties returns 204.
   if (!properties.length) return { status: 204 };
   return { status: 200, body: responseBody(c, row, properties, outputs) };
 }
 
 // CSDL for one API; '' when it is left out (private, or a function with no response, which is invalid CSDL).
-// unverified: private APIs are left out of CSDL.
+// Assumed: private APIs are left out of CSDL.
 function csdlOf(store, name) {
   const row = apiNamed(store, name);
   if (!row || row.isprivate) return '';
@@ -392,13 +391,13 @@ const fxSynchronous = (powerFx) => powerFx.describe?.().operations?.some((item) 
 // A Power Fx error value (Error(), division by zero...) answers the plug-in fault envelope with its message. A refused
 // data-source write (a privilege or validation refusal behind the error value) answers that refusal itself: power-fx.mjs
 // runtimeError returns the data source's DataError, the same envelope the Web API gives.
-// unverified: native answers a Function's or plug-in's Power Fx error as an InvalidPluginExecutionException (0x80040265).
+// Assumed: native answers a Function's or plug-in's Power Fx error as an InvalidPluginExecutionException (0x80040265).
 const fxFailure = (error, plugin) => (error?.code === 'PowerFxError'
   ? pluginFailure({ pluginFault: 'InvalidPluginExecutionException', message: error.message }, plugin, TIMEOUT_MS)
   : error);
 
 // A Function's outputs: the expression evaluated with the typed inputs, its { value } record mapped onto the response
-// properties. Learn ("Supported functions" for functions in Dataverse): the function reads and writes tables (Collect,
+// properties. The function reads and writes tables (Collect,
 // Patch, Filter, LookUp) as the caller, in the transaction context: a synchronous evaluation runs as one atomic unit
 // (api.runAtomic), so an error value after a write leaves no row behind. An entity-bound function's target is ThisRecord.
 async function fxOutputs(api, row, inputs, properties, c) {
@@ -419,15 +418,13 @@ async function fxOutputs(api, row, inputs, properties, c) {
     throw fxFailure(error, plugin);
   }
   if (isObject(value)) return value;
-  // unverified: a scalar result fills a lone response property.
+  // Assumed: a scalar result fills a lone response property.
   return properties.length === 1 ? { [properties[0].uniquename]: value } : {};
 }
 
 // The plug-in runs as the calling user, so its changes to the target pass the caller's column security; a secured column
 // the caller may not write fails the write with the column-security refusal.
-// unverified: Learn ("Supported functions" for functions in Dataverse) says the expression's operations "run directly
-// against the function's IOrganizationService" in the transaction context; that the target changes are checked against the
-// caller's column security is this simulator's reading of that execution context.
+// Assumed: the expression runs through the caller's organization service, so column security applies to the target changes.
 function assertColumnWrites(api, c, mapping, operation, existing, columns) {
   const fls = api.fieldSecurity;
   const user = c.user ?? (c.userId != null ? api.principals.byId?.(c.userId) : null);
@@ -469,8 +466,8 @@ function runAutomated(api, reported, c, mapping, { operation, data, existing }) 
     throw evaluatorMissing(`Automated low-code plug-in '${name}'`);
   }
   const principal = c.user?.systemuserid ?? null;
-  // ThisRecord is the row as written; Learn (low-code plug-ins): Set on its columns changes the target ("columns are treated
-  // as global variables"), an Error() refuses the write with its message. A pack adapter's { value } record also changes
+  // ThisRecord is the row as written; Set on its columns changes the target (columns act as global variables), an Error()
+  // refuses the write with its message. A pack adapter's { value } record also changes
   // the target columns (the adapter contract).
   const host = dataverseHost(api, { c });
   const run = (step, evaluated) => {
@@ -601,15 +598,15 @@ export function customApiHandlers(packs = []) {
     typeof value === 'function' ? { handler: value, pluginType: null } : { handler: value.handler, pluginType: value.pluginType ?? null }]));
 }
 
+const automatedHooks = new WeakSet();
 /**
  * Seeds the customapi tables and supplies their current operation definitions to
  * the canonical registry. Row edits, signatures and deletions are visible on its
- * next read. Small embedded registries can retain the legacy sync-on-revision adapter.
+ * next read. A registry without setProvider is instead synced on each data revision.
  * Returns { sync, ready }; await ready to persist the seed.
- * options: handlers (from customApiHandlers), pluginTypes (the pack pluginTypes handlers keyed by typename, P4) and timeoutMs (the plug-in limit, default 2 minutes).
+ * options: handlers (from customApiHandlers), pluginTypes (the pack pluginTypes handlers keyed by typename) and timeoutMs (the plug-in limit, default 2 minutes).
  */
 // seed runs now, so the mappings are in memory for the caller; ready persists them in a store transaction.
-const automatedHooks = new WeakSet();
 export function install(api, options = {}) {
   const { store, registry } = api;
   const resolved = { handlers: options.handlers ?? new Map(), pluginTypes: options.pluginTypes ?? new Map(), timeoutMs: options.timeoutMs ?? TIMEOUT_MS };

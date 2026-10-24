@@ -1,5 +1,5 @@
 // Dataverse identity query functions (Microsoft.Dynamics.CRM.*) and the portal parity
-// of the shared condition operators. Invented schema and GUIDs only.
+// of the shared condition operators.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CRM_FUNCTIONS, compileOperator } from "../lib/dataverse-conditions.mjs";

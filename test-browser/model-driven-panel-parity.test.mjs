@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -16,9 +16,14 @@ import { readModelDrivenNativeSource } from '../lense/model-driven-native-compar
 import { panelUi } from '../lense/panel-ui.mjs';
 import { modelDrivenPanelData } from '../lense/model-driven-panel.mjs';
 
-export async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false } = {}) {
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions()); });
+after(() => browser?.close());
+
+async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false } = {}) {
   const owner = ownedFixture(t), root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-panel-parity-'));
-  owner.remove(() => fs.rm(root, {recursive:true,force:true}));
+  // Async Git reads started by a refresh can still hold the directory briefly on Windows.
+  owner.remove(() => fs.rm(root, {recursive:true,force:true,maxRetries:10}));
   const file = path.join(root,'x_script.js'), raw = 'window.sourceRevision="same";';
   await fs.writeFile(file,raw);
   const git = args => execFileSync('git',args,{cwd:root,windowsHide:true,stdio:'pipe'});
@@ -31,8 +36,7 @@ export async function modelPanelFixture(t, { nativeBody, withGit = true, archive
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   owner.add(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
   const origin=`http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch(browserLaunchOptions()); owner.add(()=>browser.close());
-  const context=await browser.newContext(),page=await context.newPage();page.setDefaultTimeout(5000);
+  const context=await browser.newContext(),page=await context.newPage();owner.add(()=>context.close());page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   const makeImported = data => ({assets:new Map([['x_script.js',{name:'x_script.js',file:archive?undefined:file,mime:'text/javascript',data:Buffer.from(data)}]]),resources:[{name:'x_script.js'}],layers:[{dir:root,documents:[]}],diagnostics:[]});
   const imported=makeImported(raw),overlay=createModelDrivenOverlay({origin,imported,mappings:[{path:'/%7b2026%7d/webresources/x_script.js',resource:'x_script.js'}],ownsRequest:request=>request.frame().page()===page});
@@ -118,10 +122,25 @@ test('comparison preserves UTF8 BOM and rejects a stale source revision without 
 
 test('a paused comparison evaluator releases its lease at the Node deadline and permits a fresh read', {timeout:20000}, async t => {
   const f = await modelPanelFixture(t), original = f.page.evaluate.bind(f.page);
-  f.page.evaluate = (fn, input) => fn.name === 'readModelDrivenNativeSource' ? new Promise(() => {}) : original(fn, input);
-  const started = Date.now(), token = f.inspector.snapshot().token;
-  const result = await original(token => window.__paqviloModelPanelApi({ token, name: 'diff', body: { rel: 'x_script.js' } }), token);
-  assert.equal(result.ok, false); assert.match(result.error, /13 seconds/); assert.ok(Date.now() - started < 15000);
+  // The deadline timer is created synchronously after the paused read starts; only that window uses
+  // mock timers, and the deadline elapses at once instead of after 13 real seconds.
+  let paused = 0, settled = false, settledBeforeDeadline;
+  f.page.evaluate = (fn, input) => {
+    if (fn.name !== 'readModelDrivenNativeSource') return original(fn, input);
+    paused++; t.mock.timers.enable({ apis: ['setTimeout'] });
+    queueMicrotask(async () => {
+      // A result released early would reach Node within this real 300 ms window (immediates are not mocked).
+      t.mock.timers.tick(12_999);
+      for (const end = performance.now() + 300; performance.now() < end;) await new Promise(resolve => setImmediate(resolve));
+      settledBeforeDeadline = settled;
+      t.mock.timers.tick(1); t.mock.timers.reset();
+    });
+    return new Promise(() => {});
+  };
+  const token = f.inspector.snapshot().token;
+  const result = await original(token => window.__paqviloModelPanelApi({ token, name: 'diff', body: { rel: 'x_script.js' } }), token).finally(() => { settled = true; });
+  assert.equal(paused, 1); assert.equal(settledBeforeDeadline, false, 'the paused read is still awaited 1 ms before the deadline');
+  assert.equal(result.ok, false); assert.match(result.error, /13 seconds/);
   f.page.evaluate = original;
   const fresh = await original(token => window.__paqviloModelPanelApi({ token, name: 'diff', body: { rel: 'x_script.js' } }), token);
   assert.equal(fresh.ok, true);
@@ -178,7 +197,7 @@ test('inspector drains shared-panel DOM and listeners even when owned discovery 
   assert.equal(f.page.listenerCount('console'),0);assert.equal(f.page.listenerCount('response'),0);
 });
 
-test('edge mapped nonGit and archive sources can bootstrap explicit native Diff', {timeout:15000}, async t=>{
+test('mapped nonGit and archive sources can bootstrap explicit native Diff', {timeout:15000}, async t=>{
  for(const archive of [false,true]){
   await t.test(archive?'archive':'directory',async child=>{
    const f=await modelPanelFixture(child,{withGit:false,archive});
@@ -190,7 +209,7 @@ test('edge mapped nonGit and archive sources can bootstrap explicit native Diff'
  }
 });
 
-test('edge Power Pages capability restores a visible tab after an Actions-tab UI state', {timeout:10000}, async t=>{
+test('Power Pages capability restores a visible tab after an Actions-tab UI state', {timeout:10000}, async t=>{
  const f=await modelPanelFixture(t),state=f.inspector.snapshot();await f.inspector.close();
  const data=modelDrivenPanelData(state,{cfg:{},ui:{open:true,tab:'actions'}});
  await f.page.evaluate(panelUi,{...data,token:'invented-pp-state',transport:undefined,modelDriven:false,capabilities:{actions:false,targets:false},items:[],notes:[],inspection:{active:false}});

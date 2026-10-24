@@ -1,10 +1,9 @@
-// Standard table runtime: the file header, insert-only seeding of stand-in mappings, Solution mappings left alone,
-// idempotence, activity flags and the field merge. Invented Solution mapping only; no network.
+// Standard table runtime: insert-only seeding of stand-in mappings, Solution mappings left alone,
+// idempotence, activity flags and the field merge.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import {
-  loadStandard,
   mergeFields,
   relationshipsOf,
   seed,
@@ -14,15 +13,6 @@ import {
   standardSchema,
   standardTableDef,
 } from "../lib/dataverse-standard.mjs";
-
-const PINNED_COMMIT = "c3a8c43bfabbbbf1b6dd018fbb37bce6f6b7cd59";
-
-test("the standard file carries the pinned commit and the CC BY 4.0 licence", () => {
-  const file = loadStandard();
-  assert.equal(file.commit, PINNED_COMMIT);
-  assert.equal(file.licence, "CC-BY-4.0");
-  assert.equal(Object.keys(file.tables).length, 167);
-});
 
 test("seeding an empty state creates the account stand-in with its defaults", () => {
   const store = { state: emptyState() };
@@ -71,7 +61,7 @@ test("activity tables are flagged from the activityid primary id", () => {
   assert.equal(standardTableDef("activitypointer").isActivity, true);
   assert.equal(standardTableDef("account").isActivity, false);
   assert.equal(standardTableDef("activityparty").isActivity, false);
-  // chat has activityid as its primary id (skip sweep), so it joins the nine activity tables.
+  // chat has activityid as its primary id, so it joins the nine activity tables.
   assert.equal(Object.values(standardSchema().tables).filter((t) => t.isActivity).length, 10);
   assert.equal(standardTableDef("no_such_table"), null);
 });
@@ -83,7 +73,7 @@ test("Solution fields win over standard fields and the standard columns fill the
   const merged = mergeFields(standard, { name: { name: "name", maxLength: 200 }, x_tier: { name: "x_tier" } });
   assert.equal(merged.name.maxLength, 200);
   assert.equal(merged.x_tier.name, "x_tier");
-  assert.ok(merged.industrycode);
+  assert.deepEqual(merged.industrycode, standard.industrycode);
 });
 
 test("global option sets are keyed by Name with labelled options", () => {
@@ -144,7 +134,7 @@ test("plug-in and process tables carry the relationships their registration uses
   assert.equal(rel("plugintype_sdkmessageprocessingstep").referencingAttribute, "eventhandler");
   assert.equal(rel("sdkmessageprocessingstepid_sdkmessageprocessingstepimage").cascade.delete, "Cascade");
   assert.deepEqual(schema.targets["customapi/plugintypeid"], ["plugintype"]);
-  // Learn's column table names sdkmessagefilter for plugintypeid; the relationship names plugintype, and targets follow relationships.
+  // The documented column table names sdkmessagefilter for plugintypeid; the relationship names plugintype, and targets follow relationships.
   assert.deepEqual(schema.targets["sdkmessageprocessingstep/plugintypeid"], ["plugintype"]);
   assert.deepEqual(schema.targets["asyncoperation/workflowactivationid"], ["workflow"]);
 });

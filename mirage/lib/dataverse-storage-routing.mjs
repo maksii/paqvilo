@@ -1,4 +1,4 @@
-// Storage routing for Dataverse bytes (ARCH §2.8). With a storage router (install option `storage`, else api.providers.storage):
+// Storage routing for Dataverse bytes. With a storage router (install option `storage`, else api.providers.storage):
 // - file and image column bytes live under provider route `dataverseFiles` as files/<fileId>; state.dataverse.files keeps
 //   metadata and `key` (dataverse-files.mjs reads and writes through setFileStorage);
 // - annotation.documentbody and activitymimeattachment.body move to route `annotations` as annotations/<rowId>/<n> in a
@@ -6,7 +6,7 @@
 //   bytes back only for responses that carry the column, so Web API and SOAP shapes do not change;
 // - provider puts happen before the row commits; released keys are deleted after commit when no committed row (or recycle-bin
 //   snapshot) still references them; install and reset migrate inline legacy bytes once and sweep unreferenced objects.
-// Without a router bytes stay in state; deleting a row still drops the file entries nothing references (03-B1).
+// Without a router bytes stay in state; deleting a row still drops the file entries nothing references.
 // - pack DATA rows (simulation/deep, the store's storageAdapter owns the table) keep bodies up to PACK_INLINE_BODY_LIMIT inline
 //   (base64, the legacy inline format), so a committed DATA file reads on any machine; larger bodies go to the provider;
 // - a referenced object the provider no longer has never fails a read: install/reset report one STORAGE_OBJECTS_MISSING,
@@ -298,7 +298,7 @@ async function install(api, { storage, diagnostic } = {}) {
     diagnostics: () => [...state.diagnostics],
   };
 
-  // 03-B1: a deleted row's file entries and blobs go once the delete has committed (cascades and portal deletes included).
+  // A deleted row's file entries and blobs go once the delete has committed (cascades and portal deletes included).
   state.unsubscribe = store.addCommittedEvents((events) => {
     const keys = events.filter((event) => event.operation === "delete").flatMap((event) => storedKeysOf(store, event.entity, event.row));
     if (keys.length) release(keys);
@@ -410,7 +410,7 @@ export async function attachmentBody(api, logical, row, { strict = false } = {})
   return key ? storedBody(api, logical, guidKey(row[ID_COLUMN[logical]]), key, { strict }) : null;
 }
 
-/** Capability record (ARCH §2.4): behaviour with storage routes, contract when bytes stay in state. */
+/** Capability record: behaviour with storage routes, contract when bytes stay in state. */
 function describe(api) {
   const state = api ? states.get(api) : null;
   const level = state?.files || state?.annotations ? "behaviour" : "contract";

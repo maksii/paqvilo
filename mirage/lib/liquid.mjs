@@ -9,7 +9,7 @@ import { FetchRenderCache } from './fetch-render-cache.mjs';
 // entities, knowledge, resx), the portal tags (fetchxml, editable, substitution, forms,
 // lists, views, search, chart, powerbi, codecomponent, redirect, outputcache, log,
 // manifest), web template resolution (active web templates by name, then the embedded
-// runtime templates) and the page shell. Behaviour and evidence: docs/liquid-parity.md.
+// runtime templates) and the page shell. Behaviour: docs/liquid-parity.md.
 import { normalizePortalPath, portalField, pageTemplateKind } from "./importer.mjs";
 import { pageAccess } from "./page-access.mjs";
 import { siteSetting, servicePages } from "./redirects.mjs";
@@ -83,9 +83,7 @@ export function renderShellResource(value, kind, { localOnly = false } = {}) {
   return `<script src="${htmlEscape(source)}"${typeof value === "object" && value.defer ? " defer" : ""}${typeof value === "object" && value.async ? " async" : ""}${type ? ` type="${htmlEscape(type)}"` : ""}></script>`;
 }
 
-// ---------------------------------------------------------------------------
-// Template resolution
-// ---------------------------------------------------------------------------
+// ---- Template resolution
 /**
  * Local adapters for runtime templates whose native implementation is a platform control:
  * entity lists render through the shared component renderer. The embedded poll and ad templates
@@ -127,9 +125,7 @@ const builtinSource = (name) =>
 const nameKey = (value) => String(value ?? "").trim().toLowerCase();
 const managedSource = (managed) => MANAGED_SOURCES[managed] ?? builtinSource(managed);
 
-// ---------------------------------------------------------------------------
-// Data values (Dataverse records become Liquid entity objects)
-// ---------------------------------------------------------------------------
+// ---- Data values (Dataverse records become Liquid entity objects)
 /** ISO date/time strings from the local store are Dataverse DateTime values. */
 function liquidValue(value) {
   if (typeof value === "string" && ISO_DATETIME.test(value)) return parseNetDate(value) ?? value;
@@ -389,7 +385,7 @@ class SettingsDrop extends LiquidDrop {
   }
 }
 
-/** Snippets render the Liquid they contain in the current context (observed live behaviour). */
+/** Snippets render the Liquid they contain in the current context. */
 class SnippetsDrop extends LiquidDrop {
   constructor({ snippets, engine, profiles, origin, diagnostics }) {
     super();
@@ -442,9 +438,7 @@ async function renderNested(engine, source, context) {
   return buffer.join("");
 }
 
-// ---------------------------------------------------------------------------
-// Portal tags
-// ---------------------------------------------------------------------------
+// ---- Portal tags
 const COMPONENT_SYNTAX = /^\s*(?:([\p{L}\p{Mn}\p{Nd}\p{Pc}]+)\s*=\s*)?/u;
 async function evaluateAttributes(markup, context) {
   const args = {};
@@ -517,9 +511,8 @@ class FetchXmlTag extends Block {
     try {
       results = (await host.fetchXml(xml, host.user(context), host.request(context), { right, fetchCache: context.state.fetchCache ??= new FetchRenderCache() })) ?? {};
     } catch (error) {
-      // FetchXmlQueryDrop: without a table permission granting read, results is an empty
       fetchDiagnostics(context, error);
-      // collection rather than an error; simulator infrastructure failures still propagate.
+      // FetchXmlQueryDrop: without a table permission granting read, results is an empty collection rather than an error; simulator infrastructure failures still propagate.
       if (isInfrastructureError(error) || Number(error?.status) !== 403) throw error;
       results = { entities: [], permission_granted: false, global_permission_granted: false };
     }
@@ -612,8 +605,8 @@ class ManifestTag extends RawBlock {
   async render() {}
 }
 /**
- * {% serverlogic name: 'record', operation: 'function', input: value, output: variable %} (Learn,
- * liquid-objects "serverlogic": the output object has success, status_code, data and raw_result).
+ * {% serverlogic name: 'record', operation: 'function', input: value, output: variable %} (the
+ * output object has success, status_code, data and raw_result).
  * Registered operations use the host's local adapter; unregistered calls receive a 501
  * result. An explicitly observed site uses 404 when the source has no matching record.
  */
@@ -639,8 +632,7 @@ class ServerLogicTag extends Tag {
   }
 }
 
-// ---- Component tags (forms, lists, views, search, charts). The
-// renderComponent(tag, args, contextSnapshot, portal) contract is unchanged. ----
+// ---- Component tags (forms, lists, views, search, charts)
 const COMPONENT_TAGS = ["entityform", "webform", "entitylist", "entityview", "searchindex", "powerbi", "codecomponent", "chart"];
 const BLOCK_COMPONENTS = new Set(["entitylist", "entityview", "searchindex"]);
 function componentTag(tag) {
@@ -679,7 +671,7 @@ function componentTag(tag) {
   };
 }
 
-// ---- Ad and poll services and placements (MasterPortal Areas/Cms AdController, PollController). ----
+// ---- Ad and poll services and placements (MasterPortal Areas/Cms AdController, PollController)
 // The services render one ad or poll: by id or name, or the first item a placement accepts where
 // the platform picks one at random (Cms/AdDataAdapter.SelectRandomAd, PollDataAdapter
 // .SelectRandomPoll). Items come from the ads and polls objects, which apply the data adapters'
@@ -737,9 +729,7 @@ function communityPlacementTag(portal, kind) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Renderer
-// ---------------------------------------------------------------------------
+// ---- Renderer
 /** Render exported templates with Power Pages tags and request-local data/identity. */
 export function createPortalRenderer(portal, options = {}) {
   const templateDiagnostics = new WeakMap();
@@ -1450,7 +1440,7 @@ export function createPortalRenderer(portal, options = {}) {
       const urls = (paths, type) => (paths ?? []).map((value) => renderShellResource(value, type)).join("\n");
       const contentStyles = shellProfile?.stylesheets || options.shellStyles ? null : await contentStylesheets(page, context);
       // Platform shell (lib/platform-manifest.mjs): the ResourceManager script and
-      // the platform bundles in live document order, in the Bootstrap 3 or 5 build that
+      // the platform bundles in native document order, in the Bootstrap 3 or 5 build that
       // Site/BootstrapV5Enabled selects. jQuery, moment and the compatibility adapters come
       // from the bundles' local equivalents. A captured shell supplies the deployed bundle
       // names; its other resources stay in their lists.
@@ -1521,9 +1511,9 @@ export function createPortalRenderer(portal, options = {}) {
   }
   /**
    * The platform layout frame of documents served outside the site map (modal form and quick
-   * view documents, live evidence): the language attributes, the site map state of the Page Not
-   * Found page, the home page title, the Head/Bottom snippet and the private-mode banner and
-   * offline bar that open the body.
+   * view documents): the language attributes, the site map state of the Page Not Found page,
+   * the home page title, the Head/Bottom snippet and the private-mode banner and offline bar
+   * that open the body.
    */
   async function serviceLayout(target = "/", extra = {}) {
     const { notFound, home } = servicePages(portal);
@@ -1557,8 +1547,7 @@ export function createPortalRenderer(portal, options = {}) {
    * ancestors, root first, then by display order. bootstrap.min.css is linked first on its own:
    * the Head/Bootstrap snippet when it exists, else the content style of that name (the platform
    * default /css/bootstrap.min.css is the platform bundle slot's). Hrefs are the web file URLs
-   * without a query: a site-wide cache-busting query was seen on one earlier capture of the
-   * reference site and not on later ones, so it is not derivable from the export.
+   * without a query: the platform's occasional cache-busting query is not derivable from the export.
    */
   async function contentStylesheets(page, context) {
     const path = [];
@@ -1696,7 +1685,6 @@ export function createPortalRenderer(portal, options = {}) {
 }
 const AUTO_ENCODE_ROOTS = new Set(["user", "request"]);
 
-/** weblinks['Set name'] or weblinks['<set guid>']. */
 /** WebLinkSetsDrop: a GUID key selects any active set by ID, other keys the set a name selects. */
 class WebLinkSetsDrop extends LiquidDrop {
   constructor(byName, byId = new Map()) {

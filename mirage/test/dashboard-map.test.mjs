@@ -1,4 +1,4 @@
-// dashboard-map.mjs: layer layout, product mapping, connectors, highlight classes, KPI sparklines and safe markup. Invented data only.
+// dashboard-map.mjs: layer layout, product mapping, connectors, highlight classes, KPI sparklines and safe markup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

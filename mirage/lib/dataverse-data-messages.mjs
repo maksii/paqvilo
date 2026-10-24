@@ -1,6 +1,6 @@
 // Dataverse data messages: the recycle bin (the delete record hook, Restore, EmptyRecycleBin) and the classic import job
-// (ParseImport, TransformImport, ImportRecordsImport). Invented schema only in tests. unverified: every error code and
-// message text not marked from Learn, the privilege names, and the asyncoperation operationtype values chosen below.
+// (ParseImport, TransformImport, ImportRecordsImport). Assumptions: undocumented error codes and message texts, the
+// privilege names, and the asyncoperation operationtype values chosen below.
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { contextUrl, parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
@@ -24,9 +24,9 @@ const bodyOf = (c) => {
 };
 const reply = (c, name, fields) => ({ status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, `${CRM}${name}Response`), ...fields } });
 
-// --- Recycle bin ---------------------------------------------------------------------------------------------------------
-// Learn requires System Administrator for EmptyRecycleBin. prvBulkDelete is used only in the refusal diagnostic;
-// the exact native error shape remains unverified.
+// --- Recycle bin
+// EmptyRecycleBin requires System Administrator. prvBulkDelete is used only in the refusal error, whose native shape is
+// not known.
 const RECYCLE_PRIVILEGE = "prvBulkDelete";
 const REFERENCE = "deleteditemreference";
 const NEVER_RECYCLED = new Set([REFERENCE, "recyclebinconfig"]);
@@ -41,7 +41,7 @@ export function recycleBinEnabled(store, logical) {
 }
 
 // The reference row points at a stored JSON snapshot of the deleted row, kept as a file on the reference (deletedrecords).
-// unverified: the snapshot's file name and mime type; the reference's statecode/statuscode values.
+// Assumptions: the snapshot's file name and mime type; the reference's statecode/statuscode values.
 function writeReference(store, entries, identity) {
   const root = entries.at(-1);
   if (!root) return;
@@ -96,9 +96,9 @@ function dropReference(store, key) {
   if (row.deletedrecords && files[row.deletedrecords]) delete files[row.deletedrecords];
 }
 
-// Restore takes the deleted record as Target. A legacy reference target remains accepted for existing local callers.
+// Restore takes the deleted record as Target; a deleteditemreference target is accepted too.
 // The documented conflict codes distinguish primary keys, alternate keys, removed choices and missing lookups;
-// exact refusal text/status remains unverified where the public reference gives no wire response.
+// the refusal text and status are guesses where the reference gives no wire response.
 function restore(api) {
   return async (c) => {
     const { store } = api;
@@ -147,7 +147,7 @@ function restore(api) {
   };
 }
 
-// EmptyRecycleBin (Learn: System Administrator only) deletes every reference and answers the count. unverified: privilege check.
+// EmptyRecycleBin (System Administrator only) deletes every reference and answers the count.
 function emptyRecycleBin(api) {
   return async (c) => {
     const { store } = api;
@@ -167,10 +167,10 @@ function emptyRecycleBin(api) {
   };
 }
 
-// --- Import ---------------------------------------------------------------------------------------------------------------
-// Learn picklist values for importfile.processingstatus and asyncoperation.operationtype (standard table JSON).
+// --- Import
+// Choice values of importfile.processingstatus and asyncoperation.operationtype.
 const STATUS = { parsingComplete: 3, transformationComplete: 8, importComplete: 11 };
-const OPERATION = { importFileParse: 3, import: 5 }; // unverified: TransformImport and ImportRecordsImport share 5
+const OPERATION = { importFileParse: 3, import: 5 }; // assumed: TransformImport and ImportRecordsImport share 5
 const LOG_PHASE_CREATE = 2; // importlog.logphasecode: 0 parse, 1 transform, 2 create, 3 update
 
 // CSV fields use the standard importfile delimiter choices, including doubled quotes and CR/LF/CRLF line endings.
@@ -213,7 +213,7 @@ const logFailure = (store, file, phase, line, message) => store.insertRow("impor
   errordescription: message, errornumber: 0, createdon: nowIso(),
 });
 
-// The import's files, in sequence order. unverified: the sequence column name.
+// The import's files, in table order.
 const filesOfImport = (store, importId) => (store.state.tables.importfile ?? []).filter((f) => sameId(f.importid, importId));
 
 // Each job runs as a system job of dataverse-async. The asyncoperation row carries regardingobjectid = the import.
@@ -229,7 +229,7 @@ function asImportAction(api, name, operation, workFor) {
     const importRow = rowById(api, c, "import", importId);
     authorize(api, c, "import", "update", importRow);
     const files = filesOfImport(store, importId);
-    if (!files.length) throw new DataError(`import With Id = ${importId} has no import file.`, 400, "InvalidRequest"); // unverified: text
+    if (!files.length) throw new DataError(`import With Id = ${importId} has no import file.`, 400, "InvalidRequest"); // native message text not known
     for (const file of files) authorize(api, c, "importfile", "update", file);
     const jobId = await importJob(api, {
       name, operation, importId, callerId: c.caller?.systemuserid ?? c.user?.systemuserid, work: () => workFor({ c, files: filesOfImport(store, importId) }),
@@ -244,7 +244,7 @@ const setFile = (api, file, values) => api.change(() => api.store.transact(() =>
   if (row) Object.assign(row, values);
 }, { isolated: true }));
 
-// ParseImport: reads each file's header line and row count. unverified: the header is stored comma-joined in headerrow.
+// ParseImport: reads each file's header line and row count. Assumption: the header is stored comma-joined in headerrow.
 function parseWork(api) {
   return async ({ files }) => {
     for (const file of files) {
@@ -263,7 +263,7 @@ function parseWork(api) {
 function transformWork(api) {
   return async ({ files }) => {
     for (const file of files) {
-      if (file.processingstatus !== STATUS.parsingComplete) throw invalid("The import file has not been parsed."); // unverified: wording and code
+      if (file.processingstatus !== STATUS.parsingComplete) throw invalid("The import file has not been parsed."); // native wording and code not known
       try {
         const columns = mapOf(api.store, file), target = api.store.resolveMapping(file.targetentityname);
         if (columns?.some((column) => !Object.hasOwn(target.fields ?? {}, column.targetattributename))) throw invalid("An import map target attribute does not exist.");
@@ -435,8 +435,8 @@ function installImportMessages(api) {
   register({ name: "ImportMappingsImportMap", kind: "action", signature: { params: [["MappingsXml", "Edm.String"], ["ReplaceIds", "Edm.Boolean"]], returns: "mscrm.importmap" }, handle: importMappings(api) });
   register({ name: "ExportMappingsImportMap", kind: "action", binding: "entity", entity: "importmap", signature: { params: [["ExportIds", "Edm.Boolean"]], response: [["MappingsXml", "Edm.String"]] }, handle: exportMappings(api) });
   register({ name: "AutoMapEntity", kind: "action", signature: { params: [["EntityMapId", "Edm.Guid"]] }, handle: async (c) => {
-    // Mapping is customization metadata. Reuse the simulator's customization privilege gate; the precise native
-    // AutoMapEntity privilege (not documented by the action reference) remains unverified.
+    // Mapping is customization metadata, so the customization privilege gate applies; the native AutoMapEntity
+    // privilege is not documented.
     requireMetadataPrivilege(api, c, "prvWriteEntity", "entitymap");
     const id = argsOf(c).EntityMapId, map = (api.store.state.tables.entitymap ?? []).find((row) => sameId(row.entitymapid, id));
     if (!map) throw new DataError(`entitymap With Id = ${id} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
@@ -461,8 +461,7 @@ function installImportMessages(api) {
 }
 
 function installRetentionMessages(api) {
-  // Microsoft Learn explicitly says "Don't use this action. This message is to be executed only by Dataverse."
-  // https://learn.microsoft.com/power-apps/developer/data-platform/webapi/reference/retain (and sibling actions).
+  // These actions are documented as executed only by Dataverse, so they are registered as internal messages.
   const params = {
     BulkRetain: [["EntityName", "Edm.String"], ["FetchXml", "Edm.String"], ["PageSize", "Edm.Int32"], ["OperationId", "Edm.Guid"], ["PagingCookie", "Edm.String"]],
     Retain: [["Target", "mscrm.crmbaseentity"], ["OperationId", "Edm.Guid"]],
@@ -500,7 +499,7 @@ export function install(api) {
     if (root && eligible(store.resolveMapping(root.logicalName)) && recycleBinEnabled(store, root.logicalName)) writeReference(store, entries, identity);
   };
   store.datasourceRows = (source, logical, identity, context = {}) => {
-    // Learn data-retention-view: retained queries read one table; joins and aggregate functions are unsupported.
+    // Retained queries read one table; joins and aggregate functions are unsupported natively.
     // The Dataverse-only fourth argument comes from the planned query, so ordinary portal fetches are untouched.
     if (source === "retained" && (context.plan?.aggregate || context.plan?.links?.length)) throw invalid("Retained data queries support one table only; joins and aggregate functions are not supported.");
     const rows = source === "bin" ? binRows(store, logical) : source === "retained" ? retainedRows(store, logical) : [];

@@ -68,12 +68,14 @@ test("notification capture rejects unsafe graphics and style values, and missing
       native.replace('<path d="M1 1"/>', "<script>bad</script>"),
       { headerSource: source },
     ),
+    /non-static element/,
   );
   assert.throws(() =>
     observedHeaderNotifications(
       native.replace("font-size:12px", "background:url(https://evil.example)"),
       { headerSource: source },
     ),
+    /count styles contain active content/,
   );
 });
 test("observed menu layout and blank severity templates preserve local text without native descriptions", () => {
@@ -119,6 +121,7 @@ test("observed menu layout and blank severity templates preserve local text with
     observedHeaderNotifications(html.replace("left:-230px", "position:fixed"), {
       headerSource: source,
     }),
+    /dropdown layout contains unsupported CSS/,
   );
 });
 

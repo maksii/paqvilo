@@ -1,7 +1,5 @@
 // Local portals Web API (/_api) against the documented Power Pages and
-// Dataverse Web API behaviour (power-pages/configure/web-api-overview,
-// read-operations, write-update-delete-operations,
-// web-api-http-requests-handle-errors; data-platform/webapi/query/*).
+// Dataverse Web API behaviour.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -156,7 +154,7 @@ async function start(t, { settings = SETTINGS, state = fixture(), observed = nul
     fetch(app.url + route, {
       method,
       headers: {
-        ...(token ? { __RequestVerificationToken: app.state().csrf } : {}),
+        ...(token ? { __RequestVerificationToken: app.csrf } : {}),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...headers,
       },
@@ -716,8 +714,8 @@ test("alternate keys are unique and duplicate primary keys are rejected", async 
   });
   const duplicateKey = await json("/_api/accounts", { method: "POST", body: { name: "Copy", accountnumber: "ACC-0001" } });
   assert.equal(duplicateKey.status, 412);
-  // Learn web-service-error-codes 0x80060892 DuplicateRecordEntityKey; 0x80040237 stays for If-None-Match: * and a duplicate
-  // primary key. unverified: portal /_api inner code for a duplicate alternate key not captured live (Learn web-service-error-codes)
+  // 0x80060892 DuplicateRecordEntityKey; 0x80040237 stays for If-None-Match: * and a duplicate primary key. The portal
+  // /_api inner code for a duplicate alternate key is not observed natively, so it is a guess.
   assert.equal(duplicateKey.body.error.innererror.code, "0x80060892");
   const duplicateId = await json("/_api/accounts", { method: "POST", body: { name: "Copy", accountid: G(1) } });
   assert.equal(duplicateId.status, 412);
@@ -738,7 +736,7 @@ test("anti-forgery tokens, disabled tables, configuration tables, entity set nam
   assert.equal(snippet.status, 404);
   assert.deepEqual(snippet.body.error, { code: "9004010E", message: "Configuration table adx_contentsnippet is not supported." });
   // Segments are entity set names: an unknown set, a logical name or a function names no
-  // entity set and answers 400 9004010A (Third, Second and Example live: /_api/ppsimparitymissings).
+  // entity set and answers 400 9004010A.
   for (const route of ["/_api/ppsimparitymissings?$top=1", "/_api/account", "/_api/WhoAmI"]) {
     const unknown = await json(route);
     assert.equal(unknown.status, 400, route);

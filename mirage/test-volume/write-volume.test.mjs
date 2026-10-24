@@ -3,7 +3,7 @@
 // It asserts the time ratio between the two sizes, never absolute milliseconds: the O(n) paths stay near 2x, and a
 // reintroduced per-row table scan (O(n^2)) lands near 4x. Run explicitly, not in the ordinary suite:
 //   node --test mirage/test-volume/write-volume.test.mjs
-// Invented x_ tables and GUIDs only; the record handlers run in process (no HTTP).
+// The record handlers run in process (no HTTP).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

@@ -195,7 +195,7 @@ export function createLocalMessageBus({ store, clock = store?.clock, ids = store
   return bus;
 }
 
-// --- Service Bus emulator: AMQP 1.0 transport in core (amqp-client.mjs) -------------------------------------------
+// ---- Service Bus emulator: AMQP 1.0 transport (amqp-client.mjs)
 const EMULATOR_SOURCES = Object.freeze([
   'https://learn.microsoft.com/azure/service-bus-messaging/overview-emulator',
   'https://learn.microsoft.com/azure/service-bus-messaging/test-locally-with-service-bus-emulator',
@@ -203,8 +203,8 @@ const EMULATOR_SOURCES = Object.freeze([
   'https://learn.microsoft.com/azure/service-bus-messaging/service-bus-amqp-protocol-guide',
 ]);
 const diagnostic = (code, message, severity = 'error') => ({ code, severity, message });
-const EMULATOR_AMQP_PORT = 5672; // "Azure Service Bus emulator uses the port 5672 by default" (test-locally-with-service-bus-emulator)
-const EMULATOR_MAX_MESSAGE = 256 * 1024; // emulator usage quota: message size 256 KB, not configurable (overview-emulator)
+const EMULATOR_AMQP_PORT = 5672; // Service Bus emulator default AMQP port.
+const EMULATOR_MAX_MESSAGE = 256 * 1024; // Emulator quota: message size 256 KB, not configurable.
 
 /**
  * The one reading of an emulator connection string: { host, bracketed, keyName, key } or { error: { code, message } }.
@@ -282,7 +282,7 @@ export const serviceBusEmulatorDescriptor = Object.freeze({
 });
 
 const stamp = (value) => (value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null);
-// unverified: Service Bus SDKs read the 16-byte delivery-tag as the lock token in .NET Guid byte order (first three groups little-endian).
+// Assumed: Service Bus SDKs read the 16-byte delivery-tag as the lock token in .NET Guid byte order (first three groups little-endian).
 function lockTokenOf(tag) {
   const raw = Buffer.from(tag ?? []);
   if (raw.length !== 16) return raw.toString('hex');
@@ -355,12 +355,12 @@ export function createServiceBusEmulatorBus({ id = 'servicebus-emulator', settin
       deliveryCount: (Number(message.header[4]) || 0) + 1,
       lockToken, lockedUntil: lockToken ? stamp(lockedUntil) : null,
       state: entity.endsWith(DEAD_LETTER_SUFFIX) ? 'deadLettered' : lockToken ? 'locked' : 'active',
-      // unverified: the emulator carries dead-letter reasons as the application properties DeadLetterReason/DeadLetterErrorDescription.
+      // Assumed: the emulator carries dead-letter reasons as the application properties DeadLetterReason/DeadLetterErrorDescription.
       deadLetterReason: DeadLetterReason, deadLetterDescription: DeadLetterErrorDescription,
     };
   }
   // A settlement goes on the link that received the message; a lock that is unknown, past x-opt-locked-until, or whose
-  // link or connection has gone is lost (Service Bus has no link recovery: Learn AMQP guide, Transfers).
+  // link or connection has gone is lost (Service Bus has no link recovery).
   function settle(lockToken, state, check = () => {}) {
     const lock = typeof lockToken === 'string' ? locks.get(lockToken) : null;
     if (!lock || lock.connection.failed || lock.link.failure || (lock.lockedUntil && lock.lockedUntil.getTime() <= now())) { locks.delete(lockToken); throw lockLost(); }
@@ -375,7 +375,7 @@ export function createServiceBusEmulatorBus({ id = 'servicebus-emulator', settin
     // What the synchronous I/O bridge (sync-io-bridge.mjs 'amqp-send') needs to open its own connection: the env:NAME
     // reference, never the connection string. The worker reads the variable from the shared process environment.
     syncIo: Object.freeze({ id, connectionString: settings.connectionString, amqpPort: port }),
-    /** Send to a queue or topic. scheduledEnqueueTime becomes x-opt-scheduled-enqueue-time (Learn AMQP guide, Message annotations).
+    /** Send to a queue or topic. scheduledEnqueueTime becomes the x-opt-scheduled-enqueue-time message annotation.
      * duplicate is null: Service Bus duplicate detection drops a duplicate silently, so the sender cannot tell. */
     async send(entity, body, options = {}) {
       const { value, properties, messageId = randomUUID(), scheduled } = messageInput(entity, body, options);
@@ -391,21 +391,20 @@ export function createServiceBusEmulatorBus({ id = 'servicebus-emulator', settin
      * within waitMs; with waitMs 0 the link is drained so only messages available now are returned. */
     async receive(entity, { mode = 'peekLock', maxMessages = 1, waitMs = 0 } = {}) {
       receiveInput(entity, mode, maxMessages);
-      // Learn AMQP guide: peek-lock deliveries are unsettled; receive-and-delete uses a pre-settled (snd-settle-mode settled) link.
+      // Peek-lock deliveries are unsettled; receive-and-delete uses a pre-settled (snd-settle-mode settled) link.
       const { connection, link } = await linkOf(receivers, `${mode}:${entity}`, (c) => c.attach({ role: 'receiver', address: entity, settled: mode === 'receiveAndDelete' }));
       const deliveries = await connection.take(link, maxMessages, Math.max(0, Number(waitMs) || 0));
       return deliveries.map((delivery) => view(entity, mode, connection, link, delivery));
     },
-    /** accepted: the message is removed (Learn AMQP guide, Flow control). */
+    /** accepted: the message is removed. */
     async complete(lockToken) { return settle(lockToken, described(CODE.accepted, [])); },
     /** modified with delivery-failed=true, undeliverable-here=false (messaging 3.4.5): the message is delivered again with a
-     * higher delivery count. Learn's JMS mapping (service-bus-java-how-to-use-jms-api-amqp) lists MODIFIED_FAILED as Abandon,
-     * which increases the delivery count, while RELEASED only unlocks.
-     * unverified: the emulator's handling of modified (the Azure SDKs abandon this way). */
+     * higher delivery count. The Service Bus JMS mapping lists MODIFIED_FAILED as Abandon, which increases the delivery count,
+     * while RELEASED only unlocks. The emulator's handling of modified is assumed (the Azure SDKs abandon this way). */
     async abandon(lockToken) { return settle(lockToken, described(CODE.modified, [true, false])); },
     /** rejected with the com.microsoft:dead-letter condition and the reason fields. */
     async deadLetter(lockToken, { reason, description } = {}) {
-      // unverified: the condition and info keys the emulator reads for an explicit dead-letter (the Service Bus SDKs send these).
+      // Assumed: the condition and info keys the emulator reads for an explicit dead-letter (the Service Bus SDKs send these).
       const info = new Map([[sym('DeadLetterReason'), reason ?? 'DeadLettered'], [sym('DeadLetterErrorDescription'), description ?? null]]);
       return settle(lockToken, described(CODE.rejected, [described(CODE.error, [sym('com.microsoft:dead-letter'), description ?? null, info])]), (lock) => {
         if (lock.entity.endsWith(DEAD_LETTER_SUFFIX)) throw new DataError('A dead-lettered message cannot be dead-lettered again', 400, 'InvalidOperation');
@@ -437,7 +436,7 @@ export function mappedEntities(settings, providerId) {
   return [...new Set(Object.values(settings?.endpoints ?? {}).filter((target) => target.startsWith(`${providerId}/`)).map((target) => target.slice(providerId.length + 1)))];
 }
 
-// --- providers.messaging config validation (report 03 §8.3) -----------------------------------------------------------
+// ---- providers.messaging config validation
 const PROVIDER_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const KINDS = new Set(['local-queue', 'servicebus-emulator']);
 const PACK_KIND = /^pack:[A-Za-z0-9@._-]+\/[A-Za-z0-9._-]+$/;

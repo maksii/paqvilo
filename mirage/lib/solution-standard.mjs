@@ -4,14 +4,13 @@
  * Solution exports contain only the components (and, for system tables, only the
  * customized columns) that were added to a solution. When the selected sources do
  * not declare an entity set, primary key or a built-in relationship, the importer
- * consults this catalogue. Every entry was read from the Microsoft Dataverse
- * table/entity reference page it cites (properties tables, fetched 2026-10-07);
- * nothing here is inferred from a project.
+ * consults this catalogue. Every entry cites its Microsoft Dataverse table reference
+ * page; nothing here is inferred from a project.
  */
 const PA = "https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/";
 const D365 = "https://learn.microsoft.com/dynamics365/developer/reference/entities/";
 
-// Microsoft Learn system choices checked 2026-10-13, omitted from partial exports. Solution
+// Documented system choices that partial exports omit. Solution
 // definitions always take precedence. English labels are a reference fallback,
 // not evidence of a site's translations or installed application extensions.
 const SYSTEM_OPTION_SETS = {

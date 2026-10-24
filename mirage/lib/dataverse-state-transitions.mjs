@@ -16,9 +16,8 @@
 // IsValidStateTransition is registered by dataverse-record-messages.mjs and is reused, not registered again: its handler asks
 // api.stateTransitions.isValid first, which calls the exported isValidStateTransition evaluator. On an enforced table this module answers IsValid with the same targets (the state must match
 // and the target must be allowed; a state change is valid here, as SetState makes it). Other tables keep that module's answer.
-// unverified: the refusal's inner code 0x8004F00E (InvalidStateTransition) is matched by its documented name only, and its 400
-// status is assumed. The brief's 0x80044331 is StringLengthTooLong on Learn, so it is not used.
-// unverified: the XML attribute order (sourcestatusid before tostatusid) is the order of the Learn example.
+// The refusal's inner code 0x8004F00E (InvalidStateTransition) is taken from its documented name; its 400 status is a guess.
+// The XML is matched with sourcestatusid before tostatusid, the order of the documented example; another order is not read.
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference } from "./data.mjs";
 import { packCheck, registerPackExport } from "./pack-exports.mjs";
@@ -66,8 +65,6 @@ export function validateTransitions(map) {
   return result;
 }
 
-// ---- Metadata and lookups -------------------------------------------------------------------------------------------
-
 // Exported metadata nests column facts under columnMetadata; runtime definitions may hold them at the top level.
 const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
 const statusOptions = (api, logical) => facts(api.store.fieldDefinition(logical, "statuscode", api.metadataFields)).options ?? [];
@@ -110,9 +107,6 @@ function noteUnconfigured(state, logical, from, source) {
   });
 }
 
-// ---- Write check ----------------------------------------------------------------------------------------------------
-
-// unverified: the refusal's outer status (400) is assumed for the native transition errors.
 const refuse = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: REFUSED });
 
 function checkWrite(state, api, mapping, existing, data) {
@@ -128,8 +122,6 @@ function checkWrite(state, api, mapping, existing, data) {
     }
   }
 }
-
-// ---- IsValidStateTransition reuse -----------------------------------------------------------------------------------
 
 const stripOrigin = (text) => text.trim().replace(/^https?:\/\/[^/]+/i, "").replace(/^\/?api\/data\/v\d+\.\d+\//i, "");
 
@@ -170,8 +162,6 @@ function isValidFor(api, state) {
     return { ...answer, body: { ...answer.body, IsValid: isValid } };
   };
 }
-
-// ---- Extension ------------------------------------------------------------------------------------------------------
 
 /**
  * install(api, { transitions, diagnostic }): transitions is the pack export (validateTransitions), diagnostic receives each

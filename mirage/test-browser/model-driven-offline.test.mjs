@@ -4,9 +4,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+
 
 const PROFILE = '77777777-7777-4777-8777-777777777791', COPPER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
@@ -19,8 +21,7 @@ test('the shell goes offline, edits a record in the offline copy, shows it pendi
   const appFile = path.join(dir, 'AppModules/x_example/AppModule.xml');
   await fs.writeFile(appFile, (await fs.readFile(appFile, 'utf8')).replace('</AppModuleComponents>', `<AppModuleComponent type="161" id="{${PROFILE}}"/></AppModuleComponents>`));
   const sim = await initial.start(); const origin = sim.origin ?? sim.url; t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = [];
+  const page = await chrome.page(t); const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const serverName = () => sim.store.tableRows('x_item').find(row => row.x_itemid === COPPER).x_name;
   const toggle = page.locator('#offline-mode');

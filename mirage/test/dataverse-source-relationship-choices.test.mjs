@@ -51,7 +51,7 @@ test('typed relationship expansions omit redundant JSON types without changing i
     new_child: { logicalName: 'new_child', entitySet: 'new_children', idColumn: 'new_childid', fields: { new_childid: { dataverseType: 'uniqueidentifier' }, new_parentid: { dataverseType: 'lookup' } } },
   } });
   const expanded = service.entity('new_parent', { expand: 'OneToManyRelationships' });
-  assert.ok(expanded.OneToManyRelationships.length);
+  assert.deepEqual(expanded.OneToManyRelationships.map(relationship => relationship.SchemaName), ['new_children']);
   assert.ok(expanded.OneToManyRelationships.every(relationship => !Object.hasOwn(relationship, '@odata.type')));
   assert.equal(service.oneToMany('new_parent')[0]['@odata.type'], '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata');
 });

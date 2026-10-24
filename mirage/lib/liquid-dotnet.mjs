@@ -32,9 +32,7 @@ const overflow = () =>
 const divideByZero = () =>
   new LiquidError("Attempted to divide by zero.", "System.DivideByZeroException");
 
-// ---------------------------------------------------------------------------
-// Numbers: JS integers model Int32/Int64; NetDecimal models System.Decimal.
-// ---------------------------------------------------------------------------
+// ---- Numbers: JS integers model Int32/Int64; NetDecimal models System.Decimal.
 const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 const DECIMAL_MAX_MANTISSA = 79228162514264337593543950335n;
@@ -253,9 +251,7 @@ export function toNetDecimal(value) {
   throw invalidCast(netTypeName(value), "System.Decimal");
 }
 
-// ---------------------------------------------------------------------------
-// Culture (en-US) and DateTime formatting
-// ---------------------------------------------------------------------------
+// ---- Culture (en-US) and DateTime formatting
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -462,9 +458,7 @@ export function parseNetDate(value) {
 /** Strict ISO date/time strings produced by the local data store are Dataverse DateTime values. */
 export const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-// ---------------------------------------------------------------------------
-// Encoders
-// ---------------------------------------------------------------------------
+// ---- Encoders
 /** System.Net.WebUtility.HtmlEncode (.NET Framework 4.5+, Strict conformance). */
 export function htmlEncode(value) {
   const text = String(value);
@@ -603,9 +597,7 @@ export const webUrlDecode = (value) => decodeBytes(String(value), { plus: true, 
 /** System.Web.HttpUtility.UrlDecode (also accepts %uXXXX). */
 export const httpUtilityUrlDecode = (value) => decodeBytes(String(value), { plus: true, unicodeEscapes: true });
 
-// ---------------------------------------------------------------------------
-// Type names, Convert.ChangeType and comparisons
-// ---------------------------------------------------------------------------
+// ---- Type names, Convert.ChangeType and comparisons
 export function netTypeName(value) {
   if (value == null) return "null";
   if (typeof value === "string") return "System.String";
@@ -738,9 +730,7 @@ export function netCompare(left, right) {
   return m === n ? 0 : m > n ? 1 : -1;
 }
 
-// ---------------------------------------------------------------------------
-// .NET regular expressions (DotLiquid 2.x legacy `replace`/`replace_first`)
-// ---------------------------------------------------------------------------
+// ---- .NET regular expressions (DotLiquid 2.x legacy `replace`/`replace_first`)
 /** Translate the common .NET regex dialect into an equivalent JavaScript RegExp. */
 export function netRegex(pattern, flags = "g") {
   let source = String(pattern);

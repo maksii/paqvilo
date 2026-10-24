@@ -12,7 +12,7 @@ const nodes = (root, name) => root.name === name ? [root] : descendants(root, na
 const value = (node, ...names) => names.map(name => childText(node, name) ?? node.attrs?.[name]).find(v => v !== undefined);
 const xmlOf = node => node ? node.children.length ? node.children.map(serializeXml).join('') : node.text.trim() : '';
 export const PAYLOAD_COMPONENTS = Object.freeze({ systemform: 60, savedquery: 26, workflow: 29, sitemap: 62, appmodule: 80, webresource: 61, key: 14 });
-// SiteMap is not yet in the pinned standard catalogue. Public table identity:
+// SiteMap is not in the pinned standard catalogue. Public table identity:
 // https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/sitemap
 const SITEMAP = { entitySet: 'sitemaps', primaryIdAttribute: 'sitemapid', ownershipType: 'OrganizationOwned', tableType: 'Standard' };
 

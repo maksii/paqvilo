@@ -1,6 +1,6 @@
-// The /_sim/ Infrastructure dashboard against a fake JSON host (invented data, loopback only): topology, node drawer,
+// The /_sim/ Infrastructure dashboard against a fake JSON host: topology, node drawer,
 // on-demand preflight, polling, the 503 "starting" state, 390 px layout, and the 404 fallback of an older host.
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import fs from "node:fs/promises";
@@ -70,23 +70,29 @@ async function host(t, { dashboard }) {
   return { origin: `http://127.0.0.1:${server.address().port}`, calls };
 }
 
-async function open(t, origin, path = "/__sim/") {
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
+async function open(t, origin, { clock = false } = {}) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  t.after(() => context.close());
+  const page = await context.newPage();
   page.setDefaultTimeout(10_000);
+  // The dashboard polls every 5 s; a fake page clock lets the test trigger each poll.
+  if (clock) await page.clock.install();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(origin + path);
+  await page.goto(origin + "/__sim/");
   return { page, errors };
 }
 
 test("the dashboard lands first, renders every node, opens a node drawer, runs preflight, polls and fits 390 px", { timeout: 60_000 }, async (t) => {
-  // Requests 1-2 (route probe, first load) answer 503 starting; then 3 requests; later polls 7 requests.
+  // Requests 1-2 (route probe, first load) answer 503 starting; each later request reports its own count.
   const { origin, calls } = await host(t, {
-    dashboard: (res, count) => (count <= 2 ? res.writeHead(503).end(JSON.stringify({ status: "starting" })) : res.end(JSON.stringify(payload(count === 3 ? 3 : 7)))),
+    dashboard: (res, count) => (count <= 2 ? res.writeHead(503).end(JSON.stringify({ status: "starting" })) : res.end(JSON.stringify(payload(count)))),
   });
-  const { page, errors } = await open(t, origin);
+  const { page, errors } = await open(t, origin, { clock: true });
   await page.getByRole("heading", { name: "Infrastructure", exact: true }).waitFor();
   await page.getByText("The runtime is still starting.", { exact: false }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Infrastructure", exact: false }).getAttribute("aria-current"), "page");
@@ -121,19 +127,18 @@ test("the dashboard lands first, renders every node, opens a node drawer, runs p
   assert.ok(calls.some((call) => call === "/__sim/api/preflight?requires=table%3A*&requires=cloud-flow%3A*&strict=true"));
 
   // The 5 s poll re-renders with the new activity; the preflight result stays.
-  await page.waitForFunction(() => document.querySelector('.dm-kpi[data-kpi="requests"] .dm-kpi-value')?.textContent === "7", null, { timeout: 15_000 });
-  assert.equal(await results.count(), 2);
-  // Pack descriptors print their ids (RU2-05).
-  assert.match(await page.locator('[data-ui-section="dashboard-configuration"]').textContent(), /Data packsinvented-pack/);
-
-  // A poll keeps keyboard focus and the open drawer element (RU2-04).
   const polled = () => calls.filter((call) => call === "/__sim/api/dashboard").length;
   const nextPoll = async () => {
-    const before = polled(), deadline = Date.now() + 12_000;
-    while (polled() <= before && Date.now() < deadline) await page.waitForTimeout(200);
-    assert.ok(polled() > before, "a poll happened");
-    await page.waitForTimeout(300); // the poll's render
+    const expected = String(polled() + 1);
+    await page.clock.fastForward(5000);
+    await page.waitForFunction((expected) => document.querySelector('.dm-kpi[data-kpi="requests"] .dm-kpi-value')?.textContent === expected, expected);
   };
+  await nextPoll();
+  assert.equal(await results.count(), 2);
+  // Pack descriptors print their ids.
+  assert.match(await page.locator('[data-ui-section="dashboard-configuration"]').textContent(), /Data packsinvented-pack/);
+
+  // A poll keeps keyboard focus and the open drawer element.
   await page.locator('[data-node="host:portal"]').click();
   await page.evaluate(() => { document.getElementById("dashboard-drawer").dataset.marker = "kept"; });
   await nextPoll();

@@ -1,5 +1,5 @@
 // The /_sim/ administration page and its assets on both hosts: the shared CSP (runtime-admin.mjs ADMIN_CSP), nosniff,
-// text/javascript modules, and 404 for anything outside the admin asset pattern (D1, D10). Invented data only.
+// text/javascript modules, and 404 for anything outside the admin asset pattern.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

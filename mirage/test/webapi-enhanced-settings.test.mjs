@@ -75,7 +75,7 @@ for (const [format, files] of Object.entries(FORMATS))
     const call = (route, options = {}) =>
       fetch(app.url + route, {
         ...options,
-        headers: { __RequestVerificationToken: app.state().csrf, "content-type": "application/json", ...(options.headers ?? {}) },
+        headers: { __RequestVerificationToken: app.csrf, "content-type": "application/json", ...(options.headers ?? {}) },
       });
     let response = await call("/_api/contacts?$select=fullname");
     assert.equal(response.status, 200);

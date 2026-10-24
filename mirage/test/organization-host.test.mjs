@@ -1,6 +1,6 @@
 // Shared host composition (lib/organization-host.mjs): both hosts compose through it. A runtime switch of a plug-in step to
-// clr in the standalone host now prepares the CLR runtime before the choice is stored (01-B4), close runs in one order and
-// the operation catalogue is memoised while the store revision and the sources are unchanged. Invented sources only.
+// clr in the standalone host prepares the CLR runtime before the choice is stored, close runs in one order and
+// the operation catalogue is memoised while the store revision and the sources are unchanged.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -30,7 +30,8 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
   // A trusted descriptor for the exact step and type whose assembly does not exist: preparing it must fail.
   const descriptor = { trust: 'execute-local-assembly', root, assembly: 'Invented.Missing.dll', typeName: 'Invented.WidgetRules.Validate',
     sdkRoot: root, sdkAssembly: 'Invented.Sdk.dll', cacheRoot: path.join(root, 'cache'), timeoutMs: 1000,
-    context: { initiatingUserId: GUID(1), organizationId: GUID(2), businessUnitId: GUID(3) } };
+    context: { initiatingUserId: GUID(1), organizationId: GUID(2), businessUnitId: GUID(3) },
+    serviceProfile: { userId: GUID(1), evidence: 'invented test profile', grants: [] } };
   const pack = { id: 'invented-clr', name: 'Invented CLR', description: 'Invented', matches: () => true, presets: () => ({}), pluginRuntimes: { [pluginId(3)]: descriptor } };
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     packs: [pack], simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
@@ -38,10 +39,13 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
   const key = `plugin-step:${pluginId(3)}`;
   const items = await (await fetch(`${sim.url}/_sim/api/operations`)).json();
   assert.equal(items.items.find((item) => item.key === key)?.clrAvailable, true, 'the step has its trusted descriptor');
-  const response = await fetch(`${sim.url}/_sim/api/config`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+  const response = await fetch(`${sim.url}/_sim/api/config`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ operations: { [key]: { mode: 'clr' } } }) });
   const answer = await response.text();
-  assert.notEqual(response.status, 200, answer);
+  // Windows reads the missing assembly; other platforms refuse the built-in CLR host before reading it.
+  assert.ok(response.status >= 400, answer);
+  if (process.platform === 'win32') assert.match(JSON.parse(answer).error.message, /Invented\.Missing\.dll/);
+  else assert.equal(JSON.parse(answer).error.code, 'LocalPluginClrUnavailable', answer);
   assert.equal(sim.store.state.simulator.operations?.[key], undefined, 'nothing is stored when preparation fails');
 });
 
@@ -56,7 +60,7 @@ async function composed(t) {
 }
 
 test('close runs backend, organization, Dataverse API and managed identity in that order', async (t) => {
-  const { store, host } = await composed(t);
+  const { host } = await composed(t);
   await host.createBackend();
   const organization = await host.createOrganization({ settings: dataverseSettings({ enabled: true, tds: { enabled: false } }), change: (fn) => fn() });
   await host.startApi({ host: '127.0.0.1' });
@@ -71,7 +75,6 @@ test('close runs backend, organization, Dataverse API and managed identity in th
   spy('managed-identity', host.managedIdentity);
   await host.close();
   assert.deepEqual(order, ['backend', 'organization', 'api', 'managed-identity']);
-  assert.ok(store);
 });
 
 test('the operation catalogue is memoised on an unchanged store revision and rebuilt after a commit', async (t) => {

@@ -96,7 +96,6 @@ export function plannedTopology(snapshot = {}) {
     const providers = settings.providers ?? {};
     if (plain(providers.storage) || plain(providers.routes)) {
       node('provider:storage', 'Storage', 'planned', { providers: Object.keys(providers.storage ?? {}) });
-      // File columns and note bodies go through the organization's storage routing; the portal stages uploads there.
       // File columns and notes go through the organization's storage routing; the portal reads web files and stages uploads.
       edge('org:store', 'provider:storage', 'storage', 'file columns and notes (storage routing)'); if (item.kind === 'power-pages') edge('host:portal', 'provider:storage', 'storage', 'web files and uploads');
       for (const [route, target] of Object.entries(providers.routes ?? {})) {

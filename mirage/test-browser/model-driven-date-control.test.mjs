@@ -2,14 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+// Control-only tests render into one shared simulator page origin; saved-record tests own theirs.
+const scope = fileScope();
+let sharedApp;
 
 async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ timezoneId, viewport: { width: 1200, height: 900 } }); page.setDefaultTimeout(5000);
+  const { origin } = await (sharedApp ??= modelDrivenFixture(scope));
+  const page = await chrome.page(t, { timezoneId, viewport: { width: 1200, height: 900 } }); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx');
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
   await page.evaluate(async () => {
@@ -106,7 +109,7 @@ test('calendar clamps its actual responsive width into the viewport in either fo
   }
 });
 
-test('date-time controls preserve independent wall time, convert user-local values and validate time edits', async t => {
+test('date-time controls preserve independent wall time, convert user-local values, validate time edits and keep date-only calendar dates', async t => {
   const page = await fixture(t);
   assert.equal(await page.getByRole('combobox', { name: 'Independent Time', exact: true }).inputValue(), '2:30 PM');
   assert.equal(await page.getByRole('combobox', { name: 'Local Time', exact: true }).inputValue(), '10:30 AM');
@@ -119,6 +122,12 @@ test('date-time controls preserve independent wall time, convert user-local valu
   await page.evaluate(() => fields.independent.setValue('2024-02-29T23:45:00Z'));
   assert.equal(await page.getByRole('combobox', { name: 'Independent', exact: true }).inputValue(), '2/29/2024');
   assert.equal(await page.evaluate(() => fields.independent.read()), '2024-02-29T23:45:00.000Z'); assert.equal(await page.evaluate(() => submits), 0);
+  const dateOnly = await page.evaluate(async () => {
+    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const control = renderControl({ name: 'x_date', type: 'date', dateTimeBehavior: 'DateOnly' }, '2026-06-15T14:30:00Z');
+    return { input: control.primary.value, time: control.element.querySelector('.date-time-input')?.value, value: control.read() };
+  });
+  assert.deepEqual(dateOnly, { input: '6/15/2026', time: undefined, value: '2026-06-15' }, 'a date-only control keeps the stored calendar date of a timestamp');
 });
 
 test('calendar stays inside a scrolled record body below its pinned header and dismisses before scrolling under it', async t => {
@@ -171,8 +180,7 @@ for (const kind of ['portal', 'model-driven']) test(`saved UserLocal controls ho
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('<control id="unimplemented"/>', '<control datafieldname="x_appointment"/>'));
   await sim.reload();
   await sim.store.transact(() => { sim.store.state.settings.timeZoneOffsetMinutes = 0; sim.store.state.tables.x_item[0].x_appointment = '2026-10-22T09:30:00Z'; });
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ timezoneId: 'Europe/Kyiv' });
+  const page = await chrome.page(t, { timezoneId: 'Europe/Kyiv' });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   const time = page.getByRole('combobox', { name: 'Appointment Time', exact: true }); await time.waitFor();
   assert.equal(await time.inputValue(), '9:30 AM', 'the configured staff offset takes precedence over browser Kyiv time');

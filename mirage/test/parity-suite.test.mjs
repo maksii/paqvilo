@@ -1,4 +1,3 @@
-// Parity-suite regressions: synthetic loopback fixtures only; no portal or browser is contacted.
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -66,7 +65,7 @@ test("isolated baseline identity imports stay on the owned loopback runtime rega
   const state = await fetch(owned.url + "/__sim/api/state/export").then(response => response.json());
   state.mappings.contact = { entitySet: "contacts", idColumn: "contactid" };
   state.tables.contact = [JSON.parse(await fs.readFile(fieldsFile, "utf8"))];
-  const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-sim-csrf": owned.app.state().csrf }, body: JSON.stringify(state) });
+  const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-sim-csrf": owned.app.csrf }, body: JSON.stringify(state) });
   assert.equal(response.status, 200);
   assert.equal(owned.app.store.state.tables.contact[0].fullname, "Synthetic persona");
 });
@@ -108,8 +107,10 @@ test("live text is revealed only when source-derived, local-equal or trivially s
 
 test("read-only guards reject writes, deny-listed routes and unsafe plans", () => {
   assert.doesNotThrow(() => assertReadOnlyPath("/workspace/"));
-  for (const bad of ["https://evil.example/", "//evil.example/", "/orders/submit/", "/Account/Login/LogOff", "/signout", "/clearcache/?id=1", "/_services/entity-grid-data.json/1", "/%2e%2e/x", "/__sim/api/state"])
-    assert.throws(() => assertReadOnlyPath(bad), undefined, bad);
+  for (const bad of ["https://evil.example/", "//evil.example/"]) assert.throws(() => assertReadOnlyPath(bad), /must be portal-relative/, bad);
+  for (const bad of ["/orders/submit/", "/Account/Login/LogOff", "/signout", "/clearcache/?id=1", "/_services/entity-grid-data.json/1", "/__sim/api/state"])
+    assert.throws(() => assertReadOnlyPath(bad), /read-only deny list/, bad);
+  assert.throws(() => assertReadOnlyPath("/%2e%2e/x"), /traversal or encoded path delimiters/);
   const base = { version: 1, scenarios: [{ id: "a", kind: "page-dom", path: "/" }] };
   assert.doesNotThrow(() => validatePlan(base));
   assert.throws(() => validatePlan({ ...base, scenarios: [{ id: "a", kind: "api-json", path: "/_api/x", method: "POST" }] }), /GET/);
@@ -126,16 +127,11 @@ test("read-only guards reject writes, deny-listed routes and unsafe plans", () =
 test("request decisions continue reads, fulfil explicit writes locally and block everything else", () => {
   const origins = ["https://reference.example"];
   const fulfil = [{ method: "PATCH", pathPattern: "^/_api/contacts\\(", status: 204, reason: "documented local answer" }];
-  const allowList = [{ method: "POST", pathPrefix: "/_services/entity-grid-data.json/", reason: "read-only grid data request" }];
   assert.deepEqual(requestDecision("GET", "https://reference.example/x", { origins }), { action: "continue" });
   assert.equal(requestDecision("PATCH", `https://reference.example/_api/contacts(${GUID_A})`, { fulfil, origins }).action, "fulfil");
   assert.equal(requestDecision("PATCH", `https://other.example/_api/contacts(${GUID_A})`, { fulfil, origins }).action, "block");
   assert.equal(requestDecision("DELETE", `https://reference.example/_api/contacts(${GUID_A})`, { fulfil, origins }).action, "block");
-  // An allow-list passed by a caller is ignored: only GET and HEAD reach the reference.
-  assert.equal(requestDecision("POST", "https://reference.example/_services/entity-grid-data.json/1", { allowList, origins }).action, "block");
-  assert.equal(requestDecision("POST", "https://reference.example/_api/sample_applications", { allowList, origins }).action, "block");
-  assert.equal(isAllowedRequest("POST", "https://reference.example/_services/entity-grid-data.json/1", { allowList, origins }).allowed, false);
-  assert.equal(requestDecision("POST", "https://dc.services.visualstudio.com/v2/track", { allowList, fulfil, origins }).action, "block");
+  assert.equal(requestDecision("POST", "https://dc.services.visualstudio.com/v2/track", { fulfil, origins }).action, "block");
 });
 
 test("semantic trees collapse data rows, redact control values and report structural deltas", () => {

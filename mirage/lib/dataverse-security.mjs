@@ -15,8 +15,8 @@ const OPERATION_RIGHT = { read: 'Read', create: 'Create', update: 'Write', write
 const ORGANIZATION_EXCLUDED = new Set(['Assign', 'Share']);
 const ROLE_NAMES = ['System Administrator', 'System Customizer', 'Basic User'];
 // Miscellaneous privileges (no table). Granted at Global to System Administrator and System Customizer only,
-// except the three System Administrator only privileges: the two bypass privileges and prvBulkDelete (Microsoft: a system
-// administrator has BulkDelete by default; other users must be granted it, and System Customizer is not documented as holding it).
+// except the three System Administrator only privileges: the two bypass privileges and prvBulkDelete (a system
+// administrator has BulkDelete by default; other users, System Customizer included, must be granted it).
 const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete']);
 const GLOBAL_PRIVILEGES = [
   'prvActOnBehalfOfAnotherUser', 'prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete',
@@ -131,20 +131,20 @@ const PLATFORM_NOUN = {
 export const isOrganizationTable = logical => Object.hasOwn(TABLE_DEFS, logical) || Object.hasOwn(PLATFORM_NOUN, logical);
 // Intersect tables own no privileges; Dataverse checks the parent table's (the table whose relationship they serve).
 // Activity parties follow their activity: the Activity privileges, tested against the activity row (see parentRowOf).
-// The other None-owned tables below take their parent's privileges too (Learn's table pages give OwnershipType None and the
-// lookup to the parent; the privilege mapping itself is unverified: live capture). Their privileges are not seeded (tableInfo).
+// The other None-owned tables below take their parent's privileges too (OwnershipType None with a lookup to the parent; the
+// privilege mapping itself is assumed). Their privileges are not seeded (tableInfo).
 const INTERSECT_PARENT = {
   systemuserroles: 'systemuser', teammembership: 'team', teamroles: 'team', roleprivileges: 'role', activityparty: 'activitypointer',
   calendarrule: 'calendar', appmodulecomponent: 'appmodule', attributemaskingrule: 'maskingrule', workflowlog: 'workflow',
   activitymimeattachment: 'activitypointer', solutioncomponent: 'solution', dependency: 'solution',
-  // skip sweep 2026-10-20: None-owned tables and queue membership (intersect rows), each under its parent's privileges.
+  // None-owned tables and queue membership (intersect rows), each under its parent's privileges.
   queuemembership: 'queue', postregarding: 'post', privilegecheckerlog: 'privilegecheckerrun', knowledgearticleviews: 'knowledgearticle',
   processstage: 'workflow', reportcategory: 'report', rollupfield: 'metric', duplicaterecord: 'duplicaterule',
   columnmapping: 'importmap', picklistmapping: 'importmap', lookupmapping: 'importmap', ownermapping: 'importmap',
   importentitymapping: 'importmap', transformationmapping: 'importmap', transformationparametermapping: 'importmap',
   msdyn_aiconfiguration: 'msdyn_aimodel',
 };
-// Timezone tables are platform reads open to every enabled user without a privilege. Learn's table pages do not state this: unverified.
+// Timezone tables are platform reads open to every enabled user without a privilege (assumed; not documented).
 const PUBLIC_READ = new Set(['timezonedefinition', 'timezonerule', 'timezonelocalizedname']);
 // Customer addresses follow their parent account or contact (objecttypecode). Without a row (create, lists) either parent's privilege passes.
 // ponytail: create (no row) checks either parent's privilege, not the body's parent; records would need to pass the body to narrow it.
@@ -163,18 +163,17 @@ export const privilegeNounOf = (logical, table, mapping) => {
 const schemaTableOf = (schema, logical) => (typeof schema === 'function' ? schema() : schema)?.tables?.[logical];
 
 // Platform tables get only the Basic User depths listed here, per right; every other right on them is none for Basic User.
-// System Job (AsyncOperation) is user-owned (Microsoft Learn), so Basic reads only its own rows and its teams'. The
-// userquery and savedquery depths follow the brief; the Customer Insights Basic User baseline lists userquery Read, Write
-// and Create at Basic, and the pages checked do not confirm the savedquery Global read.
+// System Job (AsyncOperation) is user-owned, so Basic reads only its own rows and its teams'. The userquery depths and the
+// savedquery Global read are assumed (a published Basic User baseline lists userquery Read, Write and Create at Basic).
 const PLATFORM_BASIC = {
   asyncoperation: { Read: DEPTH.Basic },
   userquery: { Create: DEPTH.Basic, Read: DEPTH.Basic, Write: DEPTH.Basic, Delete: DEPTH.Basic, Append: DEPTH.Basic, AppendTo: DEPTH.Basic, Assign: DEPTH.Basic, Share: DEPTH.Basic },
   savedquery: { Read: DEPTH.Global },
 };
-// unverified: live capture. Everything else in PLATFORM_NOUN gets no Basic User grant: bulkdeleteoperation, bulkdeletefailure,
+// Everything else in PLATFORM_NOUN gets no Basic User grant: bulkdeleteoperation, bulkdeletefailure,
 // backgroundoperation, audit (its reads are the miscellaneous prvReadAuditSummary and prvReadRecordAuditHistory, administrators only),
 // the custom API tables, duplicaterule(condition), the field security tables, teamtemplate, queueitem and environmentvariablevalue
-// (organization depth for the administrators only; unverified: live capture for those depths).
+// (organization depth for the administrators only; those depths are assumed).
 const PLATFORM_TABLES = new Set(Object.keys(PLATFORM_NOUN));
 
 function mappingFor(logical, def) {
@@ -303,22 +302,11 @@ function roleIdByName(store, organizationId, role) {
   return rowsOf(store, 'role').find((row) => key(row.name) === key(role))?.roleid ?? roleIdOf(organizationId, role);
 }
 
-// Privilege depth names of a Solution role file -> privilegedepthmask (Learn: Basic 1, Local 2, Deep 4, Global 8).
+// Privilege depth names of a Solution role file -> privilegedepthmask (Basic 1, Local 2, Deep 4, Global 8).
 const depthMaskOf = (depth) => DEPTH[Object.keys(DEPTH).find((name) => key(name) === key(depth))] ?? (Number.isInteger(Number(depth)) && Object.values(DEPTH).includes(Number(depth)) ? Number(depth) : null);
 const grantSignature = (store, roleId) => rowsOf(store, 'roleprivileges').filter((g) => sameId(refId(g.roleid), roleId))
   .map((g) => `${key(refId(g.privilegeid))}:${g.privilegedepthmask}`).sort().join('|');
 
-/**
- * Imports Solution security definitions (solution-inventory.mjs securityDefinitions) into the security tables:
- * - a role row under the root business unit, keeping the Solution's role id, with its roleprivileges resolved by privilege name;
- *   an unknown privilege name is skipped and reported (SOLUTION_ROLE_PRIVILEGE_UNKNOWN), never granted;
- * - a field security profile row, keeping its Solution id, with its fieldpermission rows.
- * Users and teams get the roles and profiles from project data (settings users' roles, /_sim/, the Web API associations).
- * A managed definition is a layer on the role's stack (state.dataverse.managedLayers, kind securityrole): a new definition
- * replaces the privilege set (Learn how-managed-solutions-merged, "Replace behavior for custom security roles") unless the
- * role was changed after the last import (AddPrivilegesRole, ReplacePrivilegesRole: an unmanaged layer on top), which stays.
- * An unmanaged definition is applied when the role is new or unchanged since its last import. Returns the diagnostics.
- */
 // An uninstall restores a role or field security profile from its layer stack (dataverse-solution-messages.mjs popLayers
 // through SECURITY_LAYERS: the layer below, or the component, its grants and its user/team associations removed with the last layer).
 /**
@@ -387,6 +375,17 @@ function pushSecurityLayer(store, org, kind, id, name, managed, solutionid, body
   if (managed) { if (at >= 0) record.stack[at] = entry; else record.stack.push(entry); }
 }
 
+/**
+ * Imports Solution security definitions (solution-inventory.mjs securityDefinitions) into the security tables:
+ * - a role row under the root business unit, keeping the Solution's role id, with its roleprivileges resolved by privilege name;
+ *   an unknown privilege name is skipped and reported (SOLUTION_ROLE_PRIVILEGE_UNKNOWN), never granted;
+ * - a field security profile row, keeping its Solution id, with its fieldpermission rows.
+ * Users and teams get the roles and profiles from project data (settings users' roles, /_sim/, the Web API associations).
+ * A managed definition is a layer on the role's stack (state.dataverse.managedLayers, kind securityrole): a new definition
+ * replaces the privilege set (the platform's replace behavior for custom security roles) unless the
+ * role was changed after the last import (AddPrivilegesRole, ReplacePrivilegesRole: an unmanaged layer on top), which stays.
+ * An unmanaged definition is applied when the role is new or unchanged since its last import. Returns the diagnostics.
+ */
 export function importSolutionSecurity(store, organizationId, { securityRoles = [], fieldSecurityProfiles = [] } = {}, { solutionId = null } = {}) {
   const org = organizationId, root = rootId(org);
   const diagnostics = [];
@@ -479,7 +478,7 @@ function tableInfo(store, schema) {
   });
 }
 
-// System Customizer sees only the rows it creates in account, contact and the activity tables (Microsoft Learn): Basic there, Global elsewhere.
+// System Customizer sees only the rows it creates in account, contact and the activity tables: Basic there, Global elsewhere.
 const CUSTOMIZER_BASIC = new Set(['account', 'contact']);
 /** Built-in role templates: admins Global on everything; Basic User Basic on user-owned, Global Read on org-owned. */
 function templateGrants(p) {
@@ -487,13 +486,13 @@ function templateGrants(p) {
   const customizer = p.right && (CUSTOMIZER_BASIC.has(p.table) || isActivityTable(p.table)) ? DEPTH.Basic : DEPTH.Global;
   const admins = [['System Administrator', DEPTH.Global], ['System Customizer', customizer]];
   if (!p.right) return admins;
-  // unverified: a table made at run time (metadata API or Solution import) gets the admin and customizer roles only; Basic User needs a grant.
+  // Assumed: a table made at run time (metadata API or Solution import) gets the admin and customizer roles only; Basic User needs a grant.
   if (p.created) return admins;
   if (PLATFORM_TABLES.has(p.table)) {
     const depth = PLATFORM_BASIC[p.table]?.[p.right];
     return depth ? [...admins, ['Basic User', depth]] : admins;
   }
-  // unverified: live capture. Basic User depths are the heuristic of standard-tables-plan 4.3, not a documented per-table list.
+  // Basic User depths are a heuristic (Basic on user-owned, Global Read on org-owned), not a documented per-table list.
   if (p.own === 'user') return [...admins, ['Basic User', DEPTH.Basic]];
   // Every share in the organization is listed here, so Basic User gets no Global Read on it.
   return p.right === 'Read' && p.table !== 'principalobjectaccess' ? [...admins, ['Basic User', DEPTH.Global]] : admins;

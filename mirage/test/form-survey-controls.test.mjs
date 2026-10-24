@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
 import { webFormsForm } from "../lib/platform-manifest.mjs";
 
-// Synthetic survey form: basic form metadata gives whole numbers, a choice and a two-option
+// Survey form: basic form metadata gives whole numbers, a choice and a two-option
 // column the platform's survey control styles (adx_controlstyle + adx_groupname).
 const ID = "d0000000-0000-4000-8000-000000000001";
 const record = { widgetid: ID, first: 1, second: 2, third: 3, fourth: 4, fifth: 5, colour: 2, agreed: true, other: false };

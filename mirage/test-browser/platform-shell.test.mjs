@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -14,6 +14,10 @@ const require = createRequire(import.meta.url);
 const SITE = "7b2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c2d";
 const CONTACT = "c2000000-0000-4000-8000-000000000001";
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 test("code component server form preserves hosted nested-form parsing", async (t) => {
   const { page, app } = await portalFixture(t, { home: '<div data-pcf-schema="Invented.Component"></div><section><form data-first><input name="subject"></form></section><form data-second><input name="second"></form>' });
   await page.goto(app.url + '/');
@@ -24,7 +28,7 @@ test("code component server form preserves hosted nested-form parsing", async (t
 });
 
 // Synthetic portal: header with a dropdown menu, footer followed by an authored cookie
-// banner, a plain page and a basic form page. Nothing leaves loopback.
+// banner, a plain page and a basic form page.
 async function portalFixture(t, { settings = [], home = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-shell-browser-"));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
@@ -71,9 +75,8 @@ async function portalFixture(t, { settings = [], home = null } = {}) {
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();
   const errors = [];

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
 
-// Synthetic dropdown lookup without a DefaultViewId: the choices come from the target table's
+// A dropdown lookup without a DefaultViewId: the choices come from the target table's
 // default lookup view (querytype 64), so its filter applies.
 test("dropdown lookup without a view reads the target's default lookup view", async () => {
   const ID = "e0000000-0000-4000-8000-000000000001";

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-const CLIENT = '99999999-9999-4999-8999-999999999999'; // invented application user
+const CLIENT = '99999999-9999-4999-8999-999999999999'; // application user
 
 async function solutionFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-standalone-overrides-'));
@@ -36,14 +36,14 @@ async function json(response, status) {
 test('an admin request-limit override applies to the standalone Web API', async t => {
   const sim = await solutionFixture(t);
   const registration = await json(await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] }) }), 201);
   const token = await json(await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: registration.secret, scope: sim.dataverse.origin + '/.default' }) }), 200);
   const read = () => fetch(sim.dataverse.origin + '/api/data/v9.2/x_items?$top=1', {
     headers: { authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(10000) });
   const setEnvironment = body => fetch(sim.url + '/_sim/api/dataverse/environment', { method: 'PATCH',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify(body) });
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify(body) });
 
   assert.equal((await read()).status, 200);
   assert.equal((await read()).status, 200);

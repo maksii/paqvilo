@@ -1,7 +1,6 @@
-// 03-B5 regression: with 64 MiB of file bytes stored through the storage router, an unrelated row update costs about what it
-// did with no files (bytes are no longer cloned with the state's non-table sections on every write). Both are measured here.
+// With 64 MiB of file bytes stored through the storage router, an unrelated row update costs about what it does with no
+// files (bytes are not cloned with the state's non-table sections on every write). Both are measured here.
 // Only the routed runtime is measured: without a router the bytes stay in state by design and this cost remains.
-// Invented schema and GUIDs; loopback only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { routingApi } from "./storage-routing-fixture.mjs";

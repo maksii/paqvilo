@@ -1,16 +1,16 @@
 // Simulated Dataverse customization messages: RetrieveApplicationRibbon, RetrieveEntityRibbon, UpdateRibbonClientMetadata,
 // QueueUpdateRibbonClientMetadata, RetrieveFilteredForms, CopySystemForm, RetrieveUnpublished, RetrieveUnpublishedMultiple and
-// PublishTheme. Registered as extension operations (dataverse-operations.mjs). Invented schema and GUIDs only in tests.
+// PublishTheme. Registered as extension operations (dataverse-operations.mjs).
 //
 // Publishing: Mirage keeps no unpublished layer. Every write applies at once (PublishXml does nothing, dataverse-metadata-tables.mjs),
-// so RetrieveUnpublished and RetrieveUnpublishedMultiple return the current rows, as Learn describes for components with no
+// so RetrieveUnpublished and RetrieveUnpublishedMultiple return the current rows, as the platform does for components with no
 // pending changes.
 //
-// Ribbons: Mirage has no ribbon model and does not read RibbonDiffXml from Solutions. Every ribbon answer is the empty
-// RibbonDiffXml that Learn gives as the default (remove-an-unmanaged-layer-for-ribbon), zipped and base64 encoded.
+// Ribbons: Mirage has no ribbon model and does not read RibbonDiffXml from Solutions. Every ribbon answer is the documented
+// default (empty) RibbonDiffXml, zipped and base64 encoded.
 //
 // ValidateUnpublished (mobileofflineprofile), IsComponentCustomizable and SubstituteForAttribute/SubstituteForComponent are here
-// too, with unverified answers. RemoveActiveCustomization* live in dataverse-solution-messages.mjs (G2b).
+// too, with assumed answers. RemoveActiveCustomization* live in dataverse-solution-messages.mjs.
 import { DataError } from "./data-error.mjs";
 import { randomUUID } from "node:crypto";
 import { contextUrl, parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
@@ -23,16 +23,16 @@ const SUBSTITUTION_TYPES = `<ComplexType Name="SubstitutionResult"><Property Nam
 <EnumType Name="SubstitutionStatus"><Member Name="Success" Value="0" /><Member Name="Error" Value="1" /><Member Name="Warning" Value="2" /></EnumType>
 `;
 
-// RibbonLocationFilters enum (Learn: ribbonlocationfilters).
+// RibbonLocationFilters enum.
 const RIBBON_FILTERS = { Form: 1, HomepageGrid: 2, SubGrid: 4, All: 7 };
-// Learn: the RetrieveUnpublished bound entity list. Only the tables Mirage has are registered.
+// The tables RetrieveUnpublished binds to natively; only the ones Mirage has are registered.
 const UNPUBLISHED_ENTITIES = [
   "savedqueryvisualization", "systemform", "customcontroldefaultconfig", "webresource", "sitemap", "savedquery",
   "mobileofflineprofileitem", "mobileofflineprofile", "appconfig", "appconfiginstance", "navigationsetting", "appmodule",
   "workflow", "desktopflowbinary", "aipluginconversationstarter", "aipluginconversationstartermapping",
   "aipluginoperationresponsetemplate", "aiplugintitle", "aiplugin", "aipluginoperation", "aipluginoperationparameter", "computeruseagent",
 ];
-// unverified: live capture. Learn gives this XML as the default for removing ribbon customizations; the zip entry name is ours.
+// The documented default RibbonDiffXml (not a live capture); the zip entry name is ours.
 const RIBBON_XML = '<RibbonDiffXml><CustomActions /><Templates><RibbonTemplates Id="Mscrm.Templates"></RibbonTemplates></Templates>'
   + "<CommandDefinitions /><RuleDefinitions><TabDisplayRules /><DisplayRules /><EnableRules /></RuleDefinitions><LocLabels /></RibbonDiffXml>";
 const compressedRibbon = () => zipOf([{ name: "RibbonXml.xml", data: Buffer.from(RIBBON_XML, "utf8") }]).toString("base64");
@@ -49,7 +49,7 @@ function ribbonFilterOf(value) {
   if (value === undefined || value === null) throw invalid("RibbonLocationFilter is required.");
   const name = String(value).trim().replace(/^Microsoft\.Dynamics\.CRM\.RibbonLocationFilters/, "").replace(/^'|'$/g, "");
   const found = Object.entries(RIBBON_FILTERS).find(([member, number]) => member === name || String(number) === name);
-  if (!found) throw invalid(`RibbonLocationFilter ${value} is not a RibbonLocationFilters member.`); // unverified: message text
+  if (!found) throw invalid(`RibbonLocationFilter ${value} is not a RibbonLocationFilters member.`); // native message text not known
   return found[1];
 }
 
@@ -57,7 +57,7 @@ function ribbonFilterOf(value) {
 function destinationOf(target) {
   if (target === undefined || target === null) return null;
   const match = GUID.exec(String(target?.formid ?? target?.systemformid ?? target?.["@odata.id"] ?? target));
-  if (!match) throw invalid("Target must be a systemform reference."); // unverified: message text
+  if (!match) throw invalid("Target must be a systemform reference."); // native message text not known
   return match[1];
 }
 
@@ -68,7 +68,7 @@ function profileIdOf(target) {
   const set = /([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase();
   const id = GUID.exec(text)?.[1];
   if (!id || (type && type !== "mobileofflineprofile") || (set && set !== "mobileofflineprofiles")) {
-    throw invalid("Target must be a mobileofflineprofile reference."); // unverified: message text
+    throw invalid("Target must be a mobileofflineprofile reference."); // native message text not known
   }
   return id;
 }
@@ -117,9 +117,8 @@ function operations(api) {
       name: "InstantiateFilters", kind: "action", binding: "entity", entity: "systemuser",
       csdl: csdlOf("action", "InstantiateFilters", { bound: "systemuser", params: [["TemplateCollection", "Collection(mscrm.savedquery)"]] }),
       async handle(c) {
-        // https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/instantiatefilters
         // Outlook templates instantiate personal views owned by the bound user. The filter client itself is outside Mirage.
-        // unverified: exact copied columns, duplicate-template behavior and errors; no native write was performed to infer them.
+        // Assumptions: the copied columns, duplicate-template behaviour and errors.
         need(c, "create", "UserQuery", "userquery");
         const userId = c.target?.id;
         const userMapping = store.resolveMapping("systemuser");
@@ -153,13 +152,13 @@ function operations(api) {
       csdl: csdlOf("function", "RetrieveEntityRibbon", { params: [["EntityName", "Edm.String"], ["RibbonLocationFilter", "Microsoft.Dynamics.CRM.RibbonLocationFilters"]], response: ["CompressedEntityXml", "Edm.Binary"] }),
     },
     {
-      // unverified: live capture. Learn has no page for this action (404), and Mirage keeps no ribbon cache, so nothing changes.
+      // Undocumented action; Mirage keeps no ribbon cache, so nothing changes.
       name: "UpdateRibbonClientMetadata", kind: "action", binding: "unbound",
       handle: async () => ({ status: 204 }),
       csdl: csdlOf("action", "UpdateRibbonClientMetadata", {}), // parameterless in the native metadata.xml (self-closing Action)
     },
     {
-      // Learn: "Queues UpdateRibbonClientMetadata to a background job." No response is documented; Mirage has no ribbon cache, so the job does nothing. unverified: live capture.
+      // Queues UpdateRibbonClientMetadata to a background job; no response is documented. Mirage has no ribbon cache, so the job does nothing.
       name: "QueueUpdateRibbonClientMetadata", kind: "action", binding: "unbound",
       handle: async () => ({ status: 204 }),
       csdl: csdlOf("action", "QueueUpdateRibbonClientMetadata", {}),
@@ -180,8 +179,8 @@ function operations(api) {
       csdl: csdlOf("function", "RetrieveFilteredForms", { bound: "systemform", params: [["EntityLogicalName", "Edm.String"], ["FormType", "Edm.Int32"], ["User", "mscrm.systemuser"]], returns: "Collection(mscrm.systemform)" }),
     },
     {
-      // Learn: copies a systemform. Target is the form the copy is written to (Learn: "copied to"); absent, a new row is created.
-      // unverified: live capture (the copy's name and formid; Learn gives no detail).
+      // Copies a systemform. Target is the form the copy is written to; absent, a new row is created.
+      // Assumption: the copy's name and formid (undocumented).
       name: "CopySystemForm", kind: "action", binding: "entity", entity: "systemform",
       handle: async (c) => {
         const destination = destinationOf(c.body?.Target);
@@ -209,7 +208,7 @@ function operations(api) {
       csdl: csdlOf("action", "CopySystemForm", { bound: "systemform", returns: "mscrm.systemform" }),
     },
     {
-      // unverified: Learn gives no behaviour for the check beyond the Target reference. Mirage has no unpublished layer, so a
+      // The check is undocumented beyond the Target reference. Mirage has no unpublished layer, so a
       // mobileofflineprofile that exists is valid (204).
       name: "ValidateUnpublished", kind: "action", binding: "unbound",
       handle: async (c) => {
@@ -221,14 +220,14 @@ function operations(api) {
       csdl: csdlOf("action", "ValidateUnpublished", { params: [["Target", "mscrm.crmbaseentity"]] }),
     },
     {
-      // unverified: the answer per component kind. An attribute takes its column's IsCustomizable, a table its own; a relationship
+      // Assumed answer per component kind: an attribute takes its column's IsCustomizable, a table its own; a relationship
       // and an option set are customizable. Only Mirage component ids are accepted (componentObjectId, dataverse-solution-messages.mjs).
       name: "IsComponentCustomizable", kind: "function", binding: "unbound",
       handle: async (c) => {
         const id = key(GUID.exec(String(c.params?.ComponentId ?? ""))?.[1]);
         const type = Number(c.params?.ComponentType);
         const component = componentsOf(store.state).find((x) => x.id === id && x.type === type);
-        if (!component) throw new DataError(`The solution component ${c.params?.ComponentId} does not exist.`, 404, "NotFound"); // unverified: message text
+        if (!component) throw new DataError(`The solution component ${c.params?.ComponentId} does not exist.`, 404, "NotFound"); // native message text not known
         const mapping = component.kind === "entity" || component.kind === "attribute" ? store.resolveMapping(component.logical) : null;
         const customizable = component.kind === "attribute" ? mapping.fields[component.name]?.columnMetadata?.isCustomizable
           : component.kind === "entity" ? mapping.dataverseMetadata?.IsCustomizable?.Value : undefined;
@@ -237,7 +236,7 @@ function operations(api) {
       csdl: csdlOf("function", "IsComponentCustomizable", { params: [["ComponentId", "Edm.Guid"], ["ComponentType", "Edm.Int32"]], response: ["IsComponentCustomizable", "Edm.Boolean"] }),
     },
     {
-      // unverified: Learn gives the parameters only. The answer is a success with no store effect.
+      // Only the parameters are documented; the answer is a success with no store effect.
       name: "SubstituteForAttribute", kind: "action", binding: "unbound",
       handle: async (c) => {
         for (const name of ["AttributeName", "AttributeContent", "SubStore"]) if (c.body?.[name] === undefined) throw invalid(`${name} is required.`);
@@ -248,7 +247,7 @@ function operations(api) {
       }),
     },
     {
-      // unverified: as SubstituteForAttribute. The entity is the record the substitution is for.
+      // As SubstituteForAttribute. The entity is the record the substitution is for.
       name: "SubstituteForComponent", kind: "action", binding: "unbound",
       handle: async (c) => {
         for (const name of ["Entity", "SubStore"]) if (c.body?.[name] === undefined) throw invalid(`${name} is required.`);
@@ -272,7 +271,6 @@ function operations(api) {
 
   for (const entity of UNPUBLISHED_ENTITIES) {
     if (!store.state.mappings[entity]) continue;
-    // unverified: Mirage has no unpublished layer, so these return the current rows (see the header).
     ops.push({
       name: "RetrieveUnpublished", kind: "function", binding: "entity", entity,
       handle: async (c) => read(c, `/api/data/${c.version}/${c.target.mapping.entitySet}(${c.target.id})`),

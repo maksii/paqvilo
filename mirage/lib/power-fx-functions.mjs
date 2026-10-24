@@ -2,10 +2,7 @@
 // { min, max, fn(fx, ...values) } evaluates its arguments first and lets an error argument flow through (Learn, "Error
 // handling": error in, error out); `errors: true` sees error arguments; `lazy: true` receives the argument nodes (If,
 // Switch, IfError, record scope functions, behaviour functions that name their target).
-// Semantics follow the Learn Power Fx formula reference page of each function (learn.microsoft.com/power-platform/power-fx/
-// reference/function-<name>); the formula-column list is Learn "Formula reference - Dataverse formula columns", the
-// Dataverse delegation rules are Learn "Connect to Microsoft Dataverse" (Power Apps delegable functions and operations
-// for Dataverse) and "Delegation overview".
+// Semantics follow each function's Learn reference page (https://learn.microsoft.com/power-platform/power-fx/reference/).
 import { decimalParts, decimalText, exactNumeric, isExactNumeric, numericPair, roundNumeric } from './exact-numeric.mjs';
 import {
   ALIASES, CAUSE, FxFloat, decimalArithmetic, invariantNumberText, parseNumber, toDecimal, ErrorKind, FxDataSource, FxDate, FxError, FxGuid, FxRecordRef, FxUntyped, compare, equals, fieldName, formatDate,
@@ -18,7 +15,7 @@ const fail = (kind, message) => fxError(ErrorKind[kind], message);
 const notHosted = (name) => fail('NotSupported', `${name} is not available in this host.`);
 const firstError = (...values) => values.find((value) => value instanceof FxError);
 
-// ---- Shared helpers ------------------------------------------------------------------------------------------------
+// ---- Shared helpers
 
 // A table argument's rows: a data source read without delegation (with the warning), an untyped array as Value records.
 function rowsOf(fx, value, operation) {
@@ -82,7 +79,7 @@ const rounding = (mode) => ({
   },
 });
 
-// ---- Number formatting (Learn "Text function": 0 # , . % placeholders, literal text) --------------------------------
+// ---- Number formatting (Learn "Text function": 0 # , . % placeholders, literal text)
 
 function formatNumber(value, format) {
   const fmt = String(format).replace(/^\[\$-[^\]]*\]/, '');
@@ -151,9 +148,9 @@ function isoWeek(d) {
   return Math.ceil(((date.getTime() - yearStart) / DAY + 1) / 7);
 }
 
-// ---- Regular expressions (Learn "IsMatch, Match, and MatchAll") ------------------------------------------------------
+// ---- Regular expressions (Learn "IsMatch, Match, and MatchAll")
 
-// unverified: the JavaScript engine runs the pattern (with the u flag); Learn's Power Fx dialect blocks some constructs at
+// The JavaScript engine runs the pattern (with the u flag); Learn's Power Fx dialect blocks some constructs at
 // authoring time, which are not refused here.
 function regexOf(fx, pattern, options, fallback) {
   const opts = String(options ?? fallback);
@@ -177,7 +174,7 @@ function matchRecord(match, numbered) {
   return record;
 }
 
-// ---- JSON (Learn "JSON function", "ParseJSON function") ---------------------------------------------------------------
+// ---- JSON (Learn "JSON function", "ParseJSON function")
 
 function jsonOf(fx, value, flatten) {
   if (isBlank(value)) return null;
@@ -198,7 +195,7 @@ function jsonOf(fx, value, flatten) {
   return value;
 }
 
-// ---- Delegation (Learn "Connect to Microsoft Dataverse": Power Apps delegable functions and operations for Dataverse) ---
+// ---- Delegation (Learn "Connect to Microsoft Dataverse": Power Apps delegable functions and operations for Dataverse)
 
 const ODATA_OP = { '=': 'eq', '<>': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge' };
 const SWAPPED = { '=': '=', '<>': '<>', '<': '>', '<=': '>=', '>': '<', '>=': '<=' };
@@ -344,7 +341,7 @@ function filterRows(fx, table, rows, preds) {
   return out;
 }
 
-// ---- Aggregates (Learn "Average, Max, Min, StdevP, Sum, and VarP") ----------------------------------------------------
+// ---- Aggregates (Learn "Average, Max, Min, StdevP, Sum, and VarP")
 
 function aggregate(name, reduce) {
   return {
@@ -384,7 +381,7 @@ function asDecimal(value, language) {
   return isExactNumeric(value) ? value : toNumber(value);
 }
 
-// ---- Data writes (Learn "Patch", "Collect, Clear, and ClearCollect", "Remove and RemoveIf", "Set", "UpdateContext") -----
+// ---- Data writes (Learn "Patch", "Collect, Clear, and ClearCollect", "Remove and RemoveIf", "Set", "UpdateContext")
 
 // The target of Collect, ClearCollect, Clear, Remove: a data source, a collection (an array in host.variables) or, for a
 // name nothing holds yet, a new collection when the host keeps variables.
@@ -423,7 +420,7 @@ function guarded(fn) {
   }
 }
 
-// ---- The table ------------------------------------------------------------------------------------------------------
+// ---- The table
 
 export const FUNCTIONS = {
   // Logical (Learn "And, Or, and Not", "If and Switch", "IfError")
@@ -477,7 +474,7 @@ export const FUNCTIONS = {
     fn(fx, value) {
       if (value instanceof FxError) return value;
       if (isBlank(value) || (Array.isArray(value) && !value.length)) return null;
-      // unverified: Error("text") (used by Learn's low-code plug-in examples) is a Custom error with that message.
+      // Assumed: Error("text") (used by Learn's low-code plug-in examples) is a Custom error with that message.
       if (typeof value === 'string') return fxError(ErrorKind.Custom, value);
       const records = Array.isArray(value) ? value : [value];
       return new FxError(records.map((record) => ({ ...record, Kind: record.Kind ?? ErrorKind.Custom, Message: record.Message ?? null })));
@@ -1060,7 +1057,7 @@ export const FUNCTIONS = {
       // Learn "ForAll": a blank result adds no record; records stay records, other values go in a Value column.
       const results = rows.map((row) => inRow(fx, row, table, () => fx.ev(args[1]))).filter((value) => !isBlank(value));
       // An element that failed (a refused Patch, an Error()) makes ForAll an error value, so a behaviour formula sees the
-      // failure and IfError/IsError still handle it. unverified: native surfaces such element errors to the caller.
+      // failure and IfError/IsError still handle it. Assumed: native surfaces such element errors to the caller.
       const failed = results.filter((value) => value instanceof FxError);
       if (failed.length) return new FxError(failed.flatMap((error) => error.errors));
       return results.map((value) => (isRecord(value) ? value : { Value: value }));
@@ -1243,7 +1240,7 @@ function asRows(fx, value, operation, fn) {
   const rows = rowsOf(fx, value, operation);
   return rows instanceof FxError ? rows : fn(rows);
 }
-// Blank first in ascending order. unverified: Power Fx's placement of blanks and its text collation; text compares by code
+// Blank first in ascending order. Power Fx's placement of blanks and its text collation are not known; text compares by code
 // unit here.
 function compareKeys(fx, a, b) {
   if (isBlank(a) || isBlank(b)) return isBlank(a) && isBlank(b) ? 0 : isBlank(a) ? -1 : 1;

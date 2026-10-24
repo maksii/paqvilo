@@ -9,8 +9,8 @@ import { contactFieldsFromClaims, externalProviders, oidcOptions } from "../lib/
 import { startIdentityProvider } from "../lib/identity-provider.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-// The authorization code flow and the request options of an OpenID Connect provider (Learn,
-// "Set up an OpenID Connect provider"; lib/identity-provider.mjs, lib/sign-in-flow.mjs).
+// The authorization code flow and the request options of an OpenID Connect provider (lib/identity-provider.mjs,
+// lib/sign-in-flow.mjs).
 
 const decode = (value) => value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const hiddenFields = (html) => Object.fromEntries([...html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(([, name, value]) => [name, decode(value)]));
@@ -128,7 +128,7 @@ test("the identity provider redeems authorization codes with client_secret_post 
 });
 
 test("the identity provider answers every documented response type, prompt and acr_values, and shows custom parameters", async (t) => {
-  const { authority, authorize } = await provider(t, { clientSecret: "s3cret" });
+  const { authority, discovery, authorize, tokenRequest } = await provider(t, { clientSecret: "s3cret" });
   // Front-channel access tokens come with at_hash; codes with c_hash.
   const implicit = await authorize({ response_type: "id_token token" });
   assert.deepEqual(Object.keys(implicit), ["access_token", "token_type", "expires_in", "id_token", "state"]);
@@ -166,7 +166,10 @@ test("the identity provider answers every documented response type, prompt and a
   assert.equal(hiddenFields(custom).region, "eu");
   // A new user may give a phone number, a UserInfo claim.
   const newUser = await fetch(`${authority}oauth2/authorize`, { ...formBody({ ...hiddenFields(custom), subject: "new", given_name: "Nia", family_name: "New", email: "nia@example.test", phone_number: "+44 20" }), redirect: "manual" });
-  assert.ok(new URL(newUser.headers.get("location")).searchParams.get("code"));
+  const tokens = await (await tokenRequest({ code: new URL(newUser.headers.get("location")).searchParams.get("code"), client_secret: "s3cret" })).json();
+  assert.equal(claimsOf(tokens.id_token).phone_number, undefined);
+  const info = await (await fetch(discovery.userinfo_endpoint, { headers: { authorization: `Bearer ${tokens.access_token}` } })).json();
+  assert.deepEqual([info.name, info.email, info.phone_number], ["Nia New", "nia@example.test", "+44 20"]);
 });
 
 test("private_key_jwt: the token endpoint accepts client assertions signed with the registered key only", async (t) => {

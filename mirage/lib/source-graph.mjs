@@ -168,25 +168,6 @@ const field = (record, name) => record?.[`adx_${name}`] ?? record?.[`mspp_${name
 const DOCUMENT_GRID = /<TargetEntityType>\s*sharepointdocumentlocation\s*<\/TargetEntityType>/i;
 
 /**
- * Requirement nodes for what the Power Pages and model-driven hosts detect in the sources but do not run, each with
- * `requirement: { status, reason, level }`:
- * - portal:enhanced-authorization and portal:modern-list: platform-changes.mjs findings that carry a requirement;
- * - portal:sharepoint-documents: a basic form or advanced form step whose Solution form has a Document Locations subgrid
- *   (the document control renders local markup over the local document service: contract);
- * - model-driven:custom-page/<app>/<subarea>: a SiteMap SubArea that opens a custom page (its canvas app runs in the
- *   headless canvas host: placeholder CANVAS_NOT_RENDERED) when the app has the page as a type-300 component and the
- *   sources hold its canvas app, else unsupported MD_NAV_CUSTOM_PAGE with the reason;
- * - model-driven:pcf/<control>: a virtual (React) code component whose platform libraries the project does not supply;
- *   portal:pcf/<control>: the same control under a portal source (the Power Pages host supplies no platform libraries);
- * - model-driven:offline/<profile>: a mobile offline profile (satisfied when every item's filter is evaluated, else
- *   MD_OFFLINE_FILTER_UNSUPPORTED naming the items), or an app naming a profile the sources do not hold (keyed by the app);
- * - model-driven:dashboard/<app>/<subarea>: a SiteMap SubArea that opens a dashboard: `satisfied` (behaviour) when the shell
- *   hosts every component, else `unsupported` with MD_NAV_DASHBOARD (no definition in the sources) or
- *   MD_DASHBOARD_COMPONENT_UNSUPPORTED naming the components (charts, web resources, IFRAMEs, other controls).
- * Their rows carry `surface` (portalRendering for portal, staff for model-driven). A Solution dashboard an app hosts also
- * raises its inventory node: to behaviour when every component renders, else its row keeps MD_DASHBOARD_COMPONENT_UNSUPPORTED.
- */
-/**
  * Canvas apps (canvas-runtime.mjs hosts their logic headlessly): canvas:app/<name> is satisfied when every control is
  * hosted, else unsupported (CANVAS_CONTROL_UNSUPPORTED) naming the controls; canvas:rendering is the documented boundary
  * (apps are never rendered: placeholder at inventory) while there is a canvas app. One rule for Solution inventory apps
@@ -208,6 +189,25 @@ function canvasNodes(records = []) {
 export const canvasRequirementRows = records => canvasNodes(records).map(node =>
   ({ id: `canvas:${canonical(node.key)}`, kind: 'canvas', source: node.source, ...node.requirement, surface: SURFACES.canvas }));
 
+/**
+ * Requirement nodes for what the Power Pages and model-driven hosts detect in the sources but do not run, each with
+ * `requirement: { status, reason, level }`:
+ * - portal:enhanced-authorization and portal:modern-list: platform-changes.mjs findings that carry a requirement;
+ * - portal:sharepoint-documents: a basic form or advanced form step whose Solution form has a Document Locations subgrid
+ *   (the document control renders local markup over the local document service: contract);
+ * - model-driven:custom-page/<app>/<subarea>: a SiteMap SubArea that opens a custom page (its canvas app runs in the
+ *   headless canvas host: placeholder CANVAS_NOT_RENDERED) when the app has the page as a type-300 component and the
+ *   sources hold its canvas app, else unsupported MD_NAV_CUSTOM_PAGE with the reason;
+ * - model-driven:pcf/<control>: a virtual (React) code component whose platform libraries the project does not supply;
+ *   portal:pcf/<control>: the same control under a portal source (the Power Pages host supplies no platform libraries);
+ * - model-driven:offline/<profile>: a mobile offline profile (satisfied when every item's filter is evaluated, else
+ *   MD_OFFLINE_FILTER_UNSUPPORTED naming the items), or an app naming a profile the sources do not hold (keyed by the app);
+ * - model-driven:dashboard/<app>/<subarea>: a SiteMap SubArea that opens a dashboard: `satisfied` (behaviour) when the shell
+ *   hosts every component, else `unsupported` with MD_NAV_DASHBOARD (no definition in the sources) or
+ *   MD_DASHBOARD_COMPONENT_UNSUPPORTED naming the components (charts, web resources, IFRAMEs, other controls).
+ * Their rows carry `surface` (portalRendering for portal, staff for model-driven). A Solution dashboard an app hosts also
+ * raises its inventory node: to behaviour when every component renders, else its row keeps MD_DASHBOARD_COMPONENT_UNSUPPORTED.
+ */
 function hostSurfaceNodes(add, { portal, metadata, clientResources, inventory = [], nodes, tableNames = [], relationships = [] }) {
   for (const node of canvasNodes(inventory)) add(node);
   // The catalogue's verdict (dashboardPage) over the catalogue's tables (the effective mappings, else the Solution tables) and their public views.

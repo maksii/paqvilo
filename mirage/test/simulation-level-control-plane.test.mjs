@@ -1,7 +1,7 @@
 // At level `simulation` the control plane is private runtime state: flow activation (PATCH /_sim/api/operations/<key>),
 // a deployment-profile switch and a preset apply work on the Power Pages host with a pack DATA file that owns only the
 // business table. Workflow definitions keep their exported activation across state replacements, and a preset that
-// replaces an organization table keeps the Solution's rows. Invented x_ schema, ids and pack only.
+// replaces an organization table keeps the Solution's rows.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -34,7 +34,7 @@ test('flow activation, a deployment-profile switch and a preset apply work at le
     dataverse: { enabled: true, port: 0, tls: false, tds: { enabled: false } } });
   t.after(() => sim.close());
   const call = async (method, suffix, payload) => {
-    const response = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: payload === undefined ? undefined : JSON.stringify(payload) });
+    const response = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: payload === undefined ? undefined : JSON.stringify(payload) });
     return { status: response.status, body: await response.text() };
   };
   const definition = () => sim.store.tableRows('workflow').find(row => String(row.workflowid).toLowerCase() === FLOW);
@@ -47,7 +47,7 @@ test('flow activation, a deployment-profile switch and a preset apply work at le
 
   const profile = await call('PUT', '/environment/profiles', { profile: 'test', enabled: {} });
   assert.equal(profile.status, 200, profile.body);
-  assert.equal(sim.state().simulator?.deploymentProfilePin?.profile ?? JSON.parse(profile.body).profile, 'test');
+  assert.equal(sim.store.state.simulator.deploymentProfilePin?.profile, 'test');
 
   const preset = await call('POST', '/presets/busy/apply', {});
   assert.equal(preset.status, 200, preset.body);
@@ -56,4 +56,5 @@ test('flow activation, a deployment-profile switch and a preset apply work at le
   assert.equal(JSON.parse(await fs.readFile(path.join(fixture.root, 'pack', 'data.json'), 'utf8')).items.length, 2, 'business rows go to the DATA file');
   const state = JSON.parse(await fs.readFile(fixture.stateFile, 'utf8'));
   assert.equal(state.simulator.operations[`cloud-flow:${FLOW}`].activation, 'local-enabled', 'the activation choice is private runtime state');
+  assert.equal(state.simulator.deploymentProfilePin?.profile, 'test', 'the profile pin is private runtime state');
 });

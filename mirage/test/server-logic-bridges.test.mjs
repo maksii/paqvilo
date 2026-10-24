@@ -1,6 +1,5 @@
 // Server objects in exported server logic, through runExportedServerLogic (the production caller), not the bare worker:
 // environment variables, Dataverse.InvokeCustomApi, CloudFlow.TriggerAsync, HttpClient (loopback contract) and Logger.
-// Learn: power-pages/configure/server-objects. Invented data only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

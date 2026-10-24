@@ -299,7 +299,7 @@ async function loadCapture(dir) {
 }
 
 // Platform-generated element ids whose value is a per-render GUID or a hosted-bundle instance counter: both sides keep
-// the element, only the token is normalised, so a missing element still shows up as a delta (decision D11).
+// the element, only the token is normalised, so a missing element still shows up as a delta.
 // Also: ASP.NET control counters in generated control names ($ctl<n>), per-render GUID values of data-content-id
 // attributes, and each side's own origin in absolute self links ({origin}).
 const GENERATED_IDS = [[/PcfControl_[0-9a-f]{32}/g, "PcfControl_{hex32}"], [/UpdMSPicklistControl\d+/g, "UpdMSPicklistControl{n}"], [/\$ctl\d+/g, "$ctl{n}"], [/(data-content-id=\\?")[0-9a-f-]{36}/g, "$1{guid}"], [/("data-content-id"\s*:\s*")[0-9a-f-]{36}/g, "$1{guid}"], [/popoverUpdateButton_[0-9a-f-]{36}/g, "popoverUpdateButton_{guid}"]];
@@ -309,7 +309,7 @@ export const normalizeGeneratedIds = (text, origins = []) => {
   for (const origin of origins) if (origin) out = out.split(origin).join("{origin}");
   return out.replace(LOOPBACK_ORIGIN, "{origin}");
 };
-// The address composite control's hidden popover container carries a per-render GUID id (D11); only ids of elements
+// The address composite control's hidden popover container carries a per-render GUID id; only ids of elements
 // with that class are tokenised (in document order), plain text and CSS-escaped selector forms alike.
 const ADDRESS_CONTAINER = /<div\b[^>]*\baddressCompositeControlContainer\b[^>]*>/g;
 export const addressContainerIds = (dom = "") => [...dom.matchAll(ADDRESS_CONTAINER)].map((m) => /\bid="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i.exec(m[0])?.[1]).filter(Boolean);

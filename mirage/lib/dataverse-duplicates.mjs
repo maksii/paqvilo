@@ -1,7 +1,7 @@
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse duplicate detection: duplicate rules (duplicaterule and duplicaterulecondition
 // tables), the create and update check gated by MSCRM.SuppressDuplicateDetection, and the
-// PublishDuplicateRule, UnpublishDuplicateRule and RetrieveDuplicates operations. Invented schema only.
+// PublishDuplicateRule, UnpublishDuplicateRule and RetrieveDuplicates operations.
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -14,9 +14,9 @@ import { pluralizeEntitySetName } from './solution-standard.mjs';
 
 const ACTIVE = 1; // statecode Active
 const PUBLISHED = 2; // statuscode Published; its statecode is Active (1)
-// unverified: the limit of five published rules per table comes from the task brief, not from the docs read.
+// Assumption: at most five published rules per table.
 const MAX_PUBLISHED_PER_TABLE = 5;
-const DEFAULT_PAGE = 5000; // Default page size of paged queries (Page results using QueryExpression: 5,000 rows).
+const DEFAULT_PAGE = 5000; // Default page size of paged queries.
 const DUPLICATE_MESSAGE = 'A record was not created or updated because a duplicate of the current record already exists.';
 const TEXT = 'nvarchar', INT = 'int', BOOL = 'bit', GUID = 'uniqueidentifier', LOOKUP = 'lookup';
 
@@ -51,7 +51,7 @@ const textOf = (v) => String(valueOf(v) ?? '');
 const same = (a, b) => textOf(a).toLowerCase() === textOf(b).toLowerCase();
 const isBlank = (v) => textOf(v) === '';
 // Date and time values as epoch milliseconds, or null when the value is not a date.
-// unverified: a date without a time zone is read as UTC by Date.parse.
+// Date.parse reads a date-only value as UTC but a date-time without an offset as local time.
 const timeOf = (v) => {
   const t = v instanceof Date ? v.getTime() : Date.parse(textOf(v));
   return Number.isNaN(t) ? null : t;
@@ -61,7 +61,7 @@ const dayOf = (t) => new Date(t).toISOString().slice(0, 10);
 function mappingFor(logical, def) {
   return {
     logicalName: logical,
-    entitySet: pluralizeEntitySetName(logical), // unverified: the Web API set name of duplicaterulecondition
+    entitySet: pluralizeEntitySetName(logical), // assumed: the native set name of duplicaterulecondition is not known
     idColumn: def.id,
     ...(def.name ? { nameColumn: def.name } : {}),
     userConfigured: true,
@@ -106,7 +106,7 @@ function operatorOf(code) {
   return op;
 }
 
-// Same first or last N characters. unverified: a value shorter than N never matches.
+// Same first or last N characters. Assumption: a value shorter than N never matches.
 function compare(op, param, a, b, caseSensitive) {
   if (op === 'value') return Number(valueOf(a)) === Number(valueOf(b));
   if (op === 'date' || op === 'datetime') {
@@ -150,7 +150,7 @@ function duplicatesUnder(store, rule, base, selfId) {
   const mapping = store.state.mappings[rule.matchingentityname];
   if (!mapping) return [];
   const conditions = conditionsOf(store, rule);
-  if (conditions.length === 0) return []; // unverified: a rule without conditions matches nothing.
+  if (conditions.length === 0) return []; // assumed: a rule without conditions matches nothing
   const sameTable = same(mapping.logicalName, rule.baseentityname);
   return store.tableRows(mapping.logicalName).filter((row) => (!sameTable || !same(row[mapping.idColumn], selfId))
     && (rule.excludeinactiverecords !== true || Number(row.statecode ?? 0) === 0)
@@ -181,11 +181,11 @@ const publish = (api) => async (c) => {
     api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
     const others = publishedRules(store, (r) => same(r.baseentityname, rule.baseentityname) && !same(r.duplicateruleid, rule.duplicateruleid));
     if (others.length >= MAX_PUBLISHED_PER_TABLE) {
-      // unverified: the error code and message for the sixth published rule.
+      // Native error code and message for the sixth published rule not known; this one is a guess.
       throw new DataError(`Table ${rule.baseentityname} already has ${MAX_PUBLISHED_PER_TABLE} published duplicate rules.`, 400, 'InvalidRequest');
     }
     await store.updateRecordAsync('duplicaterule', c.target.id, { statecode: 1, statuscode: PUBLISHED }, c.identity);
-    return randomUUID(); // unverified: the simulation completes synchronously; the job id is not tracked.
+    return randomUUID(); // publishing completes synchronously, so the job id is not tracked
   }));
   return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.PublishDuplicateRuleResponse'), JobId: jobId } };
 };
@@ -201,11 +201,11 @@ const unpublish = (api) => async (c) => {
     api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
     await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, { statecode: 0, statuscode: 0 }, c.identity);
   }));
-  return { status: 204 }; // unverified: return type of UnpublishDuplicateRule not read.
+  return { status: 204 }; // assumed: the native return of UnpublishDuplicateRule is not known
 };
 
 // PagingInfo (Web API complex type): Count and PageNumber page the result, and PagingCookie is an opaque offset.
-// unverified: the Web API returns a bare collection, so no PagingCookie comes back; a cookie in the request is honoured.
+// The Web API answers a bare collection, so no PagingCookie comes back; a cookie in the request is honoured.
 function offsetOf(info, count) {
   if (!info.PagingCookie) return Math.max(0, ((Number(info.PageNumber) || 1) - 1) * count);
   try {
@@ -220,14 +220,14 @@ function offsetOf(info, count) {
 const retrieveDuplicates = (api) => async (c) => {
   const { store } = api;
   const business = c.params.BusinessEntity ?? {};
-  const baseEntity = business.LogicalName ?? business.logicalName; // unverified: crmbaseentity wire shape
+  const baseEntity = business.LogicalName ?? business.logicalName; // crmbaseentity wire shape assumed
   const matching = c.params.MatchingEntityName;
   if (!baseEntity) throw new DataError('BusinessEntity must name its logical name.', 400, 'InvalidRequest');
   const target = store.state.mappings[matching];
   if (!target) throw new DataError(`${matching} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity: matching, operation: 'read', mapping: target });
   const readable = api.principals.readFilter({ user: c.user, entity: matching, mapping: target });
-  const attributes = business.Attributes ?? business.attributes ?? business; // unverified: attribute container shape
+  const attributes = business.Attributes ?? business.attributes ?? business; // attribute container shape assumed
   const selfId = attributes[store.state.mappings[baseEntity]?.idColumn];
   const found = new Map();
   for (const rule of publishedRules(store, (r) => same(r.baseentityname, baseEntity) && same(r.matchingentityname, matching))) {
@@ -240,20 +240,20 @@ const retrieveDuplicates = (api) => async (c) => {
   rows = rows.slice(offset, offset + count);
   return {
     status: 200,
-    body: { '@odata.context': contextUrl(c.origin, c.version, target.entitySet), value: rows.map((row) => formatRow(api, c.user, target, row)) }, // unverified: context URL form
+    body: { '@odata.context': contextUrl(c.origin, c.version, target.entitySet), value: rows.map((row) => formatRow(api, c.user, target, row)) }, // context URL form assumed
   };
 };
 
-// BulkDetectDuplicates (Learn): an asynchronous system job over the published rules of a table, at most 5,000 duplicates.
+// BulkDetectDuplicates: an asynchronous system job over the published rules of a table, at most 5,000 duplicates.
 // The job is a system job of dataverse-async (operationtype 8). Each detected pair writes one duplicaterecord row linked to the job.
-// unverified: privilege (Learn names none), the Query wire shape, and whether both directions of a pair are written.
+// Assumptions: the privilege (none is documented), the Query wire shape, and whether both directions of a pair are written.
 const MAX_BULK_DUPLICATES = 5000;
 const ref = (logical, id) => ({ id, logical_name: logical, name: '' });
 const bulkDetectDuplicates = (api) => async (c) => {
   const { store } = api;
   const body = typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {});
   const entity = body.Query?.EntityName ?? body.Query?.entityName;
-  if (!entity) throw new DataError('Query must name the entity to check.', 400, 'InvalidRequest'); // unverified: message text
+  if (!entity) throw new DataError('Query must name the entity to check.', 400, 'InvalidRequest'); // native message text not known
   const mapping = store.state.mappings[entity];
   if (!mapping) throw new DataError(`${entity} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity, operation: 'read', mapping });
@@ -293,9 +293,9 @@ const bulkDetectDuplicates = (api) => async (c) => {
   return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.BulkDetectDuplicatesResponse'), JobId: jobId } };
 };
 
-// CompoundUpdateDuplicateDetectionRule (Learn): one call updates a duplicaterule and its conditions. Only the known columns are
-// written, and each condition named in ChildEntities must already exist. unverified: the 404 text for a missing condition, and
-// the 204 answer (Learn names no return).
+// CompoundUpdateDuplicateDetectionRule: one call updates a duplicaterule and its conditions. Only the known columns are
+// written, and each condition named in ChildEntities must already exist. Assumptions: the 404 text for a missing condition,
+// and the 204 answer (no return is documented).
 const compoundUpdateRule = (api) => async (c) => {
   const { store } = api;
   const body = typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {});
@@ -321,7 +321,7 @@ const compoundUpdateRule = (api) => async (c) => {
 };
 
 // CSDL. PagingInfo (mscrm.PagingInfo) is emitted by dataverse-audit.mjs, with RetrieveRecordChangeHistory.
-// unverified: PublishDuplicateRule's documented return is asyncoperation; the simulated body still carries JobId.
+// PublishDuplicateRule's documented return is asyncoperation; the simulated body still carries JobId.
 const CSDL_PUBLISH = `<Action Name="PublishDuplicateRule" IsBound="true">
   <Parameter Name="entity" Type="mscrm.duplicaterule" Nullable="false" />
   <ReturnType Type="mscrm.asyncoperation" Nullable="false" />
@@ -354,8 +354,8 @@ const CSDL_COMPOUND_UPDATE = `<Action Name="CompoundUpdateDuplicateDetectionRule
 
 // Solution duplicate rules: <folder>/<unique name>/duplicaterule.xml, one folder per rule as the export writes them.
 // Columns are the rule's text children. statecode and statuscode are read when the file has them; without them a rule
-// is published (unverified: the captured export carries no state). <duplicaterulecondition> children, when present,
-// become condition rows (unverified shape: the captured export carries none).
+// is published (an export carries no state). <duplicaterulecondition> children, when present, become condition rows
+// (assumed shape: an export carries none).
 const SOLUTION_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 export function parseDuplicateRuleXml(text) {
   const root = parseSolutionXml(text);

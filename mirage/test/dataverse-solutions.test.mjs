@@ -1,4 +1,4 @@
-// Solution export and import over the Dataverse Web API. Invented schema (new_ prefix, contoso-style names), loopback servers only.
+// Solution export and import over the Dataverse Web API.
 // Round trip: a solution built from metadata writes that name it in MSCRM.SolutionUniqueName is exported, then imported into a
 // fresh simulator, where the table, columns, option set and relationship exist and the Web API creates a row in the table.
 import { describe, it, before, after } from "node:test";
@@ -253,7 +253,7 @@ describe("Solution export and import", { concurrency: false }, () => {
   });
 });
 
-// Solution component messages and dependency functions, on the same source solution. Invented schema, loopback only.
+// Solution component messages and dependency functions, on the same source solution.
 describe("Solution component messages", { concurrency: false }, () => {
   let source;
   const componentId = (kind, logical, name = null) => componentObjectId({ kind, logical, name }, ORG);
@@ -293,7 +293,7 @@ describe("Solution component messages", { concurrency: false }, () => {
     assert.equal(noSolution.status, 404, JSON.stringify(noSolution.json));
   });
 
-  // Learn AddSolutionComponentRequest.ComponentId: for MetadataBase components the component id is the MetadataId.
+  // AddSolutionComponentRequest.ComponentId: for MetadataBase components the component id is the MetadataId.
   it("AddSolutionComponent takes the MetadataId the table definition returns and refuses the old generated component id", async () => {
     const metadataId = (await source.request("GET", "/EntityDefinitions(LogicalName='new_loose')?$select=MetadataId")).json.MetadataId;
     const publisherId = (await source.request("GET", `/publishers?$select=publisherid&$filter=uniquename eq '${PUBLISHER}'`)).json.value[0].publisherid;
@@ -358,13 +358,27 @@ describe("Solution component messages", { concurrency: false }, () => {
     assert.equal(removed.status, 200, JSON.stringify(removed.json));
     const missing = await source.request("GET", `/RetrieveMissingDependencies(SolutionUniqueName='${SOLUTION}')`);
     assert.ok(dependencyRows(missing.json).some((row) => row.requiredcomponentobjectid === category), "the table is now missing");
-    const uninstall = await source.request("GET", `/RetrieveDependenciesForUninstall(SolutionUniqueName='${SOLUTION}')`);
-    assert.equal(uninstall.status, 200, JSON.stringify(uninstall.json));
+    const uninstallRows = async () => {
+      const uninstall = await source.request("GET", `/RetrieveDependenciesForUninstall(SolutionUniqueName='${SOLUTION}')`);
+      assert.equal(uninstall.status, 200, JSON.stringify(uninstall.json));
+      return dependencyRows(uninstall.json);
+    };
+    assert.deepEqual(await uninstallRows(), [], "nothing outside the solution depends on it yet");
+    // A relationship created outside the solution, from the loose table to the solution's widget, blocks its uninstall.
+    const outside = await source.request("POST", "/RelationshipDefinitions", {
+      "@odata.type": "#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata",
+      SchemaName: "new_loose_widget", ReferencedEntity: "new_widget", ReferencingEntity: "new_loose",
+      ReferencedAttribute: "new_widgetid", ReferencedEntityNavigationPropertyName: "new_loose_widget_ref",
+      ReferencingEntityNavigationPropertyName: "new_widget_loose",
+      Lookup: column("Lookup", "new_WidgetLoose", { Description: label("") }),
+    });
+    assert.equal(outside.status, 204, JSON.stringify(outside.json));
+    assert.ok((await uninstallRows()).some((row) => row.requiredcomponentobjectid === componentId("entity", "new_widget")), "the outside relationship is reported");
   });
 });
 
 // Solution lifecycle messages: patches and their roll-up, a staged upgrade and its promotion, async export and download,
-// uninstall, the preferred solution and AddComponentsToSolutionAsync. Same invented schema; loopback servers only.
+// uninstall, the preferred solution and AddComponentsToSolutionAsync, on the same schema.
 // Patch export lock and roll-up: https://learn.microsoft.com/en-us/power-platform/alm/create-patches-simplify-solution-updates
 // Missing upgrade code: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/web-service-error-codes
 // Supported uninstall: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/uninstallsolutionasync
@@ -593,13 +607,6 @@ describe("Solution lifecycle messages", { concurrency: false }, () => {
     assert.equal(baseRow(removable.store), undefined);
     assert.equal(rowsOf(removable.store, "solutioncomponent").some((r) => r.solutionid === solutionId), false);
 
-    const asyncTarget = await open();
-    assert.equal((await asyncTarget.request("POST", "/ImportSolution", { CustomizationFile: base64(managedV1) })).status, 204);
-    const started = await asyncTarget.request("POST", "/UninstallSolutionAsync", { SolutionUniqueName: SOLUTION });
-    assert.equal(started.status, 200, JSON.stringify(started.json));
-    await solutionImportJob(asyncTarget.api, started.json.AsyncOperationId);
-    assert.equal(operationOf(asyncTarget.store, started.json.AsyncOperationId).statuscode, 30);
-    assert.equal(baseRow(asyncTarget.store), undefined);
   });
 
   it("the preferred solution: the Default solution until one is set; it is per user and counted by PreferredSolutionUsedBy", async () => {

@@ -1,6 +1,6 @@
 // Shared fixture for the read-projection, paging, exact-JSON, collation and file-name tests: a loopback Dataverse API
-// over an invented state with the default EXTENSIONS and two application users: ADMIN (System Administrator) and
-// CUST (System Customizer, which does not bypass column security). Invented x_ tables and GUIDs only.
+// over a state with the default EXTENSIONS and two application users: ADMIN (System Administrator) and
+// CUST (System Customizer, which does not bypass column security).
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";

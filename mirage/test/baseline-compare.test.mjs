@@ -1,4 +1,3 @@
-// Baseline comparison and matrix regressions: invented requests, markup and folders only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -44,7 +43,6 @@ test("DOM diff reports tag, attribute, class, text and children deltas and ignor
   const b = parseFragment('<div id="r" class="y x" nonce="2" title="u"><p>Bye</p><b>s</b><i></i></div>');
   const out = diffDom(a, b, []);
   assert.deepEqual(out.map((d) => d.field).sort(), ["attr.title", "children.length", "class", "tag", "text"]);
-  assert.ok(!out.some((d) => d.field.includes("nonce")));
   assert.equal(diffDom(parseFragment('<p nonce="a">x</p>'), parseFragment('<p nonce="b">x</p>'), []).length, 0);
 });
 
@@ -199,9 +197,14 @@ test("compareScenario verdicts, allowlist classification, second-live variance a
   assert.match(unusable.reason, /not usable/);
 
   const entry = { id: "x", scope: "dom", pattern: "a", field: "b", reason: "r", proof: "platform-generated", evidence: "e" };
-  for (const bad of [{ version: 2, entries: [] }, { version: 1, entries: [{ ...entry, reason: "" }] }, { version: 1, entries: [{ ...entry, proof: "hunch" }] }, { version: 1, entries: [{ ...entry, scope: "page" }] }]) {
+  for (const [bad, message] of [
+    [{ version: 2, entries: [] }, /version 1 with entries is required/],
+    [{ version: 1, entries: [{ ...entry, reason: "" }] }, /lacks reason/],
+    [{ version: 1, entries: [{ ...entry, proof: "hunch" }] }, /needs proof/],
+    [{ version: 1, entries: [{ ...entry, scope: "page" }] }, /unknown scope/],
+  ]) {
     await fs.writeFile(allowFile, JSON.stringify(bad));
-    await assert.rejects(loadAllowlist(allowFile));
+    await assert.rejects(loadAllowlist(allowFile), message);
   }
 
   const report = { generatedAt: "2026-01-01", scenarios: [pass, fail, allowedResult, unusable].map((r, i) => ({ ...r, id: `s${i}` })) };
@@ -228,7 +231,7 @@ test("validateMatrix accepts a good matrix and rejects invalid ones", () => {
   assert.throws(() => validateMatrix(mutate((m) => delete m.scenarios[1].steps)), /needs steps/);
   assert.throws(() => validateMatrix(mutate((m) => (m.origin = "http://portal.invalid"))), /HTTPS/);
   assert.throws(() => validateMatrix(mutate((m) => (m.origin = "https://portal.invalid/path"))), /HTTPS/);
-  assert.throws(() => validateMatrix({ version: 1, scenarios: [] }));
+  assert.throws(() => validateMatrix({ version: 1, scenarios: [] }), /matrix with scenarios is required/);
   assert.equal(scenarioDir("/out", { id: "a/b" }, "live"), path.join("/out", "a", "b", "live"));
 });
 

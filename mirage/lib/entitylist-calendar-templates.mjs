@@ -2,7 +2,7 @@
  * Local equivalents of the platform calendar templates (/Areas/EntityList/tmpls/BootstrapV5/*.html,
  * underscore-style <% %> templates the calendar client fetches by name). They are written for
  * entitylist-calendar-compat.js, which supplies `cal` (locale, date formatting, the day/month/week
- * helpers) and `_` (each); the markup they render follows the platform calendar DOM (live evidence).
+ * helpers) and `_` (each); the markup they render follows the platform calendar DOM.
  */
 const eventDate = `<% var start = cal.moment(event.start, event), end = event.end ? cal.moment(event.end, event) : null; %>`;
 const eventRange = `<%= start.format('MMMM D, YYYY h:mm A') %><%= end && event.end > event.start ? ' &ndash; ' + (end.sameDay(start) ? end.format('h:mm A') : end.format('MMMM D, YYYY h:mm A')) : '' %>`;

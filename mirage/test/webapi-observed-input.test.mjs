@@ -53,7 +53,7 @@ test('observed API errors retain rejection and atomicity without contacting boun
   ownedFixture(t).add(() => app.close());
   const baseline = app.store.snapshot().tables;
   const route = '/_api/probes('+G(1)+')';
-  async function send(body,{token=app.state().csrf,raw}={}) {
+  async function send(body,{token=app.csrf,raw}={}) {
     const r = await fetch(app.url+route,{method:'PATCH',headers:{'content-type':'application/json',...(token==null?{}:{__RequestVerificationToken:token})},body:raw??JSON.stringify(body)});
     return {status:r.status,body:await r.json(),cache:r.headers.get('cache-control')};
   }
@@ -83,6 +83,6 @@ test('observed API errors retain rejection and atomicity without contacting boun
   const empty=await send(null,{raw:''});assert.equal(empty.status,400);assert.equal(empty.body.error.innererror.message,'Passed entity object cannot be null or empty.');assert.deepEqual(app.store.snapshot().tables,baseline);
   assert.equal(empty.body.error.innererror.code,'0x80072530');assert.equal(Object.hasOwn(empty.body.error.innererror,'type'),false,'Dataverse details do not acquire a portal exception type');
   const missingKey=await send({'parentid@odata.bind':"/probes(title='Missing')"});assert.equal(missingKey.status,404);assert.deepEqual(app.store.snapshot().tables,baseline);
-  const bound=await fetch(app.url+route,{method:'PATCH',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({'parentid@odata.bind':"/probes(title='Lookup target')"})});assert.equal(bound.status,204);
-  const record=await fetch(app.url+route+'?$select=_parentid_value',{headers:{__RequestVerificationToken:app.state().csrf}});assert.equal((await record.json())._parentid_value,G(3),'observed reference checks retain declared alternate-key bindings');
+  const bound=await fetch(app.url+route,{method:'PATCH',headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify({'parentid@odata.bind':"/probes(title='Lookup target')"})});assert.equal(bound.status,204);
+  const record=await fetch(app.url+route+'?$select=_parentid_value',{headers:{__RequestVerificationToken:app.csrf}});assert.equal((await record.json())._parentid_value,G(3),'observed reference checks retain declared alternate-key bindings');
 });

@@ -21,12 +21,12 @@ const escape = (value) =>
 const json = (value) => JSON.stringify(value, null, 2);
 const badge = (text, tone = "") =>
   `<span class="badge ${tone}">${escape(text)}</span>`;
-// View modules (D3): DOM-free `{ id, label, icon, hosts, requires, load(ctx), render(ctx), handle(ctx, event) }`
+// View modules: DOM-free `{ id, label, icon, hosts, requires, load(ctx), render(ctx), handle(ctx, event) }`
 // objects, plus the optional hooks `mounted(ctx)` (after each render) and `leave(ctx)` (when the view closes).
 // Wiring another module is one import and one entry in this array.
 const BOTH = ["power-pages", "standalone"];
 const modules = [dashboardModule(), servicesView, flowsView, capabilitiesView, packsView];
-// Built-in views (D13): a view without `requires` exists on every host; otherwise its first route decides. When the
+// Built-in views: a view without `requires` exists on every host; otherwise its first route decides. When the
 // host publishes `status.routes` (its mounted admin routes) the list answers without a request; otherwise built-in
 // routes are probed on standalone hosts only (Power Pages hosts serve every built-in route) and module routes everywhere.
 // Views of the portal source need the portal page-resources route (Power Pages hosts only).
@@ -62,13 +62,13 @@ const NAV_GROUPS = [
 const groupOf = id => NAV_GROUPS.find(([, ids]) => ids.includes(id))?.[0] ?? "Platform";
 const collapsedGroups = new Set();
 let state;
-// GET /status, read once per session when `/state` carries no `docs` (RU2-03); it may also carry `routes`.
+// GET /status, read once per session when `/state` carries no `docs`; it may also carry `routes`.
 let statusExtra;
 const capabilities = () => state?.capabilities ?? state?.status?.capabilities ?? {};
 const powerPages = () => capabilities().powerPages !== false;
 const hostKind = () => (powerPages() ? "power-pages" : "standalone");
-// Route probes (D13): one GET per required route and session; only a 404 hides a view. A host that publishes
-// `status.routes` answers from that list instead, so no probe request (and no 404 console noise) is made (RU2-12).
+// Route probes: one GET per required route and session; only a 404 hides a view. A host that publishes
+// `status.routes` answers from that list instead, so no probe request (and no 404 console noise) is made.
 const probes = new Map();
 const probeUrl = route => String(route).replace(/^\/_{1,2}sim\//, "/__sim/");
 const probing = new Map();
@@ -114,13 +114,13 @@ const docOf = path => (path ? kit.docLink(path, docs()) : undefined);
 const helpKey = key => `help-${String(key).replace(/[^a-z0-9-]+/gi, "-")}`;
 /** Help from help-content (`<view>.<panel>`): its first sentence, with the details and doc link behind an (i) tooltip. */
 const panelHelp = (key, title) => (HELP[key] ? kit.leadHelp({ id: helpKey(key), label: title, text: HELP[key].intro, steps: HELP[key].steps, example: HELP[key].example, doc: docOf(HELP[key].doc) }) : "");
-/** Visible help for one control from `HELP[key].fields[name]` (RU2-09); the control carries `aria-describedby="<id>-help"`. */
+/** Visible help for one control from `HELP[key].fields[name]`; the control carries `aria-describedby="<id>-help"`. */
 const controlHelp = (id, key, name) => kit.fieldHelp(id, HELP[key]?.fields?.[name] ?? "");
 /** The `fields` legend of a help entry (audit kinds, log types, operation modes…) as a collapsed list. */
 const legend = (key, title = "What the values mean") => (HELP[key]?.fields
   ? kit.section({ key: `legend:${key}`, title, body: `<ul class="help-list">${Object.values(HELP[key].fields).map(text => `<li>${escape(text)}</li>`).join("")}</ul>` })
   : "");
-/** The guide that starts every view (D12): intro, steps, example and doc links from help-content. */
+/** The guide that starts every view: intro, steps, example and doc links from help-content. */
 const viewGuide = key => (HELP[key]
   ? kit.guide({ key, intro: kit.splitLead(HELP[key].intro)[0], details: kit.splitLead(HELP[key].intro)[1], steps: HELP[key].steps ?? [], example: HELP[key].example, docs: HELP[key].doc ? [docOf(HELP[key].doc)] : [] })
   : "");
@@ -345,7 +345,7 @@ function tableTools(key, total, pages, { search = true } = {}) {
   if (total <= kit.PAGE_SIZES[0] && !settings.search && settings.page <= 1) return "";
   return kit.tableTools(key, { total, pages, page: settings.page, size: settings.size, search: settings.search }, { searchable: search });
 }
-/** A paged kit table keyed by `key` (rows carry `data-table="key"`, D14). */
+/** A paged kit table keyed by `key` (rows carry `data-table="key"`). */
 // Ten rows or fewer need no search box or pager (the kit pages longer lists).
 const pagedTable = (key, items, spec) => (items.length <= kit.PAGE_SIZES[0] && !browserFor(key).search
   ? kit.table({ key, items, ...spec })
@@ -407,7 +407,7 @@ async function loadRecords() {
     }
   }
 }
-// Contacts for persona choices (RA-05): one page of 20, never the whole table. When that page holds every
+// Contacts for persona choices: one page of 20, never the whole table. When that page holds every
 // contact the choices stay a `<select>`; otherwise each choice is a server-searched lookup (`contactLookup`).
 const CONTACT_PAGE = 20;
 let contactDirectory = { items: [], total: 0 };
@@ -515,7 +515,7 @@ async function loadEnvironment() {
   }
   if (activeView === "environment") render();
 }
-// Module load state per view (RU2-01): a module renders only after its data arrived; a failed load shows its error.
+// Module load state per view: a module renders only after its data arrived; a failed load shows its error.
 const moduleLoads = new Map();
 async function loadView() {
   if (activeView !== "logs") disconnectLogs();
@@ -722,7 +722,7 @@ const preferredEntity = (names) => {
   }
   return names[0] || "";
 };
-// The page heading of a built-in view, followed by its guide (RA-25..RA-35). The heading is the sidebar label and the
+// The page heading of a built-in view, followed by its guide. The heading is the sidebar label and the
 // eyebrow its sidebar group, so the page names where a link landed; the guide intro is the one description, and
 // `description` shows only for a view without a help entry.
 const viewLabel = id => views.find(view => view.id === id)?.label ?? id;
@@ -1245,7 +1245,7 @@ function operationPanel(item, index) {
 }
 let selectedOperation = "", standaloneOperations = [];
 // Power Pages hosts list operations in /state; standalone hosts answer GET /operations and take overrides
-// through PATCH /config { operations } (the whole override map), RA-48.
+// through PATCH /config { operations } (the whole override map).
 const operationItems = () => (powerPages() ? config().operations ?? [] : standaloneOperations);
 async function loadOperations() {
   if (!powerPages()) standaloneOperations = (await request("/operations")).items ?? [];
@@ -1558,7 +1558,7 @@ function externalIdentitiesPanel() {
       if (!byContact.has(key)) byContact.set(key, { name: item.contactName, rows: [] });
       byContact.get(key).rows.push(item);
     }
-    // Contacts with identity records; when every contact is loaded (RA-12: at most one page), also those without one.
+    // Contacts with identity records; when every contact is loaded (at most one page), also those without one.
     const entries = contactsComplete() ? contactList().map((record) => [personaId(record.contactid), contactLabel(record)]) : [];
     for (const [key, value] of byContact) if (!entries.some(([id]) => id === key)) entries.push([key, value.name || key]);
     const describe = (item) =>
@@ -1718,7 +1718,7 @@ function snippetCompositionControls() {
   return disclosure("snippet-compositions", `Observed snippet compositions (${rows.length})`, () => `<section>${panelHelp("mappings.snippet-compositions", "observed snippet compositions")}<form id="snippet-composition-form" class="form-grid"><div><label for="composition-page">Observed page path</label><input id="composition-page" placeholder="/owned-products/" required></div><div><label for="composition-parent">Parent snippet name</label><input id="composition-parent" required></div><div><label for="composition-child">Existing action snippet name</label><input id="composition-child" required></div><div><button class="button" type="submit">Observe static composition</button></div></form>${lazyJson("Inspect source-bound compositions", rows)}</section>`);
 }
 
-// Diagnostics grouped by code (RA-13): the groups and the items inside each group page through the kit.
+// Diagnostics grouped by code: the groups and the items inside each group page through the kit.
 function diagnosticItem(item) {
   const where = item.path || item.page || item.file;
   const route =
@@ -1874,7 +1874,7 @@ function accessRulesPanel() {
   }</tbody></table></div></section>`;
 }
 
-// Three kinds of scenario (RB-14): state scenarios saved here, persona-catalogue scenarios and preflight scenario files.
+// Three kinds of scenario: state scenarios saved here, persona-catalogue scenarios and preflight scenario files.
 function scenarioForm() {
   const presets = (state.status?.availablePresets || []).filter((preset) => !preset.unavailable);
   const option = (value, label) => `<option value="${escape(value)}">${escape(label)}</option>`;
@@ -2027,7 +2027,7 @@ const filteredLogs = () =>
       (!logFilters.search ||
         JSON.stringify(entry).toLowerCase().includes(logFilters.search.toLowerCase())),
   );
-// Only the current page is in the DOM (RA-09): newest first, 20 per page by default, through the kit pager.
+// Only the current page is in the DOM: newest first, 20 per page by default, through the kit pager.
 function logRows() {
   const page = sliceRows("logs", filteredLogs(), { searchable: false });
   return (
@@ -2075,7 +2075,7 @@ async function loadDataverse() {
     dataverseResult = await request("/dataverse");
     dataverseError = "";
     dataverseDisabled = false;
-    // The full request ring (RA-08); the summary above carries only the last 50.
+    // The full request ring; the summary above carries only the last 50.
     dataverseRequests = (await request("/dataverse/requests").catch(() => ({ requests: dataverseResult.requests ?? [] }))).requests ?? [];
   } catch (error) {
     dataverseResult = undefined;
@@ -2084,7 +2084,7 @@ async function loadDataverse() {
   }
   if (activeView === "dataverse") render();
 }
-// The user and workflow whose single edit form is open (RA-02, RA-03).
+// The user and workflow whose single edit form is open.
 let dataverseRequests = [], dataverseUserEditing = null, dataverseWorkflowEditing = null;
 const ACCESS_MODES = { 0: "Read-Write", 1: "Administrative", 2: "Read", 3: "Support user", 4: "Non-interactive", 5: "Delegated admin" };
 function dataverse() {
@@ -2142,7 +2142,7 @@ function dataverse() {
   const federatedRows = (result.applications ?? []).flatMap((app) => (app.federatedCredentials ?? []).map((credential) => ({ app, credential })));
   const federatedPage = sliceRows("dv-federated", federatedRows);
   const federated = disclosure("dv-federated", `Federated credentials (${federatedRows.length})`, () => `<section><div class="panel-heading"><h2>Federated credentials</h2>${badge(`${federatedRows.length} trusted`)}</div>${panelHelp("dataverse.federated")}<p class="muted">Workload identity federation: tokens from an external issuer sign in as the application. Only the issuer's public keys are stored.</p>${tableTools("dv-federated", federatedPage.total, federatedPage.pages)}<div class="table-wrap"><table data-table="dv-federated"><thead><tr><th>Application</th><th>Issuer</th><th>Subject</th><th>Audience</th><th>Actions</th></tr></thead><tbody>${federatedPage.items.map(({ app, credential }) => `<tr id="dv-federated-row-${escape(app.appId)}-${encodeURIComponent(credential.issuer)}-${encodeURIComponent(credential.subject)}" data-operation-scope><td class="item-title">${escape(app.displayName)}</td><td><code>${escape(credential.issuer)}</code></td><td><code>${escape(credential.subject)}</code></td><td>${escape((credential.audiences ?? []).join(", "))}</td><td class="actions"><button class="button small quiet" type="button" data-dv-remove-federated data-dv-app="${escape(app.appId)}" data-dv-issuer="${escape(credential.issuer)}" data-dv-subject="${escape(credential.subject)}">Remove</button></td></tr>`).join("") || '<tr><td colspan="5">No federated credential yet.</td></tr>'}</tbody></table></div><form id="dv-federated-form" class="form-grid section-gap"><div><label for="dv-fed-app">Application</label><select id="dv-fed-app" required ${appOptions ? "" : "disabled"}>${appOptions || "<option value=''>Register an application first</option>"}</select></div><div><label for="dv-fed-issuer">Issuer (https URL)</label><input id="dv-fed-issuer" type="url" placeholder="https://issuer.example.test/tenant" required>${kit.fieldHelp("dv-fed-issuer", "The iss claim of the external tokens.")}</div><div><label for="dv-fed-subject">Subject</label><input id="dv-fed-subject" placeholder="repo:example/app:ref:refs/heads/main" required>${kit.fieldHelp("dv-fed-subject", "The sub claim that must match exactly.")}</div><div><label for="dv-fed-audience">Audience</label><input id="dv-fed-audience" value="api://AzureADTokenExchange" required>${kit.fieldHelp("dv-fed-audience", "The aud claim the external token carries.")}</div><div><label for="dv-fed-jwks">Issuer JWKS (public keys, JSON)</label><textarea id="dv-fed-jwks" class="code-editor" rows="5" spellcheck="false" placeholder='{"keys":[]}' required></textarea><p class="field-help">The issuer's public JSON Web Key Set. A key with a private part is refused.</p></div><div><button class="button" type="submit" ${appOptions ? "" : "disabled"}>Add federated credential</button></div></form></section>`);
-  // Managed identity endpoint summary (RA-52): mode and endpoint only; the identity header is never rendered.
+  // Managed identity endpoint summary: mode and endpoint only; the identity header is never rendered.
   const summary = result.managedIdentity ?? {};
   const identitySummary = summary.enabled
     ? kit.kv([["Mode", escape(summary.mode ?? "appservice")], ["Endpoint", summary.endpoint ? `<code>${escape(summary.endpoint)}</code>` : "Not reported"], ["Identity header", "Configured for the managed identity endpoint; its value is not displayed here."]])
@@ -2389,9 +2389,9 @@ function render() {
   for (const [selector, key] of [['#open-portal', 'powerPages'], ['#open-model-driven', 'modelDriven']]) {
     const anchor = $(selector); if (anchor) { anchor.hidden = key === 'powerPages' ? !powerPages() : capabilities().modelDriven === false; if (links[key]) anchor.href = links[key]; }
   }
-  // One product, two areas (D22): the wordmark stays Paqvilo; the small line names the area and the host flavour.
+  // One product, two areas: the wordmark stays Paqvilo; the small line names the area and the host flavour.
   const kind = $('#workspace-kind'); if (kind) kind.textContent = `SIMULATOR WORKSPACE · ${powerPages() ? 'PORTAL' : 'MIRAGE'} STUDIO`;
-  // Sidebar groups (D12): collapsible, the active view's group always open; link texts are unchanged.
+  // Sidebar groups: collapsible, the active view's group always open.
   const available = availableViews();
   $("#navigation").innerHTML = [...NAV_GROUPS.map(([group]) => group)]
     .map((group) => {
@@ -2543,7 +2543,7 @@ function askConfirmation(title, message, action, label = "Delete") {
 
 async function saveConfig(patch, { form } = {}) {
   await request("/config", { method: "PATCH", body: JSON.stringify(patch) });
-  // Saved values now come from the simulator; a failed save keeps the draft.
+  // After a successful save the values come from the simulator; a failed save keeps the draft.
   if (form) drafts.delete(form);
   await refresh();
   notify("Configuration saved.");
@@ -3499,12 +3499,12 @@ document.addEventListener("submit", async (event) => {
 });
 
 
-// ---- Infrastructure dashboard (D12): GET /__sim/api/dashboard, polled every 5 s while visible and active;
-// Power Pages hosts also refetch on the SSE `reload` event. A 404 (older host) hides the view (D13).
+// ---- Infrastructure dashboard: GET /__sim/api/dashboard, polled every 5 s while visible and active;
+// Power Pages hosts also refetch on the SSE `reload` event. A 404 (older host) hides the view.
 function dashboardModule() {
   let payload = null, previousActivity = null, problem = null, timer = 0, events = null, selected = null, preflight = null, preflightError = "", generation = 0;
   const history = []; // ring of earlier activity snapshots, oldest first (sparklines)
-  // The open drawer's nodes and the node payload they show: a poll re-render re-attaches them unchanged (RU2-04), so
+  // The open drawer's nodes and the node payload they show: a poll re-render re-attaches them unchanged, so
   // focus (restored by id in render()) and the drawer's scroll position survive while the node's facts did not change.
   let drawer = null;
   const route = "/_sim/api/dashboard";

@@ -1,5 +1,5 @@
 // Desktop flow messages (lib/dataverse-addon-flows.mjs) over HTTP: run with a pack handler, run without one, cancel, save as,
-// leave group and the flow machine groups. Invented flow, machine and group rows, loopback only.
+// leave group and the flow machine groups.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

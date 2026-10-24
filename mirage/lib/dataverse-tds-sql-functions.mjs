@@ -17,11 +17,10 @@
 //   version (string), caseSensitive (default false), ansiNulls (default true).
 // Errors are thrown as plain { number, message } objects.
 //
-// Unverified: error numbers other than 245 (CAST/CONVERT doc) follow SQL Server from memory;
-// Dataverse gives no documented text for unsupported functions, so 195 with a plain message is used;
-// DATALENGTH of decimals is fixed at 17 bytes; ISNUMERIC accepts plain numeric text only;
-// an empty CHARINDEX or REPLACE pattern is not verified (returns 0 and the input).
-// FORMATMESSAGE's missing-parameter error 2787 is from memory; FORMAT currency codes cover common regions only.
+// Guesses: error numbers other than 245 (documented for CAST/CONVERT) follow SQL Server from memory, including
+// FORMATMESSAGE's missing-parameter 2787; unsupported functions raise 195 with a plain message (no documented text);
+// DATALENGTH of decimals is fixed at 17 bytes; ISNUMERIC accepts plain numeric text only; an empty CHARINDEX or
+// REPLACE pattern returns 0 and the input. FORMAT currency codes cover common regions only.
 import { randomUUID } from 'node:crypto';
 
 const DAY = 86400000;
@@ -295,7 +294,7 @@ export function toFloat(value, fromType) {
 }
 // varbinary to integer: big-endian two's complement, as CAST does. More than 8 bytes overflows.
 function bytesToBigInt(buf) {
-  if (buf.length > 8) fail(8115, 'Arithmetic overflow error converting expression to data type bigint.'); // unverified: from memory
+  if (buf.length > 8) fail(8115, 'Arithmetic overflow error converting expression to data type bigint.');
   if (buf.length === 0) return 0n;
   let u = BigInt(`0x${buf.toString('hex')}`);
   if (buf[0] & 0x80) u -= 1n << BigInt(8 * buf.length);
@@ -398,7 +397,6 @@ function toDatetime(value, style, fromType) {
   return new Date(ms);
 }
 
-// Parses a type spec such as "decimal(18,2)", "nvarchar(max)" or "int". Unknown types raise 2715.
 // Static type of a CAST or CONVERT target spec such as 'varchar(10)' or 'decimal(10,2)'.
 function metaOfTypeText(spec) {
   const t = parseType(spec);
@@ -408,6 +406,7 @@ function metaOfTypeText(spec) {
   return meta;
 }
 
+// Parses a type spec such as "decimal(18,2)", "nvarchar(max)" or "int". Unknown types raise 2715.
 function parseType(spec) {
   const m = TYPE_TEXT.exec(String(spec));
   const raw = m ? m[1].toLowerCase() : '';
@@ -445,7 +444,7 @@ function toBinary(value, t, fromType) {
     if (value >= -2147483648 && value <= 2147483647) { bytes = Buffer.alloc(4); bytes.writeInt32BE(value); }
     else { bytes = Buffer.alloc(8); bytes.writeBigInt64BE(BigInt(value)); }
   } else if (typeof value === 'boolean') bytes = Buffer.from([value ? 1 : 0]);
-  else fail(8114, `Error converting data type ${fromType} to ${t.base}.`); // unverified: from memory
+  else fail(8114, `Error converting data type ${fromType} to ${t.base}.`);
   if (t.base === 'binary') {
     const out = Buffer.alloc(t.length);
     bytes.copy(out, 0, 0, t.length);
@@ -461,7 +460,7 @@ export function castValue(value, spec, { style, fromType = 'nvarchar' } = {}) {
   if (t.base === 'binary' || t.base === 'varbinary') return toBinary(value, t, fromType);
   if (Buffer.isBuffer(value)) { // varbinary: text reads bytes as characters (utf16le for nvarchar), integers read big-endian
     if (t.base === 'varchar' || t.base === 'nvarchar') {
-      return (t.base === 'nvarchar' ? value.toString('utf16le') : value.toString('latin1')).slice(0, t.length); // unverified: from memory
+      return (t.base === 'nvarchar' ? value.toString('utf16le') : value.toString('latin1')).slice(0, t.length);
     }
     if (!['int', 'bigint', 'smallint', 'tinyint'].includes(t.base)) fail(8114, `Error converting data type varbinary to ${t.base}.`);
   }

@@ -1,14 +1,12 @@
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
-import { protectConfiguration, unprotectConfiguration, portalNotes } from "../lib/native-services.mjs";
+import { protectConfiguration, unprotectConfiguration, portalNotes, reportCapturedBundleRequirements, gridRecord } from "../lib/native-services.mjs";
 import { notesFilter } from "../lib/form-service.mjs";
 import { signInHeaders } from "../testing/session.mjs";
-import {reportCapturedBundleRequirements} from '../lib/native-services.mjs';
-import {gridRecord} from '../lib/native-services.mjs';
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 test('native grids preserve zone-less DateOnly and independent dates across host time zones',()=>{
@@ -140,12 +138,18 @@ async function fixture(t, { roles = ["Editor"] } = {}) {
   ownedFixture(t).add(() => app.close());
   // Portal requests are signed in explicitly (paqvilo-mirage-auth session) as the persona.
   const session = signInHeaders(app, CONTACT, { roles });
-  const token = app.state().csrf;
+  const token = app.csrf;
   const post = (action, body, headers = { __RequestVerificationToken: token }) =>
     fetch(`${app.url}/_services/${action}/${SITE}`, { method: "POST", headers: { "content-type": "application/json", ...session, ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
   const get = (pathname) => fetch(app.url + pathname, { headers: session });
   return { app, post, get };
 }
+
+// Read-only service tests share one runtime; tests that change state start their own.
+let shared;
+const cleanup = [];
+before(async () => { shared = await fixture({ after: (fn) => cleanup.push(fn) }); });
+after(async () => { for (const fn of cleanup) await fn(); });
 
 const layoutsAfter = (html, marker) => {
   const encoded = /data-view-layouts="([^"]*)"/.exec(html.slice(html.indexOf(marker)))[1];
@@ -176,8 +180,8 @@ test("protected grid configuration round-trips and rejects tampering", () => {
   assert.throws(() => unprotectConfiguration("not-a-token"), (error) => error.status === 403);
 });
 
-test("entity grid service returns the native paging, search and layout-only sort contract", async (t) => {
-  const { app, post, get } = await fixture(t);
+test("entity grid service returns the native paging, search and layout-only sort contract", async () => {
+  const { post, get } = shared;
   const page = await (await get(`/?id=${CONTACT}`)).text();
   assert.match(page, new RegExp(`data-get-url="/_services/entity-grid-data.json/${SITE}"`));
   const [layout] = layoutsAfter(page, 'class="entity-grid entitylist');
@@ -204,15 +208,15 @@ test("entity grid service returns the native paging, search and layout-only sort
   assert.deepEqual(names(data), ["Gamma", "Beta", "Alpha"]);
   // A sort on a column outside the layout is ignored rather than leaking other columns.
   data = await (await post("entity-grid-data.json", gridRequest(secure, { sortExpression: "accountid DESC", pageSize: 3 }))).json();
-  assert.equal(data.Records.length, 3);
+  assert.deepEqual(names(data), ["Alpha", "Beta", "Gamma"]);
   // The opaque configuration is bound to its endpoint kind and signature.
   assert.equal((await post("entity-subgrid-data.json", gridRequest(secure))).status, 403);
   const forged = Buffer.from(`${Buffer.from(JSON.stringify({ t: "list", w: SITE })).toString("base64url")}.forged`).toString("base64");
   assert.equal((await post("entity-grid-data.json", gridRequest(forged))).status, 403);
 });
 
-test("lookup grid service serves the editable lookup's target view on demand", async (t) => {
-  const { app, post, get } = await fixture(t);
+test("lookup grid service serves the editable lookup's target view on demand", async () => {
+  const { post, get } = shared;
   const page = await (await get(`/?id=${CONTACT}`)).text();
   assert.match(page, /value="Alpha"[^>]*id="parentcustomerid_name"/);
   assert.match(page, /<button type="button" class="btn btn-default launchentitylookup"[^>]*aria-label="Organisation Launch lookup modal"/);
@@ -238,8 +242,8 @@ test("grid reads follow table permissions and report native access denial", asyn
   assert.deepEqual([response.headers.get("cache-control"), response.headers.get("pragma"), response.headers.get("expires")], ["private", null, null]);
 });
 
-test("notes service lists portal notes and annotation downloads stream the document body", async (t) => {
-  const { app, post, get } = await fixture(t);
+test("notes service lists portal notes and annotation downloads stream the document body", async () => {
+  const { post, get } = shared;
   const response = await post("entity-notes", { regarding: { LogicalName: "contact", Id: CONTACT }, page: 1, pageSize: 10 });
   assert.equal(response.status, 200);
   const notes = await response.json();
@@ -258,10 +262,10 @@ test("notes service lists portal notes and annotation downloads stream the docum
   assert.equal((await post("entity-notes", { regarding: { LogicalName: "contact", Id: CONTACT } }, {})).status, 403);
 });
 
-test("anti-forgery token endpoint returns the native hidden input", async (t) => {
-  const { app, get } = await fixture(t);
+test("anti-forgery token endpoint returns the native hidden input", async () => {
+  const { app, get } = shared;
   const html = await (await get(`/_portal/${SITE}/Layout/GetAntiForgeryToken`)).text();
-  assert.equal(html, `<input name="__RequestVerificationToken" type="hidden" value="${app.state().csrf}" />`);
+  assert.equal(html, `<input name="__RequestVerificationToken" type="hidden" value="${app.csrf}" />`);
 });
 
 test("notes service adds, edits and deletes the signed-in contact's own portal notes", async (t) => {
@@ -312,7 +316,7 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
   const bound = await post("entity-form-addnote", { regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Bound note" });
   assert.equal(bound.status, 201);
   // The native form transport gets the platform's empty 201, without Vary (live note-add).
-  const native = await post("entity-form-addnote", new URLSearchParams({ regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Native note", __RequestVerificationToken: app.state().csrf }).toString(), { "content-type": "application/x-www-form-urlencoded" });
+  const native = await post("entity-form-addnote", new URLSearchParams({ regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Native note", __RequestVerificationToken: app.csrf }).toString(), { "content-type": "application/x-www-form-urlencoded" });
   assert.equal(native.status, 201);
   assert.equal(native.headers.get("vary"), null);
   assert.equal(await native.text(), "");

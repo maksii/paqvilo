@@ -1,5 +1,5 @@
 // Simulated Dataverse auditing: seeding, enablement, audit actions, impersonation, the
-// history functions and their privileges. Invented schema and GUIDs only.
+// history functions and their privileges.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -354,8 +354,8 @@ test("reset(api) re-seeds the audit table and mapping that a reset wipes", async
   assert.deepEqual([api.store.state.mappings.audit.entitySet, api.store.state.mappings.audit.dataverseOnly], ["audits", true]);
 });
 
-// DeleteAuditData, GetAuditStorageDetails and RetrieveAuditPartitionList (Learn: the operations; the privileges and the
-// response properties are unverified, see dataverse-audit.mjs).
+// DeleteAuditData, GetAuditStorageDetails and RetrieveAuditPartitionList. Their privileges and response properties are
+// not documented, so the simulator's choices are guesses.
 test("DeleteAuditData deletes the audit rows older than EndDate, and a caller without the delete privilege is refused", async () => {
   const api = await setup();
   await api.store.create("widget", { name: "A", statecode: 0 }, IDENTITY);

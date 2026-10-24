@@ -1,4 +1,4 @@
-// Custom APIs: customapi tables, unpacked solution parsing and registry operations. Invented sample_ names and loopback URLs only.
+// Custom APIs: customapi tables, unpacked solution parsing and registry operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -247,7 +247,7 @@ test('the seeded customapi mappings are persisted by the ready transaction', asy
   assert.equal(reloaded.state.mappings.customapiresponseproperty?.dataverseOnly, true);
 });
 
-// Parameter conversion, native defaults and trusted pack handlers on an invented echo action.
+// Parameter conversion, native defaults and trusted pack handlers on an echo action.
 const ECHO = apiFiles('sample_Echo', {
   params: [['Text', { type: 10, optional: 1 }], ['Count', { type: 7, optional: 1 }], ['Flag', { type: 0, optional: 1 }], ['Key', { type: 12, optional: 1 }], ['Ids', { type: 11, optional: 1 }], ['Stamp', { type: 1, optional: 1 }]],
   props: [['Reply', { type: 10 }], ['Count', { type: 7 }], ['Flag', { type: 0 }], ['Note', { type: 10 }], ['Stamp', { type: 1 }], ['Key', { type: 12 }]],

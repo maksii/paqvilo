@@ -1,6 +1,5 @@
 // Dynamics 365 application messages (lib/dataverse-addon-d365.mjs) over HTTP: goal Recalculate, SyncBulkOperation, SendBulkMail,
-// ImmediateBook, CalculatePrice (with its pack hook) and ApplyRecordCreationAndUpdateRule. Invented contoso_widget schema,
-// goals and metrics, and GUIDs only; loopback only.
+// ImmediateBook, CalculatePrice (with its pack hook) and ApplyRecordCreationAndUpdateRule.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -175,7 +174,7 @@ describe("Dynamics 365 application messages over HTTP", () => {
     });
     assert.equal(result.status, 200);
     assert.deepEqual(result.body.Notifications, []);
-    assert.ok(result.body.ValidationResult);
+    assert.deepEqual(result.body.ValidationResult, { ActivityId: APPT, TraceInfo: { ErrorInfoList: [] }, ValidationSuccess: true });
     assert.ok(h.store.state.tables.appointment?.some((row) => row.activityid === APPT && row.subject === "Invented meeting"));
   });
 

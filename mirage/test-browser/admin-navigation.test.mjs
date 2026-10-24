@@ -184,7 +184,7 @@ test(
       },
     ];
     await page.locator("#refresh").click();
-    // Baselines are collapsed sections (RA-21); open the rich-text one.
+    // Baselines are collapsed sections; open the rich-text one.
     await page.locator('[data-disclosure="rich-text-baselines"] > summary').click();
     await page
       .getByRole("heading", { name: "Versioned rich-text JSON baselines" })

@@ -1,9 +1,5 @@
 // Standard Dataverse metadata entity contracts for the implemented read routes.
-// The three metadata collections and MetadataBase inheritance families are documented at:
-// https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/use-web-api-metadata
-// https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/metadatabase
 // Declaration is separate from CRUD capability; only existing metadata read routes are advertised.
-// No organization schemas, labels, records, identities, URLs or internal managed-property collection.
 export const METADATA_ENTITY_SETS = Object.freeze([
   "EntityDefinitions",
   "GlobalOptionSetDefinitions",

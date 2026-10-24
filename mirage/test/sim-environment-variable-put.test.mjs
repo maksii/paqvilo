@@ -1,5 +1,5 @@
 // The _sim environment variable PUT keeps one value row per definition when the Solution has the definition but no value,
-// including across a Solution re-seed. Invented schema, rows and portal only; the admin pattern follows admin-api.test.mjs.
+// including across a Solution re-seed. The admin pattern follows admin-api.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -27,7 +27,7 @@ test("_sim environment variable PUT keeps exactly one value row per definition a
   await fs.writeFile(path.join(variable, "environmentvariabledefinition.xml"), '<environmentvariabledefinition schemaname="sample_NoValue"><defaultvalue>default</defaultvalue><displayname default="No value"><label description="No value" languagecode="1033" /></displayname><type>100000000</type></environmentvariabledefinition>');
   const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state", "state.json"), watch: false, solutionRoots: [solution] });
   ownedFixture(t).add(() => app.close());
-  const csrf = app.state().csrf;
+  const csrf = app.csrf;
   const call = async (route, method = "GET", body) => {
     const response = await fetch(app.url + route, { method, headers: { "content-type": "application/json", "x-sim-csrf": csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, json: await response.json().catch(() => null) };

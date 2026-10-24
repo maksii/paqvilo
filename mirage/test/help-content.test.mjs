@@ -45,7 +45,7 @@ test('required topics are covered', () => {
   assert.match(HELP['access.catalogue'].intro, /first registered definition wins/);
 });
 
-test('every doc path exists, is in the D9 docs map and its anchor matches a heading', async () => {
+test('every help doc path exists, is in the docs map and its anchor matches a heading', async () => {
   const known = new Set(Object.values(DOC_PATHS));
   const docs = [...new Set(Object.values(HELP).map(entry => entry.doc).filter(Boolean))];
   assert.ok(docs.length > 20);

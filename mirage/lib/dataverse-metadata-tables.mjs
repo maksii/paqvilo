@@ -4,8 +4,7 @@
 // Created tables are userConfigured, dataverseOnly store mappings flagged createdByMetadataApi; seeded and Solution tables
 // keep their table-level writes read-only. Columns created here (isManaged: false, isCustomizable: true) may be added to any
 // table; they are kept in state.dataverse.customColumns and reapplied onto the mapping (reapplyCustomColumns) so a Solution
-// refresh keeps them. Shapes follow the Web API table and column articles; items marked unverified are
-// not confirmed against the service. Choice storage follows the canonical shape in dataverse-metadata-relationships.mjs.
+// refresh keeps them. Choice storage follows the canonical shape in dataverse-metadata-relationships.mjs.
 import { DataError } from "./data-error.mjs";
 import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import { createMetadataService } from "./dataverse-metadata.mjs";
@@ -15,7 +14,7 @@ import { pluralizeEntitySetName } from "./solution-standard.mjs";
 import { equalityKey } from "./dataverse-values.mjs";
 import { assertElasticColumn, assertElasticKey, assertElasticTable, builtInKey, isElastic, SYSTEM_ATTRIBUTES, tableTypeOf } from "./dataverse-elastic.mjs";
 
-// unverified: customization prefix of 2 to 8 letters, then an underscore and a name (the quote and space forms are refused).
+// Assumed: a customization prefix of 2 to 8 letters, then an underscore and a name (the quote and space forms are refused).
 const SCHEMA_NAME = /^[A-Za-z][A-Za-z0-9]{1,7}_[A-Za-z0-9_]+$/;
 const GUID = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
 const LOGICAL_KEY = /^LogicalName='([^']+)'$/i;
@@ -27,14 +26,14 @@ const OWNERSHIP_TYPES = new Set(["UserOwned", "OrganizationOwned"]);
 const DEFAULT_LCID = 1033;
 const MAX_KEYS = 10;
 const MAX_KEY_COLUMNS = 16;
-const MAX_KEY_BYTES = 900; // unverified: SQL index limit for an alternate key, per Microsoft Learn
-// Column types an alternate key may use (Web API docs: whole number, decimal, single line of text, date time, lookup, option set).
+const MAX_KEY_BYTES = 900; // SQL index limit for an alternate key
+// Column types an alternate key may use: whole number, decimal, single line of text, date time, lookup, option set.
 const KEY_TYPES = new Set(["nvarchar", "int", "decimal", "datetime", "lookup", "picklist"]);
-// Bytes a key column takes toward the 900-byte limit. unverified: per-type widths.
+// Bytes a key column takes toward the 900-byte limit. The per-type widths are guesses.
 const KEY_BYTES = {
   nvarchar: (f) => 2 * (f.columnMetadata?.maxLength ?? 100), int: () => 4, decimal: () => 17, datetime: () => 8, lookup: () => 16, picklist: () => 4,
 };
-// @odata.type -> dataverseType. Double, File and Image column facts are unverified.
+// @odata.type -> dataverseType. Double, File and Image column facts are guesses.
 const COLUMN_TYPES = {
   StringAttributeMetadata: "nvarchar",
   MemoAttributeMetadata: "memo",
@@ -50,7 +49,7 @@ const COLUMN_TYPES = {
   FileAttributeMetadata: "file",
   ImageAttributeMetadata: "image",
 };
-// Columns whose writable numeric and text properties PUT may change (unverified: which properties Dataverse accepts per type).
+// Columns whose writable numeric and text properties PUT may change (which properties Dataverse accepts per type is a guess).
 const NUMERIC = new Set(["int", "bigint", "decimal", "float", "money"]);
 const TEXT = new Set(["nvarchar", "memo"]);
 // Owner columns of a user-owned table, stored like the seeded security tables.
@@ -62,7 +61,7 @@ const OWNER_FIELDS = {
 };
 const VERB = { POST: "Create", PUT: "Write", DELETE: "Delete" };
 
-// Error text and inner codes come from the gap review; the messages and statuses are unverified.
+// The inner codes are native; refusal messages and statuses are guesses.
 const fail = (message, status = 400, code = "InvalidRequest", innerCode) => new DataError(message, status, code, innerCode ? { innerCode } : undefined);
 const schemaNameError = (name, type) => fail(`The schema name ${name} for type ${type} is invalid or missing.Custom attribute, entity, entitykey, option set and relationship names must start with a valid customization prefix.`, 400, "InvalidRequest", "0x80044366");
 const attributeExists = (name, table) => fail(`Attribute ${name} already exists for entity ${table}.`, 400, "InvalidRequest", "0x80060304");
@@ -86,13 +85,13 @@ const requiredLevelOf = (value) => String((typeof value === "string" ? value : v
 // Label complex type -> { languageCode: text }. Only LocalizedLabels is read. Undefined when the property is absent.
 function labelMap(label) {
   if (label === undefined || label === null) return undefined;
-  if (!Array.isArray(label.LocalizedLabels)) throw fail("A label needs a LocalizedLabels array."); // unverified
+  if (!Array.isArray(label.LocalizedLabels)) throw fail("A label needs a LocalizedLabels array.");
   return Object.fromEntries(label.LocalizedLabels.map((item) => [String(item.LanguageCode ?? DEFAULT_LCID), String(item.Label ?? "")]));
 }
 
 function requireLabel(label, name) {
   const map = labelMap(label);
-  if (!map || !Object.keys(map).length) throw fail(`${name} is required.`); // unverified
+  if (!map || !Object.keys(map).length) throw fail(`${name} is required.`);
   return map;
 }
 
@@ -104,7 +103,7 @@ function nextObjectTypeCode(mappings) {
 // The global set a bind names, by Name or by MetadataId. The set must exist in the store or the schema.
 function globalNameOf(api, bind) {
   const m = GLOBAL_BIND.exec(String(bind));
-  if (!m) throw fail("GlobalOptionSet@odata.bind must name a global option set by Name or MetadataId."); // unverified
+  if (!m) throw fail("GlobalOptionSet@odata.bind must name a global option set by Name or MetadataId.");
   const org = api.settings.organizationId;
   const schema = typeof api.schema === "function" ? api.schema() : api.schema;
   const known = [
@@ -113,7 +112,7 @@ function globalNameOf(api, bind) {
   ];
   const wanted = m[1] ? (name) => lower(name) === lower(m[1]) : (name) => uuidV5(org, `optionset:${name}`).toLowerCase() === guidOf(m[2]);
   const name = known.find(wanted);
-  if (!name) throw fail(`Global option set ${m[1] ?? m[2]} does not exist.`, 404, "NotFound"); // unverified
+  if (!name) throw fail(`Global option set ${m[1] ?? m[2]} does not exist.`, 404, "NotFound");
   return name;
 }
 
@@ -122,7 +121,7 @@ function optionSetOf(api, attr) {
   const bind = attr["GlobalOptionSet@odata.bind"];
   if (bind) return { isGlobal: true, name: globalNameOf(api, bind) };
   const options = attr.OptionSet?.Options;
-  if (!Array.isArray(options)) throw fail("A picklist column needs OptionSet.Options or GlobalOptionSet@odata.bind."); // unverified
+  if (!Array.isArray(options)) throw fail("A picklist column needs OptionSet.Options or GlobalOptionSet@odata.bind.");
   const list = [];
   for (const option of options) list.push(optionFrom(option, assignValue(list, option.Value)));
   return { options: list };
@@ -175,7 +174,7 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
       break;
     case "file":
     case "image":
-      facts.maxSizeInKB = attr.MaxSizeInKB ?? null; // unverified: File and Image column facts
+      facts.maxSizeInKB = attr.MaxSizeInKB ?? null;
       break;
   }
   return { ...field, columnMetadata: facts };
@@ -193,7 +192,7 @@ function remember(state, logical, mapping, name, field) {
 function customColumnOf(api, logical, mapping, name) {
   const facts = mapping.fields[name]?.columnMetadata;
   if (facts?.isManaged !== false || facts?.isCustomizable !== true) {
-    throw fail(`${name} is a managed Solution or system column and cannot be changed or deleted.`); // unverified
+    throw fail(`${name} is a managed Solution or system column and cannot be changed or deleted.`);
   }
   const bucket = customBucket(api.store.state, logical);
   bucket[name] ??= structuredClone(mapping.fields[name]);
@@ -212,10 +211,10 @@ function addColumn(api, mapping, table, attr, { primary = false, system = false 
   const type = typeOf(attr);
   // A lookup is a relationship: its column comes from RelationshipDefinitions, not from an Attributes write.
   if (/LookupAttributeMetadata$/.test(type)) {
-    throw fail("A lookup column is created with a one-to-many relationship: POST RelationshipDefinitions or CreatePolymorphicLookupAttribute.", 400, "InvalidRequest"); // unverified
+    throw fail("A lookup column is created with a one-to-many relationship: POST RelationshipDefinitions or CreatePolymorphicLookupAttribute.", 400, "InvalidRequest");
   }
   const dataverseType = COLUMN_TYPES[type];
-  if (!dataverseType) throw fail(`${type || "A column without a type"} is not supported by the simulator.`, 501, "NotImplemented"); // unverified
+  if (!dataverseType) throw fail(`${type || "A column without a type"} is not supported by the simulator.`, 501, "NotImplemented");
   const schemaName = requireText(attr.SchemaName, "SchemaName");
   if (!system && !SCHEMA_NAME.test(schemaName)) throw schemaNameError(schemaName, "Attribute");
   const name = schemaName.toLowerCase();
@@ -227,7 +226,7 @@ function addColumn(api, mapping, table, attr, { primary = false, system = false 
   if (dataverseType === "file") {
     remember(api.store.state, table, mapping, `${name}_name`, {
       dataverseType: "nvarchar",
-      columnMetadata: { type: "nvarchar", schemaName: `${schemaName}_Name`, labels: {}, descriptionLabels: {}, requiredLevel: "none", isCustomField: true, isManaged: false, isCustomizable: true, maxLength: 300 }, // unverified: name column size
+      columnMetadata: { type: "nvarchar", schemaName: `${schemaName}_Name`, labels: {}, descriptionLabels: {}, requiredLevel: "none", isCustomField: true, isManaged: false, isCustomizable: true, maxLength: 300 }, // name column size is a guess
     });
   }
   logMetadataChange(api, "add", "attribute", table, name);
@@ -248,7 +247,7 @@ function tableNameOf(api, key) {
 function anyTable(api, key) {
   const logical = tableNameOf(api, key);
   const mapping = logical ? api.store.state.mappings[logical] : undefined;
-  if (!mapping) throw fail(`${key} does not exist.`, 404, "NotFound"); // unverified
+  if (!mapping) throw fail(`${key} does not exist.`, 404, "NotFound");
   return { logical, mapping };
 }
 
@@ -257,7 +256,7 @@ function userTable(api, key) {
   const found = anyTable(api, key);
   const { mapping, logical } = found;
   if (mapping.dataverseOnly !== true || mapping.dataverseMetadata?.createdByMetadataApi !== true) {
-    throw fail(`${logical} is a system or solution table and cannot be changed through the Web API.`); // unverified
+    throw fail(`${logical} is a system or solution table and cannot be changed through the Web API.`);
   }
   return found;
 }
@@ -265,7 +264,7 @@ function userTable(api, key) {
 function columnNamed(api, logical, mapping, attributeId) {
   const service = ids(api);
   const name = Object.keys(mapping.fields).find((n) => service.metadataId("attribute", logical, n).toLowerCase() === guidOf(attributeId));
-  if (!name) throw fail(`Attribute ${attributeId} does not exist.`, 404, "NotFound"); // unverified
+  if (!name) throw fail(`Attribute ${attributeId} does not exist.`, 404, "NotFound");
   return name;
 }
 
@@ -274,7 +273,7 @@ function columnNamed(api, logical, mapping, attributeId) {
 function assertCustomizable(api, kind, logical, name, label) {
   const top = layerStack(managedLayerOf(api, kind, logical, name)).at(-1);
   if (!top || top.customizable !== false) return;
-  // Learn web-service-error-codes EntityIsNotCustomizable; unverified: the code for a column and the HTTP status.
+  // EntityIsNotCustomizable; the code for a column and the HTTP status are guesses.
   throw fail(`The specified ${kind === "entity" ? "entity" : "attribute"} ${label} is not customizable`, 400, "ManagedComponentModification", "0x80047008");
 }
 
@@ -291,20 +290,20 @@ export function createTable(c, body) {
     DisplayCollectionName: requireLabel(body.DisplayCollectionName, "DisplayCollectionName"),
     Description: labelMap(body.Description) ?? {},
   };
-  if (!OWNERSHIP_TYPES.has(body.OwnershipType)) throw fail("OwnershipType must be UserOwned or OrganizationOwned."); // unverified
+  if (!OWNERSHIP_TYPES.has(body.OwnershipType)) throw fail("OwnershipType must be UserOwned or OrganizationOwned.");
   for (const flag of ["IsActivity", "HasActivities", "HasNotes"]) {
-    if (typeof body[flag] !== "boolean") throw fail(`${flag} is required.`); // unverified
+    if (typeof body[flag] !== "boolean") throw fail(`${flag} is required.`);
   }
   const attributes = body.Attributes;
-  if (!Array.isArray(attributes)) throw fail("Attributes must contain the primary name column."); // unverified
+  if (!Array.isArray(attributes)) throw fail("Attributes must contain the primary name column.");
   const primaries = attributes.filter((a) => a?.IsPrimaryName === true);
   if (primaries.length !== 1 || typeOf(primaries[0]) !== "StringAttributeMetadata") {
-    throw fail("Attributes must contain exactly one StringAttributeMetadata with IsPrimaryName true."); // unverified
+    throw fail("Attributes must contain exactly one StringAttributeMetadata with IsPrimaryName true.");
   }
   const tableType = tableTypeOf(body.TableType);
   if (tableType === "Elastic") assertElasticTable(body);
   const { mappings } = api.store.state;
-  if (Object.hasOwn(mappings, logical)) throw fail(`An entity named ${logical} already exists.`); // unverified
+  if (Object.hasOwn(mappings, logical)) throw fail(`An entity named ${logical} already exists.`);
   const entitySet = pluralizeEntitySetName(logical);
   if (Object.values(mappings).some((m) => m.entitySet === entitySet)) throw entitySetExists(entitySet);
 
@@ -345,8 +344,8 @@ export function createTable(c, body) {
 
 export function updateTable(c, key, body) {
   const { logical, mapping } = userTable(c.api, key);
-  if (body.SchemaName !== undefined && String(body.SchemaName).toLowerCase() !== logical) throw fail(`The schema name of ${logical} cannot change.`); // unverified
-  if (body.OwnershipType !== undefined && body.OwnershipType !== mapping.ownership) throw fail("OwnershipType cannot change."); // unverified
+  if (body.SchemaName !== undefined && String(body.SchemaName).toLowerCase() !== logical) throw fail(`The schema name of ${logical} cannot change.`);
+  if (body.OwnershipType !== undefined && body.OwnershipType !== mapping.ownership) throw fail("OwnershipType cannot change.");
   const merge = mergeHeader(c.headers);
   const dm = mapping.dataverseMetadata ?? {};
   const labels = { ...(dm.labels ?? {}) };
@@ -384,7 +383,7 @@ export function createColumn(c, key, body) {
   if (isElastic(mapping)) assertElasticColumn(body);
   const name = addColumn(c.api, mapping, logical, body);
   const url = attributeIdUrl(c, logical, name);
-  return { status: 204, headers: { "OData-EntityId": url, ...(mapping.fields[name].columnMetadata.type === "file" ? { Location: url } : {}) } }; // unverified: Location on File
+  return { status: 204, headers: { "OData-EntityId": url, ...(mapping.fields[name].columnMetadata.type === "file" ? { Location: url } : {}) } }; // Location on a File column is a guess
 }
 
 // PUT replaces the writable properties; the ones the body omits keep their stored value.
@@ -394,22 +393,22 @@ function updateColumn(c, key, attributeId, body) {
   assertCustomizable(c.api, "attribute", logical, name, `${logical}.${name}`);
   const field = customColumnOf(c.api, logical, mapping, name);
   const facts = field.columnMetadata;
-  if (body.SchemaName !== undefined && String(body.SchemaName).toLowerCase() !== name) throw fail(`The schema name of ${name} cannot change.`); // unverified
+  if (body.SchemaName !== undefined && String(body.SchemaName).toLowerCase() !== name) throw fail(`The schema name of ${name} cannot change.`);
   const merge = mergeHeader(c.headers);
   if (body.DisplayName !== undefined) facts.labels = mergeLabels(facts.labels, labelMap(body.DisplayName), merge);
   if (body.Description !== undefined) facts.descriptionLabels = mergeLabels(facts.descriptionLabels, labelMap(body.Description), merge);
   if (body.RequiredLevel !== undefined) facts.requiredLevel = requiredLevelOf(body.RequiredLevel);
   if (body.MaxLength !== undefined) {
-    if (!TEXT.has(field.dataverseType)) throw fail(`MaxLength applies to text columns, not ${name}.`); // unverified
+    if (!TEXT.has(field.dataverseType)) throw fail(`MaxLength applies to text columns, not ${name}.`);
     facts.maxLength = Number(body.MaxLength);
   }
   if (body.MinValue !== undefined || body.MaxValue !== undefined) {
-    if (!NUMERIC.has(field.dataverseType)) throw fail(`MinValue and MaxValue apply to numeric columns, not ${name}.`); // unverified
+    if (!NUMERIC.has(field.dataverseType)) throw fail(`MinValue and MaxValue apply to numeric columns, not ${name}.`);
     if (body.MinValue !== undefined) facts.minValue = body.MinValue;
     if (body.MaxValue !== undefined) facts.maxValue = body.MaxValue;
   }
   if (body.FormatName !== undefined) {
-    if (field.dataverseType !== "nvarchar") throw fail(`FormatName applies to text columns, not ${name}.`); // unverified
+    if (field.dataverseType !== "nvarchar") throw fail(`FormatName applies to text columns, not ${name}.`);
     facts.format = String(body.FormatName?.Value ?? body.FormatName).toLowerCase();
   }
   mapping.fields[name] = structuredClone(field);
@@ -422,8 +421,8 @@ function deleteColumn(c, key, attributeId) {
   const name = columnNamed(c.api, logical, mapping, attributeId);
   assertNotManaged(c.api, "attribute", logical, name, `${logical}.${name}`);
   const facts = customColumnOf(c.api, logical, mapping, name).columnMetadata;
-  if (facts.isPrimaryName) throw fail("The primary name column cannot be deleted."); // unverified
-  if ((mapping.alternateKeys ?? []).some((k) => k.attributes.includes(name))) throw fail(`${name} is used by an alternate key.`); // unverified
+  if (facts.isPrimaryName) throw fail("The primary name column cannot be deleted.");
+  if ((mapping.alternateKeys ?? []).some((k) => k.attributes.includes(name))) throw fail(`${name} is used by an alternate key.`);
   dropColumn(c.api, logical, name);
   return { status: 204 };
 }
@@ -452,17 +451,17 @@ export function createKey(c, key, body) {
   if (!SCHEMA_NAME.test(schemaName)) throw schemaNameError(schemaName, "EntityKey");
   const name = schemaName.toLowerCase();
   const keys = mapping.alternateKeys ?? [];
-  if (keys.length >= MAX_KEYS) throw fail(`A table can have at most ${MAX_KEYS} alternate keys.`); // unverified
-  if (keys.some((k) => k.name === name)) throw fail(`An alternate key named ${name} already exists.`); // unverified
+  if (keys.length >= MAX_KEYS) throw fail(`A table can have at most ${MAX_KEYS} alternate keys.`);
+  if (keys.some((k) => k.name === name)) throw fail(`An alternate key named ${name} already exists.`);
   const attributes = Array.isArray(body.KeyAttributes) ? body.KeyAttributes.map((a) => String(a).toLowerCase()) : [];
-  if (!attributes.length || attributes.length > MAX_KEY_COLUMNS) throw fail(`A key needs 1 to ${MAX_KEY_COLUMNS} columns.`); // unverified
+  if (!attributes.length || attributes.length > MAX_KEY_COLUMNS) throw fail(`A key needs 1 to ${MAX_KEY_COLUMNS} columns.`);
   for (const attribute of attributes) {
     const field = mapping.fields[attribute];
-    if (!field || !KEY_TYPES.has(field.dataverseType)) throw fail(`${attribute} cannot be used in an alternate key.`); // unverified
+    if (!field || !KEY_TYPES.has(field.dataverseType)) throw fail(`${attribute} cannot be used in an alternate key.`);
   }
   const bytes = attributes.reduce((sum, attribute) => sum + KEY_BYTES[mapping.fields[attribute].dataverseType](mapping.fields[attribute]), 0);
-  if (bytes > MAX_KEY_BYTES) throw fail(`The key is ${bytes} bytes; a key can be at most ${MAX_KEY_BYTES} bytes.`); // unverified
-  // Learn define-alternate-keys-entity: a new key is Pending until its index job (activateKey) has validated the data.
+  if (bytes > MAX_KEY_BYTES) throw fail(`The key is ${bytes} bytes; a key can be at most ${MAX_KEY_BYTES} bytes.`);
+  // A new key is Pending until its index job (activateKey) has validated the data.
   mapping.alternateKeys = [...keys, { name, schemaName, attributes, labels: labelMap(body.DisplayName) ?? {}, indexStatus: "Pending" }];
   logMetadataChange(api, "change", "entity", logical);
   const keyId = ids(api).metadataId("key", logical, name);
@@ -474,9 +473,9 @@ function deleteKey(c, key, keyId) {
   const { logical, mapping } = userTable(api, key);
   const keys = mapping.alternateKeys ?? [];
   const found = keys.find((k) => guidOf(ids(api).metadataId("key", logical, k.name)) === guidOf(keyId));
-  if (!found) throw fail(`Key ${keyId} does not exist.`, 404, "NotFound"); // unverified
+  if (!found) throw fail(`Key ${keyId} does not exist.`, 404, "NotFound");
   assertNotManaged(api, "key", logical, found.name, `${logical}.${found.name}`);
-  if (found.builtIn) throw fail(`${found.name} is the built-in key of an elastic table and cannot be deleted.`); // unverified: LC-E1c
+  if (found.builtIn) throw fail(`${found.name} is the built-in key of an elastic table and cannot be deleted.`);
   mapping.alternateKeys = keys.filter((k) => k !== found);
   logMetadataChange(api, "change", "entity", logical);
   return { status: 204 };
@@ -501,7 +500,7 @@ function keyDuplicates(api, logical, key) {
 }
 
 /**
- * The index job of an alternate key (Learn define-alternate-keys-entity#monitor-index-creation-for-alternate-keys): the key is
+ * The index job of an alternate key: the key is
  * Pending, then a system job named "Create index for {key} for table {table}" checks the rows. Unique values make the key Active;
  * duplicate values make it Failed and fail the job with the duplicate tuples, and ReactivateEntityKey runs the job again once
  * the data is fixed. A key that is not Active neither resolves a key segment nor enforces uniqueness. Returns the job id.
@@ -523,7 +522,7 @@ export async function activateKey(api, logical, keyName, callerId = null) {
     });
     if (duplicates.length) {
       const sample = duplicates.slice(0, 5).map((values) => `(${values.join(", ")})`).join(", ");
-      // unverified: the native job message; the code is MultipleRecordsFoundByEntityKey from Learn web-service-error-codes.
+      // The code is MultipleRecordsFoundByEntityKey; the job message is a guess.
       throw fail(`More than one record exists for entity ${logical} with entity key involving attributes ${key.attributes.join(", ")}: ${sample}${duplicates.length > 5 ? ` and ${duplicates.length - 5} more` : ""}.`, 400, "InvalidRequest", "0x8006089D");
     }
     return null;
@@ -532,7 +531,7 @@ export async function activateKey(api, logical, keyName, callerId = null) {
     await evaluate().catch(() => {}); // no job host: the status alone records the outcome
     return null;
   }
-  // unverified: asyncoperation operationtype 63 for the index job.
+  // asyncoperation operationtype 63 for the index job is a guess.
   const jobId = await api.systemJob({ name: `Create index for ${key.schemaName ?? key.name} for table ${logical}`, operationtype: 63, callerId }, evaluate);
   await write(() => { const k = keyOf(); if (k) k.asyncJob = jobId; });
   return jobId;
@@ -540,12 +539,12 @@ export async function activateKey(api, logical, keyName, callerId = null) {
 
 // PublishXml and PublishAllXml are accepted and do nothing: changes already apply to the simulated model.
 function publish(c) {
-  if (c.method !== "POST") throw fail(`${c.method} is not supported for ${c.route.name}.`, 405, "MethodNotAllowed"); // unverified
-  if (c.route.name === "PublishXml" && typeof c.body?.ParameterXml !== "string") throw fail("ParameterXml is required."); // unverified
+  if (c.method !== "POST") throw fail(`${c.method} is not supported for ${c.route.name}.`, 405, "MethodNotAllowed");
+  if (c.route.name === "PublishXml" && typeof c.body?.ParameterXml !== "string") throw fail("ParameterXml is required.");
   return { status: 204 };
 }
 
-// Privilege for a write: table writes need prv*Entity, column and key writes prv*Attribute (keys: unverified).
+// Privilege for a write: table writes need prv*Entity, column and key writes prv*Attribute (a guess for keys).
 const privilegeFor = (method, segment) => (VERB[method] ? `prv${VERB[method]}${segment ? "Attribute" : "Entity"}` : null);
 
 /**
@@ -571,7 +570,7 @@ export async function install(api) {
   if (api.store) await api.store.transact(() => failDuplicateSeededKeys(api, api.diagnostic));
 }
 
-// runs on every reseed (/_sim/ reset, state import) inside the change queue: the store only, never api.change.
+// Runs on every reseed (/_sim/ reset, state import) inside the change queue: the store only, never api.change.
 // The custom columns are kept in state.dataverse.customColumns; a reset mapping gets them back from there, and its managed
 // flags from the layer stacks.
 export function reset(api) {
@@ -582,12 +581,12 @@ export function reset(api) {
 export async function handleMetadataWrite(c) {
   const { api, method, route } = c;
   if (route.kind === "function") {
-    if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, "NotFound"); // unverified
-    if (method === "POST") requireMetadataPrivilege(api, c, "prvWriteEntity", route.name); // unverified: publishing needs the customizer write privilege
+    if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, "NotFound");
+    if (method === "POST") requireMetadataPrivilege(api, c, "prvWriteEntity", route.name); // assumed: publishing needs the customizer write privilege
     return publish(c);
   }
-  if (route.set !== "EntityDefinitions") throw fail(`${route.set} is not a metadata resource.`, 404, "NotFound"); // unverified
-  if (c.body !== undefined && (typeof c.body !== "object" || c.body === null || Array.isArray(c.body))) throw fail("The request body must be a JSON object."); // unverified
+  if (route.set !== "EntityDefinitions") throw fail(`${route.set} is not a metadata resource.`, 404, "NotFound");
+  if (c.body !== undefined && (typeof c.body !== "object" || c.body === null || Array.isArray(c.body))) throw fail("The request body must be a JSON object.");
   const body = c.body ?? {};
   const { segment, key, segmentKey } = route;
   const privilege = privilegeFor(method, segment);
@@ -606,5 +605,5 @@ export async function handleMetadataWrite(c) {
     return result;
   }
   if (segment === "Keys" && key && segmentKey && method === "DELETE") return write(() => deleteKey(c, key, segmentKey));
-  throw fail(`${method} is not supported for ${route.set}${segment ? `/${segment}` : ""}.`, 405, "MethodNotAllowed"); // unverified: PATCH on definitions
+  throw fail(`${method} is not supported for ${route.set}${segment ? `/${segment}` : ""}.`, 405, "MethodNotAllowed"); // the answer to PATCH on definitions is a guess
 }

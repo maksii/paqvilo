@@ -37,7 +37,7 @@ test("observed public Office fonts are mirrored without credentials and remain s
     source.replace("/fonts/", "/api/"),
     "https://user:pass@res.cdn.office.net/files/fabric-cdn-prod_1.1/assets/icons/a.woff",
   ])
-    assert.throws(() => officeFontPath(url));
+    assert.throws(() => officeFontPath(url), /Office capture is confined to versioned public Fluent UI font files/, url);
   const restored = await new AssetCache({
     directory: dir,
     origin: "https://portal.example.test",

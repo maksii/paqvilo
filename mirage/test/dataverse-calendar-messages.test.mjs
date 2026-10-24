@@ -1,5 +1,5 @@
 // Simulated Dataverse time zone, calendar, app and report messages: happy paths, the documented scheduling refusal, a privilege
-// denial, DST boundary conversion, a weekly series with an exception, and a Book conflict. Invented schema and GUIDs only.
+// denial, DST boundary conversion, a weekly series with an exception, and a Book conflict.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -327,7 +327,7 @@ test("every seeded time zone converts; Romance Standard Time matches Europe/Pari
   const paris = async (utc) => (await invoke(t.api, "LocalTimeFromUtcTime", { user: t.admin, params: { TimeZoneCode: 105, UtcTime: utc } })).body.LocalTime;
   assert.equal(await paris("2026-01-15T12:00:00Z"), "2026-01-15T13:00:00+01:00");
   assert.equal(await paris("2026-07-15T12:00:00Z"), "2026-07-15T14:00:00+02:00");
-  // Research check: the smaller of the January and July 2026 offsets equals the display name's base offset, for every code.
+  // The smaller of the January and July 2026 offsets equals the display name's base offset, for every code.
   const mismatches = TIME_ZONE_IDS.filter(([code, , iana]) => {
     const [, sign, hours, minutes] = /\((?:GMT|UTC)(?:([+-])(\d\d):(\d\d))?\)/.exec(TIME_ZONE_DEFINITIONS.find(([c]) => c === code)[1]);
     const base = hours === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(hours) * 60 + Number(minutes));

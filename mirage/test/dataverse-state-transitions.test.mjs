@@ -108,8 +108,10 @@ test("SOAP SetState on an enforced table changes the state through the same chec
       + `${option("State", 1)}${option("Status", status)}</a:Parameters><a:RequestName>SetState</a:RequestName></request></Execute></s:Body></s:Envelope>`,
   });
   const refusedSoap = await setState(4);
-  assert.notEqual(refusedSoap.status, 200);
-  assert.match(await refusedSoap.text(), /InvalidStateTransition|0x8004F00E|-2147160050|do not include 4/i);
+  const fault = await refusedSoap.text();
+  assert.equal(refusedSoap.status, 500, fault);
+  assert.match(fault, /<ErrorCode>-2147160050<\/ErrorCode>/);
+  assert.match(fault, /<Message>The status of x_ticket cannot change from 5 to 4: the transitions allowed from status 5 do not include 4\.<\/Message>/);
   assert.equal(rowOf("x_ticket", TICKET).statuscode, 5);
   const accepted = await setState(3);
   const text = await accepted.text();
@@ -120,8 +122,11 @@ test("SOAP SetState on an enforced table changes the state through the same chec
 });
 
 test("writing the current status and state again is not a transition", async (t) => {
-  const { request, json } = await setup(t);
+  // Status 1 does not list itself among its targets, so a check that treated this as a change would refuse it.
+  const { request, json, rowOf, diagnostics } = await setup(t);
   await json(await patch(request, "x_ticket", TICKET, { statuscode: 1, statecode: 0 }), 200);
+  assert.equal(rowOf("x_ticket", TICKET).statuscode, 1);
+  assert.deepEqual(diagnostics, []);
 });
 
 test("a table without enforcement is untouched", async (t) => {
@@ -149,36 +154,27 @@ test("explicit transitions win over the metadata and enforce a table without the
   assert.equal(rowOf("x_plain", PLAIN).statuscode, 5);
 });
 
-test("IsValidStateTransition answers with the same rule on an enforced table", async (t) => {
-  const { request, json } = await setup(t);
-  const check = async (status, state) => {
-    const entity = encodeURIComponent(JSON.stringify({ "@odata.id": `x_tickets(${TICKET})` }));
-    const response = await request("GET", `/IsValidStateTransition(Entity=@e,NewState='${state}',NewStatus=${status})?@e=${entity}`);
-    return (await json(response, 200))["IsValid"];
-  };
+const isValid = async ({ request, json }, entitySet, id, status, state) => {
+  const entity = encodeURIComponent(JSON.stringify({ "@odata.id": `${entitySet}(${id})` }));
+  const response = await request("GET", `/IsValidStateTransition(Entity=@e,NewState='${state}',NewStatus=${status})?@e=${entity}`);
+  return (await json(response, 200))["IsValid"];
+};
+
+test("IsValidStateTransition answers with the same rule on an enforced table, and a plain table keeps the record-messages answer", async (t) => {
+  const fixture = await setup(t);
+  const check = (status, state) => isValid(fixture, "x_tickets", TICKET, status, state);
   assert.equal(await check(2, "0"), true, "status 1 allows 2, an Active target");
   assert.equal(await check(5, "0"), true, "status 1 allows 5");
   assert.equal(await check(6, "0"), false, "status 1 does not allow 6");
   assert.equal(await check(3, "1"), false, "status 1 does not allow 3");
   assert.equal(await check(2, "1"), false, "the state must match the target status option");
-});
-
-test("IsValidStateTransition on a plain table keeps the record-messages answer", async (t) => {
-  const { request, json } = await setup(t);
-  const entity = encodeURIComponent(JSON.stringify({ "@odata.id": `x_plains(${PLAIN})` }));
-  const response = await request("GET", `/IsValidStateTransition(Entity=@e,NewState='1',NewStatus=3)?@e=${entity}`);
-  assert.equal((await json(response, 200))["IsValid"], false, "status 1 lists [2, 5] as its targets by metadata");
+  assert.equal(await isValid(fixture, "x_plains", PLAIN, 3, "1"), false, "status 1 lists [2, 5] as its targets by metadata");
 });
 
 test("IsValidStateTransition follows explicit transitions on a table that enforces them", async (t) => {
-  const { request, json } = await setup(t, { options: { transitions: { x_plain: { 1: [5] } } } });
-  const check = async (status, state) => {
-    const entity = encodeURIComponent(JSON.stringify({ "@odata.id": `x_plains(${PLAIN})` }));
-    const response = await request("GET", `/IsValidStateTransition(Entity=@e,NewState='${state}',NewStatus=${status})?@e=${entity}`);
-    return (await json(response, 200))["IsValid"];
-  };
-  assert.equal(await check(2, "0"), false, "the metadata lists 2, the explicit map does not");
-  assert.equal(await check(5, "0"), true, "the explicit map lists 5");
+  const fixture = await setup(t, { options: { transitions: { x_plain: { 1: [5] } } } });
+  assert.equal(await isValid(fixture, "x_plains", PLAIN, 2, "0"), false, "the metadata lists 2, the explicit map does not");
+  assert.equal(await isValid(fixture, "x_plains", PLAIN, 5, "0"), true, "the explicit map lists 5");
 });
 
 test("the validator accepts the documented shape and rejects bad shapes", () => {

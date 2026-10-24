@@ -24,7 +24,7 @@ for (const kind of ['catalogue', 'project']) {
       const snapshot = await new SetupStore({ directory, ...(kind === 'project' ? { project: file } : {}), processEnv: {} }).snapshot();
       assert.deepEqual([...new Set(snapshot.findings.map(item => item.code))].sort(), [...template.expectedFindings].sort(), `${template.id}: ${JSON.stringify(snapshot.findings)}`);
       assert.ok(template.title && template.description && template.surfaces.length && template.nextSteps.length);
-      // Invented names only: every URL is an example.test placeholder or loopback.
+      // Every URL is an example.test placeholder or loopback.
       for (const url of JSON.stringify(template.document).match(/https?:\/\/[^"\s]+/g) ?? []) assert.match(new URL(url).hostname, /(?:^|\.)example\.test$|^127\.0\.0\.1$/);
     }
   });

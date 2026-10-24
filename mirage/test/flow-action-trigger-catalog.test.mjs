@@ -1,7 +1,6 @@
-// FX3 follow-up (task 44): catalog and catalogassignment rows are imported from the Solution (catalogs/<name>/catalog.xml,
+// Catalog and catalogassignment rows are imported from the Solution (catalogs/<name>/catalog.xml,
 // Assets/catalogassignments.xml), so "When an action is performed" fires for the action assigned to its catalog and category
 // and not for an unassigned one; an organization whose Solution ships no catalog records FLOW_TRIGGER_CATALOG_UNCHECKED once.
-// Invented x_ Solution through the Dataverse Web API, loopback only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -33,13 +32,13 @@ async function simulator(t, extra) {
   const sim = await createSimulator({ runtime: { kind: 'dataverse-api' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false,
     simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   ownedFixture(t).add(() => sim.close());
-  const simApi = async (method, suffix, payload) => (await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'x-sim-csrf': sim.state().csrf, 'content-type': 'application/json' }, body: JSON.stringify(payload) })).status;
+  const simApi = async (method, suffix, payload) => (await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'x-sim-csrf': sim.csrf, 'content-type': 'application/json' }, body: JSON.stringify(payload) })).status;
   const enabled = { mode: 'exported', activation: 'local-enabled' };
   assert.equal(await simApi('PATCH', '/config', { operations: { [`cloud-flow:${ASSIGNED}`]: enabled, [`cloud-flow:${UNASSIGNED}`]: enabled } }), 200);
-  const { secret } = await (await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST', headers: { 'x-sim-csrf': sim.state().csrf, 'content-type': 'application/json' }, body: JSON.stringify({ appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] }) })).json();
+  const { secret } = await (await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST', headers: { 'x-sim-csrf': sim.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] }) })).json();
   const token = await (await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST', body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: secret, scope: sim.dataverse.origin + '/.default' }) })).json();
   const perform = async name => assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/' + name, { method: 'POST', headers: { authorization: `Bearer ${token.access_token}`, 'content-type': 'application/json' }, body: '{}' })).status, 204);
-  const runs = async id => { for (let i = 0; i < 50; i++) await new Promise(resolve => setTimeout(resolve, 10)); return (sim.store.state.tables.flowrun ?? []).filter(row => String(row.workflowid).toLowerCase() === id).map(row => row.status); };
+  const runs = async id => { await sim.settle(); return (sim.store.state.tables.flowrun ?? []).filter(row => String(row.workflowid).toLowerCase() === id).map(row => row.status); };
   const notes = code => sim.state().diagnostics.filter(entry => entry.code === code);
   return { sim, perform, runs, notes };
 }
@@ -55,7 +54,7 @@ test('a Solution catalog and assignment: the assigned action fires its trigger, 
   await perform('x_Other');
   assert.deepEqual(await runs(ASSIGNED), ['Succeeded']);
   assert.deepEqual(await runs(UNASSIGNED), [], 'x_Other is not assigned to the x_events category');
-  assert.ok(notes('FLOW_TRIGGER_NOT_CATALOGED').length >= 1);
+  assert.deepEqual(notes('FLOW_TRIGGER_NOT_CATALOGED').map(entry => entry.operationKey), [`cloud-flow:${UNASSIGNED}`]);
   assert.equal(notes('FLOW_TRIGGER_CATALOG_UNCHECKED').length, 0);
 });
 

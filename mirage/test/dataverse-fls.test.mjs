@@ -1,6 +1,5 @@
 // Simulated Dataverse column (field) security: profile matrix, team profiles, field sharing, administrator bypass,
 // write errors, aliased projection, aggregates, api.fieldSecurity and RetrievePrincipalAttributePrivileges.
-// Invented schema and GUIDs only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";

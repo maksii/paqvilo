@@ -1,7 +1,5 @@
 # Paqvilo demo project
 
-The starter and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).
-
 One account workflow in three Power Pages approaches: native lists and forms, custom Web API, and PCF field editors. Includes 12 invented accounts, 24 contacts, notes, an attachment, access roles and deployable sources.
 
 From an empty working folder, run:
@@ -82,3 +80,7 @@ npm test
 ```
 
 Keep business data, observations and project tests in your own project. See [project extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md).
+
+## Use it as a starting point
+
+This project and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).

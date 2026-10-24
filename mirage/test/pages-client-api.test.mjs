@@ -68,7 +68,7 @@ test('unsupported members throw PagesClientApiUnsupported with the member name a
     assert.throws(call, error => error.name === 'PagesClientApiUnsupported' && error.member === member && error.message.includes(member));
   assert.throws(() => $pages.agents.sendActivity('y'), { name: 'PagesClientApiUnsupported' });
   assert.equal(logs.error.filter(line => line.includes('agents.sendActivity')).length, 1);
-  // Forms, file columns and languages.setActive are served (Learn, client-api/forms-tabs-sections, dataverse, languages).
+  // Forms, file columns and languages.setActive are served.
   assert.deepEqual([...$pages.currentPage.forms.getAll()], []);
   assert.equal($pages.currentPage.forms.getFormByName('x'), undefined);
 });

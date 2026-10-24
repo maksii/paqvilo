@@ -29,7 +29,7 @@ const read = async (relative) => JSON.parse(await fs.readFile(abs(relative), "ut
 const text = (relative) => fs.readFile(abs(relative), "utf8");
 const list = async (relative, filter = () => true) => (await fs.readdir(abs(relative)).catch(() => [])).filter(filter).sort();
 
-// --- small XML helpers (the export is machine-written, one element per line) -----------------------
+// ---- small XML helpers (the export is machine-written, one element per line)
 const tag = (xml, name) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml)?.[1];
 const attrsOf = (open) => Object.fromEntries([...open.matchAll(/([\w:]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
 const bare = (id) => String(id ?? "").replace(/[{}]/g, "").toLowerCase();
@@ -171,7 +171,7 @@ const pagesFor = (formPages, ...names) => [...new Set(names.flatMap((name) => [.
 const brief = (names, limit = 6) => (names.length > limit ? `${names.slice(0, limit).join(", ")} … (${names.length} in all)` : names.join(", "));
 const unique = (values) => [...new Set(values)];
 
-// --- column type of an exported attribute ---------------------------------------------------------
+// ---- column type of an exported attribute
 function columnItem(a) {
   if (a.type === "primarykey") return "dv.column.uniqueidentifier";
   if (a.type === "state") return "dv.column.state";
@@ -204,7 +204,7 @@ function columnItem(a) {
 }
 const NUMERIC = new Set(["int", "decimal", "float", "money"]);
 // File and image values are written through the upload messages, never Create/Update, so every such column is
-// exported ValidForCreateApi 0 / ValidForUpdateApi 0 (learn-file-column-data); that is not a read-only setting.
+// exported ValidForCreateApi 0 / ValidForUpdateApi 0; that is not a read-only setting.
 const UPLOADED = new Set(["file", "image"]);
 const REQUIRED = { none: "optional", required: "required", systemrequired: "required", recommended: "recommended" };
 function attributeFacts(a) {

@@ -1,4 +1,4 @@
-// Headless canvas runtime (canvas-runtime.mjs) on the core Power Fx engine over an invented two-screen app: OnStart, a
+// Headless canvas runtime (canvas-runtime.mjs) on the core Power Fx engine over a two-screen app: OnStart, a
 // gallery bound to a Dataverse table filtered by a text input, Patch as the caller's principal (403 for a Basic User on
 // an organization-owned table), Navigate/Back with OnVisible and context variables, an edit form submitted with
 // SubmitForm, unsupported controls, the driver API and the source-graph rows. Delegation, display names, cycles and
@@ -60,7 +60,7 @@ test('a button Patch creates the row as the caller; a Basic User is refused with
   assert.equal(refused.errors[0].status, 403);
   assert.equal(refused.errors[0].kind, 'CreatePermission');
   assert.ok(!basic.org.store.state.tables.fx_widget.some(item => item.fx_name === 'Delta'));
-  // Learn error-handling: actions in a chain do not stop after the first error.
+  // Actions in a chain do not stop after the first error.
   assert.deepEqual(refused.snapshot.notifications.map(item => item.message), ['Saved']);
 });
 
@@ -78,7 +78,7 @@ test('Navigate passes context, runs OnHidden/OnVisible and Back returns through 
   assert.equal(snapshot.currentScreen, 'HomeScreen');
   assert.deepEqual(snapshot.history, ['HomeScreen']);
   assert.deepEqual(snapshot.context.HomeScreen, { fxVisits: 2 });
-  assert.equal((await instance.act({ action: 'back' })).result, false); // Learn: Back answers false with nowhere to go back to
+  assert.equal((await instance.act({ action: 'back' })).result, false); // Back answers false with nowhere to go back to
   await assert.rejects(instance.act({ action: 'navigate', screen: 'NoSuchScreen' }), { code: 'CanvasScreenNotFound', status: 404 });
 });
 
@@ -104,7 +104,7 @@ test('SubmitForm updates the item, runs OnSuccess, refuses a missing required va
   assert.equal(snapshot.forms.EditForm1.mode, 'New');
   ({ snapshot } = await instance.act({ action: 'select', control: 'SaveButton' }));
   assert.ok(org.store.state.tables.fx_widget.some(row => row.fx_name === 'Epsilon'));
-  assert.equal(snapshot.forms.EditForm1.mode, 'Edit'); // Learn function-form: a successful submit in New returns the form to Edit
+  assert.equal(snapshot.forms.EditForm1.mode, 'Edit'); // a successful submit in New returns the form to Edit
 });
 
 test('an unsupported control is listed, refused when driven and reported by the canvas:app requirement row', async t => {

@@ -52,5 +52,5 @@ test("projected snapshots are detached, current and omit unrelated data", async 
   assert.equal(store.snapshot(projection).tables.contact[0].fullname, "After");
   assert.ok(store.snapshot().presets.large);
   assert.throws(() => store.snapshot({ unknown: [] }), /projection/);
-  assert.throws(() => store.snapshot({ sections: ["__proto__"] }));
+  assert.throws(() => store.snapshot({ sections: ["__proto__"] }), /Invalid entity or field name: __proto__/);
 });

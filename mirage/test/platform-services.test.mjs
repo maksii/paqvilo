@@ -85,7 +85,7 @@ test("the implicit grant token endpoint issues a signed ID token for the signed-
 test("the implicit grant flow can be turned off by site setting", async (t) => {
   const { app, session } = await servicesFixture(t, [["Connector/ImplicitGrantFlowEnabled", "False"]]);
   const response = await fetch(`${app.url}/_services/auth/token`, { method: "POST", headers: session });
-  assert.notEqual(response.status, 200);
+  assert.equal(response.status, 405, "the token route falls through to page routing, which refuses the POST");
   assert.equal((await fetch(`${app.url}/_services/auth/publickey`)).status, 404);
 });
 
@@ -199,7 +199,7 @@ test("native grid actions activate, deactivate, associate, disassociate and down
   const call = (action, body) =>
     fetch(`${app.url}/_services/${action}/site`, {
       method: "POST",
-      headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf, ...session },
+      headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf, ...session },
       body: JSON.stringify(body),
     });
   const child = (id) => app.store.snapshot().tables.child.find((row) => row.childkey === id);
@@ -242,7 +242,7 @@ test("native grid actions activate, deactivate, associate, disassociate and down
 });
 
 test("list OData feeds are removed by default: /_odata falls through to the site's page-not-found handling", async () => {
-  // Learn: Power Pages removed list OData feeds by June 2026 (live list/item-list-odata/feed: 404 page).
+  // Power Pages removed list OData feeds by June 2026 (the feed URL answers the 404 page).
   const list = { id: "1d000000-0000-4000-8000-000000000002", name: "Feed", entityName: "orgcontact", metadata: { adx_odata_enabled: true, adx_odata_entitysetname: "FeedSet" } };
   const res = fakeResponse();
   assert.equal(await handleODataFeed({ method: "GET", headers: {} }, res, new URL("http://localhost:3000/_odata/FeedSet"), { portal: { lists: [list], website: { id: SITE } } }), false);

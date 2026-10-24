@@ -66,7 +66,7 @@ export function staffContext(runtime, user) {
       // .NET DayOfWeek: 0 is Sunday; Intl weekInfo: 7 is Sunday.
       firstDayOfWeek: (weekInfo?.firstDay ?? 7) % 7, dateSeparator, timeSeparator,
       // .NET ShortDatePattern keeps a four-digit year where ICU's short style has two (en-US M/d/yyyy, Learn DateTimeFormatInfo).
-      // unverified: the four-digit year for every catalogue locale other than en-US.
+      // Assumed: the four-digit year for every catalogue locale other than en-US.
       shortDatePattern: settings.dateformatstring ?? pattern(locale, { dateStyle: 'short' }).replace(/(^|[^y])yy(?!y)/, '$1yyyy'), longDatePattern: pattern(locale, { dateStyle: 'full' }),
       shortTimePattern: settings.timeformatstring ?? pattern(locale, { timeStyle: 'short' }), longTimePattern: pattern(locale, { timeStyle: 'medium' }),
       monthDayPattern: pattern(locale, { month: 'long', day: 'numeric' }), yearMonthPattern: pattern(locale, { year: 'numeric', month: 'long' }),
@@ -87,7 +87,7 @@ function installUserSettings(api) {
     if (!c.caller) throw new DataError('Authentication is required.', 401, 'Unauthorized');
     const id = bare(USER_SETTINGS_ROUTE.exec(c.url.pathname)[1]);
     if (!GUID.test(id)) throw new DataError(`The key '${id}' is not a systemuserid.`, 400, 'BadRequest');
-    // unverified: the native status and code for another user's settings without prvReadUserSettings.
+    // The native status and code for another user's settings without prvReadUserSettings are a guess.
     if (bare(c.caller.systemuserid) !== id) throw new DataError("Only the caller's own usersettings row is available locally.", 403, 'Forbidden');
     const org = store.tableRows('organization')[0] ?? {};
     const rowOf = () => store.tableRows('usersettings').find(row => bare(row.systemuserid) === id);

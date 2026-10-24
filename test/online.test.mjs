@@ -8,7 +8,8 @@ import { fetchOnline, mapLimit, portalResourceUrl, compareWebFile } from '../len
 test('resource paths keep their origin and encode literal reserved filename characters once', () => {
   assert.equal(portalResourceUrl('https://portal.example', '/files/a b#c?.js'), 'https://portal.example/files/a%20b%23c%3F.js');
   assert.equal(portalResourceUrl('https://portal.example', '/files/a%20b.js'), 'https://portal.example/files/a%20b.js');
-  for (const value of ['//evil.example/x', '@evil.example', '/a/../x', '/a/%2e%2e/x', '/\\evil', '/a\n']) assert.throws(() => portalResourceUrl('https://portal.example', value));
+  for (const value of ['//evil.example/x', '@evil.example', '/\\evil', '/a\n']) assert.throws(() => portalResourceUrl('https://portal.example', value), /Expected a same-origin resource path/, value);
+  for (const value of ['/a/../x', '/a/%2e%2e/x']) assert.throws(() => portalResourceUrl('https://portal.example', value), /Invalid resource path segment/, value);
 });
 
 test('browser-authenticated comparisons keep redirects confined and dispose every response', async (t) => {

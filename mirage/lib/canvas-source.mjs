@@ -25,7 +25,7 @@ const PA_YAML = /\.pa\.ya?ml$/i;
 const FX_YAML = /\.fx\.ya?ml$/i;
 const DATA_SOURCE_JSON = /^DataSources\/[^/]+\.json$/i;
 const wanted = name => PA_YAML.test(name) || FX_YAML.test(name) || DATA_SOURCE_JSON.test(name.replaceAll('\\', '/'));
-// `.fx.yaml` control keys: `Name As type[.variant]` (Learn power-apps-yaml "Experimental format"); a quoted name keeps its spaces.
+// `.fx.yaml` control keys: `Name As type[.variant]`; a quoted name keeps its spaces.
 const FX_CONTROL = /^\s*(?:'((?:[^']|'')+)'|(.+?))\s+As\s+([\w.]+)\s*$/;
 
 const entriesOf = node => isMap(node) ? node.items.map(pair => [String(isScalar(pair.key) ? pair.key.value : pair.key), pair.value, pair.key]) : [];
@@ -123,7 +123,7 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
         const table = text(field(field(body, 'Parameters'), 'TableLogicalName')), connectorId = text(field(body, 'ConnectorId'));
         result.dataSources.push({ name: dataSource, kind: text(field(body, 'Type')), ...(table ? { table } : {}), ...(connectorId ? { connectorId } : {}) });
       } else if (key === 'EditorState') {
-        // unverified: EditorState.ScreensOrder (pa.schema.yaml v3.0) as the Studio screen order; the first one is the default start screen.
+        // Assumption: EditorState.ScreensOrder (pa.schema.yaml v3.0) is the Studio screen order; the first one is the default start screen.
         const order = field(value, 'ScreensOrder');
         if (isSeq(order)) result.app.screensOrder = order.items.map(text);
       }
@@ -137,7 +137,7 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
 /**
  * The retired unpacked format: `Src/App.fx.yaml` (`App As appinfo`), one `Src/<Screen>.fx.yaml` per screen whose map mixes
  * `=formula` properties with `Name As type` child controls, `Src/Components/*.fx.yaml` (`Name As component`) and
- * `DataSources/<Name>.json`. Learn: power-apps-yaml "Experimental format (*.fx.yaml)" (retired, layout not documented further).
+ * `DataSources/<Name>.json`. The retired format's layout is not documented further.
  */
 async function readFxYaml(files, result, diagnostic) {
   result.app.format = 'fx.yaml';
@@ -175,7 +175,7 @@ async function readFxYaml(files, result, diagnostic) {
       } else diagnostic('CANVAS_SOURCE_SCHEMA_UNKNOWN', `${source}: top-level key "${key}" is not an appinfo, screen or component.`, source);
     }
   }
-  // unverified: DataSources/<Name>.json as an array (or one object) of { Name, LogicalName|TableLogicalName, ApiId } entries.
+  // Assumption: DataSources/<Name>.json is an array (or one object) of { Name, LogicalName|TableLogicalName, ApiId } entries.
   for (const file of files.filter(item => DATA_SOURCE_JSON.test(item.name))) {
     let entries;
     try { entries = JSON.parse(await file.read()); } catch { diagnostic('CANVAS_SOURCE_DATASOURCE_INVALID', `${file.name} is not valid JSON.`, file.name); continue; }

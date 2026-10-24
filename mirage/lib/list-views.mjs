@@ -1,5 +1,5 @@
 // List calendar views (adx_calendar_*): the server markup shell, the head resources the platform
-// links, the language script and the event feed the calendar client reads. Evidence: a live
+// links, the language script and the event feed the calendar client reads. The platform's
 // Bootstrap 5 calendar list renders `div.entitylist[data-view=calendar]` with data-calendar-url
 // /EntityList/Calendar/{website}/{list}/{view}, loads Areas/EntityList calendar scripts and
 // styles plus /EntityList/Calendar/{website}/language.js, and reads
@@ -115,7 +115,7 @@ export function calendarLanguageScript(culture = "en-US") {
     ...day.map((name, i) => `  d${i}: ${JSON.stringify(name)},`),
   ];
   // The client's first_day: 1 Monday, 2 Sunday.
-  // The platform view renders CRLF lines with two blank lines before the month names (live language.js).
+  // The platform view renders CRLF lines with two blank lines before the month names.
   return `\nif(!window.calendar_languages) {\n  window.calendar_languages = {};\n}\n\nwindow.calendar_languages[${JSON.stringify(culture)}] = {\n${lines.join("\n")}\n\n\n${names.join("\n\n")}\n\n  \n  first_day: ${firstDay === 7 ? 2 : 1}\n};\n`.replace(/\n/g, "\r\n");
 }
 
@@ -126,12 +126,12 @@ const text = (value) => {
   return String(value);
 };
 
-/** Calendar events of rows inside [from, to): start/end in epoch milliseconds (strings). */
 /**
- * The event feed (live list calendar feed): numeric start/end instants, the details URL only when
- * the list has a details page, the organizer as {name, email}, and the conversion and date-time
- * behaviour flags. A list with a fixed time zone sends user-local instants as that zone's wall
- * clock (live: 05:05Z in May with time zone 85 is sent as 06:05) and no client conversion.
+ * The event feed of rows overlapping [from, to): numeric start/end instants (epoch ms), the
+ * details URL only when the list has a details page, the organizer as {name, email}, and the
+ * conversion and date-time behaviour flags. A list with a fixed time zone sends user-local
+ * instants as that zone's wall clock (05:05Z in May with time zone 85 is sent as 06:05) and no
+ * client conversion.
  */
 export function calendarEvents(rows, { calendar, idColumn, detailsUrl, idParameter = "id", from, to }) {
   const events = [];

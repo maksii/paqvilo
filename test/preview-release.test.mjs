@@ -22,7 +22,8 @@ test('preview versions identify the commit and branch without occupying stable n
   assert.ok(branchToken('a'.repeat(200)).length <= 41);
   assert.notEqual(preview.version, previewRelease({ branch: 'codex/input-behavior-parity', version, sha, timestamp: 1700000000001 }).version);
   assert.equal(previewRelease({ branch: 'test', version: '0.9.4-rc.1', sha, timestamp: 1 }).version.split('-preview.')[0], version);
-  for (const branch of ['', '-option', 'a..b', 'a\nb', 'name.lock']) assert.throws(() => branchToken(branch));
+  for (const branch of ['', '-option']) assert.throws(() => branchToken(branch), /A branch name is required/);
+  for (const branch of ['a..b', 'a\nb', 'name.lock']) assert.throws(() => branchToken(branch), /git check-ref-format/);
   for (const invalid of ['01.2.3', '0.9.4-01', 'not-semver', '0.9.4\n'])
     assert.throws(() => previewRelease({ branch: 'test', version: invalid, sha }), /Invalid package version/);
 });
@@ -134,7 +135,7 @@ test('release workflows gate the preview metadata and publish only the tested ar
   assert.ok(!release.jobs.publish.steps.some(step => step.run?.includes('npm pack')), 'publishing must reuse the CI archive');
   const githubRelease = release.jobs.publish.steps.find(step => step.name === 'Create stable GitHub release');
   assert.ok(githubRelease.if.includes("env.PREVIEW != 'true'"));
-  for (const name of ['checks', 'test', 'windows', 'package']) {
+  for (const name of ['checks', 'test', 'browser', 'windows', 'package']) {
     const steps = ci.jobs[name].steps;
     const stamp = steps.findIndex(step => step.run === 'node scripts/release-version.mjs stamp');
     assert.ok(stamp >= 0 && stamp < steps.findIndex(step => step.name === 'Install locked dependencies'), name);

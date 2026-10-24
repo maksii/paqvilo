@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -17,12 +17,15 @@ const CONTACT = "c2000000-0000-4000-8000-000000000011";
 const ACCOUNT = "a2000000-0000-4000-8000-000000000011";
 const FORM = "2d000000-0000-4000-8000-000000000011";
 
+let sharedBrowser;
+before(async () => { sharedBrowser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => sharedBrowser?.close());
+
 
 async function fixture(t, {captured=false,currentLookup=false,targetRead=true}={}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-affordance-"));
   const owner=ownedFixture(t);
-  let app,browser;
-  owner.add(()=>browser?.close());
+  let app;
   owner.add(()=>app?.close());
   owner.remove(()=>fs.rm(dir,{recursive:true,force:true}));
   const jquery = await fs.readFile(path.join(path.dirname(require.resolve("jquery/package.json")), "dist", "jquery.min.js"));
@@ -85,11 +88,9 @@ async function fixture(t, {captured=false,currentLookup=false,targetRead=true}={
     await cache.capture(captured==='preform'?bundlePaths.slice(0,1):bundlePaths,{origin,request:async resource=>({status:200,headers:{'content-type':'text/css'},body:Buffer.from(`/* Invented captured fixture: ${resource} */ body{--captured-sheet:1}`)})});
   }
   app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, observed: {siteVisibility:"private",evidence:"Invented private-site fixture for structural fallback regression"} });
-  return {app,launchBrowser:async()=>{
-    if(browser)throw new Error("Fixture browser already acquired");
-    browser=await chromium.launch(browserLaunchOptions({headless:true}));
-    return browser;
-  }};
+  // Each test opens contexts on the shared browser; they close with the test.
+  const newContext=async options=>{const context=await sharedBrowser.newContext(options);owner.add(()=>context.close());return context;};
+  return {app,launchBrowser:async()=>({newContext,newPage:async options=>(await newContext(options)).newPage()})};
 }
 
 const bundlePaths=[

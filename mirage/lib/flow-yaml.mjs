@@ -3,10 +3,11 @@
 // same workflow entry the classic Workflows/<name>.json export gives (exported-operations.mjs importOperationWorkflows):
 // { file, name, active, activation, definition: { properties: { definition, connectionReferences } } }, so triggers, actions,
 // expressions and connection references run through the one flow interpreter.
-// unverified: Learn does not describe the files under modernflows/. A flow is a modernflows/<folder>/ of YAML or JSON files;
-// they are merged, and the flow is read from the workflow row fields (workflowid, name, statecode, clientdata as JSON text or
-// an object) or from a client data document ({ properties: { definition, connectionReferences } } or { definition }), keys
-// matched without case. A folder without a workflow id or a definition is not imported (its inventory record says so).
+// The files under modernflows/ are not documented, so this reading is a guess. A flow is a modernflows/<folder>/ of YAML or
+// JSON files; they are merged, and the flow is read from the workflow row fields (workflowid, name, statecode, clientdata as
+// JSON text or an object) or from a client data document ({ properties: { definition, connectionReferences } } or
+// { definition }), keys matched without case. A folder without a workflow id or a definition is not imported (its inventory
+// record says so).
 // ponytail: YAML numbers become JavaScript numbers before the exact-numeric JSON parse; integers above 2^53 in YAML lose digits.
 import path from 'node:path';
 import YAML from 'yaml';

@@ -15,7 +15,7 @@ import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
 import { PACK_EXPORTS } from '../lib/pack-exports.mjs';
 
-// Task 44: Recurrence and pack connector triggers are hosted by the trigger runner (opt-in: exported mode plus explicit
+// Recurrence and pack connector triggers are hosted by the trigger runner (opt-in: exported mode plus explicit
 // local activation); HTTP Request and manual flows start on demand through /_sim/api.
 const RECURRING = '77777777-7777-4777-8777-0000000000a1', HOOKED = '77777777-7777-4777-8777-0000000000a2';
 const BUTTON = '77777777-7777-4777-8777-0000000000a3', HTTP_FLOW = '77777777-7777-4777-8777-0000000000a4';
@@ -96,10 +96,10 @@ test('the unsupported-trigger message names mock/disable, not an adapter', () =>
   assert.doesNotMatch(answer.errors[0], /adapter/);
 });
 
-// Task 44: Recurrence schedule (hours, minutes, weekDays, monthDays) in an IANA timeZone, on a fixed clock.
+// Recurrence schedule (hours, minutes, weekDays, monthDays) in an IANA timeZone, on a fixed clock.
 test('a Recurrence schedule runs at its wall-clock hours, week days and month days in its IANA time zone', () => {
   const parse = value => inspectFlowTrigger({ triggers: { t: { type: 'Recurrence', recurrence: value } } });
-  // Learn example: every Saturday at 5:00 PM (Week, weekDays Saturday, hours 17, minutes 0). 2026-01-01 is a Thursday.
+  // Documented example: every Saturday at 5:00 PM (Week, weekDays Saturday, hours 17, minutes 0). 2026-01-01 is a Thursday.
   const weekly = parse({ frequency: 'Week', interval: 1, schedule: { weekDays: ['Saturday'], hours: [17], minutes: [0] } });
   assert.equal(weekly.supported, true);
   const now = Date.parse('2026-01-01T09:00:00Z');
@@ -109,7 +109,7 @@ test('a Recurrence schedule runs at its wall-clock hours, week days and month da
   assert.equal(daily.recurrence.start, Date.parse('2026-01-01T05:00:00Z'), 'a startTime without Z is wall-clock time in the zone');
   assert.equal(new Date(nextOccurrence(daily.recurrence, now)).toISOString(), '2026-01-01T13:30:00.000Z');
   assert.equal(new Date(nextOccurrence(daily.recurrence, Date.parse('2026-03-10T00:00:00Z'))).toISOString(), '2026-03-10T12:30:00.000Z');
-  // monthDays -1 runs on the last day of each month (Learn: run one time on the last day of the month).
+  // monthDays -1 runs on the last day of each month.
   const last = parse({ frequency: 'Month', interval: 1, startTime: '2026-01-01T06:00:00Z', schedule: { monthDays: [-1] } });
   assert.equal(new Date(nextOccurrence(last.recurrence, Date.parse('2026-02-01T00:00:00Z'))).toISOString(), '2026-02-28T06:00:00.000Z');
   // Every other Monday (interval 2 weeks from the start week).
@@ -117,7 +117,7 @@ test('a Recurrence schedule runs at its wall-clock hours, week days and month da
   assert.equal(new Date(nextOccurrence(biweekly.recurrence, Date.parse('2026-01-05T08:00:00Z'))).toISOString(), '2026-01-19T07:00:00.000Z');
 });
 
-// Task 55: a polling connector trigger's first poll is at its startTime.
+// A polling connector trigger's first poll is at its startTime.
 test('a polling trigger first polls at its startTime, never before it', async t => {
   const POLLED = '77777777-7777-4777-8777-0000000000a5', FEBRUARY = Date.parse('2026-02-01T00:00:00Z');
   const extra = { [POLLED]: wrap({ triggers: { poll: { type: 'OpenApiConnection', recurrence: { frequency: 'Hour', interval: 1, startTime: '2026-02-01T00:00:00Z' }, inputs: { host: { apiId: API, operationId: 'OnNewItem' } } } }, actions: compose }) };
@@ -131,7 +131,7 @@ test('a polling trigger first polls at its startTime, never before it', async t 
   assert.deepEqual(polls, [FEBRUARY]);
 });
 
-// Task 44: "When an action is performed" fires through the custom API execution hook (store.messageObservers).
+// "When an action is performed" fires through the custom API execution hook (store.messageObservers).
 test('a Dataverse action trigger runs a tracked flow with the action inputs and outputs, only for its message', async t => {
   const PERFORMED = '77777777-7777-4777-8777-0000000000a6';
   const definition = { triggers: { performed: { type: 'OpenApiConnectionWebhook', inputs: { host: { apiId: '/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps', operationId: 'BusinessEventsTrigger' },
@@ -204,7 +204,7 @@ test('POST /_sim/api/flow-runs starts a tracked run of a Button, Http or Recurre
   for (const name of ['set-cookie', 'location', 'x-sim-csrf', 'content-security-policy']) assert.equal(request.headers.get(name), null, name);
   assert.equal((await call('POST', `/_sim/api/flow-triggers/${BUTTON}`, {})).body.error.code, 'FlowTriggerUnsupported');
   delete overrides['cloud-flow:' + BUTTON];
-  assert.deepEqual((await call('POST', '/_sim/api/flow-runs', { processId: BUTTON })).status, 409);
+  assert.equal((await call('POST', '/_sim/api/flow-runs', { processId: BUTTON })).status, 409);
   const listed = await call('GET', '/_sim/api/flow-triggers');
   assert.deepEqual(listed.body.map(h => [h.processId, h.kind]).sort(), [[HOOKED, 'connector'], [HTTP_FLOW, 'http'], [RECURRING, 'recurrence']].sort());
   assert.equal(runs.list().length, 3);

@@ -12,7 +12,8 @@ test('pure SDK controls independently cover column constructors, authored Fetch 
  for(const kind of ['QueryExpression','Retrieve','FetchExpression'])for(const columnMode of ['empty','name','pk','all'])assert.equal(plan.probes.filter(row=>row.id===(kind==='QueryExpression'?'QE':kind==='Retrieve'?'Retrieve':'Fetch')+'-'+columnMode).length,1);
  for(const kind of ['QueryExpression','FetchExpression'])assert.deepEqual(plan.probes.filter(row=>row.kind===kind&&row.countFixture).map(row=>row.totalCount),[null,false,true]);
  assert.deepEqual(plan.probes.filter(row=>row.distinct!==undefined).map(row=>row.distinct),[false,true]);assert.equal(plan.probes.filter(row=>row.minActiveRowVersion).length,1);assert.ok(plan.probes.every(row=>row.equipmentId===equipmentId&&row.canaryRunId===canaryRunId));
- for(const invalid of [{equipmentId:'x'},{canaryRunId:'x'},{markerUtc:'x'},{operationId:()=>equipmentId}])assert.throws(()=>planSdkProjectionProbes({equipmentId,canaryRunId,markerUtc,...invalid}));
+ for(const invalid of [{equipmentId:'x'},{canaryRunId:'x'},{markerUtc:'x'}])assert.throws(()=>planSdkProjectionProbes({equipmentId,canaryRunId,markerUtc,...invalid}),/exact owned Equipment\/Run IDs/);
+ assert.throws(()=>planSdkProjectionProbes({equipmentId,canaryRunId,markerUtc,operationId:()=>equipmentId}),/unique immutable operation/);
 });
 
 test('actual compiled SDK driver selects TLS 1.2 before reading invalid local input',{skip:process.platform!=='win32'||!process.env.PAQ_TEST_XRM_SDK},async()=>{

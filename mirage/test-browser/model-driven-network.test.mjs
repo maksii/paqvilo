@@ -2,14 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+// Tests that only render controls or read records share one simulator; tests that write own theirs.
+const scope = fileScope();
+let sharedApp;
+const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
+
 
 test('lazy metadata rejects inherited table identities before making a metadata request', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), metadata = [], errors = [];
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t), metadata = [], errors = [];
   await page.addInitScript(() => {
     Object.defineProperty(Object.prototype, 'metadata', { value: 'lazy', configurable: true, writable: true });
     Object.defineProperty(Object.prototype, 'x_inherited', { value: { metadata: 'lazy' }, configurable: true });
@@ -34,8 +39,7 @@ test('form-only overlays retain the trusted Xrm CRUD/query round trip with bound
       relationships: { x_parentid: { entity: 'x_item', from: 'x_parentid', to: 'x_itemid', many: false } } } },
     tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Mapped original', x_quantity: 2 }] } };
   const sim = await fixture.start({ stateFile: null, initial, modelDriven: { trustedExtensions: true } }); t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), paths = [], errors = [];
+  const page = await chrome.page(t), paths = [], errors = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/_apps/api')) paths.push(new URL(request.url()).pathname); });
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
@@ -67,8 +71,7 @@ test('form-only overlays retain the trusted Xrm CRUD/query round trip with bound
 
 test('model-driven Xrm lookup writes use the local staff transport, CSRF and current ETags', async t => {
   const { sim, origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), requests = [], external = [], errors = [];
+  const page = await chrome.page(t), requests = [], external = [], errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => {
     if (new URL(request.url()).origin !== origin) external.push(request.url());
@@ -104,8 +107,7 @@ test('model-driven Xrm lookup writes use the local staff transport, CSRF and cur
 
 for (const kind of ['portal', 'model-driven']) test(`Xrm queries share canonical filtering, expansion, FetchXML and continuation in ${kind} with the public API disabled`, async t => {
   const { sim, origin } = await modelDrivenFixture(t, kind === 'model-driven' ? { runtime: { kind }, sourceDir: undefined } : {}); assert.equal(sim.dataverse ?? null, null);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), external = [], errors = [];
+  const page = await chrome.page(t), external = [], errors = [];
   page.on('request', request => { if (new URL(request.url()).origin !== origin) external.push(request.url()); });
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
@@ -135,8 +137,7 @@ for (const kind of ['portal', 'model-driven']) test(`Xrm queries share canonical
 
 test('saved form and Xrm edits share concurrency without overwriting either a newer row or the rejected draft', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), errors = [], external = [], writes = [];
+  const page = await chrome.page(t), errors = [], external = [], writes = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (new URL(request.url()).origin !== origin) external.push(request.url()); });
   page.on('response', response => { if (response.request().method() === 'PATCH') writes.push(response.status()); });
@@ -170,8 +171,7 @@ test('saved form and Xrm edits share concurrency without overwriting either a ne
 
 test('leaving a form during Xrm ETag preflight prevents the pending update from writing afterward', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), errors = [], methods = [];
+  const page = await chrome.page(t), errors = [], methods = [];
   page.on('pageerror', error => errors.push(error.message));
   const child = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', endpoint = '/_apps/api/tables/x_child/' + child;
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');

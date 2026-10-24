@@ -1,5 +1,4 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Synthetic form workflows run only against disposable local sources and a loopback server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

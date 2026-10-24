@@ -1,6 +1,7 @@
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
@@ -9,6 +10,12 @@ import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
 import { compileForm, parseAppDefinitions, parseSiteMap } from '../lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../lib/solution-xml.mjs';
 import { columnIcon } from '../lib/model-driven/icons.mjs';
+
+// Read-only HTTP tests share one runtime; tests that write or restart start their own.
+let shared;
+const cleanup = [];
+before(async () => { shared = await modelDrivenFixture({ after: (fn) => cleanup.push(fn) }); });
+after(async () => { for (const fn of cleanup) await fn(); });
 
 test('source navigation admits bounded imported table-view pages and leaves remote or unknown destinations unavailable', () => {
   const areas = parseSiteMap('<SiteMap><Area Id="work"><Group Id="planning"><SubArea Id="all" Entity="x_item"/><SubArea Id="upper" Url="/main.aspx?appid=77777777-7777-4777-8777-777777777777&amp;pagetype=entitylist&amp;etn=x_item&amp;viewid={upper-view}&amp;viewType=1039"/><SubArea Id="missing" Url="main.aspx?pagetype=entitylist&amp;etn=x_item&amp;viewid=missing-view"/><SubArea Id="remote" Url="https://example.invalid/main.aspx?pagetype=entitylist&amp;etn=x_item"/><SubArea Id="record" Url="/main.aspx?pagetype=entityrecord&amp;etn=x_item"/><SubArea Id="script" Url="javascript:alert(1)"/><SubArea Id="unmapped" Url="/main.aspx?pagetype=entitylist&amp;etn=x_absent"/></Group></Area></SiteMap>');
@@ -126,8 +133,8 @@ test('source form matrices preserve spacer cells, row spans, labels and ordered 
   assert.equal(occupied.tabs[0].sections[0].fields.at(-1).column, 2, 'a spanned cell requires a contiguous free range after prior-row occupancy');
 });
 
-test('model-driven app catalogue imports solution navigation, forms and views alongside the default management app', async t => {
-  const { origin } = await modelDrivenFixture(t);
+test('model-driven app catalogue imports solution navigation, forms and views alongside the default management app', async () => {
+  const { origin } = shared;
   const response = await fetch(origin + '/_apps/api'); assert.equal(response.status, 200);
   const catalogue = await response.json();
   assert.equal(catalogue.defaultApp, 'power-pages-management');
@@ -143,8 +150,8 @@ test('model-driven app catalogue imports solution navigation, forms and views al
   assert.match(shell.headers.get('content-security-policy'), /connect-src 'self'/);
 });
 
-test('grid runs saved FetchXML with search, filters, columns, sorting and paging', async t => {
-  const { origin } = await modelDrivenFixture(t);
+test('grid runs saved FetchXML with search, filters, columns, sorting and paging', async () => {
+  const { origin } = shared;
   const list = async query => { const response = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify(query))); assert.equal(response.status, 200, await response.clone().text()); return response.json(); };
   const first = await list({ pageSize: 1, sort: 'x_quantity', direction: 'desc' });
   assert.equal(first.rows[0].x_name, 'Silver'); assert.equal(first.total, 2); assert.equal(first.more, true);
@@ -157,7 +164,7 @@ test('grid runs saved FetchXML with search, filters, columns, sorting and paging
 test('native text filter operations match literal substrings and retain explicit LIKE patterns', async t => {
   const { origin, sim } = await modelDrivenFixture(t);
   for (const x_name of ['Literal %_[box]', 'Literal AAbox', 'Other %_[box]']) {
-    const response = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name, x_quantity: 1 }) }); assert.equal(response.status, 201);
+    const response = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify({ x_name, x_quantity: 1 }) }); assert.equal(response.status, 201);
   }
   const names = async (operator, value) => {
     const response = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify({ filters: [{ field: 'x_name', operator, value }] })));
@@ -219,8 +226,8 @@ test('management creates related customization records and auxiliary websites wi
   const rejected = await call('PATCH', 'adx_website', { adx_name: '' }, primary, original.etag); assert.equal(rejected.status, 400);
 });
 
-test('app assets stay origin-confined and reject unknown resources, cross-origin writes and inherited table names', async t => {
-  const { origin } = await modelDrivenFixture(t);
+test('app assets stay origin-confined and reject unknown resources, cross-origin writes and inherited table names', async () => {
+  const { origin } = shared;
   assert.equal((await fetch(origin + '/_apps/assets/missing.mjs')).status, 404);
   assert.equal((await fetch(origin + '/_apps/api/tables/constructor')).status, 404);
   assert.equal((await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: '{}' })).status, 403);
@@ -241,7 +248,8 @@ test('sparse customization overlays retain later source changes to untouched sib
 });
 
 test('monolithic solution metadata imports app forms, views and navigation with no portal-form dependency', async t => {
-  const { root } = await modelDrivenFixture(t);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-embedded-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'embedded.xml');
   await fs.writeFile(file, '<ImportExportXml><Entities><Entity><Name>x_embedded</Name><EntityInfo><entity Name="x_embedded"><attributes><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo><FormXml><forms type="main"><systemform><formid>{embedded-form}</formid><type>2</type><form><tabs><tab name="general"><columns><column><sections><section><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform></forms></FormXml><SavedQueries><savedquery><savedqueryid>{embedded-view}</savedqueryid><querytype>0</querytype><fetchxml><fetch><entity name="x_embedded"><attribute name="x_name"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="x_name" width="100"/></row></grid></layoutxml></savedquery></SavedQueries></Entity></Entities><AppModules><AppModule><UniqueName>x_embedded_app</UniqueName><AppModuleId>embedded-app</AppModuleId><SiteMap><Area Id="main"><Group Id="items"><SubArea Id="items" Entity="x_embedded"/></Group></Area></SiteMap></AppModule></AppModules></ImportExportXml>');
   const scan = await scanSolutionSources([file]); const metadata = await importSolutionMetadata([file], { scan });
@@ -250,7 +258,6 @@ test('monolithic solution metadata imports app forms, views and navigation with 
   const catalogue = appCatalogue({ portal: { website: {}, records: [], format: 'enhanced' }, metadata: { ...metadata, modelDrivenApps: solutionApps(scan) }, mappings: { x_embedded: { idColumn: 'x_embeddedid', nameColumn: 'x_name' } } });
   const app = catalogue.apps.find(app => app.uniqueName === 'x_embedded_app'); assert.equal(app.navigation[0].groups[0].items[0].title, 'X Embedded');
 });
-
 
 test('table default desktop grid pagination flows from source facts into the app catalogue without form PCF leakage', async t => {
   const { solutionDir } = await modelDrivenFixture(t);

@@ -12,22 +12,15 @@
 // engine's delegation warning; writes go through the records pipeline as the caller. Rows carry display-name aliases.
 // Control properties are a reactive formula graph: a property is computed on read, memoized and dirtied when an input it
 // read changes; a behaviour formula may change anything, so it clears the memo when it completes.
-// Connector operations (`Source.Operation(...)`) are asynchronous; they are called before the formula that holds them.
-//
-// Learn: behaviour formulas https://learn.microsoft.com/power-platform/power-fx/imperative
-//        variables (established by Set/UpdateContext/Navigate/Collect, blank until set) https://learn.microsoft.com/power-platform/power-fx/variables
-//        Navigate/Back https://learn.microsoft.com/power-platform/power-fx/reference/function-navigate
-//        Select queues OnSelect after the current formula https://learn.microsoft.com/power-platform/power-fx/reference/function-select
-//        SubmitForm/NewForm/EditForm/ViewForm/ResetForm https://learn.microsoft.com/power-platform/power-fx/reference/function-form
-//        error handling and App.OnError https://learn.microsoft.com/power-platform/power-fx/error-handling
-//        delegation and the data row limit https://learn.microsoft.com/power-apps/maker/canvas-apps/delegation-overview
+// Connector operations (`Source.Operation(...)`) are asynchronous: a formula suspends at a call that has no answer yet and
+// runs again once it has one (see the behaviour section).
 import { COMMON_DEFAULTS, CONTROL_CATALOGUE, controlKind, unsupportedControls } from './canvas-controls.mjs';
 import { ErrorKind, FxDataSource, FxError, FxRecordRef, evaluateFx, fromFx } from './power-fx.mjs';
 import { dataverseHost } from './power-fx-dataverse.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 
 const enumOf = (...names) => Object.freeze(Object.fromEntries(names.map(name => [name, name])));
-// Canvas enumerations the engine does not hold. unverified: Power Apps enum values are opaque; only equality is relied on.
+// Canvas enumerations the engine does not hold. Power Apps enum values are opaque; only equality is relied on.
 const ENUMS = Object.freeze({ FormMode: enumOf('Edit', 'New', 'View'), DisplayMode: enumOf('Edit', 'View', 'Disabled'),
   ScreenTransition: enumOf('None', 'Fade', 'Cover', 'CoverRight', 'UnCover', 'UnCoverRight') });
 export const CANVAS_DATA_ROW_LIMIT = 500;
@@ -126,7 +119,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
     const owner = row.owner.includes('.') ? row.owner.slice(row.owner.indexOf('.') + 1) : row.owner;
     if (!formulas.has(owner)) formulas.set(owner, new Map());
     const raw = String(row.text ?? '').trimStart();
-    // Learn yaml-formula-grammar: a formula starts with `=`; any other scalar is a literal value.
+    // A formula starts with `=`; any other scalar is a literal value.
     formulas.get(owner).set(row.property, raw.startsWith('=') ? { formula: raw.slice(1).trim() } : { value: literal(raw) });
   }
   const screens = new Map(), controls = new Map(), lower = new Map();
@@ -155,7 +148,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
   const descendants = name => (controls.get(name)?.children ?? []).flatMap(child => [child, ...descendants(child)]);
 
   // ---- state ----
-  // Learn variables: Set, UpdateContext, Navigate's context record, Collect and ClearCollect establish a name, which reads
+  // Set, UpdateContext, Navigate's context record, Collect and ClearCollect establish a name, which reads
   // blank (a collection: empty) until a formula fills it.
   const variables = {}, globals = new Set(), collections = new Set(), contexts = new Map(screenNames.map(name => [name, {}]));
   const recordKeys = text => /^\{[\s\S]*\}$/.test(text?.trim() ?? '')
@@ -258,7 +251,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
     // Now() and GUID() answer from the replay journal when a behaviour formula runs again after a connector answer.
     now: () => journaled('now', records ? records.now : Date.now),
     guid: () => journaled('guid', () => crypto.randomUUID()),
-    // unverified: navigation is applied when the behaviour formula completes (Learn states the queueing for Select only).
+    // Navigation is applied when the behaviour formula completes; the docs state that queueing for Select only, so it is a guess here.
     navigate: (target, transition, update) => {
       const named = nameOf(target), screen = screens.has(named) ? named : controls.get(named)?.screen;
       if (!screen) throw fail(`Navigate target is not a screen of this app.`, 'CanvasScreenNotFound', 404);
@@ -363,7 +356,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
         const list = items(name), chosen = input(name, scope);
         if (chosen !== undefined) return list[chosen] ?? null;
         const wanted = fallback(name, 'Default', scope);
-        // Learn control-drop-down: Default is the initial value; without one the first item is selected.
+        // Default is the initial value; without one the first item is selected.
         return list.find(row => isPlain(row) ? Object.values(row).some(value => value === wanted) : row === wanted) ?? list[0] ?? null;
       }
       case 'combobox.SelectedItems': {
@@ -398,7 +391,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
       case 'card.Update': { const result = declared(name, property, scope); return result.found ? result.value : read(name, 'Default', scope); }
       case 'card.Valid': return !(read(name, 'Required', scope) === true && blank(read(name, 'Update', scope)));
       case 'card.DisplayMode': {
-        // Learn function-form "DisplayMode Property": cards usually take Parent.DisplayMode (the form's).
+        // Cards usually take Parent.DisplayMode (the form's).
         const result = declared(name, property, scope);
         return result.found ? result.value : formOf(name) ? read(formOf(name), 'DisplayMode', {}) : COMMON_DEFAULTS.DisplayMode;
       }
@@ -415,7 +408,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
     };
     const mode = (form, next) => { setForm(form, { mode: next, error: undefined, errorKind: undefined }); clearInputs(form); return true; };
     return {
-      // Learn "Launch and Param functions": Param returns the named launch parameter as text, blank when it was not passed;
+      // Param returns the named launch parameter as text, blank when it was not passed;
       // names are case-sensitive. A custom page receives recordId and entityName (Xrm.Navigation.navigateTo).
       Param: name => (Object.hasOwn(parameters, String(name ?? '')) ? String(parameters[String(name)]) : null),
       SubmitForm: form => { submit(controlArg(form, ['form'], 'SubmitForm'), where); return true; },
@@ -424,14 +417,14 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
       ViewForm: form => mode(controlArg(form, ['form'], 'ViewForm'), 'View'),
       ResetForm: target => {
         const form = controlArg(target, ['form'], 'ResetForm');
-        if (read(form, 'Mode') === 'View') return true; // Learn: ResetForm has no effect in FormMode.View
+        if (read(form, 'Mode') === 'View') return true; // ResetForm has no effect in FormMode.View
         clearInputs(form);
         setForm(form, { mode: read(form, 'Mode') === 'New' ? 'Edit' : state.forms.get(form)?.mode, error: undefined, errorKind: undefined });
         pending.push(() => behaviour(form, 'OnReset', {}));
         return true;
       },
       Reset: target => { clearInputs(controlArg(target, null, 'Reset'), true); return true; },
-      // Learn function-select: the target's OnSelect is queued and runs after the current formula.
+      // The target's OnSelect is queued and runs after the current formula.
       Select: target => {
         const control = controlArg(target, null, 'Select');
         pending.push(() => select(control, scope.gallery && scope.gallery === galleryOf(control) ? scope : {}));
@@ -449,9 +442,9 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
   }
   function submit(form, where) {
     const mode = read(form, 'Mode');
-    if (mode === 'View') return; // Learn: SubmitForm has no effect in FormMode.View
+    if (mode === 'View') return; // SubmitForm has no effect in FormMode.View
     if (!read(form, 'Valid')) {
-      setForm(form, { error: 'A required value is missing.', errorKind: ErrorKind.Validation }); // unverified: message text
+      setForm(form, { error: 'A required value is missing.', errorKind: ErrorKind.Validation }); // Native message text not known.
       pending.push(() => behaviour(form, 'OnFailure', {}));
       return;
     }
@@ -498,8 +491,8 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
   // The replay journal: the operations a suspended attempt completed before its connector call (Dataverse reads and writes
   // through the data sources, Now(), GUID()) keep their results with the suspension, and the attempt that runs again
   // takes them from the journal in call order instead of executing them again. A Patch made before a connector call is
-  // therefore committed once, with the id the connector was sent (Learn "Error handling": a behaviour formula's actions
-  // happen in sequence and are not undone). `journal` = { entries: [{ op, value | error }], next } of the formula
+  // therefore committed once, with the id the connector was sent (a behaviour formula's actions happen in sequence and
+  // are not undone). `journal` = { entries: [{ op, value | error }], next } of the formula
   // evaluating now; it is set only while one attempt evaluates synchronously.
   let journal = null;
   const journaled = (op, fn) => {
@@ -518,10 +511,9 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
     read: query => journaled('read', () => adapter.read(query)), count: query => journaled('count', () => adapter.count(query)),
     create: record => journaled('create', () => adapter.create(record)), update: (base, changes) => journaled('update', () => adapter.update(base, changes)),
     remove: record => journaled('remove', () => adapter.remove(record)) });
-  // A connector failure is a Power Fx error value, so IfError/IsError handle it and the chain's later statements run
-  // (Learn "Error handling"). Learn "Error, IfError, IsError": "Currently, details are provided only for network errors.
-  // This record includes HttpStatusCode ... and HttpResponse which contains the body of the response from the connector".
-  // unverified: the message text; Power Apps' own wording for a failed connector call was not captured.
+  // A connector failure is a Power Fx error value, so IfError/IsError handle it and the chain's later statements run.
+  // Only network errors carry details: HttpStatusCode and HttpResponse (the connector's response body).
+  // Power Apps' own message text for a failed connector call is not known.
   const EXCERPT = 2000; // ponytail: HttpResponse keeps the first 2000 characters of the body; raise it if a body needs more.
   const connectorFailure = (source, status, body, kind = ErrorKind.Network) => {
     const text = body === undefined || body === null ? '' : typeof body === 'string' ? body : JSON.stringify(body);
@@ -572,7 +564,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
       forget();
     }
   }
-  /** Runs one behaviour formula; its errors are recorded (the chain itself continues, Learn error handling). */
+  /** Runs one behaviour formula; its errors are recorded (the chain itself continues). */
   async function run(text, scope, where) {
     let errors = [], value = null;
     const tape = { list: [], next: 0, journal: { entries: [], next: 0 } };
@@ -622,7 +614,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
     await behaviour(screen, 'OnVisible', { screen });
   }
   async function goBack(transition) {
-    if (state.history.length < 2) return false; // Learn: Back returns false when the user has not navigated since the app started
+    if (state.history.length < 2) return false; // Back returns false when the user has not navigated since the app started
     state.history.pop();
     await show(state.history.at(-1).screen, { transition: transition ?? 'inverse', push: false });
     return true;
@@ -682,8 +674,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
     principal,
     /**
      * Runs App.OnStart, then shows App.StartScreen (else the first screen) and runs its OnVisible. A Navigate in OnStart
-     * opens its screen instead (Learn object-app StartScreen: Navigate in OnStart is supported, StartScreen recommended),
-     * and only that screen's OnVisible runs.
+     * opens its screen instead, and only that screen's OnVisible runs.
      */
     start: () => serial(async () => {
       if (state.started) return instance.snapshot();
@@ -766,7 +757,7 @@ export function createCanvasApp({ app, evaluator, principal = null, api = null, 
   return instance;
 }
 const SNAPSHOT_ITEMS = 50; // ponytail: a snapshot lists the first 50 gallery rows; drive later rows by index through the API.
-// Properties the runtime maintains for each kind (beyond the declared ones). Learn control reference pages per kind.
+// Properties the runtime maintains for each kind (beyond the declared ones).
 const OUTPUTS = Object.freeze({
   textinput: ['Text'], checkbox: ['Value'], toggle: ['Value'], datepicker: ['SelectedDate'], dropdown: ['Selected'], combobox: ['SelectedItems', 'Selected'],
   gallery: ['Selected', 'AllItems'], form: ['Mode', 'DisplayMode', 'Updates', 'Valid', 'Unsaved', 'LastSubmit', 'Error', 'ErrorKind'], formviewer: ['Mode', 'DisplayMode'],

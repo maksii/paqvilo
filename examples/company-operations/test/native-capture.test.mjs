@@ -78,7 +78,9 @@ test('batch envelopes bind every unique operation, actor, role set, case and dat
   assert.equal(result[0].effectiveFetchXml, '<fetch distinct="true"/>');
   assert.equal(decodeBatchResponse(xml.replace('more="false"', 'more="True"'), input)[0].more, true);
   assert.equal(decodeBatchResponse(xml.replace('more="false"', 'more="False"'), input)[0].more, false);
-  for (const mutated of [xml.replace('operation-id="operation"', 'operation-id="other"'), xml.replace('contact-id="actor"', 'contact-id="foreign"'), xml.replace('<role>Reader</role>', '<role>Writer</role>'), xml.replace('case-id="C1"', 'case-id="C2"'), xml.replace('dataset-version="invented"', 'dataset-version="other"'), xml.replace('<co-batch-response>', '<co-batch-response>unhandled error')]) assert.throws(() => decodeBatchResponse(mutated, input));
+  assert.throws(() => decodeBatchResponse(xml.replace('operation-id="operation"', 'operation-id="other"'), input), /foreign or repeated operation/);
+  for (const mutated of [xml.replace('contact-id="actor"', 'contact-id="foreign"'), xml.replace('<role>Reader</role>', '<role>Writer</role>'), xml.replace('case-id="C1"', 'case-id="C2"'), xml.replace('dataset-version="invented"', 'dataset-version="other"')]) assert.throws(() => decodeBatchResponse(mutated, input), /actor, role, case or dataset binding/);
+  assert.throws(() => decodeBatchResponse(xml.replace('<co-batch-response>', '<co-batch-response>unhandled error'), input), /loose error text/);
 });
 
 test('native DotLiquid boolean strings normalize case-insensitively and malformed values fail', () => {

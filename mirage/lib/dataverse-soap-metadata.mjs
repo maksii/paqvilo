@@ -2,10 +2,7 @@
 // Each handler returns the execute-response descriptor dataverse-soap.mjs builds for other messages ({ name, responseType,
 // namespace, results }). Result values are DataContract XML: members in DataContract order (base class first, then
 // DataMember Order, then ordinal name, DATA_CONTRACTS), each in its contract namespace, and xsi:type on derived types.
-// Grounded (Microsoft Learn): MetadataBase(HasChanged, MetadataId) is the base of EntityMetadata, AttributeMetadata and
-// RelationshipMetadataBase; RelationshipMetadataBase(IntroducedVersion, IsCustomizable, IsCustomRelationship, IsManaged,
-// IsValidForAdvancedFind, RelationshipType, SchemaName, SecurityTypes); EntityFilters 1/2/4/8/15.
-// Ceilings: the Label/ManagedProperty nested types carry no xsi:type; a condition's multi-value Value (In, NotIn) is read as
+// Limits: the Label/ManagedProperty nested types carry no xsi:type; a condition's multi-value Value (In, NotIn) is read as
 // a string list, so numeric lists compare as text.
 import { DataError } from "./data-error.mjs";
 import { createMetadataService } from "./dataverse-metadata.mjs";
@@ -22,7 +19,7 @@ const esc = (value) => xmlEscapeAttribute(String(value));
 // Prefix per contract namespace. a is declared on the envelope (xrm/2011/Contracts), so only the others are declared per value.
 const PREFIX = { "2011/Metadata": "m", "2011/Contracts": "a", "7.1/Metadata": "m71", "2013/Metadata": "m13", "9.0/Metadata": "m90" };
 const NS_DECL = Object.entries(PREFIX).filter(([, p]) => p !== "a").map(([ns, p]) => ` xmlns:${p}="http://schemas.microsoft.com/xrm/${ns}"`).join("");
-// Element name of collection items, from the DataContract item names. // unverified: items of PrivilegeMetadata-style collections
+// Element name of collection items, from the DataContract item names (the Privileges item name is a guess).
 const ITEM_ELEMENT = {
   Attributes: "AttributeMetadata",
   Keys: "EntityKeyMetadata",
@@ -159,7 +156,7 @@ const notFound = (what, key) => new DataError(`${what} '${key}' does not exist.`
 // EntityQueryExpression (xrm/2011/Metadata) read back into the Web API JSON shape retrieveMetadataChanges takes. Members are
 // matched by local name; a nil member is absent. Enums arrive as names or numbers (numbers index these lists).
 const LOGICAL_OPERATORS = ["And", "Or"];
-// Microsoft.Xrm.Sdk.Metadata.Query.MetadataConditionOperator (Learn): Equals 0, NotEquals 1, In 2, NotIn 3, GreaterThan 4, LessThan 5.
+// Microsoft.Xrm.Sdk.Metadata.Query.MetadataConditionOperator: Equals 0, NotEquals 1, In 2, NotIn 3, GreaterThan 4, LessThan 5.
 const CONDITION_OPERATORS = ["Equals", "NotEquals", "In", "NotIn", "GreaterThan", "LessThan"];
 const VALUE_TYPES = { string: "System.String", int: "System.Int32", long: "System.Int64", decimal: "System.Decimal", double: "System.Double", boolean: "System.Boolean", dateTime: "System.DateTime", guid: "System.Guid" };
 const SUB_QUERIES = ["AttributeQuery", "RelationshipQuery", "KeyQuery"];
@@ -208,7 +205,7 @@ function queryOf(node) {
   return out;
 }
 
-// ---- SOAP typed metadata writes ----
+// ---- SOAP typed metadata writes
 // A typed metadata parameter (EntityMetadata, AttributeMetadata subtypes, OneToManyRelationshipMetadata, ...) is decoded
 // from its XML element into the JSON the Web API metadata writers read: members by element name, @odata.type from
 // xsi:type, managed properties as their Value, numbers and booleans as their text says. The write then goes through the
@@ -282,7 +279,7 @@ function metadataWriteRequests(api, svc) {
   const attributeId = (logical, name) => svc.retrieveAttributeResponse(logical, name)?.AttributeMetadata?.MetadataId ?? null;
   const existingAttributeId = (logical, name) => {
     const id = attributeId(logical, name);
-    if (!id) throw new DataError(`Attribute ${name} does not exist for entity ${logical}.`, 404, "NotFound", { innerCode: "0x80040217" }); // unverified: message text
+    if (!id) throw new DataError(`Attribute ${name} does not exist for entity ${logical}.`, 404, "NotFound", { innerCode: "0x80040217" }); // native message text is a guess
     return id;
   };
   const merge = (p) => (p.get("MergeLabels")?.value === true ? { "MSCRM.MergeLabels": "true" } : {});
@@ -294,7 +291,7 @@ function metadataWriteRequests(api, svc) {
     return null;
   };
   const required = (value, what) => {
-    if (value == null) throw new DataError(`${what} is required.`, 400, "InvalidRequest", { innerCode: "0x80040203" }); // unverified: message text
+    if (value == null) throw new DataError(`${what} is required.`, 400, "InvalidRequest", { innerCode: "0x80040203" }); // native message text is a guess
     return value;
   };
   return new Map([
@@ -401,7 +398,7 @@ const logicalOf = (column) => lowerText(column.LogicalName ?? column.SchemaName,
 
 // Text of a required name, lower case (logical names are lower case in the metadata routes).
 function lowerText(value, what) {
-  if (value == null || value === "") throw new DataError(`${what} is required.`, 400, "InvalidRequest", { innerCode: "0x80040203" }); // unverified: message text
+  if (value == null || value === "") throw new DataError(`${what} is required.`, 400, "InvalidRequest", { innerCode: "0x80040203" }); // native message text is a guess
   return String(value).toLowerCase();
 }
 

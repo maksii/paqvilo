@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -7,6 +7,10 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 
 const TENANT = "https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/";
@@ -85,9 +89,8 @@ async function portal(t, settings, header) {
   }
   const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, "state.json"), watch: false, initial: structuredClone(state) });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ serviceWorkers: "block" });
+  ownedFixture(t).add(() => context.close());
   const idp = app.identityProvider.origin;
   // Only the portal and its local identity provider are reachable.
   await context.route("**/*", (route) => {

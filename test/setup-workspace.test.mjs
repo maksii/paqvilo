@@ -40,7 +40,7 @@ test('setup projects expose standalone runtime configuration without portal or e
   const next = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation'), set(['dataverse', 'enabled'], true)]);
   assert.equal(next.settings.simulation.level, 'simulation');
   assert.deepEqual(JSON.parse(await fs.readFile(filename, 'utf8')).dataPacks, raw.dataPacks);
-  await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'invalid')]));
+  await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'invalid')]), /simulation requires level/);
 });
 
 test('setup retains omitted legacy simulation and validates standalone missing pack paths', async t => {
@@ -83,8 +83,9 @@ test('schema failures, dangerous keys and concurrent edits leave original docume
   await fs.writeFile(filename, YAML.stringify(minimal));
   const store = new SetupStore({ directory, processEnv: {} });
   const original = await fs.readFile(filename, 'utf8'), initial = await store.snapshot();
-  for (const operations of [[set(['browser', 'headless'], 'wrong')], [set(['__proto__', 'polluted'], true)], [set(['sites', 'portal', 'mirage', 'observed'], { loginPath: '/SignIn' })], [{ op: 'set', path: ['sites', 'portal', 'routes'], yaml: '[' }]]) {
-    await assert.rejects(store.save({ revision: initial.revision, layer: 'shared', operations }));
+  for (const [operations, message] of [[[set(['browser', 'headless'], 'wrong')], /browser\.headless must be true or false/], [[set(['__proto__', 'polluted'], true)], /Invalid configuration field path/],
+    [[set(['sites', 'portal', 'mirage', 'observed'], { loginPath: '/SignIn' })], /observed\.evidence must name the observation/], [[{ op: 'set', path: ['sites', 'portal', 'routes'], yaml: '[' }], /Flow sequence must end/]]) {
+    await assert.rejects(store.save({ revision: initial.revision, layer: 'shared', operations }), message);
     assert.equal(await fs.readFile(filename, 'utf8'), original);
   }
   await fs.writeFile(filename, original + '# external edit\n');
@@ -267,11 +268,8 @@ test('setup creates configuration from a template and serves own and shared asse
     assert.equal(response.status, 200, asset); assert.match(response.headers.get('content-type'), new RegExp(type)); assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     assert.match(response.headers.get('content-security-policy'), /default-src 'none'/);
   }
-  for (const name of ['ui-kit.mjs', 'ui-kit.css', 'shell.css', 'dashboard-view.mjs', 'help-content.mjs']) {
-    const present = await fs.stat(new URL(`../mirage/admin/${name}`, import.meta.url)).then(() => true, () => false);
-    assert.equal((await fetch(`${base}/_setup/${name}`)).status, present ? 200 : 404, name);
-  }
-  for (const blocked of ['/_setup/missing.mjs', '/_setup/%2e%2e/package.json', '/_setup/App.mjs', '/_setup/x.json', '/_setup/store.mjs', '/_setup/server.mjs', '/_setup/templates.mjs']) assert.equal((await fetch(base + blocked)).status, 404, blocked);
+  for (const name of ['ui-kit.mjs', 'ui-kit.css', 'shell.css', 'help-content.mjs']) assert.equal((await fetch(`${base}/_setup/${name}`)).status, 200, name);
+  for (const blocked of ['/_setup/missing.mjs', '/_setup/dashboard-view.mjs', '/_setup/%2e%2e/package.json', '/_setup/App.mjs', '/_setup/x.json', '/_setup/store.mjs', '/_setup/server.mjs', '/_setup/templates.mjs']) assert.equal((await fetch(base + blocked)).status, 404, blocked);
 });
 
 test('restart drift follows the runtime identity and names the restart command', async t => {

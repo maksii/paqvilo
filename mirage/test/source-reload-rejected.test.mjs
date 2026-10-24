@@ -1,5 +1,5 @@
 // Reload guard (solution-schema.mjs assertReloadableScan): a reload whose scan carries an error diagnostic the last accepted scan did
-// not have (a Solution root renamed mid-checkout) is rejected before any state changes, on both hosts. Invented sources only.
+// not have (a Solution root renamed mid-checkout) is rejected before any state changes, on both hosts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -48,7 +48,7 @@ test('a deployment profile change with a renamed Solution root is rejected and k
   assert.ok(before.length);
   await fs.rename(solution, `${solution}-moved`);
   const response = await fetch(`${app.url}/__sim/api/environment/profiles`, { method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, body: JSON.stringify({ profile: 'test' }) });
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf }, body: JSON.stringify({ profile: 'test' }) });
   assert.equal(response.status, 409);
   assert.match(await response.text(), /SOURCE_RELOAD_REJECTED/);
   assert.deepEqual(definitions(), before);

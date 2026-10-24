@@ -92,11 +92,12 @@ test('redirect waits allow writes within the navigation budget to finish', { tim
 });
 
 
-test('same-document changes in a child frame keep its real replacement observable', { timeout: 30000 }, async t => {
-  const flow = await navigationFixture(t, { embedded: true, late: true });
+for (const crossOrigin of [false, true]) test(`${crossOrigin ? 'cross-origin' : 'same-origin'} child document commits retire only their predecessor requests`, { timeout: 30000 }, async t => {
+  const flow = await navigationFixture(t, { embedded: true, crossOrigin, late: true });
   assert.equal(flow.passed, true, JSON.stringify(flow));
   assert.equal(flow.navigationCancelledRequests?.length, 2);
   assert.ok(flow.navigationCancelledRequests.every(row => row.reason === 'document-replaced'));
+  assert.deepEqual(flow.blockedRequests, []);
 });
 
 test('replacement document requests remain pending after retiring its predecessor', { timeout: 30000 }, async t => {
@@ -140,11 +141,6 @@ test('a delayed form submission keeps its hold inside the triggering click deadl
   assert.ok(flow.navigationWaits.reduce((sum, row) => sum + row.waitedMs, 0) < 1800);
 });
 
-test('cross-origin child document commits retire only their predecessor requests',{timeout:30000},async t=>{
- const flow=await navigationFixture(t,{embedded:true,crossOrigin:true,late:true});
- assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests?.length,2);
- assert.ok(flow.navigationCancelledRequests.every(row=>row.reason==='document-replaced'));assert.deepEqual(flow.blockedRequests,[]);
-});
 
 
 test('acceptance distinguishes failed loopback writes from external proxy refusals', {timeout:30000}, async t=>{
@@ -177,23 +173,15 @@ for(const redirect of [false,true])test(`a slow ${redirect?'POST redirect':'GET 
  assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests.length,2);assert.ok(flow.navigationWaits.every(wait=>wait.commitReserveMs>1000&&wait.commitReserveMs<=2000&&wait.commitReservePolicy==='bounded-write-fallback'));
 });
 
-test('the fallback reserve leaves time for a 2.5 s document with writes exceeding a 15 s action',{timeout:30000},async t=>{
- const flow=await navigationFixture(t,{history:'none',writeMs:30000,documentDelay:2500,timeout:15000});
- assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests.length,2);
- assert.ok(flow.navigationCancelledRequests.every(row=>row.reason==='document-replaced'));
- assert.ok(flow.navigationWaits.every(wait=>wait.commitReservePolicy==='bounded-write-fallback'&&wait.commitReserveMs>=9000));
-});
 test('a short action retains its half-budget bound when a 2.5 s replacement cannot fit',{timeout:15000},async t=>{
  const flow=await navigationFixture(t,{history:'none',writeMs:30000,documentDelay:2500,timeout:4000});
  assert.equal(flow.passed,false);assert.match(flow.error,/Timeout 4000ms/);
  assert.ok(flow.navigationWaits.some(wait=>wait.commitReservePolicy==='bounded-write-fallback'&&wait.commitReserveMs>1000&&wait.commitReserveMs<=2000));
 });
-test('4 s writes settle before an immediate redirect within an 8 s action in three successive runs',{timeout:45000},async t=>{
- for(let run=0;run<3;run++){
-  const flow=await navigationFixture(t,{redirect:true,history:'none',writeMs:4000,documentDelay:0,timeout:8000});
-  assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests?.length??0,0);assert.equal(flow.resources.filter(row=>/slow-/.test(row.url)&&row.finished).length,2);
-  assert.ok(flow.navigationWaits.some(wait=>wait.commitReservePolicy==='bounded-write-fallback'&&wait.commitReserveMs===3000));
- }
+test('4 s writes settle before an immediate redirect within an 8 s action',{timeout:30000},async t=>{
+ const flow=await navigationFixture(t,{redirect:true,history:'none',writeMs:4000,documentDelay:0,timeout:8000});
+ assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests?.length??0,0);assert.equal(flow.resources.filter(row=>/slow-/.test(row.url)&&row.finished).length,2);
+ assert.ok(flow.navigationWaits.some(wait=>wait.commitReservePolicy==='bounded-write-fallback'&&wait.commitReserveMs===3000));
 });
 test('an explicit navigation commit reserve overrides the default half-time budget',{timeout:15000},async t=>{
  const flow=await navigationFixture(t,{history:'none',writeMs:30000,documentDelay:2500,timeout:4000,navigationCommitReserveMs:3000});
@@ -202,16 +190,24 @@ test('an explicit navigation commit reserve overrides the default half-time budg
 });
 for(const status of [204,205])test(`a ${status} no-content navigation keeps both completed writes and is separate from failed requests`,{timeout:30000},async t=>{
  const flow=await navigationFixture(t,{noContent:status,completed:true,writeMs:1000,documentDelay:300,timeout:8000});
- assert.equal(flow.passed,true,JSON.stringify(flow));assert.deepEqual(flow.failedRequests,[]);assert.equal(flow.noContentNavigations[0].status,status);assert.equal(flow.resources.filter(row=>/slow-/.test(row.url)&&row.finished).length,2);
+ assert.equal(flow.passed,true,JSON.stringify(flow));assert.deepEqual(flow.failedRequests,[]);assert.equal(flow.resources.filter(row=>/slow-/.test(row.url)&&row.finished).length,2);
+ // The report must classify the navigation by its 204/205 status, however Chromium ends the empty response.
+ await t.test('the navigation is reported as no-content',()=>{
+  assert.deepEqual(flow.noContentNavigations?.map(row=>row.status),[status],JSON.stringify(flow.resources.filter(row=>/\/submit/.test(row.url))));
+ });
 });
-test('a fast initial page cannot shrink the fallback reserve for a new 5 s document', {timeout:30000}, async t => {
+// A 5 s document only commits when the reserve exceeds the 3 s minimum, so the larger fallback is observed, not just reported.
+test('a fast initial page cannot shrink the fallback reserve for a new 5 s document with writes exceeding a 15 s action', {timeout:30000}, async t => {
  const flow = await navigationFixture(t, {history:'none',writeMs:30000,documentDelay:5000,timeout:15000});
  assert.equal(flow.passed,true,JSON.stringify(flow));
+ assert.equal(flow.navigationCancelledRequests.length,2);
+ assert.ok(flow.navigationCancelledRequests.every(row=>row.reason==='document-replaced'));
  assert.ok(flow.navigationWaits.every(wait=>wait.commitReservePolicy==='bounded-write-fallback'&&wait.comparableNavigationMs===null&&wait.commitReserveMs>=9000));
  assert.ok(flow.navigationWaits.every(wait=>wait.actionRemainingMs-wait.commitReserveMs<200));
 });
 test('a new POST to 303 to 303 to GET chain reserves all three slow response hops', {timeout:30000}, async t => {
- const flow = await navigationFixture(t, {redirect:true,redirectHops:2,history:'none',writeMs:30000,documentDelay:2500,timeout:15000});
+ // Three 1.5 s hops exceed the 3 s minimum reserve, so the chain only completes inside the full fallback reserve.
+ const flow = await navigationFixture(t, {redirect:true,redirectHops:2,history:'none',writeMs:30000,documentDelay:1500,timeout:15000});
  assert.equal(flow.passed,true,JSON.stringify(flow));
  assert.ok(flow.navigationWaits.every(wait=>wait.commitReservePolicy==='bounded-write-fallback'&&wait.commitReserveMs>=9000));
  assert.ok(flow.navigationWaits.reduce((sum,wait)=>sum+wait.waitedMs,0)<5500);

@@ -318,7 +318,7 @@ test("solution ZIP is parsed in memory and rejects traversal or invalid archives
     () => readSolutionZip(zipXml("../customizations.xml", "<root/>")),
     /traversal/,
   );
-  assert.throws(() => readSolutionZip(Buffer.from("not a zip")));
+  assert.throws(() => readSolutionZip(Buffer.from("not a zip")), /end directory is missing/);
   const root = await fs.mkdtemp(join(tmpdir(), "pp-solution-zip-"));
   try {
     const file = join(root, "solution.zip");

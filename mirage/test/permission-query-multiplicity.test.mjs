@@ -35,7 +35,7 @@ test('the default Web API compiler deduplicates omitted DISTINCT across pages an
   const cookie=String(first.paging_cookie).replaceAll('&','&amp;').replaceAll('"','&quot;');
   const second=store.fetchXml(`<fetch count="2" page="2" paging-cookie="${cookie}"><entity name="item"><attribute name="itemid"/><order attribute="itemid"/></entity></fetch>`,identity,api);
   const ids=[...first.entities,...second.entities].map(row=>row.itemid);assert.equal(ids.length,3);assert.equal(new Set(ids).size,3);
-  const authored=store.fetchXml(xml('false'),identity,api);assert.ok(authored.entities.length>3);assert.ok(authored.permissionQuery.diagnostics.some(row=>row.code==='PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED'));
+  const authored=store.fetchXml(xml('false'),identity,api);assert.equal(authored.entities.length,14);assert.ok(authored.permissionQuery.diagnostics.some(row=>row.code==='PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED'));
   store.state.permissions.push({id:'global',entity:'item',scope:'global',roles:['red'],operations:['read']});
   const global=store.fetchXml(xml(null,'<link-entity name="detail" from="itemid" to="itemid"/>'),identity,api);
   assert.equal(global.entities.length,10);assert.doesNotMatch(global.xml,/distinct="true"/);
@@ -48,7 +48,7 @@ test('default scoped DISTINCT preserves projected tuples, aggregate inputs and b
   assert.equal(tuples.entities.length,6);
   assert.equal(new Set(tuples.entities.map(row=>row.itemid)).size,3,'Linked projections remain part of DISTINCT, rather than collapsing by root ID');
   const multiplicity=store.fetchXml(xml('false'),identity,api).entities.length;
-  assert.ok(multiplicity>3);
+  assert.equal(multiplicity,14,"one row per qualifying membership path, not per root item");
   for(const distinct of [null,'false','true'])
     assert.deepEqual(store.fetchXml(xml(distinct,'',true),identity,api).entities,[{total:multiplicity}]);
   for(const bypass of ['admin','permissive']){

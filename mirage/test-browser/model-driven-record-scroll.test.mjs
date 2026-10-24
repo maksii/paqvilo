@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+
 
 test('record title and tabs stay pinned while long exported sections and their controls scroll', async t => {
   const source = await modelDrivenFixture(t); await source.sim.close();
@@ -16,9 +18,8 @@ test('record title and tabs stay pinned while long exported sections and their c
   const section = (name, fields) => `<section name="${name}"><labels><label description="${name}" languagecode="1033"/></labels><rows>${fields.map(row).join('')}</rows></section>`;
   await fs.writeFile(path.join(source.solutionDir, 'Entities/x_item/FormXml/main/item.xml'), `<systemform><formid>{item-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Information" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><labels><label description="General" languagecode="1033"/></labels><columns><column><sections>${section('Opening section', ['x_name', ...names.slice(0, 12)])}${section('Numbers and dates', ['x_quantity', 'x_due'])}${section('Closing section', names.slice(12))}</sections></column></columns></tab></tabs></form></systemform>`);
   const sim = await source.start(); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
   for (const viewport of [{ width: 1582, height: 1000 }, { width: 390, height: 844 }]) {
-    const page = await browser.newPage({ viewport });
+    const page = await chrome.page(t, { viewport });
     await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
     const geometry = () => page.evaluate(() => Object.fromEntries(['.record-header', '.tabs', '#field-x_text0'].map(selector => { const { top, bottom, height } = document.querySelector(selector).getBoundingClientRect(); return [selector, { top, bottom, height }]; })));
@@ -41,7 +42,7 @@ test('record title and tabs stay pinned while long exported sections and their c
     await calendar.waitFor();
     const day = calendar.getByRole('button', { name: /15, / }).first();
     await day.click();
-    assert.equal(await due.inputValue() !== '', true);
+    assert.match(await due.inputValue(), /^\d{1,2}\/15\/\d{4}$/, 'the picked calendar day is written to the scrolled field');
     assert.deepEqual((await geometry())['.tabs'], before['.tabs']);
     await page.close();
   }

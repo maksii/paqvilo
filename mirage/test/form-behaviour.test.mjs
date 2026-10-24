@@ -33,8 +33,8 @@ test('a plugin rejection surfaces its message in the Bootstrap 5 danger panel', 
   const step = { id, name: 'Invented', enabled: true, entity: 'widget', message: 'Create', stage: 10, rank: 1, mode: 0, typeName: 'Invented', assemblyId: 'Invented', supportedDeployment: 0, images: [], filteringAttributes: [] };
   const handlers = new Map([[id, ({ target, reject }) => { if (target.title === 'fail') reject('Widget rejected <here>'); }]]);
   let failure;
-  try { runPluginPhase({ items: pluginCatalogue({ plugins: { steps: [step] }, handlers }), handlers, entity: 'widget', operation: 'create', stage: 10, target: { title: 'fail' }, record: { title: 'fail' } }); }
-  catch (error) { failure = error; }
+  assert.throws(() => runPluginPhase({ items: pluginCatalogue({ plugins: { steps: [step] }, handlers }), handlers, entity: 'widget', operation: 'create', stage: 10, target: { title: 'fail' }, record: { title: 'fail' } }),
+    error => { failure = error; return /Widget rejected <here>/.test(error.message); });
   failure.nativeFormWriteFailure = true;
   const outcome = formWriteError(failure);
   assert.equal(outcome.message, 'Widget rejected <here>');

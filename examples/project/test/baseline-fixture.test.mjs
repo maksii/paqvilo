@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FORMS,extras,BANNER_HTML} from '../baseline/generate.mjs';
 
-test('item main form places each column once outside hidden sections and tabs (O17)',()=>{
+test('item main form places each column once outside hidden sections and tabs',()=>{
  const xml=FORMS.find(form=>form.file==='item-main').build();
  // Hidden tabs and sections are not rendered, so the platform does not count them; strip them before counting.
  const visible=xml.replace(/<tab [^>]*visible="false"[\s\S]*?<\/tab>/g,'').replace(/<section [^>]*visible="false"[\s\S]*?<\/section>/g,'');
@@ -11,7 +11,7 @@ test('item main form places each column once outside hidden sections and tabs (O
  assert.match(xml,/<Url>pqvd_baseline_banner\.html<\/Url>/);
 });
 
-test('form web resource is a static HTML document so it renders inline as well as framed (O17)',()=>{
+test('form web resource is a static HTML document so it renders inline as well as framed',()=>{
  const spec=extras().webResource;
  assert.deepEqual([spec.name,spec.type,spec.retire],['pqvd_baseline_banner.html',1,['pqvd_baseline_icon.png','pqvd_baseline_icon.svg']]);
  assert.equal(Buffer.from(spec.content,'base64').toString('utf8'),BANNER_HTML);
@@ -19,7 +19,7 @@ test('form web resource is a static HTML document so it renders inline as well a
  assert.doesNotMatch(BANNER_HTML,/<script|on[a-z]+=/i);
 });
 
-test('stepped insert form keeps the Related tab without the quick view, which needs a saved record (O12)',()=>{
+test('stepped insert form keeps the Related tab without the quick view, which needs a saved record',()=>{
  const build=file=>FORMS.find(form=>form.file===file).build();
  assert.match(build('item-main'),/id="quickview_parent"/);
  const steps=build('item-steps');
@@ -41,7 +41,7 @@ test('contact- and account-filtered item lists show at least four rows whose cod
  check(items.filter(row=>row.refs.pqvd_accountid==='account'&&row.fields.statecode===0)); // item-list-options: active view, account filter
 });
 
-test('fixed insert multistep shows a parent reference form whose control ids the item create form does not repeat (O11)',()=>{
+test('fixed insert multistep shows a parent reference form whose control ids the item create form does not repeat',()=>{
  const ids=file=>[...FORMS.find(form=>form.file===file).build().matchAll(/<control id="([^"]+)"/g)].map(match=>match[1]);
  const create=ids('item-lookup-create');
  assert.ok(ids('parent-main').some(id=>create.includes(id))); // the observed failure stays in multistep-insert

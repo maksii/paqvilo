@@ -74,4 +74,3 @@ Example preset:
 }
 ```
 
-The feature regressions use invented loopback sources: they exercise two simultaneous runtimes, API/SDK join budgets, source reload/restart, attachment restrictions, localized snippet overrides, invalid imports and the actual administration controls.

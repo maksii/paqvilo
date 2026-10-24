@@ -17,7 +17,7 @@
 //   <Not>, <IsNull>
 //   <AddDays|AddHours|AddWeeks|AddMonths|AddYears> date, amount;  <DiffInDays|DiffInHours|DiffInMinutes|DiffInWeeks|
 //   DiffInMonths|DiffInYears> from, to
-// unverified: the designer's native FormulaDefinition is Windows Workflow XAML (ActivityReference / EvaluateExpression with VB
+// The designer's native FormulaDefinition is Windows Workflow XAML (ActivityReference / EvaluateExpression with VB
 // expressions). It is outside this subset, so an exported designer formula reports CALCULATED_UNSUPPORTED; a pack override
 // supplies its value.
 // Expressions nest at most 64 deep; a deeper definition reports CALCULATED_UNSUPPORTED (parse and evaluation recurse).
@@ -53,7 +53,7 @@ const isThenable = (value) => value !== null && typeof value === "object" && typ
 class Unsupported extends Error {}
 const unsupported = (message) => { throw new Unsupported(message); };
 
-// ---- Parser: FormulaDefinition text -> expression tree ---------------------------------------------------------------
+// ---- Parser: FormulaDefinition text -> expression tree
 
 const ARITY = {
   add: [2, Infinity], subtract: [2, 2], multiply: [2, Infinity], divide: [2, 2], concat: [1, Infinity], if: [2, 3],
@@ -114,7 +114,7 @@ export function parseCalculatedFormula(text) {
   }
 }
 
-// ---- Evaluator ------------------------------------------------------------------------------------------------------
+// ---- Evaluator
 
 const asNumber = (value) => {
   if (value === null || value === undefined) return null;
@@ -160,7 +160,7 @@ function addMonths(date, months) {
   result.setUTCDate(Math.min(day, last));
   return result;
 }
-// unverified: native DIFFIN* rounding. Whole units, truncated toward zero; months and years count calendar boundaries.
+// Whole units, truncated toward zero; months and years count calendar boundaries. Native DIFFIN* rounding is a guess.
 function diff(kind, from, to) {
   const ms = to - from;
   if (kind === "diffindays") return Math.trunc(ms / DAY);
@@ -211,7 +211,7 @@ function evaluate(node, row, ctx) {
   return quotient instanceof FxError ? null : quotient;
 }
 
-// ---- Pack export ----------------------------------------------------------------------------------------------------
+// ---- Pack export
 
 /** Validates a pack's calculatedColumns export: '<table>.<column>' keys mapping to synchronous functions. Returns the map. */
 export function validateCalculatedColumns(map) {
@@ -226,10 +226,10 @@ export function validateCalculatedColumns(map) {
   return result;
 }
 
-// ---- Extension ------------------------------------------------------------------------------------------------------
+// ---- Extension
 
-// unverified: the native refusal of a value for a calculated column (IsValidForCreate/IsValidForUpdate are false). The payload
-// reader's invalid-property shape (0x80048d19) is used.
+// The native refusal of a value for a calculated column (IsValidForCreate/IsValidForUpdate are false) is not known; the
+// payload reader's invalid-property shape (0x80048d19) stands in.
 const writeRefused = (mapping, column) => new DataError(
   `The attribute '${column}' of entity '${mapping.logicalName}' is a calculated field and cannot be set.`,
   400,
@@ -268,7 +268,7 @@ function storedRow(store, logical, id) {
 }
 
 // The parent row behind a lookup column of the row: the lookup's own logical_name first, else the N:1 relationship.
-// The platform computes calculated columns itself, so the parent is read without the caller's read privilege (unverified).
+// The platform computes calculated columns itself, so the parent is read without the caller's read privilege (assumed).
 function relatedRow(store, mapping, row, lookup) {
   const value = row[lookup];
   if (value === null || value === undefined) return null;
@@ -292,7 +292,7 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
   const key = `${table}.${column}\u0000${formula}`;
   if (!state.parsed.has(key)) state.parsed.set(key, parseCalculatedFormula(formula));
   const parsed = state.parsed.get(key);
-  // Learn define-calculated-fields: a chain of calculated columns is at most 5 deep.
+  // A chain of calculated columns is at most 5 deep.
   if (state.depth >= MAX_CHAIN) {
     report(state, { code: "CALCULATED_UNSUPPORTED", table, column, message: `The column is calculated through more than ${MAX_CHAIN} chained calculated columns. The column reads as null.` });
     return null;
@@ -310,7 +310,7 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
   }
 }
 
-// Learn define-calculated-fields#considerations: sorting is disabled on a calculated column that references a parent
+// Sorting is disabled on a calculated column that references a parent
 // column or another calculated column (the subset has no Now() or logical-column node); such an order is ignored.
 function sortable(api, state, logical, column) {
   const calculated = calculatedColumnsOf(api, logical);

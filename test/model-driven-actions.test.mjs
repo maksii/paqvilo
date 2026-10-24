@@ -18,9 +18,14 @@ test('action parameters reject arbitrary expressions and inherited shapes while 
   assert.deepEqual(validateModelDrivenAction('navigation:open-record-by-id', { entity: 'X_Person', id: '{AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA}' }), { action: 'navigation:open-record-by-id', params: { entity: 'x_person', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } });
   assert.deepEqual(validateModelDrivenAction('form:toggle-autosave', { enabled: false }).params, { enabled: false });
   assert.deepEqual(validateModelDrivenAction('form:toggle-autosave').params, { enabled: true });
-  for (const params of [{ entity: "x_person')/Other" }, { entity: 'x_person', expression: 'window.alert(1)' }, Object.create({ entity: 'x_person' }), []]) assert.throws(() => validateModelDrivenAction('navigation:new-record', params));
-  assert.throws(() => validateModelDrivenAction('navigation:open-record-by-id', { entity: 'x_person', id: 'not-a-guid' }));
-  assert.throws(() => validateModelDrivenAction('custom:execute', { code: 'anything' }));
+  for (const [params, message] of [
+    [{ entity: "x_person')/Other" }, /Enter a table logical name/],
+    [{ entity: 'x_person', expression: 'window.alert(1)' }, /Unknown action parameter: expression/],
+    [Object.create({ entity: 'x_person' }), /must be an object/],
+    [[], /must be an object/],
+  ]) assert.throws(() => validateModelDrivenAction('navigation:new-record', params), message);
+  assert.throws(() => validateModelDrivenAction('navigation:open-record-by-id', { entity: 'x_person', id: 'not-a-guid' }), /Enter a valid record GUID/);
+  assert.throws(() => validateModelDrivenAction('custom:execute', { code: 'anything' }), /Unknown model-driven action/);
 });
 
 test('diagnostic toggles preserve source routes and unrelated duplicate flags, then reset all owned options', () => {

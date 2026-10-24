@@ -11,7 +11,7 @@
 // hooks, business rules, plug-ins), synchronously, inside a store savepoint (store.sdkMutation).
 // Delegated queries are OData $filter / $orderby / $top over the store's Dataverse dialect (Learn delegation table for
 // Dataverse: comparisons, And/Or/Not, IsBlank, StartsWith, in, Sort, First, LookUp, CountRows, Sum/Min/Max/Average).
-// unverified: Power Fx resolves Dataverse names through the table's display names; here a table is found by its entity set,
+// Power Fx resolves Dataverse names through the table's display names; here a table is found by its entity set,
 //   logical name or collection label, and a column by its logical name or its definition's displayName/label.
 // ponytail: an asynchronous after-write hook of a write made by a formula finishes after the formula returns (its failure is
 //   reported as POWERFX_DEFERRED_EFFECT); a formula's writes are synchronous because the engine is.
@@ -248,7 +248,7 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
     get language() { return languageOf(); },
     now: () => (typeof api.clock === 'function' ? api.clock() : Date.now()),
     diagnostic: diagnostic ?? api.diagnostic ?? undefined,
-    // unverified: the record User() answers in Dataverse functions; the canvas User() columns are filled from systemuser.
+    // The record User() answers in Dataverse functions is not documented; the canvas User() columns are filled from systemuser.
     user: user ? { FullName: user.fullname ?? null, Email: user.internalemailaddress ?? user.domainname ?? null, EntraObjectId: user.azureactivedirectoryobjectid ?? null } : undefined,
     record: toRecord,
     // Every column of a table (an automated plug-in's ThisRecord holds them all, so Set reaches any column).

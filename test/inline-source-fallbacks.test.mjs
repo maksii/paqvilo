@@ -5,7 +5,7 @@ import {PortalModel,sourceText} from '../lense/portal-model.mjs';
 import {editSource} from '../lense/source-edit.mjs';
 import {createFixture,HOME_ID} from './fixture.mjs';
 for(const short of [false,true]){
-  test(`YAML-inline snippet edits retain record and sibling identity (${short})`,async t=>{
+  test(`YAML-inline snippet edits retain record and sibling identity (${short?'short-key':'classic'} export)`,async t=>{
     const fx=createFixture();t.after(()=>fx.cleanup());const k=n=>short?n:'adx_'+n,id=short?'id':'adx_contentsnippetid';
     if(short)fx.write('website.yml','id: site\nname: Site\n');
     const file='content-snippets/inline/en-US/Inline.contentsnippet.yml';
@@ -21,7 +21,7 @@ for(const short of [false,true]){
     const foreign={...record,[id]:'foreign-snippet'};fx.write(file,YAML.stringify(foreign));
     assert.equal(sourceText(source),null);assert.throws(()=>editSource(source,text=>text+'x'),/stale record identity/);
   });
-  test(`standalone step sources use declared parent-form identity (${short})`,async t=>{
+  test(`standalone step sources use declared parent-form identity (${short?'short-key':'classic'} export)`,async t=>{
     const fx=createFixture();t.after(()=>fx.cleanup());const k=n=>short?n:'adx_'+n,id=n=>short?'id':'adx_'+n+'id';
     if(short)fx.write('website.yml','id: site\nname: Site\n');
     fx.write('web-pages/home/Home.webpage.yml',YAML.stringify({[id('webpage')]:HOME_ID,[k('partialurl')]:'/',[k('webform')]:'declared-form'}));

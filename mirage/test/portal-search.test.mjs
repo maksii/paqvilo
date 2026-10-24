@@ -103,8 +103,8 @@ test('the default /search/ page renders the search results markup and states a d
   assert.deepEqual(diagnostics, ['PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED', 'PORTAL_SEARCH_DISABLED']);
 });
 
-// Learn power-pages/configure/search/overview, "Table-specific handling": knowledge articles are searchable only when Published
-// with Internal set to No, and "This behavior can't be modified". The store row decides, never the view's projected columns.
+// Knowledge articles are searchable only when Published with Internal set to No, and the platform does not let a site
+// change that. The store row decides, never the view's projected columns.
 test('knowledge article eligibility does not depend on the Portal Search view columns', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-search-ka-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));

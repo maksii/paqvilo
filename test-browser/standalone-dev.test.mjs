@@ -78,7 +78,7 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
   const owned = await develop();
   await closeBrowser(owned.browser);
   assert.deepEqual(await owned.exited, { code: 0, signal: null });
-  await assert.rejects(fetch(owned.url + '/_sim/api/status', { signal: AbortSignal.timeout(2000) }));
+  await assert.rejects(fetch(owned.url + '/_sim/api/status', { signal: AbortSignal.timeout(2000) }), /fetch failed/);
   assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
 
   const background = await commands(project, 'start', '--port', '0'), reused = await develop();

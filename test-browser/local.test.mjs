@@ -1,6 +1,5 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
-// Explicit acceptance suite: only temporary extracts, local Git, and loopback HTTP fixtures.
-// Run with npm run test:browser; it never reads the repository's site/environment catalogue.
+// Explicit acceptance suite, run with npm run test:browser; it never reads the repository's site/environment catalogue.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

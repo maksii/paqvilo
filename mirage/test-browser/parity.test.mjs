@@ -1,4 +1,3 @@
-// Verifier regression: synthetic loopback sites and an owned browser identity only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -254,13 +253,14 @@ test(
     assert.deepEqual(result.local.pendingRequests, []);
     mode = "slow-font";
     const fontWaitStarted = Date.now();
-    result = await verify("slow-font");
+    // The stalled font holds the font, network-idle and screenshot waits until their timeout; a short one keeps this step fast.
+    result = await verify("slow-font", { timeout: 2000 });
     assert.equal(result.passed, false);
     assert.ok(stalledFontRequests > 0);
     assert.equal(result.local.fontsReady, false);
     assert.ok(result.local.readinessFailures.some((item) => item.includes("Document fonts did not settle")));
     assert.ok(result.local.pendingRequests.some((item) => item.url.includes("slow-font.woff2")));
-    assert.ok(Date.now() - fontWaitStarted < 25_000, `font readiness wait must remain bounded (elapsed=${Date.now() - fontWaitStarted}ms)`);
+    assert.ok(Date.now() - fontWaitStarted < 15_000, `font readiness wait must remain bounded (elapsed=${Date.now() - fontWaitStarted}ms)`);
     mode = "console";
     result = await verify("console");
     assert.equal(result.passed, false);

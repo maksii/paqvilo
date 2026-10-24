@@ -3,7 +3,7 @@ import tls from 'node:tls';
 
 // TDS wire framing for the Dataverse SQL endpoint (MS-TDS). No store or protocol-message knowledge here.
 //
-// API for the next TDS tasks (login, messages, server):
+// API:
 //   readPackets(stream)                 async iterator of { type, payload } messages, reassembled across packets.
 //                                       Breaking out of the loop destroys the stream (for-await semantics).
 //   createMessageReader(onMessage)      sync push parser: returns (chunk) => void; throws on malformed framing.
@@ -33,7 +33,7 @@ const EOM = 0x01;
 const TDS8_ALPN = 'tds/8.0';
 const EMPTY = Buffer.alloc(0);
 
-// ---- message framing ----
+// ---- message framing
 
 export function createMessageReader(onMessage, { maxBytes = MAX_MESSAGE_BYTES } = {}) {
   let pending = EMPTY;
@@ -93,7 +93,7 @@ export function writeMessage(stream, type, payload, packetSize = DEFAULT_PACKET_
   stream.write(Buffer.concat(out));
 }
 
-// ---- PRELOGIN (MS-TDS 2.2.6.5) ----
+// ---- PRELOGIN (MS-TDS 2.2.6.5)
 
 const PRELOGIN_TOKENS = Object.freeze({
   version: 0x00,
@@ -144,7 +144,7 @@ export function decodePrelogin(payload) {
   return fields;
 }
 
-// ---- TDS 7.x (PRELOGIN wrapped TLS) and TDS 8.0 (strict, TLS first) ----
+// ---- TDS 7.x (PRELOGIN wrapped TLS) and TDS 8.0 (strict, TLS first)
 
 export function detectTdsMode(chunk) {
   if (chunk[0] === 0x16) return 'tds8'; // TLS handshake record before any TDS message

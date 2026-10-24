@@ -56,7 +56,7 @@ export function records(tester = TESTER_CONTACT) {
         [p("secret")]: "secret value", [p("notupdatable")]: "fixed at create", [p("defaulted")]: 7,
       },
       refs: { [p("contactid")]: "tester", [p("accountid")]: "account", [p("customerid")]: "account", [p("anyid")]: "parent2" },
-      // Values Dataverse computes on the live row, which the reset cannot write: the file column the reset uploads (BRIEF) and
+      // Values Dataverse computes on the live row, which the reset cannot write: the file column the reset uploads (baseline-brief.txt) and
       // the formula column Concatenate(name, " / ", code). Mirage rows only: this seeded
       // formula output covers initial rendering and does not recalculate after name/code edits.
       computed: { [p("file")]: guid("file:item1"), [p("file_name")]: "baseline-brief.txt", [p("formula")]: "Baseline Item Alpha / I-001" },
@@ -89,7 +89,7 @@ export function records(tester = TESTER_CONTACT) {
     { key: "child3", id: ids.child3, table: CHILD, fields: { [p("name")]: "Child Three", [p("sortorder")]: 3 }, refs: { [p("itemid")]: "item1" } },
     { key: "child4", id: ids.child4, table: CHILD, fields: { [p("name")]: "Child Four", [p("sortorder")]: 1 }, refs: { [p("itemid")]: "item2" } },
     { key: "child5", id: ids.child5, table: CHILD, fields: { [p("name")]: "Child Five", [p("sortorder")]: 5, [p("note")]: "Deactivated child.", statecode: 1, statuscode: 2 }, refs: { [p("itemid")]: "item1" } },
-    // The portal shows only notes whose text starts with the site setting KnowledgeManagement/NotesFilter (`*WEB*` on the shared site, D8); portal-created notes carry it.
+    // The portal shows only notes whose text starts with the site setting KnowledgeManagement/NotesFilter (`*WEB*` on the shared site); portal-created notes carry it.
     { key: "note1", id: ids.note1, table: "annotation", fields: { subject: "Baseline note", notetext: "*WEB*A plain note on the alpha item." }, refs: { objectid: "item1" } },
     { key: "note2", id: ids.note2, table: "annotation", fields: { subject: "Baseline attachment", notetext: "*WEB*A note with a text attachment.", filename: "baseline-brief.txt", mimetype: "text/plain", documentbody: BRIEF.toString("base64"), isdocument: true }, refs: { objectid: "item1" } },
   ];

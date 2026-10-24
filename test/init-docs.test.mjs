@@ -11,7 +11,9 @@ test('generated guides link correctly for single/multi/no-pack variants and agre
   for(const [index,options]of [{},{packs:['alpha','beta'],sites:['one','two']},{noPack:true,noVscode:true}].entries()){
     const directory=path.join(work,String(index));
     const report=await prepareProject(directory,{name:'guides',...options});
-    for(const file of report.created.filter(name=>name.endsWith('.md'))){
+    const guides=report.created.filter(name=>name.endsWith('.md'));
+    assert.ok(guides.includes('README.md'),JSON.stringify(report.created));
+    for(const file of guides){
       const body=await fs.readFile(path.join(directory,file),'utf8');
       assert.doesNotMatch(body,/\{\{[a-zA-Z]+\}\}/,file);
       for(const match of body.matchAll(/\]\(([^)]+)\)/g)){

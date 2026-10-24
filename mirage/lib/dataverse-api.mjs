@@ -79,11 +79,9 @@ const RING_SIZE = 500;
 const MAX_HEADER_SIZE = 65536;
 const MAX_URL_LENGTH = 32768;
 const PLAIN_INVALID_URL = "Bad Request - Invalid URL";
-// The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted no-ops:
-// the simulator has no duplicate detection, solution layers or consistency levels.
+// The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted and ignored.
 // Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
 const TLS_HOST_NAMES = ["localhost", "127.0.0.1", "[::1]"];
-// Record writes made while a $batch runs share the batch's change slot: the server's queue is not re-entrant.
 
 const refOf = (value) => (value !== null && typeof value === "object" ? value.id : value) ?? undefined;
 const asJson = (result) => ({ ...result, headers: { "content-type": "application/json; charset=utf-8", ...(result.headers ?? {}) } });
@@ -211,7 +209,7 @@ function send(res, result, requestId, clientRequestId, { cors = false, gzip = fa
   }
   const status = result.status ?? 200;
   if (status === 304) delete headers['odata-version'];
-  // observed: parity cases, every native 200 that is not an octet-stream download is gzipped when the caller accepts it.
+  // Every native 200 that is not an octet-stream download is gzipped when the caller accepts it.
   if (status === 200 && gzip && payload !== undefined && headers["content-type"] !== "application/octet-stream") {
     payload = gzipSync(payload);
     headers["content-encoding"] = "gzip";
@@ -485,7 +483,7 @@ async function shareAction(d, c, route, common) {
   const target = entityParameter(d, body.Target);
   const row = d.store.get(target.logical, target.id, common.identity);
   if (!row) throw new DataError(`${target.logical} With Id = ${target.id} Does Not Exist`, 404, "NotFound", { id: target.id });
-  // Sharing needs Read on the row as well as Share (security-access-rights, dependencies between access rights).
+  // Sharing needs Read on the row as well as Share.
   d.principals.authorize({ user: common.user, entity: target.logical, operation: "read", row, mapping: target.mapping });
   d.principals.authorize({ user: common.user, entity: target.logical, operation: "share", row, mapping: target.mapping });
   const principal = entityParameter(d, route.name === "RevokeAccess" ? body.Revokee : body.PrincipalAccess?.Principal);
@@ -535,7 +533,7 @@ function metadataRead(c, metadata, route) {
     if (key == null) return collection(shape(metadata.globalOptionSets()), set);
     const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
     const found = name ? metadata.globalOptionSet(name) : null;
-    // observed: parity case metadata.choices (the option set is typed OptionSetMetadata).
+    // A global option set is typed OptionSetMetadata in the context URL.
     return found ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`) : missing(set);
   }
   if (set === "RelationshipDefinitions") {
@@ -555,7 +553,7 @@ function metadataRead(c, metadata, route) {
   }
   if (!entity) return missing(set);
   if (!segment) {
-    // observed: parity cases metadata.table and metadata.relationships ($expand navigations are written as name()).
+    // The context URL writes $expand navigations as name().
     const names = [...(select ? [select] : []), ...expand.map((name) => `${name}()`)];
     return single(metadata.selectMetadata(entity, select), `${names.length ? `${set}(${names.join(",")})` : set}/$entity`);
   }
@@ -569,11 +567,10 @@ function metadataRead(c, metadata, route) {
     case "Attributes": {
       const list = metadata.attributes(key, { cast, key: segmentKey, select, expand }) ?? missing(set);
       if (segmentKey != null) return list[0] ? single(list[0], `${set}/Attributes/$entity`) : missing("Attributes");
-      // observed: parity cases metadata.attributes and metadata.typed-string (the cast is a typed attribute collection).
+      // A cast makes the context a typed attribute collection.
       return collection(metadata.filterMetadata(list, filter), keyedContext(set, key) + `/Attributes${cast ? `/Microsoft.Dynamics.CRM.${cast}` : ""}${selectContext(select)}`);
     }
     case "Keys":
-      // observed: parity case metadata.keys.
       return collection(listed(metadata.keys(key, { select }), "Keys"), keyedContext(set, key) + `/Keys${selectContext(select)}`);
     case "OneToManyRelationships":
       return collection(listed(metadata.oneToMany(logical), segment), `${set}/${segment}`);
@@ -636,7 +633,7 @@ const disabledEnvelope = (user, requestId) =>
 
 const INVALID_CALLER = "CallerId provided for impersonation is invalid. Provided CallerId is either NULL or empty string";
 
-// An MSCRMCallerID that names no user: 404 in the legacy _error body (native evidence), not the envelope.
+// An MSCRMCallerID that names no user: 404 in the legacy _error body, not the envelope.
 function unknownCaller(id, requestId) {
   const text = `Entity 'systemuser' With Id = ${id} Does Not Exist`;
   return {
@@ -675,7 +672,7 @@ async function dataApi(d, c, route) {
   // HEAD is not a Web API verb (405, no body); the serve step maps it to GET only for the non-data routes.
   if (!METHODS.has(req.method) || req.method === "HEAD") {
     const refused = methodNotAllowed(c);
-    // observed: parity cases errors.method-head and errors.method-options on a keyed record list the record's verbs.
+    // On a keyed record Allow lists the record's verbs, POST twice as native does.
     if (route.kind === "entity") refused.headers.Allow = "POST,OPTIONS,GET,HEAD,POST";
     return refused;
   }
@@ -696,9 +693,9 @@ async function dataApi(d, c, route) {
 // The bearer check, caller resolution and impersonation for every route that acts as a caller (Web API, extension routes, SOAP).
 // handle({ user, caller, identity, bodyBuffer }) runs inside the service-protection admission. An unauthenticated request throws
 // the same 401 everywhere; a disabled or unknown caller gets the Dataverse envelope.
-// CallerObjectId / MSCRMCallerID impersonation (Learn impersonate-another-user-web-api): { user } for the impersonated
-// principal, { user: null } without the headers, { refused } with the envelope of an invalid or disabled target. A top-level
-// request and each $batch part (Learn execute-batch-operations: a part's own headers control it) resolve it here.
+// CallerObjectId / MSCRMCallerID impersonation: { user } for the impersonated principal, { user: null } without the headers,
+// { refused } with the envelope of an invalid or disabled target. A top-level request and each $batch part (a part's own
+// headers control it) resolve it here.
 function impersonatedUser(d, caller, headers, requestId) {
   const callerObjectId = headers.callerobjectid;
   const callerId = headers.mscrmcallerid;
@@ -917,14 +914,10 @@ async function runOperation(d, op, route, paramsText, common, target) {
   const result = (await runInBackground(d.api, call, op)) ?? (await op.handle(call));
   if (!result) return { status: 204 };
   const jsonBody = result.body !== null && typeof result.body === "object" && !Buffer.isBuffer(result.body);
-  // observed: parity cases custom.* and file.* answer application/json; odata.metadata=minimal with no charset.
+  // Native operation responses are application/json; odata.metadata=minimal with no charset.
   return jsonBody ? { ...result, headers: { "content-type": JSON_CONTENT_TYPE, ...(result.headers ?? {}) } } : result;
 }
 
-// The largest versionnumber any stored row holds (0 for none); a reset restores the org row version to it.
-// Runs fn as one unit: an isolated store transaction, so its writes stay private until fn returns and a throw discards them.
-// The change log is rewound to its revision on rollback. Usable by any caller that holds the api (a $batch changeset, a later
-// SOAP ExecuteTransaction); the caller holds the change slot. Plain store.transact calls made inside fn join this transaction.
 // $batch: parts run in process under the caller verified for the batch; a changeset rolls back on failure (runAtomic).
 async function batchCall(d, c, common) {
   if (c.method !== "POST") return methodNotAllowed(c);
@@ -945,8 +938,7 @@ async function batchCall(d, c, common) {
     const user = impersonation.user ?? common.user;
     const identity = impersonation.user ? organizationPrincipalContext(d.store, user, { caller: common.caller, appId: common.identity?.dataverse?.appId }).identity : common.identity;
     // Extension routes (metadata writes and the other api.addRoute writes) answer inside a batch as they do at top level. In a
-    // changeset they run in its transaction, so a metadata change rolls back with the changeset (Learn
-    // execute-batch-operations-using-web-api "Change sets": a failing operation rolls back every completed one).
+    // changeset they run in its transaction, so a metadata change rolls back with the changeset.
     const extension = (d.routes ?? []).find((entry) => !entry.anonymous && entry.match(target.pathname, method));
     if (extension) {
       return extension.handler(extensionContext({ method, url: target, origin: c.origin, prefer: parsePrefer(headers?.prefer), requestId: c.requestId, req: { method, headers: partHeaders } },
@@ -1048,13 +1040,13 @@ async function route(d, c) {
   return dataApi(d, c, parsed);
 }
 
-// Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
-// becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
 const DATA_PLANE = /^\/api\/data\/v\d+(?:\.\d+)*(?:\/|$)/i;
 export function createDataverseHandler(deps) {
   const limits = deps.limits ?? createServiceProtection({ ...(deps.settings?.serviceProtection ?? {}), clock: deps.clock });
   const d = { ...deps, change: deps.change ?? ((fn) => fn()), limits, requests: deps.requests ?? [], hostNames: allowedHostNames(deps.host ?? "127.0.0.1") };
   const log = deps.log ?? (() => {});
+  // Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
+  // becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
   const serve = async (req, res) => {
     const requestId = randomUUID();
     const started = d.clock();
@@ -1097,7 +1089,7 @@ export function createDataverseHandler(deps) {
       } else {
         c.url = new URL(req.url ?? "/", origin);
         // A CORS preflight (Origin + Access-Control-Request-Method) and an anonymous OPTIONS answer 204. An authenticated
-        // OPTIONS that is not a preflight is a 405 from the route (native evidence: Dataverse refuses it).
+        // OPTIONS that is not a preflight is a 405 from the route, as Dataverse refuses it.
         const preflight = req.headers.origin !== undefined && req.headers["access-control-request-method"] !== undefined;
         if (req.method === "OPTIONS" && (preflight || req.headers.authorization === undefined)) {
           meta.kind = "options";

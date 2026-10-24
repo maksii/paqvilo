@@ -1,7 +1,7 @@
 // Guidance text for every `/_sim/` view and panel and every `/_setup/` stage. Keys: `<view>`, `<view>.<panel>`,
 // `<view>.<panel>.<field>`, `setup.<stage>` and `setup.<stage>.<field>`. Each entry is
 // `{ intro, steps?, example?, doc?, fields? }`; `doc` is a repository path (optionally with an anchor) that the
-// D9 docs map resolves. Text states current behaviour from the cited guide. No imports, no DOM access.
+// docs map resolves. Text states current behaviour from the cited guide. No imports, no DOM access.
 const SIM = 'mirage/docs/sim-administration.md';
 const OPS = 'mirage/docs/operations.md';
 const LEVELS = 'mirage/docs/simulation-levels.md';
@@ -19,7 +19,7 @@ const STACK = 'mirage/docs/platform-stack.md';
 const SETUP = 'docs/setup.md';
 const CONFIG = 'docs/configuration.md';
 
-/** Setup stages of the guided rail, in order (D15); `setup.<id>` keys use these ids. */
+/** Setup stages of the guided rail, in order; `setup.<id>` keys use these ids. */
 export const SETUP_STAGES = Object.freeze(['project', 'runtime', 'sources', 'environments', 'packs', 'personas', 'simulation', 'providers', 'identity', 'start']);
 
 const OPERATION_MODES = {
@@ -50,7 +50,7 @@ const ACCESS_MODES = {
 };
 
 const HELP = {
-  // ---- Monitor -------------------------------------------------------------------------------------------
+  // ---- Monitor
   dashboard: {
     intro: 'A live map of what this local runtime runs and how busy each part is. It reads local state only and changes nothing.',
     steps: [
@@ -117,7 +117,7 @@ const HELP = {
   'evidence.rendering': { intro: 'Screenshots and comparisons captured for this runtime. A pass covers only the compared route, data, person and window size; report coverage and skipped cases with it.', doc: EVIDENCE },
   'evidence.pages': { intro: 'Pages found in the portal export. Being listed here does not prove a page works; open it to exercise it.' },
 
-  // ---- Data ----------------------------------------------------------------------------------------------
+  // ---- Data
   records: {
     intro: 'The local records your portal pages, lists, forms and Web API calls read. Saving here follows the simulation level: dry run keeps changes in memory only, simulation writes declared pack DATA files and deep simulation also allows new tables and columns. A table without a pack DATA file is read-only, so its Create, Edit and Delete are switched off.',
     steps: ['Pick a table under Entity.', 'Search or page through its records.', 'Create, Edit or Delete opens a JSON editor; saving applies the change to local data at once. Backend plugin rules run; portal table permissions do not.'],
@@ -157,7 +157,7 @@ const HELP = {
   endpoints: { intro: 'Your own answers for chosen request paths. A local endpoint answers with the status and body you enter; a live endpoint sends that request to the connected environment, and writes there still need explicit permission.', doc: SIM },
   'endpoints.table': { intro: 'Each endpoint matches one request path and HTTP method.', example: '{\n  "path": "/api/example",\n  "method": "GET",\n  "mode": "local",\n  "status": 200,\n  "body": { "value": [] }\n}' },
 
-  // ---- Platform ------------------------------------------------------------------------------------------
+  // ---- Platform
   services: {
     intro: 'The outside services your organization uses and their local stand-ins: storage, the local message bus, the outbox, connections, secret references, local services you run yourself and service fixtures. Only names, counts and status are shown; secrets and connection strings never are.',
     steps: ['Check each provider is ready or declared as expected.', 'Probe declared local services with preflight (Infrastructure, Blocking).', 'Change providers in /_setup/ (Providers & services) and restart.'],
@@ -240,7 +240,7 @@ const HELP = {
   'portal.roles': { intro: 'Web roles of the local portal. Assign roles to contacts under Portal identity & permissions.' },
   'portal.access-rules': { intro: 'Rules that restrict or grant pages to web roles.' },
 
-  // ---- Identity ------------------------------------------------------------------------------------------
+  // ---- Identity
   access: {
     intro: 'Who you are on the portal while testing: sign this browser in as a test person (a persona: a local contact with its web roles) and see what that person may read and change. Portal requests start anonymous; a sign-in sets a cookie for this browser and this runtime only. Portal table permissions never apply to the Dataverse API.',
     doc: SIM,
@@ -299,7 +299,7 @@ const HELP = {
   'scenarios.save': { intro: 'Choose what the scenario changes; parts left on keep stay as they are when it is applied. Applying runs the preset first (it replaces the tables it defines), so the person must exist afterwards. In JSON, permissionMode is enforce or permissive, permissionSource is configured, exported or combined, and persona null means an anonymous visitor.' },
   'scenarios.reset': { intro: 'Restores the imported records, configuration, identity and permissions of this workspace. Saved scenarios are kept.' },
 
-  // ---- Runtime -------------------------------------------------------------------------------------------
+  // ---- Runtime
   runtime: { intro: 'The state of this runtime: where changes are kept, which code and sources are loaded, and copies of the local state. Export, import and reset act on local state only; import replaces the whole local state (saved scenarios are kept).', doc: LEVELS },
   'runtime.persistence': { intro: 'Where this runtime keeps your changes. Dry run keeps record edits, local registrations and password or secret hashes in memory; persistent levels need a private state file under the ignored .paqvilo/ folder, and writes to undeclared business tables fail with SimulationDataTargetRequired.', doc: `${LEVELS}#private-runtime-and-identity-state` },
   'runtime.fingerprints': { intro: 'Fingerprints of the loaded sources and runtime code. Restart to load edited runtime code; never read a deployed commit from them.' },
@@ -313,7 +313,7 @@ const HELP = {
   'connection.shell-resources': { intro: 'The stylesheet and script order placed around local page templates, as captured (observed) from the reference.' },
   'connection.baselines': { intro: 'Rich-text and stylesheet baselines and snippet combinations captured from the reference.' },
 
-  // ---- Setup stages --------------------------------------------------------------------------------------
+  // ---- Setup stages
   setup: { intro: 'The local setup workspace edits configuration files only. It never deploys, synchronizes, runs PAC, reads live references, imports packs or authorizes live writes. Saves apply on the next preview start.', doc: SETUP },
   'setup.project': {
     intro: 'Paqvilo keeps your choices in one settings file in this folder (paqvilo.config.yml, or a project file). It can hold several projects; each runs as its own preview.',

@@ -1,5 +1,5 @@
 // Upsert and delete resolve their target row inside the write slot: concurrent requests see the writes queued before them.
-// Invented schema and GUIDs only; the record handlers run without HTTP.
+// The record handlers run without HTTP.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

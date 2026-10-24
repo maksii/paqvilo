@@ -31,7 +31,9 @@ export function resolveLocalOverrides(options = {}, projectRoot = process.cwd())
   const { compat, head } = validateLocalOverrides(options);
   const assets = [], root = fs.realpathSync(projectRoot);
   for (const [kind, paths] of Object.entries(head)) for (const name of paths) {
-    const file = fs.realpathSync(path.resolve(root, name)), relative = path.relative(root, file);
+    let file;
+    try { file = fs.realpathSync(path.resolve(root, name)); } catch (error) { throw new Error(`Local head asset ${name} cannot be read (${error.code ?? 'error'})`); }
+    const relative = path.relative(root, file);
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.statSync(file).isFile())
       throw new Error('Local head assets must stay inside the project');
     const extension = kind === 'scripts' ? '.js' : '.css';

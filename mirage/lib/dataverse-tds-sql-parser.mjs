@@ -35,8 +35,7 @@
  *   Syntax errors: 102 "Incorrect syntax near '...'" (unsupported: false).
  *   Constructs the Dataverse endpoint rejects: 102 with unsupported: true, same as the lexer's OVER error.
  *   Unknown data types: 2715 (unsupported: true).
- *   Messages for rejected constructs are UNVERIFIED: tds-spike.md section 4 lists the constructs
- *   but not the endpoint's text. Each such message carries "unverified: live capture".
+ *   The docs list the rejected constructs but not the endpoint's text, so those messages are guesses.
  *
  * Rejected by the endpoint (no AST): OFFSET/FETCH, WITH (CTEs and table hints), EXCEPT and
  * INTERSECT, INTO, OPTION, OUTPUT, FOR (XML/JSON), VALUES, PIVOT/UNPIVOT, FREETEXT, AT TIME ZONE,
@@ -45,13 +44,13 @@
  * Also rejected, in a SELECT with a FROM clause only: duplicate output names and expression columns without
  * an alias. Both are checked only when the name is known statically (plain column references and aliases);
  * SELECT * is exempt. A FROM-less SELECT (constants, variables, @@ functions such as SELECT @@version) is
- * allowed and its unnamed columns get the name "". The FROM rule is UNVERIFIED: live capture pending.
+ * allowed and its unnamed columns get the name "". The FROM-only scope of this rule is assumed, not observed.
  * Not enforced: function names other than FREETEXT and FREETEXTTABLE.
  */
 
 import { TdsSqlError, checkPredicate, parseExpression, splitBatches, tokenize } from "./dataverse-tds-sql-lexer.mjs";
 
-// Data types listed as supported in tds-spike.md section 4.
+// Data types the Dataverse SQL docs list as supported.
 const SUPPORTED_TYPES = new Set([
   "BIGINT", "BINARY", "BIT", "CHAR", "DATETIME", "DECIMAL", "FLOAT", "INT", "MONEY", "NCHAR", "NUMERIC", "NVARCHAR",
   "REAL", "SMALLDATETIME", "SMALLINT", "SMALLMONEY", "TINYINT", "UNIQUEIDENTIFIER", "VARBINARY", "VARCHAR",
@@ -97,7 +96,7 @@ export function parseBatch(sql) {
   return { statements };
 }
 
-// ---------------------------------------------------------------- token rules
+// ---- token rules
 
 // Runs before parsing. Clauses the endpoint rejects are reported at their own token, even when the
 // lexer or statement parser would otherwise see a generic syntax error. ANY, SOME and ALL after a
@@ -109,7 +108,7 @@ function prepareTokens(tokens) {
     const next = tokens[i + 1];
     const word = wordOf(tok);
     if (tok.type === "keyword" && REJECTED_KEYWORDS.has(tok.value) && !(tok.value === "INTO" && isKeyword(tokens[i - 1], "INSERT"))) {
-      throw notSupported(tok, `The ${tok.value} clause is not supported by the Dataverse SQL endpoint.`); // unverified: live capture
+      throw notSupported(tok, `The ${tok.value} clause is not supported by the Dataverse SQL endpoint.`);
     }
     if (tok.type === "keyword" && QUANTIFIERS.has(tok.value) && tokens[i - 1]?.type === "operator" && COMPARISONS.has(tokens[i - 1].value)
       && isPunct(next, "(") && isKeyword(tokens[i + 2], "SELECT")) {
@@ -119,25 +118,25 @@ function prepareTokens(tokens) {
       continue;
     }
     if ((word === "FREETEXT" || word === "FREETEXTTABLE") && isPunct(next, "(")) {
-      throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`); // unverified: live capture
+      throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
     }
     if ((word === "PIVOT" || word === "UNPIVOT") && isPunct(next, "(")) {
-      throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`); // unverified: live capture
+      throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
     }
     if (word === "AT" && isWord(next, "TIME") && isWord(tokens[i + 2], "ZONE")) {
-      throw notSupported(tok, "AT TIME ZONE is not supported by the Dataverse SQL endpoint."); // unverified: live capture
+      throw notSupported(tok, "AT TIME ZONE is not supported by the Dataverse SQL endpoint.");
     }
     if (word === "OFFSET" && (next?.type === "number" || next?.type === "variable")) {
-      throw notSupported(tok, "The OFFSET clause is not supported by the Dataverse SQL endpoint."); // unverified: live capture (OFFSET/FETCH stay rejected)
+      throw notSupported(tok, "The OFFSET clause is not supported by the Dataverse SQL endpoint.");
     }
     if (word === "FETCH" && (isWord(next, "NEXT") || isWord(next, "FIRST"))) {
-      throw notSupported(tok, "The FETCH clause is not supported by the Dataverse SQL endpoint."); // unverified: live capture (OFFSET/FETCH stay rejected)
+      throw notSupported(tok, "The FETCH clause is not supported by the Dataverse SQL endpoint.");
     }
   }
   return tokens;
 }
 
-// ---------------------------------------------------------------- statements
+// ---- statements
 
 function parseStatement(s) {
   const tok = peek(s);
@@ -145,9 +144,9 @@ function parseStatement(s) {
   if (word === "SELECT") return parseQuery(s);
   if (word === "DECLARE") return parseDeclare(s);
   if (word === "SET") return parseSet(s);
-  if (READ_ONLY.has(word)) throw notSupported(tok, `${word} is not supported: the Dataverse SQL endpoint is read-only.`); // unverified: live capture
-  if (UNSUPPORTED_STATEMENTS.has(word)) throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`); // unverified: live capture
-  if (word === "VALUES") throw notSupported(tok, "The VALUES table value constructor is not supported by the Dataverse SQL endpoint."); // unverified: live capture
+  if (READ_ONLY.has(word)) throw notSupported(tok, `${word} is not supported: the Dataverse SQL endpoint is read-only.`);
+  if (UNSUPPORTED_STATEMENTS.has(word)) throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
+  if (word === "VALUES") throw notSupported(tok, "The VALUES table value constructor is not supported by the Dataverse SQL endpoint.");
   throw syntaxError(tok);
 }
 
@@ -181,7 +180,7 @@ function parseDataType(s) {
   advance(s);
   const name = tok.value.toUpperCase();
   if (!SUPPORTED_TYPES.has(name)) {
-    throw new TdsSqlError(2715, `Data type '${tok.value}' is not supported by the Dataverse SQL endpoint.`, { // unverified: live capture
+    throw new TdsSqlError(2715, `Data type '${tok.value}' is not supported by the Dataverse SQL endpoint.`, {
       pos: tok.pos, line: tok.line, unsupported: true,
     });
   }
@@ -213,14 +212,14 @@ function parseSet(s) {
   const kw = advance(s);
   const tok = peek(s);
   if (!tok) throw syntaxError(kw);
-  if (tok.type !== "variable") throw notSupported(tok, "SET options are not supported; only SET @variable = expression is."); // unverified: live capture
+  if (tok.type !== "variable") throw notSupported(tok, "SET options are not supported; only SET @variable = expression is.");
   advance(s);
   if (!isOperator(peek(s), "=")) throw syntaxError(peek(s));
   advance(s);
   return { type: "Set", name: tok.value, value: expr(s) };
 }
 
-// ---------------------------------------------------------------- queries
+// ---- queries
 
 // Used for top-level statements and for derived tables. Scalar, IN and EXISTS subqueries go through
 // parseSubqueryHook, which the lexer calls with the stream on SELECT.
@@ -233,7 +232,7 @@ function parseQuery(s) {
     query = { type: "SetOperation", operator: "UNION", all, left: query, right, orderBy: null };
   }
   if (isWord(peek(s), "EXCEPT") || isWord(peek(s), "INTERSECT")) {
-    throw notSupported(peek(s), `${wordOf(peek(s))} is not supported by the Dataverse SQL endpoint; only UNION is.`); // unverified: live capture
+    throw notSupported(peek(s), `${wordOf(peek(s))} is not supported by the Dataverse SQL endpoint; only UNION is.`);
   }
   if (isKeyword(peek(s), "ORDER")) query.orderBy = parseOrderBy(s);
   return query;
@@ -318,10 +317,10 @@ function checkColumnNames(columns, starts) {
     const tok = starts[i];
     const name = column.alias ?? (column.expr.type === "ColumnRef" ? column.expr.parts.at(-1) : null);
     if (name === null) {
-      throw notSupported(tok, "Without unique column name and alias: an expression column needs an alias in the Dataverse SQL endpoint."); // unverified: live capture
+      throw notSupported(tok, "Without unique column name and alias: an expression column needs an alias in the Dataverse SQL endpoint.");
     }
     const key = name.toLowerCase();
-    if (seen.has(key)) throw notSupported(tok, `Duplicate column name '${name}' is not supported by the Dataverse SQL endpoint.`); // unverified: live capture
+    if (seen.has(key)) throw notSupported(tok, `Duplicate column name '${name}' is not supported by the Dataverse SQL endpoint.`);
     seen.add(key);
   });
 }
@@ -341,7 +340,7 @@ function parseFrom(s) {
 function parseTableSource(s) {
   const tok = peek(s);
   if (eatPunct(s, "(")) {
-    if (isKeyword(peek(s), "VALUES")) throw notSupported(peek(s), "The VALUES table value constructor is not supported by the Dataverse SQL endpoint."); // unverified: live capture
+    if (isKeyword(peek(s), "VALUES")) throw notSupported(peek(s), "The VALUES table value constructor is not supported by the Dataverse SQL endpoint.");
     if (!isKeyword(peek(s), "SELECT")) throw syntaxError(peek(s));
     const query = parseQuery(s);
     expectPunct(s, ")");
@@ -357,9 +356,9 @@ function parseTableSource(s) {
     const second = peek(s);
     if (!isName(second)) throw syntaxError(second);
     advance(s);
-    if (isPunct(peek(s), ".")) throw notSupported(peek(s), "Three-part table names are not supported by the Dataverse SQL endpoint."); // unverified: live capture
+    if (isPunct(peek(s), ".")) throw notSupported(peek(s), "Three-part table names are not supported by the Dataverse SQL endpoint.");
     if (tok.value.toLowerCase() !== "dbo") {
-      throw notSupported(tok, `Schema '${tok.value}' is not supported; only dbo is.`); // unverified: live capture
+      throw notSupported(tok, `Schema '${tok.value}' is not supported; only dbo is.`);
     }
     schema = tok.value;
     name = second.value;
@@ -403,7 +402,7 @@ function parseJoin(s) {
 function parseApply(s, kind) {
   const tok = peek(s);
   const source = parseTableSource(s);
-  if (source.type !== "Derived") throw notSupported(tok, "APPLY is supported only with a derived table (unverified)."); // unverified: live capture
+  if (source.type !== "Derived") throw notSupported(tok, "APPLY is supported only with a derived table (unverified).");
   return { type: "Apply", kind, source };
 }
 
@@ -411,11 +410,11 @@ function parseGroupBy(s) {
   advance(s);
   expectKeyword(s, "BY");
   const tok = peek(s);
-  if (isKeyword(tok, "ALL")) throw notSupported(tok, "GROUP BY ALL is not supported by the Dataverse SQL endpoint."); // unverified: live capture
+  if (isKeyword(tok, "ALL")) throw notSupported(tok, "GROUP BY ALL is not supported by the Dataverse SQL endpoint.");
   if (isWord(tok, "CUBE") || isWord(tok, "ROLLUP") || isWord(tok, "GROUPING")) {
-    throw notSupported(tok, "CUBE, ROLLUP and GROUPING SETS are not supported by the Dataverse SQL endpoint."); // unverified: live capture
+    throw notSupported(tok, "CUBE, ROLLUP and GROUPING SETS are not supported by the Dataverse SQL endpoint.");
   }
-  if (isPunct(tok, "(") && isPunct(peek(s, 1), ")")) throw notSupported(tok, "GROUP BY () is not supported by the Dataverse SQL endpoint."); // unverified: live capture
+  if (isPunct(tok, "(") && isPunct(peek(s, 1), ")")) throw notSupported(tok, "GROUP BY () is not supported by the Dataverse SQL endpoint.");
   const items = [];
   do {
     items.push(expr(s));
@@ -452,7 +451,7 @@ function parseAlias(s) {
   return null;
 }
 
-// ---------------------------------------------------------------- expressions
+// ---- expressions
 
 // Parses one expression through the lexer, then turns ANY/ALL-marked comparisons into Quantified nodes.
 const expr = (s) => {
@@ -471,7 +470,7 @@ function attachQuantifiers(node, quantified) {
   return node;
 }
 
-// ---------------------------------------------------------------- stream helpers
+// ---- stream helpers
 
 const peek = (s, k = 0) => s.tokens[s.pos + k];
 const advance = (s) => s.tokens[s.pos++];

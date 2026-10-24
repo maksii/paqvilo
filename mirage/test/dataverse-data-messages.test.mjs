@@ -1,6 +1,5 @@
 // Recycle bin (delete hook, Restore, EmptyRecycleBin), the classic import job (ParseImport, TransformImport, ImportRecordsImport)
-// and the annotation and attachment block messages, over HTTP through the full extension list. Invented schema
-// (contoso_widget) and GUIDs only; loopback only.
+// and the annotation and attachment block messages, over HTTP through the full extension list.
 import { test, describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -119,7 +118,7 @@ test("CSV imports enforce secured-column create permissions for a customizer", a
   await waitForStatus(h.store, 11);
   assert.equal(h.store.state.tables.contoso_widget.some((row) => row.name === "Refused"), false);
   assert.equal(h.store.state.tables.importfile[0].failurecount, 1);
-  assert.match(h.store.state.tables.importlog[0].errordescription, /secured|field|permission|privilege/i);
+  assert.match(h.store.state.tables.importlog[0].errordescription, /does not have create permissions to a secret secured field on entity contoso_widget/);
 });
 
 test("mapped lookup imports enforce AppendTo access instead of assigning inaccessible records directly", async (t) => {
@@ -137,7 +136,7 @@ test("mapped lookup imports enforce AppendTo access instead of assigning inacces
   await waitForStatus(h.store, 11);
   assert.equal(h.store.state.tables.contoso_widget.length, 1, "the refused lookup creates no partial record");
   assert.equal(h.store.state.tables.importfile[0].failurecount, 1);
-  assert.match(h.store.state.tables.importlog[0].errordescription, /access|AppendTo|privilege/i);
+  assert.match(h.store.state.tables.importlog[0].errordescription, /does not have AppendToAccess right\(s\) for record with ID aaaaaaaa-0000-0000-0000-0000000000b2 of entity account/);
 });
 
 test("parsed-file functions return headings, distinct pages and row collections, then refuse disposed parse data", async (t) => {
@@ -217,7 +216,7 @@ test("a cascade creates one bin snapshot, restores through the root Target, and 
   const bin = await h.get(`/contoso_widgets?fetchXml=${encodeURIComponent(query)}`);
   assert.equal(bin.status, 200, JSON.stringify(await bin.clone().json()));
   assert.equal((await bin.json()).value[0].name, "alpha");
-  assert.throws(() => h.store.fetchXml(query, { admin: true }), /datasource|source/i);
+  assert.throws(() => h.store.fetchXml(query, { admin: true }), { code: "UnsupportedQuery", message: /Unsupported FetchXML datasource bin/ });
   h.store.state.tables.contoso_widget.push({ contoso_widgetid: WIDGET, name: "Conflict" });
   const conflict = await h.send("POST", "/Restore", { Target: target("contoso_widget", "contoso_widgetid", WIDGET) });
   assert.equal((await conflict.json()).error.code, "0x80049939");
@@ -335,9 +334,9 @@ describe("recycle bin: delete hook, Restore and EmptyRecycleBin", () => {
   });
   after(async () => h?.close());
 
-  it("a delete of an enabled table writes a deleteditemreference with the deleted row", async () => {
-    const response = await h.send("DELETE", `/contoso_widgets(${WIDGET})`);
-    assert.equal(response.status, 204);
+  it("a delete of an enabled table writes a deleteditemreference that Restore turns back into the row under its original id", async () => {
+    const deleted = await h.send("DELETE", `/contoso_widgets(${WIDGET})`);
+    assert.equal(deleted.status, 204);
     const refs = h.store.state.tables.deleteditemreference;
     assert.equal(refs.length, 1);
     assert.equal(refs[0].deletedobject, WIDGET);
@@ -346,10 +345,8 @@ describe("recycle bin: delete hook, Restore and EmptyRecycleBin", () => {
     const snapshot = JSON.parse(Buffer.from(h.store.state.dataverse.files[refs[0].deletedrecords].data, "base64").toString("utf8"));
     assert.equal(snapshot[0].row.name, "alpha");
     assert.equal(h.store.state.tables.contoso_widget.length, 0);
-  });
 
-  it("Restore recreates the row under its original id and removes the reference", async () => {
-    const ref = h.store.state.tables.deleteditemreference[0].deleteditemreferenceid;
+    const ref = refs[0].deleteditemreferenceid;
     const response = await h.send("POST", "/Restore", { Target: target("deleteditemreference", "deleteditemreferenceid", ref) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).id, WIDGET);

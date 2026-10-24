@@ -1,5 +1,4 @@
-// Copilot Studio (Pva*) bot and component messages and the shared workspace (lib/dataverse-addon-pva.mjs) over HTTP. Invented bot,
-// component and user rows, loopback only.
+// Copilot Studio (Pva*) bot and component messages and the shared workspace (lib/dataverse-addon-pva.mjs) over HTTP.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -152,12 +151,14 @@ describe("Copilot Studio and Teams messages over HTTP", () => {
   });
 
   it("the bot list is the caller's bots as JSON", async () => {
+    const created = await fetch(`${api.origin}/api/data/${VERSION}/bots`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ botid: id(4), name: "Invented own bot" }),
+    });
+    assert.equal(created.status, 204, await created.text());
     const result = await call("Microsoft.Dynamics.CRM.PvaGetUserBots", { RoleType: 0 });
     assert.equal(result.status, 200);
-    const bots = JSON.parse(result.body.Bots);
-    assert.ok(Array.isArray(bots));
-    // The app user owns no seeded bot, so the list is empty; every entry carries botid and name.
-    for (const bot of bots) assert.ok(bot.botid && bot.name !== undefined);
+    // The seeded bots belong to another user, so only the bot the caller created (its ownerid a stored reference) is listed.
+    assert.deepEqual(JSON.parse(result.body.Bots), [{ botid: id(4), name: "Invented own bot" }]);
   });
 
   it("publish is not simulated (internal-only, GC policy)", async () => {

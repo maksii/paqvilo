@@ -1,5 +1,4 @@
-// Schema-driven scaffold (lib/scaffold-data.mjs) on a synthetic portal and
-// synthetic solution XML.
+// Schema-driven scaffold (lib/scaffold-data.mjs).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -125,7 +124,7 @@ test("scaffold rows follow metadata: required columns, option labels, autonumber
   assert.throws(() => scaffoldData({ portal, schema: data.schema, profile: "huge" }), /Unknown scaffold profile/);
 });
 
-// --- data scaffold: portal resolution like serve ---------------------------
+// --- data scaffold: portal resolution like serve
 
 const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
 const scaffoldCli = async (args) =>
@@ -154,47 +153,37 @@ async function workspace(t) {
   return dir;
 }
 
-test("data scaffold with --source and explicit --solution-root bootstraps a state and merges additively", async (t) => {
+test("data scaffold with --source and explicit --solution-root bootstraps a state, then merges additively, preserving edited decorated GUID rows and memberships", async (t) => {
   const dir = await workspace(t);
   const source = await writePortal(path.join(dir, "portal"));
   const solution = await writeSolution(path.join(dir, "solution"));
   const state = path.join(dir, "state.json");
-  const first = await scaffoldCli(["--source", source, "--solution-root", solution, "--state", state]);
+  const args = ["--source", source, "--solution-root", solution, "--state", state];
+  const first = await scaffoldCli(args);
   assert.equal(first.bootstrapped, true);
   assert.deepEqual(first.resolution, { kind: "source", solutionRoots: "explicit" });
   assert.equal(first.source, path.resolve(source));
   assert.deepEqual(first.solutionRoots, [path.resolve(solution)]);
   assert.equal(first.rows.x_case.added, 3);
   assert.equal(first.addedMemberships, 1);
-  const second = await scaffoldCli(["--source", source, "--solution-root", solution, "--state", state]);
-  assert.equal(second.bootstrapped, false);
-  assert.deepEqual(second.rows.x_case, { added: 0, alreadyPresent: 3 });
-  assert.equal(second.addedMemberships, 0);
   const saved = JSON.parse(await fs.readFile(state, "utf8"));
   assert.equal(saved.provenance.scaffold.profile, "smoke");
   assert.equal(saved.simulator.contactRoles.length, 1);
-});
-
-test('data scaffold preserves edited decorated GUID rows and memberships across additive reruns', async t => {
-  const dir=await workspace(t), source=await writePortal(path.join(dir,'portal'));
-  const solution=await writeSolution(path.join(dir,'solution')), state=path.join(dir,'state.json');
-  const args=['--source',source,'--solution-root',solution,'--state',state];
-  await scaffoldCli(args);
-  const saved=JSON.parse(await fs.readFile(state,'utf8'));
-  saved.tables.x_case[0].x_caseid=`{${saved.tables.x_case[0].x_caseid.toUpperCase()}}`;
-  saved.tables.x_case[0].x_name='Preserved local edit';
-  const membership=saved.simulator.contactRoles[0];
-  membership.contactId=`(${membership.contactId.toUpperCase()})`;
-  membership.roleId=`{${membership.roleId.toUpperCase()}}`;
-  membership.localEdit=true;
-  await fs.writeFile(state,JSON.stringify(saved));
-  const result=await scaffoldCli(args);
-  assert.deepEqual(result.rows.x_case,{added:0,alreadyPresent:3});
-  assert.equal(result.addedMemberships,0);
-  const after=JSON.parse(await fs.readFile(state,'utf8'));
-  assert.deepEqual(after.tables.x_case,saved.tables.x_case);
-  assert.deepEqual(after.simulator.contactRoles,saved.simulator.contactRoles);
-  assert.deepEqual((await scaffoldCli(args)).rows.x_case,{added:0,alreadyPresent:3});
+  // A rerun must recognise braced, upper-case or parenthesised GUIDs as the rows and memberships it wrote.
+  saved.tables.x_case[0].x_caseid = `{${saved.tables.x_case[0].x_caseid.toUpperCase()}}`;
+  saved.tables.x_case[0].x_name = "Preserved local edit";
+  const membership = saved.simulator.contactRoles[0];
+  membership.contactId = `(${membership.contactId.toUpperCase()})`;
+  membership.roleId = `{${membership.roleId.toUpperCase()}}`;
+  membership.localEdit = true;
+  await fs.writeFile(state, JSON.stringify(saved));
+  const second = await scaffoldCli(args);
+  assert.equal(second.bootstrapped, false);
+  assert.deepEqual(second.rows.x_case, { added: 0, alreadyPresent: 3 });
+  assert.equal(second.addedMemberships, 0);
+  const after = JSON.parse(await fs.readFile(state, "utf8"));
+  assert.deepEqual(after.tables.x_case, saved.tables.x_case);
+  assert.deepEqual(after.simulator.contactRoles, saved.simulator.contactRoles);
 });
 
 test("data scaffold with --source discovers solution repositories next to the portal repository", async (t) => {

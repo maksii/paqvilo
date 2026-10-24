@@ -4,7 +4,7 @@ import { DataStore } from '../lib/data.mjs';
 import { createConnectorRuntime, DATAVERSE_OPERATION_SPEC } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition, inspectFlowDefinition } from '../lib/flow-runtime.mjs';
 
-// Task 43: the Dataverse connector operations share one parameter table with the interpreter allowlist and run through
+// The Dataverse connector operations share one parameter table with the interpreter allowlist and run through
 // the SDK service of the flow principal (the organization's internal entries when the store has an organization).
 const PARENT = '77777777-7777-4777-8777-000000000101', CHILD = '77777777-7777-4777-8777-000000000102', MISSING = '77777777-7777-4777-8777-000000000103';
 const API = '/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps';

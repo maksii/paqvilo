@@ -121,11 +121,11 @@ for (const watch of [false, true]) test(`catalogue invalidates source, form and 
     preset: 'invented-scale', presetMode: 'bootstrap', dataverse: { enabled: false, users: [{ objectId: performanceId(700), domainname: 'invented@example.test', fullname: 'Invented restricted staff', roles: ['Basic User'] }] } });
   t.after(() => sim.close());
   const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
-  const selected = await fetch(sim.url + '/_sim/api/dataverse/session', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ userId: session.users.find(user => user.name === 'Invented restricted staff').id }) });
+  const selected = await fetch(sim.url + '/_sim/api/dataverse/session', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify({ userId: session.users.find(user => user.name === 'Invented restricted staff').id }) });
   assert.equal(selected.status, 200); const cookie = selected.headers.get('set-cookie').split(';')[0];
   const catalogue = async () => (await (await fetch(sim.url + '/_apps/api/metadata/x_scale0', { headers: { cookie } })).json());
   const before = await catalogue(); assert.equal(before.capabilities.fields.x_value1.read, false);
-  const csrf = sim.state().csrf, headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
+  const csrf = sim.csrf, headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
   const made = await fetch(sim.url + '/_apps/api/tables/x_scale0', { method: 'POST', headers: { ...headers, cookie }, body: JSON.stringify({ x_value0: 'Invented staff row' }) });
   assert.equal(made.status, 201); const created = await made.json();
   const saved = await fetch(sim.url + '/_apps/api/tables/x_scale0/' + created.id, { method: 'PATCH', headers: { ...headers, 'if-match': created.etag }, body: JSON.stringify({ x_value1: 'Must stay masked' }) });

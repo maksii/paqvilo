@@ -60,14 +60,14 @@ test('API transport marks observer reads explicitly without making direct SDK re
   const store = fixture(), calls = [];
   const query = store.query.bind(store), fetchXml = store.fetchXml.bind(store), get = store.get.bind(store);
   store.readOperation = async fn => fn();
-  store.query = (...args) => { calls.push(args[4]); return query(...args); };
-  store.fetchXml = (...args) => { calls.push(args[2]); return fetchXml(...args); };
-  store.get = (...args) => { calls.push(args[3]); return get(...args); };
+  store.query = (...args) => { calls.push(['query', args[4]]); return query(...args); };
+  store.fetchXml = (...args) => { calls.push(['fetchXml', args[2]]); return fetchXml(...args); };
+  store.get = (...args) => { calls.push(['get', args[3]]); return get(...args); };
   await request(store, '/_api/widgets?$select=title');
   await request(store, '/_api/widgets?fetchXml=' + encodeURIComponent('<fetch><entity name="widget"><attribute name="title"/></entity></fetch>'));
   await request(store, `/_api/widgets(${recordId})/title`);
-  assert.ok(calls.length >= 4);
-  assert.ok(calls.every(options => options.portalRequest === true));
+  assert.deepEqual([...new Set(calls.map(([kind]) => kind))].sort(), ['fetchXml', 'get', 'query']);
+  assert.ok(calls.every(([, options]) => options.portalRequest === true));
 });
 
 test('permission-generated Dataverse query limits retain a CDS execution error envelope', async () => {

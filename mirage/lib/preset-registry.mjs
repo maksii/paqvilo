@@ -16,7 +16,7 @@ import { validatePackDataFiles } from './pack-data-files.mjs';
  * outside the toolkit and are named explicitly by a project
  * (`dataPacks: [{ id, module }]`). A pack default-exports
  * `{ id, name, description, matches({ portal }), presets({ portal, metadata,
- * options }), generators, personas, plugins }`; see docs/data-packs.md.
+ * options }), generators, personas, plugins }`; see mirage/docs/data-packs.md.
  */
 // No installed or adjacent project code is imported implicitly.
 export const PACKS_ROOT = null;
@@ -178,10 +178,10 @@ export function validatePack(pack, source = "data pack") {
     const entries=dataProperty(pack,kind)?.value;
     if(entries!==undefined&&(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.entries(entries).some(([id,value])=>!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g,''))||!value||typeof value!=='object'||Array.isArray(value))))fail(`${kind} must map exact exported IDs to explicit trusted descriptors`);
   }
+  const templates = Object.getOwnPropertyDescriptor(pack, "webApiErrorTemplates");
+  if (templates && !("value" in templates)) fail("webApiErrorTemplates must be an explicit data property");
   try {
     validateEndpoints(pack.id, dataProperty(pack, "endpoints")?.value);
-    const templates = Object.getOwnPropertyDescriptor(pack, "webApiErrorTemplates");
-    if (templates && !("value" in templates)) fail("webApiErrorTemplates must be an explicit data property");
     if (templates?.value !== undefined) validateWebApiErrorTemplates(templates.value);
   } catch (error) {
     fail(error.message);

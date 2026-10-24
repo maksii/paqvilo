@@ -1,6 +1,6 @@
-// Ownership of managed components (Learn power-platform/alm/solution-concepts-alm: components of a managed solution are not
-// edited or deleted directly; a customizable one takes an unmanaged layer on top; uninstall removes them).
-import test from 'node:test';
+// Ownership of managed components: components of a managed solution are not edited or deleted directly; a customizable
+// one takes an unmanaged layer on top; uninstall removes them.
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
@@ -15,12 +15,12 @@ const tableBody = (schema) => ({ '@odata.type': '#Microsoft.Dynamics.CRM.EntityM
   Description: label(''), OwnershipType: 'OrganizationOwned', IsActivity: false, HasActivities: false, HasNotes: false, Attributes: [column('fx_Name', { IsPrimaryName: true, MaxLength: 100 })] });
 
 let counter = 0;
-async function server(t) {
+async function server(owner) {
   const variable = `PAQ_OWNERSHIP_SECRET_${process.pid}_${++counter}`; process.env[variable] = 'invented-secret';
   const store = await new DataStore({ state: emptyState() }).init();
   const settings = dataverseSettings({ enabled: true, tds: { enabled: false }, applications: [{ appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] }] });
   const api = await startDataverseApi({ store, settings, log: () => {} });
-  t.after(async () => { delete process.env[variable]; await api.close(); });
+  owner.after(async () => { delete process.env[variable]; await api.close(); });
   const token = (await (await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: APP, client_secret: 'invented-secret', scope: `${api.origin}/.default` }) })).json()).access_token;
   const request = async (method, path, body, headers = {}) => {
@@ -32,9 +32,12 @@ async function server(t) {
   return { store, request };
 }
 
-// A managed fx_base with fx_widget (fx_code customizable, fx_note not customizable) and the key fx_codekey, imported into a new organization.
-async function managedImport(t) {
-  const src = await server(t);
+// A managed fx_base with fx_widget (fx_code customizable, fx_note not customizable) and the key fx_codekey, exported once
+// per file and imported into a new organization by each test.
+let zip;
+before(async () => {
+  const closers = [];
+  const src = await server({ after: (fn) => closers.push(fn) });
   await src.request('POST', '/publishers', { uniquename: 'fx_pub', friendlyname: 'Fx', customizationprefix: 'fx', customizationoptionvalueprefix: 10000 });
   const pub = (await src.request('GET', "/publishers?$select=publisherid&$filter=uniquename eq 'fx_pub'")).json.value[0].publisherid;
   await src.request('POST', '/solutions', { uniquename: 'fx_base', friendlyname: 'fx_base', version: '1.0.0.0', 'publisherid@odata.bind': `/publishers(${pub})` });
@@ -43,8 +46,12 @@ async function managedImport(t) {
   for (const name of ['fx_Code', 'fx_Note']) await src.request('POST', "/EntityDefinitions(LogicalName='fx_widget')/Attributes", column(name, { MaxLength: 20 }), H);
   assert.equal((await src.request('POST', "/EntityDefinitions(LogicalName='fx_widget')/Keys", { SchemaName: 'fx_CodeKey', KeyAttributes: ['fx_code'], DisplayName: label('Code') }, H)).status, 204);
   const exported = Buffer.from((await src.request('POST', '/ExportSolution', { SolutionName: 'fx_base', Managed: true })).json.ExportSolutionFile, 'base64');
-  const zip = zipOf(readSolutionZip(exported).map((entry) => ({ name: entry.name, data: Buffer.from(entry.xml != null
+  zip = zipOf(readSolutionZip(exported).map((entry) => ({ name: entry.name, data: Buffer.from(entry.xml != null
     ? entry.xml.replace(/(<attribute PhysicalName="fx_Note">)/i, '$1<IsCustomizable>0</IsCustomizable>') : entry.read()) })));
+  for (const close of closers) await close();
+});
+
+async function managedImport(t) {
   const dst = await server(t);
   assert.equal((await dst.request('POST', '/ImportSolution', { CustomizationFile: zip.toString('base64') })).status, 204);
   const idOf = async (name) => (await dst.request('GET', `/EntityDefinitions(LogicalName='fx_widget')/Attributes(LogicalName='${name}')?$select=MetadataId`)).json.MetadataId;
@@ -88,7 +95,7 @@ test('a managed column that is not customizable refuses PUT', async (t) => {
   assert.equal(put.json.error.code, '0x80047008');
 });
 
-test('an unmanaged import leaves its components unmanaged and deletable', async (t) => {
+test('a table created outside a managed solution reports IsManaged false and is deletable', async (t) => {
   const src = await server(t);
   await src.request('POST', '/EntityDefinitions', tableBody('fx_plain'));
   assert.equal((await src.request('GET', "/EntityDefinitions(LogicalName='fx_plain')?$select=IsManaged")).json.IsManaged, false);

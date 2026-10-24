@@ -40,7 +40,7 @@ test('site-observed empty Power BI output requires evidence and does not infer i
   for (const source of [SOURCE, '{% powerbi %}', "{% powerbi path: 'invalid' %}"]) {
     assert.equal(await fixture(diagnostics, { observed }).renderString(`before${source}after`), 'beforeafter');
   }
-  assert.ok(diagnostics.every(entry => entry.code === 'LIQUID_POWERBI_OBSERVED_EMPTY'));
+  assert.deepEqual(diagnostics.map(entry => entry.code), Array(3).fill('LIQUID_POWERBI_OBSERVED_EMPTY'));
 });
 
 test('trusted Power BI fixtures receive evaluated arguments and override observed empty output', async () => {
@@ -73,7 +73,7 @@ test('powerbi placeholder redacts fragment values and relative paths', async () 
   assert.doesNotMatch(fragment + relative, /abc|=v\b|=w\b/);
 });
 
-test('named powerbi tag no longer fails with COMPONENT_UNSUPPORTED', async () => {
+test('a named powerbi tag renders the same placeholder as the native unnamed tag', async () => {
   const diagnostics = [];
   const html = await fixture(diagnostics).renderString("{% powerbi name: 'Report', path: 'https://app.powerbi.example.test/reports/r1' %}");
   assert.match(html, /class="paqvilo-powerbi-placeholder"/);

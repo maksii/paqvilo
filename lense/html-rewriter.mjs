@@ -51,7 +51,7 @@ export function pageKey(urlPath, model = null) {
   return key.slice(prefix.length + 1) || '/';
 }
 
-// ---------------------------------------------------------------------------------- block sources
+// ---- block sources
 
 function lineSet(text) {
   const set = new Set();
@@ -256,7 +256,7 @@ function differentLocalizedVariants(a, b) {
   return a.kind === 'content-snippet' && a.snippetName && b.snippetName && a.snippetName.toLowerCase() === b.snippetName.toLowerCase();
 }
 
-// --------------------------------------------------------------------------------- markup sources
+// ---- markup sources
 
 function normExpr(expr) {
   // Whitespace and apostrophes inside Liquid string literals are data. Canonicalise quote
@@ -594,7 +594,7 @@ function normalise(html) {
   return { text, original, crlf: removed.length * 2 > text.split('\n').length - 1 };
 }
 
-// ------------------------------------------------------------------------------------- rewriter
+// ---- rewriter
 
 export class HtmlRewriter {
   /** Warm cold source reads asynchronously with at most 16 files in flight. */
@@ -977,7 +977,7 @@ export class HtmlRewriter {
       // `online`: what the portal printed, kept for the ones that differ so the two can be compared
       matched.push({ kind: src.kind, rel: src.rel, file: src.file, score: block.score, identical, active: src.active, online: identical ? undefined : block.norm });
       const replace = !identical && src.active;
-      // A script that is (now) the local file can be debugged in that file, but debuggers do not
+      // A script replaced by the local file can be debugged in that file, but debuggers do not
       // follow source maps of inline scripts. So it is loaded from the overlay as a file instead;
       // a plain <script src> runs at the same point of the page as the inline block did.
       // (not for text that lives inside another file: there is no script file to load)

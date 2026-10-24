@@ -1,10 +1,9 @@
 // Dynamics 365 application messages (Sales, Marketing and Service stubs): Recalculate (goal rollups), SyncBulkOperation,
-// SendBulkMail, ImmediateBook, CalculatePrice and ApplyRecordCreationAndUpdateRule. Contracts: the SDK and Web API pages of each
-// message (RecalculateRequest, SendBulkMail, ImmediateBook, CalculatePrice, ApplyRecordCreationAndUpdateRule), read 2026-10-20.
-// Invented data only. Every operation is registered through registerAddon (dataverse-addon-common.mjs), so a trusted pack's
-// dataverseMessages handler replaces it. Book, InstantiateTemplate and SendEmail are reused through api.registry: their
-// modules are not edited. unverified: the bulk-mail failure text, the SyncBulkOperation result and state mapping, the rollup
-// column stem (goalattribute without "rollupfield") and the LC7 cases.
+// SendBulkMail, ImmediateBook, CalculatePrice and ApplyRecordCreationAndUpdateRule. Every operation is registered through
+// registerAddon (dataverse-addon-common.mjs), so a trusted pack's dataverseMessages handler replaces it. Book,
+// InstantiateTemplate and SendEmail are reused through api.registry. Guesses: the bulk-mail failure text, the
+// SyncBulkOperation result and state mapping, the rollup column stem (goalattribute without "rollupfield"), and the answers
+// for tables that are absent natively.
 // ponytail: one GET page per query (the records default), QueryByAttribute is not modelled, no Exchange (EWS) attachments,
 // a rollup query on a missing row does not restrict, and the time window is the goal's own dates (no entityfordateattribute join).
 import { DataError } from "./data-error.mjs";
@@ -88,7 +87,7 @@ function operations(api) {
     return { entity: model.entityName, rows: await rowsByXml(c, model.entityName, xml) };
   }
 
-  // ---- Recalculate -------------------------------------------------------------------------------------------------------
+  // ---- Recalculate
 
   const parentOf = (goal) => (idOf(goal.parentgoalid) == null ? null : rowIn("goal", idOf(goal.parentgoalid)));
   const childrenOf = (goal) => rowsOf("goal").filter((row) => sameId(idOf(row.parentgoalid), goal.goalid));
@@ -170,7 +169,7 @@ function operations(api) {
     return undefined;
   }
 
-  // ---- SyncBulkOperation -------------------------------------------------------------------------------------------------
+  // ---- SyncBulkOperation
 
   async function syncBulkOperation(c) {
     need(c, "asyncoperation", "Write");
@@ -181,7 +180,7 @@ function operations(api) {
     const ids = [];
     for (const query of Array.isArray(args.QuerySet) ? args.QuerySet : []) {
       const { entity, rows } = await selectedRows(c, query);
-      // unverified: a query on another table is refused; Learn says the rows are bulk operation jobs.
+      // The rows are documented as bulk operation jobs; refusing a query on another table is a guess.
       if (entity !== "asyncoperation") throw invalid("SyncBulkOperation selects asyncoperation rows only.");
       ids.push(...rows.map((row) => row[idColumn]));
     }
@@ -191,7 +190,7 @@ function operations(api) {
     return { Result: ids.length };
   }
 
-  // ---- SendBulkMail ------------------------------------------------------------------------------------------------------
+  // ---- SendBulkMail
 
   async function sendBulkMail(c) {
     const args = argsOf(c);
@@ -223,7 +222,7 @@ function operations(api) {
     return undefined;
   }
 
-  // ---- ImmediateBook, CalculatePrice, ApplyRecordCreationAndUpdateRule ---------------------------------------------------
+  // ---- ImmediateBook, CalculatePrice, ApplyRecordCreationAndUpdateRule
 
   // The appointment is booked by the Book handler from the Target's own fields. The Exchange attachment parameters are ignored.
   async function immediateBook(c) {
@@ -233,7 +232,7 @@ function operations(api) {
 
   function calculatePrice(c) {
     const { logical, id } = refOf(argsOf(c), "Target");
-    // A table the store does not hold (opportunity, quote and the other ABSENT price tables, LC7) has no price to compute.
+    // A table the store does not hold (opportunity, quote and the other price tables absent natively) has no price to compute.
     if (!mappingOf(logical)) throw notFound(logical, id);
     return undefined;
   }
@@ -241,12 +240,12 @@ function operations(api) {
   function applyRecordCreation(c) {
     const { logical, id } = refOf(argsOf(c), "Target");
     if (!mappingOf(logical) || !rowIn(logical, id)) throw notFound(logical, id);
-    // No rule can exist (convertrule is ABSENT natively), so nothing is applied (unverified, LC7).
+    // No rule can exist (convertrule is absent natively), so nothing is applied.
     return undefined;
   }
 
   return [
-    // unverified: the percentage is 0 when the target is unset; rollup attribute names are read from goalattribute (LC7).
+    // Guesses: the percentage is 0 when the target is unset; rollup attribute names are read from goalattribute.
     {
       name: "Recalculate", kind: "action", binding: "entity", entity: "goal", signature: { params: [] },
       handle: recalculate,
@@ -257,13 +256,13 @@ function operations(api) {
       handle: syncBulkOperation,
     },
     {
-      // unverified: Query is mscrm.QueryBase (QueryExpression JSON here, the native type is not declared); Sender is a crmbaseentity.
+      // Query is mscrm.QueryBase natively (QueryExpression JSON here, the type is not declared); Sender is a crmbaseentity.
       name: "SendBulkMail", kind: "action", binding: "unbound",
       signature: { params: [["Sender", "mscrm.crmbaseentity"], ["TemplateId", "Edm.Guid"], ["RegardingType", "Edm.String"], ["RegardingId", "Edm.Guid"], ["Query", "Edm.Untyped"]] },
       handle: sendBulkMail,
     },
     {
-      // unverified: ValidationResult and BusinessNotification are not declared here, so Edm.Untyped stands in (as the Book CSDL does).
+      // ValidationResult and BusinessNotification are not declared here, so Edm.Untyped stands in (as the Book CSDL does).
       name: "ImmediateBook", kind: "action", binding: "unbound",
       signature: {
         params: [["Target", "mscrm.crmbaseentity"], ["AttachmentIds", "Collection(Edm.String)"], ["EWSUrl", "Edm.String"], ["AttachmentToken", "Edm.String"]],
@@ -271,8 +270,8 @@ function operations(api) {
       },
       handle: immediateBook,
     },
-    // C (internal-only, custom pricing): the pack hook dataverseMessages.CalculatePrice replaces this default.
-    // unverified: the 404 for an absent table and the 204 otherwise (LC7).
+    // Internal-only (custom pricing): the pack hook dataverseMessages.CalculatePrice replaces this default.
+    // The 404 for an absent table and the 204 otherwise are guesses.
     {
       name: "CalculatePrice", kind: "action", binding: "unbound",
       signature: { params: [["Target", "mscrm.crmbaseentity"], ["ParentId", "Edm.Guid"]] },

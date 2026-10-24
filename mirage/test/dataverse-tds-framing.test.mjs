@@ -16,7 +16,6 @@ import {
   writeMessage,
 } from "../lib/dataverse-tds-framing.mjs";
 
-// Invented payloads and loopback endpoints only.
 const TIMEOUT = 15_000;
 const VERSION = Buffer.from([12, 0, 0x07, 0xd0, 0, 0]);
 
@@ -153,7 +152,7 @@ test("detectTdsMode separates TLS-first strict connections from PRELOGIN", () =>
   assert.equal(detectTdsMode(Buffer.from([0x01])), null);
 });
 
-test("PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways", { timeout: TIMEOUT }, async () => {
+test("PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways", { timeout: TIMEOUT }, async (t) => {
   const { key, cert } = createSelfSignedCertificate();
   const secureContext = tls.createSecureContext({ key, cert, maxVersion: "TLSv1.2" });
   let resolveServerTls;
@@ -168,8 +167,11 @@ test("PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways"
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
+  const sockets = [];
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
 
   const net1 = net.connect(port, "127.0.0.1");
+  sockets.push(net1);
   await once(net1, "connect");
   writeMessage(net1, TDS.PRELOGIN, encodePrelogin({ version: VERSION, encryption: 0x01 }));
   const reply = await nextMessage(net1);
@@ -177,9 +179,11 @@ test("PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways"
   assert.equal(decodePrelogin(reply.payload).fedAuthRequired[0], 0x01);
   const wrapper = wrapClient(net1);
   const clientTls = tls.connect({ socket: wrapper.duplex, ca: cert, servername: "localhost" });
+  sockets.push(clientTls);
   clientTls.once("secure", () => wrapper.setRaw());
   await once(clientTls, "secureConnect");
   const serverTls = await serverTlsReady;
+  sockets.push(serverTls);
   assert.equal(serverTls.getProtocol(), "TLSv1.2");
 
   const big = Buffer.from(Array.from({ length: 10_000 }, (_, i) => (i * 7) % 256));
@@ -193,14 +197,9 @@ test("PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways"
   writeMessage(clientTls, TDS.SQL_BATCH, query);
   const fromClient = await nextMessage(serverTls);
   assert.deepEqual(fromClient.payload, query);
-
-  clientTls.destroy();
-  serverTls.destroy();
-  net1.destroy();
-  server.close();
 });
 
-test("TDS 8 strict: TLS first on the raw socket, ALPN tds/8.0, PRELOGIN inside TLS", { timeout: TIMEOUT }, async () => {
+test("TDS 8 strict: TLS first on the raw socket, ALPN tds/8.0, PRELOGIN inside TLS", { timeout: TIMEOUT }, async (t) => {
   const { key, cert } = createSelfSignedCertificate();
   const secureContext = tls.createSecureContext({ key, cert });
   const server = net.createServer((socket) => {
@@ -222,14 +221,13 @@ test("TDS 8 strict: TLS first on the raw socket, ALPN tds/8.0, PRELOGIN inside T
     ca: cert,
     ALPNProtocols: ["tds/8.0"],
   });
+  t.after(() => { client.destroy(); server.close(); });
   await once(client, "secureConnect");
   assert.equal(client.alpnProtocol, "tds/8.0");
   writeMessage(client, TDS.PRELOGIN, encodePrelogin({ version: VERSION, encryption: 0x01, mars: 0x00 }));
   const reply = await nextMessage(client);
   assert.equal(reply.type, TDS.TABULAR);
   assert.equal(decodePrelogin(reply.payload).encryption[0], 0x01);
-  client.destroy();
-  server.close();
 });
 
 test("readPackets yields reassembled messages from a stream", async () => {

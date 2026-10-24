@@ -61,7 +61,7 @@ async function fixture(t, { mode = "local", liveBridge, allowLiveWrites = false 
   const persona = { session: signInHeaders(app, "local-editor", { roles: ["Editor"] }) };
   const submit = (
     values,
-    headers = { __RequestVerificationToken: app.state().csrf },
+    headers = { __RequestVerificationToken: app.csrf },
   ) =>
     fetch(app.url + "/__sim/forms/entityform/create/submit", {
       method: "POST",

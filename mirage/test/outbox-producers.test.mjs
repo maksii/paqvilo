@@ -1,5 +1,4 @@
 // SendEmail and BackgroundSendEmail capture outgoing email in the outbox (outbox.mjs) through the full Web API.
-// Invented data only; loopback.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

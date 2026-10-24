@@ -1,4 +1,4 @@
-// $expand rules and expanded-collection links for the simulated Dataverse Web API. Invented schema only.
+// $expand rules and expanded-collection links for the simulated Dataverse Web API.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataError } from "../lib/data-error.mjs";
@@ -11,7 +11,7 @@ const VERSION = "v9.2";
 const ID = "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f";
 const PAGING = "Only $select and $filter clause can be provided while doing $expand on many-to-one relationship or nested one-to-many relationship.";
 
-// Invented schema: widget has gadgets (one-to-many), tags (N:N) and a lookup to gadget.
+// Schema: widget has gadgets (one-to-many), tags (N:N) and a lookup to gadget.
 const gadget = { logicalName: "gadget", entitySet: "gadgets", relationships: {} };
 const tag = { logicalName: "tag", entitySet: "tags", relationships: {} };
 const widget = {
@@ -50,9 +50,9 @@ test("more than 15 expand options is rejected and 15 is accepted, nested options
   const lookupMapping = { logicalName: "w", relationships: lookups };
   assert.doesNotThrow(() => assertExpand(parseExpand(flat), lookupMapping, resolve));
   const sixteen = Array.from({ length: 16 }, () => "primarygadgetid").join(",");
-  expectError(() => assertExpand(parseExpand(sixteen), lookupMapping, resolve), "The number of $expand options exceeded the limit of 15."); // unverified: text
+  expectError(() => assertExpand(parseExpand(sixteen), lookupMapping, resolve), "The number of $expand options exceeded the limit of 15."); // native text is a guess
   const nestedCount = Array.from({ length: 8 }, () => "primarygadgetid($expand=primarygadgetid)").join(",");
-  expectError(() => assertExpand(parseExpand(nestedCount), lookupMapping, resolve), "The number of $expand options exceeded the limit of 15."); // unverified: text
+  expectError(() => assertExpand(parseExpand(nestedCount), lookupMapping, resolve), "The number of $expand options exceeded the limit of 15."); // native text is a guess
 });
 
 test("$top or $orderby on a collection child is rejected only when the query nests", () => {
@@ -71,8 +71,8 @@ test("a sibling N:N next to a nested expand is rejected under the N:N navigation
 });
 
 test("$top or $orderby on a single-valued lookup is rejected at any nesting", () => {
-  expectError(() => assertExpand(parseExpand("primarygadgetid($top=1)"), widget, resolve), PAGING); // unverified: Dataverse may accept it
-  expectError(() => assertExpand(parseExpand("primarygadgetid($orderby=name)"), widget, resolve), PAGING); // unverified: Dataverse may accept it
+  expectError(() => assertExpand(parseExpand("primarygadgetid($top=1)"), widget, resolve), PAGING); // a guess: Dataverse may accept it
+  expectError(() => assertExpand(parseExpand("primarygadgetid($orderby=name)"), widget, resolve), PAGING); // a guess: Dataverse may accept it
 });
 
 test("expand option values are percent-encoded once in the nextLink, nested values included", () => {

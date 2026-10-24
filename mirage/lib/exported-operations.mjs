@@ -37,11 +37,10 @@ export function assertOperationRole(record, identity) {
   if (!allowed.length || !allowed.some(id => held.includes(id))) throw failure('The current web roles cannot execute this operation.', 403, 'Forbidden');
 }
 
-// The server-object response envelope (Learn: power-pages/configure/server-objects).
+// Reason phrases of the server-object response envelope.
 const REASONS = { 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 400: 'Bad Request', 403: 'Forbidden', 404: 'Not Found', 501: 'Not Implemented', 502: 'Bad Gateway' };
 const envelope = (status, body = '', headers = {}, serverError = null) => ({ StatusCode: status, Body: body == null ? '' : typeof body === 'string' ? body : stringifyExactJson(body),
   IsSuccessStatusCode: status >= 200 && status < 300, ReasonPhrase: serverError ?? REASONS[status] ?? String(status), ServerError: Boolean(serverError), ServerErrorMessage: serverError, Headers: headers ?? {} });
-// ServerLogic/* site settings (Learn power-pages/configure/server-logic-overview, "Site settings").
 const settingOf = (portal, name) => siteSetting(portal ?? {}, name);
 const settingFlag = (value, fallback) => (value == null || String(value).trim() === '' ? fallback : /^(?:true|1)$/i.test(String(value).trim()));
 
@@ -49,7 +48,7 @@ const settingFlag = (value, fallback) => (value == null || String(value).trim() 
 export function assertServerLogicEnabled(portal, diagnostic = () => {}) {
   if (settingFlag(settingOf(portal, 'ServerLogic/Enabled'), true)) return;
   diagnostic({ code: 'SERVER_LOGIC_DISABLED', severity: 'warning', message: 'ServerLogic/Enabled is false: server logic is turned off for this site.' });
-  // unverified: the native status of a server-logic call on a site with ServerLogic/Enabled false.
+  // Native status for a site with ServerLogic/Enabled false is not known; 403 ServerLogicDisabled is a guess.
   throw failure('Server logic is disabled for this site (ServerLogic/Enabled).', 403, 'ServerLogicDisabled');
 }
 
@@ -58,7 +57,7 @@ export function assertServerLogicEnabled(portal, diagnostic = () => {}) {
 export function serverLogicDomainAllowed(portal, host) {
   const domains = String(settingOf(portal, 'ServerLogic/AllowedDomains') ?? '').split(/[;,\s]+/).map(item => item.trim().toLowerCase().replace(/^\*?\./, '')).filter(Boolean);
   const all = settingFlag(settingOf(portal, 'ServerLogic/AllowNetworkingToAllDomains'), true);
-  // unverified: how AllowedDomains combines with AllowNetworkingToAllDomains; a configured list restricts, and networking off with no list refuses all.
+  // Native combination of AllowedDomains and AllowNetworkingToAllDomains is a guess: a configured list restricts, and networking off with no list refuses all.
   if (!domains.length) return all;
   const name = String(host ?? '').toLowerCase();
   return domains.some(domain => name === domain || name.endsWith(`.${domain}`));
@@ -114,10 +113,10 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
     },
     async flow(message) {
       if (!services.triggerFlow) return unavailable('CloudFlow.TriggerAsync', 'SERVER_LOGIC_FLOW_UNAVAILABLE');
-      // Learn: siteId, siteUrl and userId are added to the payload. unverified: their casing; siteUrl is not known here.
+      // The platform adds siteId, siteUrl and userId to the payload; their native casing is a guess and siteUrl is not known here.
       const payload = { ...parsePayload(message.payload), siteId: portal.website?.id ?? null, userId: identity?.contactId ?? identity?.id ?? null };
       const answer = await services.triggerFlow({ flowId: canonical(message.flowId), payload, identity });
-      // Learn: a flow without a Response action answers 202 Accepted with an empty Body, reported as success.
+      // A flow without a Response action answers 202 Accepted with an empty Body, reported as success.
       return envelope(answer.status ?? 200, answer.status === 202 ? '' : answer.body ?? '', answer.headers);
     },
     async http(message) {
@@ -125,7 +124,7 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
       let original = null; try { original = new URL(message.url).hostname; } catch {}
       if (!serverLogicDomainAllowed(portal, original)) {
         note({ code: 'SERVER_LOGIC_HTTP_DOMAIN_BLOCKED', severity: 'warning', host: original, message: 'HttpClient target is outside ServerLogic/AllowedDomains (or ServerLogic/AllowNetworkingToAllDomains is false).' });
-        // Learn (disable external service calls): a blocked outbound call answers 403 Forbidden. unverified: the same status for AllowedDomains.
+        // A blocked outbound call answers 403 Forbidden (documented for disabled external calls, assumed for AllowedDomains).
         return envelope(403, '', {}, 'HTTP target domain is not allowed for server logic');
       }
       // Contract: every outbound call goes through loopbackFetch; a cloud host must be rewritten to a declared local service.
@@ -209,7 +208,7 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
 }
 
 /**
- * Dataverse.InvokeCustomApi through the organization (Learn, server objects: InvokeCustomApi(httpMethod, url, payload)):
+ * Dataverse.InvokeCustomApi(httpMethod, url, payload) through the organization:
  * `url` is an unbound `name`, or `set(id)/Microsoft.Dynamics.CRM.name` / `set/Microsoft.Dynamics.CRM.name` for bound
  * operations; a function takes inline literal parameters, `name(P1='text',P2=5)`. The operation runs through the
  * organization's operation registry as `principal` (a systemuserid, or a function answering one: the host passes the portal
@@ -242,7 +241,7 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
     const id = key == null ? null : String(key).replace(/^'|'$/g, '');
     target = { mapping, id, row: id ? store.tableRows(mapping.logicalName).find(row => canonical(row[mapping.idColumn]) === canonical(id)) ?? null : null };
     if (id && !target.row) return error(404, `${mapping.logicalName} With Id = ${id} Does Not Exist`);
-    // Learn server-logic-overview: table permissions govern what server logic reaches. unverified: the native status and code.
+    // Table permissions govern what server logic reaches; the native status and code of a denial are a guess.
     if (target.row && !store.allowed(mapping.logicalName, 'read', target.row, identity ?? {}))
       return { status: 403, body: { error: { code: 'Forbidden', message: `The current portal user cannot read ${mapping.logicalName} ${id}.` } }, headers: {} };
   }
@@ -308,8 +307,8 @@ export function runExportedCloudFlow({ record, workflows, input, store,servicePr
   const args = {definition,input,store,serviceProfile,steps,diagnostic,connectors,connectionReferences:workflow.definition.properties?.connectionReferences,context};
   const runs = flowRunsOf(store);
   if (!runs) return executeFlowDefinition(args);
-  // unverified: the native answer of a Power Pages flow request whose run waits before its Response (natively the request
-  // waits for the Response until the portal times out); the flowrun triggertype text.
+  // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
+  // waits for the Response until the portal times out), as is the flowrun triggertype text.
   return runTrackedFlow({ runs, processId: record.processId, trigger: 'PowerPages', ...args })
     .then(answer => answer?.status === 'Waiting' ? answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } } : answer);
 }

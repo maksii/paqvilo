@@ -18,6 +18,11 @@ import { createCounters } from './runtime-counters.mjs';
 import { QUEUE_MESSAGE_MAPPING, QUEUE_MESSAGE_TABLE } from './message-bus.mjs';
 import { OUTBOX_MAPPING, OUTBOX_TABLE } from './outbox.mjs';
 import { FLOW_RUN_TABLE } from './flow-runs.mjs';
+
+// A stable number per state object: a replaced state (restore, reset) never reuses a cached derivation.
+const stateIds = new WeakMap();
+let nextStateId = 0;
+const stateKey = (state) => { if (!stateIds.has(state)) stateIds.set(state, ++nextStateId); return stateIds.get(state); };
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
 // The organization's internal tables (the one registration seam): table -> its own mapping, or null for a standard table
 // whose mapping the standard metadata supplies. The organization composes them in its startup transaction, before any
@@ -68,7 +73,7 @@ function seedRegistrations(store, settings, ids, clock) {
   }
 }
 
-// The providers object (ARCH 18): every key present, each a provider or null.
+// The providers object: every key present, each a provider or null.
 const PROVIDER_KEYS = ['storage', 'messaging', 'outbox', 'connectors', 'secrets', 'serviceFixtures', 'powerFx', 'localServices'];
 const providersOf = (providers = {}) => Object.freeze(Object.fromEntries(PROVIDER_KEYS.map(key => [key, providers?.[key] ?? null])));
 
@@ -143,7 +148,7 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
   if (!schedulerOption && scheduler !== previousScheduler) organizationSchedulers.set(scheduler, 0);
   const ownsScheduler = organizationSchedulers.has(scheduler);
   if (ownsScheduler) { organizationSchedulers.set(scheduler, organizationSchedulers.get(scheduler) + 1); pendingSchedulers.set(store, scheduler); }
-  // Standard table columns under the Solution's own fields (plan 3.2); the records and TDS layers both read this.
+  // Standard table columns under the Solution's own fields; the records and TDS layers both read this.
   const solutionFields = metadataFields;
   metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
   const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
@@ -198,6 +203,8 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
     changeLog: () => store.state.dataverse?.metadataLog ?? [],
     extraCsdl: () => operations.csdlFragments(),
+    // Commits advance dataRevision; a replaced state or a table added outside a commit changes the other parts.
+    revision: () => `${store.dataRevision()}|${stateKey(store.state)}|${Object.keys(store.state.mappings).length}`,
   });
   // One change log per API: the record handlers read it, a rolled-back changeset rewinds it and a reset expires its tokens.
   const changes = createChangeLog(store, { clock });
@@ -240,7 +247,7 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
     runAtomic: (fn) => runAtomic(api, fn),
     dataRevision: () => store.dataRevision?.(),
-    // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs (ARCH 18, 19).
+    // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs.
     // An explicit `secrets` resolver option wins over providers.secrets; api.secrets stays its alias for the message handlers.
     providers: providersOf(secrets === undefined ? providers : { ...providers, secrets }),
     packs,
@@ -258,8 +265,8 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
         return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...response } };
       },
     });
-  // unverified: the response property types (the metadata CSDL's ComplexEntityMetadata and ComplexAttributeMetadata); the
-  // EntityFilters flags are Edm.Int32 here, not the mscrm enum.
+  // The response property types (ComplexEntityMetadata, ComplexAttributeMetadata) are assumed; the EntityFilters flags are
+  // Edm.Int32 here, not the mscrm enum.
   metadataFunction("RetrieveEntity", (p) => metadata.retrieveEntityResponse(p.LogicalName ?? p.MetadataId ?? null, p.EntityFilters ?? null), `<ComplexType Name="RetrieveEntityResponse">
   <Property Name="EntityMetadata" Type="mscrm.ComplexEntityMetadata" />
 </ComplexType>
@@ -311,7 +318,7 @@ async function composeOrganizationRuntime({ store, settings, change = fn => fn()
     await close().catch(cleanup => log('organization-cleanup', cleanup));
     throw error;
   }
-  // H6: the organization the seeded organization row carries (settings.organizationId is null at runtime).
+  // The organization the seeded organization row carries (settings.organizationId is null at runtime).
   const organizationRow = store.tableRows("organization").find((row) => String(row.organizationid).toLowerCase() === organizationId);
   api.settings = { ...settings, organizationId: organizationRow?.organizationid ?? organizationId };
   // Query hierarchy operators resolve through the hierarchy module when it is installed: Dataverse callers through their

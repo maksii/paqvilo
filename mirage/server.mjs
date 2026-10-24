@@ -197,7 +197,8 @@ import {
 import { handleWebApi } from "./lib/webapi-handler.mjs";
 import { buildSiteTables } from "./lib/site-tables.mjs";
 
-// Organization.BlockedAttachments default (Learn power-apps/developer/data-platform/files-images-overview, "Block files by extension").
+// Organization.BlockedAttachments default ("Block files by extension":
+// https://learn.microsoft.com/power-apps/developer/data-platform/files-images-overview).
 const DATAVERSE_BLOCKED_ATTACHMENTS = 'ade;adp;app;asa;ashx;asmx;asp;bas;bat;cdx;cer;chm;class;cmd;com;config;cpl;crt;csh;dll;exe;fxp;hlp;hta;htr;htw;ida;idc;idq;inf;ins;isp;its;jar;js;jse;ksh;lnk;mad;maf;mag;mam;maq;mar;mas;mat;mau;mav;maw;mda;mdb;mde;mdt;mdw;mdz;msc;msh;msh1;msh1xml;msh2;msh2xml;mshxml;msi;msp;mst;ops;pcd;pif;prf;prg;printer;pst;reg;rem;scf;scr;sct;shb;shs;shtm;shtml;soap;stm;tmp;url;vb;vbe;vbs;vsmacros;vss;vst;vsw;ws;wsc;wsf;wsh;svg';
 const ROOT =path.dirname(fileURLToPath(import.meta.url));
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -721,7 +722,7 @@ async function createPowerPagesSimulator({
     certificateFingerprint: dataverseCertificate?.fingerprint256 ?? null,
     managedIdentity: managedIdentitySummary(),
   });
-  // Site settings bound to environment variables (E2) take their effective value; Secret ones resolve as the organization's
+  // Site settings bound to environment variables take their effective value; Secret ones resolve as the organization's
   // SYSTEM user. portalOverrides.settings still win over both.
   const environmentBound = (source, state) => bindPortalEnvironment(source, state, { resolver: organizationHost.providers.secrets,
     principalId: uuidV5(dataverseOrganizationId(dataverseConfig), 'systemuser:SYSTEM'), diagnostic: entry => sourceDiagnostic(entry) });
@@ -1263,10 +1264,10 @@ async function createPowerPagesSimulator({
       );
     return { [mapping.idColumn]: recordId };
   };
-  // The site's application user (Learn power-pages/admin/connectivity: "# Portals-<site name>"), which server logic's
-  // InvokeCustomApi runs as: the observed one (observed.portalApplicationUserId) when the organization has it, else a local
-  // application user for this site, created once. unverified: its roles; the native Portal Application User, Service Writer and
-  // Service Deleter roles are not seeded locally, so System Administrator stands in.
+  // The site's application user ("# Portals-<site name>"), which server logic's InvokeCustomApi runs as: the observed one
+  // (observed.portalApplicationUserId) when the organization has it, else a local application user for this site, created
+  // once. The native Portal Application User, Service Writer and Service Deleter roles are not seeded locally, so System
+  // Administrator stands in for them.
   const portalApplicationAppId = () => uuidV5(organization.organizationId, `portal-application:${String(portal.website?.id ?? '').replace(/[{}]/g, '').toLowerCase()}`);
   // The application user id when it exists (observed or local), else null; never writes.
   const existingPortalApplicationUser = () => {
@@ -3449,7 +3450,7 @@ async function createPowerPagesSimulator({
     clientAssets: () => modelDrivenSettingsValue.trustedExtensions ? clientResources.assets : new Map([...clientResources.assets].filter(([, asset]) => asset.passive === true)),
     csrf: () => csrf, json, readBody: jsonObjectBody, change, read: fn => store.readOperation(() => solutionMetadataOverlay.withReadEpoch(fn)),
     principal: req => staffSessions.resolve(req), webApi: createModelDrivenWebApi({ organization: () => organization }), offlineState: offlineSessionState(store, change) });
-  // Reserved app surfaces (ARCH 10): canvas inventory pages and code apps answer before the model-driven handler.
+  // Reserved app surfaces: canvas inventory pages and code apps answer before the model-driven handler.
   // Canvas apps run headlessly (canvas-runtime.mjs) as the staff session's user or, for a signed-in portal visitor, the
   // Dataverse user enhanced authorization maps the contact to (portal-authorization.mjs principal); never SYSTEM.
   const canvasRuntime = createCanvasRuntime({ apps: organizationHost.canvasApps, evaluator: () => organizationHost.providers.powerFx, api: () => organization?.api ?? null,
@@ -3495,8 +3496,8 @@ async function createPowerPagesSimulator({
     if (managementStorage && !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)) await change(async () => {});
     // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService), local route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
     if (organization?.api?.sharepoint && await (portalDocuments ??= createPortalDocumentService({ sharepoint: organization.api.sharepoint, store, portal: () => portal, access: portalDocumentAccess,
-      // An unconfigured BlockedAttachments uses the Dataverse organization default list (Learn files-images-overview, "Block
-      // files by extension"); the organization row, a catalogue default or an instance override (even empty) replaces it.
+      // An unconfigured BlockedAttachments uses the Dataverse organization default list
+      // (DATAVERSE_BLOCKED_ATTACHMENTS); the organization row, a catalogue default or an instance override (even empty) replaces it.
       blockedExtensions: () => { const entry = platformSettingEntries(store.state).find(item => item.key === 'BlockedAttachments');
         return String(entry.origin === 'Default / not configured' ? DATAVERSE_BLOCKED_ATTACHMENTS : entry.value ?? '').split(/[;,\s]+/).map(item => item.toLowerCase().replace(/^\./, '')).filter(Boolean); } }))
       .handle(req, res, url, { identity: currentIdentity(), csrf })) return;
@@ -4219,7 +4220,7 @@ async function createPowerPagesSimulator({
       };
       // WebFiles/StorageLocation AzureBlobStorage: the bytes are the object webfiles/<webfileid>/<filename> of storage route
       // portalWebFiles. An unset or export route, a missing provider or object answers WEBFILE_CLOUD_STORAGE_UNAVAILABLE (503);
-      // the export file is never served in its place. unverified: the object naming of native Azure web file storage.
+      // the export file is never served in its place. The object naming of native Azure web file storage is a guess.
       if (String(siteSetting(portal, "WebFiles/StorageLocation") ?? "").trim().toLowerCase() === "azureblobstorage") {
         const name = String(asset.metadata?.filename ?? asset.metadata?._attachment?.name ?? path.basename(file));
         return sendFile(await cloudWebFile(asset.id, name, url.pathname), asset.mimeType || mime(name));
@@ -4782,6 +4783,8 @@ async function createPowerPagesSimulator({
       return dataverse ? { origin: dataverse.origin, tlsOrigin: dataverse.tlsOrigin, authority: dataverse.authority, tenantId: dataverse.tenantId, organizationId: dataverse.organizationId, tdsPort: dataverse.tdsPort, requests: dataverse.requests } : null;
     },
     state: exposedState,
+    // The /_sim write token (x-sim-csrf); constant for the life of the server.
+    csrf,
     // The preflight report of this running simulator (GET /_sim/api/preflight): { scenario, strict }.
     preflight,
     // Resolves once every committed-event job (asynchronous plug-in steps, web hooks, row-triggered flows, due scheduled

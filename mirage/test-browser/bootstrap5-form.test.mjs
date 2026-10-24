@@ -16,8 +16,8 @@ const CONTACT = "c2000000-0000-4000-8000-000000000011";
 const ACCOUNT = "a2000000-0000-4000-8000-000000000011";
 const FORM = "2d000000-0000-4000-8000-000000000011";
 
-// Invented Bootstrap 5 site (Site/BootstrapV5Enabled) with one insert form: a required name,
-// an empty read-only code, an option set and a modal lookup. Nothing leaves loopback.
+// A Bootstrap 5 site (Site/BootstrapV5Enabled) with one insert form: a required name,
+// an empty read-only code, an option set and a modal lookup.
 test("Bootstrap 5 forms: the runtime adopts its form marker, dashes empty read-only boxes and renders Bootstrap 5 lookup grids and success panels", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bootstrap5-form-browser-"));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));

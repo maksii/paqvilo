@@ -113,8 +113,8 @@ export function dataverseScalarCause(
   }
   if (sourceType === "Edm.String") {
     let cause;
-    // A syntactically numeric string outside its CLR range has an overflow cause;
-    // retain the existing diagnostic until that additional cause is qualified.
+    // A syntactically numeric string outside its CLR range has an overflow cause, which is not reported separately;
+    // it keeps the generic diagnostic.
     if (
       ["Edm.Int32", "Edm.Int64", "Edm.Decimal"].includes(expectedType) &&
       /^[\t-\r ]*[+-]?\d+(?:\.\d*)?[\t-\r ]*$/.test(value)

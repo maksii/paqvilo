@@ -18,7 +18,7 @@
 // them again from the recorded waits after a restart. A durable committed job (committed-work.mjs) runs as soon as it is
 // written and has no due time, so it does not carry a timer.
 // ponytail: in-memory wait timers re-armed by rearm(); move them to a due-time job row when committedJobs gains one.
-// unverified: the native flowrun status text values and the Approvals timeout outputs.
+// The flowrun status text values and the Approvals timeout outputs are guesses of the native ones.
 import { DataError } from './data-error.mjs';
 import { storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
 import { runTrackedFlow, triggerPrincipal } from './flow-runtime.mjs';
@@ -343,7 +343,7 @@ export function createHostFlowRuns({ store, clock = null, ids = null, scheduler 
   });
 }
 
-/** Capability record (ARCH §2.4): local run mechanics are behaviour; native outcome and run-history parity are contract. */
+/** Capability record: local run mechanics are behaviour; native outcome and run-history parity are contract. */
 export function describe() {
   return {
     name: 'flow-runs', version: 1, kind: 'organization-module', level: 'behaviour',

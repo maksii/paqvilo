@@ -1,4 +1,4 @@
-// Inventory nodes are found by canonical id as well as by name (Task 13): a Solution MissingDependency that names a role, a
+// Inventory nodes are found by canonical id as well as by name: a Solution MissingDependency that names a role, a
 // dashboard and a canvas app by GUID only is satisfied by a selected layer that provides them.
 import test from 'node:test';
 import assert from 'node:assert/strict';

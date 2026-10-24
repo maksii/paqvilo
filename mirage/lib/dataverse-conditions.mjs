@@ -1,6 +1,6 @@
 // Condition operators shared by FetchXML <condition> and the Dataverse OData
 // query functions (Microsoft.Dynamics.CRM.*). One implementation keeps both
-// query languages consistent; see docs/dataverse-parity.md for evidence.
+// query languages consistent; see mirage/docs/dataverse-parity.md.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DataError } from "./data-error.mjs";
 import {
@@ -110,7 +110,7 @@ export function compileOperator(operator, {
   if (hierarchy) return compileIdentityOperator(op, { attribute, values, table, identity: { hierarchy } });
   // EqualUserAuthContext is a query function only: it has no FetchXML operator, so it is not in FETCH_OPERATORS.
   // The caller's authentication contexts come from identity.dataverse.authContexts; the simulator issues no acrs claim,
-  // so the list is empty and nothing matches. unverified: the semantics are a guess from the name (live capture LC-G5-3).
+  // so the list is empty and nothing matches. The semantics are a guess from the name.
   if (op === "eq-userauthcontext") {
     if (!identity.dataverse)
       throw new DataError(
@@ -419,7 +419,7 @@ export const CRM_FUNCTIONS = {
   EqualUserTeams: { operator: "eq-userteams", values: "none" },
   EqualBusinessId: { operator: "eq-businessid", values: "none" },
   NotEqualBusinessId: { operator: "ne-businessid", values: "none" },
-  // Full-text search (webapi/reference/contains): Dataverse accepts it only on columns enabled
+  // Full-text search: Dataverse accepts it only on columns enabled
   // for full-text indexing and otherwise answers 400 0x80041120 with this message. Exported
   // metadata doesn't say which columns are indexed, so every call gets the documented error.
   Contains: {

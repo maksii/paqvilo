@@ -25,7 +25,7 @@ export const ANONYMOUS_STAFF_CONTEXT = Object.freeze({ userId: '', userName: '',
   locale: 'en-US', localeResolved: true, isRTL: false, timeZone: Object.freeze({ code: 92, standardName: 'UTC', iana: 'UTC' }), transactionCurrency: null,
   numberFormattingInfo: null, dateFormattingInfo: null, anonymous: true });
 
-/** Minutes to add to UTC for the local time in an IANA zone at a date (Learn: getTimeZoneOffsetMinutes). */
+/** Minutes to add to UTC for the local time in an IANA zone at a date (getTimeZoneOffsetMinutes). */
 export function timeZoneOffsetMinutes(iana = 'UTC', date = new Date()) {
   const name = new Intl.DateTimeFormat('en-US', { timeZone: iana, timeZoneName: 'longOffset' }).formatToParts(date).find(part => part.type === 'timeZoneName')?.value ?? 'GMT';
   const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
@@ -50,7 +50,7 @@ export function staffFormatting(staff = ANONYMOUS_STAFF_CONTEXT) {
   };
 }
 
-/** PCF context.userSettings (Learn: UserSettings) from the staff context. */
+/** PCF context.userSettings from the staff context. */
 export function pcfUserSettings(staff = ANONYMOUS_STAFF_CONTEXT) {
   return { dateFormattingInfo: staff.dateFormattingInfo, isRTL: staff.isRTL, languageId: staff.languageId, numberFormattingInfo: staff.numberFormattingInfo,
     securityRoles: [...staff.securityRoles], userId: staff.userId, userName: staff.userName, getTimeZoneOffsetMinutes: staffFormatting(staff).getTimeZoneOffsetMinutes };
@@ -177,7 +177,7 @@ function virtualView(element) {
     unmount: () => { if (root) root.unmount(); else ReactDOM.unmountComponentAtNode?.(element); } };
 }
 
-// Learn PCF client: isOffline follows the shell's mobile offline session (options.isOffline); the network is the loopback host.
+// PCF client: isOffline follows the shell's mobile offline session (options.isOffline); the network is the loopback host.
 const pcfClient = options => { const offline = () => Boolean(options.isOffline?.());
   return { getClient: () => offline() ? 'Mobile' : 'Web', getFormFactor: () => innerWidth < 768 ? 3 : 1, isOffline: offline, isNetworkAvailable: () => true }; };
 export function renderPcfControl(field, initialValue, options = {}) {
@@ -284,13 +284,13 @@ export function renderPcfControl(field, initialValue, options = {}) {
 }
 
 
-// unverified: PCF ConditionOperator numbers (0 Equal, 1 NotEqual, 2 GreaterThan, 3 LessThan, 4 GreaterEqual, 5 LessEqual, 6 Like, 7 NotLike, 12 Null, 13 NotNull).
+// Assumed PCF ConditionOperator numbers (0 Equal, 1 NotEqual, 2 GreaterThan, 3 LessThan, 4 GreaterEqual, 5 LessEqual, 6 Like, 7 NotLike, 12 Null, 13 NotNull).
 const CONDITION_OPERATORS = { 0: 'eq', 1: 'ne', 2: 'gt', 3: 'lt', 4: 'ge', 5: 'le', 6: 'like', 7: 'not-like', 12: 'null', 13: 'not-null' };
 const DATA_TYPES = { text: 'SingleLine.Text', textarea: 'Multiple', boolean: 'TwoOptions', date: 'DateAndTime.DateAndTime', lookup: 'Lookup.Simple', multiselect: 'MultiSelectPicklist' };
 const dataTypeOf = field => !field ? 'unknown' : field.type === 'number' ? field.options?.length ? 'OptionSet' : ({ decimal: 'Decimal', money: 'Currency', double: 'FP', float: 'FP' }[field.dataverseType] ?? 'Whole.None') : DATA_TYPES[field.type] ?? 'SingleLine.Text';
 const linkName = /^[a-z_][a-z\d_]*$/i;
 
-/** A PCF DataSet (Learn: component-framework/reference/dataset) over the model-driven view query engine.
+/** A PCF DataSet over the model-driven view query engine.
  * query(input) runs the view query ({ view, page, pageSize, sort, direction, filters, columns, links }) and answers
  * { rows, total, more }. baseFilters narrow it (a related subgrid's parent); openRecord(entity, id) navigates. */
 export function createDatasetHost({ table, tables = {}, view, columns, query, openRecord, baseFilters = [], updated = () => {} }) {
@@ -332,7 +332,7 @@ export function createDatasetHost({ table, tables = {}, view, columns, query, op
       loadNextPage: () => { if (!dataset.paging.hasNextPage) return Promise.resolve(); page++; return load(); },
       loadPreviousPage: () => { if (page <= 1) return Promise.resolve(); page--; return load(); },
       loadExactPage: number => { if (!Number.isInteger(number) || number < 1) fail('PCF dataset page number is invalid.'); page = number; return load(); },
-      // Learn paging.reset: "Reload the results from the server, and reset to page 1."
+      // paging.reset: "Reload the results from the server, and reset to page 1."
       reset: () => { page = 1; return load(); } },
     refresh: () => dataset.paging.reset(),
     addColumn: (name, entityAlias) => {

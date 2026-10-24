@@ -4,7 +4,7 @@ import { DataError } from "./data-error.mjs";
 
 // Docs show versioned paths (/api/discovery/v9.1/) beside v2.0, so any vN.N is served.
 const PATH = /^\/api\/discovery\/v(\d+\.\d+)(?:\/(\$metadata|Instances(?:\((.*)\))?))?\/?$/;
-const NAMESPACE = "Microsoft.Dynamics.CRM"; // unverified: CSDL namespace of the Instance type
+const NAMESPACE = "Microsoft.Dynamics.CRM"; // CSDL namespace of the Instance type is a guess
 const KEYS = "OData.Community.Keys.V1";
 const EDM = "http://docs.oasis-open.org/odata/ns/edm";
 // Property order is the CSDL and response order. Types are CSDL names.
@@ -30,7 +30,7 @@ const PROPERTIES = {
   Url: "Edm.String",
   Version: "Edm.String",
 };
-// Values a caller's instance may omit. unverified: StatusMessage 6 and OrganizationType 0 are defaults chosen here, not seen in a live response.
+// Values a caller's instance may omit. StatusMessage 6 and OrganizationType 0 are guessed defaults.
 const DEFAULTS = { DatacenterName: null, IsUserSysAdmin: false, State: 0, StatusMessage: 6, OrganizationType: 0 };
 // Id is the key; these are the alternate keys that Instances(name=value) accepts.
 const ALTERNATE_KEYS = ["UniqueName", "Region", "State", "Version"];
@@ -195,7 +195,7 @@ function evaluate(node, row) {
     case "fn": {
       const [subject, argument] = node.args.map((arg) => evaluate(arg, row));
       if (typeof subject !== "string" || typeof argument !== "string") return false;
-      // unverified: string comparison is case-sensitive here (the brief's rule), unlike Dataverse.
+      // String comparison is case-sensitive here, unlike Dataverse.
       if (node.name === "contains") return subject.includes(argument);
       return node.name === "startswith" ? subject.startsWith(argument) : subject.endsWith(argument);
     }
@@ -211,7 +211,7 @@ function evaluate(node, row) {
       if (node.op === "eq") return left === right;
       if (node.op === "ne") return left !== right;
       if (left == null || right == null) return false;
-      // unverified: ordering is ordinal and case-sensitive for strings.
+      // Strings order ordinally and case-sensitively (a guess).
       if (node.op === "gt") return left > right;
       if (node.op === "ge") return left >= right;
       if (node.op === "lt") return left < right;
@@ -244,7 +244,7 @@ function toRecord(source) {
 
 function metadataDocument() {
   const properties = Object.entries(PROPERTIES).map(([name, type]) => `        <Property Name="${name}" Type="${type}"${name === "Id" ? ' Nullable="false"' : ""}/>`);
-  // unverified: the alternate key annotation mirrors dataverse-metadata.mjs; Dataverse's exact shape for this entity is not confirmed.
+  // The alternate key annotation mirrors dataverse-metadata.mjs; the native shape for this entity is a guess.
   const alternateKeys = ALTERNATE_KEYS.map((name) => `            <Record Type="${KEYS}.AlternateKey"><PropertyValue Property="Key"><Collection><Record Type="${KEYS}.PropertyRef"><PropertyValue Property="Alias" String="${name}"/><PropertyValue Property="Name" PropertyPath="${name}"/></Record></Collection></PropertyValue></Record>`);
   return [
     '<?xml version="1.0" encoding="utf-8"?>',

@@ -1,5 +1,5 @@
-// QueryExpression, QueryByAttribute and BulkDelete QuerySet to FetchXML. Invented
-// schema and GUIDs only; the output is run through DataStore.fetchXml as well.
+// QueryExpression, QueryByAttribute and BulkDelete QuerySet to FetchXML. The output
+// is run through DataStore.fetchXml as well.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -151,8 +151,7 @@ test("generated FetchXML runs through DataStore.fetchXml", async () => {
     columnSet: { allColumns: false, columns: ["name"] },
     linkEntities: [{ linkToEntityName: "gadget", linkToAttributeName: "widgetid", linkFromAttributeName: "widgetid", joinOperator: "Inner", entityAlias: "g", columns: { allColumns: false, columns: ["name"] } }],
   });
-  const joined = store.fetchXml(linked, admin);
-  assert.equal(joined.entities.length, 2);
+  assert.deepEqual(names(store.fetchXml(linked, admin)), ["Redmond", "Seattle"]);
 
   const page = store.fetchXml(toFetchXml({ entityName: "widget", columnSet: { allColumns: true }, orders: [{ attributeName: "name", orderType: "Ascending" }], pageInfo: { count: 2, pageNumber: 1, returnTotalRecordCount: true } }), admin);
   assert.equal(page.entities.length, 2);
@@ -224,7 +223,7 @@ test("AnyAllFilterLinkEntity is refused, not dropped; FilterHint and IsQuickFind
   assert.equal(toFetchXml(fromBulkDeleteJson({ EntityName: "widget", Criteria: { FilterHint: "x", IsQuickFindFilter: false, AnyAllFilterLinkEntity: null, Conditions: [] } })), '<fetch><entity name="widget"></entity></fetch>');
 });
 
-test("misc-messages modelOf with {Type, Value} keeps the value", () => {
+test("the QueryExpression JSON modelOf keeps a {Type, Value} condition value", () => {
   const json = { EntityName: "widget", Criteria: { FilterOperator: "And", Conditions: [{ AttributeName: "status", Operator: "Equal", Values: [{ Type: "System.Int32", Value: 2 }] }], Filters: [] } };
   assert.equal(toFetchXml(modelOf(json)), '<fetch><entity name="widget"><filter type="and"><condition attribute="status" operator="eq" value="2"/></filter></entity></fetch>');
 });
@@ -241,7 +240,7 @@ test("typed codec values and Date objects render as their scalar text", () => {
   assert.match(equal([{ type: "EntityReference", logicalName: "gadget", id: "g-1" }]), /value="g-1"/);
   assert.match(equal([{ type: "OptionSetValue", value: 2 }]), /value="2"/);
   assert.match(equal([new Date("2026-01-01T00:00:00Z")]), /value="2026-01-01T00:00:00\.000Z"/);
-  // unverified: a boolean renders as "true"; the FetchXML text form of booleans is not checked against the service.
+  // A guess: a boolean renders as "true"; the service's FetchXML text form of booleans is not documented.
   assert.match(equal([true]), /value="true"/);
   assert.match(toFetchXml(where(condition("Contains", [{ type: "string", value: "Red" }]))), /value="%Red%"/);
 });
@@ -257,13 +256,13 @@ test("an empty ColumnSet on the root returns only the primary key, as QueryExpre
 });
 
 test("TopCount with paging in a QueryExpression is refused", () => {
-  // unverified: the SDK documents that a query containing both PageInfo and TopCount throws; the service message text is not documented.
+  // The SDK documents that a query containing both PageInfo and TopCount throws; the message text is a guess.
   assert.throws(() => toFetchXml({ entityName: "widget", topCount: 3, pageInfo: { count: 2, pageNumber: 1 } }), (error) => error instanceof DataError && error.status === 400);
   assert.throws(() => toFetchXml({ entityName: "widget", topCount: 3, pageInfo: { returnTotalRecordCount: true } }), (error) => error instanceof DataError && error.status === 400);
-  assert.doesNotThrow(() => toFetchXml({ entityName: "widget", topCount: 3, pageInfo: {} }));
+  assert.equal(toFetchXml({ entityName: "widget", topCount: 3, pageInfo: {} }), '<fetch top="3"><entity name="widget"></entity></fetch>');
 });
 
 test("JoinOperator Natural maps to inner as an unverified placeholder", () => {
-  // unverified: no FetchXML link-type is documented for JoinOperator.Natural; inner is the current mapping and is not checked against the service.
+  // No FetchXML link-type is documented for JoinOperator.Natural; mapping it to inner is a guess.
   assert.match(toFetchXml({ entityName: "widget", linkEntities: [{ linkToEntityName: "gadget", linkToAttributeName: "widgetid", linkFromAttributeName: "widgetid", joinOperator: "Natural" }] }), /link-type="inner"/);
 });

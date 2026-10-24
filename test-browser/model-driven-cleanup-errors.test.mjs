@@ -295,10 +295,12 @@ test(
       contexts.every((context) => context.pages().length === 0),
       "owned browser contexts close after inspector failure",
     );
+    // A refused connection, not the abort timeout of a listener that is still open.
     await assert.rejects(
       fetch(blocker.discovery.endpoint + "/v1/session", {
         signal: AbortSignal.timeout(1000),
       }),
+      { name: "TypeError", message: "fetch failed" },
     );
     assert.ok(setup.methods.every((method) => method === "GET"));
   },

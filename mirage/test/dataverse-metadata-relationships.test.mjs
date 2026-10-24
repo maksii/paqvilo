@@ -1,4 +1,4 @@
-// Metadata writes for relationships and choices, over an invented schema. The store is seeded with ensureSecurityModel;
+// Metadata writes for relationships and choices. The store is seeded with ensureSecurityModel;
 // the sample tables are created through the table writer, so their mappings are the runtime shapes. The association
 // checks run through the record handlers. Handlers are called directly, not through the router.
 import test from "node:test";
@@ -173,7 +173,8 @@ test("1:N navigation names come from the explicit properties when given", async 
     ReferencingEntityNavigationPropertyName: "bank_account",
     ReferencedEntityNavigationPropertyName: "bank_list",
   }));
-  assert.ok(t.store.state.mappings.account.relationships.bank_list);
+  assert.equal(t.store.state.mappings.account.relationships.bank_list.entity, "sample_bank");
+  assert.equal(t.store.state.mappings.account.relationships.sample_bank_account, undefined, "the default name is not used as well");
   assert.equal(t.store.state.mappings.sample_bank.relationships.bank_account.entity, "account");
 });
 
@@ -381,7 +382,7 @@ test("a relationship read by its MetadataId resolves even without a stored Schem
 test("global option set: create, base-property update, use from an option action, and delete guarded by use", async () => {
   const t = await setup();
   const set = t.store.state.dataverse.globalOptionSets.sample_colors;
-  assert.deepEqual(set.options.map((o) => o.value), [727000000, 727000001]); // unverified: the null value base
+  assert.deepEqual(set.options.map((o) => o.value), [727000000, 727000001]); // the value base is a guess
   assert.equal(set.options[0].label, "Red");
 
   await metadata(t, "PUT", `${globalPath()}(Name='sample_colors')`, { DisplayName: label("Palette") }, { headers: MERGE });
@@ -415,7 +416,7 @@ test("InsertOptionValue assigns a value to a local picklist, and UpdateOptionVal
   const t = await setup();
   const insert = await action(t, "InsertOptionValue", { EntityLogicalName: "sample_bank", AttributeLogicalName: "sample_choice", Label: label("Pending") });
   assert.equal(insert.status, 200);
-  assert.equal(insert.body.NewOptionValue, 100000000); // unverified: the null value base
+  assert.equal(insert.body.NewOptionValue, 100000000); // the value base is a guess
   assert.equal(insert.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#Microsoft.Dynamics.CRM.InsertOptionValueResponse`);
 
   await assert.rejects(action(t, "InsertOptionValue", { EntityLogicalName: "sample_bank", AttributeLogicalName: "sample_choice", Value: 2, Label: label("Dup") }), failing(400));

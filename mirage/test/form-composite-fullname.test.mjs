@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
 
-// Invented "person" table with a computed fullname column (valid for neither create nor update)
+// A "person" table with a computed fullname column (valid for neither create nor update)
 // on a read-only form; a text box with the same (text box) classid stays a plain box.
 test("the full name composite control renders a required composite box without a maximum length", async () => {
   const ID = "f0000000-0000-4000-8000-000000000001";

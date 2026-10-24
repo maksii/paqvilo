@@ -4,8 +4,7 @@
 // A table is virtual when its mapping says so (isVirtual, tableType "Virtual" or a dataSourceId, the markers the Solution and
 // metadata readers set) or when install() declares it in virtualTables. Its provider is virtualTableProviders[dataSourceId]
 // or, failing that, virtualTableProviders[table]. With a provider, beforeWrite only checks and queues the write; the matching
-// operation is called in the records 'external' stage (Learn custom-ve-data-providers: the provider is the main operation,
-// stage 30), after the store write passed every check (If-Match, alternate keys, required columns, business rules, store
+// operation is called in the records 'external' stage (the provider is the main operation, stage 30), after the store write passed every check (If-Match, alternate keys, required columns, business rules, store
 // plug-ins) and inside the same transaction, and the stored row mirrors the provider's returned row:
 //   create (and an upsert that creates)  -> provider.create(row, ctx)        the returned row must carry the primary key
 //   update (and an upsert that updates)  -> provider.update(id, patch, ctx)  a returned row is merged into the mirror
@@ -31,9 +30,8 @@
 // The external events OnExternalCreated/Updated/Deleted stay contract: dataverse-misc-messages.mjs answers them and this module
 // registers no step or handler for them.
 //
-// unverified: the native error code and status of a failed external write (400 VirtualProviderFailed is the module's own shape,
-// not checked against Microsoft Learn's virtual table error codes).
-// unverified: the native status of a write to a virtual table whose data provider lacks the operation (501 is the module's own).
+// The native answers to a failed external write (400 VirtualProviderFailed) and to a provider that lacks the operation (501)
+// are not known; both are the module's own guesses.
 // ponytail: the mirror takes every column the provider returns, as given; no check that the columns exist on the table.
 // ponytail: provider failures are reported once per table and operation; every attempt still fails with 400.
 // ponytail: select, filter and orderby reach the provider as OData text, unparsed. Every collection read refreshes the whole
@@ -43,10 +41,9 @@
 // retrieveMultipleSync(ctx, request) (readSync below), else answer 501 SdkVirtualReadUnsupported. Portal reads (store reads
 // outside the Web API records layer) read the mirror as the last Web API read or write left it.
 //
-// Transactions. Learn (custom-ve-data-providers, Plug-in registration): a data provider's plug-ins run in stage 30, "the main
-// core transaction stage for the operation"; Learn (scalable-customization-design/database-transactions, Event pipeline:
-// platform step): the pipeline's transaction is a SQL transaction committed or aborted with the operation, and ExecuteTransaction
-// and a $batch changeset run their requests in one such transaction. A provider joins that transaction through an optional
+// Transactions. A data provider's plug-ins run in stage 30, the main core transaction stage of the operation; the pipeline's
+// transaction is a SQL transaction committed or aborted with the operation, and ExecuteTransaction and a $batch changeset run
+// their requests in one such transaction. A provider joins that transaction through an optional
 // transaction contract, all three or none:
 //   begin(ctx)     called once per provider and outermost transaction, before its first write in it
 //   commit(ctx)    called once that transaction has committed (store onCommit)
@@ -57,10 +54,10 @@
 // A provider without the contract is not enlisted: its write is made when it is called and stays when the transaction later
 // rolls back; VIRTUAL_PROVIDER_EFFECT_UNCOMPENSATED names each such row once the rollback happens. The module never calls an
 // inverse operation (no platform step does).
-// unverified: Learn does not state what happens to an external system's change when the Dataverse transaction rolls back after
-// a provider plug-in ran; an external change outside the SQL transaction is taken to persist.
+// Assumed: an external change made outside the SQL transaction persists when the Dataverse transaction later rolls back (the
+// platform documentation does not say).
 // ponytail: a provider enlists in the outermost transaction; a savepoint rolled back inside it (an inner SDK call a plug-in
-// caught) does not roll the provider back (Learn plug-in troubleshooting: a failed data operation in a synchronous plug-in ends
+// caught) does not roll the provider back (a failed data operation in a synchronous plug-in ends
 // the whole transaction, so the outermost rollback follows). An asynchronous rollback or commit completes after the response.
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
@@ -73,7 +70,6 @@ const PROVIDER_OPERATIONS = ["retrieve", "retrieveMultiple", "retrieveSync", "re
 const OPERATIONS = [["Create", "create"], ["Update", "update"], ["Delete", "delete"], ["Retrieve", "retrieve"], ["RetrieveMultiple", "retrieveMultiple"]];
 const EXTERNAL_EVENTS = ["OnExternalCreated", "OnExternalUpdated", "OnExternalDeleted"];
 
-// Per-API state: one WeakMap entry per installed API. Never module-global mutable state.
 const states = new WeakMap();
 function stateOf(api) {
   if (!states.has(api)) states.set(api, { providers: new Map(), virtualTables: new Map(), reporter: onceReporter() });
@@ -181,7 +177,7 @@ const pendingWrites = new WeakMap();
 // beforeWrite (synchronous, no provider call): refuses a providerless table (501), a missing provider operation (501) and a
 // deep-insert child, then queues the write. A create without a primary key gets a local one so the external stage finds its
 // row; the provider never sees that generated key. Associate and disassociate change no columns of this row.
-// unverified: the native answer to a deep insert of a virtual table row (501 VirtualProviderDeepInsertUnsupported is the module's own).
+// The native answer to a deep insert of a virtual table row is not known; 501 VirtualProviderDeepInsertUnsupported is a guess.
 function writeThrough(state, c, mapping, { operation, data, existing, deep = false }) {
   const resolved = resolveTable(state, mapping);
   if (!resolved.virtual) return undefined;
@@ -201,7 +197,7 @@ function writeThrough(state, c, mapping, { operation, data, existing, deep = fal
 
 // The external stage (dataverse-records.mjs, after the store write passed every check, before afterWrite): the provider
 // answers the queued write and the stored row mirrors what it returned. A throw or a rejected promise answers 400
-// VirtualProviderFailed and rolls the local write back. In a synchronous SDK write (info.sync) an async provider operation is
+// VirtualProviderFailed and rolls the local write back.
 // A synchronous SDK write (info.sync) calls only the provider's declared synchronous write operation (createSync, updateSync,
 // deleteSync; the same arguments as create, update, delete), as SDK reads call retrieveSync; without it the write answers 501
 // SdkAsyncPreOperationUnsupported before any provider call. A declared synchronous operation that answers a promise fails
@@ -418,7 +414,8 @@ async function query(state, api, table, request = {}) {
 /**
  * install(api, { virtualTableProviders, virtualTables, diagnostic }): the pack export (validateVirtualTableProviders), the
  * declarations (install option, else the packs' virtualTables export) and the diagnostic sink (called once per diagnostic).
- * Exposes api.virtualProviders = { for(table), query(table, { select, filter, orderby, top }), describe(table), diagnostics() }.
+ * Exposes api.virtualProviders = { for(table), query(table, { select, filter, orderby, top }), describe(table), status(table),
+ * readSync(c, table, options), diagnostics() }.
  */
 function install(api, options = {}) {
   const state = stateOf(api);
@@ -464,7 +461,6 @@ function describe(api) {
   const operations = OPERATIONS.map(([name, operation]) => ({ name, level: providers.some((provider) => typeof (provider[operation] ?? provider[`${operation}Sync`]) === "function") ? "behaviour" : "contract" }));
   const fallbacks = [...(state?.virtualTables ?? [])].filter(([, declaration]) => declaration.fallback).map(([table]) => table);
   if (fallbacks.length) operations.push({ name: "LocalFallback", level: "contract", reason: `fallback 'local' declared for ${fallbacks.join(", ")}` });
-  // Transaction enlistment: behaviour when a registered provider declares begin/commit/rollback.
   operations.push({ name: "TransactionEnlistment", level: providers.some(transactional) ? "behaviour" : "contract" });
   return {
     name: "dataverse-virtual-providers",

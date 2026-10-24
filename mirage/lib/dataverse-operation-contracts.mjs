@@ -1,10 +1,7 @@
-// Structural platform Web API contracts for operations implemented by Mirage. No organization rows, labels, IDs, URLs
-// or custom API definitions are included. Each tuple is [EDM element, attributes, ...children]; descriptions are omitted.
-// Public contract index (each documented operation/type uses its lowercase name beneath this reference):
-// https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/
-// https://learn.microsoft.com/en-us/odata/odatalib/edm/define-operations
-// Schema facts supplement the local implementations; declaring a parameter does not implement its native semantics.
-// The four separately documented unqualified system operations retain their captured signatures and honest 501 defaults.
+// Structural platform Web API contracts for operations implemented by Mirage, as documented per operation and type under
+// https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/ (lowercase name). Each tuple is
+// [EDM element, attributes, ...children]; descriptions are omitted. Declaring a parameter does not implement its native
+// semantics. The four separately documented unqualified system operations keep their signatures and answer 501 by default.
 
 
 export const PLATFORM_OPERATIONS = [

@@ -1,6 +1,6 @@
 # Native component baseline
 
-The baseline measures how closely Mirage renders native Power Pages components compared with a real portal. It also lets you run the same measurement against your own portal. It is unrelated to the [compatibility baseline](../mirage/docs/compatibility-baseline.md), which summarizes local regression coverage for ordinary Lense and Mirage flows.
+The baseline measures how closely Mirage renders native Power Pages components compared with a real portal. It also lets you run the same measurement against your own portal.
 
 ## What it is
 

@@ -6,7 +6,6 @@
 //    not delete.
 //  - A custom API call with Prefer: respond-async is a background operation (backgroundoperations row): 202 with its
 //    status monitor location. The status monitor, GET or DELETE on /api/backgroundoperation/<id>, is outside /api/data.
-// Invented data only.
 import { DataError } from "./data-error.mjs";
 import { fromBulkDeleteJson, toFetchXml } from "./dataverse-soap-query.mjs";
 import { dataverseIdentity, ownerColumns, privilegeDeniedError } from "./dataverse-security.mjs";
@@ -15,9 +14,9 @@ import { isLoopbackUrl, loopbackFetch } from "./dataverse-webhooks.mjs";
 import { createScheduler, systemIds } from "./runtime-clock.mjs";
 
 const BULK_DELETE_TYPE = 13; // asyncoperation.operationtype: Bulk Delete
-// asyncoperation.operationtype: Bulk Duplicate Detection (Learn, system job reference). Used by dataverse-duplicates.mjs.
+// asyncoperation.operationtype: Bulk Duplicate Detection. Used by dataverse-duplicates.mjs.
 export const BULK_DUPLICATE_TYPE = 8;
-// asyncoperation.operationtype labels (Learn: asyncoperation). 202, 203, 207, 208 and 211 are the solution jobs (dataverse-solutions.mjs,
+// asyncoperation.operationtype labels. 202, 203, 207, 208 and 211 are the solution jobs (dataverse-solutions.mjs,
 // dataverse-solution-messages.mjs); 209 and 210 are the language jobs; 63 is the alternate key index job (dataverse-metadata-messages.mjs).
 const OPERATION_TYPES = [
   [BULK_DELETE_TYPE, "Bulk Delete"], [BULK_DUPLICATE_TYPE, "Bulk Duplicate Detection"], [63, "EntityKey Index Creation"], [202, "Export Solution Async Operation"], [203, "Import Solution Async Operation"],
@@ -29,14 +28,14 @@ const STATUS = { WaitingForResources: 0, Waiting: 10, InProgress: 20, Succeeded:
 const CANCELING = 22; // backgroundoperation status Canceling (state Locked); the job status Canceling too
 const PAUSING = 21; // job status Pausing (state Locked)
 // Status written by each allowed statecode change, keyed "from>to". Anything else is refused.
-// unverified: live capture. Without a live run a Locked job is written straight to Canceled or Waiting.
+// Without a live run a Locked job is written straight to Canceled or Waiting; the native behaviour is a guess.
 const TRANSITIONS = {
   "0>3": STATUS.Canceled, "1>3": STATUS.Canceled, "2>3": STATUS.Canceled, // cancel
   "1>0": STATUS.WaitingForResources, // resume
   "2>1": STATUS.Waiting, // pause
 };
 // A cancel or pause of a Locked job whose run is live is written as its transitional status; the run finishes it at its
-// next row (Canceling ends Canceled, Pausing ends Suspended). Learn lists both as Locked statuses. unverified: live capture for their order.
+// next row (Canceling ends Canceled, Pausing ends Suspended). Both are Locked statuses; the native order of writes is a guess.
 const TRANSITIONAL = { "2>3": CANCELING, "2>1": PAUSING };
 const JOB_WRITABLE = new Set(["statecode", "statuscode", "postponeuntil"]);
 const STATUS_OPTIONS = [
@@ -54,7 +53,7 @@ const BACKGROUND_STATUS_OPTIONS = [
 ];
 // backgroundoperation states are a picklist of 0, 2 and 3: no Suspended.
 const BACKGROUND_STATE_OPTIONS = STATE_OPTIONS.filter((option) => option.value !== STATE.Suspended);
-// The state and status columns take their Dataverse types (State, Status, Picklist); an earlier int mapping is corrected.
+// The state and status columns take their Dataverse types (State, Status, Picklist); a stored mapping that types them int is corrected.
 const STATE_COLUMNS = new Set(["statecode", "statuscode", "backgroundoperationstatecode", "backgroundoperationstatuscode"]);
 // A cancel of a background operation: Ready or Locked moves to Locked/Canceling, and its run then finishes it as Canceled.
 const CANCEL_PATCH = { backgroundoperationstatecode: STATE.Locked, backgroundoperationstatuscode: CANCELING };
@@ -70,7 +69,7 @@ const errorNumber = (error) => {
   const code = dataverseError(error, {}).body?.error?.code;
   return /^0x[0-9a-f]+$/i.test(code ?? "") ? Number.parseInt(code, 16) | 0 : 0;
 };
-// The CSDL of the BulkDelete action. unverified: live capture for the recipient types. The EntityContainer import is emitted by the operation registry.
+// The CSDL of the BulkDelete action; the recipient types are a guess. The EntityContainer import is emitted by the operation registry.
 const BULK_DELETE_CSDL = `<ComplexType Name="BulkDeleteResponse"><Property Name="JobId" Type="Edm.Guid" /></ComplexType>
 <Action Name="BulkDelete">
   <Parameter Name="QuerySet" Type="Collection(mscrm.QueryExpression)" />
@@ -178,9 +177,9 @@ function checkJobUpdate(data, existing, running) {
   data.statuscode = status;
 }
 
-// The RFC 2445 subset Learn documents for RecurrencePattern: FREQ HOURLY, DAILY, WEEKLY or MONTHLY, with an optional INTERVAL.
+// The RFC 2445 subset documented for RecurrencePattern: FREQ HOURLY, DAILY, WEEKLY or MONTHLY, with an optional INTERVAL.
 // ponytail: COUNT, UNTIL, BYDAY, BYMONTHDAY, BYMONTH and YEARLY are not documented for Dataverse, so they are refused.
-// unverified: live capture for the refusal's message and code.
+// The refusal's native message and code are not known.
 const FREQUENCIES = ["HOURLY", "DAILY", "WEEKLY", "MONTHLY"];
 function parseRecurrence(text) {
   if (!text) return null;
@@ -208,7 +207,7 @@ const queryOf = (item) => {
   delete query.DataSource;
   return fromBulkDeleteJson(query);
 };
-// DataSource "retained" is the long-term store. Only "default" and "retained" are documented by Learn.
+// DataSource "retained" is the long-term store. Only "default" and "retained" are documented.
 const RETAINED_SOURCE = /^retained$/i;
 const SOURCES = /^(?:default|retained)$/i;
 
@@ -260,12 +259,6 @@ const waitFor = (now, postponeuntil) => (postponeuntil ? Math.max(0, Date.parse(
 // ponytail: a plain POST with no retry; a failed callback is logged and the operation keeps its result.
 const postCallback = (url, body) => loopbackFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
 
-/**
- * Registers the BulkDelete action, the background operation call path and the system-table write rules.
- * options.schedule(task, delayMs) runs a task on a later tick (tests inject their own); options.pageSize is the FetchXML
- * page used to collect ids; options.notify(url, body) posts a callback.
- * The router calls runInBackground before each registered operation; see that export.
- */
 // reset runs on every reseed (/_sim/ reset, state import) inside the change queue, so it writes through the store only.
 // Clearing the run tokens stops in-flight runs at their next row (their job rows are gone). Timers already queued find no
 // row and return. ponytail: an imported state's Ready or Locked jobs run again only after a restart (install resumes them).
@@ -274,6 +267,12 @@ export function reset(api) {
   return api.store.transact(() => seedMappings(api.store));
 }
 
+/**
+ * Registers the BulkDelete action, the background operation call path and the system-table write rules.
+ * options.schedule(task, delayMs) runs a task on a later tick (tests inject their own); options.pageSize is the FetchXML
+ * page used to collect ids; options.notify(url, body) posts a callback.
+ * The router calls runInBackground before each registered operation; see that export.
+ */
 export async function install(api, { schedule = (task, delayMs) => defaultSchedule(api, task, delayMs), pageSize = 5000, notify = postCallback } = {}) {
   const { store } = api;
   seedMappings(store);
@@ -448,7 +447,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
         });
       }
     } finally {
-      // Only the run still active at its end owns the job; a superseded run must not queue a second occurrence (P21).
+      // Only the run still active at its end owns the job; a superseded run must not queue a second occurrence.
       owned = active.get(jobId) === token;
       if (owned) active.delete(jobId);
       liveRuns.delete(requestId);
@@ -457,8 +456,8 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
     const done = rowOf(store, "asyncoperation", jobId);
     if (owned && done?.statecode === STATE.Completed && done.statuscode !== STATUS.Canceled && done.recurrencepattern) {
       const rule = parseRecurrence(done.recurrencepattern);
-      // Stepped from this occurrence's own start, so the cadence does not drift. unverified: live capture for occurrences a late
-      // or resumed job has already passed; they are skipped here.
+      // Stepped from this occurrence's own start, so the cadence does not drift. Occurrences a late or resumed job has
+      // already passed are skipped; native handling of them is not known.
       let next = Date.parse(nextOccurrence(Date.parse(done.recurrencestarttime ?? stamp()), rule));
       while (next <= api.clock()) next = Date.parse(nextOccurrence(next, rule));
       const at = new Date(next).toISOString();
@@ -480,7 +479,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
       // ponytail: SendEmailNotification and the recipients are accepted and ignored.
       for (const item of body.QuerySet) {
         queryOf(item); // refuses unsupported keys
-        // unverified: live capture for the refusal's message and code (Learn documents only default and retained).
+        // The refusal's native message and code are not known.
         if (item.DataSource != null && !SOURCES.test(item.DataSource)) throw invalid(`The QuerySet DataSource '${item.DataSource}' is not supported.`);
         const mapping = store.resolveMapping(item.EntityName);
         api.principals.authorize({ user: ctx.user, entity: mapping.logicalName, operation: "read", mapping });
@@ -503,10 +502,10 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
   });
 
   // Cascades run synchronously here, so no cascade job row exists and the answer is the empty id.
-  // unverified: live capture for the response property name and for the empty-id answer.
+  // The response property name and the empty-id answer are a guess.
   const NO_CASCADE_JOB = "00000000-0000-0000-0000-000000000000";
   const requiredGuid = (value, name) => {
-    if (value == null || value === "") throw invalid(`${name} is required.`); // unverified: message text
+    if (value == null || value === "") throw invalid(`${name} is required.`); // Native message text not known.
     return value;
   };
   api.registry.register({
@@ -530,13 +529,13 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
 </Function>`,
     async handle(ctx) {
       const ids = ctx.params?.ParentEntityIds;
-      if (!Array.isArray(ids)) throw invalid("ParentEntityIds must be a collection of ids."); // unverified: message text
+      if (!Array.isArray(ids)) throw invalid("ParentEntityIds must be a collection of ids."); // Native message text not known.
       return { status: 200, body: { AsyncJobId: NO_CASCADE_JOB } };
     },
   });
-  // A business event the platform raises when a background operation completes (Learn: "You should not use this action
-  // directly"). The direct-call result is unverified; the parameters are checked and the call changes nothing.
-  // ponytail: no plug-in subscribes to it here (P3 is not modelled), so no event is delivered.
+  // A business event the platform raises when a background operation completes; the docs say not to call it directly.
+  // The native direct-call result is not known; the parameters are checked and the call changes nothing.
+  // ponytail: no plug-in subscribes to it here, so no event is delivered.
   api.registry.register({
     name: "OnBackgroundOperationComplete", kind: "action", binding: "unbound",
     csdl: `<Action Name="OnBackgroundOperationComplete">
@@ -550,9 +549,9 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
     async handle(ctx) {
       const body = typeof ctx.body === "string" ? JSON.parse(ctx.body || "{}") : (ctx.body ?? {});
       requiredGuid(body.BackgroundOperationId, "BackgroundOperationId");
-      if (!body.LocationUrl) throw invalid("LocationUrl is required."); // unverified: message text
+      if (!body.LocationUrl) throw invalid("LocationUrl is required."); // Native message text not known.
       if (!rowOf(store, "backgroundoperation", body.BackgroundOperationId)) {
-        throw new DataError(`backgroundoperation With Id = ${body.BackgroundOperationId} Does Not Exist`, 404, "NotFound"); // unverified: message text
+        throw new DataError(`backgroundoperation With Id = ${body.BackgroundOperationId} Does Not Exist`, 404, "NotFound"); // Native message text not known.
       }
       return { status: 204 };
     },
@@ -581,7 +580,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
     if (current.backgroundoperationstatuscode !== CANCELING) {
       if (current.backgroundoperationstatecode !== STATE.Ready) return;
       await setRow("backgroundoperation", id, { backgroundoperationstatecode: STATE.Locked, backgroundoperationstatuscode: STATUS.InProgress, starttime: stamp() });
-      // A cancel that arrives while the operation runs does not stop it: Dataverse keeps the started result (P8).
+      // A cancel that arrives while the operation runs does not stop it: Dataverse keeps the started result.
       patch = await invokeOutcome(op, call);
     }
     await setRow("backgroundoperation", id, { backgroundoperationstatecode: STATE.Completed, endtime: stamp(), ...patch });
@@ -605,7 +604,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
       const callback = callbackOf(call.headers?.prefer);
       // Callbacks go only to a loopback address (the shared guard); anything else is refused before the request is queued.
       if (callback !== null && !isLoopbackUrl(callback)) {
-        throw invalid("The callback URI must be a loopback address in this simulator.", "InvalidCallbackUri", { innerCode: "0x8009732A" }); // unverified: message text
+        throw invalid("The callback URI must be a loopback address in this simulator.", "InvalidCallbackUri", { innerCode: "0x8009732A" }); // Native message text not known.
       }
       const mapping = store.resolveMapping("backgroundoperation");
       api.principals.authorize({ user: call.user, entity: "backgroundoperation", operation: "read", mapping });
@@ -652,7 +651,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
   // failure rows are read-only; a background operation can be changed only to cancel it.
   api.recordHooks.add("beforeWrite", (c, mapping, { operation, data, existing }) => {
     // A row of a bulk delete run is refused once that run is no longer live (a reset, a cancel or a newer run), even if it
-    // was queued before the change: the reseeded row with the same id is not deleted by the stale run (P19).
+    // was queued before the change: the reseeded row with the same id is not deleted by the stale run.
     if (operation === "delete") {
       const live = liveRuns.get(c.requestId);
       if (live && !live()) throw invalid("The bulk delete run stopped before this row was deleted.");
@@ -660,7 +659,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
     }
     const logical = mapping.logicalName;
     if (logical === "bulkdeleteoperation" || logical === "bulkdeletefailure") {
-      if (operation === "create" || operation === "update") throw invalid("The bulk deletion operation is written by the system and is read-only."); // unverified: exact message and status
+      if (operation === "create" || operation === "update") throw invalid("The bulk deletion operation is written by the system and is read-only."); // Native message and status not known.
       return;
     }
     if (logical === "backgroundoperation") {
@@ -677,7 +676,7 @@ export async function install(api, { schedule = (task, delayMs) => defaultSchedu
       return;
     }
     if (logical !== "asyncoperation") return;
-    if (operation === "create") throw invalid("System jobs are created by their actions, not through the Web API."); // unverified: exact message and status
+    if (operation === "create") throw invalid("System jobs are created by their actions, not through the Web API."); // Native message and status not known.
     if (operation !== "update") return;
     const before = Number(existing?.statecode);
     checkJobUpdate(data, existing, active.has(existing.asyncoperationid));

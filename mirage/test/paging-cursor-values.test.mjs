@@ -1,6 +1,6 @@
 // Value-based paging cursor: the paging cookie carries the order-column values and the primary key of the page's last
 // row, so forward paging skips nothing when the cursor row is deleted or updated out of the filter between pages
-// (Learn page-results, "Ordering and paging"). Invented schema and GUIDs only.
+// (as documented under "Ordering and paging").
 import test from "node:test";
 import assert from "node:assert/strict";
 import { keysetPage } from "../lib/data.mjs";
@@ -73,7 +73,7 @@ test("FetchXML paging cookie survives cursor-row delete", async (t) => {
 });
 
 // A null order value travels as the empty marker the OData skip token uses and resumes nulls first ascending: every row is
-// paged once, with and without the page-1 cursor row deleted (Learn page-results).
+// paged once, with and without the page-1 cursor row deleted.
 test("FetchXML paging cookie with a null order value pages every row once", async (t) => {
   const nullable = [null, 2, null, 1, null, 3].map((x_rank, i) => ({ x_itemid: id(i + 1), x_name: "abcdef"[i], x_rank, statecode: 0, statuscode: 1 }));
   for (const removeCursor of [false, true]) {

@@ -1,7 +1,7 @@
-// List quick search and sort over a view that shows a masked column (RC4a-08). A masked column is left out of the search `like`
+// List quick search and sort over a view that shows a masked column. A masked column is left out of the search `like`
 // set and is SortDisabled in the view layout, so a search or a sort request never sends an operand the portal read refuses
 // with 0x80041155 (native-services.mjs gridMasked; portal-authorization.mjs maskedColumn, the assertOperands rule).
-// unverified: the portal's own search/sort over a masked view column was not captured live. Both data models; invented data.
+// The portal's own search/sort over a masked view column is not observed natively, so this is a guess. Both data models.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

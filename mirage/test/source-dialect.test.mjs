@@ -13,9 +13,8 @@ import { bootstrapReport, resolveReportInputs } from "../bootstrap-report.mjs";
 import { bootstrapProject } from "../lib/project-config.mjs";
 
 // A source the importer cannot read must fail loudly, naming its layout, instead of importing
-// as an empty portal (ecosystem review docs/runtime-evidence.md, X1: a
-// .powerpages-site code site imported as "standard" with 0 pages and no error). The short-key
-// layout itself is imported now (test/short-key-import.test.mjs); mspp_ YAML is still refused.
+// as an empty portal. The short-key layout itself is imported (short-key-import.test.mjs);
+// mspp_ YAML is refused.
 
 const execFileAsync = promisify(execFile);
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cli.mjs");

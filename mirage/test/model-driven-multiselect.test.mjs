@@ -33,7 +33,7 @@ test('imported multiselect metadata round trips through the shared organization 
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.fields.x_choices.type, 'multiselect');
   assert.equal(catalogue.tables.x_item.entitySet, 'x_items');
-  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf };
+  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf };
   const response = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers, body: JSON.stringify({ x_name: 'Choices round trip', x_choices: [2, 1] }) });
   assert.equal(response.status, 201); const created = await response.json();
   assert.equal(created.row.x_choices, '2,1');

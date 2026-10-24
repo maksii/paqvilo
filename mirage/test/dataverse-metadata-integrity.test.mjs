@@ -1,5 +1,5 @@
 // All installed extensions contribute to one EDM model. SDK parsers need every referenced type declared, including
-// nested structured parameters of internal-only messages. Invented mappings and loopback only.
+// nested structured parameters of internal-only messages.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

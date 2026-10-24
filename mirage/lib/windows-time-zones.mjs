@@ -1,6 +1,6 @@
 // Windows time-zone ids (the Recurrence trigger's timeZone values, https://learn.microsoft.com/windows-hardware/manufacture/desktop/default-time-zones)
 // to IANA zones: the territory "001" rows of Unicode CLDR 45 common/supplemental/windowsZones.xml.
-// unverified: transcribed from CLDR 45, not captured from a live flow; an id outside this table is refused by name.
+// Transcribed from CLDR 45; an id outside this table is refused by name.
 const PAIRS = `Dateline Standard Time=Etc/GMT+12|UTC-11=Etc/GMT+11|Aleutian Standard Time=America/Adak|Hawaiian Standard Time=Pacific/Honolulu
 |Marquesas Standard Time=Pacific/Marquesas|Alaskan Standard Time=America/Anchorage|UTC-09=Etc/GMT+9|Pacific Standard Time (Mexico)=America/Tijuana
 |UTC-08=Etc/GMT+8|Pacific Standard Time=America/Los_Angeles|US Mountain Standard Time=America/Phoenix|Mountain Standard Time (Mexico)=America/Mazatlan

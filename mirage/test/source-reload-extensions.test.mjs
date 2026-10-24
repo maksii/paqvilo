@@ -1,7 +1,7 @@
 // Source reload refresh (source-organization-extensions.mjs refresh): a reload re-registers custom APIs, duplicate rules,
 // classic workflow definitions and activations and plug-in registrations exactly as a restart does, additions and deletions,
 // in one transaction. Native reference: a Solution upgrade removes components absent from the new version
-// (https://learn.microsoft.com/power-platform/alm/solution-concepts-alm). Invented sources only.
+// (https://learn.microsoft.com/power-platform/alm/solution-concepts-alm).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

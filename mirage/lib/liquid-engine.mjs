@@ -25,10 +25,8 @@ import {
 
 export { LiquidError, LiquidSyntaxError };
 
-// ---------------------------------------------------------------------------
-// DotLiquid regular expressions (Liquid.cs), translated to JavaScript.
+// ---- DotLiquid regular expressions (Liquid.cs), translated to JavaScript.
 // .NET \w is Unicode-aware; the u-flag classes below reproduce it.
-// ---------------------------------------------------------------------------
 const WC = "\\p{L}\\p{Mn}\\p{Nd}\\p{Pc}";
 const QS = `"[^"]*"|'[^']*'`;
 const QF = `${QS}|(?:[^\\s,|'"]|${QS})+`;
@@ -67,9 +65,7 @@ export function tagAttributes(markup) {
 const TAG_END_TEXT = "(?-mix:\\%\\})";
 const VARIABLE_END_TEXT = "(?-mix:\\}\\})";
 
-// ---------------------------------------------------------------------------
-// Runtime value model
-// ---------------------------------------------------------------------------
+// ---- Runtime value model
 /** DotLiquid Hash: ordered, case-insensitive (OrdinalIgnoreCase naming convention). */
 export class LiquidHash {
   constructor(entries, { numericPairLookup = true, namedPairLookup = true } = {}) {
@@ -201,9 +197,7 @@ export async function lookupMember(object, part, context) {
 export const LIQUID_PROPERTIES = Symbol.for("paqvilo.liquid.properties");
 export const LIQUID_HIDDEN = Symbol.for("paqvilo.liquid.hidden");
 
-// ---------------------------------------------------------------------------
-// Output formatting (DotLiquid Variable.Render on .NET Framework, en-US)
-// ---------------------------------------------------------------------------
+// ---- Output formatting (DotLiquid Variable.Render on .NET Framework, en-US)
 /** Item formatting inside IEnumerable output (IFormattable.ToString / object.ToString). */
 export function formatItem(value) {
   if (value == null) return "";
@@ -232,9 +226,7 @@ export function formatOutput(value) {
 /** DotLiquid condition truthiness: only nil and false are falsy. */
 export const truthy = (value) => value != null && value !== false;
 
-// ---------------------------------------------------------------------------
-// Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
-// ---------------------------------------------------------------------------
+// ---- Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
 // Scan the whole-template shorthands without overlapping dot/whitespace regex
 // repetitions. Preserve the optional single whitespace and final-newline rules.
 function shorthandBody(text, literal) {
@@ -330,9 +322,7 @@ export function tokenize(source, rawTags = new Set()) {
   return tokens;
 }
 
-// ---------------------------------------------------------------------------
-// Variables and filters
-// ---------------------------------------------------------------------------
+// ---- Variables and filters
 const ENCODING_FILTERS = new Set(["escape", "h", "escape_once", "xml_escape"]);
 export class Variable {
   constructor(markup) {
@@ -385,9 +375,7 @@ export class Variable {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Conditions (DotLiquid Condition.cs)
-// ---------------------------------------------------------------------------
+// ---- Conditions (DotLiquid Condition.cs)
 function equalVariables(left, right) {
   if (left instanceof LiquidSymbol) return left.test(right);
   if (right instanceof LiquidSymbol) return right.test(left);
@@ -478,9 +466,7 @@ export function parseCondition(markup, preserveParentheses = false) {
   return condition;
 }
 
-// ---------------------------------------------------------------------------
-// Context (scopes, environments, registers, resolution, filters, errors)
-// ---------------------------------------------------------------------------
+// ---- Context (scopes, environments, registers, resolution, filters, errors)
 const BLANK = new LiquidSymbol("blank", (value) =>
   value == null ||
   value === false ||
@@ -559,7 +545,6 @@ export class LiquidContext {
     if (!encodedAssignments.has(this.outerScope)) encodedAssignments.set(this.outerScope, new Set());
     encodedAssignments.get(this.outerScope).add(String(key).toLowerCase());
   }
-  /** Merged view of all variables (innermost wins) for host components. */
   /** Merged plain-object view of all variables (innermost wins) for host components. */
   snapshot() {
     const result = {};
@@ -741,9 +726,7 @@ export class LiquidContext {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing: Tag / Block / Document and the standard tags
-// ---------------------------------------------------------------------------
+// ---- Parsing: Tag / Block / Document and the standard tags
 export class Tag {
   initialize(engine, tagName, markup, tokens) {
     this.engine = engine;
@@ -1266,7 +1249,7 @@ class IncludeTag extends Tag {
     });
   }
 }
-// ---- extends / block (DotLiquid Tags/Extends.cs, Tags/Block.cs) ----
+// ---- extends / block (DotLiquid Tags/Extends.cs, Tags/Block.cs)
 class BlockRenderState {
   constructor() {
     this.parents = new Map();
@@ -1377,9 +1360,7 @@ function findBlocks(node, blocks = []) {
   return blocks;
 }
 
-// ---------------------------------------------------------------------------
-// Template and engine
-// ---------------------------------------------------------------------------
+// ---- Template and engine
 export class Template {
   constructor(engine, root, source) {
     this.engine = engine;

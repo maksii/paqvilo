@@ -277,10 +277,10 @@
         try { previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams; } catch { /* Keep the lookup's own entity name when the previous URL is invalid. */ }
         const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
         // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
-        // none and the platform client then sends it empty (live DOM).
+        // none and the platform client then sends it empty.
         const primary = frame.dataset.entityprimarykeyname || '';
         // The platform client rebuilds the frame URL without the response's isprofilepage/lang
-        // parameters and with the primary key name parameter always present (live requests).
+        // parameters and with the primary key name parameter always present.
         // Keep native literal spaces in the path-relative src; other query characters must
         // stay in their value rather than becoming another parameter or a fragment.
         const queryValue = value => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
@@ -301,8 +301,8 @@
     if (quickToken.waiting) quickToken.then = refreshBound;
     else setTimeout(refreshBound, 0);
     // On ready the file controls' hidden size field and the image controls' hidden value and size
-    // fields (an image without a link) carry an explicit empty value (platform crmentityformview.js
-    // behaviour, live DOM); the file name field takes the shown file name.
+    // fields (an image without a link) carry an explicit empty value, as the platform script sets
+    // them; the file name field takes the shown file name.
     for (const name of [...document.getElementsByClassName("break-file-name")]) {
       const control = name.parentElement?.parentElement?.parentElement;
       const link = name.querySelector(":scope > a");
@@ -317,8 +317,8 @@
       const size = value?.nextElementSibling;
       if (size?.tagName === "INPUT") size.setAttribute("value", "");
     }
-    // File and image controls are laid out by their rendered width (platform crmentityformview.js
-    // behaviour, live read-only form): a file container narrower than 250px drops its class and
+    // File and image controls are laid out by their rendered width, as the platform script does:
+    // a file container narrower than 250px drops its class and
     // stacks its link block (below 120px the name and delete blocks too); an image control whose
     // box is at least 250px wide puts its button and file name side by side.
     for (const container of [...document.getElementsByClassName("file-control-container")]) {
@@ -345,7 +345,7 @@
       const label = active.textContent;
       const host = active.parentElement?.parentElement;
       // The platform writes the step title as an unquoted id attribute: the first word is the id
-      // and every further word an empty attribute (live DOM). Reproduced without interpreting the
+      // and every further word an empty attribute. Reproduced without interpreting the
       // title as HTML: only plain attribute-name words become attributes.
       if (host) {
         const announcer = document.createElement("div");
@@ -408,7 +408,7 @@
       });
   };
   // Bound quick view frames wait for the shell's anti-forgery token, asked for before the page's
-  // ready handlers (live order: the token request, the replaced frame, then the other
+  // ready handlers (platform order: the token request, the replaced frame, then the other
   // token-bound requests); without the shell the replacement follows ready.
   const quickToken = { waiting: false, then: null };
   const askQuickToken = () => {

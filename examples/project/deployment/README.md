@@ -46,7 +46,7 @@ pac solution pack --folder ./code-solution --zipfile ./deployment/PaqviloDemoCod
 
 To rebuild a PCF, run `npm install` and `npm run build` in its `components/` project. Import or push the rebuilt control into your environment before resolving its ID again. The composite account control imports the 14 typed editor classes from the same field-types project.
 
-For Lense, add your live address as an environment in `paqvilo.config.yml`, then run:
+For Lense, add your live address as an environment named `online` under the `example` site in `paqvilo.config.yml`, then run:
 
 ```powershell
 npx paqvilo lense dev --config ./paqvilo.config.yml --site example --env online --profile demo-live --debug-port 9337

@@ -4,8 +4,7 @@
 // follow the Power Pages Web API documentation (power-pages/configure:
 // web-api-overview, read-operations, write-update-delete-operations,
 // web-api-http-requests-handle-errors) and, where Power Pages passes requests
-// through, the Dataverse Web API. docs/dataverse-parity.md lists the evidence
-// and the remaining open questions for each behaviour.
+// through, the Dataverse Web API.
 import {isExactNumeric} from './exact-numeric.mjs';
 import {preparePortalFetchXml} from './portal-fetchxml.mjs';
 import { createHash } from "node:crypto";
@@ -95,7 +94,7 @@ export function parseWebApiRoute(pathname) {
   if (!match) throw notFound(path.split(/[/(]/)[0] || path);
   const [, set, rawKey, segment, navigationKey, tail] = match;
   const key = rawKey != null && rawKey.trim() !== "" ? rawKey.trim() : null;
-  // The OData v2/v3 key literal guid'…' isn't OData v4 syntax: live sites reject it
+  // The OData v2/v3 key literal guid'…' isn't OData v4 syntax: the platform rejects it
   // while parsing the URL, 400 9004010A, before any permission check.
   for (const literal of [key, navigationKey])
     if (literal != null && /^\s*guid'/i.test(literal))
@@ -195,8 +194,8 @@ const DEFAULT_INNER_CODES = {
   PluginValidation: "0x80040265",
 };
 
-// innererror.type of each error code. Observed on two live reference sites with
-// innererror on every error (identical on both): 9004010A UnexpectedError,
+// innererror.type of each error code. Observed natively, with
+// innererror on every error: 9004010A UnexpectedError,
 // 9004010E ConfigurationResourceNotSupported, 9004010C ResourceDoesNotExists and
 // 90040120 EntityPermissionReadIsMissing. The others are the documented error names
 // (web-api-http-requests-handle-errors: the error code table and the 405 error types).
@@ -231,7 +230,6 @@ const ERROR_TYPES = Object.freeze({
  *   error): code and message repeat the outer error, as observed; Dataverse failures,
  *   keep the Dataverse code and message that portal scripts read without a type.
  *   Portal exceptions use ERROR_TYPES, or null for a code without a name.
- * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
 export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod, mutationPermissionText, selfNnPermissionErrors } = {}) {
@@ -268,7 +266,7 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   if (details.phase === "query" && QUERY_CODES.has(internal))
     return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
   // A write payload the OData reader can't map (an @odata.bind name that isn't a navigation
-  // property): the same generic 9004010A as a malformed query (decision, not observed).
+  // property): the same generic 9004010A as a malformed query (a guess: not observed natively).
   if (details.phase === "payload" && internal === "UndeclaredNavigationProperty")
     return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
   if (internal === "WebApiInvalidReference")
@@ -395,7 +393,7 @@ async function route(req, res, url, deps) {
     seen.add(key);
   }
   if (WRITE_METHODS.has(method)) {
-    // Token failures (docs/dataverse-parity.md, "Token failures"): no token is Learn's
+    // Token failures: no token is Learn's
     // 401 MissingPortalRequestVerificationToken; a token that doesn't match this session's is
     // 90040107 with 403, the status Microsoft's Power Pages clients refresh the token on.
     const supplied = req.headers.__requestverificationtoken;
@@ -508,8 +506,8 @@ function dispatch(t) {
 /**
  * Resolve an entity set segment; Web API segments are case-sensitive entity set names.
  * A segment that names no Dataverse table answers 400 9004010A, a known table that
- * isn't enabled 404 9004010C with its logical name (webApiPolicy), as live reference
- * sites answer (docs/dataverse-parity.md). Known tables are the local mappings (including
+ * isn't enabled 404 9004010C with its logical name (webApiPolicy), as the platform
+ * answers. Known tables are the local mappings (including
  * tables the simulated Dataverse API seeds or creates), data and site tables, and the
  * Power Pages tables every environment has (POWER_PAGES_TABLES).
  */
@@ -577,7 +575,7 @@ function requestContext(req, res, url, deps, target, method) {
   return { req, res, url, deps, store, target, method, mapping, policy, prefer, include, formatter };
 }
 
-// ---- response helpers -------------------------------------------------------
+// ---- response helpers
 
 const send = async (t, status, body, headers = {}) => {
   if (status === 200 || status === 201) {
@@ -711,7 +709,7 @@ const readRecord = (t, mapping, id, key) => {
   return row;
 };
 
-// ---- reads -----------------------------------------------------------------
+// ---- reads
 
 function collectionBody(t, mapping, params, result, value, paging) {
   // Collections carry the context and the CRM count annotations
@@ -997,7 +995,7 @@ async function getProperty(t, raw) {
   return send(t, 200, { value });
 }
 
-// ---- writes ----------------------------------------------------------------
+// ---- writes
 
 async function readBody(t) {
   const observed = t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper";
@@ -1091,7 +1089,7 @@ function portalRemove(t, mapping, id) {
 }
 // Portal $ref associations run the organization's association pipeline (records.associateInternal/disassociateInternal:
 // record hooks, Associate/Disassociate plug-in stages, committed work); the store write keeps the portal identity, so the
-// table permissions (append/appendTo) are checked as before.
+// table permissions (append/appendTo) apply.
 function portalAssociation(t, mapping, id, navigation, targetId, associate) {
   const records = t.store.recordPipeline;
   if (!records) return t.store.changeAssociationRecord(mapping.logicalName, id, navigation, targetId, t.deps.identity, associate);
@@ -1215,7 +1213,7 @@ async function putProperty(t) {
 // permission, and the table permission (Read to download, Write to upload or delete) on the row. The bytes then go through
 // the organization's file seam (store.recordPipeline.fileContentInternal, dataverse-files.mjs): column MaxSizeInKB, image
 // sniffing, storage routing, the 404 of an empty file column and the 204 of an empty image, as on /api/data.
-// unverified: native portal response headers; a download answers 200 (Learn's sample shows 204), an upload or delete 204.
+// Native portal response headers are not known; a download answers 200 (Learn's sample shows 204), an upload or delete 204.
 // A download is never served as its stored type on the portal origin (an uploaded .html would run as the reader):
 // application/octet-stream, attachment disposition, nosniff, and the stored type in the mimetype header with the
 // x-ms-file-name and x-ms-file-size headers /api/data sends. An upload without a name keeps the stored file's name, else
@@ -1259,7 +1257,7 @@ async function fileColumnRequest(t) {
   const header = (name) => (typeof req.headers?.[name] === "string" ? req.headers[name] : null);
   const fileName = header("x-ms-file-name") ?? url.searchParams.get("x-ms-file-name");
   // A file name is a name, never a path: separators, NUL and "."/".." are refused before anything is read or stored.
-  // unverified: the platform's code and wording for such a name.
+  // The platform's code and wording for such a name are a guess.
   if (fileName != null && (/[\\/\0]/.test(fileName) || /^\.{1,2}$/.test(fileName.trim())))
     throw badRequest("The file name must not contain a path.", "InvalidRequest", "0x80040203");
   const answer = await store.recordPipeline.fileContentInternal({

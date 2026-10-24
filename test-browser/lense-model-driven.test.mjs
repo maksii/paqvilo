@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -13,6 +13,10 @@ import { interceptOrigin } from '../lense/intercept.mjs';
 import { refreshModelDrivenPage } from '../lense/commands/model-driven.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+let browser;
+before(async () => { browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true }); });
+after(() => browser?.close());
 
 test('model-driven overlay refresh bypasses an existing worker only in its owned tab and restores it on release', { timeout: 30000 }, async t => {
   const worker = `self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
@@ -25,14 +29,12 @@ test('model-driven overlay refresh bypasses an existing worker only in its owned
     response.end(request.url.startsWith('/main.aspx') ? '<!doctype html><script src="/WebResources/x_cached.js"></script>' : '<!doctype html>Worker registration fixture');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  let browser, release;
+  let context, release;
   ownedFixture(t).add(async () => { await release?.(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
-  const context = await browser.newContext(), page = await context.newPage();
+  context = await browser.newContext(); const page = await context.newPage();
   await page.goto(origin + '/register');
   await page.evaluate(async () => { await navigator.serviceWorker.register('/worker.js'); await navigator.serviceWorker.ready; });
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
@@ -68,15 +70,13 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
     response.end('<!doctype html><script src="/WebResources/x_debug.js"></script>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  let browser, release;
+  let context, release;
   ownedFixture(t).add(async () => { await release?.(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   ownedFixture(t).remove(async () => { await fs.rm(root, { recursive: true, force: true, maxRetries: 5 }); });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
-  const context = await browser.newContext({ serviceWorkers: 'block' }), page = await context.newPage();
+  context = await browser.newContext({ serviceWorkers: 'block' }); const page = await context.newPage();
   const overlay = createModelDrivenOverlay({ origin, imported: {
     resources: [{ name: 'x_debug.js' }], diagnostics: [],
     assets: new Map([['local', { name: 'x_debug.js', file, data: Buffer.from(source), mime: 'text/javascript' }]]),
@@ -137,7 +137,9 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
   const mapDeadline = Date.now() + 5000;
   while (seen.length === observations && Date.now() < mapDeadline && child.exitCode == null) await new Promise(resolve => setTimeout(resolve, 50));
   assert.ok(seen.length > observations, `Explicit resource map change did not reload: ${output}`);
-  assert.equal(await exited, 0, output);
+  // 'exit' can precede the last stdout chunks; 'close' fires once both pipes are drained.
+  const code = await exited; await closed;
+  assert.equal(code, 0, output);
   assert.match(output, /startup\s+configuration/);
   assert.match(output, /startup\s+source discovery and Solution resources/);
   assert.match(output, /startup\s+document navigation/);

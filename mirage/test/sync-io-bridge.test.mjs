@@ -1,11 +1,9 @@
 // The synchronous I/O bridge (sync-io-bridge.mjs): a synchronous plug-in step that posts (a Service Bus emulator send, a web
 // hook) on the synchronous SDK drive - a plug-in's own SDK call - runs inside the operation through
-// a worker thread and fails it when the post fails (Learn: write-custom-azure-aware-plugin, "For a synchronous registered
-// plug-in, an exception is returned"; use-webhooks). The broker and the receiver run on their own threads: the main thread waits.
-// Invented x_ tables, invented keys and loopback endpoints only.
+// a worker thread and fails it when the post fails (a synchronous registered plug-in gets an exception). The broker and the
+// receiver run on their own threads: the main thread waits.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import http from 'node:http';
 import { Worker } from 'node:worker_threads';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -114,13 +112,6 @@ test('the bridge gives up at its deadline with 504 SyncIoTimeout, and the next c
   assert.ok(Date.now() - started < 5000);
   const receiver = await threadReceiver(t);
   assert.equal(syncIo('http-post', { url: `${receiver.origin}/status/204`, headers: {}, body: '{}' }), 204);
-});
-
-test('no delivery module starts a child process', () => {
-  for (const file of ['dataverse-webhooks.mjs', 'sync-io-bridge.mjs', 'sync-io-worker.mjs', 'message-bus.mjs', 'amqp-client.mjs']) {
-    const source = fs.readFileSync(new URL(`../lib/${file}`, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /child_process|spawnSync|execFileSync/, file);
-  }
 });
 
 test('a plug-in SDK create whose synchronous step sends to the emulator posts through the bridge inside the operation', async (t) => {

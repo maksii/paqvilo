@@ -1,6 +1,6 @@
 // One request context per inbound call (Web API, model-driven, portal, code app) and per asynchronous run it starts.
 // It lives in the organization ALS (dataverse-transaction-context.mjs), so the record pipeline, committed events and the
-// runners read it without new parameters. A context with inBatch true owns the host change slot, as the legacy `true` did.
+// runners read it without new parameters. A context with inBatch true owns the host change slot.
 import { organizationContext } from './dataverse-transaction-context.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 

@@ -1,4 +1,4 @@
-// Dataverse TDS endpoint (tds-spike.md 6.3): a listener for the read-only SQL surface. Login takes an Entra access
+// Dataverse TDS endpoint: a listener for the read-only SQL surface. Login takes an Entra access
 // token (FEDAUTH); the batch runs in dataverse-tds-sql-eval.mjs and every table is read through the Web API record
 // handlers as the caller, so table permissions, field security, business units, sharing and service protection apply.
 //
@@ -23,9 +23,9 @@ const FIVE_MINUTES_MS = 5 * 60_000;
 const TWO_MINUTES_MS = 2 * 60_000;
 // AST node types that make a batch long-running: a Join or Apply source, or a Derived source (a nested FROM).
 const LONG_RUN_NODES = new Set(["Join", "Apply", "Derived"]);
-// unverified: the error numbers and texts of the refusals below are not probed live (tds-spike.md 6.3).
+// The error numbers and texts of the refusals below are guesses.
 const SIGN_IN_FAILED = "Sign-in failed: Request is not authenticated.";
-const DISABLED = "TDS protocol endpoint is disabled for this organization."; // unverified: live capture
+const DISABLED = "TDS protocol endpoint is disabled for this organization.";
 const TIMEOUT = { number: -2, state: 1, class: 11, message: "Timeout expired. The timeout period elapsed prior to completion of the operation or the server is not responding." };
 const sqlError = (number, message, cls = 16) => ({ number, message, state: 1, class: cls });
 const refOf = (value) => (value !== null && typeof value === "object" ? value.id : value) ?? undefined;
@@ -154,7 +154,7 @@ export async function startDataverseTds({
         caller: user,
         identity,
         requestId: randomUUID(),
-        bypassCustomPlugins: true, // tds-spike.md: Retrieve and RetrieveMultiple plug-ins do not run here.
+        bypassCustomPlugins: true, // Retrieve and RetrieveMultiple plug-ins do not run on the TDS endpoint.
       });
       return result ?? { status: 204, headers: {} };
     }

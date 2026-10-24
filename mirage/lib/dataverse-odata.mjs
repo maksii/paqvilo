@@ -73,7 +73,7 @@ const INNER_STATUS = {
   "0x80072560": 401,
   "0x80040225": 401,
   "0x8004032c": 401,
-  // Codes from the gap review (task 0.2) and from Wave 1 modules. Statuses marked unverified there default to 400.
+  // Less common codes: where the native status is not known, 400 is a guess.
   "0x80040333": 412,
   "0x8004f502": 403,
   "0x8004f507": 403,
@@ -105,7 +105,6 @@ const INNER_STATUS = {
   "0x80040239": 400,
   "0x80041120": 400,
   "0x80072491": 400,
-  "0x80048d19": 400,
 };
 
 const decode = (text) => {
@@ -260,7 +259,7 @@ export function assertKeyText(text) {
 
 /**
  * A key that is GUID-shaped (two or more hyphens) but not a GUID is a syntax error (400 0x80060888), not a missing row.
- * Position: the second hyphen of "(key)". Inferred from one native sample ("(not-a-guid)" -> 6); unverified for other shapes.
+ * Position: the second hyphen of "(key)". Inferred from one native response ("(not-a-guid)" -> 6); other shapes are a guess.
  * Returns null for any other text, which callers keep as their own "Invalid argument." (0x80040203).
  */
 export function keySyntaxError(text) {
@@ -439,7 +438,7 @@ const XML_ATTRIBUTE = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 /**
  * Raw paging cookie: the pagingcookie attribute is percent-encoded twice, with lowercase escapes.
  * orderColumns ([{ name, last, first }], optional; orderColumn for one): the $orderby columns' values, in order, which
- * come before the id element, as the paging cookie carries them (Learn page-results: data about the first and last record).
+ * come before the id element, as the paging cookie carries them (data about the first and last record).
  * A column whose name is not an XML name (a navigation path) is left out.
  */
 export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOfRecords, orderColumn, orderColumns = orderColumn ? [orderColumn] : [] }) {
@@ -457,7 +456,7 @@ export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOf
 const QUERY_ESCAPES = { "%": "%25", "<": "%3C", ">": "%3E", '"': "%22", " ": "%20" };
 
 /**
- * nextLink $skiptoken value (the research sample form). Escapes only % < > " and space.
+ * nextLink $skiptoken value, in the native form. Escapes only % < > " and space.
  * Pass the cookie as the query decodes it: decodeURIComponent(encodeSkipToken(state)).
  */
 export function skipTokenQueryValue(token) {
@@ -513,7 +512,7 @@ export const cdsHelpLink = (code) => `http://go.microsoft.com/fwlink/?LinkID=398
 
 const VALIDATION_PLUGIN = "Microsoft.Crm.ObjectModel.TargetAttributeValidationPlugin";
 const SERVICE_PLUGIN = "Microsoft.Crm.ObjectModel.CustomBusinessEntityService";
-// Native Api* details by code: [message name, plug-in that raised it]. Observed: POST and GET only (parity cases of text length, datetime and not-found).
+// Native Api* details by code: [message name, plug-in that raised it]. Native sends them for POST and GET only.
 const API_ERRORS = {
   "0x80040217": ["ObjectDoesNotExist", SERVICE_PLUGIN],
   "0x80040239": ["InvalidDateTime", SERVICE_PLUGIN],
@@ -524,8 +523,7 @@ const API_ERRORS = {
   "0x8004432f": ["IntegerValueOutOfRange", VALIDATION_PLUGIN],
 };
 const ERROR_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
-// Local framework identities: reference organization step IDs belong in private
-// evidence. Stable generated IDs preserve consistency without impersonating it.
+// Stable generated step ids, so no real organization's step ids are reproduced.
 const validationStep = (method) => uuidV5(ERROR_NAMESPACE, `${VALIDATION_PLUGIN}:${method === "PATCH" ? "Update" : "Create"}`);
 const NOT_FOUND_WORDING = /^([a-z_][a-z0-9_]*) With Id = (.+) Does Not Exist$/;
 
@@ -611,7 +609,7 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
   // Native repeats the request id on an engine error (two REQ_ID lines); a route-level error carries one.
   if (!details.route && requestId != null) headers.REQ_ID = [requestId, requestId];
   if (status === 429) headers["Retry-After"] = String(details.retryAfter ?? 300);
-  // A keyed 405 names the methods its resource answers (B18); the default Allow list is the collection one.
+  // A keyed 405 names the methods its resource answers; the default Allow list is the collection one.
   if (details.allow) headers.Allow = details.allow;
   return { status, body, headers };
 }
@@ -630,7 +628,7 @@ function resolveError(error) {
 
 // The x-ms-ratelimit-* headers are not set here: the service-protection limiter supplies them for authenticated responses
 // (dataverse-api.mjs serve) and omits them when its limits are disabled.
-// unverified: Dataverse is documented to send them with authenticated responses only; an unauthenticated 401 carries none.
+// Dataverse is documented to send them with authenticated responses only, so an unauthenticated 401 carries none.
 export function baseHeaders(requestId) {
   return {
     "OData-Version": "4.0",

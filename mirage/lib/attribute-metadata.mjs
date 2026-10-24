@@ -27,7 +27,7 @@ const TYPES = {
 };
 const REQUIRED = { none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 };
 const IME = { auto: 0, inactive: 1, active: 2, disabled: 3 };
-// StringFormat values; json/richtext follow the enum order (not observed in evidence yet).
+// StringFormat values; json/richtext follow the enum order (a guess).
 const STRING_FORMATS = ["email", "text", "textarea", "url", "tickersymbol", "phoneticguide", "versionnumber", "phone", "json", "richtext"];
 const FORMAT_NAMES = { email: "Email", text: "Text", textarea: "TextArea", url: "Url", tickersymbol: "TickerSymbol", phoneticguide: "PhoneticGuide", versionnumber: "VersionNumber", phone: "Phone", json: "Json", richtext: "RichText" };
 const INTEGER_FORMATS = { none: 0, duration: 1, timezone: 2, language: 3, locale: 4 };
@@ -102,8 +102,8 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
   const [attributeType, typeName] = TYPES[type] ?? TYPES.nvarchar;
   const mask = facts.displayMask;
   const custom = facts.isCustomField === true;
-  // A system column of a system table lives in the platform's managed layer (live Contacts Lookup View:
-  // fullname/statecode IsManaged true with managed labels); system columns of a table the unmanaged
+  // A system column of a system table lives in the platform's managed layer (IsManaged true with
+  // managed labels, e.g. contact fullname/statecode); system columns of a table the unmanaged
   // solution created (statecode of a custom table) are unmanaged, like its custom columns.
   const system = !custom && facts.customTable === false;
   const isPrimaryName = attribute === primaryName || facts.isPrimaryName === true;
@@ -141,7 +141,7 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     LinkedAttributeId: null,
     LogicalName: attribute,
     // Managed-layer columns lock their managed properties and report an empty AutoNumberFormat and null
-    // FormulaDefinition (live Contacts Lookup View records); unmanaged columns keep them changeable.
+    // FormulaDefinition; unmanaged columns keep them changeable.
     IsCustomizable: managed(facts.isCustomizable ?? true, !system, "iscustomizable"),
     IsRenameable: managed(facts.isRenameable ?? true, !system, "isrenameable"),
     IsValidForAdvancedFind: managed(flag(mask, "ValidForAdvancedFind"), facts.canModifySearchSettings ?? true, "canmodifysearchsettings"),
@@ -149,7 +149,7 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     IsRequiredForForm: flag(mask, "RequiredForForm"),
     IsValidForGrid: flag(mask, "ValidForGrid"),
     // A primary key, and a managed-layer system-required column, cannot change its requirement level
-    // (live: contactid, contact.statecode false; statecode of a custom table true).
+    // (contactid and contact.statecode cannot; the statecode of a custom table can).
     RequiredLevel: managed(REQUIRED[facts.requiredLevel] ?? 0, facts.canModifyRequirementLevelSettings ?? !(type === "primarykey" || (system && facts.requiredLevel === "systemrequired")), "canmodifyrequirementlevelsettings"),
     CanModifyAdditionalSettings: managed(facts.canModifyAdditionalSettings ?? true, !system, "canmodifyadditionalsettings"),
     SchemaName: facts.schemaName ?? attribute,
@@ -193,7 +193,7 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
         Format: /^date(only)?$/.test(format) ? 0 : 1,
         ImeMode: ime,
         DateTimeBehavior: { Value: field.dateTimeBehavior ?? "UserLocal", ExtensionData: {} },
-        // unverified: logical name (Learn gives the property, not its managed property name); shared with dataverse-soap-contracts.mjs.
+        // The managed property name is a guess; shared with dataverse-soap-contracts.mjs.
         CanChangeDateTimeBehavior: managed(facts.canChangeDateTimeBehavior ?? true, facts.canChangeDateTimeBehavior ?? true, "canmodifydatetimebehavior"),
       }, formula);
     case 1:

@@ -19,7 +19,7 @@ async function fixture(t,options={}){
   for(const [file,body]of Object.entries(files))await fs.writeFile(path.join(root,file),body);
   const stateFile=path.join(root,'state.json'),initial={settings:{permissionMode:'permissive'},mappings:{contact:{entitySet:'contacts',idColumn:'contactid'},account:{entitySet:'accounts',idColumn:'accountid'}},tables:{contact:[{contactid:'person',fullname:'Invented person',parentcustomerid:{id:'first',logical_name:'account'}}],account:[{accountid:'first',name:'First invented account'},{accountid:'second',name:'Second invented account'}]},simulator:{mode:'local',pageMode:'local',endpoints:[],identity:{id:'person',roles:[]}}};
   const app=await createSimulator({sourceDir:root,stateFile,initial,watch:false,...options});ownedFixture(t).add(()=>app.close());
-  const call=(route,method='GET',body,headers={})=>fetch(app.url+route,{method,headers:{'x-sim-csrf':app.state().csrf,'content-type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const call=(route,method='GET',body,headers={})=>fetch(app.url+route,{method,headers:{'x-sim-csrf':app.csrf,'content-type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
   return {app,root,stateFile,call};
 }
 
@@ -53,7 +53,7 @@ test('invalid externalAssets cannot silently disable confinement or misreport it
     const response=await call('/__sim/api/config','PATCH',{externalAssets});
     assert.equal(response.status,400,await response.text());
     assert.deepEqual(app.store.state,before);
-    assert.ok((await fetch(app.url)).headers.get('content-security-policy'));
+    assert.match((await fetch(app.url)).headers.get('content-security-policy'),/connect-src 'self'/);
   }
   assert.deepEqual((await readStateFile(stateFile)).simulator,before.simulator);
   const valid=await call('/__sim/api/config','PATCH',{externalAssets:true});assert.equal(valid.status,200,await valid.text());
@@ -92,13 +92,13 @@ test('diagnostics endpoint includes import diagnostics counted by status and exp
 
 test('reset reuses project confinement defaults while returning runtime changes to their seed',async t=>{
   const {app,call}=await fixture(t,{contentPolicyDefaults:{confinePortalPages:true}});
-  assert.ok((await fetch(app.url)).headers.get('content-security-policy'));
+  assert.match((await fetch(app.url)).headers.get('content-security-policy'),/connect-src 'self'/);
   const changed=await call('/__sim/api/config','PATCH',{confinePortalPages:false});assert.equal(changed.status,200,await changed.text());
   assert.equal((await fetch(app.url)).headers.get('content-security-policy'),null);
   const reset=await call('/__sim/api/reset','POST',{});assert.equal(reset.status,200,await reset.text());
   assert.equal(app.state().config.confinePortalPages,true);
   assert.equal(app.state().config.contentPolicySource,'project defaults');
-  assert.ok((await fetch(app.url)).headers.get('content-security-policy'));
+  assert.match((await fetch(app.url)).headers.get('content-security-policy'),/connect-src 'self'/);
 });
 
 test('both administration aliases use the JSON error contract when the origin is rejected',async t=>{

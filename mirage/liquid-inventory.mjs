@@ -38,7 +38,7 @@ const LITERALS = new Set(["true", "false", "nil", "null", "empty", "blank"]);
 const KEYWORDS = new Set(["and", "or", "contains", "startswith", "endswith", "haskey", "hasvalue", "in", "with", "for", "reversed", "by"]);
 const INTERMEDIATE_TAGS = new Set(["else", "elsif", "elseif", "when"]);
 
-/** Global objects listed by Microsoft Learn (Power Pages "Available Liquid objects"). */
+/** Global objects Power Pages documents ("Available Liquid objects"). */
 export const DOCUMENTED_GLOBALS = [
   "ads",
   "blogs",
@@ -59,7 +59,7 @@ export const DOCUMENTED_GLOBALS = [
   "weblinks",
   "website",
 ];
-/** Tags documented by Microsoft Learn (conditional, iteration, variable, template and Dataverse tags). */
+/** Tags Power Pages documents (conditional, iteration, variable, template and Dataverse tags). */
 export const DOCUMENTED_TAGS = [
   "assign",
   "block",
@@ -87,7 +87,7 @@ export const DOCUMENTED_TAGS = [
   "unless",
   "webform",
 ];
-/** Filters documented by Microsoft Learn ("Available Liquid filters"). */
+/** Filters Power Pages documents ("Available Liquid filters"). */
 export const DOCUMENTED_FILTERS = [
   "add_query", "append", "base", "batch", "boolean", "capitalize", "ceil", "concat", "current_sort", "date",
   "date_add_days", "date_add_hours", "date_add_minutes", "date_add_months", "date_add_seconds", "date_add_years",

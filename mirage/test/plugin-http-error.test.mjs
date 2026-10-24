@@ -24,7 +24,7 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
  app.store.setPluginPipeline(context=>{try{return runPluginPhase({...context,store:app.store,items,runtimes,handlers:new Map(),diagnostic:note=>notes.push(note)});}catch(error){failures.push(error);throw error;}});
  const before=app.store.snapshot();
  for(const [mode,expectedCode,message] of [['default','0x80040265','Invented default abort'],['custom','0x8004f001','Invented explicit custom abort'],['unrelated','0x80040265','Invented unrelated exception']]){
-  const response=await fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({fx_title:mode})});
+  const response=await fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify({fx_title:mode})});
   assert.equal(response.status,400);assert.equal(response.headers.get('x-sim-error-code'),'PluginValidation');
   const body=await response.json();assert.deepEqual(body,{error:{code:'9004010D',message:'CDS error occurred.',innererror:{code:expectedCode,message}}});
   assert.deepEqual(app.store.snapshot(),before);
@@ -33,7 +33,7 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
  assert.equal((failures[0].details.sourceException.errorCode>>>0).toString(16),'80131500','Original CLR source exception code is preserved separately from the platform fault');
  assert.equal((failures[1].details.sourceException.errorCode>>>0).toString(16),'8004f001');
  assert.equal(failures[2].details.sourceException.type,'System.Exception');assert.equal(failures[2].details.sourceException.errorCode,null);assert.equal(failures[2].details.innerCode,undefined,'Unrelated exception mapping is unchanged by the default SDK-code correction');
- const nested=await fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({fx_title:'nested'})});assert.equal(nested.status,204);
+ const nested=await fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify({fx_title:'nested'})});assert.equal(nested.status,204);
  const rows=app.store.snapshot().tables.fx_widget;assert.equal(rows.length,1);assert.equal(rows[0].fx_note,'Nested platform fault passed');assert.equal(rows[0].fx_title,'nested');
  const starts=notes.filter(note=>note.code==='PLUGIN_CLR_HOST_STARTED'),stops=notes.filter(note=>note.code==='PLUGIN_CLR_HOST_STOPPED');assert.equal(starts.length,5);assert.equal(stops.length,5);assert.ok(stops.every(note=>note.absenceVerified));
 });

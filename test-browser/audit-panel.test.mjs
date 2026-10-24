@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Adversarial panel checks: invented data and a disposable loopback document only.
+// Adversarial panel checks.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

@@ -1,6 +1,6 @@
 // Shared fixture for the Dataverse contract-module tests (dataverse-calculated, dataverse-business-rules, ...): starts a
 // loopback Dataverse API over an invented state with the default EXTENSIONS plus the module under test, installed
-// explicitly, and returns an authenticated Web API caller. Invented x_ tables and GUIDs only.
+// explicitly, and returns an authenticated Web API caller.
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
@@ -29,7 +29,7 @@ export async function contractModuleFixture(t, { mappings = {}, tables = {}, ext
     enabled: true,
     applications: [{ appId: APP_ID, displayName: "Contract module app", secretEnvironmentVariable: secretVar, roles: ["System Administrator"] }],
   });
-  // The module is installed explicitly, after the default list, with its options (the lead wires the pack export in the host).
+  // The module is installed explicitly, after the default list, with its options (the host wires the pack export).
   let internal = null;
   const installed = { ...extension, install: (api) => { internal = api; return extension.install(api, options); } };
   const extensions = [...EXTENSIONS.filter((entry) => entry.name !== extension.name), installed];

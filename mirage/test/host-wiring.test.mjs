@@ -1,14 +1,15 @@
 // Host wiring on both hosts (Power Pages simulator and standalone dataverse-api runtime): status `docs`, `routes` (from
 // the mounted routers' own `routes` lists) and `modelDrivenApps`; ISO request times on the dashboard; the in-process Web
 // API behind Xrm.WebApi.execute; the default /search/ page; the portal document control; Solution custom connectors and
-// Recurrence trigger hosting. Invented x_ data, example.test hosts and loopback only.
-import test from 'node:test';
+// Recurrence trigger hosting.
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
+import { DOC_PATHS } from '../lib/docs-links.mjs';
 
 const CASE = '77777777-7777-4777-8777-777777777760';
 const SITE = '77777777-7777-4777-8777-777777777761';
@@ -44,9 +45,9 @@ async function writeTree(root, files) {
     await fs.writeFile(path.join(root, relative), content);
   }
 }
-async function tempRoot(t) {
+async function tempRoot(cleanup) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-wiring-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  cleanup(() => fs.rm(root, { recursive: true, force: true }));
   await writeTree(path.join(root, 'solution'), solutionFiles);
   return root;
 }
@@ -60,16 +61,22 @@ const portalInitial = () => ({
   settings: { permissionMode: 'enforce' },
   simulator: { mode: 'local', pageMode: 'local', permissionSource: 'configured', live: { allowWrites: false }, endpoints: [] },
 });
-async function powerPages(t, options = {}) {
-  const root = await tempRoot(t);
+async function startPowerPages(cleanup, options = {}) {
+  const root = await tempRoot(cleanup);
   await writeTree(path.join(root, 'portal'), portalFiles);
   const sim = await createSimulator({ sourceDir: path.join(root, 'portal'), solutionRoots: [path.join(root, 'solution')], stateFile: path.join(root, 'state.json'),
     port: 0, watch: false, initial: portalInitial(), ...options });
-  t.after(() => sim.close());
+  cleanup(() => sim.close());
   return sim;
 }
+const powerPages = (t, options) => startPowerPages(fn => t.after(fn), options);
+// Tests that only read share one Power Pages host; the cleanups run in reverse order after the file.
+const sharedCleanups = [];
+let sharedPortal;
+after(async () => { for (const cleanup of sharedCleanups.reverse()) await cleanup(); });
+const sharedPowerPages = () => (sharedPortal ??= startPowerPages(fn => sharedCleanups.push(fn)));
 async function standalone(t, kind = 'dataverse-api') {
-  const root = await tempRoot(t);
+  const root = await tempRoot(fn => t.after(fn));
   const sim = await createSimulator({ runtime: { kind }, solutionRoots: [path.join(root, 'solution')], projectRoot: root,
     port: 0, watch: false, simulation: { level: 'dry-run' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   t.after(() => sim.close());
@@ -77,19 +84,21 @@ async function standalone(t, kind = 'dataverse-api') {
 }
 const body = async (response, status) => { const text = await response.text(); assert.equal(response.status, status, text.slice(0, 400)); return text ? JSON.parse(text) : null; };
 const simApi = (sim, method, suffix, payload) => fetch(sim.url + '/_sim/api' + suffix, { method,
-  headers: { 'x-sim-csrf': sim.state().csrf, ...(payload ? { 'content-type': 'application/json' } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
+  headers: { 'x-sim-csrf': sim.csrf, ...(payload ? { 'content-type': 'application/json' } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
 // The transport of Xrm.WebApi.execute (model-driven/client-runtime.mjs): one Web API request through /_apps/api/webapi.
-const execute = (sim, request) => fetch(sim.url + '/_apps/api/webapi', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify(request) });
+const execute = (sim, request) => fetch(sim.url + '/_apps/api/webapi', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify(request) });
 const PORTAL_ONLY = ['/experiments', '/portal-settings', '/portal-snippets', '/portal-roles', '/portal-access-rules', '/page-resources', '/scenarios', '/presets',
   '/personas', '/session', '/audit', '/persona-runtimes', '/persona-catalog', '/reference', '/assets', '/live', '/reset', '/reload', '/mappings', '/plugins', '/permissions', '/endpoints'];
 const SHARED = ['/dashboard', '/packs', '/environment', '/messages', '/outbox', '/flow-runs', '/flow-waits', '/flow-triggers', '/preflight', '/status', '/dataverse', '/operations'];
 
-for (const [name, start] of [['Power Pages', powerPages], ['standalone', standalone]]) {
+const docPaths = docs => Object.fromEntries(Object.entries(docs).map(([key, link]) => [key, link.path]));
+
+for (const [name, start] of [['Power Pages', sharedPowerPages], ['standalone', standalone]]) {
   test(`${name}: status carries docs, router-derived routes and modelDrivenApps; Xrm.WebApi.execute runs an unbound function; the custom connector is a provider`, async t => {
     const sim = await start(t);
     const status = await body(await simApi(sim, 'GET', '/status'), 200);
-    assert.equal(typeof status.docs, 'object');
-    assert.ok(Array.isArray(status.modelDrivenApps));
+    assert.deepEqual(docPaths(status.docs), DOC_PATHS);
+    assert.deepEqual(status.modelDrivenApps, [], 'the Solution has no app modules');
     for (const route of SHARED) assert.ok(status.routes.includes(route), `${route} in ${status.routes}`);
     assert.equal(new Set(status.routes).size, status.routes.length);
     // The flow-runs capability record is valid: the registry lists it, so flow-triggers' requirement resolves.
@@ -109,16 +118,16 @@ for (const [name, start] of [['Power Pages', powerPages], ['standalone', standal
 }
 
 test('Power Pages: /state carries docs and the dashboard reports request times as ISO strings', async t => {
-  const sim = await powerPages(t);
+  const sim = await sharedPowerPages();
   assert.equal((await fetch(sim.url + '/')).status, 200);
   const state = await body(await simApi(sim, 'GET', '/state'), 200);
-  assert.equal(typeof state.docs, 'object');
+  assert.deepEqual(docPaths(state.docs), DOC_PATHS);
   const dashboard = await body(await simApi(sim, 'GET', '/dashboard'), 200);
   assert.match(dashboard.activity.requests.recent[0].at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/);
 });
 
-test('Power Pages: the default /search/ page answers and the portal document control is wired to storage', async t => {
-  const sim = await powerPages(t);
+test('Power Pages: the default /search/ page answers and the portal document control is wired to storage', async () => {
+  const sim = await sharedPowerPages();
   const search = await fetch(sim.url + '/search/?q=invented');
   assert.equal(search.status, 200);
   assert.equal(search.headers.get('x-sim-route'), 'portal-search-local');
@@ -134,13 +143,13 @@ test('Power Pages: the portal document control answers 503 while its document st
   initial.permissions = [{ ...initial.permissions[0], operations: ['read', 'appendTo', 'update'] }, { ...initial.permissions[1], operations: ['read', 'create', 'update', 'append'] }];
   const sim = await powerPages(t, { initial, providers: { storage: { emulator: { kind: 'azurite', connectionString: 'env:FX_UNSET_AZURITE' } }, routes: { sharepointDocuments: 'emulator' } } });
   const upload = await fetch(`${sim.url}/_apps/portal-documents/x_case/${CASE}?name=note.txt`, { method: 'POST', body: 'invented',
-    headers: { ...signInHeaders(sim, 'alex', { roles: ['Member'] }), 'content-type': 'text/plain', __RequestVerificationToken: sim.state().csrf } });
+    headers: { ...signInHeaders(sim, 'alex', { roles: ['Member'] }), 'content-type': 'text/plain', __RequestVerificationToken: sim.csrf } });
   const answer = await upload.text();
   assert.equal(upload.status, 503, answer);
   assert.match(JSON.parse(answer).error.message, /FX_UNSET_AZURITE is not set/);
 });
 
-// RA1-06/RA1-07: every prefix in status.routes is a dispatcher entry that answers (not 404) with its accepted method, and
+// Every prefix in status.routes is a dispatcher entry that answers (not 404) with its accepted method, and
 // a prefix the routers do not list answers 404. Prefixes not in PROBES are requested with GET; /shutdown runs last.
 const PROBES = {
   '/records': ['GET', '/records/contact'], '/persona-catalog': ['PUT', '/persona-catalog', {}], '/reference': ['POST', '/reference/enrich/validate', { plan: [] }],
@@ -182,8 +191,8 @@ for (const [name, start] of [['Power Pages', powerPages], ['standalone', standal
   });
 }
 
-test('Power Pages: /search/ carries the same site HTTP/* headers, CSP and nosniff as every portal page', async t => {
-  const sim = await powerPages(t);
+test('Power Pages: /search/ carries the same site HTTP/* headers, CSP and nosniff as every portal page', async () => {
+  const sim = await sharedPowerPages();
   const page = await fetch(sim.url + '/'), search = await fetch(sim.url + '/search/?q=invented');
   assert.equal(search.headers.get('x-sim-route'), 'portal-search-local');
   for (const name of ['content-security-policy', 'x-frame-options', 'x-content-type-options', 'cache-control']) {

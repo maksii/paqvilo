@@ -1,4 +1,4 @@
-// SharePoint document integration for Dataverse records (adapter A): document location rows plus a folder per record,
+// SharePoint document integration for Dataverse records: document location rows plus a folder per record,
 // with list/upload/delete over the storage provider route `sharepointDocuments`. Bytes never enter state JSON.
 //
 // Behaviour (when a storage router or provider is passed): location rows (sharepointsite -> table library location ->
@@ -8,30 +8,22 @@
 // `SharePointStorageNotConfigured` and reports diagnostic SHAREPOINT_ROUTE_MISSING once; locationsFor still reads rows.
 // Contract only: the Power Pages document control wire format and the native auto-folder naming.
 //
-// Sources:
-//   https://learn.microsoft.com/power-pages/configure/manage-sharepoint-documents (default site, Document Locations subgrid,
-//     table permissions, SharePoint/MaxUploadSize 10 MB default / 50 MB max, SharePoint/MaxTotalUploadSize)
-//   https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/sharepointdocumentlocation
-//   https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/sharepointsite
-//   https://learn.microsoft.com/power-platform/admin/permissions-required-document-management-tasks ("Manage documents": Read, Write)
-//   https://learn.microsoft.com/power-platform/admin/enable-sharepoint-document-management-specific-entities
-//   https://learn.microsoft.com/dynamics365/customerengagement/on-premises/basics/manage-sharepoint-documents-document-locations-in-dynamics-365-apps
-//     (auto-created location folder "<record_name>_<record_id>")
-//   https://learn.microsoft.com/troubleshoot/power-platform/power-apps/integrate-products/troubleshoot-doc-management-issues
-//     (folder path "<entity name>/<record name>" without the entity-based folder structure)
-// unverified: the record id inside the folder name is the GUID upper-case without dashes.
-// unverified: characters SharePoint refuses in folder names (" * : < > ? / \ |) are dropped from the record name.
-// unverified: the record location is named "Documents on <site name>"; the library location carries the table logical name.
+// Contract: https://learn.microsoft.com/power-pages/configure/manage-sharepoint-documents; an auto-created record
+// folder is named "<record_name>_<record_id>" as in Dynamics 365 document locations.
+// Guessed: the record id inside the folder name is the GUID upper-case without dashes.
+// Guessed: characters SharePoint refuses in folder names (" * : < > ? / \ |) are dropped from the record name.
+// Guessed: the record location is named "Documents on <site name>"; the library location carries the table logical name.
 // Power Pages document control (createPortalDocumentService, contract): the documented operations (list, upload, download,
 //   delete for a record's location) under the local route /_apps/portal-documents/<table>/<id>[/<name>], with the documented
 //   permission rules (permissions.mjs portalDocumentAccess: parent Read and Append To, Write to upload; child Document
 //   Location Read; Create, Write and Append to upload; Delete to delete) and upload limits (SharePoint/MaxUploadSize, default
 //   10 MB, at most 50 MB; SharePoint/MaxTotalUploadSize per request; the organization's blocked attachment extensions).
-// unverified: the platform's own document control endpoints, payloads and markup (under /_services/) are not documented;
+// The platform's own document control endpoints, payloads and markup (under /_services/) are not documented;
 //   the local markup (platform.mjs) and route are labelled local. Subfolders (New folder, navigation, upload, download and
 //   delete inside them) use the ?folder=<path> parameter; New folder follows the upload permission rule.
 // Outside the portal path the organization MaxUploadFileSize (base64 length) is the upload limit.
-// unverified: the `sharepointdocument` virtual table is not in the standard table reference this runtime reads; it is not seeded.
+// The `sharepointdocument` virtual table is not in the standard table reference this runtime reads; it is not seeded.
+// The SharePoint* error codes and their wording are local guesses; native ones are not documented.
 // ponytail: one head() per listed file to recover the original name and content type; store the name in the key when
 //   folders hold thousands of files.
 import { randomUUID } from "node:crypto";
@@ -85,21 +77,21 @@ const encodeSegment = (text) => [...lower(text)].map((ch) => (/[a-z0-9.-]/.test(
 
 function assertName(name) {
   if (typeof name !== "string" || !name.trim() || name === "." || name === ".." || /[\\/\0]/.test(name) || name.length > 400)
-    throw new DataError("The document name is not valid.", 400, "SharePointInvalidName"); // unverified: code and wording
+    throw new DataError("The document name is not valid.", 400, "SharePointInvalidName");
   return name;
 }
 
 // A new file or folder name also follows SharePoint's naming rules: no " * : < > ? / \ |, no leading or trailing space,
-// no trailing dot, none of the reserved names. unverified: the exact SharePoint Online set (Learn documents these
+// no trailing dot, none of the reserved names. The exact SharePoint Online set is a guess (Learn documents these
 // characters and the Windows reserved names; .lock, _vti_, desktop.ini, ~$ prefixes and _private are the SharePoint list).
 const RESERVED_NAME = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$|^\.lock$|^desktop\.ini$|^_private$|^~\$|_vti_/i;
 function assertNewName(name) {
   assertName(name);
   if (/["*:<>?/\\|]/.test(name) || name !== name.trim() || name.endsWith(".") || RESERVED_NAME.test(name))
-    throw new DataError(`'${name}' is not a valid SharePoint file or folder name.`, 400, "SharePointInvalidName"); // unverified: code and wording
+    throw new DataError(`'${name}' is not a valid SharePoint file or folder name.`, 400, "SharePointInvalidName");
   return name;
 }
-const sameNameExists = () => new DataError("A file or folder with this name already exists.", 409, "SharePointNameExists"); // unverified: code and wording
+const sameNameExists = () => new DataError("A file or folder with this name already exists.", 409, "SharePointNameExists");
 
 function storageOf(api) {
   const state = stateOf(api);
@@ -128,13 +120,13 @@ function rowOf(store, logical, id) {
 // identity: { admin: true } passes; { user } (a systemuser row, the request's c.user) is checked by the security model.
 function authorize(api, identity, logical, row, operation) {
   if (identity?.admin === true) return;
-  if (!identity?.user) throw new DataError(`SharePoint documents need an authenticated caller for ${operation}.`, 403, "PrivilegeDenied"); // unverified
+  if (!identity?.user) throw new DataError(`SharePoint documents need an authenticated caller for ${operation}.`, 403, "PrivilegeDenied");
   api.principals.authorize({ user: identity.user, entity: logical, operation, row, mapping: api.store.resolveMapping(logical) });
 }
 
 function regardingRow(api, regarding) {
   const logical = lower(regarding?.logicalName);
-  if (!logical || !regarding?.id || !api.store.state.mappings?.[logical]) throw new DataError("The regarding record is not valid.", 400, "SharePointInvalidRegarding"); // unverified
+  if (!logical || !regarding?.id || !api.store.state.mappings?.[logical]) throw new DataError("The regarding record is not valid.", 400, "SharePointInvalidRegarding");
   const row = rowOf(api.store, logical, regarding.id);
   if (!row) throw new DataError(`${logical} With Id = ${regarding.id} Does Not Exist`, 404, "NotFound");
   return { logical, row, mapping: api.store.resolveMapping(logical) };
@@ -153,7 +145,7 @@ function pathOf(store, location) {
     if (!parent) break;
     current = { row: parent, logical: parentLogical };
   }
-  throw new DataError("The document location has no parent SharePoint site.", 400, "SharePointLocationUnresolved"); // unverified
+  throw new DataError("The document location has no parent SharePoint site.", 400, "SharePointLocationUnresolved");
 }
 
 const folderKey = (store, location) => {
@@ -182,7 +174,7 @@ function defaultSite(store, parentSite) {
   const sites = store.tableRows(SITE);
   const site = parentSite ? sites.find((row) => sameId(row.sharepointsiteid, parentSite)) : sites.find((row) => row.isdefault === true && row.statecode !== 1);
   if (!site) throw new DataError(parentSite ? `sharepointsite With Id = ${parentSite} Does Not Exist` : "No default SharePoint site is configured.",
-    parentSite ? 404 : 400, parentSite ? "NotFound" : "SharePointDefaultSiteMissing"); // unverified: code for a missing default site
+    parentSite ? 404 : 400, parentSite ? "NotFound" : "SharePointDefaultSiteMissing");
   return site;
 }
 
@@ -209,7 +201,7 @@ function createApi(api) {
       const site = defaultSite(store, parentSite);
       const name = target.row[target.mapping.nameColumn] ?? "";
       const folder = relativeUrl ?? `${String(name).replace(/["*:<>?/\\|]/g, "").trim()}_${String(regarding.id).replace(/-/g, "").toUpperCase()}`;
-      if (!String(folder).split("/").filter(Boolean).length) throw new DataError("The relative URL is not valid.", 400, "SharePointInvalidName"); // unverified
+      if (!String(folder).split("/").filter(Boolean).length) throw new DataError("The relative URL is not valid.", 400, "SharePointInvalidName");
       const siteRef = lookup(SITE, site.sharepointsiteid, site.name);
       const library = activeLocations(store, (row) => !refId(row.regardingobjectid) && sameId(refId(row.parentsiteorlocation), site.sharepointsiteid)
         && lower(row.relativeurl) === target.logical)[0];
@@ -221,7 +213,7 @@ function createApi(api) {
         parentsiteorlocation: lookup(LOCATION, libraryId, target.logical), regardingobjectid: lookup(target.logical, target.row[target.mapping.idColumn], name),
         locationtype: 0, servicetype: 0, statecode: 0, statuscode: 1,
       };
-      // Bytes before the row commit (ARCH §2.8): an orphaned empty folder marker is harmless, a row without its folder is not.
+      // Bytes before the row commit: an orphaned empty folder marker is harmless, a row without its folder is not.
       const key = ["sharepoint", encodeSegment(lower(site.sharepointsiteid)), encodeSegment(target.logical), ...String(folder).split("/").filter(Boolean).map(encodeSegment)].join("/");
       await storage.put(`${key}/${FOLDER_MARKER}`, Buffer.alloc(0), { contentType: "application/x-folder" });
       const c = pipelineContext(store, identity);
@@ -237,10 +229,10 @@ function createApi(api) {
   // record folder down; a subfolder exists when its FOLDER_MARKER (metadata { name }) does.
   async function folderOf(locationId, identity, operation, path = []) {
     const { folder } = locationContext(api, locationId, identity, operation);
-    if (!Array.isArray(path) || path.length > MAX_FOLDER_DEPTH) throw new DataError("The folder path is not valid.", 400, "SharePointInvalidName"); // unverified: code and wording
+    if (!Array.isArray(path) || path.length > MAX_FOLDER_DEPTH) throw new DataError("The folder path is not valid.", 400, "SharePointInvalidName");
     const key = [folder, ...path.map((segment) => encodeSegment(assertName(segment)))].join("/");
     if (path.length && !(await storageOf(api).head(`${key}/${FOLDER_MARKER}`)))
-      throw new DataError(`The folder '${path.join("/")}' does not exist in this location.`, 404, "NotFound"); // unverified: native wording
+      throw new DataError(`The folder '${path.join("/")}' does not exist in this location.`, 404, "NotFound");
     return key;
   }
 
@@ -272,12 +264,12 @@ function createApi(api) {
 
   async function createFolder(locationId, { path = [], name } = {}, identity) {
     // Every created folder must stay addressable: its own path is at most MAX_FOLDER_DEPTH names.
-    if (Array.isArray(path) && path.length >= MAX_FOLDER_DEPTH) throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, "SharePointInvalidName"); // unverified: code and wording
+    if (Array.isArray(path) && path.length >= MAX_FOLDER_DEPTH) throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, "SharePointInvalidName");
     const parent = await folderOf(locationId, identity, "write", path);
     assertNewName(name);
     const key = `${parent}/${encodeSegment(name)}/${FOLDER_MARKER}`;
     const storage = storageOf(api);
-    if (await storage.head(key)) throw new DataError(`A folder named '${name}' already exists.`, 409, "SharePointFolderExists"); // unverified: code and wording
+    if (await storage.head(key)) throw new DataError(`A folder named '${name}' already exists.`, 409, "SharePointFolderExists");
     if (await storage.head(`${parent}/${encodeSegment(name)}`)) throw sameNameExists();
     const stored = await storage.put(key, Buffer.alloc(0), { contentType: "application/x-folder", metadata: { name } });
     return { name, folder: true, lastModified: stored.lastModified };
@@ -285,7 +277,7 @@ function createApi(api) {
 
   // Deletes a subfolder and everything in it.
   async function deleteFolder(locationId, path, identity) {
-    if (!Array.isArray(path) || !path.length) throw new DataError("The folder path is not valid.", 400, "SharePointInvalidName"); // unverified: code and wording
+    if (!Array.isArray(path) || !path.length) throw new DataError("The folder path is not valid.", 400, "SharePointInvalidName");
     const folder = await folderOf(locationId, identity, "write", path);
     const storage = storageOf(api);
     const keys = [];
@@ -305,7 +297,7 @@ function createApi(api) {
     assertNewName(name);
     const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
     if (maxBytes == null) assertAttachmentSize(store.state, 4 * Math.ceil(body.length / 3));
-    else if (body.length > maxBytes) throw new DataError(`The file exceeds the maximum upload size of ${Math.round(maxBytes / 1048576)} MB.`, 413, "SharePointFileTooLarge"); // unverified: code and wording
+    else if (body.length > maxBytes) throw new DataError(`The file exceeds the maximum upload size of ${Math.round(maxBytes / 1048576)} MB.`, 413, "SharePointFileTooLarge");
     const storage = storageOf(api);
     if (await storage.head(`${folder}/${encodeSegment(name)}/${FOLDER_MARKER}`)) throw sameNameExists();
     const stored = await storage.put(`${folder}/${encodeSegment(name)}`, body, { contentType: contentType ?? "application/octet-stream", metadata: { name }, ...(ifMatch !== undefined ? { ifMatch } : {}) });
@@ -316,14 +308,14 @@ function createApi(api) {
     const folder = await folderOf(locationId, identity, "write", path);
     assertName(name);
     const existed = await storageOf(api).delete(`${folder}/${encodeSegment(name)}`, ifMatch !== undefined ? { ifMatch } : {});
-    if (!existed) throw new DataError(`The document '${name}' does not exist in this location.`, 404, "NotFound"); // unverified: native wording
+    if (!existed) throw new DataError(`The document '${name}' does not exist in this location.`, 404, "NotFound");
     return { deleted: true };
   }
 
   async function download(locationId, name, identity, { path = [] } = {}) {
     const folder = await folderOf(locationId, identity, "read", path);
     assertName(name);
-    const missing = () => new DataError(`The document '${name}' does not exist in this location.`, 404, "NotFound"); // unverified: native wording
+    const missing = () => new DataError(`The document '${name}' does not exist in this location.`, 404, "NotFound");
     let found;
     try { found = await storageOf(api).get(`${folder}/${encodeSegment(name)}`); } catch (error) { if (error?.code === "NotFound" || error?.status === 404) throw missing(); throw error; }
     if (!found) throw missing();
@@ -354,7 +346,7 @@ function reset(api) {
   seed(api.store);
 }
 
-/** Capability record (ARCH §2.4). Storage-backed operations are behaviour only when this api has storage. */
+/** Capability record. Storage-backed operations are behaviour only when this api has storage. */
 function describe(api) {
   const storageLevel = api && stateOf(api).storage ? "behaviour" : "contract";
   return {
@@ -412,7 +404,7 @@ export function createPortalDocumentService({ sharepoint, store, portal = () => 
       if (parts.length < 2 || parts.length > 3) return answer(res, 501, failureBody({ code: "PortalDocumentMemberUnsupported", message: "This document control member is not available locally." }));
       if (!["GET", "POST", "DELETE"].includes(req.method) || (req.method === "POST" && parts.length !== 2) || (req.method === "DELETE" && parts.length !== 3 && !path.length))
         return answer(res, 501, failureBody({ code: "PortalDocumentMemberUnsupported", message: "This document control member is not available locally." }));
-      if (path.length > MAX_FOLDER_DEPTH) throw new DataError("The folder path is not valid.", 400, "SharePointInvalidName"); // unverified: code and wording
+      if (path.length > MAX_FOLDER_DEPTH) throw new DataError("The folder path is not valid.", 400, "SharePointInvalidName");
       for (const segment of path) assertName(segment);
       if (req.method !== "GET" && (!csrf || req.headers.__requestverificationtoken !== csrf)) return answer(res, 403, failureBody({ code: "Forbidden", message: "Missing portal verification token." }));
       // Without storage every operation answers 501, never an empty list.
@@ -430,7 +422,7 @@ export function createPortalDocumentService({ sharepoint, store, portal = () => 
         if (!allowed.list) return answer(res, 403, failureBody({ code: "PermissionDenied", message: "Table permissions do not allow reading this record's documents." }));
         if (!location && path.length) return answer(res, 404, failureBody({ code: "NotFound", message: `The folder '${path.join("/")}' does not exist in this location.` }));
         const entries = location ? await sharepoint.listDocuments(location.sharepointdocumentlocationid, system, { path }) : [];
-        // unverified: New folder follows the upload rule (Create, Write and Append on Document Location); Learn names no separate privilege.
+        // New folder follows the upload rule (Create, Write and Append on Document Location); Learn names no separate privilege.
         return answer(res, 200, {
           folder: path.join("/"),
           folders: entries.filter((entry) => entry.folder).map(({ name: folder, lastModified }) => ({ name: folder, lastModified })),
@@ -456,7 +448,7 @@ export function createPortalDocumentService({ sharepoint, store, portal = () => 
       if (!allowed.upload) return answer(res, 403, failureBody({ code: "PermissionDenied", message: "Table permissions do not allow uploading documents to this record." }));
       if (newFolder != null) {
         assertNewName(newFolder);
-        if (path.length >= MAX_FOLDER_DEPTH) throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, "SharePointInvalidName"); // unverified: code and wording
+        if (path.length >= MAX_FOLDER_DEPTH) throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, "SharePointInvalidName");
         if (!location && path.length) return answer(res, 404, failureBody({ code: "NotFound", message: `The folder '${path.join("/")}' does not exist in this location.` }));
         const target = location ?? (await sharepoint.ensureLocation(regarding, {}, system));
         return answer(res, 201, await sharepoint.createFolder(target.sharepointdocumentlocationid, { path, name: newFolder }, system));

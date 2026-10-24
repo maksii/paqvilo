@@ -17,7 +17,7 @@ not guarantee server cancellation. The normal CLI prints waiting progress every 
 continuing other sites. Disconnect is attempted after success, timeout and failure; a
 failed cleanup is reported as `disconnectFailed` without replacing the capture's cause.
 
-Capture records date/origin and lists missing directly referenced head stylesheets. Confirmed native HTTP errors retain their status as `NATIVE_ASSET_HTTP`; a native stylesheet answered with a non-CSS content type is `NATIVE_ASSET_CONTENT_TYPE`. Both carry `nativeOriginFailed: true`, remain visible and do not block application or completeness. Unusable native head references are omitted from the applied profile, and their response bodies are not cached. Literal percent-encoded quotes in CSS URLs are requested unchanged, so a native 404 is distinguishable from a path-validation failure. Timeouts, unsafe resources and unverified failures remain failures. No credentials, inline page data or bearer tokens are saved.
+Capture records date/origin and lists missing directly referenced head stylesheets. Confirmed native HTTP errors retain their status as `NATIVE_ASSET_HTTP`; a native stylesheet answered with a non-CSS content type is `NATIVE_ASSET_CONTENT_TYPE`. Both carry `nativeOriginFailed: true`, remain visible and do not block application or completeness. Unusable native head references are omitted from the applied profile, and their response bodies are not cached. Literal percent-encoded quotes in CSS URLs are requested unchanged, so a native 404 is distinguishable from a path-validation failure. Timeouts, unsafe resources and other failures remain failures. No credentials, inline page data or bearer tokens are saved.
 
 Mirage serves local equivalents of required platform clients, styles and resources in their page-kind order. Compatibility modules cover form/grid controls, Bootstrap plugins, date formatting, accessibility, portal objects and service endpoints. Third-party packages and fonts retain their upstream licenses.
 
@@ -66,10 +66,10 @@ Modal and quick-view documents also include exported root styles and native cont
 Captured stylesheet links take precedence over duplicate exported links. Local head additions
 apply to both document types. Clearing a quick view blanks its frame and removes it from the tab order.
 
-Authorized native observations confirmed presentation markup in authored field, section and
-subgrid labels. These labels preserve sanitized markup by default; scripts, event handlers
-and inline styles are removed. Record values remain encoded. An evidenced site may select
-`mirage.observed: { subgridLabelMarkup: encoded, evidence: "your observation receipt" }`.
+Power Pages renders presentation markup in authored field, section and subgrid labels.
+Mirage keeps sanitized markup in these labels by default; scripts, event handlers and inline
+styles are removed. Record values remain encoded. A site observed to encode subgrid labels
+can select `mirage.observed: { subgridLabelMarkup: encoded, evidence: "<where you observed it>" }`.
 
 Captured preform bundles for Bootstrap 3 and 5 that assign the global jQuery library satisfy
 the shell requirement. The profile records its provider path, origin and byte hash in `jquery`.

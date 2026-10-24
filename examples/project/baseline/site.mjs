@@ -76,9 +76,7 @@ const json = (value) => ({ json: value });
 const unique = (list) => [...new Set(list)];
 const metaKey = (values) => values.adx_attributelogicalname ?? values.adx_sectionname ?? values.adx_tabname ?? values.adx_subgrid_name ?? ({ 100000005: "notes", 756150000: "timeline" })[values.adx_type] ?? "metadata";
 
-// ---------------------------------------------------------------------------
-// Catalog index: a record's columns and choice values select the catalog items it exercises.
-// ---------------------------------------------------------------------------
+// ---- Catalog index: a record's columns and choice values select the catalog items it exercises.
 const KIND_PREFIXES = {
   basicform: ["pp.basicform."],
   basicformmetadata: ["pp.bfmeta."],
@@ -97,7 +95,7 @@ const KIND_PREFIXES = {
   webfile: ["pp.webfile."],
 };
 // JSON columns: their inner items are cited by hand next to the JSON that sets them.
-/** Invented Bing Maps key (O9): not a secret, rejected by the service; a real key replaces it through the same setting and column. */
+/** Invented Bing Maps key: not a secret, rejected by the service; a real key replaces it through the same setting and column. */
 export const FAKE_MAP_KEY = "baseline-fake-bing-key";
 const JSON_COLUMNS = new Set(["adx_settings", "adx_subgrid_settings", "adx_notes_settings", "adx_timeline_settings", "adx_filter_definition"]);
 const FIELD_ITEMS = new Map();
@@ -145,9 +143,7 @@ const liquidIds = (copy) => [
   ...(/\{%-?\s*entitylist\s+name:/.test(copy) ? ["pp.list.name"] : []),
 ];
 
-// ---------------------------------------------------------------------------
-// YAML in the PAC export style: sorted keys, `>-` blocks for JSON, `- ` lists.
-// ---------------------------------------------------------------------------
+// ---- YAML in the PAC export style: sorted keys, `>-` blocks for JSON, `- ` lists.
 function scalar(value) {
   if (typeof value === "boolean" || typeof value === "number") return String(value);
   const text = String(value);
@@ -189,13 +185,11 @@ const errorDialog = (title) => { const { LoadingMessage, ...rest } = dialog("Crm
 // Notes dialogs carry no Type discriminator in exported settings (PAC rejects unknown Type values).
 const untypedDialog = (...args) => { const { Type, ...rest } = dialog(...args); return rest; };
 // Column overrides as platform-written lists carry them (typed CrmEntityFormView-ViewColumn, plain-text DisplayName); an
-// untyped entry made live drop the whole grid settings object (run 7: list-options and the item subgrid rendered defaults).
+// untyped entry made live drop the whole grid settings object (list-options and the item subgrid rendered defaults).
 const viewColumn = (attribute, displayName, width) => ({ Type: "CrmEntityFormView-ViewColumn", AttributeLogicalName: attribute, DisplayName: displayName, Width: width });
 const gridMessages = (what) => ({ LoadingMessage: res(`Loading ${what}...`), ErrorMessage: res(`Could not load ${what}.`), AccessDeniedMessage: res(`You do not have access to ${what}.`), EmptyMessage: res(`No ${what}.`), CssClass: "baseline-grid", GridCssClass: "table-striped" });
 
-// ---------------------------------------------------------------------------
-// Model
-// ---------------------------------------------------------------------------
+// ---- Model
 export function buildSite(identity = readIdentity()) {
   const { WEBSITE, LANGUAGE, LANGUAGE_ID, PUBLISHED, HOME, TEMPLATE } = siteRecords(identity);
   const files = new Map();
@@ -203,7 +197,7 @@ export function buildSite(identity = readIdentity()) {
   const put = (relative, content) => files.set(relative.split(path.sep).join("/"), content);
   const record = (kind, recordId, name, variation, catalog, extra = {}, values = {}) => records.push({ id: recordId, kind, name, ...extra, ...((values.adx_entityname ?? values.adx_targetentitylogicalname) ? { table: values.adx_entityname ?? values.adx_targetentitylogicalname } : {}), variation, catalog: unique([...catalog, ...derivedIds(kind, values)]) });
 
-  // Pages ------------------------------------------------------------------
+  // ---- Pages
   const pages = new Map();
   const ROOT = { key: "root", id: id("page:root"), name: "Baseline", partial: "baseline", path: "/baseline/" };
   pages.set("root", ROOT);
@@ -234,7 +228,7 @@ export function buildSite(identity = readIdentity()) {
     record("webpage", entry.id, entry.name, isRoot ? "root page, hidden from sitemap" : `page for ${entry.key}${entry.query ? `, opened with ${entry.query} (the read form takes its record from the query string)` : ""}`, [...catalog, ...liquidIds(copy)], { path: entry.path, contentPageId: id(`page:${entry.key}:en-US`) });
   }
 
-  // Basic forms --------------------------------------------------------------
+  // ---- Basic forms
   const forms = new Map();
   const formBase = (name, table, formName, mode) => ({
     adx_captcharequired: false,
@@ -249,7 +243,7 @@ export function buildSite(identity = readIdentity()) {
   });
   const INSERT = 100000000, EDIT = 100000001, READONLY = 100000002;
   // Redirect URL is an absolute "External URL" (Learn: basic forms, redirect step); a site-relative path
-  // returned HTTP 500 on save in the live capture. example.com is reserved for documentation (RFC 2606).
+  // returned HTTP 500 on save. example.com is reserved for documentation (RFC 2606).
   const EXTERNAL_URL = "https://example.com/";
   const QUERY = { adx_entitysourcetype: 756150001, adx_recordidquerystringparametername: "id" };
   const MESSAGE = { adx_onsuccess: 756150000, adx_hideformonsuccess: false };
@@ -272,7 +266,7 @@ export function buildSite(identity = readIdentity()) {
   basicForm("item-create-captcha", { name: "Baseline Item Insert Captcha", mode: INSERT, fields: { ...MESSAGE, adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: false }, variation: "insert, captcha for anonymous users only", page: "item-create-captcha" });
   basicForm("item-create-captcha-all", { name: "Baseline Item Insert Captcha All Users", mode: INSERT, fields: { ...MESSAGE, adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true }, variation: "insert, captcha for anonymous and authenticated users", page: "item-create-captcha-all" });
   // Portal Comment save option attaches to an adx_portalcomment activity; the baseline tables are not activity tables, so live
-  // refused the upload (403 AU0005, run 7a): both attach forms save notes and redirect to the record so the note is visible.
+  // refused the upload (403 AU0005): both attach forms save notes and redirect to the record so the note is visible.
   const TO_EDIT = { adx_onsuccess: 756150001, adx_hideformonsuccess: false, adx_redirectwebpage: edit.page.id, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "id", adx_appendquerystring: false };
   basicForm("item-create-attach", { name: "Baseline Item Insert Attach", mode: INSERT, fields: { ...MESSAGE, adx_attachfile: true, adx_attachfileaccept: "image/*", adx_attachfilerestrictaccept: true, adx_attachfilemaxsize: 1024, adx_attachfileallowmultiple: false, adx_attachfilerequired: false, adx_attachfilestoragelocation: 756150000, adx_attachfilesaveoption: 756150000, adx_attachfilelabel: json(label("Baseline attachment")), ...TO_EDIT }, variation: "insert, attach file (image/*, 1024 KB) saved as notes; success redirects to the edit page with the record id (the note shows)", page: "item-create-attach" });
   basicForm("item-create-attach-multiple", { name: "Baseline Item Insert Attach Multiple", mode: INSERT, fields: { ...MESSAGE, adx_attachfile: true, adx_attachfileallowmultiple: true, adx_attachfilerequired: true, adx_attachfilerequirederrormessage: json(label("Attach at least one baseline PDF.")), adx_attachfileaccept: "application/pdf", adx_attachfileacceptextensions: ".pdf", adx_attachfilerestrictaccept: true, adx_attachfiletypeerrormessage: json(label("Baseline attachments must be PDF files.")), adx_attachfilemaxsize: 2048, adx_attachfilesizeerrormessage: json(label("Baseline attachments must be 2 MB or smaller.")), adx_attachfilestoragelocation: 756150000, adx_attachfilesaveoption: 756150000, adx_attachfilelabel: json(label("Baseline PDFs")), ...TO_EDIT }, variation: "insert, multiple required PDF attachments saved as notes, with type/size/required messages; success redirects to the edit page with the record id", page: "item-create-attach-multiple" });
@@ -305,7 +299,7 @@ export function buildSite(identity = readIdentity()) {
   basicForm("child-create-reference-code", { name: "Baseline Child Insert Reference Code", table: CHILD, formName: "Baseline Child", mode: INSERT, fields: { ...MESSAGE, ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150000, adx_referencequerystringname: "code", adx_referencequerystringisprimarykey: false, adx_referencequeryattributelogicalname: "pqvd_code", adx_referenceentityshowreadonlyform: false }, variation: "insert child, reference the item whose pqvd_code matches ?code= and populate the required item lookup, no read-only form", page: "child-create-reference-code" });
   basicForm("item-create-contact-reference", { name: "Baseline Item Insert Contact Reference", mode: INSERT, fields: { ...MESSAGE, adx_setentityreference: true, adx_referenceentitylogicalname: "contact", adx_referenceentityrelationshipname: "pqvd_contact_baselineitem", adx_referencetargetlookupattributelogicalname: "pqvd_contactid", adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150001 }, variation: "insert item, reference the record associated to the current portal user (contact)", page: "item-create-contact-reference" });
   // Platform-written FormActionMetadata (sources' exported basic forms) carries the placement on each action
-  // (ActionButtonPlacement/Alignment/Style per action); the root-level key alone renders the bar below the form (O14).
+  // (ActionButtonPlacement/Alignment/Style per action); the root-level key alone renders the bar below the form.
   const actionsSettings = (size, placement, deleteTarget) => { const actionCss = { ButtonCssClass: "btn btn-default baseline-action", ActionButtonStyle: 0, ActionButtonPlacement: placement, ActionButtonAlignment: 0 }; return json({
     Type: "FormActionMetadata",
     ActionButtonPlacement: placement,
@@ -333,7 +327,7 @@ export function buildSite(identity = readIdentity()) {
   const childLookup = basicForm("child-edit-lookup", { name: "Baseline Child Edit Lookup", table: CHILD, formName: "Baseline Child", mode: EDIT, fields: { ...QUERY, ...MESSAGE }, variation: "edit child; item lookup offers Baseline Item Lookup Create", page: "child-edit-lookup" });
   const parentEdit = basicForm("parent-edit", { name: "Baseline Parent Edit", table: PARENT, formName: "Baseline Parent", mode: EDIT, fields: { ...QUERY, ...MESSAGE }, variation: "edit parent; items subgrid with associate/disassociate", page: "parent-edit" });
 
-  // Basic form metadata -----------------------------------------------------------
+  // ---- Basic form metadata
   const ATTRIBUTE = 100000000, SECTION = 100000001, TAB = 100000002, SUBGRID = 100000003, NOTES = 100000005, TIMELINE = 756150000;
   const ATTRIBUTE_DEFAULTS = { adx_adddescription: false, adx_descriptionposition: 100000000, adx_fieldisrequired: false, adx_ignoredefaultvalue: false, adx_setvalueonsave: false, adx_useattributedescriptionproperty: false };
   // The server assigns adx_name (observed in the exports): "<form name> <target>", with an empty target for
@@ -454,7 +448,7 @@ export function buildSite(identity = readIdentity()) {
   // Inactive basic form (statecode Inactive): its page shows that a deactivated form is not rendered.
   basicForm("item-read-inactive", { name: "Baseline Item Read Inactive", mode: READONLY, fields: { ...QUERY, statecode: 1, statuscode: 2 }, variation: "read-only, deactivated record", page: "item-read-inactive" });
 
-  // Lists ------------------------------------------------------------------------
+  // ---- Lists
   const lists = [];
   const listBase = (key, name, fields) => ({ adx_entitylistid: id(`list:${key}`), adx_entityname: ITEM, adx_entitypermissionsenabled: true, adx_idquerystringparametername: "id", adx_name: name, adx_pagesize: 5, adx_view: view("item-active"), ...fields });
   const viewsJson = (files) => json({ Type: "ViewMetadata", Views: files.map((file) => ({ Type: "View", ViewId: view(file), DisplayName: label(VIEWS.find((v) => v.file === file).name) })) });
@@ -539,7 +533,7 @@ export function buildSite(identity = readIdentity()) {
       DeleteDialog: dialog("CrmEntityFormView-GridDeleteModal", "Delete baseline item", "large"),
       // Shapes of the platform-written lists in the export (Active Accounts…, op-mv2sgrtr account list): every action with
       // ConfirmationRequired has its dialog (ActivateModal/DeactivateModal), and the error dialog carries Body, no
-      // LoadingMessage. Run 6 rendered this list with the settings' defaults (no actions, no column override, null
+      // LoadingMessage. Live rendered this list with the settings' defaults (no actions, no column override, null
       // messages in data-view-layouts) while Activate required a confirmation without an ActivateDialog.
       ActivateDialog: confirmDialog("ActivateModal", "Activate baseline item"),
       DeactivateDialog: confirmDialog("DeactivateModal", "Deactivate baseline item"),
@@ -614,7 +608,7 @@ export function buildSite(identity = readIdentity()) {
     adx_filterportaluser: "pqvd_contactid",
   }, "sorted view (All Baseline Items, code ascending) filtered to the portal user's pqvd_contactid", ["pp.list.sorting"]);
   // Map view columns, stored as the export stores them on other lists (no default centre: see notExpressed). The credentials
-  // column and the Bingmaps/credentials site setting hold an invented key (O9): the pages are observed with a key the
+  // column and the Bingmaps/credentials site setting hold an invented key: the pages are observed with a key the
   // service rejects. A real key, if one is supplied, replaces FAKE_MAP_KEY in both places.
   const PUSHPIN = { name: "baseline-pushpin.png", path: "/baseline/baseline-pushpin.png" };
   const MAP = { adx_map_credentials: FAKE_MAP_KEY, adx_map_resturl: "https://dev.virtualearth.net/REST/v1/Locations", adx_map_zoom: 12, adx_map_distancevalues: "5,10,25,50,100", adx_map_latitudefieldname: "pqvd_float", adx_map_longitudefieldname: "pqvd_decimal", adx_map_infoboxtitlefieldname: "pqvd_name", adx_map_infoboxdescriptionfieldname: "pqvd_text", adx_map_infoboxoffsetx: 25, adx_map_infoboxoffsety: 46, adx_map_pushpinurl: PUSHPIN.path, adx_map_pushpinwidth: 32, adx_map_pushpinheight: 39 };
@@ -623,7 +617,7 @@ export function buildSite(identity = readIdentity()) {
   list("item-list-map-esri", "Baseline Item List Map Esri", { ...MAP, adx_map_enabled: true, adx_map_type: 756150002, adx_map_distanceunits: 756150000 }, "map view type Esri (Learn: only Bing is supported), kilometres", []);
   list("item-list-inactive", "Baseline Item List Inactive", { statecode: 1, statuscode: 2 }, "deactivated list record", []);
 
-  // Multistep forms ---------------------------------------------------------------
+  // ---- Multistep forms
   const multisteps = [];
   const stepId = (key) => id(`advancedformstep:${key}`);
   const stepBase = (webformId, key, name, fields) => ({
@@ -725,7 +719,7 @@ export function buildSite(identity = readIdentity()) {
   ], surveyMeta);
 
   // C: insert with attachments, geolocation, portal user association and table references (query string, previous step, query attribute).
-  // Two variants (O11). "multistep-insert" shows the parent through "Baseline Parent", whose pqvd_name/pqvd_code control ids
+  // Two variants. "multistep-insert" shows the parent through "Baseline Parent", whose pqvd_name/pqvd_code control ids
   // repeat in the item create form: live fails the step ("An entry with the same key already exists."), kept as the observed
   // platform failure. "multistep-insert-fixed" shows "Baseline Parent Reference" (parent-only columns), so the step submits.
   const insertMultistep = (key, s, name, readonlyForm, note) => {
@@ -753,7 +747,7 @@ export function buildSite(identity = readIdentity()) {
     { values: stepBase(userId, "user3", "Baseline Multistep Associated Reference", { adx_type: 100000001, adx_targetentitylogicalname: CHILD, adx_formname: "Baseline Child", adx_mode: INSERT, ...REFERENCE_ITEM, adx_referenceentitysourcetype: 100000002, adx_referencerecordsourcerelationshipname: "pqvd_contact_baselineitem", adx_referencesourceentitylogicalname: "contact", adx_referenceentityprimarykeylogicalname: `${ITEM}id` }), variation: "insert child referencing the item associated to the current portal user", catalog: [] },
   ]);
 
-  // Web roles, table permissions, page rule -------------------------------------------------
+  // ---- Web roles, table permissions, page rule
   const roleNames = ["Baseline Editors", "Baseline Readers", "Baseline Contact Scope", "Baseline Account Scope", "Baseline Parent Scope", "Baseline Privilege Combinations"];
   const role = Object.fromEntries(roleNames.map((name) => [name, id(`webrole:${name}`)]));
   const webroles = [...roleNames, "Baseline Inactive Role"].map((name) => ({ adx_anonymoususersrole: false, adx_authenticatedusersrole: false, adx_description: `Baseline fixture role ${name}; not a default role.`, adx_key: `baseline-${slug(name)}`, adx_name: name, adx_webroleid: id(`webrole:${name}`), ...(name === "Baseline Inactive Role" ? { statecode: 1, statuscode: 2 } : {}) }));
@@ -775,7 +769,7 @@ export function buildSite(identity = readIdentity()) {
   // A child (parent-scoped) permission inherits the web roles of its parent permission (Learn: "Configure child
   // permissions", roles are inherited from the parent table permission), so the parent-scope chain gets its own root:
   // with the shared lookup-read permission as its parent, every baseline role read every item through the chain
-  // (live run 6b: the contact- and account-scope personas rendered a foreign item read-only).
+  // (on live the contact- and account-scope personas rendered a foreign item read-only).
   const parentGlobal = perm("Baseline parent global read", PARENT, 756150000, READ_APPEND, personaRoles.filter((name) => name !== "Baseline Parent Scope"), {}, "parent lookup read for the baseline roles outside the parent-scope chain");
   const parentScopeRoot = perm("Baseline Parent Scope parents", PARENT, 756150000, READ_APPEND, ["Baseline Parent Scope"], {}, "root of the parent-scope chain; its child permissions inherit this role");
   perm("Baseline Editors parents", PARENT, 756150000, ALL, ["Baseline Editors"], {}, "editors edit parents and associate items");
@@ -800,7 +794,7 @@ export function buildSite(identity = readIdentity()) {
     { values: { adx_description: "Baseline: grant change on the editors page to Baseline Editors, excluding its direct child web files.", adx_name: "Baseline Editors Page Grant Change", adx_right: 1, adx_scope: 2, adx_webpageaccesscontrolrule_webrole: [role["Baseline Editors"]], adx_webpageaccesscontrolruleid: id("webpagerule:editors"), adx_webpageid: editorsPage.id }, page: editorsPage, variation: "grant change, exclude direct child web files, Baseline Editors" },
   ];
 
-  // Site settings, scoped to the baseline tables (the site-wide ones are not safe: notExpressed) --------
+  // ---- Site settings, scoped to the baseline tables (the site-wide ones are not safe: notExpressed)
   const setting = (name, value, variation, extra = {}) => ({ values: { adx_description: `Baseline fixture: ${variation}.`, adx_name: name, adx_sitesettingid: id(`sitesetting:${name}`), adx_value: value, ...extra }, variation });
   const settings = [
     setting(`Webapi/${ITEM}/enabled`, "true", "Web API enabled"),
@@ -811,17 +805,17 @@ export function buildSite(identity = readIdentity()) {
     setting(`Webapi/${CHILD}/enabled`, "false", "Web API disabled for children"),
     setting(`Webapi/${CHILD}/UseFieldsFromView`, "false", "Web API fields not taken from a view"),
     // Settings only the fixture reads (no recognised feature key): Source=Table and a deactivated record.
-    // Site-wide by name (Learn: Add geolocation): the geolocation forms and Bing map lists read them. Invented key (O9).
+    // Site-wide by name (Learn: Add geolocation): the geolocation forms and Bing map lists read them. Invented key.
     setting("Bingmaps/credentials", FAKE_MAP_KEY, "invented Bing Maps key, so the map and geolocation pages render with a key the service rejects (O9)"),
     setting("Bingmaps/restURL", "https://dev.virtualearth.net/REST/v1/Locations", "Bing Maps REST URL (Learn's default)"),
     setting("Baseline/Source Table", "baseline", "value from the Value column (Source = Table)", { adx_source: 0 }),
     setting("Baseline/Inactive", "baseline", "deactivated setting", { statecode: 1, statuscode: 2 }),
   ];
 
-  // Own page and web templates (the site's templates stay untouched) ------------------------
+  // ---- Own page and web templates (the site's templates stay untouched)
   const webTemplates = [
     { values: { adx_mimetype: "text/html", adx_name: "Baseline Page Template", adx_webtemplateid: id("webtemplate:page") }, source: `<div class="baseline-template">{{ page.adx_copy }}</div>\n` },
-    { values: { adx_mimetype: "application/json", adx_name: "Baseline Json Template", adx_webtemplateid: id("webtemplate:json") }, source: `{"page":"{{ page.adx_name | escape }}"}\n` }, // live has no json filter (run 6 rendered the value unquoted): the template quotes it
+    { values: { adx_mimetype: "application/json", adx_name: "Baseline Json Template", adx_webtemplateid: id("webtemplate:json") }, source: `{"page":"{{ page.adx_name | escape }}"}\n` }, // live has no json filter (it rendered the value unquoted): the template quotes it
     // Template inheritance and inclusion: Extends overrides one block of Layout and includes Part with a parameter.
     { values: { adx_mimetype: "text/html", adx_name: "Baseline Layout", adx_webtemplateid: id("webtemplate:layout") }, source: `<div class="baseline-layout"><header class="baseline-layout-title">{% block title %}Baseline layout title{% endblock %}</header><main class="baseline-layout-main">{% block main %}Baseline layout main{% endblock %}</main></div>\n` },
     { values: { adx_mimetype: "text/html", adx_name: "Baseline Include Part", adx_webtemplateid: id("webtemplate:include-part") }, source: `<p class="baseline-include-part">{{ part_label | default: 'Baseline part' | escape }}</p>\n` },
@@ -862,7 +856,7 @@ export function buildSite(identity = readIdentity()) {
     [page("bound-webform", "bound-webform", "Baseline Bound Multistep Form", rewrite, { adx_webform: mainMultistep.values.adx_webformid }), "multistep form Baseline Multistep bound through adx_webform", ["pp.msform.webpage"]],
   ];
 
-  // Emit -------------------------------------------------------------------------------
+  // ---- Emit
   put("website.yml", yamlRecord(WEBSITE));
   record("website", WEBSITE.adx_websiteid, WEBSITE.adx_name, "existing website record, emitted unchanged (header and footer web templates)", [], { path: "/baseline/" }, WEBSITE);
   put("websitelanguage.yml", yamlList([LANGUAGE]));
@@ -952,9 +946,7 @@ export function buildSite(identity = readIdentity()) {
   return { files, manifest };
 }
 
-// ---------------------------------------------------------------------------
-// Items the fixture does not set, with the reason; the catalog's Learn source ids are appended.
-// ---------------------------------------------------------------------------
+// ---- Items the fixture does not set, with the reason; the catalog's Learn source ids are appended.
 const SHARED = "Site-wide setting: changing it changes the shared site outside /baseline/ (not safe on the shared fixture site).";
 const under = (pattern) => CATALOG_ITEMS.map((item) => item.id).filter((itemId) => pattern.test(itemId));
 const NOT_EXPRESSED = [

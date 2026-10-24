@@ -70,7 +70,7 @@ test("permission source changes apply atomically and failed reload retains the a
       method: "PATCH",
       headers: {
         "content-type": "application/json",
-        "x-sim-csrf": app.state().csrf,
+        "x-sim-csrf": app.csrf,
       },
       body: JSON.stringify(body),
     });
@@ -135,7 +135,7 @@ test("permission source changes apply atomically and failed reload retains the a
   );
   response = await fetch(app.url + "/__sim/api/permissions/native-read", {
     method: "DELETE",
-    headers: { "x-sim-csrf": app.state().csrf },
+    headers: { "x-sim-csrf": app.csrf },
   });
   assert.equal(response.status, 409);
   assert.equal(

@@ -1,5 +1,5 @@
 // The additive systemColumns store option used by the Dataverse layer: merged after coercion,
-// on create and update, and absent from every write that does not pass it. Invented schema only.
+// on create and update, and absent from every write that does not pass it.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

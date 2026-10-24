@@ -5,17 +5,6 @@ import { registerSettingParser } from './config-keys.mjs';
 
 /*
  * Project `codeApps` setting and read-only `power.config.json` parsing for Power Apps code apps.
- *
- * Sources (Microsoft Learn):
- * - Overview: https://learn.microsoft.com/power-apps/developer/code-apps/overview
- * - Architecture ("power.config.json ... contains metadata. Both the CLI and Power Apps client library
- *   use this metadata ...; your app logic doesn't need to interact with it"):
- *   https://learn.microsoft.com/power-apps/developer/code-apps/architecture
- * - `environmentId` / `region` in power.config.json: https://learn.microsoft.com/power-apps/developer/code-apps/troubleshoot-add-datasource
- * - `connectionReferences` / `databaseReferences` properties: https://learn.microsoft.com/power-apps/vibe/convert-vibe-to-code
- * - `@envvar:` references persisted in data source configuration: https://learn.microsoft.com/power-apps/developer/code-apps/how-to/use-environment-variables
- * - `localAppUrl` / `--appUrl` (local URL the app runs on): https://learn.microsoft.com/power-platform/developer/cli/reference/code#pac-code-init
- *
  * The file is owned by the Power Apps CLI. Mirage reads it and never writes it back.
  */
 
@@ -50,7 +39,7 @@ export function codeAppSettings(value, label = 'codeApps') {
   });
 }
 
-// unverified: the shape of a connectionReferences entry. Observed files key entries by a reference id with
+// The connectionReferences entry shape is not documented. Sample files key entries by a reference id with
 // `id` ('/providers/Microsoft.PowerApps/apis/<apiId>'), `displayName` and `dataSources`; an array is accepted too.
 const references = value => {
   const entries = Array.isArray(value) ? value.map((item, index) => [item?.name ?? item?.id ?? String(index), item]) : Object.entries(value ?? {});

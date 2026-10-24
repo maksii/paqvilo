@@ -1,5 +1,5 @@
 // Standalone reload settles backend work before it takes the host change queue: a pending job that itself calls the
-// organization's change() completes, and so does the reload. Invented Solution only.
+// organization's change() completes, and so does the reload.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

@@ -10,9 +10,9 @@ const JSON_TYPE = "application/json; odata.metadata=minimal; odata.streaming=tru
 const FRAME_CODE = "0x80048d19";
 const REFERENCE_CODE = "0x80040203";
 const FRAME_ERROR = "Stream was not readable.";
-// unverified: wording after "InnerException" is not confirmed; the code 0x80048d19 and the prefix are from the task brief.
+// The native wording after "InnerException" is a guess.
 const JSON_BATCH = "Error identified in Payload provided by the user for Entity :''  ---->  InnerException : Batch content must be multipart/mixed.";
-const MAX_URL = 65536; // unverified: whether the limit counts the path and query only (as here) or the absolute URL
+const MAX_URL = 65536; // assumed to count the path and query only, not the absolute URL
 const URL_CODE = "0x80060888";
 const ROLLBACK = Symbol("rollback");
 // Matches "name@odata.bind": "$1" and "name@odata.id": "$1" values; group 3 is the Content-ID.
@@ -36,7 +36,7 @@ const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+?(?:--)?[ \t]*(?
 
 // Splits on delimiter lines that match this boundary exactly (CRLF, the boundary, optional "--", padding, CRLF).
 // A longer boundary that starts with this one is content, not a delimiter. Returns the text after each delimiter line.
-// Docs: only payload items that use the batch identifier are executed; a batch with none succeeds with nothing run.
+// Only payload items that use the batch identifier are executed; a batch with none succeeds with nothing run.
 function sections(text, boundary) {
   const framed = `\r\n${text}`;
   const delimiter = new RegExp(`\\r\\n--${escapeRegExp(boundary)}(--)?[ \\t]*(?=\\r\\n|$)`, "g");
@@ -107,7 +107,7 @@ function parseSection(section, inChangeset) {
 // so the items run through the same dispatch as multipart parts. Items run in dependsOn order (array order otherwise).
 // Consecutive members of an atomicityGroup remain one changeset after dependency ordering.
 // Dependencies on any member constrain the complete transaction, never an individual commit.
-// unverified: the JSON form is not documented; malformed JSON and unknown dependsOn/cycle messages are assumed.
+// The JSON form is not documented; the messages for malformed JSON and unknown dependsOn or cycles are guesses.
 function jsonItem(item) {
   if (!item || typeof item !== "object" || typeof item.method !== "string" || typeof item.url !== "string") throw invalid(JSON_BATCH);
   const headers = {};
@@ -131,10 +131,10 @@ function jsonItem(item) {
 
 function orderJson(items) {
   const ids = items.map((item) => item.refId).filter((id) => id !== undefined);
-  if (new Set(ids).size !== ids.length) throw invalid("The batch contains a duplicate request id."); // unverified: message
+  if (new Set(ids).size !== ids.length) throw invalid("The batch contains a duplicate request id."); // native message not known
   for (const item of items) {
     const missing = item.dependsOn.find((dep) => !ids.includes(dep));
-    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`); // unverified: message
+    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`); // native message not known
   }
   const units = [], groups = new Map(), owners = new Map();
   for (const item of items) {
@@ -281,17 +281,16 @@ const mimeLines = (contentId) => [
 
 const partOf = (boundary, mime, content) => `--${boundary}\r\n${mime.map((line) => `${line}\r\n`).join("")}\r\n${content}\r\n`;
 
-// Envelope headers that a top-level answer carries but a native batch part does not (measured on batch.success,
-// batch.rollback and batch.continue-on-error): the service request ids and dop hint, expires, Allow, Public, the
-// transport headers and CORS. REQ_ID is not here: the dispatch supplies it on entity-engine errors only.
+// Envelope headers that a top-level answer carries but a native batch part does not: the service request ids and dop
+// hint, expires, Allow, Public, the transport headers and CORS. REQ_ID is not here: the dispatch supplies it on entity-engine errors only.
 const PART_ENVELOPE = /^(x-ms-|expires$|allow$|public$|strict-transport-security$|access-control-|connection$|keep-alive$|set-cookie$)/i;
-// The JSON type a multipart part carries (native batch.success, batch.continue-on-error); a JSON batch answers with streaming too.
+// The JSON type a native multipart part carries; a JSON batch answers with streaming too.
 const PART_JSON_TYPE = "application/json; odata.metadata=minimal";
 
 function httpBlock(response, { json = false } = {}) {
   const headers = new Map();
   const set = (name, value) => headers.set(name.toLowerCase(), [name, String(value)]);
-  // An error part carries no Cache-Control (native batch.rollback and batch.continue-on-error); the no-cache pair is for reads.
+  // A native error part carries no Cache-Control; the no-cache pair is for reads.
   for (const [name, value] of Object.entries(response.headers ?? {})) {
     if (value === undefined || value === null || PART_ENVELOPE.test(name)) continue;
     if (response.status >= 400 && /^cache-control$/i.test(name)) continue;
@@ -302,8 +301,8 @@ function httpBlock(response, { json = false } = {}) {
   if (text && !headers.has("content-type")) set("Content-Type", json ? JSON_TYPE : PART_JSON_TYPE);
   if (!headers.has("odata-version")) set("OData-Version", "4.0");
   if (response.status < 400) {
-    // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair:
-    // unverified beyond the two nested record reads measured; a WhoAmI part carries neither.
+    // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair
+    // (seen on record reads only; other entity responses are assumed alike); a WhoAmI part carries neither.
     if (!headers.has("x-content-type-options")) set("X-Content-Type-Options", "nosniff");
     if (headers.has("etag")) {
       if (!headers.has("cache-control")) set("Cache-Control", "no-cache");
@@ -323,7 +322,7 @@ function changesetPart(boundary, responses, json) {
 }
 
 function result(boundary, status, blocks) {
-  // observed: parity cases batch.stop-on-error and batch.rollback; a failed batch answers nosniff on the outer response too.
+  // Native: a failed batch answers nosniff on the outer response too.
   const nosniff = status >= 400 ? { "x-content-type-options": "nosniff" } : {};
   return {
     status,
@@ -339,7 +338,7 @@ export async function executeBatch(parsed, { dispatch, origin, base, continueOnE
   // A JSON batch shares its references across items; a multipart part scopes them to its own changeset.
   const shared = new Map();
   const blocks = [];
-  // Without continue-on-error the batch stops at the first failing part and keeps the parts that already ran (native batch.stop-on-error).
+  // Without continue-on-error the batch stops at the first failing part and keeps the parts that already ran, as natively.
   for (const part of parsed.parts) {
     const refs = parsed.json ? shared : new Map();
     if (part.kind === "request") {

@@ -1,4 +1,4 @@
-// Scaffolding shared by the `/_sim/` view modules (D3): heading with guide, collapsed panels with help, paged tables,
+// Scaffolding shared by the `/_sim/` view modules: heading with guide, collapsed panels with help, paged tables,
 // field help from help-content `fields`, pending buttons and request failures. DOM-free and import-free: the module
 // passes its id, label, the UI kit and the HELP map, so every host serves this file by the admin asset pattern.
 export function viewCommon({ id, label, kit, help }) {

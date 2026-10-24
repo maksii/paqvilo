@@ -47,65 +47,59 @@ test('an explicitly selected extract under .paqvilo is watched while its generat
     const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(5000) });
     fs.writeFileSync(file, '// saved\n');
     await refreshed;
+    // A later real save proves the watcher already processed the ignored write before it.
+    const next = once(session, 'refreshed', { signal: AbortSignal.timeout(5000) });
     fs.writeFileSync(ignoredFile, '{"saved":true}');
-    await sleep(400);
-    assert.deepEqual(events, [file]);
+    fs.writeFileSync(file, '// saved again\n');
+    await next;
+    assert.deepEqual(events, [file, file]);
   } finally {
     await watcher.close();
     fs.rmSync(parent, { recursive: true, force: true });
   }
 });
 
-test('saves in quick succession never start a reload while another is under way', async () => {
+test('saves during a reload are shown by one following reload, never an overlapping one', async (t) => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-')));
   const file = path.join(dir, 'script.js');
   fs.writeFileSync(file, '// 0\n');
-
-  let running = 0;
-  let overlapped = false;
-  let reloads = 0;
-  const page = {
-    isClosed: () => false,
-    url: () => 'https://portal.example.com/',
-    // a reload takes far longer than the gap between the saves
-    goto: async () => {
-      if (++running > 1) overlapped = true;
-      reloads++;
-      await sleep(400);
-      running--;
-    },
-  };
-  const context = { pages: () => [page] };
+  const signal = () => ({ signal: AbortSignal.timeout(5000) });
+  let running = 0, overlapped = false;
+  const gotos = new EventEmitter(), releases = [];
+  // Each reload stays in flight until the test releases it.
+  const page = { isClosed: () => false, url: () => 'https://portal.example.com/', goto: async () => {
+    if (++running > 1) overlapped = true;
+    await new Promise((resolve) => { releases.push(resolve); gotos.emit('goto'); });
+    running--;
+  } };
   const session = Object.assign(new EventEmitter(), {
     cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
-    model: { webFiles: [] },
-    rewriter: { unsupported: [] },
-    refresh: () => {},
-    rel: (f) => path.relative(dir, f),
+    model: { webFiles: [] }, rewriter: { unsupported: [] }, refresh: () => {}, rel: (f) => path.relative(dir, f),
   });
   const seen = [];
-  session.on('refreshed', ({ files }) => seen.push(...files));
-
-  const watcher = watchSources(session, context, { log: () => {} });
-  await new Promise((resolve) => watcher.on('ready', resolve));
-  try {
-    for (let i = 1; i <= 4; i++) {
-      fs.writeFileSync(file, `// ${i}\n`);
-      await sleep(250);
-    }
-    await sleep(1500);
-    assert.equal(overlapped, false, 'two reloads ran at the same time');
-    assert.ok(reloads >= 2, 'the saves that arrived during a reload must still be shown');
-    assert.ok(seen.every((f) => f === file));
-    // and it settles: no reload keeps running or re-arming itself
-    const settled = reloads;
-    await sleep(700);
-    assert.equal(reloads, settled);
-    assert.equal(running, 0);
-  } finally {
-    await watcher.close();
-    fs.rmSync(dir, { recursive: true, force: true });
+  session.on('refreshed', ({ files }) => seen.push(files));
+  const watcher = watchSources(session, { pages: () => [page] }, { log: () => {} });
+  t.after(async () => { releases.forEach((release) => release()); await watcher.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  await watcher.ready;
+  const first = once(gotos, 'goto', signal());
+  fs.writeFileSync(file, '// 1\n');
+  await first;
+  for (const save of [2, 3]) {
+    const noticed = once(watcher, 'all', signal());
+    fs.writeFileSync(file, `// ${save}\n`);
+    await noticed;
   }
+  await sleep(150); // past the save debounce, which must not start a reload while one is in flight
+  assert.equal(releases.length, 1);
+  const second = once(gotos, 'goto', signal());
+  releases[0]();
+  await second;
+  releases[1]();
+  await watcher.whenIdle(5000);
+  assert.equal(overlapped, false, 'two reloads ran at the same time');
+  assert.equal(releases.length, 2, 'both saves made during the first reload share the next one');
+  assert.deepEqual(seen, [[file], [file]]);
+  assert.equal(running, 0);
 });
 
 test('closing the watcher cancels queued saves and prevents reload after shutdown', async () => {
@@ -268,12 +262,13 @@ test('web CSS reaches the browser before deferred Git tracking completes', async
   const file = path.join(dir, 'site.css');
   fs.writeFileSync(file, 'body { color: red; }');
   const order = [];
-  let finishTracking;
+  let finishTracking, trackingStarted;
+  const tracking = new Promise((resolve) => { trackingStarted = resolve; });
   const session = Object.assign(new EventEmitter(), {
     cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
     model: { webFiles: [{ file, url: '/site.css' }] }, rewriter: { unsupported: [] },
     refresh: (_files, options) => { assert.equal(options.deferChangeTracking, true); order.push('prepared'); return { changeTrackingDeferred: true }; },
-    refreshChangeTracking: () => { order.push('tracking'); return new Promise((resolve) => { finishTracking = () => { order.push('tracked'); resolve({ baselineChanged: false }); }; }); },
+    refreshChangeTracking: () => { order.push('tracking'); trackingStarted(); return new Promise((resolve) => { finishTracking = () => { order.push('tracked'); resolve({ baselineChanged: false }); }; }); },
     rel: (f) => path.relative(dir, f),
   });
   const page = { isClosed: () => false, url: () => session.cfg.origin, evaluate: async () => { order.push('css'); return { links: 1, styles: 0 }; }, goto: async () => assert.fail('CSS should swap without navigation') };
@@ -282,7 +277,7 @@ test('web CSS reaches the browser before deferred Git tracking completes', async
     await watcher.ready;
     const refreshed = new Promise((resolve) => session.once('refreshed', resolve));
     watcher.emit('all', 'change', file);
-    await sleep(180);
+    await tracking;
     assert.deepEqual(order, ['prepared', 'css', 'tracking']);
     finishTracking();
     const event = await refreshed;

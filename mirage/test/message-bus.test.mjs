@@ -98,7 +98,7 @@ test('messages survive a restart through the store state, and a rolled-back tran
   const { store, bus, clock } = busFixture();
   await bus.send('fx-orders', { n: 1 }, { messageId: 'keep' });
   const [locked] = await bus.receive('fx-orders');
-  await assert.rejects(store.transact(async () => { await bus.send('fx-orders', { n: 2 }, { nested: true }); throw new Error('invented rollback'); }, { incremental: true }));
+  await assert.rejects(store.transact(async () => { await bus.send('fx-orders', { n: 2 }, { nested: true }); throw new Error('invented rollback'); }, { incremental: true }), /invented rollback/);
   const snapshot = store.snapshot();
   assert.ok(snapshot.mappings[QUEUE_MESSAGE_TABLE], 'internal mapping is registered');
   assert.equal(snapshot.mappings[QUEUE_MESSAGE_TABLE].entitySet, undefined, 'internal table has no entity set');
@@ -127,7 +127,8 @@ test('descriptors declare the local bus and the core emulator transport as behav
   assert.equal(serviceBusEmulatorDescriptor.kind, 'servicebus-emulator');
   assert.equal(serviceBusEmulatorDescriptor.level, 'behaviour');
   assert.ok(serviceBusEmulatorDescriptor.requires.includes('external-process:servicebus-emulator'));
-  assert.ok(serviceBusEmulatorDescriptor.fidelity.sources.every((url) => url.startsWith('https://learn.microsoft.com/')));
+  const sources = serviceBusEmulatorDescriptor.fidelity.sources;
+  assert.ok(sources.length > 0 && sources.every((url) => url.startsWith('https://learn.microsoft.com/')), sources.join());
 });
 
 test('emulator preflight refuses non-emulator and non-loopback endpoints without contacting them', async () => {

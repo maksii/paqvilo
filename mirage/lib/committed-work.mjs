@@ -11,7 +11,7 @@ export async function settleCommittedWork(store,runners,{close=false}={}){
  if(close){for(const runner of active)await runner.close();store.committedJobs?.close();}
 }
 
-// asyncoperation values of a durable committed-event job (Learn: asyncoperation). operationtype 1 is System Event (the
+// asyncoperation values of a durable committed-event job. operationtype 1 is System Event (the
 // default), 10 is Workflow (a classic workflow job keeps it for its whole life through `columns.operationtype`).
 export const SYSTEM_EVENT=1,WORKFLOW=10;
 const READY=0,LOCKED=2;

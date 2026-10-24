@@ -4,7 +4,6 @@ import { assertDataverseRootBody } from "./dataverse-reader-details.mjs";
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
-// metadata, objectTypeCode and clock are accepted for the router contract and unused so far.
 import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { handoffPluginResponse } from "./plugin-response.mjs";
@@ -36,7 +35,7 @@ import {
 const PAGE_CAP = 5000;
 // Control annotations a write may carry; other @ annotations are dropped by payload().
 const CONTROL = new Set(["@odata.type", "@odata.context", "@odata.id", "@odata.etag"]);
-// owningteam is left out: unverified, always null in the evidence.
+// owningteam is left out: assumed always null.
 const OWNER_FIELDS = ["ownerid", "owningbusinessunit"];
 // System lookups every table carries (audit always, owner columns on user-owned tables), with their targets.
 const SYSTEM_AUDIT = { createdby: ["systemuser"], modifiedby: ["systemuser"], createdonbehalfby: ["systemuser"], modifiedonbehalfby: ["systemuser"] };
@@ -48,12 +47,12 @@ const ALLOWED_QUERY = new Set([
   "$select", "$filter", "$expand", "$orderby", "$top", "$count", "$apply", "$skiptoken", "$deltatoken", "$id",
   "fetchXml", "fetchxml", "savedQuery", "userQuery",
   "partitionId",
-  // Learn optional-parameters#return-unmasked-data: case-sensitive; any other casing keeps the 0x80060888 refusal.
+  // Case-sensitive: any other casing keeps the 0x80060888 refusal.
   "UnMaskedData",
 ]);
 const TRACKING_REJECTS = ["$filter", "$orderby", "$expand", "$top"];
 const MONEY_SCALE = 4;
-// The JSON type of a record read whose Accept asked for XML or text (observed: parity cases headers.accept-xml, headers.accept-text).
+// The JSON type of a record read whose Accept asked for XML or text.
 const JSON_STREAMING_CONTENT_TYPE = "application/json; odata.metadata=minimal; odata.streaming=true";
 const CURRENCY = "_transactioncurrencyid_value";
 const RECORD_COUNT = "Microsoft.Dynamics.CRM.totalrecordcount";
@@ -63,7 +62,7 @@ const PAGING_COOKIE = "Microsoft.Dynamics.CRM.fetchxmlpagingcookie";
 const GLOBAL_VERSION = "Microsoft.Dynamics.CRM.globalmetadataversion";
 const OVERRIDDEN = "overriddencreatedon";
 // System columns Dataverse rejects on create and update (IsValidForCreate/IsValidForUpdate false): accepted and ignored,
-// the system stamp wins. unverified: live capture (ignored silently; the platform's answer is not captured).
+// the system stamp wins. Ignoring them silently is a guess.
 const SYSTEM_IGNORED = new Set([
   "createdby", "createdon", "modifiedby", "modifiedon", "createdonbehalfby", "modifiedonbehalfby",
   "owninguser", "owningteam", "owningbusinessunit", "versionnumber",
@@ -117,7 +116,7 @@ const unknownProperty = (key, mapping) =>
     "InvalidRequest",
     { innerCode: "0x80048d19" },
   );
-// A lookup, owner or audit value given as a plain value: the untyped-value form, 0x0 (no native case measured).
+// A lookup, owner or audit value given as a plain value: the untyped-value form, 0x0 (assumed native answer).
 const untypedProperty = (key, logical) =>
   new DataError(
     `An error occurred while validating input parameters: Microsoft.Crm.CrmException: Invalid property '${key}' was found in entity 'Microsoft.Dynamics.CRM.${logical}'. ---> Microsoft.OData.ODataException: Does not support untyped value in non-open type.`,
@@ -149,7 +148,7 @@ const appliedHeader = (prefer, options) => {
   const applied = preferenceApplied(prefer, options);
   return applied ? { "Preference-Applied": applied } : {};
 };
-// A write representation drops the columns it leaves null, with their @ annotations (observed: every native PATCH 200 body).
+// A write representation drops the columns it leaves null, with their @ annotations (as every native PATCH 200 body does).
 const withoutNullColumns = (body) => {
   const nulls = new Set(Object.keys(body).filter((key) => !key.includes("@") && body[key] === null));
   return Object.fromEntries(Object.entries(body).filter(([key]) => !nulls.has(key.split("@")[0])));
@@ -191,8 +190,8 @@ function withIdSelect(select, idColumn) {
 }
 
 // Mirrors the handler's annotation stripping: @odata.* always stays, other annotations need a match.
-// Expanded rows (single or collection, at any depth) follow the same rule for their own annotations.
-// observed: parity cases query.expand-children, query.expand-filter: no FormattedValue or lookup annotation leaks into an expanded row without Prefer.
+// Expanded rows (single or collection, at any depth) follow the same rule for their own annotations: without Prefer, no
+// FormattedValue or lookup annotation leaks into an expanded row.
 function keepAnnotations(value, include) {
   const nested = (item) => (item !== null && typeof item === "object" && Object.getPrototypeOf(item) === Object.prototype ? keepAnnotations(item, include) : item);
   const out = {};
@@ -206,7 +205,7 @@ function keepAnnotations(value, include) {
 }
 
 // Accepts /set(key), set(key), absolute <origin>/api/data/vX/set(key) and alternate-key forms.
-// urlKey: the value is a URL key ($id), which keeps the route flag; a bind or $ref body value does not (observed: relationships.bind-invalid sends REQ_ID twice).
+// urlKey: the value is a URL key ($id), which keeps the route flag; a bind or $ref body value does not (native sends REQ_ID twice).
 function refOf(value, { urlKey = false } = {}) {
   const text = String(value ?? "").trim().replace(/^https?:\/\/[^/]+/i, "").replace(/^\/?api\/data\/v\d+\.\d+\//i, "");
   const ref = parseEntityReference(text);
@@ -222,8 +221,8 @@ function refOf(value, { urlKey = false } = {}) {
 }
 
 // The caller's query without paging tokens, followed by one token parameter.
-// observed: parity case query.paging-first: a nextLink encodes each value like encodeURIComponent ( ) ' stay literal, , and : are escaped;
-// a deltaLink keeps the caller's $select raw (query.track-changes).
+// A nextLink encodes each value like encodeURIComponent ( ) ' stay literal, , and : are escaped;
+// a deltaLink keeps the caller's $select raw.
 function linkOf(c, base, name, token, { raw = false } = {}) {
   const query = new URLSearchParams(c.url.searchParams);
   query.delete("$skiptoken");
@@ -363,7 +362,6 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   const runWrite = (fn) => change(() => store.transact(fn, { incremental: true }));
   const contextFor = (c, suffix) => contextUrl(c.origin, c.version, suffix);
   // The context lists the $select columns (a repeated one once) then each expanded navigation with its own columns and nested expansions.
-  // observed: parity cases query.select-duplicate, query.expand-children, query.expand-filter, relationships.parent.
   const navContext = (item) => {
     const columns = [...(item.select ? parseSelect(item.select) ?? [] : []), ...(item.expand ?? []).map(navContext)];
     return `${item.navigation}(${[...new Set(columns)].join(",")})`;
@@ -414,7 +412,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // Money columns serialize with four-decimal lexemes, and a row that carries one reports the base currency lookup,
   // but only when the caller's $select asks for it (or selects everything): Dataverse omits the lookup otherwise.
   function shapeMoney(mapping, out, { currencyWanted = true, named = false } = {}) {
-    // named: the money column was selected on a single row, so it counts even when its value is null (observed: key GET with money select).
+    // named: the money column was selected on a single row, so it counts even when its value is null (as a native key GET with a money $select does).
     let money = named;
     for (const key of Object.keys(out)) {
       if (key.includes("@") || !isMoney(mapping, key)) continue;
@@ -535,16 +533,16 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       const key = `_${field}_value`;
       if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined) formatted[`${key}${NAVIGATION}`] = field;
     }
-    // The user-owner lookup carries its logical name only, no FormattedValue or navigation (observed: owner annotation sets).
+    // The user-owner lookup carries its logical name only, no FormattedValue or navigation.
     delete formatted[`_owninguser_value${FORMATTED}`];
     delete formatted[`_owninguser_value${NAVIGATION}`];
-    // Organization-owned rows always answer the organization lookup, selected or not (observed: seed.child, relationships.parent).
+    // Organization-owned rows always answer the organization lookup, selected or not.
     const organizationId = organizationRecord(store)?.organizationid;
     const selected = parseSelect(c.url.searchParams.get("$select"));
     if (organizationId && (!c.navigation || selected == null || selected.includes("_organizationid_value")) && formatted._organizationid_value === undefined && ownershipOf(mapping.logicalName, undefined, mapping) === "org") {
       formatted._organizationid_value = organizationId;
     }
-    // A picklist value with no option still answers its FormattedValue, as null (observed: a picklist value of -1).
+    // A picklist value with no option still answers its FormattedValue, as null (a value of -1, for example).
     for (const key of Object.keys(formatted)) {
       if (key.includes("@") || formatted[key] == null) continue;
       if (fieldKind(readDefinition(mapping, key)) === "choice" && formatted[`${key}${FORMATTED}`] === undefined) {
@@ -603,7 +601,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     // A row that carries the base currency (shapeMoney) has exchange rate 1: the base currency's own rate is 1, so a money value is its base amount.
     if (formatted[CURRENCY] != null) {
       formatted.exchangerate = 1;
-      // observed: parity case headers.prefer-malformed: the rate's FormattedValue is 1 at its 12-place scale; a base companion formats like its money column.
+      // The rate's FormattedValue is 1 at its 12-place scale; a base companion formats like its money column.
       formatted[`exchangerate${FORMATTED}`] = "1.000000000000";
       for (const name of moneys) {
         if (formatted[name] == null) continue;
@@ -663,9 +661,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   }
 
   // An expanded collection holds at most PAGE_CAP rows; its nav@odata.nextLink pages on through the navigation (nested paging).
-  // observed: parity cases query.expand-children, query.expand-filter, relationships.parent. A collection query links every expanded
-  // collection (short or empty too); a child row carries its parent's lookup; a child with no $select carries every column; a
-  // single-valued expansion carries its etag.
+  // A collection query links every expanded collection (short or empty too); a child row carries its parent's lookup; a
+  // child with no $select carries every column; a single-valued expansion carries its etag.
   function pageExpansions(c, mapping, row, formatted, expand, { collection = true } = {}) {
     for (const item of expand) {
       const rel = navigationOf(mapping, item.navigation);
@@ -851,10 +848,10 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   // Column-level security (api.fieldSecurity). A column the caller cannot read is nulled in the store's query context
   // (rowsOptionsOf), so every $filter, $orderby, $apply step, lambda and $expand option evaluates it as null: a right and a
-  // wrong guess answer alike. unverified: live capture; the platform docs do not say how such a filter behaves.
+  // wrong guess answer alike. How native evaluates such a filter is undocumented; this is a guess.
   // A readable secured column with a masking rule the read does not unmask (a collection read: UnMaskedData with
-  // CanReadUnmasked All Records unmasks) is never a filter, order or aggregate operand at any path depth: Learn
-  // web-service-error-codes 0x80041155 CannotFilterOnMaskedAttribute. One rule: api.fieldSecurity.maskedFor.
+  // CanReadUnmasked All Records unmasks) is never a filter, order or aggregate operand at any path depth:
+  // 0x80041155 CannotFilterOnMaskedAttribute. One rule: api.fieldSecurity.maskedFor.
   const security = () => fieldSecurity?.();
   // The table and column a property path ends on, through its navigation segments (lambda paths come qualified from the root).
   const columnOf = (logical, segments) => {
@@ -871,7 +868,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     return Boolean(target && security()?.maskedFor?.(c.user, target.logical, target.column, { unmask: c.unmasked === true, single: false }));
   };
   const maskedIn = (c, logical, ast) => expressionPaths(ast).some((path) => maskedPath(c, logical, path));
-  // unverified: Learn names filtering only; an order on a masked column is refused the same way (it is the same oracle).
+  // Only filtering is documented; an order on a masked column is refused the same way (it is the same oracle).
   const assertUnmasked = (c, logical, paths) => {
     if (paths.some((path) => maskedPath(c, logical, path))) throw maskedOperand();
   };
@@ -977,7 +974,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     let out = fs.mask(c.user, mapping.logicalName, row, { view });
     for (const [alias, logical] of Object.entries(info.aliases ?? {})) out = fs.mask(c.user, logical, out, { prefix: `${alias}.`, view });
     for (const column of info.columns ?? []) {
-      if (!column.aliased || out[column.key] == null) continue;
+      if (!column.aliased || column.aggregate != null || out[column.key] == null) continue;
       const value = fs.maskValue(c.user, column.entity, column.attribute, out[column.key], view);
       if (value === out[column.key]) continue;
       out[column.key] = value;
@@ -996,18 +993,19 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     // Tracked paging: the token minted on the first page travels in the $skiptoken, so the delta link starts there.
     const delta = tracked ? (carriedDelta(url) ?? changes.token()) : null;
     const params = collectionParams(c, mapping);
-    // observed: parity case query.track-changes: a tracked page without $orderby answers in row-version (creation/update) order.
+    // A tracked page without $orderby answers in row-version (creation/update) order.
     // The sort is internal: links and context are built from the caller's url, so the order is not echoed.
     if (tracked && !params.has("$orderby")) params.set("$orderby", "versionnumber asc");
     // The cookie's last order-column values and row id let the store resume after that tuple instead of re-counting the
-    // offset (key-set paging), so a cursor row deleted or updated out of the filter since skips nothing (Learn page-results).
+    // offset (key-set paging), so a cursor row deleted or updated out of the filter since skips nothing.
     // Only this function's own cookies name the last row of the page in this order; an expansion's nested cookie
     // (pageExpansions, which carries countOfRecords) names a row of the unsorted related set and keeps the offset.
     const cookie = offset > 0 ? decodeSkipToken(url.searchParams.get("$skiptoken")) : null;
     const after = cookie && cookie.countOfRecords === undefined ? { id: cookie.lastId, values: cookie.orderValues ?? {} } : null;
     const paging = { params, offset, pageSize, after, preferenceApplied: null, nextLink: () => null };
     const options = secured(c, ids ? { ids } : {});
-    const result = ids?.length === 0 ? emptyPage() : store.query(mapping.logicalName, params, c.identity, paging, options);
+    // The filter resolves field definitions per row; they are derived once for the whole synchronous query.
+    const result = ids?.length === 0 ? emptyPage() : projectPage(() => store.query(mapping.logicalName, params, c.identity, paging, options));
     const rows = result.value;
     const total = result.paging?.totalCount ?? rows.length;
     const counted = url.searchParams.get("$count") === "true";
@@ -1081,8 +1079,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const info = fetched.columns;
     const columns = (info.columns ?? []).filter((col) => col.alias == null && !col.aliased && !col.aggregate).map((col) => col.attribute);
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.push(mapping.idColumn);
-    // observed: parity case fetchxml.basic lists the columns alphabetically with the id, not in attribute order; an aggregate has no column list.
-    // A saved query's columns keep the saved attribute order (observed: parity case views.system); the id stays last when it is not listed.
+    // FetchXML lists the columns alphabetically with the id, not in attribute order; an aggregate has no column list.
+    // A saved query's columns keep the saved attribute order; the id stays last when it is not listed.
     const ordered = order === "attribute" ? columns : [...columns].sort();
     const listed = columns.length ? `(${ordered.join(",")})` : "";
     const body = { "@odata.context": contextFor(c, `${mapping.entitySet}${listed}`) };
@@ -1094,11 +1092,11 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (counted && c.include?.(RECORD_LIMIT)) body[`@${RECORD_LIMIT}`] = Boolean(fetched.total_record_count_limit_exceeded);
     body.value = fetched.entities.map((row) => withoutNulls(keepAnnotations(shapeMoney(mapping, maskFetched(c, mapping, c.formatter.formatFetchRow(row, info), info)), c.include)));
     if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
-    // observed: parity case fetchxml.page: the paging cookie is answered without a Prefer header.
+    // The paging cookie is answered without a Prefer header.
     if (fetched.more_records && fetched.paging_cookie) {
       body[`@${PAGING_COOKIE}`] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
     }
-    // observed: parity case fetchxml.join only: a FetchXML with a link-entity answers its JSON type with charset=utf-8.
+    // Only a FetchXML with a link-entity answers its JSON type with charset=utf-8.
     const joined = /<link-entity\b/i.test(xml);
     return { status: 200, headers: joined ? { "Content-Type": "application/json; odata.metadata=minimal; charset=utf-8" } : undefined, body };
   }
@@ -1178,10 +1176,10 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const etag = body["@odata.etag"];
     const match = c.headers["if-none-match"];
     if (etag && match && !c.url.searchParams.has("$expand") && c.include == null && String(match).split(",").map((item) => item.trim()).includes(etag)) {
-      // observed: parity case concurrency.not-modified: the 304 is an empty text/html answer with no ETag and no OData-Version.
+      // The 304 is an empty text/html answer with no ETag and no OData-Version.
       return { status: 304, headers: { "Content-Type": "text/html; charset=utf-8" } };
     }
-    // observed: parity cases headers.accept-xml and headers.accept-text: a record read asked for XML or text still answers JSON, streaming.
+    // A record read asked for XML or text still answers JSON, streaming.
     const asOther = /application\/xml|text\/plain/i.test(String(c.headers.accept ?? ""));
     return {
       status: 200,
@@ -1204,7 +1202,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   }
 
   // A create payload: overriddencreatedon sets createdon (UTC, ISO) and is stored under its own name; null is ignored.
-  // unverified: the rejection of an unparseable date and the stored form are not captured from the live service.
+  // The rejection of an unparseable date and the stored form are guesses.
   function createPayload(mapping, body) {
     const data = payload(mapping, body);
     const value = body[OVERRIDDEN];
@@ -1344,8 +1342,8 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     return !mapping.intersect || Boolean(mapping.stateStatusDefaults || store.fieldDefinition(mapping.logicalName, "statecode", fieldsOf) || store.fieldDefinition(mapping.logicalName, "statuscode", fieldsOf));
   }
 
-  // addressed: the alternate key columns the URL names; an update drops body values for them (Learn use-upsert: the server
-  // removes the data that uses the same keys as the key attributes, so a key cannot change through the key that addresses it).
+  // addressed: the alternate key columns the URL names; an update drops body values for them (the server removes
+  // the data that uses the same keys as the key attributes, so a key cannot change through the key that addresses it).
   async function updateData(c, mapping, body, existing, addressed = []) {
     const data = bindsOf(c, mapping, payload(mapping, body), existing);
     delete data[mapping.idColumn];
@@ -1382,16 +1380,15 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (key.row) {
       authorize(c, logical, "update", mapping, key.row);
       // An elastic row's partitionid key is its partition: a body that changes it stays refused (elastic tables), not dropped.
-      // The body's values for the URL's alternate key are dropped (Learn use-upsert, "If the record exists"). The same rule
-      // applies to an If-Match: * update through an alternate key; Learn describes the drop only for Upsert.
-      // unverified: If-Match: * update via an alternate key with a body change to that key (not captured live)
+      // The body's values for the URL's alternate key are dropped. The same rule applies to an If-Match: * update through
+      // an alternate key, which is a guess: the drop is documented only for Upsert.
       const data = await updateData(c, mapping, body, key.row, isElastic(mapping) ? [] : Object.keys(key.alternate ?? {}));
       await withKeyViolation(mapping, data, () => store.updateRecordAsync(logical, key.row[mapping.idColumn], data, c.identity, updateOptions(c, { ifMatch, ifNoneMatch })));
       await afterWrite(c, mapping, { operation: "update", id: key.row[mapping.idColumn] });
       return { created: false, id: key.row[mapping.idColumn] };
     }
     const data = await createData(c, mapping, body);
-    // Learn use-upsert: a create keeps the key values the body sets, even when they differ from the URL, and copies only the
+    // An upsert create keeps the key values the body sets, even when they differ from the URL, and copies only the
     // missing ones from the URL.
     if (key.alternate) for (const [name, value] of Object.entries(key.alternate)) { if (!Object.hasOwn(data, name)) data[name] = value; }
     else data[mapping.idColumn] = key.id;
@@ -1419,7 +1416,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       const url = entityUrl(c.origin, c.version, mapping.entitySet, id);
       return { status: 204, headers: { "OData-EntityId": url, Location: url } };
     }
-    // The new row representation answers every column; the 201 carries no ETag (observed: POST 201 has Preference-Applied only).
+    // The new row representation answers every column; the 201 carries no ETag (only Preference-Applied).
     const represented = entityBody(c, mapping, id, entityParams(c, mapping), { allColumns: true });
     return { status: 201, headers: appliedHeader(c.prefer), body: represented };
   }
@@ -1434,12 +1431,12 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
       return upsertNow(c, mapping, key, body, { ifMatch: c.headers["if-match"], ifNoneMatch: c.headers["if-none-match"] });
     });
     // The location names the stored row: the URL key while the row still carries those key values, else its id (an
-    // upsert-create keeps the body's differing key values, Learn use-upsert, so the URL key would not find it).
+    // upsert-create keeps the body's differing key values, so the URL key would not find it).
     const stored = key.alternate && rowOf(c, mapping, outcome.id);
     const urlKeyHolds = key.alternate && stored && Object.entries(key.alternate).every(([name, value]) => String(stored[name] ?? "").toLowerCase() === String(value ?? "").toLowerCase());
     const location = entityUrl(c.origin, c.version, mapping.entitySet, isElastic(mapping) ? recordKey(mapping, { [mapping.idColumn]: outcome.id, partitionid: c.partitionId }) : urlKeyHolds ? key.text : outcome.id);
     if (!c.prefer.representation) return { status: 204, headers: { "OData-EntityId": location, Location: location } };
-    // An update answers every column but drops the null ones (observed: every PATCH 200 body); an upsert-create keeps its own column set.
+    // An update answers every column but drops the null ones (as every native PATCH 200 body does); an upsert-create keeps its own column set.
     const represented = outcome.created
       ? entityBody(c, mapping, outcome.id, entityParams(c, mapping))
       : withoutNullColumns(entityBody(c, mapping, outcome.id, entityParams(c, mapping), { allColumns: true }));
@@ -1576,7 +1573,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const key = parentRow(c, mapping, "read");
     const { target, rows } = relatedRows(c, mapping, key.row, rel);
     const link = (row) => ({ "@odata.id": entityUrl(c.origin, c.version, target.entitySet, row[target.idColumn]) });
-    // observed: parity case relationships.reference: a single-valued $ref answers the $ref context.
+    // A single-valued $ref answers the $ref context.
     if (rel.many === false) return rows[0] ? { status: 200, body: { "@odata.context": contextFor(c, "$ref"), ...link(rows[0]) } } : { status: 204 };
     return { status: 200, body: { "@odata.context": contextFor(c, "Collection($ref)"), value: rows.map(link) } };
   }
@@ -1645,7 +1642,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   }
 
   // Native refuses a bulk message before any write: no targets, or a target typed as another table (the message reads 'none' there).
-  // unverified: live capture (only CreateMultiple recorded); UpdateMultiple and UpsertMultiple take the same refusals.
+  // Assumed: UpdateMultiple and UpsertMultiple take the same refusals as CreateMultiple.
   function refuseBulkTargets(mapping, message, targets) {
     if (targets.length === 0) throw new DataError("Custom state is not set for entity type crmbaseentity.", 400, "InvalidRequest", { innerCode: "0x80040216" });
     const typed = `Microsoft.Dynamics.CRM.${mapping.logicalName}`;
@@ -1655,7 +1652,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   }
 
   // Elastic bulk requests commit each successful target independently and continue after failures.
-  // Learn: bulk-operations, "On error behavior with elastic tables". Error codes of individual targets remain native CRUD errors.
+  // Error codes of individual targets remain native CRUD errors.
   async function elasticBulk(c) {
     const { mapping, route } = c;
     const targets = targetsOf(c);
@@ -1737,7 +1734,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
         seen.add(folded);
         work.push({ target, text: texts[index] });
       });
-      if (!update && work.length !== targets.length) throw invalid("Duplicate key in Targets.", "0x80040203"); // unverified: message
+      if (!update && work.length !== targets.length) throw invalid("Duplicate key in Targets.", "0x80040203"); // native message text is a guess
       await runWrite(async () => {
         for (const { target, text } of work) {
           const key = lookupKey(c, mapping, text);
@@ -1763,7 +1760,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     }
     return methodNotAllowed(c.method);
   };
-  // Allow on a keyed 405 lists the methods of the record, per attempted method (observed: errors.method-put, -post, -head).
+  // Allow on a keyed 405 lists the methods of the record, per attempted method.
   const RECORD_ALLOW = {
     HEAD: "POST,OPTIONS,GET,HEAD,POST",
     OPTIONS: "POST,OPTIONS,GET,HEAD,POST",
@@ -1804,7 +1801,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     }
   }
 
-  // ---- Internal writes: the organization mutation pipeline for every caller that is not a Web API request ---------------
+  // ---- Internal writes: the organization mutation pipeline for every caller that is not a Web API request
   // Callers: the SDK IOrganizationService (local-organization-service.mjs: CLR plug-ins and the flow Dataverse connector), the
   // portal /_api and portal forms, activity messages, and note, attachment and SharePoint rows (dataverse-files.mjs
   // createThroughPipeline). Each entry runs the Web API rules below in the caller's store transaction (none of its own).
@@ -1971,7 +1968,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
    * Associates (associateInternal) or disassociates (disassociateInternal) one row with related rows through a
    * collection-valued navigation, under the Web API $ref rules; every caller (the Web API $ref routes, the SDK
    * Associate/Disassociate, the portal /_api $ref) runs these steps:
-   * - appendTo on the row and append on each related row (Learn, security-concepts: Append / Append To), unless the caller
+   * - appendTo on the row and append on each related row, unless the caller
    *   is unauthenticated (see internalContext) or options.authorized;
    * - the beforeWrite hooks ({ operation, data: { relationship, id: relatedId }, existing }) and afterWrite hooks
    *   ({ operation, id, relationship, relatedId }) once per related row (audit rows, security rules, committed work);
@@ -2011,7 +2008,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     // Without sync each stage's post and the referencing row's update steps are awaited (drive), never the synchronous bridge.
     if (write) yield { name: "store", value: write() };
     else {
-      // unverified: the Relationship schema name falls back to the navigation name when the mapping names none.
+      // Assumed: the Relationship schema name falls back to the navigation name when the mapping names none.
       const parameters = {
         Target: { $type: "EntityReference", logicalName: mapping.logicalName, id: rowId, name: null },
         Relationship: { $type: "Relationship", schemaName: rel.schemaName ?? navigation, primaryEntityRole: null },

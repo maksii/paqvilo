@@ -51,7 +51,7 @@ test("footer capture rejects active elements, event attributes and external SVG/
     '<img src="//evil.example/logo.png">',
     '<svg><style>@import "evil";</style></svg>',
   ])
-    assert.throws(() => validateFooterLogoMarkup(unsafe));
+    assert.throws(() => validateFooterLogoMarkup(unsafe), { code: "FOOTER_LOGO_CAPTURE", status: 422 }, unsafe);
   assert.match(
     validateFooterLogoMarkup(
       '<svg><defs><path id="p" d="M1 1"/></defs><use href="#p"/></svg>',

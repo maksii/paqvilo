@@ -2,7 +2,6 @@
 // with the engine explicitly disabled a Function and a write an automated plug-in covers answer 501
 // PowerFxEvaluatorMissing (never default outputs, never an unchanged row; POWERFX_AUTOMATED_NOT_EVALUATED once); with a
 // pack adapter the result is returned or applied. The core engine's behaviour is in power-fx-dataverse.test.mjs.
-// Invented x_ data only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -19,7 +18,7 @@ const FX = '77777777-7777-4777-8777-777777777710';
 const AUTO = '77777777-7777-4777-8777-777777777711';
 const ids = { add: '77777777-7777-4777-8777-777777777712', plain: '77777777-7777-4777-8777-777777777713' };
 
-// An invented adapter: '{ Z: X + Y }' adds, 'Upper' upper-cases ThisRecord.x_name. Synchronous, as a pack may export it.
+// An adapter: '{ Z: X + Y }' adds, 'Upper' upper-cases ThisRecord.x_name. Synchronous, as a pack may export it.
 const adapter = { evaluate: (expression, { values }) => (expression === 'Upper' ? { value: { x_name: String(values.ThisRecord.x_name).toUpperCase() } } : { value: { Z: values.X + values.Y } }) };
 
 async function organization(t, { withAdapter }) {

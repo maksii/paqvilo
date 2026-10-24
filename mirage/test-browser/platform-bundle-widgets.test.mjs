@@ -12,7 +12,7 @@ const SITE = "8b3c4d5e-2f30-4b6c-9d7e-8f9a0b1c2d3e";
 const ACCOUNTS = ["a2000000-0000-4000-8000-000000000001", "a2000000-0000-4000-8000-000000000002"];
 
 // Synthetic portal: a list with a row action and an authored script that uses jQuery UI
-// widgets from the platform's preform bundle. Nothing leaves loopback.
+// widgets from the platform's preform bundle.
 test("platform bundle equivalents: the row action menu opens below its button, jQuery UI datepicker and tabs work", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-bundle-widgets-"));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));

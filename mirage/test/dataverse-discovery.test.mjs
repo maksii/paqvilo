@@ -1,5 +1,5 @@
 // Simulated Global Discovery service: service document, $metadata, Instances keys,
-// $select and $filter. Invented instance and GUIDs only.
+// $select and $filter.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createDiscovery } from "../lib/dataverse-discovery.mjs";

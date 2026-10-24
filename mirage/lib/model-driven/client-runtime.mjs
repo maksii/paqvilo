@@ -112,7 +112,7 @@ export function batchResponses(body, boundary) {
   return result;
 }
 
-/** Xrm.WebApi.execute/executeMultiple (Learn: xrm-webapi/online/execute, executemultiple) over the organization's Web
+/** Xrm.WebApi.execute/executeMultiple over the organization's Web
  * API through host.webApi({ method, path, headers, body }) → { status, headers, body }: actions (operationType 0) POST,
  * functions (1) GET with parameter aliases, CRUD (2) record requests; a nested array in executeMultiple is one $batch
  * change set (all or nothing). Unknown operations answer the organization's own 404 error. */
@@ -190,7 +190,7 @@ export function createWebApiExecute(host, assertLive = () => {}) {
     const result = await send({ method: 'POST', path: `${API_ROOT}/$batch`, headers: { 'content-type': `multipart/mixed; boundary=${batch}` }, body });
     const contentType = Object.entries(result.headers ?? {}).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
     const responses = batchResponses(String(result.body ?? ''), boundaryOf(contentType) ?? /^\s*--([^\r\n]+)/.exec(String(result.body ?? ''))?.[1]);
-    // A failed change set answers the failing request's error (Learn: executeMultiple rejects with that error).
+    // A failed change set answers the failing request's error (executeMultiple rejects with that error).
     const failed = responses.find(item => item.status >= 400) ?? (result.status >= 400 ? result : null);
     if (failed) response({ path: `${API_ROOT}/$batch` }, failed);
     return responses.map((item, index) => response(http[index], item));
@@ -206,17 +206,17 @@ export function createWebApiExecute(host, assertLive = () => {}) {
   return { execute, executeMultiple, toHttp };
 }
 
-/** Validated Xrm.Navigation.navigateTo input (Learn: xrm-navigation/navigateto). entityrecord, entitylist and
- * webresource pages open inline (target 1) or in a dialog (target 2, position 1 center or 2 side); a custom page (Learn
- * navigateTo "custom": name, optional entityName and recordId, read in the page with Param) opens the headless canvas
+/** Validated Xrm.Navigation.navigateTo input. entityrecord, entitylist and
+ * webresource pages open inline (target 1) or in a dialog (target 2, position 1 center or 2 side); a custom page
+ * (name, optional entityName and recordId, read in the page with Param) opens the headless canvas
  * host of the canvas app with that logical name (the shell checks it exists); a dashboard page opens one of the app's Solution dashboards
- * (`dashboards`, the catalogue app's list; without dashboardId its first, Learn: "the app navigates to the default
+ * (`dashboards`, the catalogue app's list; without dashboardId its first, as "the app navigates to the default
  * dashboard") and rejects with DashboardPageUnsupported when the sources hold no such dashboard. */
 export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dashboards = []) {
   const type = pageInput?.pageType;
   if (type === 'custom') {
     if (typeof pageInput.name !== 'string' || !pageInput.name.trim()) throw new Error('navigateTo needs the logical name of the custom page in name.');
-    // Learn ("Navigate to a custom page using client API"): "The recordId parameter must be a GUID".
+    // Documented for custom pages: "The recordId parameter must be a GUID".
     if (pageInput.recordId !== undefined && !/^{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}?$/i.test(String(pageInput.recordId))) throw new Error('navigateTo: the custom page recordId must be a GUID.');
   }
   const dashboard = type === 'dashboard' && (pageInput.dashboardId ? dashboards.find(candidate => candidate.id === bareId(pageInput.dashboardId)) : dashboards[0]);
@@ -252,7 +252,7 @@ export function createFormClientRuntime(host) {
     if (field.type === 'lookup') return [{ id: `{${String(value.id ?? value).replace(/[{}]/g, '')}}`, name: value.name ?? '', entityType: value.entity ?? value.logicalName ?? field.targets?.[0] }];
     return value;
   };
-  // Learn (formContext.data.entity.attributes): only columns added to the form are available. The form's bindings
+  // formContext.data.entity.attributes: only columns added to the form are available. The form's bindings
   // (body, header, footer) are host.form.attributes; a form without them exposes its controls' columns.
   const formNames = host.form?.attributes ?? [...new Set(host.controlNames().map(name => host.controlField(name)).filter(Boolean))];
   const attributes = formNames.map(name => host.table.fields[name]).filter(Boolean).map(field => {
@@ -291,9 +291,9 @@ export function createFormClientRuntime(host) {
       addOnLoad: callback => add('onload', callback), removeOnLoad: callback => remove('onload', callback),
     }, 'formContext.data'),
     ui: client({ controls: collection(controls), getFormType: () => host.getFormType?.() ?? (host.record[host.table.idColumn] ? 2 : 1),
-      // Learn formContext.ui.formSelector: the open form; switching forms from a script is not supported locally.
+      // formContext.ui.formSelector: the open form; switching forms from a script is not supported locally.
       formSelector: client({ getCurrentItem: () => formItem, items: collection(host.form?.id ? [formItem] : []) }, 'formContext.ui.formSelector'),
-      // Learn formContext.ui.tabs and tab.sections: names, labels and visibility of the exported form layout.
+      // formContext.ui.tabs and tab.sections: names, labels and visibility of the exported form layout.
       tabs: collection((host.form?.tabs ?? []).map(tab => client({ getName: () => tab.id, getLabel: () => tab.label, getVisible: () => host.layoutVisible?.(tab) ?? tab.visible !== false,
         setVisible: visible => host.setLayoutVisible(tab, Boolean(visible)),
         sections: collection((tab.sections ?? []).map(section => client({ getName: () => section.name ?? null, getLabel: () => section.label, getVisible: () => host.layoutVisible?.(section) ?? section.visible !== false,
@@ -350,9 +350,9 @@ export function createFormClientRuntime(host) {
   }, 'Xrm.WebApi');
   const operations = createWebApiExecute(host, assertLive);
   const online = client({ ...Object.fromEntries(Object.keys(onlineWebApi).map(key => [key, onlineWebApi[key]])), execute: operations.execute, executeMultiple: operations.executeMultiple }, 'Xrm.WebApi');
-  // Xrm.WebApi.offline (Learn: xrm-webapi/offline) reads and writes the session's offline copy through host.offline
+  // Xrm.WebApi.offline reads and writes the session's offline copy through host.offline
   // ({ isOffline(), tables(), request(body) }, the shell's /_apps/api/offline); the server refuses its CRUD while online.
-  // In offline mode Xrm.WebApi's own CRUD uses the offline store (Learn: xrm-webapi, "the source is the offline data store").
+  // In offline mode Xrm.WebApi's own CRUD uses the offline store ("the source is the offline data store").
   const isOffline = () => Boolean(host.offline?.isOffline());
   const offlineCall = async (action, body) => {
     assertLive();
@@ -362,7 +362,7 @@ export function createFormClientRuntime(host) {
   const isAvailableOffline = entity => (host.offline?.tables() ?? []).includes(entity);
   const offline = client({
     retrieveRecord: async (entity, id, options = '') => offlineCall('retrieve', { entity, id: bareId(id), options }),
-    // ponytail: maxPageSize is not applied offline (the offline nextLink is deprecated per Learn); the whole result returns.
+    // ponytail: maxPageSize is not applied offline (the offline nextLink is deprecated); the whole result returns.
     retrieveMultipleRecords: async (entity, options = '') => offlineCall('retrieveMultiple', { entity, options }),
     createRecord: async (entity, data) => offlineCall('create', { entity, data }),
     updateRecord: async (entity, id, data) => offlineCall('update', { entity, id: bareId(id), data }),
@@ -375,22 +375,22 @@ export function createFormClientRuntime(host) {
   const roles = staff.roles.map(role => ({ ...role, getName: () => role.name }));
   const Xrm = client({ Page: formContext, WebApi: webApi,
     Navigation: client({ openAlertDialog: options => host.alert(options.text ?? '', options.title ?? 'Message'),
-      // Learn Xrm.Navigation.openUrl: opens the address in a new window; only http(s) addresses are opened.
+      // Xrm.Navigation.openUrl: opens the address in a new window; only http(s) addresses are opened.
       openUrl: url => { const target = new URL(String(url), (host.environment?.location ?? globalThis.location).href); if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Xrm.Navigation.openUrl opens http(s) addresses only.'); (host.environment?.open ?? globalThis.open)?.(target.href, '_blank', 'noopener'); }, openConfirmDialog: options => host.confirm(options.text ?? '', options.title ?? 'Confirm').then(confirmed => ({ confirmed })), openForm: options => host.openForm(options),
       navigateTo: (pageInput, navigationOptions) => { try { return host.openPage(...pageRequest(pageInput, navigationOptions, host.tables, host.dashboards)); } catch (error) { return Promise.reject(error); } },
     }, 'Xrm.Navigation'),
     ...(host.sidePanes ? { App: client({ sidePanes: host.sidePanes }, 'Xrm.App') } : {}),
-    // Learn Xrm.Utility.getPageContext: the page the app shows (entityrecord or entitylist), from the shell's route.
+    // Xrm.Utility.getPageContext: the page the app shows (entityrecord or entitylist), from the shell's route.
     Utility: client({ getPageContext: () => ({ input: { ...(host.pageContext?.() ?? { pageType: 'entityrecord', entityName: host.table.entity, entityId: host.record[host.table.idColumn] ?? null, formId: host.form?.id ?? null }) } }),
       getGlobalContext: () => client({ getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
-      // Learn getGlobalContext.getVersion: the Web API version this organization serves.
+      // getGlobalContext.getVersion: the Web API version this organization serves.
       getVersion: () => host.version ?? '9.2.0.0',
-      // Learn (getGlobalContext.userSettings): the server-built staff context, the same one the PCF context reads.
+      // getGlobalContext.userSettings: the server-built staff context, the same one the PCF context reads.
       userSettings: client({ userId: staff.userId, userName: staff.userName, languageId: staff.languageId, isRTL: staff.isRTL, securityRoles: [...staff.securityRoles], roles: collection(roles),
         transactionCurrency: staff.transactionCurrency ? { id: staff.transactionCurrency.id, entityType: 'transactioncurrency', name: staff.transactionCurrency.name } : null,
         transactionCurrencyId: staff.transactionCurrency?.id ?? null, dateFormattingInfo: staff.dateFormattingInfo,
         getTimeZoneOffsetMinutes: () => staffFormatting(staff).getTimeZoneOffsetMinutes() }, 'globalContext.userSettings'),
-      // Learn getGlobalContext.client: the Offline state belongs to the mobile app (the simulated device while offline).
+      // getGlobalContext.client: the Offline state belongs to the mobile app (the simulated device while offline).
       client: client({ getClient: () => isOffline() ? 'Mobile' : 'Web', getClientState: () => isOffline() ? 'Offline' : 'Online', isOffline }, 'globalContext.client'),
     }, 'globalContext') }, 'Xrm.Utility'),
   }, 'Xrm');

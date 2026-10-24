@@ -7,7 +7,8 @@ import { performanceFixture } from './runtime-performance-fixture.mjs';
 test('startup observers cannot reject or delay portal, model-driven or API runtime startup', { timeout: 30000 }, async t => {
   const fixture = await performanceFixture({ tables: 1, columns: 2, records: 1 });
   t.after(fixture.cleanup);
-  for (const kind of ['power-pages', 'model-driven', 'dataverse-api']) {
+  // Each runtime starts in its own child, so the three run concurrently.
+  await Promise.all(['power-pages', 'model-driven', 'dataverse-api'].map(async kind => {
     // Keep the rejection audit in a child: an unhandled rejection must fail the
     // contract without crashing the test runner or leaving an owned listener.
     const code = `
@@ -39,5 +40,5 @@ test('startup observers cannot reject or delay portal, model-driven or API runti
     const report = JSON.parse(stdout);
     assert.equal(report.kind, kind); assert.deepEqual(report.unhandled, []);
     assert.equal(report.phases.at(-1), 'listener-ready');
-  }
+  }));
 });

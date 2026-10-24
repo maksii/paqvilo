@@ -1,4 +1,4 @@
-// Service protection limits with an injected clock. Invented user ids only.
+// Service protection limits with an injected clock.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataError } from "../lib/data-error.mjs";

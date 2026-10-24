@@ -364,6 +364,7 @@ test("custom API internal callers retain original diagnostics while the actual H
     await assert.rejects(
       () => op.handle(context),
       (e) =>
+        e.status === 400 &&
         !e.message.includes("System.FormatException") &&
         !e.message.includes(" ---> "),
     );
@@ -378,12 +379,12 @@ test("custom API internal callers retain original diagnostics while the actual H
     };
     await assert.rejects(
       () => op.handle(context),
-      (e) => e.message.includes(fragment) && !e.message.includes("   at "),
+      (e) => e.status === 400 && e.message.includes(fragment) && !e.message.includes("   at "),
     );
     for (const [method, hasJsonBody] of [["POST", false], ["GET", false], ["GET", true]]) {
       // A URI function or a non-JSON caller has no qualified JSON-reader cause,
       // even if an HTTP transport marker is present.
-      state.tables.customapi[0].isfunction = method === "GET";
+      store.state.tables.customapi[0].isfunction = method === "GET";
       await assert.rejects(
         () => op.handle({
           ...context,
@@ -391,9 +392,9 @@ test("custom API internal callers retain original diagnostics while the actual H
           ...(method === "GET" ? { body: undefined, params: body } : {}),
           dataverseHttpReader: { ...context.dataverseHttpReader, hasJsonBody },
         }),
-        (error) => !error.message.includes("System.FormatException") && !error.message.includes(" ---> "),
+        (error) => error.status === 400 && !error.message.includes("System.FormatException") && !error.message.includes(" ---> "),
       );
-      state.tables.customapi[0].isfunction = false;
+      store.state.tables.customapi[0].isfunction = false;
     }
   }
 });

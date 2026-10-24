@@ -20,7 +20,7 @@ const fail = (message, status = 400, code = "InvalidFormSubmission") => {
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ""));
 const falsy = (value) => value === false || /^(false|0)$/i.test(String(value ?? ""));
 
-// Required-field text follows the existing lexical HTML handling, including
+// Required-field text uses lexical HTML handling, including
 // unterminated comments falling back to an ordinary <...> span. Failed comment
 // and tag searches are terminal: repeating opening delimiters cannot rescan the
 // same suffix for every candidate.
@@ -75,11 +75,10 @@ export function formText(value, fallback = "", language = {}) {
   return (byLcid(language?.lcid) ?? byLcid(language?.defaultLcid) ?? rows[0])?.Value || fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Advanced (multistep) form sessions. Native Power Pages persists the step history in
-// adx_webformsession, per signed-in user or anonymous visitor; unless Start New Session On
-// Load, the user can leave and resume where they left off (Learn, "Define multistep form
-// properties"). Each runtime keeps its own sessions in memory (a restart starts new ones).
+// ---- Advanced (multistep) form sessions
+// Native Power Pages persists the step history in adx_webformsession, per signed-in user or
+// anonymous visitor; unless Start New Session On Load, the user can leave and resume where they
+// left off. Each runtime keeps its own sessions in memory (a restart starts new ones).
 // The owner is the signed-in contact ("contact:<id>", resumed from any browser session of
 // that contact) or the anonymous visitor of one browser session ("visitor:<id>", from a
 // runtime cookie); a request with neither resumes nothing.
@@ -143,12 +142,12 @@ export function sessionSteps(session, initialStepId) {
   return steps;
 }
 
-// Learn documents this default for Edit Expired Message; Edit Not Permitted Message has no
-// documented default, so the same completion message stands in for an unset one.
+// The platform documents this default for Edit Expired Message; Edit Not Permitted Message has
+// no documented default, so the same completion message stands in for an unset one.
 const COMPLETED_MESSAGE = "You have already completed a submission. Thank you!";
 
 /**
- * Form-level access of an advanced form (Learn, "Define multistep form properties"):
+ * Form-level access of an advanced form:
  * - Authentication Required: an anonymous visitor is sent to sign in ({ signIn: true }).
  * - Multiple Records Per User Permitted = No: a signed-in user who completed the form
  *   continues that submission ({ session }, its saved steps edit their records again) when
@@ -192,8 +191,7 @@ export function previousSessionRecord(session, stepId) {
   return [...earlier].reverse().find((entry) => entry.recordId)?.recordId ?? null;
 }
 
-// ---------------------------------------------------------------------------
-// Multistep condition expressions: "attr = value & (other != 2 | !flag)".
+// ---- Multistep condition expressions: "attr = value & (other != 2 | !flag)".
 
 export function evaluateStepCondition(expression, record) {
   const tokens = [];
@@ -239,7 +237,7 @@ export function evaluateStepCondition(expression, record) {
     const numericRight = typeof right === 'number' || isExactNumeric(right);
     if (numericRight && ['=', '==', '!=', '>', '<', '>=', '<='].includes(operator)) {
       // Keep saved Int64/Decimal digits and numeric literal digits out of
-      // Number(). Legacy numeric-string/boolean coercion remains supported;
+      // Number(). Numeric-string/boolean coercion still applies;
       // an empty/null value still does not equal the numeric literal zero.
       const numericLeft = isExactNumeric(left) ? left
         : typeof left === 'string' && /^\s*[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?\s*$/.test(left) ? left.trim() : Number(left);
@@ -469,7 +467,7 @@ async function writeUnit(provider, work) {
  * internal entries (dataverse-records.mjs, store.recordPipeline) when the store has an organization, so a form submission
  * runs the organization rules (state defaults, record hooks, audit and version columns, alternate-key answers) like any
  * other write; the form has authorized the write with its own permission checks. Without an organization the store writes.
- * options are the store write options of the caller (e.g. portalRequest); values are not coerced, as before.
+ * options are the store write options of the caller (e.g. portalRequest); values are not coerced.
  * Every portal write outside the Web API (forms, list and subgrid actions, notes, server logic's Dataverse connector) uses
  * this one path, so enhanced authorization's principal (portal-authorization.mjs) and column security apply to all of them.
  */
@@ -496,9 +494,9 @@ export function portalRecordWrites(store, options = {}) {
   };
 }
 
-/** The note-text prefix that marks portal-visible notes: site setting KnowledgeManagement/NotesFilter, `*WEB*` by default. */
 // The provider key of a cloud attachment: attachments/<uuid>/<file name in key characters>.
 const cloudKey = (name) => `attachments/${randomUUID()}/${String(name).toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 200) || "file"}`;
+/** The note-text prefix that marks portal-visible notes: site setting KnowledgeManagement/NotesFilter, `*WEB*` by default. */
 export const notesFilter = (portal) => siteSetting(portal ?? {}, "KnowledgeManagement/NotesFilter") ?? "*WEB*";
 
 /** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */
@@ -602,7 +600,7 @@ export async function submitPortalForm(
   if (mode === 100000002 && !stateAction) {
     if (!session) fail("This native form is read-only", 403, "FormReadOnly");
     // A read-only advanced form step saves nothing: Next records the step as visited and moves on
-    // (live multistep-user/resume: the read-only Contact step's postback answers 302 ?stepid=<next>).
+    // (its postback answers 302 ?stepid=<next>).
     const source = await resolveFormRecord({ kind, definition, schema, metadata, context: { request: { params: query } }, readProvider, store, identity, session });
     const viewedId = source.id ? canonical(source.id) : null;
     let viewed = {};
@@ -930,9 +928,9 @@ export async function submitPortalForm(
     const fullname = identity?.fullname ?? identity?.name ?? "";
     const contactId = canonical(identity?.contactId ?? identity?.id);
     const annotationMapping = store.resolveMapping("annotation");
-    // FileStorage/CloudStorageAccount set: the file goes to storage route portalCloudAttachments and the note is Learn's
+    // FileStorage/CloudStorageAccount set: the file goes to storage route portalCloudAttachments and the note is the documented
     // placeholder <name>.txt holding { Name, Type, Size, Url }. No route: PROVIDER_ROUTE_MISSING fails the save; the bytes
-    // never fall back to the note. unverified: Url is the provider key here; native carries the blob's URL.
+    // never fall back to the note. Url is the provider key here; native carries the blob's URL.
     let cloud = null;
     if (String(siteSetting(portal, "FileStorage/CloudStorageAccount") ?? "").trim()) {
       try {
@@ -1046,7 +1044,7 @@ export async function submitPortalForm(
 /**
  * A create (insert) form renders for an identity holding a Create table permission of any
  * scope on its table; without one the platform shows its create access-denied message in
- * place of the form (live basic-form permission-denied captures: reader, no role, anonymous).
+ * place of the form.
  */
 export function formCreateAllowed(store, entity, identity = {}) {
   if (typeof store?.rules !== "function" || identity.admin || store.state?.settings?.permissionMode === "permissive") return true;

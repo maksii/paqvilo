@@ -1,5 +1,4 @@
 // The organization API and the model-driven shell must use one transactional store.
-// Invented solution/portal fixture only; all requests target listeners started by this test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -19,7 +18,7 @@ async function json(response, expected = 200) {
 }
 
 async function connect(sim, existingSecret) {
-  const csrf = sim.state().csrf;
+  const csrf = sim.csrf;
   const secret = existingSecret ?? (await json(await fetch(`${sim.url}/_sim/api/dataverse/applications`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
     body: JSON.stringify({ appId: APP_ID, displayName: 'Invented model app client', roles: ['System Administrator'] }),

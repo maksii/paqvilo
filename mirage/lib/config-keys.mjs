@@ -1,4 +1,4 @@
-// One registration point for Mirage settings (ARCH decision 12). Every key that a catalogue site
+// One registration point for Mirage settings. Every key that a catalogue site
 // (`sites.<id>.mirage` / `defaults.mirage`), a project file or a project portal entry accepts has one
 // row here. `MIRAGE_KEYS` (lense/config-schema.mjs) and `KNOWN_KEYS` (project-config.mjs) derive from
 // it, and every createSimulator option assembly resolves the rows through `runtimeOptions()`.

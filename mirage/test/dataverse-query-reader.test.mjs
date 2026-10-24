@@ -324,18 +324,19 @@ test("HTTP native query reader retains qualified parser positions and unary Nega
       assert.equal(error.code, status === 501 ? "0x8006088a" : "0x80060888");
       assert.equal(error.message, message);
     });
-  for (const filter of ["quantity eq -1", "quantity eq null", "not enabled"]) {
-    const response = await request({ $filter: filter });
-    assert.equal(response.status, 200);
-    assert.ok(Array.isArray((await response.json()).value));
-  }
-  for (const [filter, aliases] of [
-    ["quantity eq @v", { "@v": "-1" }],
-    ["quantity eq -1", {}],
+  // Accepted filters still select by value: a negative literal is not read as its absolute value.
+  for (const [filter, aliases, expected] of [
+    ["quantity eq -1", {}, []],
+    ["quantity eq @v", { "@v": "-1" }, []],
+    ["quantity ne -1", {}, [ID]],
+    ["quantity gt -2", {}, [ID]],
+    ["quantity eq null", {}, []],
+    ["not enabled", {}, []],
+    ["not (quantity eq -1)", {}, [ID]],
   ]) {
     const response = await request({ $filter: filter, ...aliases });
-    assert.equal(response.status, 200);
-    assert.deepEqual((await response.json()).value, []);
+    assert.equal(response.status, 200, filter);
+    assert.deepEqual((await response.json()).value.map((row) => row.sampleid), expected, filter);
   }
   for (const rows of [store.state.tables.sample, []]) {
     store.state.tables.sample = rows;

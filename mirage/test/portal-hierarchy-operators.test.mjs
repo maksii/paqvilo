@@ -1,6 +1,6 @@
 // Hierarchy query operators for portal callers: a Liquid fetchxml `under` condition and a portal Web API $filter with
 // Microsoft.Dynamics.CRM.Under resolve through the organization's hierarchy module (the host query scope). A table that is
-// not hierarchical keeps the documented refusal. Invented x_ schema and GUIDs only.
+// not hierarchical keeps the documented refusal.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

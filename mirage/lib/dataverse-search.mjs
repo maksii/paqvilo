@@ -1,18 +1,7 @@
 import { organizationRecord } from './organization-context.mjs';
 // Dataverse search over the rows the caller can read. Web API: searchquery, searchsuggest and searchautocomplete (actions),
 // searchstatus and searchstatistics (functions). /api/search/v2.0 answers with the same bodies; /api/search/v1.0 query, suggest
-// and autocomplete answer with the legacy shapes. Sources (Microsoft Learn, read 2026-10-19):
-//   https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/searchquery (also searchsuggest,
-//     searchautocomplete, searchstatus, searchstatistics): parameters, return types and the response wrapper
-//   https://learn.microsoft.com/en-us/power-apps/developer/data-platform/search/query: filter, entities, facets, options, orderby,
-//     skip/top, the 100-character term limit, the QueryResult shape and the sample with "ObjectTypeCode": 0
-//   https://learn.microsoft.com/en-us/power-apps/developer/data-platform/search/suggest and .../autocomplete: primary-column
-//     scope, the three-character suggest minimum, "{crmhit}" highlights
-//   https://learn.microsoft.com/en-us/power-apps/developer/data-platform/search/statistics-status: status values and the
-//     notprovisioned response
-//   https://learn.microsoft.com/en-us/power-apps/developer/data-platform/search/legacy: v1.0 body properties and responses
-//   https://learn.microsoft.com/en-us/power-apps/developer/data-platform/search/overview#detect-if-search-is-enabled: the
-//     disabled error (0x80048d0b) and the organization flag isexternalsearchindexenabled
+// and autocomplete answer with the legacy shapes.
 // Rows are read through api.records as the Web API list read, so the caller's table privilege and field security apply: a table
 // the caller cannot read (403) or cannot see (404) contributes no rows.
 // ponytail: matching is a token match over the indexed columns in this module, not Dataverse's index. No Lucene syntax, fuzzy
@@ -31,14 +20,14 @@ const TOKEN = /[\p{L}\p{N}]+/gu;
 const LEGACY = /^\/api\/search\/v(1\.0|2\.0)\/(query|suggest|autocomplete|status|statistics)\/?$/i;
 const LEGACY_VERBS = { query: "POST", suggest: "POST", autocomplete: "POST", status: "GET", statistics: "GET" };
 
-// unverified: the inner error code of these request errors (Learn documents the message shape, not each rejection).
+// The inner error code of these request errors is a guess (only the message shape is documented).
 const invalid = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x80060888" });
 const disabled = () => new DataError("Dataverse Search feature is disabled for this organization.", 400, "InvalidRequest", { innerCode: DISABLED_CODE });
 const unique = (list) => [...new Set(list)];
 const isScalar = (value) => value != null && typeof value !== "object";
 const lowerKeys = (object) => Object.fromEntries(Object.entries(object ?? {}).map(([key, value]) => [key.toLowerCase(), value]));
 const tokens = (text) => text.toLowerCase().match(TOKEN) ?? [];
-const enabled = (api) => organizationRecord(api.store)?.isexternalsearchindexenabled !== false; // unverified: a row without the column is on
+const enabled = (api) => organizationRecord(api.store)?.isexternalsearchindexenabled !== false; // assumed: a row without the column is on
 
 // A list argument: a JSON array string, a comma-separated string, or an array already parsed. null and "null" mean none.
 function listOf(value, name) {
@@ -81,15 +70,15 @@ function bodyOf(c) {
 function countOf(value, fallback, name) {
   if (value == null) return fallback;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) throw invalid(`${name} must be a non-negative integer.`); // unverified: native wording
+  if (!Number.isInteger(n) || n < 0) throw invalid(`${name} must be a non-negative integer.`); // native wording is a guess
   return n;
 }
 
 function searchOf(value, min) {
   const text = typeof value === "string" ? value.trim() : "";
-  if (!text) throw invalid("The search parameter is required."); // unverified: native wording
-  if (text.length > MAX_TERM) throw new DataError("Search Text Length Exceeded.", 400, "InvalidRequest", { innerCode: "0x800401ff" }); // Learn: Web service error codes, SearchTextLenExceeded
-  if (text.length < min) throw invalid("The search parameter must be at least three characters."); // unverified: native wording
+  if (!text) throw invalid("The search parameter is required."); // native wording is a guess
+  if (text.length > MAX_TERM) throw new DataError("Search Text Length Exceeded.", 400, "InvalidRequest", { innerCode: "0x800401ff" }); // SearchTextLenExceeded
+  if (text.length < min) throw invalid("The search parameter must be at least three characters."); // native wording is a guess
   return text;
 }
 
@@ -136,7 +125,7 @@ function legacyFilters(text) {
 }
 
 // The tables a request reads: the entities list or every indexed table. A Web API entity object with no SearchColumns is
-// searched on its primary name only (Learn: searchColumns). A legacy table name, or no entities list, searches the indexed columns.
+// searched on its primary name only. A legacy table name, or no entities list, searches the indexed columns.
 function targetsOf(api, entities, filters) {
   const indexed = indexedTables(api);
   if (!entities) return indexed.map((table) => ({ ...table, select: [], searchColumns: table.columns, filter: filters.get(table.logical) ?? null }));
@@ -145,7 +134,7 @@ function targetsOf(api, entities, filters) {
     const e = named ? { name: entry } : lowerKeys(entry);
     const name = String(e.name ?? "").toLowerCase();
     const table = indexed.find((t) => t.logical === name);
-    if (!table) throw new DataError(`Invalid Search Entity - ${e.name}.`, 400, "InvalidRequest", { innerCode: "0x80060201" }); // Learn: Web service error codes, InvalidSearchEntity
+    if (!table) throw new DataError(`Invalid Search Entity - ${e.name}.`, 400, "InvalidRequest", { innerCode: "0x80060201" }); // InvalidSearchEntity
     const search = (listOf(e.searchcolumns, "SearchColumns") ?? []).map((column) => String(column).toLowerCase());
     return {
       ...table,
@@ -173,8 +162,8 @@ async function callRecords(api, c, pathname, search) {
 
 // Every row of one table the caller can read, with the table's $filter and the request's top-level filter applied by the records layer.
 // extra: the orderby and facet columns; those the table lacks are left out (a $select of an unknown column is a 400).
-// unverified: live capture. Learn does not say whether a top-level filter naming a column the table lacks fails the query or is
-// ignored for that table; here that table's 400 propagates and fails the whole query.
+// Assumed: a top-level filter naming a column the table lacks fails the whole query (that table's 400 propagates) rather than
+// being ignored for that table; the documentation does not say.
 async function readRows(api, c, target, topFilter, extra = []) {
   const fields = target.mapping.fields ?? {};
   const select = unique([target.mapping.idColumn, target.primary, ...target.searchColumns, ...target.select, ...extra.filter((name) => name in fields)].filter(Boolean));
@@ -246,7 +235,7 @@ function matchRow(row, columns, terms, mode) {
 function hitOf(target, row, match) {
   const attributes = { "@search.objecttypecode": objectTypeCode(target.logical) };
   for (const name of unique([target.primary, ...target.select])) if (name && row[name] !== undefined) attributes[name] = row[name];
-  // Learn's query and SDK samples report ObjectTypeCode 0 beside @search.objecttypecode (the real code) for account; kept as documented.
+  // The documented query and SDK samples report ObjectTypeCode 0 beside @search.objecttypecode (the real code); kept as documented.
   return { Id: row[target.mapping.idColumn], EntityName: target.logical, ObjectTypeCode: 0, Attributes: attributes, Highlights: match.highlights, Score: match.score, row };
 }
 
@@ -304,7 +293,7 @@ function facetsOf(hits, specs) {
 async function searchRows(api, c, body, legacy) {
   if (!enabled(api)) throw disabled();
   const search = searchOf(body.search, 1);
-  const top = Math.min(countOf(body.top, 50, "top"), 100); // unverified: a larger top is clamped to the documented maximum
+  const top = Math.min(countOf(body.top, 50, "top"), 100); // assumed: a larger top is clamped to the documented maximum
   const skip = countOf(body.skip, 0, "skip");
   const mode = String(legacy ? body.searchmode : optionsOf(body.options).searchmode ?? "any").toLowerCase() === "all" ? "all" : "any";
   const filters = legacy ? legacyFilters(body.filter) : new Map();
@@ -351,8 +340,7 @@ async function suggestRows(api, c, body, legacy) {
 }
 
 // Autocomplete: the most frequent indexed word that starts with the last typed word, wrapped in {crmhit}. The word is lowercased,
-// as the Learn samples show it.
-// unverified: null when no word matches (Learn documents no empty value).
+// as the documented samples show it. null when no word matches is a guess (no empty value is documented).
 async function completion(api, c, body, legacy) {
   if (!enabled(api)) throw disabled();
   const search = searchOf(body.search, 1);
@@ -373,8 +361,8 @@ async function completion(api, c, body, legacy) {
   return best ? `{crmhit}${best}{/crmhit}` : null;
 }
 
-// Status: not provisioned when search is off (the Learn response), else the indexed tables and their indexed columns.
-// unverified: lockbox and CMK values, and the entity sync status text, are Learn's sample values.
+// Status: not provisioned when search is off (the documented response), else the indexed tables and their indexed columns.
+// The lockbox and CMK values and the entity sync status text are the documented sample values.
 function statusOf(api) {
   if (!enabled(api)) return { value: { status: "notprovisioned", lockboxstatus: "Unknown" } };
   return {
@@ -393,7 +381,7 @@ function statusOf(api) {
   };
 }
 
-// ponytail: the storage size is the indexed text, not Dataverse's index. unverified: zeros when search is off.
+// ponytail: the storage size is the indexed text, not Dataverse's index. Zeros when search is off are a guess.
 function statisticsOf(api) {
   const tables = enabled(api) ? indexedTables(api) : [];
   let text = "";
@@ -441,7 +429,7 @@ async function legacyAutocomplete(api, c, body) {
 }
 
 // The legacy endpoints: v1.0 query, suggest and autocomplete with the legacy shapes, v2.0 with the Web API bodies.
-// unverified: v1.0 status and statistics, which Learn does not document; they answer with the Web API bodies here.
+// v1.0 status and statistics are not documented; they answer with the Web API bodies here.
 async function legacyRoute(api, c) {
   const [, version, name] = LEGACY.exec(c.url.pathname);
   if (name.toLowerCase() === "status") return wrapped(c, "searchstatus", statusOf(api));
@@ -456,7 +444,7 @@ async function legacyRoute(api, c) {
   return { status: 200, body: await legacy(api, c, body) };
 }
 
-// CSDL. unverified: the parameter Nullable flags are as Learn's tables list them (Edm.String parameters are nullable there).
+// CSDL. The parameter Nullable flags follow the documented parameter tables (Edm.String parameters are nullable there).
 const CSDL = {
   searchquery: `<Action Name="searchquery">
   <Parameter Name="filter" Type="Edm.String" />
@@ -525,8 +513,8 @@ const CSDL = {
 
 // GetSearchInformation(Fetchxml): the unbound function's complex response (not wrapped in a JSON string, unlike the search
 // actions). Relevance search applies when search is on and every entity the FetchXML names is an indexed table.
-// Learn has no reference page for it. unverified: the "true"/"false" string format, the leading-wildcard source (always "false"
-// here) and the refusal of a FetchXML with no entity (live capture LC-G5-4).
+// It is not documented: the "true"/"false" string format, the leading-wildcard source (always "false" here) and the refusal
+// of a FetchXML with no entity are guesses.
 function searchInformationOf(api, fetchXml) {
   let fetch;
   try {
@@ -549,7 +537,7 @@ function searchInformationOf(api, fetchXml) {
     CanSupportedByRelevanceSearch: String(enabled(api) && names.every((name) => indexed.has(name))),
   };
 }
-const searchInformationInvalid = () => new DataError("The FetchXML is not valid.", 400, "InvalidRequest", { innerCode: "0x80040203" }); // unverified: native wording
+const searchInformationInvalid = () => new DataError("The FetchXML is not valid.", 400, "InvalidRequest", { innerCode: "0x80040203" }); // native wording is a guess
 
 export function install(api) {
   const { registry } = api;

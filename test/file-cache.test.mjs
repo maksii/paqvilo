@@ -29,7 +29,7 @@ test('served-body cache reuses transforms, notices replacement, and invalidates 
   assert.equal(calls, 3);
   assert.equal(cache.read(file).toString(), 'after!', 'raw and source-mapped variants stay separate');
   fs.unlinkSync(file);
-  assert.throws(() => cache.read(file));
+  assert.throws(() => cache.read(file), { code: 'ENOENT' });
   assert.equal(cache.entries.size, 0);
   assert.equal(cache.bytes, 0);
 });

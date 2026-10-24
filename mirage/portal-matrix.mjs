@@ -59,7 +59,7 @@ export const PERSONAS = ["anonymous", "authenticated", "all-roles"];
 export const SCAFFOLD_PERSONAS = ["anonymous", "all-roles"];
 const DEFAULT_PERSONAS = ["anonymous"];
 
-/** Site component types documented by Microsoft Learn ("Site component type reference"). */
+/** Site component types Power Pages documents ("Site component type reference"). */
 export const COMPONENT_TYPES = Object.freeze({
   1: "publishingstate",
   2: "webpage",
@@ -163,7 +163,7 @@ async function listFiles(root) {
   return files;
 }
 
-// ---------------------------------------------------------------------------------- census
+// ---- census
 function emptyKind() {
   return { total: 0, active: 0, names: new Set(), activeNames: new Set() };
 }
@@ -325,7 +325,7 @@ export function censusSummary(census) {
   };
 }
 
-// ---------------------------------------------------------------------------------- import comparison
+// ---- import comparison
 const MODELLED = {
   webpage: "root pages with a resolved URL",
   webtemplate: "web templates",
@@ -366,7 +366,7 @@ export function compareImport(census, portal) {
   const raw = (kind) => census.kinds[kind] ?? emptyKind();
   const linkCount = (links = []) => links.reduce((sum, link) => sum + 1 + linkCount(link.weblinks), 0);
   // Copies the importer drops: identical re-exports, and conflicting copies of one ID resolved
-  // to a single copy (DUPLICATE_RECORD_RESOLVED; DUPLICATE_RECORD_CONFLICT kept both before).
+  // to a single copy (DUPLICATE_RECORD_RESOLVED).
   const DROPPED = ["DUPLICATE_RECORD_IDENTICAL", "DUPLICATE_RECORD_RESOLVED"];
   const dropped = (kind) => diagnostics.filter((d) => DROPPED.includes(d.code) && d.kind === kind).length;
   const rows = [];
@@ -411,7 +411,7 @@ export function compareImport(census, portal) {
     const linkIds = new Set(links.map((r) => normalizeId(r.id)));
     const setOf = (r) => normalizeId(field(r, "weblinksetid"));
     const orphan = (r) => !sets.has(setOf(r)) || Boolean(field(r, "parentweblinkid") && !linkIds.has(normalizeId(field(r, "parentweblinkid"))));
-    // Every active set is reachable by ID (portal.weblinkSets); older models keyed sets by name only.
+    // Every active set is reachable by ID (portal.weblinkSets); the fallback covers models that key sets by name only.
     const reachableSets = portal.weblinkSets ?? Object.values(portal.weblinks ?? {});
     const kept = new Set(reachableSets.map((set) => normalizeId(set.id)));
     const unreachable = activeSets.filter((r) => !kept.has(normalizeId(r.id)));
@@ -544,7 +544,7 @@ export function classifyMissingIncludes(names, webTemplates) {
   });
 }
 
-// ---------------------------------------------------------------------------------- public samples
+// ---- public samples
 /**
  * Public sample sites, referenced in place under a samples root (one folder per cloned
  * repository, named owner__repo). Nothing is copied. `model` is what the publisher declares
@@ -633,7 +633,7 @@ export async function publicSampleTargets(root, samples = PUBLIC_SAMPLES) {
   return { targets, missing };
 }
 
-// ---------------------------------------------------------------------------------- targets
+// ---- targets
 /** Resolve the portals under test from a project file, catalogue sites or a public samples root. */
 export async function resolveTargets(options) {
   if (options.samples) {
@@ -708,7 +708,7 @@ export async function resolveTargets(options) {
   return { mode: "sites", project: null, targets };
 }
 
-// ---------------------------------------------------------------------------------- stages
+// ---- stages
 async function importStage(target, context) {
   const { importPortal, normalizePortalPath } = await import("./lib/importer.mjs");
   let started = performance.now();
@@ -896,7 +896,7 @@ async function webapiStage(target, context) {
   };
 }
 
-/** Compact one render-sweep run (A's renderSweep report shape, with a fallback for the single-run shape). */
+/** Compact one render-sweep run (the renderSweep report shape, with a fallback for the single-run shape). */
 function compactSweepRun(run) {
   const liquidErrorPages = (run.liquidErrorPages ?? []).map((url) => {
     const result = (run.results ?? []).find((entry) => entry.url === url);
@@ -1449,7 +1449,7 @@ async function serveStage(resolved, context) {
   return result;
 }
 
-// ---------------------------------------------------------------------------------- orchestration
+// ---- orchestration
 /** Run the selected stages for every portal and return the matrix object. */
 export async function portalMatrix(options = {}) {
   const started = performance.now();
@@ -1577,7 +1577,7 @@ export function matrixProblems(matrix) {
   return problems;
 }
 
-// ---------------------------------------------------------------------------------- Markdown
+// ---- Markdown
 const cell = (value) => (value === undefined || value === null || value === "" ? "–" : String(value)
   .replace(/[&<>\\|`\[\]]/g, (char) => `&#${char.codePointAt(0)};`).replace(/\r?\n/g, " "));
 const statuses = (byStatus) =>
@@ -1789,7 +1789,7 @@ export function formatMatrix(matrix) {
   return lines.join("\n");
 }
 
-// ---------------------------------------------------------------------------------- CLI
+// ---- CLI
 export function parseArgs(argv) {
   const args = parseToolArgs("portal-matrix", argv);
   const list = value => value?.split(",").map(item => item.trim()).filter(Boolean);

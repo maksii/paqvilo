@@ -1,7 +1,7 @@
 // Portal storage routes (organization-host.mjs providers, dataverse-storage-routing.mjs): note bodies leave state and are read
 // back by the portal readers, web files stored in Azure Blob Storage come from route portalWebFiles, cloud attachments put
-// their bytes on route portalCloudAttachments behind Learn's placeholder note, staged uploads are provider blocks, and a
-// runtime without a state directory uses the in-memory provider. Invented x_ tables, GUIDs and loopback fixtures only.
+// their bytes on route portalCloudAttachments behind the documented placeholder note, staged uploads are provider blocks,
+// and a runtime without a state directory uses the in-memory provider.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -73,7 +73,7 @@ test("a standalone runtime without a state directory routes note bodies to the i
   assert.equal(status.providers.storage.providers.find((entry) => entry.id === "local").kind, "memory");
   assert.equal(status.providers.storage.providers.find((entry) => entry.id === "local").ready, true);
   const registration = await (await fetch(sim.url + "/_sim/api/dataverse/applications", { method: "POST",
-    headers: { "content-type": "application/json", "x-sim-csrf": sim.state().csrf },
+    headers: { "content-type": "application/json", "x-sim-csrf": sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: "Invented client", roles: ["System Administrator"] }) })).json();
   const token = await (await fetch(sim.dataverse.authority + "/oauth2/v2.0/token", { method: "POST",
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: CLIENT, client_secret: registration.secret, scope: sim.dataverse.origin + "/.default" }) })).json();
@@ -103,13 +103,13 @@ test("an Azure Blob Storage web file without a portalWebFiles provider is unavai
   const response = await fetch(`${sim.url}/logo.txt`);
   assert.equal(response.status, 503);
   assert.doesNotMatch(await response.text(), /export bytes/);
-  const state = await (await fetch(`${sim.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": sim.state().csrf } })).text();
+  const state = await (await fetch(`${sim.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": sim.csrf } })).text();
   assert.match(state, /WEBFILE_CLOUD_STORAGE_UNAVAILABLE/);
 });
 
 test("staged portal uploads are provider blocks committed by the last block", async (t) => {
   const { sim, stateDir } = await portalFixture(t);
-  const headers = { ...signInHeaders(sim, CONTACT), __requestverificationtoken: sim.state().csrf };
+  const headers = { ...signInHeaders(sim, CONTACT), __requestverificationtoken: sim.csrf };
   const started = await fetch(`${sim.url}/_api/file/InitializeFileUpload/note`, { method: "POST",
     headers: { ...headers, "x-ms-file-name": "upload.txt", "x-ms-file-size": "10", "content-type": "text/plain" } });
   assert.equal(started.status, 200, await started.clone().text());

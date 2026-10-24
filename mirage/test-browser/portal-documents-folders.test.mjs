@@ -1,6 +1,5 @@
-// The local SharePoint document grid's subfolders (Learn, manage-sharepoint-documents: website users can create subfolders;
-// New folder depends on table permissions): New folder, navigation with the breadcrumb, upload into the open folder and
-// folder delete. Invented x_ data; nothing leaves loopback.
+// The local SharePoint document grid's subfolders (website users can create subfolders; New folder depends on table
+// permissions): New folder, navigation with the breadcrumb, upload into the open folder and folder delete.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

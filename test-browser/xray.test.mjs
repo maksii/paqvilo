@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,10 @@ import { SITE } from '../test/fixture.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from '../test/source-inspection-fixture.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+
+let browser;
+before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true,args:['--disable-background-networking']}));});
+after(()=>browser?.close());
 
 const body = `<header id="portal-header"><a class="wordmark" href="/">◈ &nbsp; Fieldwork</a><nav><a href="#overview">Overview</a><a href="#work">Work items</a><a href="#team">Team</a></nav><span class="avatar">JD</span></header>
 <main id="workspace"><div class="intro"><div><p class="kicker">WORKSPACE / OPERATIONS</p><h1>A little clarity.<br>A lot of possibility.</h1><p class="description">Keep your team’s work moving, from the first idea to the final detail.</p></div><button id="open-dialog">＋ New work item</button></div>
@@ -34,33 +38,36 @@ test('X-ray inspects fields and sources without activating portal controls acros
     if(req.url==='/frame')return res.writeHead(200,{'content-type':'text/html; charset=utf-8'}).end('<button onclick="parent.frameClicks++">Embedded action</button>');
     res.writeHead(200,{'content-type':'text/html; charset=utf-8'}).end(`<!doctype html><html><head><title>Fieldwork · invented X-ray fixture</title><link rel="stylesheet" href="/widget.css"></head><body>${body}<script>window.actions=0;window.frameClicks=0;for(const type of ['pointerdown','mousedown','click','dblclick'])document.getElementById('save').addEventListener(type,()=>window.actions++);document.getElementById('open-dialog').onclick=()=>document.getElementById('dialog').showModal();document.getElementById('dialog-close').onclick=()=>document.getElementById('dialog').close();document.getElementById('nested-open').onclick=()=>document.querySelector('.nested').hidden=false;document.getElementById('shadow-control').attachShadow({mode:'open'}).innerHTML='<button id="shadow-button">Shadow component</button>';</script></body></html>`);
   });
-  let browser,panel,detach;
+  let context,panel,detach;
   ownedFixture(t).add(async () => { await panel?.dispose(); });
   ownedFixture(t).add(async () => { await detach?.(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve=>server.close(resolve)); });
   ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
-  browser=await chromium.launch(browserLaunchOptions({headless:true,args:['--disable-background-networking']}));
-  const context=await browser.newContext({viewport:{width:1440,height:1060},serviceWorkers:'block'});context.setDefaultTimeout(10_000);
+  context=await browser.newContext({viewport:{width:1440,height:1060},serviceWorkers:'block'});context.setDefaultTimeout(10_000);
   await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.fallback():route.abort());
   const session=new OverlaySession({sourceDir:fx.portal,origin,site:structuredClone(SITE),sourceMaps:false,siteName:'Fieldwork fixture',envName:'loopback',stateDir:fx.work,browser:{},mirageConfig:{project:fx.project}});
+  // The tab exists before attachment, so its first document is already intercepted instead of reloaded as a late tab.
+  const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
   detach=await attachSession(context,session);const opened=[];panel=enablePanel(context,session,{open:async(...args)=>{opened.push(args);return null;}});
-  const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));await page.goto(origin);
+  await page.goto(origin);
   const scope=page.locator('#paqvilo-panel'),xray=page.locator('#paqvilo-xray');
   const point=async(selector)=>{const r=await page.locator(selector).boundingBox();assert.ok(r);return{x:r.x+r.width/2,y:r.y+r.height/2};};
   const pick=async selector=>{const p=await point(selector);await page.mouse.click(p.x,p.y);};
+  // Source opening is asynchronous; wait (bounded) for the next editor call instead of sleeping.
+  let seenOpens=0;const nextOpen=async()=>{const deadline=Date.now()+5000;while(opened.length<=seenOpens&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(opened.length,seenOpens+1,'exactly one source open');seenOpens=opened.length;return opened.at(-1);};
   const evidence=async name=>{if(!process.env.PAQVILO_EVIDENCE_DIR)return;fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.PAQVILO_EVIDENCE_DIR,name+'.png')});};
   await scope.locator('.pill').click();await scope.getByRole('button',{name:'Toggle Lense X-ray'}).click();
   await xray.getByRole('toolbar').waitFor();await pick('#fx_title');await xray.locator('.binding').getByText('fx_widget.fx_title',{exact:true}).waitFor();
   await xray.getByText('Element source candidates',{exact:false}).waitFor();assert.equal(await page.evaluate(()=>window.actions),0);
   await evidence('01-field-sources');
   const fieldSource=xray.locator('.source').filter({hasText:'Field definition in selected Solution'}).getByRole('button',{name:'Open source ↗'});await fieldSource.click();
-  await page.waitForFunction(()=>true);await new Promise(resolve=>setTimeout(resolve,50));assert.match(opened.at(-1)?.[1]??'',/Entities[\\/]fx_widget[\\/]Entity.xml$/);
+  assert.match((await nextOpen())?.[1]??'',/Entities[\\/]fx_widget[\\/]Entity.xml$/);
   await pick('#save');assert.equal(await page.evaluate(()=>window.actions),0);await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>window.actions),0);
   await xray.getByRole('button',{name:'Details',exact:true}).click();await pick('.updates h2');await xray.locator('.title').getByText('Partial',{exact:true}).waitFor();await xray.getByText('web-templates/Partial.webtemplate.source.html',{exact:false}).first().waitFor();
-  await xray.locator('.source').filter({hasText:'Partial.webtemplate.source.html'}).getByRole('button',{name:'Open source ↗'}).click();await page.waitForTimeout(50);assert.match(opened.at(-1)?.[1]??'',/Partial.webtemplate.source.html$/);assert.equal(opened.at(-1)?.[2],1);
+  await xray.locator('.source').filter({hasText:'Partial.webtemplate.source.html'}).getByRole('button',{name:'Open source ↗'}).click();const template=await nextOpen();assert.match(template?.[1]??'',/Partial.webtemplate.source.html$/);assert.equal(template?.[2],1);
   await evidence('02-template-source');
   await page.evaluate(()=>{const heading=document.querySelector('.updates h2'),wrapper=document.createElement('div');heading.before(wrapper);wrapper.append(heading);});
   await xray.getByRole('button',{name:'Select source region'}).first().click();assert.match(await xray.locator('.element-label').textContent(),/^aside\.updates/);
@@ -85,8 +92,8 @@ test('X-ray inspects fields and sources without activating portal controls acros
 });
 
 test('X-ray keeps nested table contexts, scaled clipping, dialog order and popovers isolated', { timeout: 45_000 }, async t => {
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
-  const page=await browser.newPage({viewport:{width:1400,height:1000}});page.setDefaultTimeout(8000);
+  const context=await browser.newContext({viewport:{width:1400,height:1000}});t.after(()=>context.close());
+  const page=await context.newPage();page.setDefaultTimeout(8000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.setContent(`<!doctype html><style>body{margin:50px;font:16px sans-serif}.scaled{transform:scale(.7);transform-origin:top left;width:320px;height:110px;overflow:hidden;border:4px solid #777}.scaled button{margin-left:200px;width:300px;height:60px}dialog{padding:40px;width:500px}input{display:block;margin:15px;padding:12px}#later{position:fixed;top:150px;left:180px}#popover{position:fixed;inset:0;width:100vw;height:100vh;background:#fff8}</style><div id="EntityFormControl_outer" data-entityname="fx_outer" data-formid="outer"><div data-viewid="inner-view"><input id="inner" name="fx_shared"></div></div><input id="ambiguous" name="fx_shared"><button id="fx_shared">An ID alone is not a field binding</button><div class="scaled"><button id="scaled">Scaled and clipped</button></div><dialog id="later"><input id="later-field" name="fx_shared"></dialog><dialog id="initial"><input id="initial-field" name="fx_shared"><div id="popover" popover="manual">A later top-layer surface</div></dialog>`);
   await page.evaluate(()=>document.getElementById('initial').showModal());
@@ -111,19 +118,19 @@ test('X-ray keeps nested table contexts, scaled clipping, dialog order and popov
 });
 
 test('X-ray identifies the basic form, FormXml and column from a native Mirage-rendered form', { timeout: 45_000 }, async t => {
-  const fx=inspectionFixture();let app,browser,panel,detach;
+  const fx=inspectionFixture();let app,context,panel,detach;
   ownedFixture(t).add(async () => { await panel?.dispose(); });
   ownedFixture(t).add(async () => { await detach?.(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
   ownedFixture(t).add(async () => { await app?.close(); });
   ownedFixture(t).remove(async () => { fx.cleanup(); });
   fs.writeFileSync(path.join(fx.portal,'web-templates/Main.webtemplate.source.html'),"<main>{% entityform name: 'Edit widget' %}</main>");
   const formFile=path.join(fx.portal,'basic-forms/Widget.basicform.yml');fs.writeFileSync(formFile,fs.readFileSync(formFile,'utf8').replace('100000001','100000000'));
   app=await createSimulator({sourceDir:fx.portal,solutionRoots:[fx.solution],stateFile:path.join(fx.work,'state.json'),watch:false,initial:{version:1,tables:{fx_widget:[]},mappings:{fx_widget:{entitySet:'fx_widgets',idColumn:'fx_widgetid'}},permissions:[],settings:{permissionMode:'permissive'},simulator:{mode:'local',pageMode:'local',identity:null,endpoints:[],live:{}}}});
-  browser=await chromium.launch(browserLaunchOptions({headless:true}));const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});context.setDefaultTimeout(10000);
+  context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});context.setDefaultTimeout(10000);
   await context.route('**/*',route=>new URL(route.request().url()).origin===app.url?route.fallback():route.abort());
   const session=new OverlaySession({sourceDir:fx.portal,origin:app.url,site:structuredClone(SITE),sourceMaps:false,siteName:'Native form fixture',envName:'loopback',stateDir:fx.work,browser:{},mirage:true,mirageSourceRoots:[fx.portal,fx.solution],mirageConfig:{project:fx.project}});
-  detach=await attachSession(context,session);panel=enablePanel(context,session,{open:async()=>null});const page=await context.newPage();await page.goto(app.url);
+  const page=await context.newPage();detach=await attachSession(context,session);panel=enablePanel(context,session,{open:async()=>null});await page.goto(app.url);
   const field=page.locator('#fx_title');await field.waitFor();await page.locator('#paqvilo-xray').waitFor({state:'attached'});await page.keyboard.press('Alt+Shift+X');await page.locator('#paqvilo-xray').getByRole('toolbar').waitFor();
   const r=await field.boundingBox();await page.mouse.click(r.x+Math.min(25,r.width/2),r.y+r.height/2);
   const xray=page.locator('#paqvilo-xray');await xray.locator('.binding').getByText('fx_widget.fx_title',{exact:true}).waitFor();

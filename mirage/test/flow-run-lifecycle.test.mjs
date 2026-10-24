@@ -1,7 +1,6 @@
 // Flow run lifecycle (flow-runtime.mjs runTrackedFlow, flow-runs.mjs createHostFlowRuns): approval waits answered through
 // /_sim/api/flow-waits on a standalone runtime, delay and timeout waits on a manual scheduler, restart re-arming from the state
-// file, secure outputs, connector retry policies, child flows and CancelAllCloudFlowRuns. Invented x_ schema, GUIDs,
-// *.example.test addresses and loopback only.
+// file, secure outputs, connector retry policies, child flows and CancelAllCloudFlowRuns.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -98,7 +97,7 @@ test('a secure output is never written to state and the run resumes from process
   assert.ok(!JSON.stringify(store.state).includes('invented-secret-token'), 'still not in state after the resume');
 });
 
-// RB1-03: a secure Workflow action waiting on its child never stores the child's answer.
+// A secure Workflow action waiting on its child never stores the child's answer.
 test('a secure child flow answer is never written to state while the parent waits or after it resumes', async t => {
   const flows = {
     [FLOW]: { triggers: manual, actions: { child: { type: 'Workflow', runtimeConfiguration: { secureData: { properties: ['outputs'] } }, inputs: { host: { workflowReferenceName: CHILD }, body: {} } }, done: reply('child', {}) } },
@@ -162,7 +161,7 @@ test('a Workflow action runs the child flow as its own run and a recursive child
   assert.equal(deep.runs.list().length, 17, 'the top run and sixteen nested child runs');
 });
 
-// Task 45: the parent waits on its waiting child (wait kind child, ownership recorded) and the child's completion resumes it.
+// The parent waits on its waiting child (wait kind child, ownership recorded) and the child's completion resumes it.
 test('a child flow that waits suspends its parent, is never cancelled, and its completion resumes the parent', async t => {
   const flows = {
     [FLOW]: { triggers: manual, actions: { child: { type: 'Workflow', inputs: { host: { workflowReferenceName: CHILD }, body: {} } }, done: reply('child', "@body('child')") } },
@@ -181,7 +180,7 @@ test('a child flow that waits suspends its parent, is never cancelled, and its c
   assert.deepEqual(runs.get(answer.runId).journal.child, { status: 'Succeeded', outputs: { statusCode: 200, headers: {}, body: { from: 'child' } } });
 });
 
-// RB1-06: a cancelled parent is left alone when its child completes.
+// A cancelled parent is left alone when its child completes.
 test('a parent cancelled while its child waits is not resumed by the child', async t => {
   const flows = {
     [FLOW]: { triggers: manual, actions: { child: { type: 'Workflow', inputs: { host: { workflowReferenceName: CHILD }, body: {} } }, done: reply('child', {}) } },
@@ -195,7 +194,7 @@ test('a parent cancelled while its child waits is not resumed by the child', asy
   assert.ok(!notes.some(note => note.code === 'FLOW_RUN_RESUME_FAILED'), JSON.stringify(notes.filter(n => n.code === 'FLOW_RUN_RESUME_FAILED')));
 });
 
-// RB1-04: an on-demand run keeps context.background across its resume.
+// An on-demand run keeps context.background across its resume.
 test('an on-demand Button run with a Wait and no Response succeeds after the wait', async t => {
   const flows = { [FLOW]: { triggers: manual, actions: { pause: { type: 'Wait', inputs: { interval: { count: 1, unit: 'Minute' } } }, note: { type: 'Compose', runAfter: { pause: ['Succeeded'] }, inputs: 'done' } } } };
   const { runs, scheduler, start } = await unit(t, flows);
@@ -205,7 +204,7 @@ test('an on-demand Button run with a Wait and no Response succeeds after the wai
   assert.equal(runs.get(answer.runId).status, 'Succeeded');
 });
 
-// Task 45: a wait inside a loop suspends with the iteration's journal key; the child's completion resumes the parent there.
+// A wait inside a loop suspends with the iteration's journal key; the child's completion resumes the parent there.
 test('a child flow that waits inside a parent loop suspends the parent at that iteration and its completion resumes it', async t => {
   const flows = {
     [FLOW]: { triggers: manual, actions: { each: { type: 'Foreach', foreach: [1], actions: { child: { type: 'Workflow', inputs: { host: { workflowReferenceName: CHILD }, body: {} } } } }, done: reply('each', "@outputs('child')", ['Succeeded', 'Failed']) } },
@@ -230,7 +229,7 @@ test('without a run store a waiting action keeps answering 501 FlowSuspendNotWir
   assert.deepEqual(store.state.simulator?.approvals ?? {}, {}, 'no approval was recorded');
 });
 
-// ---- standalone runtime: ExecuteWorkflow -> Waiting -> /_sim/api/flow-waits -> Succeeded; CancelAllCloudFlowRuns ----------
+// ---- Standalone runtime: ExecuteWorkflow -> Waiting -> /_sim/api/flow-waits -> Succeeded; CancelAllCloudFlowRuns
 
 async function standalone(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
@@ -257,7 +256,7 @@ async function standalone(t) {
   ownedFixture(t).add(() => sim.close());
   const json = async (response, status) => { const text = await response.text(); assert.equal(response.status, status, text); return text ? JSON.parse(text) : null; };
   const registration = await json(await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] }) }), 201);
   const token = await json(await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: registration.secret, scope: sim.dataverse.origin + '/.default' }) }), 200);
@@ -265,7 +264,7 @@ async function standalone(t) {
     headers: { authorization: `Bearer ${token.access_token}`, ...(body ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(10000) });
   const simApi = (method, suffix, body) => fetch(sim.url + '/_sim/api' + suffix, { method,
-    headers: { 'x-sim-csrf': sim.state().csrf, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    headers: { 'x-sim-csrf': sim.csrf, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const until = async (read, check) => { let value; for (let i = 0; i < 200; i++) { value = await read(); if (check(value)) return value; await new Promise(resolve => setTimeout(resolve, 20)); } assert.fail('Timed out: ' + JSON.stringify(value)); };
   const item = await json(await api('POST', '/x_items', { x_name: 'Invented item' }), 201);
   await json(await api('POST', `/workflows(${FLOW})/Microsoft.Dynamics.CRM.ExecuteWorkflow`, { EntityId: item.x_itemid }), 200);
@@ -288,7 +287,7 @@ test('standalone: ExecuteWorkflow waits for an approval, the flow-waits answer r
 test('standalone: CancelAllCloudFlowRuns cancels the waiting run and removes its wait', async t => {
   const { json, api, simApi, wait } = await standalone(t);
   const cancelled = await api('POST', `/workflows(${FLOW})/Microsoft.Dynamics.CRM.CancelAllCloudFlowRuns`, {});
-  assert.ok(cancelled.status === 204 || cancelled.status === 200, await cancelled.clone().text());
+  assert.equal(cancelled.status, 204, await cancelled.clone().text());
   assert.equal((await json(await simApi('GET', `/flow-runs/${wait.runId}`), 200)).status, 'Cancelled');
   assert.deepEqual(await json(await simApi('GET', '/flow-waits'), 200), []);
   const late = await simApi('POST', `/flow-waits/${wait.id}`, { outcome: 'Approve' });

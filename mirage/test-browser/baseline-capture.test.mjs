@@ -1,4 +1,3 @@
-// Baseline capture regression: a synthetic loopback site and an owned headless browser only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";

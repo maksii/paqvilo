@@ -1,11 +1,15 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import http from "node:http";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 
-// Synthetic loopback page: a deferred grid with two views (as in a lookup modal) and page
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
+// A deferred grid with two views (as in a lookup modal) and page
 // script that selects a view and sorts with jQuery's .trigger("click"), which dispatches no
 // native click on links. The platform bundle binds these controls with jQuery, so the grid
 // loads the chosen view; lib/entity-grid-compat.js must do the same.
@@ -52,9 +56,9 @@ test("jQuery-triggered clicks on grid view and sort links reach the grid", async
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // Wait for the expected grid requests (a slow runner can take longer than a fixed pause), then
@@ -150,9 +154,9 @@ test("a grid confirmation dialog is exposed to assistive technology while shown,
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const tab = await browser.newPage();
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const tab = await context.newPage();
   const errors = [];
   tab.on("pageerror", (error) => errors.push(error.message));
   await tab.goto(`http://127.0.0.1:${server.address().port}/page`);

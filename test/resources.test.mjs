@@ -5,10 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import YAML from 'yaml';
 import { PortalModel } from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { describeResources, resourceFilters } from '../lense/commands/resources.mjs';
 import { editSource } from '../lense/source-edit.mjs';
+import { OverlaySession } from '../lense/session.mjs';
+import { buildMapping } from '../lense/commands/map.mjs';
+import { auditResources } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
 
 const cfgFor = (dir, site = SITE) => ({ siteName: 'test', envName: 'local', origin: 'https://portal.invalid', sourceDir: dir, configFile: path.join(dir, 'catalogue.yml'), site });
@@ -98,7 +102,10 @@ test('enhanced discovery separates physical XML path from editable field and exc
 });
 
 test('resource query validation rejects ambiguous paths and unbounded result limits', () => {
-  for (const args of [{ limit: '0' }, { limit: '501' }, { offset: '-1' }, { offset: '9007199254740992' }, { page: '//other.invalid' }, { page: '/page?secret=1' }, { kind: ['unknown'] }]) assert.throws(() => resourceFilters(args));
+  for (const [args, message] of [[{ limit: '0' }, /--limit/], [{ limit: '501' }, /--limit/], [{ offset: '-1' }, /--offset/], [{ offset: '9007199254740992' }, /--offset/],
+    [{ page: '//other.invalid' }, /--page/], [{ page: '/page?secret=1' }, /--page/], [{ kind: ['unknown'] }, /Unknown resource kind "unknown"/]]) {
+    assert.throws(() => resourceFilters(args), { code: 'invalid_argument', message });
+  }
   assert.deepEqual(resourceFilters({ kind: ['page-js', 'page-js'] }).kinds, ['page-js']);
 });
 
@@ -115,7 +122,7 @@ test('resources CLI JSON is deterministic and does not create mapping files or p
   assert.equal(second.stdout, first.stdout);
   const report = JSON.parse(first.stdout);
   assert.equal(report.command, 'resources');
-  assert.ok(report.resources.every((resource) => resource.kind === 'page-js'));
+  assert.deepEqual(report.resources.map((resource) => resource.kind), ['page-js', 'page-js']);
   assert.equal(fs.existsSync(fx.file('.paqvilo')), false);
   assert.equal(fs.existsSync(fx.file('.env')), false);
 });
@@ -155,4 +162,40 @@ test('discovered YAML and localized descriptors can be edited without losing fie
   assert.match(fx.read(metadata), /Description after/);
   assert.match(fx.read(metadata), /Other language/);
   assert.match(fx.read('weblink-sets/footer/Footer.weblinkset.yml'), /Footer after/);
+});
+
+test('map and resources share one thousand-record metadata parse, skip excluded fields and invalidate changed sources',async t=>{
+  const fx=createFixture();t.after(fx.cleanup);
+  const source=YAML.stringify(Array.from({length:1000},(_,index)=>({adx_entityformmetadataid:'field-'+index,adx_entityform:'form',adx_description:'<p>Text '+index+'</p>'})));
+  fx.write('basic-forms/form/Fields.basicformmetadata.yml',source);
+  const parse=YAML.parse;let count=0;
+  t.mock.method(YAML,'parse',(text,...args)=>{if(text===source)count++;return parse(text,...args);});
+  const session=await OverlaySession.create({sourceDir:fx.dir,site:structuredClone(SITE)});
+  const mapping=buildMapping(session);assert.equal(mapping.inline.filter(row=>row.kind==='metadata-markup').length,1000);assert.equal(count,1);
+  const baseline={available:false,spec:'HEAD'},changed=new Set(),started=performance.now();
+  const resources=describeResources(session.cfg,session.model,baseline,changed,resourceFilters({kind:'metadata-markup',limit:10}));
+  assert.equal(resources.pagination.total,1000);assert.equal(resources.resources.length,10);assert.equal(count,1,'presence checks reuse the model parse');
+  const sourceFile=fx.file('basic-forms/form/Fields.basicformmetadata.yml'),read=fs.readFileSync;let reads=0;
+  t.mock.method(fs,'readFileSync',(file,...args)=>{if(String(file)===sourceFile)reads++;return read(file,...args);});
+  describeResources(session.cfg,session.model,baseline,changed,resourceFilters({kind:'page'}));
+  assert.equal(reads,0,'a page-only query never reads markup source content');assert.equal(count,1);
+  fx.write('basic-forms/form/Fields.basicformmetadata.yml',source+'\n');
+  let changedParses=0;const currentParse=YAML.parse;
+  t.mock.method(YAML,'parse',(text,...args)=>{if(text===source+'\n')changedParses++;return currentParse(text,...args);});
+  describeResources(session.cfg,session.model,baseline,changed,resourceFilters({kind:'metadata-markup',limit:10}));
+  assert.equal(changedParses,1);assert.equal(reads,1);
+  describeResources(session.cfg,session.model,baseline,changed,resourceFilters({kind:'metadata-markup',limit:10}));assert.equal(changedParses,1,'unchanged stamped content is reused on the next run');
+  const parseDocument=YAML.parseDocument;let auditParses=0;t.mock.method(YAML,'parseDocument',(text,...args)=>{if(text===source+'\n')auditParses++;return parseDocument(text,...args);});
+  auditResources(session.model,session.cfg.site);assert.equal(auditParses,1,'independent duplicate-aware audit parses each YAML document once');
+  t.diagnostic(`1000-field resources and cache checks: ${(performance.now()-started).toFixed(1)} ms`);
+});
+
+test('enhanced optional fields expose presence and language-root rendering separately',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo-fields-feedback-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const put=(id,type,content)=>{const dir=path.join(root,'powerpagecomponents',id);fs.mkdirSync(dir,{recursive:true});const json=JSON.stringify(content).replaceAll('&','&amp;').replaceAll('<','&lt;');fs.writeFileSync(path.join(dir,'powerpagecomponent.xml'),`<powerpagecomponent powerpagecomponentid="${id}"><name>${id}</name><powerpagecomponenttype>${type}</powerpagecomponenttype><content>${json}</content></powerpagecomponent>`);};
+  put('root',2,{isroot:true,partialurl:'/'});put('language',2,{isroot:false,rootwebpageid:'root',partialurl:'/',copy:'<p>Localized</p>'});put('form',15,{});
+  const model=new PortalModel(root),report=describeResources({sourceDir:root,site:SITE},model,{available:false,spec:'HEAD'},new Set(),resourceFilters({limit:500}));
+  const rootCopy=report.resources.find(row=>row.relativePath?.includes('/root/')&&row.field==='copy'),formScript=report.resources.find(row=>row.relativePath?.includes('/form/')&&row.field==='customjavascript');
+  assert.equal(rootCopy.exists,false);assert.equal(rootCopy.renders,false);assert.equal(formScript.exists,false);assert.equal(formScript.preview.eligible,false);
+  assert.equal(report.resources.find(row=>row.relativePath?.includes('/language/')&&row.field==='copy').empty,false,'enhanced XML fields keep their component extractor');
 });

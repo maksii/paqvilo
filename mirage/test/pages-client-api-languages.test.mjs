@@ -1,5 +1,4 @@
-// $pages.languages.getAll lists the site's active website languages (Learn, client-api/languages: "the languages enabled
-// for the website"): the host passes them into the page's client object. Invented two-language site, loopback only.
+// $pages.languages.getAll lists the site's active website languages: the host passes them into the page's client object.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

@@ -12,6 +12,9 @@ import {
   redactCapabilityDiffEvidence,
   redactCaptureControlText as redactText,
   redactCaptureControlEvidence as redactEvidence,
+  redactLayoutAttributeValue,
+  redactEncodedLayoutTokens,
+  redactEncodedLayoutEvidence,
 } from "../lib/capture-control-redaction.mjs";
 const token = Buffer.from("invented signed configuration fixture").toString(
   "base64",
@@ -49,7 +52,7 @@ for (const [label, input] of [
     `<div data-json='{&quot;Base64SecureConfiguration&quot;:&quot;${token}&quot;,&quot;sibling&quot;:&quot;kept&quot;}'></div>`,
   ],
 ])
-  test(label, () => {
+  test(`base64SecureConfiguration in ${label} becomes {token}, keeps siblings and is idempotent`, () => {
     const out = redact(input);
     assert.ok(!out.includes(token));
     assert.ok(!out.includes(encodeURIComponent(token)));
@@ -151,11 +154,6 @@ test("semantically escaped JSON token key and arbitrary JSON escaped value are r
   assert.equal(JSON.parse(out).sibling, "kept");
 });
 
-import {
-  redactLayoutAttributeValue,
-  redactEncodedLayoutTokens,
-  redactEncodedLayoutEvidence,
-} from "../lib/capture-control-redaction.mjs";
 const secret = "fixture-opaque-security-token.abc123==";
 const original = JSON.stringify(
   [

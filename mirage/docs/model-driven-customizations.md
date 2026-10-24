@@ -258,9 +258,8 @@ Native apps can cache WebResources and PCF constructors inside the application.
 A browser reload may make no resource request for Lense to intercept. Exact
 observed mappings must follow the native request's current path/version. Confirm
 both current-revision application and actual handler/constructor/ribbon behavior
-after a source save; counts alone do not qualify cache replacement. Record manual
-resource refresh or handler rebinding explicitly when used. Mirage loads selected
-local resources directly and does not establish native cache parity.
+after a source save; applied-resource counts alone do not prove the cache was
+replaced. Mirage loads selected local resources directly and has no such cache.
 
 Lense overlays code in its browser session. The app continues to use its online
 environment and identity, so Save, commands and script-triggered record operations

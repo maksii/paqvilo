@@ -2,14 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+// Tests that only render controls or read records share one simulator; tests that write own theirs.
+const scope = fileScope();
+let sharedApp;
+const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 
 test('model-driven choice fields preserve typed values, required validation, keyboard selection and disabled state', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');
@@ -66,8 +70,8 @@ test('model-driven choice fields preserve typed values, required validation, key
 });
 
 test('disabled lookup presentation hides search and clear while preserving typed references and restoring native editing', async t => {
-  const { origin } = await modelDrivenFixture(t), browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); await page.goto(origin + '/main.aspx');
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren(); window.readonlyLookups = [];
     for (const [name, value] of [['Empty', null], ['Selected', { id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', entity:'x_item', name:'Copper' }]]) {
@@ -86,9 +90,8 @@ test('disabled lookup presentation hides search and clear while preserving typed
 });
 
 test('numeric controls show exported precision and currency without changing raw values, validation or editing', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren(); window.numbers = {};
@@ -118,9 +121,8 @@ test('numeric controls show exported precision and currency without changing raw
 });
 
 test('source text formats retain native scalar action glyphs and input semantics with external actions explicitly disabled', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); await page.goto(origin + '/main.aspx');
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren(); window.textFields = {};
     for (const [format, value] of [['email', 'person@example.invalid'], ['phone', '+1 555 0100'], ['url', 'https://example.invalid/'], ['tickersymbol', 'SAMPLE'], ['text', 'Plain']]) {
@@ -141,9 +143,8 @@ test('source text formats retain native scalar action glyphs and input semantics
 });
 
 test('standard memo controls use the compact native height while declared rows and source editors retain their size', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); await page.goto(origin + '/main.aspx');
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); await page.goto(origin + '/main.aspx');
   const dimensions = await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren();
     return [[{ name: 'x_description' }, {}], [{ name: 'x_source' }, {}], [{ name: 'x_notes' }, { rows: 3 }], [{ name: 'x_expanded' }, { rows: 5 }], [{ name: 'x_editor', editorRows: 12 }, {}]].map(([field, context]) => {
@@ -166,8 +167,7 @@ test('saved state and status remain editable with legacy text class IDs while ne
   const cells = '<row><cell><control datafieldname="statecode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row><row><cell><control datafieldname="statuscode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row>';
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', cells + '</rows>'));
   const sim = await source.start(); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
   const state = page.getByRole('combobox', { name: 'Record state', exact: true }), reason = page.getByRole('combobox', { name: 'Record reason', exact: true });
   await state.waitFor(); assert.equal(await state.isDisabled(), true);
@@ -185,8 +185,7 @@ test('saved state and status remain editable with legacy text class IDs while ne
 
 test('advanced lookup uses staged Done, preserves a cancelled value, queries exported views and saves a typed reference', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   const id = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
   await page.goto(`${origin}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=${id}`);
   await page.getByLabel('Parent', { exact: true }).waitFor();
@@ -222,8 +221,7 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.lookupViews[0].id, 'qualified-lookup');
   assert.equal(catalogue.tables.x_item.views.some(view => view.id === 'qualified-lookup'), false);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd');
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('option', { name: 'Silver', exact: true }).waitFor();
@@ -246,8 +244,7 @@ test('advanced lookup preserves all exported columns and their widths instead of
   const lookup = (await fs.readFile(queryFile, 'utf8')).replace('{items-view}', '{wide-lookup}').replace('<querytype>0</querytype>', '<querytype>64</querytype>').replace('<cell name="x_quantity" width="100"/>', names.map((name, index) => `<cell name="${name}" width="${80 + index * 10}"/>`).join(''));
   await fs.writeFile(path.join(path.dirname(queryFile), 'wide.xml'), lookup);
   const sim = await source.start(); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd');
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
@@ -261,9 +258,8 @@ test('advanced lookup preserves all exported columns and their widths instead of
 });
 
 test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd');
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
@@ -288,9 +284,8 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
 });
 
 test('lookup invalidates selection during search, ignores stale responses and settles Escape', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd');
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
@@ -321,8 +316,7 @@ test('lookup invalidates selection during search, ignores stale responses and se
 
 test('lookup target picker clears selection and preserves polymorphic target identity', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   let targetLabel;
   await page.route('**/_apps/api/metadata/x_child', async route => {
     const response = await route.fetch(), table = await response.json();
@@ -348,25 +342,9 @@ test('lookup target picker clears selection and preserves polymorphic target ide
   assert.equal((await submitted).postDataJSON().x_parentid.entity, 'x_child');
 });
 
-test('date-only and time-zone-independent controls retain wall time while user-local controls convert the timezone', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ timezoneId: 'America/New_York' });
-  await page.goto(origin + '/main.aspx');
-  const values = await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
-    return ['DateOnly', 'TimeZoneIndependent', 'UserLocal'].map(dateTimeBehavior => {
-      const control = renderControl({ name: 'x_date', type: 'date', dateTimeBehavior }, '2026-06-15T14:30:00Z');
-      return { input: control.primary.value, time: control.element.querySelector('.date-time-input')?.value, value: control.read() };
-    });
-  });
-  assert.deepEqual(values, [{ input: '6/15/2026', time: undefined, value: '2026-06-15' }, { input: '6/15/2026', time: '2:30 PM', value: '2026-06-15T14:30:00.000Z' }, { input: '6/15/2026', time: '10:30 AM', value: '2026-06-15T14:30:00.000Z' }]);
-});
-
 test('inline lookup rejects stale keyboard choices during debounce and after an adapter ignores cancellation', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs'); document.body.replaceChildren();

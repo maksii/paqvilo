@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Invented exports and loopback only. Real short page routes are not language prefixes.
+// Real short page routes are not language prefixes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -37,16 +37,19 @@ test('live overlays and panel source identity preserve native short routes along
   const context = await browser.newContext({ serviceWorkers: 'block' });
   await context.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.fallback() : route.abort());
   const session = new OverlaySession({ sourceDir: fx.dir, origin, site: structuredClone(SITE), sourceMaps: false, siteName: 'Fixture', envName: 'loopback', stateDir: fx.dir });
+  // Tabs exist before interception: attachSession awaits their attachment, so no first document
+  // escapes the overlay and triggers the late-tab reload while the assertions read the page.
+  const pages = await Promise.all(Array.from({ length: 4 }, () => context.newPage()));
+  const unknown = await context.newPage();
   detach = await attachSession(context, session);
   panel = enablePanel(context, session);
-  const pages = [];
-  for (const [route, expectedPath, color] of [['/', '/', 'rgb(0, 128, 0)'], ['/it', '/it', 'rgb(0, 0, 128)'], ['/ui', '/ui', 'rgb(255, 0, 0)'], ['/fr-FR/it', '/it', 'rgb(0, 0, 128)']]) {
-    const page = await context.newPage(); pages.push(page);
+  for (const [index, [route, expectedPath, color]] of [['/', '/', 'rgb(0, 128, 0)'], ['/it', '/it', 'rgb(0, 0, 128)'], ['/ui', '/ui', 'rgb(255, 0, 0)'], ['/fr-FR/it', '/it', 'rgb(0, 0, 128)']].entries()) {
+    const page = pages[index];
     await page.goto(origin + route);
     assert.equal(await page.locator('.hero').evaluate((node) => getComputedStyle(node).color), color);
     assert.equal(panel.stateFor(page).page.path, expectedPath);
   }
-  const unknown = await context.newPage(); await unknown.goto(origin + '/zz-ZZ/');
+  await unknown.goto(origin + '/zz-ZZ/');
   assert.equal(await unknown.locator('.hero').evaluate((node) => getComputedStyle(node).color), 'rgb(255, 0, 0)');
   assert.equal(panel.stateFor(unknown).page, null);
   fx.write(homeCSS, original.replace('color: red', 'color: purple'));

@@ -1,5 +1,5 @@
 // The Mass Calculate Rollup Fields job (lib/dataverse-rollup.mjs): a recurring scheduler task recalculates every stale rollup
-// column; with a manual scheduler it runs only when the clock passes the interval. Invented x_ schema only.
+// column; with a manual scheduler it runs only when the clock passes the interval.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

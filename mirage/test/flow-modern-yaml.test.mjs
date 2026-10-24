@@ -1,6 +1,5 @@
-// Task 49: a modern flow of a YAML source-control repository (modernflows/) normalises into the same executable definition as
-// the JSON client data: trigger, actions, expressions and connection references run end to end. Invented repository, pack
-// connector and loopback only.
+// A modern flow of a YAML source-control repository (modernflows/) normalises into the same executable definition as
+// the JSON client data: trigger, actions, expressions and connection references run end to end.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -95,7 +94,7 @@ test('a YAML modern flow imports into the flow interpreter and runs end to end',
   assert.deepEqual([workflow.name, workflow.active, workflow.format], ['Invented YAML flow', true, 'yaml']);
   assert.deepEqual(workflow.definition.properties.connectionReferences, { x_api: { connection: { connectionReferenceLogicalName: 'x_yamlref' } } });
 
-  // The connection reference binds a project connection served by an invented pack connector.
+  // The connection reference binds a project connection served by a pack connector.
   const store = await new DataStore({ state: { ...emptyState(), tables: { connectionreference: [{ connectionreferencelogicalname: 'x_yamlref', connectionid: 'conn-yaml' }] } } }).init();
   const pack = { id: 'x-pack', connectors: { shared_fxyaml: { operations: { Greet: request => ({ statusCode: 200, body: { text: 'hi ' + request.parameters.name } }) } } } };
   const connectors = createConnectorRuntime({ store, packs: [pack], connections: { 'conn-yaml': { connector: 'shared_fxyaml', provider: 'pack:x-pack' } } });
@@ -109,7 +108,7 @@ test('a YAML modern flow imports into the flow interpreter and runs end to end',
   assert.equal(answer.body.text, 'Hello invented');
 });
 
-// RC4b-06: a modernflows/ file that does not parse (an unquoted @ expression is invalid YAML) is never skipped silently: its
+// A modernflows/ file that does not parse (an unquoted @ expression is invalid YAML) is never skipped silently: its
 // inventory record and the workflow import name MODERNFLOW_YAML_INVALID with the file and the parser's line.
 test('a modernflows file that does not parse reports MODERNFLOW_YAML_INVALID with the file and line', async () => {
   const { inventoryEntry, mergeInventory } = await import('../lib/solution-inventory.mjs');

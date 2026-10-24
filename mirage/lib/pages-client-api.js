@@ -2,7 +2,7 @@
 // It runs inside the page runtime script (platform.mjs injectRuntime, PAGES_CLIENT_API_SOURCE), before authored
 // scripts. Learn: power-pages/configure/client-api.
 //
-// Levels (mirage/docs/power-pages-client-api.md):
+// Levels:
 // - readiness: Microsoft.PowerPages.onPagesClientApiReady calls back and resolves once the document is
 //   parsed (next tick when it already is); the deprecated Microsoft.Dynamic365.Portal alias warns once.
 // - currentPage.lists: behaviour. Modern lists (platform.mjs renderModernList) load through the list's own
@@ -416,7 +416,7 @@
   // (EntityFormControl_*/WebFormControl_*, the form id), tabs div.tab, sections table.section and the cells
   // .control[data-logical-name]. Required state and validators are ASP.NET validators in Page_Validators, so they run on
   // submit and report in the form's validation summary (webforms-compat.js). Learn documents no form events.
-  // unverified: the getType names other than MultiSelectPicklist; Boolean values are the option labels.
+  // Guessed native behaviour: the getType names other than MultiSelectPicklist; Boolean values are the option labels.
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const shown = element => Boolean(element) && element.style.display !== 'none' && !element.hidden;
   const show = (element, visible) => { if (element) element.style.display = visible ? '' : 'none'; };
@@ -473,7 +473,7 @@
   }
   // Learn controls "Full name": getValue/setValue use { firstName, middleName, lastName }. The parts are the composite's
   // own part boxes when the form renders them (<id><part> or <id>_<part>), else the form's firstname/middlename/lastname
-  // cells, which carry the parts on submit. unverified: the live composite part box ids were not captured.
+  // cells, which carry the parts on submit. The native composite part box ids are not known.
   const NAME_PARTS = { firstName: 'firstname', middleName: 'middlename', lastName: 'lastname' };
   function createControl(cell, form) {
     const name = cell.getAttribute('data-logical-name');
@@ -524,7 +524,7 @@
     const setValue = value => {
       if (type === 'Status' || type === 'StatusReason') throw new Error(`The ${name} control is read-only.`);
       if (type === undefined) return unsupported(member('setValue'))();
-      // unverified: a read-only control refuses setValue (Learn documents isReadOnly, not the setValue outcome).
+      // Guess: a read-only control refuses setValue (Learn documents isReadOnly, not the setValue outcome).
       // The full name composite box shows the computed fullname column (platform.mjs renders it read-only); the control
       // writes its parts, so it is read-only only when every part box is.
       if (type === 'FullName' ? Object.values(nameParts()).filter(Boolean).every(isReadOnly) : readOnly()) throw new Error(`The ${name} control is read-only.`);
@@ -545,7 +545,7 @@
           const editor = richEditor();
           if (typeof editor?.setData === 'function') editor.setData(html);
           else { const area = byId(cell, `${id}_editor`); if (area) area.value = html; }
-          // unverified: a captured managed rich text control (data-sim-managed-control) reads the hidden value on save; its
+          // Assumed: a captured managed rich text control (data-sim-managed-control) reads the hidden value on save; its
           // own view is Microsoft's PCF proxy and is not refreshed here.
           const encoded = JSON.stringify(html);
           element.value = encoded; element.setAttribute('value', encoded); fire(element); return;
@@ -593,7 +593,7 @@
         default: {
           const text = String(value ?? '');
           if ((type === 'String' || type === 'Memo') && element.maxLength > 0 && text.length > element.maxLength) throw new Error(`The value exceeds the maximum length ${element.maxLength} of ${name}.`);
-          // unverified: a date picker built over the bound box (date-controls.mjs) shows the new value after its change event.
+          // Assumed: a date picker built over the bound box (date-controls.mjs) shows the new value after its change event.
           element.value = text; fire(element);
         }
       }
@@ -605,7 +605,7 @@
       getRequired: () => Boolean(info?.classList.contains('required') || requiredBy.has(cell)),
       getVisible: () => shown(holder),
       getName: () => name,
-      // unverified: Learn's control type list has no rich text type; the rich text control answers undefined.
+      // Learn's control type list has no rich text type, so the rich text control answers undefined (a guess).
       getType: () => (type === 'RichText' ? undefined : type),
       getLogicalName: () => name,
       getValue,

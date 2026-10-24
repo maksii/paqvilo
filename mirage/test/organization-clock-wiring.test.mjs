@@ -58,7 +58,7 @@ test('Web API create and update stamp createdon and modifiedon from the fixed cl
   assert.equal(row.modifiedon, '2026-05-04T09:30:00Z');
   clock.advance(90_000);
   const updated = await webApi('PATCH', `x_items(${id})`, { x_name: 'Invented clocked row, renamed' });
-  assert.ok([200, 204].includes(updated.status));
+  assert.equal(updated.status, 200);
   row = store.tableRows('x_item').find(item => item.x_itemid === id);
   assert.equal(row.createdon, '2026-05-04T09:30:00Z');
   assert.equal(row.modifiedon, '2026-05-04T09:31:30Z');

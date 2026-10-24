@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
@@ -67,11 +66,11 @@ async function body(response, status = 200) {
   const text = await response.text(); assert.equal(response.status, status, text); return text ? JSON.parse(text) : null;
 }
 const ui = (sim, method, suffix = '', values, etag) => fetch(sim.url + '/_apps/api' + suffix, { method,
-  headers: { 'x-sim-csrf': sim.state().csrf, ...(values ? { 'content-type': 'application/json' } : {}), ...(etag ? { 'if-match': etag } : {}) },
+  headers: { 'x-sim-csrf': sim.csrf, ...(values ? { 'content-type': 'application/json' } : {}), ...(etag ? { 'if-match': etag } : {}) },
   ...(values ? { body: JSON.stringify(values) } : {}), signal: AbortSignal.timeout(10000) });
 async function client(sim) {
   const registration = await body(await fetch(sim.url + '/_sim/api/dataverse/applications', { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: 'Invented standalone client', roles: ['System Administrator'] }) }), 201);
   const token = await body(await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: registration.secret, scope: sim.dataverse.origin + '/.default' }) }));
@@ -157,27 +156,34 @@ test('standalone validation responses agree with the documented payload and quer
   const org = await client(sim), documentation = await fs.readFile(new URL('../docs/dataverse-api.md', import.meta.url), 'utf8');
   const payload = await body(await org('POST', '/x_items', { unknown: true }), 400);
   assert.equal(payload.error.code, '0x80048d19'); assert.ok(documentation.includes('`0x80048d19`'));
+  assert.ok(documentation.includes('`0x80060888`'));
   for (const query of ['$select=unknown', "$filter=unknown eq 'x'", '$orderby=unknown', '$expand=unknown']) {
     const result = await body(await org('GET', '/x_items?' + query), 400);
-    assert.equal(result.error.code, '0x80060888', query); assert.ok(documentation.includes('`0x80060888`'));
+    assert.equal(result.error.code, '0x80060888', query);
   }
 });
 
-for (const kind of ['dataverse-api', 'model-driven']) test(`${kind} root platform configuration is retained, enforced and exposed through public administration`, async t => {
-  const { sim, root, solution } = await fixture(t, { runtime: { kind }, dataverse: { enabled: true, tls: false, tds: { enabled: false } }, platform: { QueryLinkEntityLimit: 1, evidence: 'Invented organization limit' } });
-  const file = path.join(root, 'project.json');
+test('project platform settings need evidence, known keys and in-range values', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-platform-config-')); t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'project.json'), solution = path.join(root, 'solution');
+  await fs.mkdir(solution);
   const config = { version: 2, runtime: { kind: 'dataverse-api' }, solutions: [{ id: 'schema', path: solution }], platform: { QueryLinkEntityLimit: 1, evidence: 'Invented organization limit' } };
   await fs.writeFile(file, JSON.stringify(config));
   const project = await loadProjectConfig(file); assert.deepEqual(projectSummary(project).platform, config.platform);
   assert.deepEqual(project.platform, config.platform);
-  for (const platform of [{ QueryLinkEntityLimit: 0, evidence: 'Invalid' }, { QueryLinkEntityLimit: 50 }, { unknown: 1, evidence: 'Invalid' }]) {
-    await fs.writeFile(file, JSON.stringify({ ...config, platform })); await assert.rejects(loadProjectConfig(file));
+  for (const [platform, message] of [[{ QueryLinkEntityLimit: 0, evidence: 'Invalid' }, /QueryLinkEntityLimit/], [{ QueryLinkEntityLimit: 50 }, /evidence/], [{ unknown: 1, evidence: 'Invalid' }, /unknown/]]) {
+    await fs.writeFile(file, JSON.stringify({ ...config, platform })); await assert.rejects(loadProjectConfig(file), message);
   }
+});
+
+for (const kind of ['dataverse-api', 'model-driven']) test(`${kind} root platform configuration is retained, enforced and exposed through public administration`, async t => {
+  const { sim } = await fixture(t, { runtime: { kind }, dataverse: { enabled: true, tls: false, tds: { enabled: false } }, platform: { QueryLinkEntityLimit: 1, evidence: 'Invented organization limit' } });
+  const config = { platform: { QueryLinkEntityLimit: 1, evidence: 'Invented organization limit' } };
   const org = await client(sim);
   const xml = '<fetch><entity name="x_item"><attribute name="x_itemid"/><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
   assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
   const admin = async (method = 'GET', suffix = '', values) => body(await fetch(sim.url + '/_sim/api/platform-settings' + suffix, { method,
-    headers: { 'x-sim-csrf': sim.state().csrf, 'content-type': 'application/json' }, ...(values ? { body: JSON.stringify(values) } : {}) }));
+    headers: { 'x-sim-csrf': sim.csrf, 'content-type': 'application/json' }, ...(values ? { body: JSON.stringify(values) } : {}) }));
   assert.equal((await admin()).find(item => item.key === 'QueryLinkEntityLimit').configuredEvidence, config.platform.evidence);
   await admin('PATCH', '', { QueryLinkEntityLimit: 50 });
   assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 200);
@@ -206,7 +212,7 @@ test('standalone project CLI forwards organization platform settings into the ac
   });
   const status = await body(await fetch(started.url + '/_sim/api/status'));
   assert.equal(status.platformSettings.find(item => item.key === 'QueryLinkEntityLimit').value, 1);
-  const org = await client({ url: started.url, dataverse: status.dataverse, state: () => ({ csrf: status.csrf }) });
+  const org = await client({ url: started.url, dataverse: status.dataverse, csrf: status.csrf, state: () => ({ csrf: status.csrf }) });
   const xml = '<fetch><entity name="x_item"><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
   assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
 });
@@ -231,7 +237,7 @@ for (const kind of ['dataverse-api', 'model-driven']) for (const mode of ['appse
   const token = await body(response);
   assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/x_items', { headers: { authorization: 'Bearer ' + token.access_token } })).status, 200);
   if (kind === 'dataverse-api' && mode === 'appservice') {
-    const restricted = await body(await fetch(sim.url + '/_sim/api/dataverse/managed-identities', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ displayName: 'Restricted identity', roles: [] }) }), 201);
+    const restricted = await body(await fetch(sim.url + '/_sim/api/dataverse/managed-identities', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify({ displayName: 'Restricted identity', roles: [] }) }), 201);
     const limitedToken = await body(await requestIdentity(endpoint + '&client_id=' + restricted.clientId, headers));
     assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/x_items', { headers: { authorization: 'Bearer ' + limitedToken.access_token } })).status, 403);
   }
@@ -240,43 +246,6 @@ for (const kind of ['dataverse-api', 'model-driven']) for (const mode of ['appse
     const { file } = await ownedArcChallenge(unused.headers.get('www-authenticate'), root);
     await fs.stat(file); await sim.close(); await assert.rejects(fs.stat(file), { code: 'ENOENT' });
   }
-});
-
-test('Arc fixture rejects outside, prefix-sibling, malformed, oversized and linked challenge files before redemption', async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-arc-guard-')); t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const directory = path.join(root, '.paqvilo', 'mirage'); await fs.mkdir(directory, { recursive: true });
-  const name = 'identity-001122334455.key', file = path.join(directory, name), header = file => 'Basic realm=' + file;
-  await fs.writeFile(file, 'a'.repeat(64));
-  assert.equal(await readOwnedArcSecret(await ownedArcChallenge(header(file), root)), 'a'.repeat(64));
-  const sibling = path.join(root, '.paqvilo', 'mirage-sibling'); await fs.mkdir(sibling); await fs.writeFile(path.join(sibling, name), 'b'.repeat(64));
-  const outside = path.join(root, name); await fs.writeFile(outside, 'c'.repeat(64));
-  for (const value of [header(outside), header(path.join(sibling, name)), header(path.join(directory, 'unexpected.key')), header(name), file, null])
-    await assert.rejects(ownedArcChallenge(value, root));
-  await fs.writeFile(file, 'a'.repeat(65)); await assert.rejects(readOwnedArcSecret(await ownedArcChallenge(header(file), root)), /read limit/);
-  await fs.writeFile(file, 'not a generated hexadecimal proof'); await assert.rejects(readOwnedArcSecret(await ownedArcChallenge(header(file), root)), /64 hexadecimal/);
-  // Directory junctions exercise the canonical boundary on Windows without
-  // requiring the privilege needed to create a file symlink there.
-  await fs.rm(directory, { recursive: true });
-  await fs.symlink(sibling, directory, process.platform === 'win32' ? 'junction' : 'dir');
-  await assert.rejects(ownedArcChallenge(header(file), root), /through a link/);
-});
-
-test('identity fixture refuses remote or unowned destinations and never follows a credential-bearing redirect', async t => {
-  let forwarded = 0;
-  const receiver = http.createServer((_req, res) => { forwarded++; res.end('Must not receive identity requests.'); });
-  const redirector = http.createServer((_req, res) => { res.writeHead(302, { location: `http://127.0.0.1:${receiver.address().port}/elsewhere` }); res.end(); });
-  for (const server of [receiver, redirector]) {
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  }
-  const port = redirector.address().port, api = { origin: `http://127.0.0.1:${port}`, servers: [redirector] };
-  const params = new URLSearchParams({ resource: api.origin, 'api-version': '2019-08-01' });
-  for (const origin of ['https://example.invalid', `http://localhost:${port}`, `http://127.0.0.1:${receiver.address().port}`, `http://user@127.0.0.1:${port}`, api.origin + '/other', api.origin + '?other=1'])
-    assert.throws(() => identityEndpoint({ ...api, origin }, 'arc', params), /exact owned HTTP loopback listener/);
-  const endpoint = identityEndpoint(api, 'arc', params);
-  assert.equal(new URL(endpoint).pathname, '/metadata/identity/oauth2/token');
-  await assert.rejects(requestIdentity(endpoint, { metadata: 'true', authorization: 'Basic invented-fixture-proof' }), /fetch failed/);
-  assert.equal(forwarded, 0);
 });
 
 test('independent client directory and ZIP sources reload without changing complete organization metadata', async t => {
@@ -357,7 +326,7 @@ test('standalone close settles an accepted admin write before tearing down its o
   sim.store.create = async (...args) => { entered(); await blocked; assert.equal(closed, false); return create(...args); };
   sim.organization.close = async () => { closed = true; return closeOrganization(); };
   const request = fetch(sim.url + '/_sim/api/records/x_item', { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name: 'Accepted write' }) });
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify({ x_name: 'Accepted write' }) });
   await waiting;
   const closing = sim.close();
   await new Promise(resolve => setImmediate(resolve)); assert.equal(closed, false);

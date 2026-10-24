@@ -1,7 +1,7 @@
 // Quick setup first run, as a person without configuration knowledge does it: open setup in a folder that only holds a
-// portal export, create the project from what was found, start the local preview, open it, and stop it. Loopback only.
+// portal export, create the project from what was found, start the local preview, open it, and stop it.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -14,6 +14,9 @@ import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 test('quick setup creates a project from a found export, starts, opens and stops its preview', { timeout: 240_000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-quick-run-'));
@@ -23,8 +26,8 @@ test('quick setup creates a project from a found export, starts, opens and stops
   // Whatever the run leaves behind, the preview this test may have started is stopped.
   ownedFixture(t).add(async () => spawnSync(process.execPath, [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'], { cwd: directory, windowsHide: true, timeout: 60_000 }));
   const server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true })); ownedFixture(t).add(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
   page.setDefaultTimeout(15_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
 
@@ -46,7 +49,7 @@ test('quick setup creates a project from a found export, starts, opens and stops
 
   await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
   await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor({ timeout: 60_000 });
-  await assert.rejects(fetch(website, { signal: AbortSignal.timeout(5000) }), 'the stopped preview no longer answers');
+  await assert.rejects(fetch(website, { signal: AbortSignal.timeout(5000) }), /fetch failed/, 'the stopped preview no longer answers');
   assert.deepEqual(errors, []);
 });
 
@@ -57,8 +60,8 @@ test('All settings creates a project from what to run and the found exports, and
   const config = path.join(directory, 'paqvilo.config.yml');
   ownedFixture(t).add(async () => spawnSync(process.execPath, [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'], { cwd: directory, windowsHide: true, timeout: 60_000 }));
   const server = await startSetupServer({ directory, processEnv: {} }); ownedFixture(t).add(() => server.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true })); ownedFixture(t).add(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
   page.setDefaultTimeout(15_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
 

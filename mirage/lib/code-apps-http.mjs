@@ -10,7 +10,7 @@ import { systemIds } from './runtime-clock.mjs';
  * - Generated services create/get/getAll/update/delete returning `{ data }`: https://learn.microsoft.com/power-apps/developer/code-apps/how-to/connect-to-dataverse
  * - Local Play (`pa app run`, host on port 8080 next to the app's dev server): https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch
  * - CLI: https://learn.microsoft.com/power-apps/developer/code-apps/reference/cli , https://learn.microsoft.com/power-platform/developer/cli/reference/code
- * unverified: how the client library talks to the player (postMessage or HTTP) and what the 8080 local host serves.
+ * Not known: how the client library talks to the player (postMessage or HTTP) and what the 8080 local host serves.
  *
  * Endpoints (all relative to /_apps/code/<name>/):
  *   GET  context                         IContext from the selected staff persona (401 without one)

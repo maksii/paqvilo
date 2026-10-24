@@ -1,5 +1,5 @@
 // File and image column bytes through the storage routing extension, with a local-disk storage router and without one:
-// upload, download, ranges, blocks, SAS, delete-after-commit and the orphan sweep. Invented schema and GUIDs; loopback only.
+// upload, download, ranges, blocks, SAS, delete-after-commit and the orphan sweep.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -142,7 +142,7 @@ for (const mode of MODES) {
   });
 }
 
-// R1 F1: each key follows its own route; an unserved route keeps its bytes in state as a runtime without storage does.
+// Each key follows its own route; an unserved route keeps its bytes in state as a runtime without storage does.
 const noteBlocks = async (h, text) => {
   const init = await h.call("POST", "InitializeAnnotationBlocksUpload", { Target: widgetRef });
   assert.equal(init.status, 200, JSON.stringify(init.json));
@@ -180,7 +180,7 @@ test("note blocks stay inline when only the dataverseFiles route is served; file
   assert.deepEqual(await h.blobKeys(), [entry.key]);
 });
 
-// R1 F9: bytes put before their row commits are in flight; a sweep in between keeps them.
+// Bytes put before their row commits are in flight; a sweep in between keeps them.
 test("a sweep between an upload's put and its row write keeps the uploaded bytes", async (t) => {
   const h = await routingApi(t);
   const put = h.provider.put;
@@ -204,4 +204,35 @@ test("the routing sweep runs the outbox sweep and reports its counts", async (t)
   const result = await h.api.storageRouting.sweep();
   assert.equal(calls, 1);
   assert.deepEqual(result.outbox, { deleted: 2, pending: 1 });
+});
+
+test("closing the API drains an accepted blob delete before its state directory is removed", async () => {
+  const hooks = [], fixture = await routingApi({ after: (hook) => hooks.push(hook) });
+  const remove = fs.rm, objectPrefix = path.join(fixture.root, "blobs", "objects") + path.sep;
+  let enter, release, removed = false, cleanup;
+  const entered = new Promise((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = resolve; });
+  // Hold the provider's object removal so the directory cleanup has to wait for it.
+  fs.rm = async (target, options) => {
+    if (String(target).startsWith(objectPrefix)) { enter(); await gate; }
+    if (target === fixture.root) removed = true;
+    return remove(target, options);
+  };
+  try {
+    assert.equal((await upload(fixture)).status, 204);
+    assert.equal((await fixture.call("DELETE", `${widget}/fx_doc`)).status, 204);
+    await entered;
+    cleanup = (async () => { for (const hook of hooks) await hook(); })();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(removed, false, "directory cleanup must await the accepted release");
+    release();
+    await cleanup;
+    assert.equal(removed, true);
+    await assert.rejects(fs.stat(fixture.root), { code: "ENOENT" });
+  } finally {
+    release();
+    await cleanup?.catch(() => {});
+    fs.rm = remove;
+    await fixture.close();
+    await remove(fixture.root, { recursive: true, force: true });
+  }
 });

@@ -1,6 +1,4 @@
-// Routing and admission errors of the Dataverse Web API, over HTTP, with an invented schema (contoso_*).
-// Each expectation mirrors a native response recorded for the parity cases (headers.*, errors.*, property.unknown,
-// relationships.bind-invalid, keys.missing-key, metadata.invalid-name, documentation.*).
+// Routing and admission errors of the Dataverse Web API, over HTTP. Each expectation mirrors a native response.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";

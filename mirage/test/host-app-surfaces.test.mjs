@@ -1,6 +1,6 @@
 // App surfaces in both hosts (lib/organization-host.mjs): /_apps/canvas/ lists the Solution inventory's canvas apps and
 // /_apps/code/<app>/ serves the configured code app, both before the model-driven handler; /main.aspx keeps its answer.
-// runtime state reports inventory counts, provider descriptors and service fixtures. Invented sources, loopback only.
+// runtime state reports inventory counts, provider descriptors and service fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -60,8 +60,8 @@ test('both hosts serve /_apps/canvas/ and /_apps/code/<app>/ before the model-dr
   }
   // The portal host's model-driven shell keeps answering /main.aspx.
   const shell = await fetch(`${portal.url}/main.aspx`, { redirect: 'manual' });
-  assert.notEqual(shell.status, 404);
-  assert.equal(shell.headers.get('content-type')?.includes('application/json') && (await shell.json()).error?.code === 'CanvasAppNotFound', false);
+  assert.equal(shell.status, 200);
+  assert.match(await shell.text(), /<title>Mirage Apps<\/title>/);
 });
 
 test('runtime state reports inventory counts, provider descriptors and service fixtures in both hosts', async (t) => {
@@ -70,9 +70,11 @@ test('runtime state reports inventory counts, provider descriptors and service f
     assert.equal(state.inventory.components.canvasapp.count, 1, name);
     assert.equal(state.inventory.components.canvasapp.levels.inventory, 1, name);
     assert.ok(Array.isArray(state.providers.connectors) && state.providers.connectors.some((provider) => provider.id === 'http'), name);
-    assert.ok(state.providers.storage && state.providers.outbox, name);
+    assert.equal(state.providers.storage.routes.annotations, 'local', name);
+    assert.equal(state.providers.storage.providers.find((provider) => provider.id === 'local').level, 'behaviour', name);
+    assert.equal(state.providers.outbox.name, 'outbox:local', name);
     assert.equal(state.providers.secrets, null, `${name}: no secrets config, no resolver`);
-    assert.ok(Array.isArray(state.services), name);
+    assert.equal(state.services.find((service) => service.name === 'service:aiBuilder')?.level, 'disabled', name);
     assert.equal(state.capabilities.canvas, 'behaviour', name);
     assert.equal(state.capabilities.codeApps, 'contract', name);
   }

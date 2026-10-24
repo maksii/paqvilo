@@ -58,7 +58,7 @@ test('section is collapsed by default and opens on request', () => {
   assert.match(section({ key: 's', title: 'T', open: true, body: () => 'lazy' }), /data-ui-section="s" open>.*lazy/);
 });
 
-test('help, fieldHelp and guide structure', () => {
+test('help, fieldHelp and guide render their documented markup', () => {
   assert.equal(fieldHelp('dv-port', 'Port to listen on'), '<small class="ui-field-help" id="dv-port-help">Port to listen on</small>');
   const doc = { href: 'https://example.test/blob/main/mirage/docs/x.md', label: 'X', path: 'mirage/docs/x.md' };
   assert.match(help({ id: 'h', text: 'Read', doc }), /<p class="ui-help" id="h">Read <a class="ui-doc" href="https:\/\/example.test\/blob\/main\/mirage\/docs\/x.md" target="_blank" rel="noreferrer">X<\/a> <code>mirage\/docs\/x.md<\/code><\/p>/);
@@ -69,12 +69,12 @@ test('help, fieldHelp and guide structure', () => {
   assert.doesNotMatch(guide({ key: 'k', intro: 'only' }), /<details/);
 });
 
-test('kv and tiles', () => {
+test('kv renders a definition list and tiles carry their tone', () => {
   assert.equal(kv([['Port', '<code>1</code>', { mono: true }]]), '<dl class="ui-kv"><div class="ui-kv-row"><dt>Port</dt><dd class="ui-mono"><code>1</code></dd></div></dl>');
   assert.match(tiles([{ label: 'Requests', value: 3, detail: 'd', tone: 'ok' }]), /ui-tile ui-tone-ok.*Requests.*>3<.*d</);
 });
 
-test('docLink resolves against the D9 map and falls back to a path-only link', () => {
+test('docLink resolves against the docs map and falls back to a path-only link', () => {
   const docs = { packs: { href: 'https://example.test/blob/v1.2.3/mirage/docs/data-packs.md', path: 'mirage/docs/data-packs.md', label: 'Data Packs' } };
   assert.deepEqual(docLink('mirage/docs/data-packs.md#recognised-exports', docs), { href: 'https://example.test/blob/v1.2.3/mirage/docs/data-packs.md#recognised-exports', label: 'Data Packs', path: 'mirage/docs/data-packs.md#recognised-exports' });
   assert.deepEqual(docLink('mirage/docs/service-fixtures.md', docs), { href: null, label: 'Service Fixtures', path: 'mirage/docs/service-fixtures.md' });

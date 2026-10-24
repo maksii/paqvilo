@@ -179,6 +179,6 @@ export function createModelDrivenRecordService({ organization, store = organizat
     const response = await run(() => request(method, entity, id, { etag, ...(principalId === undefined ? {} : { principalId, kind }) }, body));
     return remove ? { deleted: true } : { id: id ?? response.body?.[mapping.idColumn], row: rowOf(response.body), etag: response.body?.['@odata.etag'] };
   };
-  // Callable write preserves the original embedded administration contract.
+  // The service itself is callable as write().
   return Object.assign(write, { write, get, retrieve, query, list, capabilities });
 }

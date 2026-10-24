@@ -46,7 +46,8 @@ test("live origins and paths reject credentials, traversal, encoded separators a
     "https://user:password@portal.example.test",
     "https://portal.example.test/path",
   ])
-    assert.throws(() => new LiveBridge({ origin: value }));
+    assert.throws(() => new LiveBridge({ origin: value }), { status: 400, message: /HTTPS origin without credentials or a path/ }, value);
+  assert.equal(new LiveBridge({ origin: "https://portal.example.test/" }).origin, origin);
   for (const value of [
     "https://evil.test/x",
     "//evil.test/a",
@@ -58,12 +59,15 @@ test("live origins and paths reject credentials, traversal, encoded separators a
     "/asset.js#fragment",
     "/asset.js\n",
   ])
-    assert.throws(() => validateLivePath(value));
-  const { bridge } = bridgeWith(() => response());
-  await assert.rejects(bridge.request("/safe", { method: "TRACE" }));
+    assert.throws(() => validateLivePath(value), { status: 400, code: "LIVE_BRIDGE" }, JSON.stringify(value));
+  assert.equal(validateLivePath("/a/b%20c?x=%2e%2e"), "/a/b%20c?x=%2e%2e");
+  const { bridge, calls } = bridgeWith(() => response());
+  await assert.rejects(bridge.request("/safe", { method: "TRACE" }), { status: 400, message: /Unsupported live HTTP method/ });
   await assert.rejects(
     bridge.request("/safe", { method: "GET", body: { secret: "body" } }),
+    { status: 400, message: /Read requests cannot carry a body/ },
   );
+  assert.equal(calls.length, 0);
 });
 
 test("API reads and authorized writes retrieve real CSRF tokens and never forward caller token", async () => {
@@ -379,7 +383,7 @@ test("live redirects and response headers stay origin-confined without credentia
   const escaped = bridgeWith(() =>
     response({ url: "https://elsewhere.example.test/a" }),
   ).bridge;
-  await assert.rejects(escaped.request("/safe"));
+  await assert.rejects(escaped.request("/safe"), { status: 400, message: /escaped the configured origin/ });
 });
 
 test("live FetchXML resolves native portal entity mappings and optional endpoint override", async () => {
@@ -390,6 +394,7 @@ test("live FetchXML resolves native portal entity mappings and optional endpoint
   assert.throws(
     () =>
       new LiveBridge({ origin, fetchXmlPath: "https://evil.test/{fetchXml}" }),
+    { status: 400, code: "LIVE_BRIDGE" },
   );
   const { bridge, calls } = bridgeWith(
     (url) =>
@@ -661,7 +666,7 @@ test("asset cache captures verified static bytes, persists digest metadata and f
       await restored.get("/styles/first.css?variant=other&_=123"),
       null,
     );
-    await assert.rejects(restored.get("/styles/first.css?token=SECRET&_=123"));
+    await assert.rejects(restored.get("/styles/first.css?token=SECRET&_=123"), /Credential or authorization query parameters cannot be cached/);
     assert.equal(
       await restored.get("/styles/first.css", { origin: null }),
       null,
@@ -738,6 +743,7 @@ test("asset capture rejects login HTML, mismatched types, sensitive query parame
           throw new Error("should not run");
         },
       }),
+      /Connected portal origin differs from the asset cache origin/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -775,7 +781,8 @@ test("Microsoft platform CDN capture uses isolated anonymous requests and reject
       ).body.toString(),
       "window.bootstrapExample=true;",
     );
-    await assert.rejects(cache.capturePublic(["/other.js"]));
+    await assert.rejects(cache.capturePublic(["/other.js"]), /confined to Microsoft Power Pages static platform resources/);
+    assert.equal(calls.length, 1);
     assert.equal(
       (await readFile(join(directory, "manifest.json"), "utf8")).includes(
         "DO_NOT_PERSIST",

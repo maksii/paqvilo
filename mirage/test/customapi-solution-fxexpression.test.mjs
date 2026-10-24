@@ -1,6 +1,6 @@
 // A Dataverse Function defined in a Solution: fxexpressions/<name>/fxexpression.xml holds the Power Fx expression and the
-// customapi.xml names it (customapi.FxExpressionId, Learn: customapi and fxexpression table references), so the Function
-// evaluates through the core engine instead of answering default outputs. Invented x_ data only.
+// customapi.xml names it (customapi.FxExpressionId), so the Function
+// evaluates through the core engine instead of answering default outputs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

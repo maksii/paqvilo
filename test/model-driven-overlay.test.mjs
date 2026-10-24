@@ -44,8 +44,12 @@ test('overlay import publication is atomic and HEAD has no body', async () => {
 });
 
 test('invalid origins, traversal and ambiguous resource maps fail before a browser opens', () => {
-  for (const origin of ['https://user:password@invented.invalid', 'https://invented.invalid/main.aspx?appid=1', 'http://public.invalid', 'file:///app']) assert.throws(() => modelDrivenOrigin(origin));
-  for (const path of ['//other.invalid/script.js', '/a/../b', '/%2e%2e/b', '/a?token=secret', '/a\\b', '/api/data/v9.2/items', '/api%2Fdata', '/oauth2/token', '/main.aspx', '/_apps/api/tables', '/_sim/']) assert.throws(() => createModelDrivenOverlay({ origin: 'https://invented.invalid', imported: imported('test'), mappings: [{ path, resource: 'x_script.js' }] }));
+  for (const origin of ['https://user:password@invented.invalid', 'https://invented.invalid/main.aspx?appid=1', 'file:///app']) assert.throws(() => modelDrivenOrigin(origin), /environment origin without credentials, path, query or fragment/, origin);
+  assert.throws(() => modelDrivenOrigin('http://public.invalid'), /require HTTPS/);
+  const refused = (paths, message) => { for (const path of paths) assert.throws(() => createModelDrivenOverlay({ origin: 'https://invented.invalid', imported: imported('test'), mappings: [{ path, resource: 'x_script.js' }] }), message, path); };
+  refused(['//other.invalid/script.js', '/a?token=secret', '/a\\b'], /origin-relative pathname without query, fragment or backslash/);
+  refused(['/a/../b', '/%2e%2e/b'], /Invalid resource mapping pathname/);
+  refused(['/api/data/v9.2/items', '/api%2Fdata', '/oauth2/token', '/main.aspx', '/_apps/api/tables', '/_sim/'], /cannot target an API, authentication, application shell or administration route/);
   assert.throws(() => createModelDrivenOverlay({ origin: 'https://invented.invalid', imported: imported('test'), mappings: [{ path: '/WebResources/x_script.js', resource: 'x_Invented.Control/bundle.js' }] }), /Multiple/);
 });
 

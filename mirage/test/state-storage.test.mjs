@@ -141,7 +141,7 @@ test('checkpoint failure keeps current file and failed multi-row effects roll ba
   initial.plugins = [{ entity: 'item', operation: 'update', set: {}, secondary: [{ entity: 'item', operation: 'create', set: { name: { literal: 'effect' } } }, { entity: 'item', operation: 'update', match: { itemid: { literal: 'missing' } }, requireMatch: true, set: {} }] }];
   const { file, store } = await workspace(t, initial);
   const originalRow = store.state.tables.item[0], digest = store.persistedDigest;
-  await assert.rejects(store.update('items', 'one', { name: 'denied' }));
+  await assert.rejects(store.update('items', 'one', { name: 'denied' }), /cannot find a matching related record/);
   assert.equal(store.state.tables.item.length, 1);
   assert.equal(store.state.tables.item[0], originalRow);
   assert.equal(await hashStateFile(file), digest);
@@ -235,7 +235,7 @@ test('declarative secondary updates retain same-row response and referenced-row 
   const before = store.snapshot();
   store.state.plugins[0].secondary[1].set.note.literal = 'must roll back';
   store.state.plugins[0].secondary.push({ entity: 'item', operation: 'update', match: { itemid: { literal: 'missing' } }, set: {}, requireMatch: true });
-  await assert.rejects(store.update('items', 'one', { name: 'failed' }));
+  await assert.rejects(store.update('items', 'one', { name: 'failed' }), /cannot find a matching related record/);
   assert.equal(store.state.tables.item[1], referenced); assert.equal(referenced.note, before.tables.item[1].note);
 });
 

@@ -31,7 +31,7 @@ test('solution catalogue has no Power Pages provider and chooses an imported def
   assert.equal(appCatalogue().defaultApp, null);
   assert.throws(() => appCatalogue({ ...input, defaultApp: '88888888-8888-4888-8888-888888888888' }), /not imported/);
 });
-test('R3-11: the legacy capability summary is booleans only', () => {
+test('the legacy capability summary is booleans only', () => {
   for (const kind of RUNTIME_KINDS) {
     const registry = createCapabilityRegistry({ runtime: { kind } });
     registry.add({ name: 'setup', kind: 'host-surface', level: 'behaviour' });

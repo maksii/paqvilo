@@ -4,8 +4,8 @@ import { renderComponent } from "../lib/platform.mjs";
 import { gridRecord, buildLayout, actionLinks } from "../lib/native-services.mjs";
 import { nativePageRegions } from "../lib/platform-manifest.mjs";
 
-// Invented "widget" table and list on a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
-// contrast, a Bootstrap 3 site. Views, fields and records are local fixtures.
+// A "widget" table and list on a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
+// contrast, a Bootstrap 3 site.
 const SITE = "5a000000-0000-4000-8000-000000000001";
 const LIST = "5b000000-0000-4000-8000-000000000001";
 const VIEW = "5c000000-0000-4000-8000-000000000001";
@@ -118,7 +118,7 @@ test("without the create privilege the list keeps its create links disabled; a p
     renderComponent("entitylist", "Widgets", { user: { id: "current" }, request: { url: "http://localhost/widgets/" }, key: "Widgets" }, { portal: portal(true), metadata, store: rulesStore(operations), schemas: {}, args });
   const reader = layouts((await renderWith(["read"])).html)[0].Configuration;
   assert.equal(reader.InsertActionLink.Enabled, false);
-  assert.ok(reader.ViewActionLinks.filter((link) => link.Type === 3).every((link) => link.Enabled === false));
+  assert.deepEqual(reader.ViewActionLinks.filter((link) => link.Type === 3).map((link) => link.Enabled), [false]);
   const editor = layouts((await renderWith(["read", "create"])).html)[0].Configuration;
   assert.equal(editor.InsertActionLink.Enabled, true);
   // A list bound to a legacy page: #EntityListControl > .entitylist > div > .entity-grid with the

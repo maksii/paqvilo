@@ -145,7 +145,7 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
         if (!table.fields[condition.field] || !['eq', 'ne', 'like', 'not-like', 'contains', 'not-contains', 'begins-with', 'ends-with', 'gt', 'ge', 'lt', 'le', 'null', 'not-null'].includes(condition.operator)) throw invalid('Unsupported filter column or operator.');
         let operator = condition.operator, value = String(condition.value ?? '');
         // The native filter editor treats the typed text as a literal substring.
-        // Explicit legacy LIKE queries retain their existing pattern semantics.
+        // Explicit LIKE operators keep their pattern semantics.
         if (['contains', 'not-contains', 'begins-with', 'ends-with'].includes(operator)) {
           const literal = value.replace(/[\[%_]/g, char => `[${char}]`);
           value = (operator === 'ends-with' || operator.endsWith('contains') ? '%' : '') + literal + (operator === 'begins-with' || operator.endsWith('contains') ? '%' : '');

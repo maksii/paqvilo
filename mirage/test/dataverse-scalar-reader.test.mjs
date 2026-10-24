@@ -33,7 +33,6 @@ test("reader source parsing is lazy and remains bounded to each actual JSON requ
   });
   assert.equal(context.ieee754Compatible, true);
   assert.equal(context.recordPayload, true);
-  assert.equal(typeof context.numberLexemeFor, "function");
   assert.throws(() => context.numberLexemeFor("quantity", 1), SyntaxError);
   const unrelated = dataverseHttpReaderContext({
     method: "POST",
@@ -45,7 +44,7 @@ test("reader source parsing is lazy and remains bounded to each actual JSON requ
   assert.equal(unrelated.recordPayload, false);
 });
 
-test("unqualified numeric-string overflow and exponent reader diagnostics are preserved", () => {
+test("a numeric string, a numeric lexeme for a text target and an unknown type produce no scalar cause", () => {
   assert.equal(dataverseScalarCause("2147483648", "Edm.Int32"), null);
   assert.equal(
     dataverseScalarCause(1, "Edm.String", { numericLexeme: "1e0" }),
@@ -57,21 +56,18 @@ test("unqualified numeric-string overflow and exponent reader diagnostics are pr
   );
 });
 test("native Boolean casing and typed causes do not invent CLR stack frames", () => {
-  for (const type of ["Edm.String", "Edm.Int32", "Edm.Decimal", "Edm.Double"]) {
-    const message = dataverseScalarCause(true, type);
-    assert.ok(message.includes("literal 'True'"));
-    assert.ok(message.includes("type 'Edm.Boolean'"));
-    assert.equal(message.includes("   at "), false);
-  }
-  assert.ok(
-    dataverseScalarCause("", "Edm.Boolean").includes(
-      "String was not recognized as a valid Boolean.",
-    ),
+  for (const type of ["Edm.String", "Edm.Int32", "Edm.Decimal", "Edm.Double"])
+    assert.equal(
+      dataverseScalarCause(true, type),
+      `Cannot convert the literal 'True' to the expected type '${type}'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Boolean' to the expected target type '${type}'.`,
+    );
+  assert.equal(
+    dataverseScalarCause("", "Edm.Boolean"),
+    "Cannot convert the literal '' to the expected type 'Edm.Boolean'. ---> System.FormatException: String was not recognized as a valid Boolean.",
   );
-  assert.ok(
-    dataverseScalarCause("2020-02-30", "Edm.Date").includes(
-      "not recognized as a valid Edm.Date",
-    ),
+  assert.equal(
+    dataverseScalarCause("2020-02-30", "Edm.Date"),
+    "Cannot convert the literal '2020-02-30' to the expected type 'Edm.Date'. ---> System.FormatException: String '2020-02-30' was not recognized as a valid Edm.Date.",
   );
 });
 

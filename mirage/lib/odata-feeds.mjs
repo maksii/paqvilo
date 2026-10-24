@@ -3,7 +3,7 @@ import { contextualViewFetchXml } from "./platform.mjs";
 import { parseFetchTree, serializeFetchTree } from "./native-services.mjs";
 
 /*
- * Entity list OData feeds : lists with adx_odata_enabled publish their OData view
+ * Entity list OData feeds: lists with adx_odata_enabled publish their OData view
  * at /_odata/<adx_odata_entitysetname>. Model from the legacy EntityListODataFeedDataAdapter
  * (MIT): the primary key, the view's columns (link-entity columns named
  * "<entity>-<attribute>"), lookups as EntityReference {Id, Name}, choices as OptionSet
@@ -103,7 +103,7 @@ function propertyValue(column, value) {
   return String(value);
 }
 
-// ---- $filter ---------------------------------------------------------------------------
+// ---- $filter
 function tokenize(text) {
   const tokens = [];
   const pattern = /(?:(guid'([0-9a-fA-F-]{36})')|(datetime'([^']*)')|('((?:[^']|'')*)')|(-?\d+(?:\.\d+)?)|(\()|(\))|(,)|([A-Za-z_][\w.\-/]*))/y;
@@ -314,9 +314,9 @@ async function feedEntries(feed, context) {
 
 /**
  * Handle /_odata requests; returns true when handled. Power Pages removed list OData feeds by
- * June 2026 (Learn, important changes and deprecations; diagnostic LIST_ODATA_FEED_REMOVED), so
- * /_odata is left to the site's page-not-found handling as on the platform (live
- * list/item-list-odata/feed: 404 "Page Not Found" for a feed-enabled list). A site whose platform
+ * June 2026 (diagnostic LIST_ODATA_FEED_REMOVED), so /_odata is left to the site's
+ * page-not-found handling as on the platform (404 "Page Not Found" even for a feed-enabled
+ * list). A site whose platform
  * still serves the feeds declares observed.listODataFeeds: "served" to get the local feed.
  */
 export async function handleODataFeed(req, res, url, context) {

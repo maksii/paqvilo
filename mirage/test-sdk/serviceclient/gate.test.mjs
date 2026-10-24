@@ -103,7 +103,7 @@ test('Microsoft.PowerPlatform.Dataverse.Client (ServiceClient) gate against the 
 
     for (const name of pass.steps) assert.ok(steps.some((s) => s.step === name && s.pass === pass.name), `${pass.name}: step "${name}" missing; exit ${run.status}\n${run.stderr.slice(-2000)}`);
 
-    // A pending step passes only when it fails with the signature the TODO names; anything else is a real failure.
+    // A pending step passes only when it fails with the signature its `pending` regex names; anything else is a real failure.
     for (const step of steps.filter((s) => !s.ok)) {
       const expected = pass.pending[step.step];
       if (expected && expected.test(step.detail)) t.diagnostic(`${pass.name}: ${step.step} pending (TODO above): ${step.detail}`);

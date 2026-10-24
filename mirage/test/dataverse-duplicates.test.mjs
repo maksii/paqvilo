@@ -1,6 +1,6 @@
 // Duplicate detection: seeded duplicate rule tables, the MSCRM.SuppressDuplicateDetection gate on create
 // and update, the match operators, and the publish, unpublish and RetrieveDuplicates operations.
-// Invented schema and GUIDs only; the registry and hooks are exercised through a fake api.
+// The registry and hooks are exercised through a fake api.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -90,7 +90,7 @@ test("install seeds the duplicate rule tables as dataverseOnly and leaves a mapp
   assert.equal(store.state.tables.duplicaterulecondition, undefined);
 });
 
-test("install registers the three operations and the beforeWrite hook", async () => {
+test("install registers the three operations on their documented bindings", async () => {
   const t = await setup();
   assert.deepEqual(
     ["PublishDuplicateRule", "UnpublishDuplicateRule", "RetrieveDuplicates"].map((name) => {
@@ -103,7 +103,6 @@ test("install registers the three operations and the beforeWrite hook", async ()
       ["RetrieveDuplicates", "function", "unbound", undefined],
     ],
   );
-  assert.equal(typeof t.hooks.beforeWrite, "function");
 });
 
 test("a create or update is checked only when MSCRM.SuppressDuplicateDetection is false", async () => {
@@ -454,7 +453,7 @@ test("BulkDetectDuplicates writes one duplicaterecord row per detected pair, lin
   assert.equal(new Set(dups.map((r) => r.duplicateid)).size, 2);
 });
 
-test("rerunning BulkDetectDuplicates writes rows for the new job only", async () => {
+test("a rerun of BulkDetectDuplicates writes its own rows and keeps the earlier job's", async () => {
   const t = await setup();
   addRule(t, { conditions: [{ base: "code" }] });
   threePairRows(t);

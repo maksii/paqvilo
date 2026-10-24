@@ -1,4 +1,4 @@
-// `#capabilities` view module (D3, D12): the capability report and Solution inventory from the `/state` payload, and a
+// `#capabilities` view module: the capability report and Solution inventory from the `/state` payload, and a
 // preflight runner over GET /__sim/api/preflight (`requires` repeatable, `strict`, `scenario`). DOM-free at module scope;
 // requests go through ctx.request with API-relative paths. The report never includes configured values.
 import * as kit from './ui-kit.mjs';

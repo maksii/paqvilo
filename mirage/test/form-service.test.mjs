@@ -601,7 +601,8 @@ test("basic and advanced forms without a resolved systemform submit their approx
     (error) => error.code === "FormFieldNotBound",
   );
   const step = await submitPortalForm("webform", "signup", { stepId: "step1", values: { fullname: "Step contact", jobtitle: "Lead" } }, { ...options, portal, metadata });
-  assert.ok(step.recordId);
+  const stepRow = options.store.snapshot().tables.contact.find((item) => item.contactid === step.recordId);
+  assert.deepEqual([stepRow.fullname, stepRow.jobtitle], ["Step contact", "Lead"]);
   // Without metadata, an export-only basic form still answers with the unresolved layout error.
   await assert.rejects(submitPortalForm("entityform", "profile", { values: {} }, { ...options, portal: { ...portal, forms: [{ id: "profile", name: "Profile", metadata: {} }] } }), (error) => error.status === 501);
 });

@@ -21,7 +21,7 @@ const ACCEPTED = 0x24, REJECTED = 0x25, RELEASED = 0x26, MODIFIED = 0x27, SOURCE
 const SASL_MECHANISMS = 0x40, SASL_INIT = 0x41, SASL_OUTCOME = 0x44;
 const HEADER = 0x70, MESSAGE_ANNOTATIONS = 0x72, PROPERTIES = 0x73, APPLICATION_PROPERTIES = 0x74, DATA = 0x75, AMQP_VALUE = 0x77;
 
-// --- Independent codec: nodes are { t, v }; decoded values are plain JS, described values { d, v } ----------------------
+// ---- Independent codec: nodes are { t, v }; decoded values are plain JS, described values { d, v }
 const node = (t, v) => ({ t, v });
 const NUL = node('null');
 const uint = (v) => node('uint', v), ubyte = (v) => node('ubyte', v), ushort = (v) => node('ushort', v), sym = (v) => node('sym', v);

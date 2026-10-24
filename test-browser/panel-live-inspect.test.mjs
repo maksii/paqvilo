@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Live Lense mode, using only invented exports and a disposable loopback portal.
+// Live Lense mode.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -50,9 +50,18 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   context.setDefaultTimeout(12_000);
   await context.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.fallback() : route.abort());
   const session = new OverlaySession({ sourceDir: fx.portal, origin, site: structuredClone(SITE), sourceMaps: false, siteName: 'Widget fixture', envName: 'loopback', stateDir: fx.work, browser: {}, mirageConfig: { project: fx.project } });
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+  const page = await context.newPage(); page.on('pageerror', (error) => errors.push(error.message));
   detach = await attachSession(context, session);
   panel = enablePanel(context, session, { open: async (...args) => { opened.push(args); return null; } });
-  const page = await context.newPage(); page.on('pageerror', (error) => errors.push(error.message));
+  // Resolves with the source the panel asked the editor to open after one click.
+  const openedBy = async (locator) => {
+    const before = opened.length;
+    await locator.click();
+    for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(opened.length, before + 1, 'the panel opened one source');
+    return opened.at(-1)[1];
+  };
   await page.goto(origin, { waitUntil: 'load' });
   await page.waitForFunction(() => performance.getEntriesByType('resource').some((entry) => entry.name.includes('/_api/')));
   const scope = page.locator('#paqvilo-panel');
@@ -68,25 +77,15 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   await scope.locator('[data-group="runtime-native"]').getByText('Child records', { exact: true }).waitFor();
   await scope.locator('[data-group="runtime-forms"]').getByText('Read child', { exact: true }).waitFor();
   await scope.locator('[data-group="runtime-pcf"]').getByText('fx_Example.Editor', { exact: true }).waitFor();
-  await scope.locator('[data-group="runtime-pcf"] [data-rel$="ControlManifest.xml"] [data-act="open"]').first().click();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(opened.at(-1)[1], path.join(nativeControlDir, 'ControlManifest.xml'));
-  await scope.locator('[data-group="runtime-pcf"] [data-rel*="FormXml"] [data-act="open"]').first().click();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(opened.at(-1)[1], nativeFormFile);
+  assert.equal(await openedBy(scope.locator('[data-group="runtime-pcf"] [data-rel$="ControlManifest.xml"] [data-act="open"]').first()), path.join(nativeControlDir, 'ControlManifest.xml'));
+  assert.equal(await openedBy(scope.locator('[data-group="runtime-pcf"] [data-rel*="FormXml"] [data-act="open"]').first()), nativeFormFile);
   if (process.env.PAQVILO_EVIDENCE_DIR) {
     fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
     await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, 'lense-inspect-live.png') });
   }
-  await scope.locator('[data-group="runtime-forms"] [data-rel*="FormXml"] [data-act="open"]').first().click();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(opened.at(-1)[1], path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'));
-  await scope.locator('[data-group="runtime-page-sources"] [data-rel$="custom_javascript.js"] [data-act="open"]').first().click();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(opened.at(-1)[1], path.join(fx.portal, 'web-pages/home/Home.webpage.custom_javascript.js'));
-  await scope.locator('[data-group="runtime-views"] .row').filter({ hasText: 'Related children' }).locator('[data-act="open"]').first().click();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(opened.at(-1)[1], path.join(fx.solution, 'Entities/fx_child/SavedQueries/child-view.xml'));
+  assert.equal(await openedBy(scope.locator('[data-group="runtime-forms"] [data-rel*="FormXml"] [data-act="open"]').first()), path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'));
+  assert.equal(await openedBy(scope.locator('[data-group="runtime-page-sources"] [data-rel$="custom_javascript.js"] [data-act="open"]').first()), path.join(fx.portal, 'web-pages/home/Home.webpage.custom_javascript.js'));
+  assert.equal(await openedBy(scope.locator('[data-group="runtime-views"] .row').filter({ hasText: 'Related children' }).locator('[data-act="open"]').first()), path.join(fx.solution, 'Entities/fx_child/SavedQueries/child-view.xml'));
   await scope.locator('[data-act="inspect-section"][data-v="components"]').click();
   assert.equal(await scope.locator('[data-group="runtime-page-sources"]').count(), 0);
   await scope.locator('[data-group="runtime-columns"] [data-act="inspect-locate"][data-field="fx_title"]').click();

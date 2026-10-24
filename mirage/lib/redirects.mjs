@@ -2,9 +2,8 @@ import { normalizePortalPath } from "./importer.mjs";
 
 /**
  * Request routing for paths that no exported page or web file resolves, and for
- * pages the current persona may not read. Behaviour follows the platform pipeline
- * described in docs/platform-internals-reference.md sections 1.2-1.6. The local
- * adapter uses these rules, with exported settings and explicit observations:
+ * pages the current persona may not read. The local adapter follows the platform
+ * pipeline with exported settings and explicit observations:
  *   0. A website language code as the first segment is removed with a 302 (pages,
  *      MultiLanguage/DisplayLanguageCodeInURL not "true"); /{code}/signin is the
  *      sign-in route. The "Knowledge Article" site-marker page also answers its
@@ -50,7 +49,7 @@ const sitePath = (value) => /^\/(?!\/)[^?#\s]*$/.test(value);
  * Authentication/ApplicationCookie/LoginPath setting; else the site's observed sign-in
  * path (applyObserved) with its evidence; else /signin, the documented default (Learn,
  * "Cookie authentication site settings"). Sites without the setting answer /signin or
- * /SignIn online, so that casing is an observation (docs/bootstrap-and-sources.md).
+ * /SignIn online, so that casing is an observation (mirage/docs/bootstrap-and-sources.md).
  */
 export function signInPath(portal) {
   const configured = String(siteSetting(portal, LOGIN_PATH_SETTING) ?? "").trim();

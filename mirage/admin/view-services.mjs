@@ -1,4 +1,4 @@
-// `#services` view module (D3, D12): providers and services of the organization. DOM-free at module scope; reads
+// `#services` view module: providers and services of the organization. DOM-free at module scope; reads
 // GET /__sim/api/dashboard (nodes and activity), /messages, /outbox, /flow-waits and /environment through ctx.request
 // (API-relative paths) and probes through GET /__sim/api/preflight on demand. Values of secrets, connection settings and
 // endpoint queries never reach this view: the routes send names, counts, statuses and hostnames only.

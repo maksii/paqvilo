@@ -82,7 +82,7 @@ test('a nested capture rolls back with its caller, and a failed capture write re
   await assert.rejects(store.transact(async () => {
     await outbox.capture(mail({ attachments: [{ name: 'a', content: Buffer.from('x') }] }), { nested: true });
     throw new Error('invented rollback');
-  }, { incremental: true }));
+  }, { incremental: true }), /invented rollback/);
   assert.equal(outbox.list().length, 0);
   const failing = createOutbox({ store: { transact: async () => { throw new Error('invented write failure'); }, state: { tables: {}, mappings: {} } }, storage });
   storage.objects.clear();
@@ -116,7 +116,7 @@ test('a rolled-back nested capture keeps the evicted entry and its bytes, and de
   await assert.rejects(store.transact(async () => {
     await outbox.capture(mail({ subject: 'B', attachments: [{ name: 'b.txt', content: Buffer.from('b') }] }), { nested: true });
     throw new Error('invented rollback');
-  }, { incremental: true }));
+  }, { incremental: true }), /invented rollback/);
   assert.deepEqual(outbox.list().map((entry) => entry.id), [first.id]);
   assert.ok(storage.objects.has(firstKey));
   assert.deepEqual(storage.deleted, []);
@@ -148,7 +148,7 @@ test('sweep reclaims the bytes of a rolled-back capture and keeps bytes that a l
   await assert.rejects(store.transact(async () => {
     await outbox.capture(mail({ subject: 'orphan', attachments: [{ name: 'o.txt', content: Buffer.from('o') }] }), { nested: true });
     throw new Error('invented rollback');
-  }, { incremental: true }));
+  }, { incremental: true }), /invented rollback/);
   const orphanKey = [...storage.objects.keys()].find((key) => key !== liveKey);
   assert.ok(orphanKey);
   assert.deepEqual(await outbox.sweep(), { deleted: 1, pending: 0 });

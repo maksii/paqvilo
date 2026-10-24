@@ -1,4 +1,4 @@
-// Change log unit tests on an invented store: committed events are delivered by hand, as DataStore does after a commit.
+// Change log unit tests: committed events are delivered by hand, as DataStore does after a commit.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

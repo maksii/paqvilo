@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -26,7 +26,11 @@ const SOLUTION = {
 const FEATURE_LIST = [`adx_view: ${VIEW_ALL}`, `adx_views: '{"Views":[{"ViewId":"${VIEW_ALL}","DisplayName":"All items"},{"ViewId":"${VIEW_TOP}","DisplayName":"Top items"}]}'`,
   "adx_searchenabled: true", `adx_settings: '{"ItemActions":[{"Type":"CrmEntityFormView-DeleteAction"}],"ViewActions":[{"Type":"CrmEntityFormView-DownloadAction"}]}'`].join("\n");
 
-// Invented site: one x_item list (page size 3) included twice on the home page, as a modern and a classic list.
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
+// One x_item list (page size 3) included twice on the home page, as a modern and a classic list.
 async function launch(t, { operations = ["read"], features = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "modern-list-browser-"));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
@@ -55,9 +59,8 @@ list.on('rowclick',function(e){window.clicked.push(e.row.getId());});window.page
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, port: 0, ...(features ? { solutionRoots: [solutionDir] } : {}) });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 800, height: 120 } });
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();
   const errors = [];
@@ -89,7 +92,7 @@ test("a modern list continues the secured list query on scroll and publishes row
   assert.deepEqual(await page.evaluate(() => window.loadedPages), [3, 6, 7]);
   // One secured query continued page by page (the classic list on the page posts its own first page).
   assert.deepEqual(bodies.filter((body) => body.page > 1).map((body) => [body.page, body.pageSize]), [[2, 3], [3, 3]]);
-  // The column header change from the loaded handler is idempotent (Learn: get methods return the source data).
+  // The column header change from the loaded handler is idempotent (get methods return the source data).
   assert.equal(await modern.locator("thead th").first().innerText(), "x_name *");
 
   const lists = await page.evaluate(() => window.__paqviloPages.currentPage.lists.getAll().map((list) => ({ modern: list.isModern, rows: list.rows.length, columns: list.columns.length, column: list.getColumn("x_name") === undefined })));

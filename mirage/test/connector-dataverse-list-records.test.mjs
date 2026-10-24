@@ -4,7 +4,7 @@ import { DataStore } from '../lib/data.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { inspectFlowDefinition } from '../lib/flow-runtime.mjs';
 
-// Task 43: Dataverse List rows with fetchXml, $expand and 5,000-row pages continued through $skiptoken / @odata.nextLink.
+// Dataverse List rows with fetchXml, $expand and 5,000-row pages continued through $skiptoken / @odata.nextLink.
 const ops = ['read', 'create', 'update', 'delete'];
 const id = n => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
 const hidden = row => row.x_name !== 'c-hidden';

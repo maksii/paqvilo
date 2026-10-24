@@ -1,5 +1,5 @@
-// One attachment size rule (03-B6): a /_sim MaxUploadFileSize override applies to record writes and to the block messages
-// alike, counted in Base64 characters on both. Invented schema and GUIDs; loopback only.
+// One attachment size rule: a /_sim MaxUploadFileSize override applies to record writes and to the block messages
+// alike, counted in Base64 characters on both.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { attachmentApi, b64 } from "./attachment-api-fixture.mjs";

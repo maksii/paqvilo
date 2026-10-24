@@ -11,7 +11,8 @@ import { classifyChanges, preCommitScripts, isDescriptionOnlyEdit } from '../.gi
 
 test('commit gates accept Conventional Commits and reject malformed subjects/bodies', () => {
   for (const message of ['feat: add preview', 'fix(lense)!: change contract\n\nBREAKING CHANGE: explicit identity required', 'revert: undo change', 'perf(mirage): speed up rendering']) assert.doesNotThrow(() => validateCommitMessage(message));
-  for (const message of ['', 'fix bug', 'fix: ', 'fix(scope) change', 'feat: change\nbody without blank line', ' fix: change']) assert.throws(() => validateCommitMessage(message));
+  for (const message of ['', 'fix bug', 'fix: ', 'fix(scope) change', ' fix: change']) assert.throws(() => validateCommitMessage(message), /Use <type>\[optional scope\]\[!\]: <description>/, message);
+  assert.throws(() => validateCommitMessage('feat: change\nbody without blank line'), /blank line/);
 });
 
 test('secondary edits skip runtime jobs but packaged documentation retains release checks', () => {

@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
 import { webFormsForm } from "../lib/platform-manifest.mjs";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
-// Synthetic contact form exercising one control of each kind. The record store and the
-// schema are local fixtures; nothing is read from a portal.
+// A contact form exercising one control of each kind.
 const ID = "c0000000-0000-4000-8000-000000000001";
 const record = {
   contactid: ID,
@@ -168,13 +169,16 @@ test("field-level read-only option set in an edit form keeps every option, aria-
   }
 });
 
-test("the multi-select host stamps its launch point only on a first render with a selection; postbacks type the delete buttons", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const vm = await import("node:vm");
+async function loadMultiSelectHost() {
   const source = await readFile(new URL("../lib/multiselect-compat.js", import.meta.url), "utf8");
   const window = { document: { readyState: "complete", querySelectorAll: () => [] } };
   window.window = window;
   vm.runInNewContext(source, { window, document: window.document });
+  return window;
+}
+
+test("the multi-select host stamps its launch point only on a first render with a selection; postbacks type the delete buttons", async () => {
+  const window = await loadMultiSelectHost();
   const { render } = window.__ppMultiSelectHost;
   const context = { ControlId: "colours", ControlName: "MscrmControls.MultiSelectPicklist.UpdMSPicklistControl", ControlProperties: { value_DisplayName: "Colours", value_Options: [{ Value: 1, Label: { UserLocalizedLabel: { Label: "Red" } } }, { Value: 2, Label: { UserLocalizedLabel: { Label: "Blue" } } }] } };
   const first = render(context, ["1"]);
@@ -195,12 +199,7 @@ test("the multi-select host stamps its launch point only on a first render with 
 });
 
 test("a disabled multi-select without a selection is marked both disabled and empty", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const vm = await import("node:vm");
-  const source = await readFile(new URL("../lib/multiselect-compat.js", import.meta.url), "utf8");
-  const window = { document: { readyState: "complete", querySelectorAll: () => [] } };
-  window.window = window;
-  vm.runInNewContext(source, { window, document: window.document });
+  const window = await loadMultiSelectHost();
   const context = { ControlId: "colours", ControlName: "MscrmControls.MultiSelectPicklist.UpdMSPicklistControl", IsDisabled: true, ControlProperties: { value_DisplayName: "Colour column", value_Options: [{ Value: 1, Label: { UserLocalizedLabel: { Label: "Red" } } }] } };
   const html = window.__ppMultiSelectHost.render(context, []);
   assert.match(html, /class="msos-container msos-disabled msos-none-selected"/);

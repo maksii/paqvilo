@@ -1,8 +1,8 @@
-// The asynchronous drive for every write that is not a plug-in's own SDK call (Learn use-webhooks: a synchronous web hook
+// The asynchronous drive for every write that is not a plug-in's own SDK call (a synchronous web hook
 // runs inside its operation): a flow Dataverse action, the Assign cascade and CalculateRollupField post a synchronous web
 // hook step in process, so Mirage keeps serving while the step waits and a receiver in Mirage's own process answers. The
 // synchronous I/O bridge (plug-in SDK calls only) reports a post that may have been delivered, takes web hook authentication
-// as an env: reference only, and reports a worker crash within the call. Invented x_ tables, keys and loopback endpoints.
+// as an env: reference only, and reports a worker crash within the call.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

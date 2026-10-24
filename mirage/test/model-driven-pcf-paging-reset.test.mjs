@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDatasetHost } from '../lib/model-driven/pcf-runtime.mjs';
 
-// Learn component-framework/reference/paging/reset: "Reload the results from the server, and reset to page 1."
+// paging.reset: "Reload the results from the server, and reset to page 1."
 test('PCF dataset paging.reset reloads page one through the dataset lifecycle', async () => {
   const rows = Array.from({ length: 5 }, (_, index) => ({ x_itemid: `77777777-7777-4777-8777-77777777770${index}`, x_name: `Item ${index}` }));
   const pages = [];

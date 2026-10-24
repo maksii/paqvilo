@@ -148,7 +148,7 @@ export async function processIdentityAsync(pid, { signal } = {}) {
   return null;
 }
 
-// ------------------------------------------------------------------------------ ownership records
+// ---- ownership records
 export async function ownedSessions(paths = DEFAULT_PATHS) {
   try {
     const value = JSON.parse(await fs.readFile(paths.ownershipFile, 'utf8'));
@@ -222,7 +222,7 @@ export async function updateOwnedSessions(paths, change, { signal } = {}) {
   return run;
 }
 
-// ------------------------------------------------------------------------------ discovery records
+// ---- discovery records
 async function discoveryRecords(paths, { signal } = {}) {
   signal?.throwIfAborted();
   let names = [];
@@ -409,7 +409,7 @@ export async function mirageStatus(paths = DEFAULT_PATHS) {
   return sessions.sort((a, b) => a.pid - b.pid);
 }
 
-// ------------------------------------------------------------------------------ configuration
+// ---- configuration
 async function loadProject(file) {
   const { loadProjectConfig } = await import('../../mirage/lib/project-config.mjs');
   return loadProjectConfig(path.resolve(file));
@@ -480,10 +480,6 @@ function liveWritesText(value) {
   return 'not reported by this Mirage';
 }
 
-/**
- * The stop summary: how many sessions were stopped for `scope` (`none` when there were none), and
- * how many owned records were kept because their process could not be verified.
- */
 /** Owned standalone sessions of one runtime kind: of the selected project, else of this catalogue site, else unscoped. */
 async function standaloneSessionPids(paths, cfg, kind, selectedProject = null) {
   return (await ownedSessions(paths)).filter(entry => entry.identity?.runtime?.kind === kind
@@ -594,7 +590,7 @@ function identityMatches(left, right) {
     && String(left.requestedPort ?? '') === String(right.requestedPort ?? ''));
 }
 
-// ------------------------------------------------------------------------------ start
+// ---- start
 async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mirage start' } = {}) {
   let interrupted = false, child, cleanup;
   const controller = new AbortController();
@@ -752,7 +748,7 @@ async function startRuntime(cfg, args, paths, startup) {
   }
 }
 
-// ------------------------------------------------------------------------------ init
+// ---- init
 const yamlPath = (from, target) => {
   const relative = path.relative(from, target);
   // Another drive, the folder itself or a distant folder keeps the absolute path.
@@ -894,7 +890,7 @@ export async function initProject(cfg, args = {}) {
   };
 }
 
-// ------------------------------------------------------------------------------ readiness
+// ---- readiness
 /** Offline check whether a loopback port can be bound now (it may be taken a moment later). */
 export function portAvailable(port, host = '127.0.0.1') {
   return new Promise((resolve) => {
@@ -1009,8 +1005,7 @@ export async function mirageReadiness(cfg, { dependencies, stateRoot = miragePat
   return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, platformStyles, deploymentProfiles, platform: configured.platform ?? projectPortal?.platform ?? null, localOverrides: configured.localOverrides, errors, warnings };
 }
 
-// ------------------------------------------------------------------------------ output
-// ------------------------------------------------------------------------------ several portals
+// ---- several portals
 // One Mirage per catalogue site (each with its own project or source, state, port, references
 // and session cookie); `dev` switches between them, and the live targets, in one browser.
 const PER_PORTAL_OPTIONS = ['project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'solution-root', 'source', 'url', 'out'];
@@ -1078,7 +1073,6 @@ function portClashes(plans) {
   return [...sitesByPort].filter(([, sites]) => sites.length > 1).map(([port, sites]) => `port ${port}: ${sites.join(', ')}`);
 }
 
-/** Starts (or reuses) every site's Mirage at once; a site that fails does not stop the others. */
 /** Per-site start plans from the catalogue: each site's own project or source, port and preset. */
 export function catalogueStartPlans(entries, args, selected = null) {
   // Every runtime reads its site's mirage settings from the catalogue this command resolved,

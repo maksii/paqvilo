@@ -51,7 +51,7 @@ test('map check reports access failures without calling them authentication or l
   t.mock.method(globalThis, 'fetch', async () => new Response('restricted network', { status: 403 }));
   assert.equal(await map(cfg, { check: true, json: true }), 1);
   const mapping = JSON.parse(output[0]);
-  assert.ok(mapping.webFiles.filter((row) => row.url).every((row) => row.online === 'forbidden'));
+  assert.deepEqual(mapping.webFiles.filter((row) => row.url).map((row) => [row.url, row.online]), [['/Logo.svg', 'forbidden'], ['/scripts/app.js', 'forbidden']]);
   assert.ok(fs.existsSync(path.join(cfg.stateDir, 'mapping-test-dev.md')));
 });
 

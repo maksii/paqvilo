@@ -11,7 +11,7 @@
 // and sets api.hierarchyQueryWired = true; until then describe() lists them at contract.
 // Diagnostics: HIERARCHY_DEPTH_EXCEEDED once per table when a walk stops at maxDepth; HIERARCHY_CYCLE once per table when a
 // lookup loops back to a visited record.
-// unverified: the native depth limit of a hierarchy walk and its error (the 100 default is a local bound), and the native
+// Not known: the native depth limit of a hierarchy walk and its error (the 100 default is a local bound), and the native
 // answer for a cyclic hierarchy (the local walk stops at the repeated record and reports HIERARCHY_CYCLE).
 // ponytail: each resolution rescans the table's rows and the relationship records; cache the parent index by store revision when a
 // hot query path needs it.
@@ -22,7 +22,7 @@ import { onceReporter, packOverrides } from "./dataverse-addon-common.mjs";
 
 const DIRECTIONS = ["under", "eq-or-under", "above", "eq-or-above"];
 const QUERY_OPERATORS = ["under", "eq-or-under", "above", "eq-or-above", "not-under"];
-const DEFAULT_MAX_DEPTH = 100; // ponytail: local bound; the native limit is unverified (see above).
+const DEFAULT_MAX_DEPTH = 100; // ponytail: local bound; the native limit is not known (see above).
 const NAME = /^[a-z_][a-z0-9_]*$/i;
 
 const refId = (value) => (value !== null && typeof value === "object" ? value.id : value);
@@ -110,7 +110,7 @@ export function resolveHierarchy(store, table, column, rootId, direction, { maxD
   return result;
 }
 
-// ---- Extension ------------------------------------------------------------------------------------------------------
+// ---- Extension
 
 const states = new WeakMap();
 function stateOf(api) {
@@ -159,7 +159,7 @@ function reset(api) {
 }
 
 /**
- * Capability record (ARCH §2.4). The resolver directions are behaviour. The query operators are behaviour only when the
+ * Capability record. The resolver directions are behaviour. The query operators are behaviour only when the
  * installed api.hierarchyQueryWired is true (set by the organization runtime after it wires them), else contract.
  */
 function describe(api = null) {

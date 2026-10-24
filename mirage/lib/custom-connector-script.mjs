@@ -1,8 +1,7 @@
-// C# custom code of a custom connector (script.csx) run through the local .NET SDK. Learn "Use custom code in a custom
-// connector" (https://learn.microsoft.com/connectors/custom-connectors/write-code): a class `Script : ScriptBase` whose
+// C# custom code of a custom connector (script.csx) run through the local .NET SDK
+// (https://learn.microsoft.com/connectors/custom-connectors/write-code): a class `Script : ScriptBase` whose
 // ExecuteAsync() answers the HttpResponseMessage; Context carries CorrelationId, OperationId, Request and Logger, and
-// Context.SendAsync sends a request. The code replaces the backend request (Learn define-blank, step 4) and runs within
-// 2 minutes (Learn custom code FAQ).
+// Context.SendAsync sends a request. The code replaces the backend request and runs within 2 minutes.
 //
 // One console host per script hash is generated under <state directory>/connector-scripts/<hash>/ (the OS temporary directory
 // for a memory-only runtime) and built once with `dotnet build`; later calls reuse the build. Each call starts the host,
@@ -14,11 +13,11 @@
 // modules are registered (AGENTS.md): the connectorScripts setting names the connector and the SHA-256 of its script.csx text
 // (scriptHash). Any other script is refused with CONNECTOR_SCRIPT_UNTRUSTED before anything is generated, built or started.
 // A trusted host is built and started with a minimal environment (ENV_ALLOWED, never process.env, so no other connection's
-// env: secret reaches it) in its folder under the state directory. It is not sandboxed: unlike the platform host (Learn
-// write-code: the supported namespaces only, .NET Standard 2.0, 2 minutes, 1 MB), it can use any .NET API, read the user's
+// env: secret reaches it) in its folder under the state directory. It is not sandboxed: unlike the platform host (the
+// supported namespaces only, .NET Standard 2.0, 2 minutes, 1 MB), it can use any .NET API, read the user's
 // files and open its own HttpClient, which is not confined to loopback. The first build restores Newtonsoft.Json and
 // Microsoft.Extensions.Logging.Abstractions from nuget.org (or the user's NuGet configuration); offline it fails.
-// unverified: the request and response header split of the native host; System.Drawing is not referenced (it needs a
+// Assumption: the native host's split of request and response headers. System.Drawing is not referenced (it needs a
 // Windows-only package on current .NET).
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -55,7 +54,7 @@ export const hostEnvironment = (source = process.env, { build = false } = {}) =>
   ...Object.fromEntries(Object.entries(source).filter(([name]) => ENV_ALLOWED.test(name) || build && BUILD_ALLOWED.test(name))), DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' });
 const missing = command => new DataError(`${SDK_MISSING}: the custom connector runs C# custom code (script.csx), which needs the .NET SDK; '${command}' is not on PATH.`, 501, 'OperationUnsupported');
 
-// The namespaces Learn lists as supported, as global usings of the generated host (System.Drawing excepted, see above).
+// The namespaces the platform supports, as global usings of the generated host (System.Drawing excepted, see above).
 const USINGS = ['System', 'System.Collections', 'System.Collections.Generic', 'System.Diagnostics', 'System.IO', 'System.IO.Compression', 'System.Linq', 'System.Net',
   'System.Net.Http', 'System.Net.Http.Headers', 'System.Net.Security', 'System.Security.Authentication', 'System.Security.Cryptography', 'System.Text',
   'System.Text.RegularExpressions', 'System.Threading', 'System.Threading.Tasks', 'System.Web', 'System.Xml', 'System.Xml.Linq', 'Microsoft.Extensions.Logging',

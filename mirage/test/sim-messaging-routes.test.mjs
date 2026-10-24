@@ -1,4 +1,4 @@
-// /_sim/api/messages and /_sim/api/outbox over a plain loopback http server with an invented api object.
+// /_sim/api/messages and /_sim/api/outbox over a plain loopback http server with a stub api object.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

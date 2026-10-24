@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Sustained saves and panel controls against a disposable loopback portal only.
+// Sustained saves and panel controls.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -107,14 +107,17 @@ test('sustained saves preserve forms, scope reloads, show Git drift and repin HE
   await panel.draw(home);
   await home.locator('#paqvilo-panel .pill').click();
   await home.locator('#paqvilo-panel [data-act="rebaseline"]').waitFor();
-  const evidence = path.resolve('.paqvilo/evidence/day-session');
-  fs.mkdirSync(evidence, { recursive: true });
-  await home.screenshot({ path: path.join(evidence, 'git-drift-panel.png'), fullPage: true });
+  const evidence = async (name) => {
+    if (!process.env.PAQVILO_EVIDENCE_DIR) return;
+    fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
+    await home.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, name), fullPage: true });
+  };
+  await evidence('git-drift-panel.png');
   await home.setViewportSize({ width: 430, height: 780 });
   await panel.draw(home);
   assert.equal(await home.locator('#paqvilo-panel .head .real').isVisible(), true, 'REAL DATA stays visible on narrow screens');
   assert.equal(await home.locator('#paqvilo-panel .gitline').isVisible(), true, 'branch and baseline stay visible');
-  await home.screenshot({ path: path.join(evidence, 'git-drift-mobile.png'), fullPage: true });
+  await evidence('git-drift-mobile.png');
   await Promise.all([home.waitForNavigation(), home.locator('#paqvilo-panel [data-act="rebaseline"]').click()]);
   assert.equal(session.baseline.commit, session.head.commit);
   assert.equal(session.changedFiles.size, 0);

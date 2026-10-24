@@ -1,7 +1,6 @@
 // Metadata-only platform back-references for ordinary source-defined custom user-owned tables.
 // Never install these declarations in DataStore relationships or the CRUD/cascade graph.
-// Names and lookup columns follow the pinned standard relationship catalogue. FileAttachments is also
-// documented at https://learn.microsoft.com/power-apps/developer/data-platform/file-column-data.
+// Names and lookup columns follow the pinned standard relationship catalogue.
 const REFERENCES = [
   ['SyncErrors', 'syncerror', 'regardingobjectid', 'Cascade'],
   ['AsyncOperations', 'asyncoperation', 'regardingobjectid', 'NoCascade'],

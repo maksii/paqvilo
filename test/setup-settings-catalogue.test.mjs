@@ -46,7 +46,7 @@ test('every example parses as YAML, passes its validator and holds no literal se
 test('choices match the parsers that enforce them', () => {
   const check = (key, choices, wrap) => {
     for (const choice of choices) parseSetting(key, wrap(choice));
-    assert.throws(() => parseSetting(key, wrap('invented-choice')));
+    assert.throws(() => parseSetting(key, wrap('invented-choice')), new RegExp(`${key}.*(?:must be|requires)`));
   };
   const entry = key => kinds.catalogue.find(item => item.key === key) ?? kinds.project.find(item => item.key === key);
   for (const key of ['solutionOrder', 'presetMode', 'presetConfiguration', 'dataModel']) check(key, entry(key).choices, value => value);
@@ -54,7 +54,7 @@ test('choices match the parsers that enforce them', () => {
   check('simulation', entry('simulation').choices, level => ({ level }));
   check('identityProvider', entry('identityProvider').choices, presentation => ({ presentation }));
   for (const value of entry('portals').choices) catalogueRoot({ portals: value });
-  assert.throws(() => catalogueRoot({ portals: 'invented-choice' }));
+  assert.throws(() => catalogueRoot({ portals: 'invented-choice' }), /portals must be/);
   for (const value of entry('scope').choices) catalogueRoot({ sites: { invented: { scope: value } } });
-  assert.throws(() => catalogueRoot({ sites: { invented: { scope: 'invented-choice' } } }));
+  assert.throws(() => catalogueRoot({ sites: { invented: { scope: 'invented-choice' } } }), /scope must be/);
 });

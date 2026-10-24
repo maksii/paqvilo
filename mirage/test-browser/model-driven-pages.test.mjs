@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { stringify } from 'yaml';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
 
-// The invented custom page: a project canvas app whose OnStart reads the navigateTo parameters (Learn: Param("recordId"),
+const chrome = sharedBrowser();
+
+
+// The custom page: a project canvas app whose OnStart reads the navigateTo parameters (Param("recordId"),
 // Param("entityName")) and looks the record up in Dataverse; its screen's OnVisible sets a context variable.
 const CUSTOM_PAGE = {
   'Src/App.pa.yaml': stringify({ App: { Properties: { OnStart: '=Set(fxRecord, Param("recordId")); Set(fxEntity, Param("entityName")); Set(fxCount, CountRows(Items))', StartScreen: '=PageScreen' } },
@@ -16,7 +18,7 @@ const CUSTOM_PAGE = {
     { ItemLabel: { Control: 'Label@2.5.1', Properties: { Text: '="Item " & LookUp(Items, x_itemid = GUID(Param("recordId"))).x_name' } } }] } } }),
 };
 
-// Invented dataset component: renders the formatted names of its dataset and exposes its context.
+// A dataset component: renders the formatted names of its dataset and exposes its context.
 const grid = `ComponentFramework.registerControl('Invented.Grid', class {
   init(context, notify, state, container) { this.container = container; }
   updateView(context) { const set = context.parameters.records; window.gridContext = context;
@@ -42,8 +44,7 @@ async function fixture(t) {
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('<form><tabs>', '<form><header><rows><row><cell><control id="header_x_quantity" datafieldname="x_quantity"/></cell></row></rows></header><tabs>').replace('</form>', '<controlDescriptions><controlDescription forControl="children"><customControl formFactor="0" name="x_Invented.Grid"><parameters><data-set name="records"><ViewId>{children-view}</ViewId><TargetEntityType>x_child</TargetEntityType></data-set></parameters></customControl></controlDescription></controlDescriptions></form>'));
   for (const app of ['x_invented_page', 'x_other_page']) for (const [name, content] of Object.entries(CUSTOM_PAGE)) { const file = path.join(initial.root, 'apps', app, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); }
   const sim = await initial.start({ projectRoot: initial.root, canvas: { sources: ['apps/x_invented_page', 'apps/x_other_page'] } }); const origin = sim.origin ?? sim.url; t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = [];
+  const page = await chrome.page(t); const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   return { page, origin, errors, sim };
 }
@@ -54,7 +55,7 @@ async function openRecord(page, origin) {
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm);
 }
 
-// Canvas apps run as a selected staff user, never SYSTEM: the tests select an invented administrator first.
+// Canvas apps run as a selected staff user, never SYSTEM: the tests select an administrator first.
 async function selectStaff(page, sim) {
   const csrf = sim.state().csrf, request = page.context().request;
   const made = await request.post(sim.origin + '/_sim/api/dataverse/users', { headers: { 'x-sim-csrf': csrf }, data: { fullname: 'Invented page staff', domainname: 'page-staff@example.test', roles: ['System Administrator'] } });
@@ -62,12 +63,12 @@ async function selectStaff(page, sim) {
   assert.equal((await request.post(sim.origin + '/_sim/api/dataverse/session', { headers: { 'x-sim-csrf': csrf }, data: { userId: (await made.json()).systemuserid } })).status(), 200);
 }
 
-test('SiteMap web resource pages open inline; a SiteMap custom page opens the headless canvas host (FC3-37)', async t => {
+test('SiteMap web resource pages open inline; a SiteMap custom page opens the headless canvas host', async t => {
   const { page, origin, errors, sim } = await fixture(t);
   sim.origin = origin; await selectStaff(page, sim);
   await page.goto(origin + '/main.aspx?appname=x_example');
   await page.getByRole('button', { name: 'Items', exact: true }).waitFor();
-  // A SiteMap custom page whose canvas app this app does not include stays listed and disabled with the failed check (RC4a-10).
+  // A SiteMap custom page whose canvas app this app does not include stays listed and disabled with the failed check.
   const other = page.getByRole('button', { name: 'Other page', exact: true });
   assert.equal(await other.isDisabled(), true);
   assert.equal(await other.getAttribute('title'), 'Custom page x_other_page is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).');
@@ -87,7 +88,7 @@ test('SiteMap web resource pages open inline; a SiteMap custom page opens the he
   assert.deepEqual(errors, []);
 });
 
-test('navigateTo opens web resources, records and custom pages; a missing custom page rejects with CustomPageNotFound (FC3-37)', async t => {
+test('navigateTo opens web resources, records and custom pages; a missing custom page rejects with CustomPageNotFound', async t => {
   const { page, origin, errors, sim } = await fixture(t);
   sim.origin = origin; await selectStaff(page, sim);
   await openRecord(page, origin);
@@ -97,7 +98,7 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
   await page.frameLocator('dialog.page-dialog iframe').locator('#message[data-data="invented"]').waitFor();
   await dialog.getByRole('button', { name: 'Close' }).click();
   assert.deepEqual(await page.evaluate(() => window.pageClosed), { result: null });
-  // Learn navigateTo: an existing record closed in a dialog resolves with no value.
+  // navigateTo: an existing record closed in a dialog resolves with no value.
   await page.evaluate(() => { window.saved = Xrm.Navigation.navigateTo({ pageType: 'entityrecord', entityName: 'x_item', entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { target: 2, position: 2, title: 'Side record' }).then(result => ({ result: result ?? null })); });
   await page.frameLocator('dialog.page-dialog.side iframe').getByRole('heading', { name: 'Silver', exact: true }).waitFor();
   await page.getByRole('dialog', { name: 'Side record' }).getByRole('button', { name: 'Close' }).first().click();
@@ -114,7 +115,7 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
   assert.match(saved.savedEntityReference[0].id, /^\{[0-9a-f-]{36}\}$/);
   assert.deepEqual(await page.evaluate(() => Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_missing_page' }).then(() => 'opened', error => [error.code, error.message])),
     ['CustomPageNotFound', 'Custom page x_missing_page is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).']);
-  // A canvas app the host holds is still not a page of this app unless the app includes it (RC4a-10).
+  // A canvas app the host holds is still not a page of this app unless the app includes it.
   assert.deepEqual(await page.evaluate(() => Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_other_page' }).then(() => 'opened', error => [error.code, error.message])),
     ['CustomPageNotFound', 'Custom page x_other_page is not a canvas app component of this app (MD_NAV_CUSTOM_PAGE).']);
   // Inline with record context: the page's formulas read recordId and entityName through Param.
@@ -139,8 +140,8 @@ test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async
   await page.frameLocator('.side-pane iframe').getByText('Silver', { exact: true }).waitFor();
   assert.equal(await pane.isVisible(), true);
   assert.equal(await page.evaluate(() => Xrm.App.sidePanes.getAllPanes().getLength()), 1);
-  // Learn sidePanes.state: 0 collapsed, 1 expanded; the value read is the value set.
-  // Learn formContext.getControl: a header column is the control header_<column>; it is not rendered locally, so changes refuse by name.
+  // sidePanes.state: 0 collapsed, 1 expanded; the value read is the value set.
+  // formContext.getControl: a header column is the control header_<column>; it is not rendered locally, so changes refuse by name.
   assert.deepEqual(await page.evaluate(() => { const control = Xrm.Page.getControl('header_x_quantity'); let refused; try { control.setVisible(false); } catch (error) { refused = error.message; }
     return [control.getName(), control.getAttribute().getName(), Xrm.Page.getAttribute('x_quantity').controls.getLength(), /header control header_x_quantity/.test(refused)]; }), ['header_x_quantity', 'x_quantity', 2, true]);
   assert.deepEqual(await page.evaluate(() => { const panes = Xrm.App.sidePanes, before = panes.state; panes.state = 0; const collapsed = panes.state; panes.state = 1; return [before, collapsed, panes.state]; }), [1, 0, 1]);

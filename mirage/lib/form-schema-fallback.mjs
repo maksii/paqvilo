@@ -4,7 +4,7 @@ import { advancedFormGraph } from './advanced-form-graph.mjs';
 
 /*
  * Local layouts for exported basic and advanced forms whose Dataverse systemforms are absent
- * from the configured solutions . Used by the form renderer (lib/platform.mjs) and
+ * from the configured solutions. Used by the form renderer (lib/platform.mjs) and
  * the native form service (lib/form-service.mjs) so approximated forms render and submit.
  */
 const canonicalId = (value) =>

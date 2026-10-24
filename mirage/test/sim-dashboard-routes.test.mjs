@@ -1,5 +1,5 @@
-// GET /_sim/api/dashboard on both hosts: the D5 payload shape, node ids and statuses, no credential material, memoised
-// nodes, and counters that move after a Web API create, a web hook that is not contacted and a storage put. Invented data only.
+// GET /_sim/api/dashboard on both hosts: the payload shape, node ids and statuses, no credential material, memoised
+// nodes, and counters that move after a Web API create, a web hook that is not contacted and a storage put.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -66,7 +66,7 @@ function assertShape(body) {
   assert.equal(typeof body.docs.simAdministration.path, 'string');
 }
 
-test('standalone dashboard: D5 shape, safe payload, memoised nodes and moving counters', async t => {
+test('standalone dashboard: payload shape, no credential material, memoised nodes and moving counters', async t => {
   const sim = await standalone(t);
   const dashboard = async () => json(await fetch(`${sim.url}/_sim/api/dashboard`));
   const first = await dashboard();
@@ -86,7 +86,7 @@ test('standalone dashboard: D5 shape, safe payload, memoised nodes and moving co
 
   // A Web API create moves dataverseRequests.
   const registration = await json(await fetch(`${sim.url}/_sim/api/dataverse/applications`, { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: 'Invented dashboard client', roles: ['System Administrator'] }) }), 201);
   const token = await json(await fetch(`${sim.dataverse.authority}/oauth2/v2.0/token`, { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: registration.secret, scope: `${sim.dataverse.origin}/.default` }) }));
@@ -112,7 +112,7 @@ test('standalone dashboard: D5 shape, safe payload, memoised nodes and moving co
 
   const after = await dashboard();
   assertShape(after);
-  assertSafe(JSON.stringify(after), sim.state().csrf);
+  assertSafe(JSON.stringify(after), sim.csrf);
   assert.equal(after.activity.dataverseRequests.total, 1, 'only the data-plane create counts');
   assert.ok(after.activity.dataverseRequests.other >= 1, 'the token request counts as other');
   assert.ok(after.activity.dataverseRequests.recent.some(item => item.method === 'POST' && item.path.endsWith('/x_widgets')));
@@ -133,7 +133,7 @@ test('standalone dashboard: D5 shape, safe payload, memoised nodes and moving co
   const hooks = Object.fromEntries((await dashboard()).nodes.filter(node => node.id.startsWith('external:webhook:')).map(node => [node.label, [node.status, node.detail.loopback]]));
   assert.deepEqual(hooks, { 'hooks.example.test': ['declared', false], 'api.localhost': ['listening', true], '127.0.0.2': ['listening', true], localhost: ['declared', false] });
 
-  const refused = await fetch(`${sim.url}/_sim/api/dashboard`, { method: 'POST', headers: { 'x-sim-csrf': sim.state().csrf } });
+  const refused = await fetch(`${sim.url}/_sim/api/dashboard`, { method: 'POST', headers: { 'x-sim-csrf': sim.csrf } });
   assert.equal(refused.status, 405);
   assert.equal(refused.headers.get('allow'), 'GET, HEAD');
   const head = await fetch(`${sim.url}/_sim/api/dashboard`, { method: 'HEAD' });
@@ -164,7 +164,7 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
   assert.equal((await fetch(`${sim.url}/`)).status, 200);
   const body = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assertShape(body);
-  assertSafe(JSON.stringify(body), sim.state().csrf);
+  assertSafe(JSON.stringify(body), sim.csrf);
   const ids = body.nodes.map(node => node.id);
   for (const id of ['client:browser', 'host:portal', 'host:identity-provider', 'host:setup', 'host:admin', 'bridge:live', 'app:pcf', 'org:store'])
     assert.ok(ids.includes(id), id);
@@ -174,7 +174,8 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
   assert.ok(body.activity.audit && body.activity.diagnostics.byCode);
   assert.equal(body.configuration.settingsKeys, null);
   // requests.total counts every portal request since start; the ring keeps the last 300.
-  for (let index = 0; index < 300; index += 1) await (await fetch(`${sim.url}/x-invented-missing`)).arrayBuffer();
+  for (let batch = 0; batch < 6; batch += 1)
+    await Promise.all(Array.from({ length: 50 }, async () => (await fetch(`${sim.url}/x-invented-missing`)).arrayBuffer()));
   const busy = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assert.equal(busy.activity.requests.retained, 300);
   assert.ok(busy.activity.requests.total >= 301, `total ${busy.activity.requests.total}`);

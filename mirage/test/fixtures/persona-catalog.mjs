@@ -27,7 +27,7 @@ export async function personaFixture(t, {count=60, curated=50, groupCount=5, ...
   const app=await createSimulator({...fixture,initial,packs:[pack],watch:false,...options});
   fixture.onCleanup(()=>app.close());
   const call=async(route,method='GET',body,headers={})=>{
-    const response=await fetch(app.url+'/_sim/api'+route,{method,headers:{'content-type':'application/json','x-sim-csrf':app.state().csrf,...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
+    const response=await fetch(app.url+'/_sim/api'+route,{method,headers:{'content-type':'application/json','x-sim-csrf':app.csrf,...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
     return {response,value:await response.json()};
   };
   return {...fixture,app,call,initial,pack};

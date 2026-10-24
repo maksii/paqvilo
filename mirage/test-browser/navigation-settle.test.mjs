@@ -1,11 +1,15 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { awaitWritesBeforeDocument, DOCUMENT_REQUEST_PATTERN } from "../lib/navigation-settle.mjs";
 
-// Synthetic loopback server: page /a starts a slow script write (PATCH /write) and a slow
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
+// Page /a starts a slow script write (PATCH /write) and a slow
 // read (GET /read) on load and links to /b; it can also issue a synchronous request that is
 // answered with a redirect. The server records whether each response finished or the client
 // closed it first.
@@ -41,9 +45,8 @@ async function fixture(t, { writeDelay = 400, pause = true, timeout = 10000 } = 
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
   const page = await browser.newPage();
+  t.after(() => page.context().close());
   // The runner's bookkeeping: CDP Network records and paused document requests.
   const cdp = await page.context().newCDPSession(page);
   const records = new Map();
@@ -106,7 +109,8 @@ test("without the pause the browser abandons the write; the wait itself is bound
   });
   await plain.page.click("#next");
   await plain.page.waitForURL(plain.origin + "/b");
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // The server records the abandoned response when the client closes it.
+  while (!plain.outcomes.some((row) => row.path === "/write")) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(plain.outcomes.find((row) => row.path === "/write"), { path: "/write", finished: false });
 
   const bounded = await fixture(t, { writeDelay: 5000, timeout: 300 });

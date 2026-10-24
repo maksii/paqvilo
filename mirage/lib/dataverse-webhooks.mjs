@@ -1,6 +1,6 @@
 import { organizationRecord } from './organization-context.mjs';
-// Webhooks (Learn: use-webhooks and register-web-hook). A plug-in step whose eventhandler is a service endpoint with contract 8
-// (Webhook) POSTs the RemoteExecutionContext JSON to the endpoint URL, with the headers and authentication Learn documents.
+// Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
+// RemoteExecutionContext JSON to the endpoint URL, with the documented headers and authentication.
 //
 // LOOPBACK ONLY: Mirage contacts an endpoint only when its URL host is localhost, 127.0.0.0/8, ::1, or a name every address of
 // which resolves to loopback (loopbackFetch). Any other URL is never contacted: the step records WEBHOOK_NOT_CONTACTED and the
@@ -8,10 +8,9 @@ import { organizationRecord } from './organization-context.mjs';
 // unavailable"), an async step gets a Failed System Job. Redirects are refused: a loopback endpoint that answers 3xx fails the step instead of
 // being re-POSTed to another host (loopbackFetch). Contracts 2 (Queue), 5 (Topic) and 6 (Queue Persistent) are sent to the message
 // bus (message-bus.mjs) when a messaging provider is configured and providers.messaging.endpoints maps the endpoint; without a
-// provider they are skipped as before. Every other contract (OneWay, Rest, TwoWay, Event Hub, Event Grid, ...) is not simulated.
+// provider they are skipped. Every other contract (OneWay, Rest, TwoWay, Event Hub, Event Grid, ...) is not simulated.
 //
-// A synchronous step runs inside the operation and fails it when its post fails (Learn: write-custom-azure-aware-plugin, "For a
-// synchronous registered plug-in, an exception is returned"; use-webhooks). On the asynchronous pipeline (every HTTP-driven write:
+// A synchronous step runs inside the operation and fails it when its post fails. On the asynchronous pipeline (every HTTP-driven write:
 // data.mjs createRecordAsync) the post is awaited in process (send). On the synchronous SDK drive (a plug-in's own SDK call) the
 // post runs on the synchronous I/O bridge (sync-io-bridge.mjs, a worker thread; sync). Asynchronous steps run after commit
 // (plugin-async.mjs afterCommit).
@@ -29,7 +28,7 @@ import { recordToSdkEntity } from './plugin-clr.mjs';
 
 const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 const WEBHOOK_CONTRACT = 8;
-const MAX_BODY = 256 * 1024; // Learn: above 256 KB four optional properties are removed and the size header is sent.
+const MAX_BODY = 256 * 1024; // above 256 KB four optional properties are removed and the size header is sent
 const NS = 'http://schemas.microsoft.com/xrm/2011/Contracts';
 const same = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
 const lookup = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? null;
@@ -47,7 +46,7 @@ export function isLoopbackUrl(text) {
   }
 }
 
-// The endpoint's documented failure. Learn: a failed synchronous webhook shows the "Endpoint unavailable" dialog. The code is unverified (LC-P6b).
+// A failed synchronous webhook shows the documented "Endpoint unavailable" error; the inner code is a guess.
 const unavailable = () => new DataError('Endpoint unavailable', 400, 'InvalidRequest', { innerCode: '0x80040265' });
 
 // Whether every address a URL's host resolves to is loopback (127.0.0.0/8 or ::1). localhost and IP literals answer without a
@@ -111,8 +110,8 @@ function fetchAtAddresses(url, init, addresses) {
   });
 }
 
-// DataContract JSON (Learn's sample): collections are {key, value} arrays and entities or references carry __type.
-// Typed values follow the SDK's contract namespace. unverified: the money, option set and collection shapes (LC-P6c).
+// DataContract JSON: collections are {key, value} arrays and entities or references carry __type. Typed values follow the
+// SDK's contract namespace; the money, option set and collection shapes are guesses.
 const pairs = (object) => Object.entries(object ?? {}).map(([key, value]) => ({ key, value: dataContract(value) }));
 function dataContract(value) {
   if (value == null || typeof value !== 'object') return value ?? null;
@@ -125,12 +124,12 @@ function dataContract(value) {
     case 'DateTime': { const ms = Date.parse(value.value); return Number.isFinite(ms) ? `/Date(${ms})/` : null; }
     case 'Guid': return value.value == null ? null : String(value.value);
     case 'Decimal': case 'Double': case 'Int64': return Number(value.value);
-    // ponytail: any other typed collection is its values in order; the native shape is LC-P6c.
+    // ponytail: any other typed collection is its values in order; the native shape is not known.
     default: return Array.isArray(value.values) ? value.values.map(dataContract) : null;
   }
 }
 
-/** The RemoteExecutionContext of one step run, with the 27 properties in Learn's sample order (ParentContext is null:
+/** The RemoteExecutionContext of one step run, with the 27 properties in the documented sample order (ParentContext is null:
  * nested contexts are not built). */
 export function remoteExecutionContext(store, facts) {
   const { item, entity, operation, stage, target = {}, record, previous, identity, depth, correlationId, asyncExecution } = facts;
@@ -150,16 +149,15 @@ export function remoteExecutionContext(store, facts) {
     Depth: depth,
     InitiatingUserId: initiating,
     InputParameters: inputs,
-    // Learn (RemoteExecutionContext.IsExecutingOffline): true only for the offline Outlook client, never for a server pipeline.
+    // True only for the offline Outlook client, never for a server pipeline.
     IsExecutingOffline: false,
-    // Learn (scalable-customization-design/database-transactions, Plug-in transaction use summary): a PreValidation step joins a
-    // transaction only when one already exists, PreOperation and PostOperation steps run inside it, asynchronous steps never do.
-    // store.pluginInTransaction is that pipeline state (data.mjs exportedPluginPhase keeps an inherited one at stage 10).
+    // A PreValidation step joins a transaction only when one already exists, PreOperation and PostOperation steps run inside
+    // it, asynchronous steps never do. store.pluginInTransaction is that pipeline state (data.mjs exportedPluginPhase keeps an inherited one at stage 10).
     IsInTransaction: !asyncExecution && store.pluginInTransaction === true,
     IsOfflinePlayback: false,
-    IsolationMode: 1, // as Learn's sample
+    IsolationMode: 1, // as in the documented sample
     MessageName: messageNameOf(operation),
-    Mode: asyncExecution ? 1 : 0, // Learn use-webhooks sample: an asynchronous step's delivery carries Mode 1
+    Mode: asyncExecution ? 1 : 0,
     OperationCreatedOn: `/Date(${(store.clock ?? systemClock).now()})/`,
     OperationId: (store.ids ?? systemIds).uuid(),
     OrganizationId: org.organizationid ?? null,
@@ -179,8 +177,8 @@ export function remoteExecutionContext(store, facts) {
   };
 }
 
-// The authentication values. Learn does not document the stored format (LC-P6a): XML settings as the Plug-in Registration Tool
-// writes them, a JSON object, or key/value text. Plain text is one value (the WebhookKey code).
+// The authentication values. The stored format is not documented: XML settings as the Plug-in Registration Tool writes them,
+// a JSON object, or key/value text. Plain text is one value (the WebhookKey code).
 function authPairs(text) {
   const value = String(text ?? '').trim();
   try {
@@ -195,14 +193,14 @@ function authPairs(text) {
   });
 }
 
-// The POST for one step run: the URL, Learn's headers, the JSON body, and the endpoint's authentication as { type, value }
+// The POST for one step run: the URL, the documented headers, the JSON body, and the endpoint's authentication as { type, value }
 // (withAuth applies it).
 function requestOf(store, endpoint, facts) {
   const url = new URL(endpoint.url);
   const org = organizationRecord(store) ?? {};
   const headers = {
     'content-type': 'application/json',
-    'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''), // Learn: the environment's domain name; unverified fallback to the organization name
+    'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''), // the environment's domain name; the fallback to the organization name is a guess
     'x-ms-dynamics-entity-name': facts.entity ?? '',
     'x-ms-dynamics-request-name': messageNameOf(facts.operation),
     'x-ms-correlation-request-id': facts.correlationId,
@@ -212,13 +210,13 @@ function requestOf(store, endpoint, facts) {
   if (Buffer.byteLength(body) > MAX_BODY) {
     for (const key of ['ParentContext', 'InputParameters', 'PreEntityImages', 'PostEntityImages']) delete context[key];
     body = JSON.stringify(context);
-    headers['x-ms-dynamics-msg-size-exceeded'] = 'true'; // unverified: Learn gives the header's presence, not its value
+    headers['x-ms-dynamics-msg-size-exceeded'] = 'true'; // only the header's presence is documented; the value is a guess
   }
   return { url: url.toString(), headers, body, auth: { type: Number(endpoint.authtype), value: endpoint.authvalue ?? '' } };
 }
 
-/** The request as it is sent: the endpoint's authentication applied to the URL or headers (Learn register-web-hook: WebhookKey
- * ?code=, HttpHeader, HttpQueryString). The one rule for every drive: the asynchronous pipeline applies it in process; the
+/** The request as it is sent: the endpoint's authentication applied to the URL or headers (WebhookKey ?code=, HttpHeader,
+ * HttpQueryString). The one rule for every drive: the asynchronous pipeline applies it in process; the
  * synchronous I/O bridge worker applies it after resolving the value's env: reference itself (sync-io-worker.mjs), so no
  * authentication value crosses the thread boundary. */
 export function withAuth({ url, headers, body, auth = null }) {
@@ -235,7 +233,7 @@ export function withAuth({ url, headers, body, auth = null }) {
 // connection) may have delivered the POST: the error says so with details.indeterminate.
 const NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL']);
 
-// One delivery with Learn's retry: 502, 503 and 504 get exactly one more attempt. Each attempt has the 60-second timeout. The
+// One delivery with the documented retry: 502, 503 and 504 get exactly one more attempt. Each attempt has the 60-second timeout. The
 // response body is ignored, so only the status is returned. send is loopbackFetch (in process and in the bridge worker).
 export async function deliver({ url, headers, body }, send) {
   for (let attempt = 1; ; attempt++) {
@@ -268,7 +266,7 @@ const postSync = ({ auth, ...request }) => {
 };
 const postAsync = (request) => deliver(withAuth(request), loopbackFetch).then((status) => ({ status }), (error) => ({ status: -1, indeterminate: indeterminate(error) }));
 
-// Queue (2), Topic (5) and Queue Persistent (6): the contracts the message bus carries (Learn: serviceendpoint contract).
+// Queue (2), Topic (5) and Queue Persistent (6): the serviceendpoint contracts the message bus carries.
 const BUS_CONTRACTS = new Set([2, 5, 6]);
 const BUS_ENTITY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,259}(?:\/[A-Za-z0-9._~-]{1,260}){0,2}$/; // message-bus.mjs ENTITY
 
@@ -305,15 +303,16 @@ const externalBus = (target) => target?.bus?.descriptor?.kind === 'servicebus-em
  *   outside 2xx ("Endpoint unavailable") or a bus send fails (ServiceEndpointFailed naming the step). A step the simulator
  *   cannot contact (a non-loopback or missing endpoint) is recorded as WEBHOOK_NOT_CONTACTED and the operation continues.
  *   A post that cannot be recalled (a web hook, an emulator send) and whose operation later rolls back is recorded as
- *   SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK (Learn: work-data-azure-solution).
- * - afterCommit() resolves to { canceled: message } for a contract other than 8 and for an endpoint it did not contact (the
+ *   SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK.
+ * - afterCommit() sends a bus contract to its bus; it resolves to { canceled: message } for any other contract than 8 and for
+ *   an endpoint it did not contact (the
  *   caller writes a Canceled System Job: an uncontacted step never counts or reports as delivered), and
  *   rejects for a contacted endpoint that answers outside 2xx (a Failed System Job). Otherwise it resolves to undefined.
  * Diagnostics carry the endpoint host only, never its path, query or authvalue.
  */
 export function serviceEndpointDelivery(store, { bus = null, messaging = bus } = {}) {
   const endpointOf = (item) => store.tableRows('serviceendpoint').find((row) => same(row.serviceendpointid, item.serviceEndpointId)) ?? null;
-  const CANCELED = 'Simulator: endpoint not delivered (loopback webhooks only)'; // the brief's documented-shape message
+  const CANCELED = 'Simulator: endpoint not delivered (loopback webhooks only)';
   // A step whose endpoint was not contacted never reports delivery: its System Job is Canceled with this message.
   const NOT_CONTACTED = 'Simulator: endpoint not contacted (loopback webhooks only)';
   // Dashboard counters (runtime-counters.mjs): webhooks.delivered (2xx), webhooks.failed (other status), webhooks.notContacted.
@@ -337,9 +336,9 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
   };
   // The bus that carries this step's endpoint (contract 2, 5 or 6 with a configured provider), else null.
   const busOf = (endpoint) => (endpoint && BUS_CONTRACTS.has(Number(endpoint.contract)) ? messagingOf(messaging) : null);
-  // One message per step run: the RemoteExecutionContext body with Learn's listener properties (organization, calling and initiating
+  // One message per step run: the RemoteExecutionContext body with the documented listener properties (organization, calling and initiating
   // user, table, request name). An unmapped endpoint is never dropped silently: SERVICE_ENDPOINT_UNMAPPED and a thrown error (a sync
-  // step fails the operation, an async step's System Job is Failed). unverified: the native property names are Learn's claim URIs.
+  // step fails the operation, an async step's System Job is Failed). The native property names (claim URIs) are not reproduced.
   const messageFor = (facts, endpoint, provider) => {
     const target = serviceEndpointTarget(provider, endpoint);
     if (!target) {
@@ -367,8 +366,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
     const { target, context, properties } = messageFor(facts, endpoint, provider);
     return target.bus.send(target.entity, context, { messageId: context.OperationId, properties, nested });
   };
-  // A synchronous step's failed bus send fails its operation. Learn (write-custom-azure-aware-plugin, Handle a failed Service Bus
-  // post): "For a synchronous registered plug-in, an exception is returned." unverified: the native error code, status and text.
+  // A synchronous step's failed bus send fails its operation; the native error code, status and text are guesses.
   const sendFailed = (facts, endpoint, cause) => {
     if (cause instanceof DataError && cause.code === 'InvalidRequest') return cause; // unmapped or refused before any send (diagnosed there)
     const step = facts.item.name ?? facts.item.id, name = endpoint.name ?? endpoint.serviceendpointid;
@@ -376,8 +374,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
     return new DataError(`Synchronous service endpoint step '${step}' could not post to service endpoint '${name}': ${String(cause?.message ?? cause)}`, 400, 'ServiceEndpointFailed', { innerCode: '0x80040265' });
   };
   // A post that left the process (a web hook, an emulator send) cannot be recalled: when the operation rolls back afterwards, say
-  // so. Learn (work-data-azure-solution): "If an error occurs after the request was sent, the data operation will rollback but
-  // the request sent the the Azure service cannot be recalled."
+  // so (https://learn.microsoft.com/power-apps/developer/data-platform/work-data-azure-solution).
   // A post that got no answer after it may have been written (indeterminate: the bridge deadline, the 60-second abort, a dropped
   // connection) is noted the same way: the receiver may still have it (SERVICE_ENDPOINT_SEND_INDETERMINATE).
   const sentBeforeRollback = (facts, target, { indeterminate: unknown = false } = {}) => store.onRollback?.((error) => facts.diagnostic?.({

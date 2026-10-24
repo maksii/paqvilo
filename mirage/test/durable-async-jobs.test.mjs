@@ -114,7 +114,7 @@ test('settle waits for durable jobs on the real scheduler', async t => {
   await backend.settle();
   assert.equal(log.length, 1);
   assert.equal(store.tableRows('x_audit').length, 1);
-  assert.ok(jobs(store).every(row => row.statecode === 3));
+  assert.deepEqual(jobs(store).map(row => [row.statecode, row.statuscode]), [[3, 30]]);
   assert.equal(backend.asyncPluginRunner.status().pending, 0);
 });
 
@@ -152,7 +152,7 @@ const jobRow = (id, kind, columns, payload) => ({ asyncoperationid: id, operatio
   data: JSON.stringify({ kind, ...payload, event: encodeEvent({ entity: 'x_widget', operation: 'create', row: { x_widgetid: '40000000-0000-4000-8000-000000000001', x_name: 'Saved' },
     target: { x_name: 'Saved' }, submittedAttributes: ['x_name'] }) }) });
 
-test('R3-01: a web hook job left Locked by an unfinished run is Ready again after a restart and runs', async t => {
+test('a web hook job left Locked by an unfinished run is recovered once after a restart and fails when its registration is gone', async t => {
   const file = await stateFile(t);
   const first = await runtime(t, { file, scheduler: createScheduler({ clock: fixedClock(), manual: true }), fresh: true });
   const id = '77777777-7777-4777-8777-000000000010';
@@ -173,11 +173,11 @@ test('R3-01: a web hook job left Locked by an unfinished run is Ready again afte
   assert.equal(second.notes.filter(note => note.code === 'COMMITTED_JOB_RECOVERED').length, 1, 'a finished job is not recovered again');
 });
 
-test('R3-02: a job whose transaction rolls back is tried three times, then finished Failed', async t => {
+test('a job whose transaction rolls back is tried three times, then finished Failed', async t => {
   let failCommit = false;
   const { store, backend, log, notes } = await runtime(t, { file: null, fresh: true, handler: () => { failCommit = true; } });
   const transact = store.transact.bind(store);
-  // An invented persistence failure: the transaction that ran the plug-in handler rejects, so its claim rolls back.
+  // A simulated persistence failure: the transaction that ran the plug-in handler rejects, so its claim rolls back.
   store.transact = (fn, options) => transact(async () => { const result = await fn(); if (failCommit) { failCommit = false; throw new Error('Invented commit failure'); } return result; }, options);
   await store.create('x_widget', { x_name: 'Poison' }, { admin: true });
   await backend.settle();
@@ -193,7 +193,7 @@ test('R3-02: a job whose transaction rolls back is tried three times, then finis
   assert.equal(log.length, 3);
 });
 
-test('R3-08: after the backend closes, the store keeps its closed scheduler and committed jobs run nothing', async t => {
+test('after the backend closes, the store keeps its closed scheduler and committed jobs run nothing', async t => {
   const { store, close } = await runtime(t, { file: null, fresh: true });
   await close();
   const closedScheduler = store.scheduler;
@@ -210,7 +210,7 @@ test('R3-08: after the backend closes, the store keeps its closed scheduler and 
   assert.equal(store.scheduler.status().closed, true);
 });
 
-test('R3-07: closing one organization leaves a second organization over the same store scheduling its jobs', async t => {
+test('closing one organization leaves a second organization over the same store scheduling its jobs', async t => {
   const store = await new DataStore({ file: null, state: initialState() }).init();
   const create = () => createOrganizationRuntime({ store, settings: dataverseSettings({ enabled: false }) });
   const first = await create(), second = await create();

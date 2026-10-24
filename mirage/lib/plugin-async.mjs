@@ -32,11 +32,11 @@ function claimJob(store,id,item,systemJobs,diagnostic){
  return{finish(error){
   const{rows,index}=live();if(index<0)return;
   if(!systemJobs()||!error&&autodelete){store.removeRow('asyncoperation',rows,index);return;}
-  // unverified: LC-P7c. friendlymessage carries the plug-in's own message; native's user-facing text is not captured.
+  // friendlymessage carries the plug-in's own message; the native user-facing text is not known.
   const message=error?String(error.message??error):null;
   Object.assign(rows[index],error?{statecode:3,statuscode:31,completedon:now(),message,friendlymessage:message,errorcode:errorNumber(error)}:{statecode:3,statuscode:30,completedon:now()});
  },
- // P6: a web hook the simulator cannot deliver in any form is Canceled (statuscode 32), with the message as its reason.
+ // A web hook the simulator cannot deliver in any form is Canceled (statuscode 32), with the message as its reason.
  cancel(message){const{rows,index}=live();if(index<0)return;if(!systemJobs()){store.removeRow('asyncoperation',rows,index);return;}Object.assign(rows[index],{statecode:3,statuscode:32,completedon:now(),message,friendlymessage:message});}};
 }
 
@@ -44,11 +44,11 @@ function claimJob(store,id,item,systemJobs,diagnostic){
  * Each SDK write is independent. A later job failure cannot reject the original
  * caller or undo completed SDK requests. This is not the Dataverse async service.
  * Every accepted run is a Ready asyncoperation row run by the store's one durable job runner (committed-work.mjs); the
- * row stays after the run while systemJobs() is true (the Dataverse API is on, P7). */
+ * row stays after the run while systemJobs() is true (the Dataverse API is on). */
 export function createAsyncPluginRunner({store,items,handlers,runtimes,webhooks=null,diagnostic=()=>{},limits={},acceptedChains=new Set(),systemJobs=()=>false}){
  const runs=new Map(),own=new Set(),jobs=committedJobs(store);let closed=false,closing=false,stopSequence=Infinity;
  const itemOf=id=>items().find(item=>sameId(item.id,id))??null;
- // P6: an asynchronous web hook is delivered after commit. Its System Job is Locked while the POST runs, then Succeeded, Failed, or Canceled
+ // An asynchronous web hook is delivered after commit. Its System Job is Locked while the POST runs, then Succeeded, Failed, or Canceled
  // (32: an endpoint the simulator does not contact, with a WEBHOOK_NOT_CONTACTED diagnostic, or a contract other than 8).
  const deliverWebhook=async({id,payload:{itemId,chain},event})=>{
   const item=itemOf(itemId);

@@ -7,7 +7,7 @@ const ORIGIN = 'http://127.0.0.1:8080';
 const B = 'batch_80dd1615-2a10-428a-bb6f-0e559792721f';
 const CRLF = '\r\n';
 
-// The request sample from webapi-contract.md section 7, with CRLF framing.
+// A documented $batch request sample, with CRLF framing.
 const SAMPLE = [
   `--${B}`,
   'Content-Type: application/http',

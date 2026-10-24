@@ -15,7 +15,7 @@ export const compactNativeControlId = (value) => String(value ?? "")
 export function nativeFormControlIds(kind, id, { modal = false, pageControl = false } = {}) {
   const N = compactNativeControlId(id);
   // Legacy ASPX page templates nest the content master in the site master: the page controls sit
-  // under ctl00$ctl00$ (live bound-entityform and bound-webform pages).
+  // under ctl00$ctl00$.
   const prefix = "ctl00$ctl00$ContentContainer$MainContent$EntityControls$";
   if (kind === "webform") return pageControl
     ? { wrapper: "WebFormControl", panel: "WebFormPanel", view: "EntityFormView", names: `${prefix}WebFormControl$EntityFormView$`, buttons: `${prefix}WebFormControl$` }
@@ -49,7 +49,7 @@ export const encodeNativeViewState = (state) => "/wE" + Buffer.from(JSON.stringi
 /**
  * The anti-forgery key a page's __VIEWSTATE carries (k), as ASP.NET binds ViewState to the
  * visitor (ViewStateUserKey): a WebForms postback then posts the page's own fields only, without
- * a separate __RequestVerificationToken (live postback bodies). Null for any other value.
+ * a separate __RequestVerificationToken. Null for any other value.
  */
 export function nativeViewStateKey(text) {
   if (typeof text !== "string" || text.length > 262144 || !text.startsWith("/wE")) return null;

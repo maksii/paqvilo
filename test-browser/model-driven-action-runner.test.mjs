@@ -1,5 +1,5 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
@@ -19,6 +19,10 @@ window.Xrm={Utility:{getGlobalContext:()=>({getClientUrl:()=>location.origin,get
 const host=document.createElement('div');host.id='paqvilo-model-inspector';document.body.append(host);host.__paqModelActions={token:'invented-owned-session',results:[],receive(requestId,result){this.results.push({requestId,result})}};
 </script>`;
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions()); });
+after(() => browser?.close());
+
 async function fixture(t) {
   const requests = [], waits = new Map();
   const server = http.createServer((request, response) => {
@@ -35,12 +39,12 @@ async function fixture(t) {
     response.writeHead(404).end('{}');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch(browserLaunchOptions());
+  const origin = `http://127.0.0.1:${server.address().port}`, context = await browser.newContext();
   ownedFixture(t).add(async () => { await drainFixture([...waits.values()].map(wait => async () => {wait.release?.();})); });
-  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
-  const page = await browser.newPage(); await page.goto(origin + '/main.aspx?appid=invented-app&pagetype=entityrecord&etn=x_person&id=' + recordId);
+  const page = await context.newPage(); await page.goto(origin + '/main.aspx?appid=invented-app&pagetype=entityrecord&etn=x_person&id=' + recordId);
   let sequence = 0;
   const run = async (action, params = {}, extra = {}) => { const input = validateModelDrivenAction(action, params), requestId = `request-${++sequence}`; const ack = await page.evaluate(runModelDrivenAction, { origin, token: 'invented-owned-session', ...input, requestId, cloud: { maker: 'https://maker.example.invalid', admin: 'https://admin.example.invalid' }, ...extra }); assert.deepEqual(ack, { accepted: true, requestId }); assert.doesNotMatch(JSON.stringify(ack), /PRIVATE_|aaaaaaaa|bbbbbbbb/); return page.evaluate(id => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.find(item => item.requestId === id)?.result, requestId); };
   return { page, origin, requests, waits, run };
@@ -66,7 +70,9 @@ test('native reads, copy links, choices, source-safe table processes and navigat
   assert.deepEqual(processes.links.map(link => { const url = new URL(link.url); assert.equal(url.origin, origin); assert.equal(url.searchParams.get('pagetype'), 'entityrecord'); return [url.searchParams.get('etn'), url.searchParams.get('id')]; }), [['workflow', formId], ['customapi', environmentId]]);
   assert.equal((await run('form:open-editor')).status, 'ok');
   await run('form:open-web-api'); await run('navigation:open-record-by-id', { entity: 'x_person', id: recordId }); await run('navigation:new-record', { entity: 'x_person' });
-  for (const action of MODEL_DRIVEN_ACTIONS.filter(action => action.id.startsWith('navigation:') && !['navigation:open-record-by-id', 'navigation:new-record', 'navigation:pin-to-side-panel', 'navigation:open-mobile-client'].includes(action.id))) assert.equal((await run(action.id, action.inputs.length ? { entity: 'x_person' } : {})).status, 'ok', action.id);
+  const plainNavigation = MODEL_DRIVEN_ACTIONS.filter(action => action.id.startsWith('navigation:') && !['navigation:open-record-by-id', 'navigation:new-record', 'navigation:pin-to-side-panel', 'navigation:open-mobile-client'].includes(action.id));
+  assert.ok(plainNavigation.length > 0);
+  for (const action of plainNavigation) assert.equal((await run(action.id, action.inputs.length ? { entity: 'x_person' } : {})).status, 'ok', action.id);
   await run('navigation:open-mobile-client'); await run('navigation:pin-to-side-panel');
   const opened = await page.evaluate(() => nativeFixture.opened); assert.ok(opened.some(item => item.url?.includes('/s/' + solutionId + '/entity/x_person/form/edit/' + formId))); assert.ok(opened.some(item => item.url?.includes('/x_people('))); assert.ok(opened.some(item => item.pane?.canClose));
   assert.equal(requests.some(request => request.method !== 'GET'), false);

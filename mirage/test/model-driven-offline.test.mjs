@@ -1,7 +1,5 @@
 // Mobile offline end to end (model-driven/offline.mjs): profile parsing, downsync through the records layer as the staff
 // user, Xrm.WebApi.offline reads and writes against the session copy, upsync on going online and conflict handling.
-// Learn: entities/mobileofflineprofileitem, power-apps/mobile/setup-mobile-offline, mobile-offline-guidelines,
-// resolve-sync-conflicts, clientapi xrm-webapi/offline and getglobalcontext/client.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -207,8 +205,8 @@ test('without conflict detection the offline change wins; with it the server row
   // The running host serves the route: CSRF on POST, an unknown app is refused.
   const post = (headers, body) => fetch(sim.url + '/_apps/api/offline', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
   assert.equal((await post({}, { app: APP, action: 'sync' })).status, 403);
-  assert.equal((await (await post({ 'x-sim-csrf': sim.state().csrf }, { app: '77777777-7777-4777-8777-777777777700', action: 'sync' })).json()).error.code, 'ModelDrivenRequestInvalid');
-  assert.deepEqual(await (await fetch(sim.url + '/_sim/api/model-driven/offline', { headers: { 'x-sim-csrf': sim.state().csrf } })).json(), { items: [] });
+  assert.equal((await (await post({ 'x-sim-csrf': sim.csrf }, { app: '77777777-7777-4777-8777-777777777700', action: 'sync' })).json()).error.code, 'ModelDrivenRequestInvalid');
+  assert.deepEqual(await (await fetch(sim.url + '/_sim/api/model-driven/offline', { headers: { 'x-sim-csrf': sim.csrf } })).json(), { items: [] });
   // The device copy is refreshed from the server after the conflict.
   await offline('A',{ action: 'mode', mode: 'offline' });
   assert.equal((await offline('A',{ action: 'retrieve', entity: 'x_item', id: ID(1) })).x_name, 'Second server edit');
@@ -335,7 +333,7 @@ test('a read-only staff user downloads the copy and is refused offline writes wi
   assert.match(refused.error.message, /missing prvCreatex_item privilege/i);
   assert.equal((await offline('C', { action: 'update', entity: 'x_item', id: ID(1), data: { x_name: 'Not allowed' } }, 403)).error.code, '0x80040220');
   assert.deepEqual((await state('C')).queue, []);
-  // Xrm.WebApi.execute is online only (Learn xrm-webapi/online): refused while the app's session is offline.
+  // Xrm.WebApi.execute is online only: refused while the app's session is offline.
   const execute = async who => {
     const res = { setHeader() {}, destroyed: false };
     await handler({ method: 'POST', headers: { 'x-sim-csrf': 'token', host: '127.0.0.1', 'x-mirage-app': APP }, principal: principals[who],

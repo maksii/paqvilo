@@ -151,7 +151,7 @@ export function parseExpression(input, { parseSubquery = null } = {}) {
   return ast;
 }
 
-// ---------------------------------------------------------------- lexer
+// ---- lexer
 
 function scan(sql) {
   const n = sql.length;
@@ -378,7 +378,7 @@ function batchSeparatorAt(sql, start, end) {
   return atLineEnd ? { end: stop, count } : null;
 }
 
-// ---------------------------------------------------------------- parser
+// ---- parser
 
 const peek = (s, k = 0) => s.tokens[s.pos + k];
 const advance = (s) => s.tokens[s.pos++];

@@ -11,7 +11,7 @@
 //   and namespaced calls `Ns.F(a)`, chaining with `;` (also inside function arguments), comments `//` and `/* */`;
 // - operators, loosest first: `As`; `||` `Or`; `&&` `And`; `in` `exactin`; `=` `<>` `<` `<=` `>` `>=`; `&`; `+` `-`;
 //   `*` `/`; prefix `-` `!` `Not`; `^`; postfix `%`.
-// unverified: the precedence ladder is read from the grammar and the open-source parser's order (Learn gives no table); in
+// The precedence ladder is read from the grammar and the open-source parser's order (Learn gives no table); in
 //   particular `-2^2` is -(2^2) = -4 here.
 // Values (Learn, "Data types"): Blank is null; Number and Decimal are JS numbers; Text; Boolean; FxDate (DateTime, Date or
 // Time); FxGuid; records are plain objects; tables are arrays of records; FxError carries Learn error records (Kind,
@@ -34,7 +34,7 @@ import { DataError } from './data-error.mjs';
 import { compareNumeric, decimalParts, decimalText, exactNumeric, isExactNumeric, multiplyNumeric, numericPair } from './exact-numeric.mjs';
 import { FUNCTIONS } from './power-fx-functions.mjs';
 
-// ---- Values ---------------------------------------------------------------------------------------------------------
+// ---- Values
 
 // Learn, "Error handling" (ErrorKind enum values) and the Power Fx SDK ErrorKind enum.
 export const ErrorKind = Object.freeze({
@@ -130,7 +130,7 @@ export function runtimeError(error) {
   return new DataError(String(first.Message ?? kind), 400, 'PowerFxError', { kind, errorKind: first.Kind, errors: error.errors });
 }
 
-// ---- Dates and time zones -----------------------------------------------------------------------------------------
+// ---- Dates and time zones
 
 const DAY = 86_400_000;
 const zoneFormats = new Map();
@@ -165,7 +165,7 @@ export function isoOf(date) {
 
 // Date/time text -> value. ISO 8601 (an offset or Z is honoured; without one the text is wall time in the host zone),
 // en-US M/D/YYYY with an optional time and AM/PM, and what Date.parse reads as a last resort.
-// unverified: Power Fx parses with the language's patterns; only en-US forms are read here.
+// Power Fx parses with the language's patterns; only en-US forms are read here.
 // A calendar date and time of day that exist (no month 13, no February 30, no hour 24): Learn ("DateValue"): text that is
 // not a valid date answers an error, it does not roll over.
 function wallOfParts(year, month, day, hour = 0, minute = 0, second = 0, ms = 0) {
@@ -206,7 +206,7 @@ export function parseDateText(text, kind, timeZone) {
   return fromWall(kind, wall, timeZone);
 }
 
-// ---- Coercion (Learn, "Data types" and the Value, Text and Boolean functions) -----------------------------------------
+// ---- Coercion (Learn, "Data types" and the Value, Text and Boolean functions)
 
 export const round15 = (n) => (Number.isFinite(n) && !Number.isInteger(n) ? Number(n.toPrecision(15)) : n);
 
@@ -263,7 +263,7 @@ export function toNumber(v) {
 // Number text as an exact decimal in a language (Learn "Decimal, Float, and Value functions": "Different languages
 // interpret , and . differently"; the language tag argument, else the current user's language): group separators, a
 // currency symbol, a trailing or leading percent sign, an exponent. The language's decimal and group separators come from
-// Intl.NumberFormat parts. unverified: Power Fx ignores only the current language's currency symbol; $ € £ ¥ are ignored here.
+// Intl.NumberFormat parts. Power Fx ignores only the current language's currency symbol; $ € £ ¥ are ignored here.
 export function numberSeparators(language = 'en-US') {
   let parts;
   try { parts = new Intl.NumberFormat(language || 'en-US', { useGrouping: true }).formatToParts(1234567.5); } catch { return null; }
@@ -402,11 +402,11 @@ export function formatDate(date, format, timeZone, language = 'en-US') {
   return out.join('');
 }
 
-// ---- Comparison ---------------------------------------------------------------------------------------------------
+// ---- Comparison
 
 // Equality (Learn, "Operators"): text is case-sensitive, GUIDs compare case-insensitively (also against GUID text), records
 // by their fields (a related record by its id), blank equals only blank.
-// unverified: Blank() = "" reads false here (IsBlank("") is true by Learn).
+// Not checked against native: Blank() = "" reads false here (IsBlank("") is true by Learn).
 export function equals(a, b, fx = null) {
   if (a instanceof FxRecordRef) a = a.id;
   if (b instanceof FxRecordRef) b = b.id;
@@ -454,7 +454,7 @@ function numericOrder(a, b) {
   return compareNumeric(da ?? 0, db ?? 0);
 }
 
-// ---- Lexer --------------------------------------------------------------------------------------------------------
+// ---- Lexer
 
 export class FxSyntaxError extends DataError {
   constructor(message, position) {
@@ -575,7 +575,7 @@ function lexInterpolation(text, from) {
   return { parts, end: i };
 }
 
-// ---- Parser -------------------------------------------------------------------------------------------------------
+// ---- Parser
 
 const BINARY = {
   As: 1, '||': 2, Or: 2, '&&': 3, And: 3, in: 4, exactin: 4,
@@ -742,11 +742,11 @@ export function parse(text) {
   return ast;
 }
 
-// ---- Evaluator ----------------------------------------------------------------------------------------------------
+// ---- Evaluator
 
 // Built-in enumerations (Learn: ErrorKind, TimeUnit, SortOrder, StartOfWeek, MatchOptions, Match, JSONFormat,
 // NotificationType, DateTimeFormat, RemoveFlags).
-// unverified: the underlying values of the text-valued enumerations; they are the option and pattern strings each one stands
+// Guessed: the underlying values of the text-valued enumerations; they are the option and pattern strings each one stands
 //   for here, and the DateTimeFormat members are the en-US patterns Learn's Text examples print.
 const ENUMS = {
   ErrorKind,
@@ -871,7 +871,7 @@ export function readAll(fx, value, operation) {
   const limit = fx?.rowLimit ?? 500;
   const rows = value.adapter.read({ ...value.query, top: value.query.top === null ? limit + 1 : Math.min(value.query.top, limit + 1) });
   const truncated = rows.length > limit;
-  // unverified: Learn shows this warning at authoring time (Studio wording); here it is raised when the formula runs.
+  // Learn shows this warning at authoring time (Studio wording); here it is raised when the formula runs.
   fx?.warn({
     code: 'POWERFX_DELEGATION', severity: 'warning', dataSource: value.name, operation, rowLimit: limit, truncated,
     message: `Delegation warning. The '${operation}' part of this formula might not work correctly on large data sets; it read the first ${limit} rows of '${value.name}'.`,
@@ -932,7 +932,7 @@ function evaluateNode(fx, node) {
     case 'as': return fx.ev(node.e);
     case 'chain': {
       // Learn ("Error handling", Stopping further processing): each chained formula runs even when an earlier one failed;
-      // unverified: the chain's result is the earlier errors when any, else the last value.
+      // Assumed: the chain's result is the earlier errors when any, else the last value.
       const errors = [];
       let last = null;
       for (const item of node.items) {
@@ -997,7 +997,7 @@ function membership(fx, needle, haystack, exact) {
 
 function arithmetic(fx, op, l, r) {
   // Date arithmetic: date/time + number adds days (Learn, "Data types": date/time values in arithmetic), date - date gives
-  // days. unverified: the result kinds of mixed date arithmetic.
+  // days. The result kinds of mixed date arithmetic are a guess.
   if (l instanceof FxDate && (op === '+' || op === '-') && !(r instanceof FxDate)) {
     const n = toNumber(r);
     if (n instanceof FxError) return n;
@@ -1042,7 +1042,7 @@ function callFunction(fx, node) {
   return definition.fn(fx, ...args);
 }
 
-// ---- Engine (the evaluator adapter canvas-power-fx.mjs registers as the default) --------------------------------------
+// ---- Engine (the evaluator adapter canvas-power-fx.mjs registers as the default)
 
 /** Evaluates text against values and host; answers the Power Fx value (an FxError for an error value). */
 export function evaluateFx(expression, { values = {}, host = {} } = {}) {

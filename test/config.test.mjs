@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, loadCatalogue, loadDevTargets } from '../lense/config.mjs';
 import { setEnvLine, rememberSelection } from '../lense/commands/use.mjs';
+import { resolveCatalogue } from '../lense/api.mjs';
 
 const CATALOGUE = `
 defaultSite: alpha
@@ -230,15 +231,15 @@ test('use: writes the choice into .env text without disturbing the rest', () => 
 });
 
 test('configuration fails early for malformed schemas and unsafe identifiers', async () => {
-  for (const text of [
-    'sites: []', 'sites: { alpha: nope }', 'liveReload: "false"',
-    'defaults: { inline: { minSimilarity: 2 } }', 'defaults: { inlien: {} }',
-    'defaults: { routes: [{url: /x, file: a, dir: b}] }',
-    'sites: { "../escape": {source: portals/alpha} }',
-    'sites: { alpha: { environments: { dev: { caution: "false" } } } }',
+  for (const [text, message] of [
+    ['sites: []', /No sites in paqvilo.config.yml/], ['sites: { alpha: nope }', /sites.alpha must be a mapping/], ['liveReload: "false"', /liveReload must be true or false/],
+    ['defaults: { inline: { minSimilarity: 2 } }', /minSimilarity must be between 0 and 1/], ['defaults: { inlien: {} }', /Unknown setting defaults.inlien/],
+    ['defaults: { routes: [{url: /x, file: a, dir: b}] }', /must select exactly one of file, dir or passthrough/],
+    ['sites: { "../escape": {source: portals/alpha} }', /site name must contain only letters/],
+    ['sites: { alpha: { environments: { dev: { caution: "false" } } } }', /caution must be true or false/],
   ]) {
     write('paqvilo.config.local.yml', text);
-    await assert.rejects(load(), undefined, text);
+    await assert.rejects(load(), message, text);
   }
 });
 
@@ -544,4 +545,26 @@ test('Mirage settings are schema checked', async () => {
     write('paqvilo.config.local.yml', text);
     await assert.rejects(load(), /mirage/, text);
   }
+});
+
+test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-resolved-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'portal'));
+  const config = path.join(root, 'paqvilo.config.yml');
+  fs.writeFileSync(config, 'sourceRoot: .\nsites:\n  synthetic:\n    source: portal\n    environments: { dev: https://synthetic.example.test }\n    mirage: { port: 8888 }\n');
+  let resolved = await resolveCatalogue({ config }, {});
+  assert.equal(resolved.provenance.sourceRoot, 'catalogue');
+  assert.equal(resolved.sites[0].sourceDir, path.join(root, 'portal'));
+  assert.equal(resolved.sites[0].mirage.port, 8888);
+  assert.equal(resolved.sites[0].mirage.stateFile, path.join(root, '.paqvilo/simulator/synthetic/state.json'));
+  fs.writeFileSync(path.join(root, 'paqvilo.config.local.yml'), 'sourceRoot: .\nsites:\n  synthetic:\n    mirage: { port: 8999 }\n');
+  resolved = await resolveCatalogue({ config }, {});
+  assert.equal(resolved.provenance.sourceRoot, 'local config'); assert.equal(resolved.sites[0].provenance.port, 'local config');
+  assert.equal(resolved.sites[0].mirage.port, 8999);
+  fs.writeFileSync(path.join(root, '.env'), 'PAQVILO_REPO=.\nPAQVILO_SYNTHETIC_SOURCE=portal\n');
+  resolved = await resolveCatalogue({ config }, {});
+  assert.equal(resolved.provenance.sourceRoot, '.env'); assert.equal(resolved.sites[0].provenance.sourceDir, '.env');
+  resolved = await resolveCatalogue({ config }, { PAQVILO_REPO: root });
+  assert.equal(resolved.provenance.sourceRoot, 'shell');
 });

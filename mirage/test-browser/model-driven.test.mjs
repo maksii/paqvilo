@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
 
 test('new record URL defaults accept rendered columns and ignore arbitrary property names', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   const name = '<script>window.urlDefaultExecuted = true</script>';
   const defaults = new URLSearchParams([
     ['x_name', name], ['x_quantity', '7'], ['x_quantity', '9'],
@@ -31,8 +31,7 @@ test('new record URL defaults accept rendered columns and ignore arbitrary prope
 
 test('slow model-driven reads and saves show feedback, prevent duplicate writes and recover with retry', { timeout: 30000 }, async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ reducedMotion: 'reduce' });
+  const page = await chrome.page(t, { reducedMotion: 'reduce' });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   let startupFailed = false;
   await page.route('**/_apps/api/index', route => {
@@ -82,7 +81,6 @@ test('slow model-driven reads and saves show feedback, prevent duplicate writes 
   await page.evaluate(() => document.querySelector('#record-form').dispatchEvent(new Event('submit', { cancelable: true })));
   while (!release) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(writes, 1);
-  if (process.env.PAQVILO_MODEL_SAVE_EVIDENCE) await page.screenshot({ path: process.env.PAQVILO_MODEL_SAVE_EVIDENCE });
   release();
   await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
   assert.equal(await page.locator('#record-form').evaluate(node => node.inert), false);
@@ -92,8 +90,7 @@ test('slow model-driven reads and saves show feedback, prevent duplicate writes 
 
 test('navigation cancels a pending grid search and repeated dialogs release listeners', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.clock.install();
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -123,8 +120,7 @@ test('navigation cancels a pending grid search and repeated dialogs release list
 
 test('completion of a save cannot clear pending feedback on a newer form route', { timeout: 30000 }, async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByLabel('Name', { exact: true }).fill('Save before navigation');
   let releaseSave, releaseForm;
@@ -153,8 +149,7 @@ test('completion of a save cannot clear pending feedback on a newer form route',
 
 test('model-driven shell supports solution navigation, editable grids and local record lifecycle', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -204,21 +199,19 @@ test('model-driven shell supports solution navigation, editable grids and local 
 
 test('default management app edits portal customization and exposes working setup/admin links', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   await page.goto(origin + '/main.aspx'); await page.getByRole('button', { name: 'Invented portal', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Content Snippets', exact: true }).click();
   await page.locator('tbody').getByRole('button', { name: 'Welcome', exact: true }).click();
   await page.getByLabel('Value', { exact: true }).fill('Hello from management');
   await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
-  const portal = await browser.newPage(); await portal.goto(origin + '/'); assert.match(await portal.locator('body').innerText(), /Hello from management/);
+  const portal = await chrome.page(t); await portal.goto(origin + '/'); assert.match(await portal.locator('body').innerText(), /Hello from management/);
   await page.goto(origin + '/_sim/'); assert.equal(await page.getByRole('link', { name: 'Model-driven apps', exact: true }).getAttribute('href'), '/main.aspx');
 });
 
 test('exported related subgrid filters by the current record and binds related creates', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   await page.getByRole('button', { name: 'Copper child', exact: true }).waitFor();

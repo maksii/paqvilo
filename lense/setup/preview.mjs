@@ -100,15 +100,15 @@ export async function exportCandidates({ directory, sourceRoot = directory }) {
   };
 }
 
-/**
- * One folder of the setup folder picker: its subfolders (dot folders and build output hidden, at most 500), each with what
- * it holds, and the folder written as the configuration writes it (`value`, from the source root). Read-only.
- */
 // Files the picker offers: website changes files (.deployment.yml), and deployment settings files (pac solution
 // create-settings): .json files that name EnvironmentVariables or ConnectionReferences in their first 64 KiB.
 const FILE_TYPES = { profile: { name: /\.deployment\.ya?ml$/i }, settings: { name: /\.json$/i, content: /"(?:EnvironmentVariables|ConnectionReferences)"\s*:/ } };
 const holds = async (file, pattern) => { const handle = await fs.open(file).catch(() => null); if (!handle) return false;
   try { const { buffer, bytesRead } = await handle.read(Buffer.alloc(65536), 0, 65536, 0); return pattern.test(buffer.subarray(0, bytesRead).toString('utf8')); } finally { await handle.close(); } };
+/**
+ * One folder of the setup folder picker: its subfolders (dot folders and build output hidden, at most 500), each with what
+ * it holds, and the folder written as the configuration writes it (`value`, from the source root). Read-only.
+ */
 export async function listFolders({ directory, sourceRoot = directory, folder, files = null }) {
   const current = path.resolve(directory, folder || '.');
   let entries;

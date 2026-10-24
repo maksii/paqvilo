@@ -346,7 +346,7 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
           fail(`Unsupported FetchXML filter type ${node.attrs.type}`, 400, "UnsupportedQuery");
         const hint = node.attrs.hint;
         if (hint != null) {
-          // Learn documents one value, union, for an or filter; one per query; moved to the
+          // Dataverse documents one value, union, for an or filter; one per query; moved to the
           // root filter when nested; ignored more than three filter levels deep. What
           // Dataverse does with the other cases isn't documented, so they are reported and
           // the hint never changes the rows.
@@ -448,7 +448,7 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
       "InvalidFetchXml",
     );
   const datasource = fetch.attrs.datasource;
-  // unverified: bin (the recycle bin) is a Dataverse-only datasource; a portal request is still refused.
+  // Guess: bin (the recycle bin) is a Dataverse-only datasource, so a portal request is refused.
   const sources = dataverseIdentity ? /^(?:retained|default|bin)$/i : /^(?:retained|default)$/i;
   if (datasource != null && !sources.test(datasource))
     fail(`Unsupported FetchXML datasource ${datasource}`, 400, "UnsupportedQuery");
@@ -635,7 +635,7 @@ export function executeFetch(plan, ctx) {
   // Columns the query names (projection, conditions, orders and join columns) are checked
   // against the local metadata. Complete Solution metadata still can't prove a column is
   // absent from an environment, which can carry columns no exported Solution defines
-  // (a live page renders a custom table's column that no exported layer defines). So a
+  // (a page can render a custom table's column that no exported layer defines). So a
   // column complete metadata lacks (ctx.column "unknown") is a FETCHXML_COLUMN_UNKNOWN
   // diagnostic, and fails like Dataverse (QueryBuilderNoAttribute, 0x80041103) only with
   // settings.fetchColumnValidation "strict". A column of a table whose metadata isn't
@@ -772,7 +772,7 @@ export function executeFetch(plan, ctx) {
     return rows;
   };
 
-  // ---- filters -----------------------------------------------------------
+  // ---- filters
   const valuesOf = (condition) => {
     const items = children(condition, "value").map((value) => value.text ?? "");
     if (items.length) return items;
@@ -881,7 +881,7 @@ export function executeFetch(plan, ctx) {
     }
   }
 
-  // ---- joins -------------------------------------------------------------
+  // ---- joins
   const linkPlans = new Map();
   const linkPlan = (link) => {
     if (linkPlans.has(link)) return linkPlans.get(link);
@@ -1036,13 +1036,13 @@ export function executeFetch(plan, ctx) {
     return limit;
   }
 
-  // ---- evaluate ------------------------------------------------------------
-  // A Dataverse caller's bin and retained datasources read their own rows; portal retained answers none, as before.
+  // ---- evaluate
+  // A Dataverse caller's bin and retained datasources read their own rows; portal retained answers none.
   let inputs = plan.dataverseIdentity && plan.datasource !== "default"
     ? (ctx.datasourceRows?.(plan.datasource, rootMapping.logicalName) ?? [])
     : plan.retained ? [] : ctx.readableRows(rootMapping.logicalName, root);
   // Only ANDed root GUID equalities can narrow inputs before the complete predicate.
-  // Text/numeric/date comparisons retain their existing collation and coercion rules.
+  // Text/numeric/date comparisons are left to the predicate's collation and coercion rules.
   const narrow = filter => {
     if ((filter.attrs.type ?? 'and') !== 'and') return;
     for (const condition of filter.children) {
@@ -1100,12 +1100,12 @@ export function executeFetch(plan, ctx) {
   }
   stats.joinedRows = joinedRows;
 
-  // ---- columns -------------------------------------------------------------
+  // ---- columns
   const columns = [];
   const outputKeys = new Map();
   // Repeating an identical <attribute> in the same entity or link-entity
-  // selects that column once (exported portal templates do this and render on
-  // the live site); a different column claiming the same name still fails.
+  // selects that column once (exported portal templates do this and render
+  // natively); a different column claiming the same name still fails.
   const sameSelection = (a, b) =>
     a.alias === b.alias &&
     a.attribute === b.attribute &&
@@ -1187,7 +1187,7 @@ export function executeFetch(plan, ctx) {
   collectAll(root, null);
   const rootAll = allAttributeAliases.includes(null) || !children(root, "attribute").length;
 
-  // ---- ordering ----------------------------------------------------------
+  // ---- ordering
   const orderSpecs = [];
   for (const order of children(root, "order"))
     orderSpecs.push({ order, alias: order.attrs.entityname != null ? resolveEntityName(order.attrs.entityname) : null, linked: order.attrs.entityname != null && resolveEntityName(order.attrs.entityname) != null });
@@ -1266,7 +1266,7 @@ export function executeFetch(plan, ctx) {
   }
   total.value = entities.length;
 
-  // ---- paging ------------------------------------------------------------
+  // ---- paging
   let start = 0,
     end = entities.length,
     more = false,

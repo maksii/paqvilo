@@ -1,6 +1,6 @@
 // FetchXML errors on the Dataverse Web API path (?fetchXml=): malformed XML, a missing entity name,
 // an unknown condition operator and a column the metadata lacks answer the native codes and text.
-// The portal's FetchXML keeps its own rules. Invented schema only (contoso_widget).
+// The portal's FetchXML keeps its own rules.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -76,30 +76,23 @@ async function failure(promise) {
 
 const fetchPath = (xml) => `/api/data/${VERSION}/contoso_widgets?fetchXml=${encodeURIComponent(xml)}`;
 
-test("malformed FetchXML answers Invalid XML before any entity is read", async () => {
-  const t = await setup(true);
-  const error = await failure(t.send(fetchPath("<fetch><entity")));
-  assert.equal(error.status, 400);
-  assert.equal(error.message, "Invalid XML.");
-  assert.equal(error.details.innerCode, "0x80040201");
-});
-
-test("FetchXML without an entity answers the missing entity name", async () => {
-  const t = await setup(true);
-  const error = await failure(t.send(fetchPath("<fetch/>")));
-  assert.equal(error.status, 400);
-  assert.equal(error.message, "Entity Name was not specified in FetchXml String.");
-  assert.equal(error.details.innerCode, "0x80041102");
-});
-
-test("an unknown condition operator answers the native operator code and text", async () => {
-  const t = await setup(true);
-  const xml = '<fetch><entity name="contoso_widget"><filter><condition attribute="contoso_name" operator="nonexistent" value="x"/></filter></entity></fetch>';
-  const error = await failure(t.send(fetchPath(xml)));
-  assert.equal(error.status, 400);
-  assert.equal(error.message, "Unknown Condition Operator: nonexistent");
-  assert.equal(error.details.innerCode, "0x80041120");
-});
+const QUERY_ERRORS = [
+  ["malformed FetchXML answers Invalid XML before any entity is read", "<fetch><entity", "Invalid XML.", "0x80040201"],
+  ["FetchXML without an entity answers the missing entity name", "<fetch/>", "Entity Name was not specified in FetchXml String.", "0x80041102"],
+  [
+    "an unknown condition operator answers the native operator code and text",
+    '<fetch><entity name="contoso_widget"><filter><condition attribute="contoso_name" operator="nonexistent" value="x"/></filter></entity></fetch>',
+    "Unknown Condition Operator: nonexistent",
+    "0x80041120",
+  ],
+];
+for (const [name, xml, message, innerCode] of QUERY_ERRORS) {
+  test(name, async () => {
+    const t = await setup(true);
+    const error = await failure(t.send(fetchPath(xml)));
+    assert.deepEqual([error.status, error.message, error.details.innerCode], [400, message, innerCode]);
+  });
+}
 
 for (const complete of [true, false]) {
   test(`a column the metadata lacks is rejected in attribute, condition and order (complete metadata: ${complete})`, async () => {

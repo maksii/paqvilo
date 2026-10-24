@@ -5,12 +5,12 @@ import http from "node:http";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 
-// Synthetic loopback Bootstrap 5 page: a subgrid and a deferred dialog grid (as in an associate
+// Bootstrap 5 page: a subgrid and a deferred dialog grid (as in an associate
 // dialog) with search. Live evidence: the page holds one SearchCountTextundefined announcer, which
 // the dialog grid takes over when it loads; grids outside the entity_list template post a null
 // natural-language filter; the associate dialog opens with OK disabled="disabled".
 const layout = (search, configuration = {}) => [{ Id: "view-1", ViewName: "Items", Configuration: { Search: { Enabled: search }, ...configuration }, Columns: [{ LogicalName: "name", Name: "Name", Width: 100, WidthAsPercent: 50 }, { LogicalName: "priority", Name: "Priority", Width: 20, WidthAsPercent: 50 }], ColumnsTotalWidth: 120, Base64SecureConfiguration: "secure", SortExpression: "name ASC, priority DESC" }];
-// The subgrid: pixel column widths and a download action (Wave M evidence: note-add live DOM).
+// The subgrid: pixel column widths and a download action (live note-add DOM).
 // The subgrid view filters by the user's account column, the dialog grid's by the user's column.
 const DOWNLOAD = { ViewActionLinks: [{ Type: 3, Enabled: true, Target: 0, Label: "New item", Tooltip: "Create an item" }, { Type: 5, Enabled: true, Label: "Add existing items", Tooltip: "Associate" }, { Type: 8, Enabled: true, Label: "Download items", Tooltip: "Download the items" }], FilterAccountAttributeName: "accountid" };
 const BY_USER = { FilterPortalUserAttributeName: "contactid" };

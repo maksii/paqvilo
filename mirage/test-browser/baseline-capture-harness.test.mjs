@@ -1,4 +1,4 @@
-// Baseline capture: `harness: true` steps leave no evidence (synthetic loopback site, owned headless browser).
+// Baseline capture: `harness: true` steps leave no evidence.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -32,7 +32,8 @@ test("harness steps run but their requests, console entries and final URL are no
   assert.equal(result.summary.status, "captured", result.summary.problems.join("; "));
 
   const failing = await run([{ goto: "/item" }, { click: "#missing", harness: true, timeout: 500 }]);
-  assert.notEqual(failing.summary.status, "captured", "a harness step's error is still reported");
+  assert.equal(failing.summary.status, "error", "a harness step's error is still reported");
+  assert.match(failing.summary.problems.join("; "), /#missing/);
 });
 
 test("same-origin frames are inventoried: DOM keyed by frame path, elements prefixed with the frame", { timeout: 120_000 }, async (t) => {

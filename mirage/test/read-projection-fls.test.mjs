@@ -1,6 +1,5 @@
 // Column security on every read route: a caller without read permission on a secured column never receives its value
-// (Learn column-level-security: "The default API behavior when returning a value for a secured column is to return no
-// data"). CUST is a System Customizer without a field security profile. Invented schema and GUIDs only.
+// (by default the API returns no data for a secured column). CUST is a System Customizer without a field security profile.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CUST, readFixture } from "./read-projection-fixture.mjs";

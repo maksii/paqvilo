@@ -1,6 +1,6 @@
 // Dataverse $filter operand typing and unsupported query functions. Operands whose EDM types can never match
 // fail 400 0x80060888 from the column metadata, before any row is read; functions and $search the simulator does
-// not run answer 501 0x8006088a. The portal and flow readers keep the default, lenient parser. Invented schema only.
+// not run answer 501 0x8006088a. The portal and flow readers keep the default, lenient parser.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

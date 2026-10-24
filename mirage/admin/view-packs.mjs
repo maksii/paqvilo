@@ -1,6 +1,6 @@
-// `#packs` view module (D3, D8, D12): the registered data packs of this runtime from GET /__sim/api/packs, with matched
+// `#packs` view module: the registered data packs of this runtime from GET /__sim/api/packs, with matched
 // status, exports, presets, persona catalogue counts, DATA ownership and PACK_EXPORT_* diagnostics, plus the data preset
-// library with its Pack and Source columns (RB-17). DOM-free at module scope; read-only (packs change in /_setup/).
+// library with its Pack and Source columns. DOM-free at module scope; read-only (packs change in /_setup/).
 import * as kit from './ui-kit.mjs';
 import { HELP } from './help-content.mjs';
 import { viewCommon } from './view-common.mjs';

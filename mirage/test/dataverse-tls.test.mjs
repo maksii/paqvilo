@@ -10,7 +10,6 @@ import { test } from "node:test";
 import { createSelfSignedCertificate, ensureCertificate } from "../lib/dataverse-tls.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-// Invented names and loopback endpoints only.
 const DAY = 86_400_000;
 const execFileAsync = promisify(execFile);
 const python = spawnSync("python", ["--version"]).status === 0 ? "python" : null;

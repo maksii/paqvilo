@@ -1,6 +1,5 @@
 // UpsertEnvironmentVariable accepts the Secret type (100000005) with a Key Vault reference, as a Solution import already does,
-// and still refuses a type outside the allow-list. Invented schema, GUIDs and reference only; the setup mirrors
-// dataverse-org-messages.test.mjs.
+// and still refuses a type outside the allow-list. The setup mirrors dataverse-org-messages.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

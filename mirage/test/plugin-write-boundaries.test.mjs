@@ -22,7 +22,14 @@ const scopedState = () => ({
   plugins: [{ entity: 'project', operations: ['create'], secondary: [{ entity: 'membership', operation: 'create', set: { project: { op: 'reference', args: ['project', '$record.projectid'] }, contact: '$record.requestedcontact' } }] }],
 });
 
-for (const mode of ['placeholder', 'disabled', 'handler', 'mock']) {
+// What each step mode leaves behind on an allowed create: handler calls, the step diagnostic and the mocked target.
+const MODES = {
+  placeholder: { calls: [], code: 'PLUGIN_STEP_PLACEHOLDER', note: undefined },
+  disabled: { calls: [], code: 'PLUGIN_STEP_DISABLED', note: undefined },
+  handler: { calls: ['handler'], code: null, note: undefined },
+  mock: { calls: [], code: null, note: 'mocked' },
+};
+for (const [mode, expected] of Object.entries(MODES)) {
   test(`scoped Create with ${mode} retains the table grant gate and final membership check`, async () => {
     const state = scopedState(), store = await new DataStore({ state }).init(), calls = [], diagnostics = [];
     const item = { id: pluginId(3), enabled: true, entity: 'project', message: 'Create', stage: 20, rank: 1, mode, filteringAttributes: [], unsupported: null, configuration: mode === 'mock' ? { body: { target: { note: 'mocked' } } } : null };
@@ -33,9 +40,9 @@ for (const mode of ['placeholder', 'disabled', 'handler', 'mock']) {
     const row = await store.create('projects', { requestedcontact: member.contactId }, member);
     assert.equal(store.state.tables.membership[0].project.id, row.projectid);
     assert.equal(store.get('projects', row.projectid, member).projectid, row.projectid);
-    if (mode === 'handler') assert.deepEqual(calls, ['handler']);
-    if (mode === 'placeholder') assert.ok(diagnostics.some(note => note.code === 'PLUGIN_STEP_PLACEHOLDER'));
-    if (mode === 'disabled') assert.ok(diagnostics.some(note => note.code === 'PLUGIN_STEP_DISABLED'));
+    assert.deepEqual(calls, expected.calls);
+    if (expected.code) assert.ok(diagnostics.some(note => note.code === expected.code), JSON.stringify(diagnostics));
+    assert.equal(store.state.tables.project[0].note, expected.note);
     const before = store.snapshot();
     await assert.rejects(store.create('projects', { requestedcontact: 'foreign-contact' }, member), { code: 'PermissionDenied' });
     assert.deepEqual(store.snapshot(), before, 'a trusted secondary effect cannot grant a foreign membership');
@@ -63,7 +70,7 @@ test('exported inert Create steps leave Parent-scoped basic form and Web API ins
   initial.simulator = { mode: 'local', pageMode: 'local', identityScope: 'configured', identity: { id: member.contactId, roles: member.roles }, live: {}, endpoints: [], componentSchemas: { create: { entity: 'project', fields: [{ name: 'requestedcontact' }] } } };
   const app = await createSimulator({ sourceDir: fixture.portal, solutionRoots: [fixture.solution], initial, watch: false });
   t.after(() => app.close());
-  const csrf = app.state().csrf, headers = { ...signInHeaders(app, member.contactId, { roles: member.roles }), __RequestVerificationToken: csrf, 'content-type': 'application/json' };
+  const csrf = app.csrf, headers = { ...signInHeaders(app, member.contactId, { roles: member.roles }), __RequestVerificationToken: csrf, 'content-type': 'application/json' };
   for (const mode of ['placeholder', 'disabled']) {
     if (mode === 'disabled') for (const id of [3, 4, 5, 6]) {
       const response = await fetch(app.url + '/__sim/api/operations/' + encodeURIComponent(`plugin-step:${pluginId(id)}`), { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf }, body: JSON.stringify({ mode }) });
@@ -89,7 +96,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
   const options = { sourceDir: portal, solutionRoots: [solution], stateFile: path.join(dir, 'journal.json'), persistence: { journalThresholdBytes: 0 }, watch: false };
   let app = await createSimulator({ ...options, initial: fixtureApp.store.snapshot() });
   t.after(() => app.close());
-  const csrf = app.state().csrf, rowId = pluginId(80);
+  const csrf = app.csrf, rowId = pluginId(80);
   const admin = (route, body) => fetch(app.url + '/__sim/api' + route, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf }, body: JSON.stringify(body) });
   const write = async (method, route, body) => {
     const response = await fetch(app.url + '/_api/' + route, { method, headers: { 'content-type': 'application/json', __RequestVerificationToken: csrf }, body: JSON.stringify(body) });
@@ -102,8 +109,8 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
     assert.equal(app.store.lastSave.mode, 'journal', mode);
   }
   const audit = await (await fetch(app.url + '/__sim/api/audit?method=PATCH')).json();
-  assert.ok(audit.items.length >= 3);
-  assert.ok(audit.items.every(entry => entry.saveMode === 'journal' && entry.saveMs >= 0));
+  assert.deepEqual(audit.items.map(entry => [entry.path, entry.saveMode]), Array(3).fill([`/_api/fx_widgets(${rowId})`, 'journal']));
+  assert.ok(audit.items.every(entry => entry.saveMs >= 0));
   const expected = structuredClone(app.store.state.tables.fx_widget);
   await app.close(); app = await createSimulator(options);
   assert.deepEqual(app.store.state.tables.fx_widget, expected);

@@ -79,7 +79,7 @@ const STARTED = Date.now();
  * Headers of the platform's own portal-origin resources (lib/native-services.mjs serves their
  * local equivalents), as observed online for each kind:
  * - "axd": WebResource.axd/ScriptResource.axd, application/x-javascript, public, one year
- *   (WebResource.axd's Vary: Accept-Encoding varies between live captures and is not sent).
+ *   (WebResource.axd's Vary: Accept-Encoding is inconsistent natively and is not sent).
  * - "resource-manager": the ResourceManager script, public for one day.
  * - "static": platform static files (/js/, /xrm-adx/js/) as IIS serves them: byte ranges, an
  *   IIS-style quoted ETag and Last-Modified; /js/ adds public,max-age=604800.
@@ -127,7 +127,7 @@ export function contentDisposition(disposition, name, { tokenFilename = false } 
  * x-ms-file-name header value: the name itself when it is printable ASCII, otherwise its
  * UTF-8 percent-encoding.
  */
-// unverified: Learn file-column-data lists x-ms-file-name without saying how non-ASCII names are encoded; percent-encoding is chosen.
+// Learn does not say how x-ms-file-name encodes non-ASCII names; percent-encoding is a guess.
 export const fileNameHeader = (name) => (/^[\x20-\x7e]*$/.test(String(name ?? "")) ? String(name ?? "") : rfc5987(name));
 
 /**

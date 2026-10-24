@@ -28,7 +28,7 @@ test('oversized/malformed inspection metadata does not block other declared sour
   assert.equal(report.limits.truncated, true); assert.equal(report.forms.length, 1); assert.equal(report.forms[0].id, 'normal');
 });
 
-// Metadata as importModelDrivenProject reads it (importSolutionMetadata and solutionApps): invented tables, one main form with a
+// Metadata as importModelDrivenProject reads it (importSolutionMetadata and solutionApps): tables, one main form with a
 // bound column and a subgrid, two views and one app.
 const SUBGRID = 'e7a81278-8635-4d9e-8d4d-59480b391c5b';
 const formXml = `<form><tabs><tab name="general"><labels><label description="General" languagecode="1033"/></labels><columns><column width="100%"><sections><section name="details"><labels><label description="Details" languagecode="1033"/></labels><rows>`

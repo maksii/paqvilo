@@ -1,4 +1,4 @@
-// loopbackFetch: loopback URLs only, and redirects are refused. Invented endpoints on 127.0.0.1 with port 0.
+// loopbackFetch: loopback URLs only, and redirects are refused.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -24,7 +24,7 @@ test('a loopback endpoint that answers 307 is not followed to another host', asy
     response.writeHead(307, { location: `http://127.0.0.1:${target}/hook` });
     response.end();
   });
-  await assert.rejects(loopbackFetch(`http://127.0.0.1:${redirecting}/hook`, { method: 'POST', body: '{}' }));
+  await assert.rejects(loopbackFetch(`http://127.0.0.1:${redirecting}/hook`, { method: 'POST', body: '{}' }), /fetch failed/);
   assert.equal(received, 0);
 });
 
@@ -114,5 +114,5 @@ test('pinned hostname responses retain empty HEAD/204 bodies and abort an active
   const response = await loopbackFetch(url + '/stream', { lookup, signal: abort.signal });
   const text = response.text();
   abort.abort();
-  await assert.rejects(text);
+  await assert.rejects(text, /aborted/);
 });

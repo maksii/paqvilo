@@ -16,12 +16,13 @@ const REQUIRED = [
   'IIF', 'CHOOSE', 'NEWID', 'CONVERT', 'TRY_CONVERT', 'ISNUMERIC', 'ROWCOUNT_BIG', 'GETANSINULL',
 ];
 
-test('every required function is registered with arity and a returns rule', () => {
+test('every required function is registered and refuses a call outside its arity with 174', () => {
   for (const name of REQUIRED) {
     const f = FUNCTIONS.get(name);
     assert.ok(f, `missing ${name}`);
-    assert.ok(f.minArgs <= f.maxArgs, name);
-    assert.equal(typeof f.returns, 'function', name);
+    for (const count of [f.minArgs - 1, f.maxArgs + 1].filter((n) => n >= 0)) {
+      assert.throws(() => call(name, Array(count).fill(1)), fails(174), `${name} with ${count} arguments`);
+    }
   }
 });
 
@@ -176,7 +177,7 @@ const cases = [
 ];
 
 for (const [name, args, expected, ctx] of cases) {
-  test(`${name}(${args.map((a) => (a instanceof Date ? a.toISOString() : typeof a === 'bigint' ? `${a}n` : JSON.stringify(a))).join(', ')})`, () => {
+  test(`${name}(${args.map((a) => (a instanceof Date ? a.toISOString() : typeof a === 'bigint' ? `${a}n` : JSON.stringify(a))).join(', ')})${ctx ? ` ${JSON.stringify(ctx)}` : ''}`, () => {
     assert.deepStrictEqual(call(name, args, ctx), expected);
   });
 }

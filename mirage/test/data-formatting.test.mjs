@@ -1,5 +1,5 @@
 // Seeded record defaults, platform AttributeMetadata and user time-zone formatting of the
-// native grid data (invented sample_ schema; no business data).
+// native grid data.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

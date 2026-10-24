@@ -91,9 +91,7 @@ const trace = (...parts) => {
 };
 const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
-// ---------------------------------------------------------------------------
-// Read-only guards
-// ---------------------------------------------------------------------------
+// ---- Read-only guards
 
 /** Validate a portal-relative scenario path before any request is formed. */
 export function assertReadOnlyPath(value, { allowDenied = false, denied = activePlanDeniedRoutes() } = {}) {
@@ -278,9 +276,7 @@ export function validatePlan(plan) {
   return plan;
 }
 
-// ---------------------------------------------------------------------------
-// Normalisation and redaction
-// ---------------------------------------------------------------------------
+// ---- Normalisation and redaction
 
 const GUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
@@ -423,9 +419,7 @@ export async function loadSourceCorpus(sourceDir, { maxFileBytes = 4 * 1024 * 10
   };
 }
 
-// ---------------------------------------------------------------------------
-// Semantic DOM capture (runs in the page) and comparison (runs in Node)
-// ---------------------------------------------------------------------------
+// ---- Semantic DOM capture (runs in the page) and comparison (runs in Node)
 
 /**
  * In-page snapshot. Raw values return to the runner's memory only; they are normalised and
@@ -766,9 +760,7 @@ export function compareTextLines(liveLines, localLines, { maxDeltas = 250 } = {}
   return { deltas, total, truncated: total > deltas.length };
 }
 
-// ---------------------------------------------------------------------------
-// Web API projections
-// ---------------------------------------------------------------------------
+// ---- Web API projections
 
 const valueType = (value) => {
   if (value === null) return "null";
@@ -932,9 +924,7 @@ export function compareJson(live, local, { compareCount = false, compareValues =
   return deltas;
 }
 
-// ---------------------------------------------------------------------------
-// HTTP shapes: redirects, headers, Liquid probes, persona derivation
-// ---------------------------------------------------------------------------
+// ---- HTTP shapes: redirects, headers, Liquid probes, persona derivation
 
 /** Redirect target shape. ReturnUrl is reduced to its normalised path (it echoes the request). */
 export function classifyLocation(location, { origin } = {}) {
@@ -1140,9 +1130,7 @@ export function checkPersonaAccess(roles, observations) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Delta classification
-// ---------------------------------------------------------------------------
+// ---- Delta classification
 
 const ruleText = (pattern, value) => {
   if (pattern === undefined) return true;
@@ -1172,9 +1160,7 @@ export function classifyDelta(delta, scenarioId, rules = []) {
   return { class: "unclassified", owner: null, note: "No classification rule matched this delta." };
 }
 
-// ---------------------------------------------------------------------------
-// Report serialisation (redaction boundary)
-// ---------------------------------------------------------------------------
+// ---- Report serialisation (redaction boundary)
 
 /** Delta kinds whose live value is free page/probe text and therefore passes the reveal policy. */
 const FREE_TEXT_DELTAS = new Set(["text", "attribute-value", "attribute-missing", "probe-text", "body-title"]);
@@ -1232,12 +1218,10 @@ function rememberLocalTree(node, redactor) {
   for (const kid of node.kids) rememberLocalTree(kid, redactor);
 }
 
-// ---------------------------------------------------------------------------
-// Drivers
-// ---------------------------------------------------------------------------
+// ---- Drivers
 
 const LOADING_SELECTORS = [".overlay:not([style*='display: none'])", ".overlayUI", ".dataTables_processing", "[role=progressbar]", ".form-loading", ".loader"];
-/** Same-origin platform paths inventoried from page traffic (question G-D13). */
+/** Same-origin platform paths inventoried from page traffic. */
 export const PLATFORM_PREFIXES = Object.freeze(["/_api/", "/_services/", "/_layout/", "/_portal/", "/_resources/", "/_odata/", "/_webresource", "/WebResource.axd", "/ScriptResource.axd"]);
 
 /**
@@ -2064,9 +2048,7 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
   };
 }
 
-// ---------------------------------------------------------------------------
-// Local runtime helpers
-// ---------------------------------------------------------------------------
+// ---- Local runtime helpers
 
 async function localState(localUrl, { summary = true } = {}) {
   const response = await fetch(new URL(`/__sim/api/state${summary ? "?summary=1" : ""}`, localUrl), { signal: AbortSignal.timeout(120000) });
@@ -2204,9 +2186,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
   return controller;
 }
 
-// ---------------------------------------------------------------------------
-// Runner
-// ---------------------------------------------------------------------------
+// ---- Runner
 
 const statusClass = (status) => (status === null || status === undefined ? "none" : status === 0 ? "opaque-redirect" : `${String(status)[0]}xx`);
 
@@ -2264,9 +2244,7 @@ function signInObserved(observation) {
 const GUID_EXACT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Find a comparable record on one side: from a Web API read, or from a link the page renders. */
-// ---------------------------------------------------------------------------
-// Scenario sources: the portal-agnostic core set and data-pack plans
-// ---------------------------------------------------------------------------
+// ---- Scenario sources: the portal-agnostic core set and data-pack plans
 
 /** The portal-agnostic core scenario set shipped with the Mirage (anonymous, read-only). */
 export const CORE_SCENARIOS_FILE = fileURLToPath(new URL("./lib/parity-core-scenarios.json", import.meta.url));
@@ -3387,9 +3365,7 @@ export function summaryMarkdown(report) {
   return lines.join("\n");
 }
 
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
+// ---- CLI
 
 async function main() {
   const { values } = parseArgs({

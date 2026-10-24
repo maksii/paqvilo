@@ -5,7 +5,7 @@ import { buildPermissionModel, resolvePortalIdentity } from '../lib/permissions.
 import { webApiPolicy } from '../lib/webapi-policy.mjs';
 import { pageAccess } from '../lib/page-access.mjs';
 
-// Local exported-policy regressions only. Expected native policy remains unqualified.
+// Exported-policy regressions; the native policy is not verified here.
 function fixture(roles = ['writer', 'deleter']) {
   const role = name => ({ kind: 'webrole', id: name, name });
   const grant = (id, entity, scope, roleIds, flags, extra = {}) => ({

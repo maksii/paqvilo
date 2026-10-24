@@ -1,5 +1,5 @@
 // Generator for mirage/lib/dataverse-standard-tables.json: page parser, file builder and page
-// loader, run on an invented Learn-layout fixture. Nothing here fetches from the network: the
+// loader, run on a fixture in the Learn page layout. Nothing here fetches from the network: the
 // loader gets a fake fetch and a temporary cache.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -165,7 +165,7 @@ test("the checked-in standard file is pinned to the commit and covers the 161 ta
   assert.deepEqual(file.source.prefixedTables, PREFIXED_TABLES);
 });
 
-// An invented msdyn_ page: the fixture renamed to msdyn_sample, with its legacy column under the msdyn_ prefix.
+// An msdyn_ page: the fixture renamed to msdyn_sample, with its legacy column under the msdyn_ prefix.
 const msdynSample = () => fixture.replaceAll("fx_widget", "msdyn_sample").replaceAll("adx_legacyflag", "msdyn_legacyflag");
 
 test("an allow-listed prefixed table keeps its prefixed columns", () => {

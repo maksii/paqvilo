@@ -12,7 +12,6 @@ import { createSimulator } from "../server.mjs";
 import { uuidV5 } from "../lib/dataverse-security.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-// Invented identifiers and a loopback origin only.
 const ORIGIN = "https://127.0.0.1:9443";
 const TENANT = "7e1a2b3c-4d5e-4f60-8a71-92b3c4d5e6f7";
 const APP_CLIENT = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
@@ -132,7 +131,7 @@ test("handle() returns null for other paths and other verbs; env() publishes the
   assert.equal(env.IMDS_ENDPOINT, ORIGIN);
 });
 
-test("P22: IMDS and App Service refuse a request without api-version before any side effect", () => {
+test("IMDS and App Service refuse a request without api-version before any side effect", () => {
   const dir = mkdtempSync(join(tmpdir(), "paqvilo-mi-"));
   try {
     const endpoints = createManagedIdentityEndpoints({ authority: authority(), settings: SETTINGS, origin: ORIGIN, secretFile: dir });
@@ -148,7 +147,7 @@ test("P22: IMDS and App Service refuse a request without api-version before any 
   }
 });
 
-test("P23: unauthenticated Arc calls keep at most 16 unused challenge files; the oldest is removed and the newest still redeems", () => {
+test("unauthenticated Arc calls keep at most 16 unused challenge files; the oldest is removed and the newest still redeems", () => {
   const dir = mkdtempSync(join(tmpdir(), "paqvilo-mi-"));
   try {
     const endpoints = createManagedIdentityEndpoints({ authority: authority(), settings: SETTINGS, origin: ORIGIN, secretFile: dir });
@@ -175,8 +174,8 @@ const startWithIdentities = async (identities) => {
   return { store, router, endpoints };
 };
 
-test("P15: a settings managed identity is an application user; its App Service token reaches the Web API as that user", async () => {
-  const { router, endpoints } = await startWithIdentities([{ clientId: APP_CLIENT, principalId: APP_PRINCIPAL, displayName: "first", roles: ["System Administrator"] }]);
+test("a settings managed identity is an application user with a managedidentity row; its App Service token reaches WhoAmI and $metadata lists the set", async () => {
+  const { store, router, endpoints } = await startWithIdentities([{ clientId: APP_CLIENT, principalId: APP_PRINCIPAL, displayName: "first", roles: ["System Administrator"] }]);
   try {
     const token = endpoints.handle({
       method: "GET", pathname: "/msi/token", searchParams: query({ resource: router.origin, client_id: APP_CLIENT, "api-version": "2019-08-01" }),
@@ -185,14 +184,7 @@ test("P15: a settings managed identity is an application user; its App Service t
     const who = await fetch(`${router.origin}/api/data/v9.2/WhoAmI`, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
     assert.equal(who.status, 200);
     assert.equal((await who.json()).UserId, uuidV5(router.organizationId, `systemuser:app:${APP_CLIENT}`));
-  } finally {
-    await router.close();
-  }
-});
 
-test("P24: configured identities are managedidentity rows; the table is registered as a Dataverse-only mapping", async () => {
-  const { store, router } = await startWithIdentities([{ clientId: APP_CLIENT, principalId: APP_PRINCIPAL, displayName: "first", roles: ["Basic User"] }]);
-  try {
     const mapping = store.state.mappings.managedidentity;
     assert.equal(mapping.entitySet, "managedidentities");
     assert.equal(mapping.idColumn, "managedidentityid");
@@ -203,12 +195,16 @@ test("P24: configured identities are managedidentity rows; the table is register
     assert.equal(row.name, "first");
     assert.equal(row.tenantid, router.tenantId);
     assert.equal(row.statecode, 0);
+
+    const metadata = await fetch(`${router.origin}/api/data/v9.2/$metadata`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(metadata.status, 200);
+    assert.match(await metadata.text(), /EntitySet Name="managedidentities"/);
   } finally {
     await router.close();
   }
 });
 
-test("P24: seedManagedIdentityRows upserts by clientId and drops rows of identities no longer configured", async () => {
+test("seedManagedIdentityRows upserts by clientId and drops rows of identities no longer configured", async () => {
   const store = await new DataStore({ state: emptyState() }).init();
   const tenantId = TENANT;
   const both = [{ clientId: APP_CLIENT, displayName: "first" }, { clientId: OTHER_CLIENT, displayName: "second" }];
@@ -219,7 +215,7 @@ test("P24: seedManagedIdentityRows upserts by clientId and drops rows of identit
   assert.deepEqual(store.state.tables.managedidentity.map((row) => [row.applicationid, row.name]), [[OTHER_CLIENT, "renamed"]]);
 });
 
-test("F5: an identity added through the runtime route gets a managedidentity row and its token passes WhoAmI", async (t) => {
+test("an identity added through the runtime route gets a managedidentity row and its token passes WhoAmI", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "pp-runtime-mi-"));
   ownedFixture(t).remove(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Runtime identity\n");
@@ -229,7 +225,7 @@ test("F5: an identity added through the runtime route gets a managedidentity row
   const admin = async (route, { method = "GET", body } = {}) => {
     const response = await fetch(`${app.url}/_sim/api${route}`, {
       method,
-      headers: { "x-sim-csrf": app.state().csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { "x-sim-csrf": app.csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();
@@ -253,19 +249,4 @@ test("F5: an identity added through the runtime route gets a managedidentity row
   assert.ok(row, "the runtime identity has a managedidentity row");
   assert.equal(row.name, "Runtime app");
   assert.equal(row.statecode, 0);
-});
-
-test("P17: the managedidentity entity set is in the service document metadata", async () => {
-  const { router, endpoints } = await startWithIdentities([{ clientId: APP_CLIENT, principalId: APP_PRINCIPAL, displayName: "first", roles: ["Basic User"] }]);
-  try {
-    const token = endpoints.handle({
-      method: "GET", pathname: "/msi/token", searchParams: query({ resource: router.origin, "api-version": "2019-08-01" }),
-      headers: { "x-identity-header": endpoints.env().IDENTITY_HEADER },
-    }).body.access_token;
-    const metadata = await fetch(`${router.origin}/api/data/v9.2/$metadata`, { headers: { authorization: `Bearer ${token}` } });
-    assert.equal(metadata.status, 200);
-    assert.match(await metadata.text(), /EntitySet Name="managedidentities"/);
-  } finally {
-    await router.close();
-  }
 });

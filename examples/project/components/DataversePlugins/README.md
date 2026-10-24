@@ -1,6 +1,6 @@
 # Dataverse plugins
 
-Two small C# plugins demonstrate synchronous Create and Update behavior for accounts and contacts. The solution contains the assembly and eight registered steps. See [registrations.json](registrations.json) for exact IDs, stages and Update filtering attributes.
+Two small C# plugins demonstrate synchronous Create and Update behavior for accounts and contacts. The solution contains the assembly and eight registered steps. The same assembly also contains `BaselineRules`, which only the [native component baseline](../../baseline/) registers on its fixture table. See [registrations.json](registrations.json) for exact IDs, stages and Update filtering attributes.
 
 | Plugin | PreValidation, stage 10 | PreOperation, stage 20 |
 | --- | --- | --- |

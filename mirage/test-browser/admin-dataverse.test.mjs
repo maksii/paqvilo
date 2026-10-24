@@ -1,6 +1,6 @@
 // The /_sim/ Dataverse API view: registration shows a secret once, later admin reads never carry it,
-// and a runtime without the API renders the disabled state. Uses a disposable loopback simulator.
-import test from "node:test";
+// and a runtime without the API renders the disabled state.
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -11,22 +11,25 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 import { createSimulator } from "../server.mjs";
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-admin-dataverse-"));
   await fs.writeFile(path.join(directory, "website.yml"), "adx_websiteid: site\nadx_name: Dataverse admin\n");
   const app = await createSimulator({ sourceDir: directory, watch: false, ...options });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  const context = await browser.newContext({ serviceWorkers: "block" });
   t.after(async () => {
-    await browser.close();
+    await context.close();
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });
   });
-  const context = await browser.newContext({ serviceWorkers: "block" });
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  // Secondary panels are collapsed (RA-18); open one without closing it when it is already open.
+  // Secondary panels are collapsed; open one without closing it when it is already open.
   const open = async (key) => {
     const section = page.locator(`[data-disclosure="${key}"]`);
     if ((await section.getAttribute("open")) === null) await section.locator("summary").first().click();
@@ -99,7 +102,6 @@ test("user, role, secret and certificate forms round-trip through the admin endp
   await page.getByText("User created.", { exact: true }).waitFor();
   const userRow = page.getByRole("row", { name: /Maker User/ });
   await userRow.getByText("Password set", { exact: true }).waitFor();
-  // One edit form for the selected user (RA-02).
   await userRow.getByRole("button", { name: "Edit Maker User", exact: true }).click();
   const userEditor = page.locator("[data-dv-user-editor]");
   assert.equal(await userEditor.getByLabel("System Customizer", { exact: true }).isChecked(), true);
@@ -205,7 +207,7 @@ test("the registration, edit, federated credential and managed identity forms ro
   await page.getByText("Federated credential removed.", { exact: true }).waitFor();
 
   await open("dv-managed-identities");
-  // RA-52: the managed identity endpoint summary renders (mode and endpoint, or why it is off).
+  // The managed identity endpoint summary renders (mode and endpoint, or why it is off).
   await page.locator('[data-disclosure="dv-managed-identities"]').getByText(/Identity header|managed identity endpoint is off/).first().waitFor();
   await page.getByLabel("Identity name", { exact: true }).fill("Invented identity");
   await page.getByRole("button", { name: "Add managed identity" }).click();
@@ -276,7 +278,6 @@ test("the workflows panel saves a run mode and its mock result in one round trip
   await open("dv-workflows");
   await page.getByRole("heading", { name: "Workflows", exact: true }).waitFor();
   const row = page.getByRole("row", { name: /Invented panel run/ });
-  // One run-mode form for the selected workflow (RA-03).
   await row.getByRole("button", { name: "Edit run mode for Invented panel run", exact: true }).click();
   const editor = page.locator("[data-dv-workflow-editor]");
   await editor.getByLabel("Run mode for Invented panel run", { exact: true }).selectOption("mock");

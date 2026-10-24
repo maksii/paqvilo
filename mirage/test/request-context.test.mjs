@@ -1,6 +1,5 @@
 // Request context (lib/request-context.mjs): one context per call in the organization ALS. The client correlation id of a
 // Web API call reaches the committed event and the asynchronous web hook payload; a child context goes one level deeper.
-// Invented x_ table, invented GUIDs and a loopback receiver only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';

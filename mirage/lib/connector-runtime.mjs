@@ -46,9 +46,9 @@ export const referenceOf = (connectionReferences, connectionName) => {
 const capability = (name, { level = 'behaviour', operations, requires = [], principal = 'none', stateOwner = 'none', lifecycle = 'per-call' }) =>
   ({ name, version: 1, kind: 'provider', level, operations: [...operations], requires, principal, stateOwner, lifecycle });
 
-// ---- built-in providers ---------------------------------------------------------------------------------------------
+// ---- built-in providers
 
-// The Dataverse connector operations (https://learn.microsoft.com/connectors/commondataserviceforapps/, read 2026-10-22) and
+// The Dataverse connector operations and
 // their parameter keys: one table read by the provider and by the flow interpreter's allowlist (flow-runtime.mjs), so the
 // inspect and invoke paths accept the same parameters. item: whether `item` / `item/<column>` keys carry row values.
 // Every record operation runs through the SDK service of the flow's principal (local-organization-service.mjs), which writes
@@ -148,7 +148,7 @@ function dataverseProvider(store, diagnostic) {
       case 'CreateRecord': return service.createAsync(entity, values).then(row => ({ statusCode: 201, body: clone(row) }));
       case 'UpdateOnlyRecord': return service.updateAsync(entity, p.recordId, values).then(row => ({ statusCode: 200, body: clone(row) }));
       case 'UpdateRecord': {
-        // unverified: the status codes of the upsert answers (201 created, 200 updated).
+        // Assumed: the status codes of the upsert answers (201 created, 200 updated).
         let exists = true;
         try { service.get(entity, p.recordId); } catch (error) { if (error.code !== 'NotFound') throw error; exists = false; }
         if (exists) return service.updateAsync(entity, p.recordId, values).then(row => ({ statusCode: 200, body: clone(row) }));
@@ -162,9 +162,9 @@ function dataverseProvider(store, diagnostic) {
         return { statusCode: 200, body: service.get(entity, p.recordId, selected ? { allColumns: false, columns: selected } : undefined, p.partitionId != null ? { partitionId: p.partitionId } : {}) };
       }
       case 'ListRecords': {
-        // Learn power-automate/dataverse/list-rows: 5,000 rows per page; without the pagination setting the answer carries
+        // 5,000 rows per page; without the pagination setting the answer carries
         // @odata.nextLink, whose skip token ($skiptoken) the next List rows call passes back.
-        // unverified: the skip token's format (a paging cookie with the page number) and the nextLink's host (relative here).
+        // Assumed: the skip token's format (a paging cookie with the page number) and the nextLink's host (relative here).
         const page = p.$skiptoken == null ? 1 : Number(/pagenumber="(\d+)"/.exec(String(p.$skiptoken))?.[1]);
         if (!(page >= 1)) throw new DataError('The skip token is not one a List rows answer issued.', 400, 'LocalFlowExpression');
         const answer = (rows, more, rest = {}) => {
@@ -172,7 +172,7 @@ function dataverseProvider(store, diagnostic) {
           return { statusCode: 200, body: { ...rest, value: rows, ...(link ? { '@odata.nextLink': link } : {}) }, ...(link ? { nextLink: link } : {}) };
         };
         if (p.fetchXml != null) {
-          // unverified: native behaviour when FetchXML is combined with the OData options; refused here.
+          // Native behaviour when FetchXML is combined with the OData options is not known; refused here.
           if (['$select', '$filter', '$orderby', '$top', '$expand'].some(key => p[key] !== undefined)) throw new DataError('A FetchXML query is not combined with $select, $filter, $orderby, $top or $expand.', 400, 'LocalFlowExpression');
           const xml = String(p.fetchXml).replace(/<fetch\b([^>]*?)(\/?)>/i, (_, attrs, close) => `<fetch${attrs.replace(/\s+page\s*=\s*(["'])[^"']*\1/i, '')} page="${page}"${close}>`);
           const fetched = service.fetch(xml);
@@ -283,8 +283,8 @@ async function sendLoopback({ method, url, headers, body }, context) {
 }
 // The GET of an asynchronous operation's status URL (202 + Location): resolved against the request URI (followAsync passes a
 // later Location already resolved against the previous status URL), then the connection rewrites; only loopback
-// (sendLoopback) or a pack http fixture answers it. The answer carries statusUrl, the base of the next relative Location. unverified: which request headers the native engine
-// sends with a status poll; none are forwarded here, so no credential reaches the status URL.
+// (sendLoopback) or a pack http fixture answers it. The answer carries statusUrl, the base of the next relative Location. The headers
+// the native engine sends with a status poll are not known; none are forwarded here, so no credential reaches the status URL.
 const statusUrlOf = (location, { parameters }) => new URL(location, parameters?.uri ?? parameters?.url).href;
 const pollRequest = (statusUrl, settings) => ({ method: 'GET', url: rewrite(statusUrl, settings?.rewrites), headers: {} });
 function httpProvider() {
@@ -431,7 +431,7 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
 
 // The authorization code sign-in of one connection (OpenAPI 2.0 flow accessCode): a one-time loopback redirect listener
 // (http://127.0.0.1:<port>/callback, RFC 8252 section 7.3) receives the code, which is exchanged with the PKCE verifier
-// (RFC 7636, S256). unverified: the native consent redirect (the connector's own redirect URL) is replaced by the loopback one.
+// (RFC 7636, S256). Deliberate difference: the native consent redirect (the connector's own redirect URL) is replaced by the loopback one.
 // Answers { authorizeUrl, redirectUri, expiresAt, completion }; completion resolves { connectionId, expiresAt } once signed in.
 async function beginAuthorization(connector, connectionId, settings, { resolved, tokens, now, tokenRequest, form, scope, timeoutMs = 10 * 60000 }) {
   const auth = connector.auth, credentials = resolved(settings.auth);
@@ -487,17 +487,16 @@ function packProvider(pack) {
 const levelled = (operations, parity) => [...operations.map(name => ({ name, level: 'behaviour' })), { name: parity, level: 'contract' }];
 const param = (p, key, wrapper) => p[key] ?? (wrapper ? p[`${wrapper}/${key}`] ?? (isMap(p[wrapper]) ? p[wrapper][key] : undefined) : undefined);
 
-// Approvals (shared_approvals). Operation ids and parameter keys from https://learn.microsoft.com/connectors/approvals/
-// (read 2026-10-22): CreateAnApproval (approvalType + ApprovalCreationInput), StartAndWaitForAnApproval (approvalType +
-// WebhookApprovalCreationInput), WaitForAnApproval (approvalName). Output field names follow the documented
+// Approvals (shared_approvals): CreateAnApproval (approvalType + ApprovalCreationInput), StartAndWaitForAnApproval
+// (approvalType + WebhookApprovalCreationInput), WaitForAnApproval (approvalName). Output field names follow the documented
 // TextSuggestionApprovalCreationOutput (name, title, details, outcome, requestDate, completionDate, responses[] with
-// responder, requestDate, responseDate, approverResponse, comments); "Approve"/"Reject" are case-sensitive (Learn).
-// unverified: the outputs of the dynamic operations, their status codes, and the per-type completion rules (only the
+// responder, requestDate, responseDate, approverResponse, comments); "Approve"/"Reject" are case-sensitive.
+// Assumed: the outputs of the dynamic operations, their status codes, and the per-type completion rules (only the
 // Basic "first to respond" rule is applied: the first response completes the approval).
 // A waiting operation answers { suspended: { kind: 'approval', id, timeoutAt, assignedTo } }; only a caller that sets
 // context.canSuspend (the flow run store integration) receives it, any other caller gets 501 FlowSuspendNotWired.
 export const APPROVAL_OPERATIONS = ['CreateAnApproval', 'StartAndWaitForAnApproval', 'WaitForAnApproval'];
-// Power Automate runs end after 30 days (https://learn.microsoft.com/power-automate/limits-and-config, run duration).
+// Power Automate runs end after 30 days.
 export const DEFAULT_WAIT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 const APPROVAL_STATUS = { Approve: 'Approved', Reject: 'Rejected' };
 const approvalsOf = store => ((store.state.simulator ??= {}).approvals ??= {});
@@ -565,9 +564,9 @@ function approvalsProvider(store, { now, uuid }) {
   };
 }
 
-// Service Bus (shared_servicebus) queue actions over the local message bus (api.providers.messaging). Operation ids and
-// parameter keys from https://learn.microsoft.com/connectors/servicebus/ (read 2026-10-22). Topic actions are not mapped.
-// unverified: the action status codes and that SendMessage/settlement answer an empty body.
+// Service Bus (shared_servicebus) queue actions over the local message bus (api.providers.messaging). Topic actions are
+// not mapped.
+// Assumed: the action status codes and that SendMessage/settlement answer an empty body.
 // ponytail: ContentType, Label, CorrelationId, SessionId, To/ReplyTo and TimeToLive are not kept (the bus has body,
 // properties, messageId and schedule only); extend the bus row when a scenario reads them back.
 export const QUEUE_OPERATIONS = ['SendMessage', 'SendMessages', 'GetMessagesFromQueueWithPeekLock', 'CompleteMessageInQueue', 'AbandonMessageInQueue', 'DeadLetterMessageInQueue'];
@@ -583,7 +582,7 @@ function queueProvider(messaging) {
   const settled = { statusCode: 200, body: null };
   const operations = {
     SendMessage: async (bus, p) => { await send(bus, p.entityName, isMap(p.message) ? p.message : p); return settled; },
-    // unverified: the batch body; both a `messages` array and a single message's flat keys are accepted.
+    // Assumed: the batch body; both a `messages` array and a single message's flat keys are accepted.
     SendMessages: async (bus, p) => { for (const m of Array.isArray(p.messages) ? p.messages : [p]) await send(bus, p.entityName, m); return settled; },
     GetMessagesFromQueueWithPeekLock: async (bus, p) => ({ statusCode: 200, body: (await bus.receive(entity(p.queueName, p.queueType), { mode: 'peekLock', maxMessages: p.maxMessageCount ?? 20, nested: true })).map(serviceBusMessage) }),
     CompleteMessageInQueue: async (bus, p) => { await bus.complete(p.lockToken, { nested: true }); return settled; },
@@ -611,10 +610,9 @@ function childFlowProvider() {
   };
 }
 
-// ---- retry policy ----------------------------------------------------------------------------------------------------
+// ---- retry policy
 
-// Action retryPolicy (https://learn.microsoft.com/azure/logic-apps/logic-apps-exception-handling#retry-policies, read
-// 2026-10-22): type fixed | exponential | none, count, interval as an ISO 8601 duration. Locally count is at most 4.
+// Action retryPolicy: type fixed | exponential | none, count, interval as an ISO 8601 duration. Locally count is at most 4.
 // ponytail: exponential waits interval * 2^(attempt-1) without the native random range or minimum/maximumInterval.
 const DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
 /** Milliseconds of an ISO 8601 day-time duration (PnDTnHnMnS), or null. */
@@ -633,7 +631,7 @@ export function parseRetryPolicy(value) {
   if (intervalMs > 24 * 60 * 60 * 1000) throw new Error('retryPolicy.interval must be at most one day');
   return { type: value.type, count: value.count, intervalMs };
 }
-// Transient: a connectivity failure, or an answer of 408, 429 or 5xx (https://learn.microsoft.com/azure/logic-apps/error-exception-handling#retry-policies).
+// Transient: a connectivity failure, or an answer of 408, 429 or 5xx.
 const transient = (answer, error) => error
   ? ['ProviderUnavailable', 'ProviderTimeout'].includes(error.code) || ['TimeoutError', 'AbortError'].includes(error.name)
   : answer?.statusCode === 408 || answer?.statusCode === 429 || answer?.statusCode >= 500;
@@ -650,7 +648,7 @@ function retryAfterMs(value, now) {
 // ponytail: at most 100 status polls per operation; the run-level deadline normally ends a longer one first.
 const MAX_POLLS = 100;
 
-// ---- runtime ---------------------------------------------------------------------------------------------------------
+// ---- runtime
 
 function principals(packs) {
   const result = [];
@@ -662,8 +660,6 @@ function principals(packs) {
  * customConnectors: compiled Solution custom connectors (custom-connector.mjs customConnectorsOf), an array or a function
  * answering the current array (sources reload); useCustomConnectors() replaces it later. Pack flowActions and flowTriggers
  * exports are reachable through flowActions() and flowTriggers(connectorId, operationId).
- */
-/**
  * stateDirectory: the runtime's private state directory (the vault key of sealed connection tokens, built custom connector
  * script hosts); dotnet: the .NET SDK command that runs custom connector scripts.
  */
@@ -715,12 +711,10 @@ export function createConnectorRuntime({ store, connections = {}, providers = []
     }
   }
   // The asynchronous operation pattern of HTTP-based providers (http, fixture, custom connectors): an answer of 202 with a
-  // Location header is polled with GET after Retry-After (1 second by default) until a non-202 answer, which is the result
-  // (https://learn.microsoft.com/azure/logic-apps/logic-apps-create-api-app#action-patterns). The run-level deadline
-  // (context.timeoutMs) bounds it and the run's cancellation ends it; context.asyncPattern false (the action's
-  // DisableAsyncPattern operation option) answers the 202 as is
-  // (https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#operation-options).
-  // unverified: a 202 without a Location header is answered as is. A relative Location resolves against the URI of the
+  // Location header is polled with GET after Retry-After (1 second by default) until a non-202 answer, which is the result.
+  // The run-level deadline (context.timeoutMs) bounds it and the run's cancellation ends it; context.asyncPattern false (the
+  // action's DisableAsyncPattern operation option) answers the 202 as is.
+  // Assumed: a 202 without a Location header is answered as is. A relative Location resolves against the URI of the
   // response that carried it (RFC 9110 section 10.2.2): the first against the request, a later one against the previous
   // status URL (a provider's poll answers it as statusUrl).
   async function followAsync(provider, request, ctx, answer) {
@@ -922,7 +916,7 @@ export function createConnectorRuntime({ store, connections = {}, providers = []
   };
 }
 
-// ---- validators the project config and pack-export registries call --------------------------------------------------
+// ---- validators the project config and pack-export registries call
 
 const CREDENTIAL = /secret|password|key|token/i;
 const REFERENCE = /^(?:env|variable):[A-Za-z_][\w.-]*$/;

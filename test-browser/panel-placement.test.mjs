@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
@@ -7,6 +7,12 @@ import { browserLaunchOptions } from "../mirage/lib/browser-launch.mjs";
 import { ownedFixture } from "../mirage/testing/owned-fixture.mjs";
 import { panelUi } from "../lense/panel-ui.mjs";
 import { modelDrivenPanelData } from "../lense/model-driven-panel.mjs";
+
+let browser;
+before(async () => {
+  browser = await chromium.launch(browserLaunchOptions());
+});
+after(() => browser?.close());
 
 for (const modelDriven of [false, true]) {
   test(
@@ -30,16 +36,15 @@ for (const modelDriven of [false, true]) {
       server.listen(0, "127.0.0.1");
       await once(server, "listening");
       const origin = `http://127.0.0.1:${server.address().port}`;
-      let browser;
-      owner.add(() => browser?.close());
+      let context;
+      owner.add(() => context?.close());
       owner.add(async () => {
         server.closeAllConnections();
         await new Promise((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),
         );
       });
-      browser = await chromium.launch(browserLaunchOptions());
-      const context = await browser.newContext({
+      context = await browser.newContext({
         viewport: { width: 1280, height: 960 },
       });
       const page = await context.newPage();

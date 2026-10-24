@@ -1,7 +1,6 @@
 // $pages forms, tabs, sections and controls over a rendered native basic form, and the file-column methods over the
-// portal Web API (Learn: power-pages/configure/client-api forms-tabs-sections, control-methods, controls, dataverse).
-// Invented x_ data; nothing leaves loopback.
-import test from "node:test";
+// portal Web API.
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -11,6 +10,10 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 const SITE = "77777777-7777-4777-8777-777777777701";
 const ROW = "77777777-7777-4777-8777-777777777702";
@@ -61,9 +64,8 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, CONTACT, { roles: ["Member"] });
   const page = await context.newPage();
   const errors = [];
@@ -115,7 +117,7 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
     const form = $pages.currentPage.forms.getFormByName("Item");
     const count = form.getControlByLogicalName("x_count");
     count.setRequired(true, "Count is needed.");
-    // A fresh lookup per call: validators belong to the rendered control, not to one lookup (FC3-72).
+    // A fresh lookup per call: validators belong to the rendered control, not to one lookup.
     form.getControlByLogicalName("x_name").addValidator("upper", () => true, "Replaced by the next addition.");
     form.getControlByLogicalName("x_name").addValidator("upper", (value) => value === value.toUpperCase(), "Name must be upper case.");
     const valid = Page_ClientValidate("");
@@ -152,8 +154,7 @@ test("$pages forms bind to the rendered basic form: tabs, sections, values, visi
 // Full name, rich text and code component cells rendered by platform.mjs (renderComponent: the read-only full name
 // composite beside the form's first, middle and last name cells, the rich text hidden value beside its editor, a code
 // component over its native input), with the portal client object runtime, the client API script and a real code
-// component mounted by the PCF host (code-components-client.js) that observes the change (RC4a-15; Learn:
-// power-pages/configure/client-api/controls).
+// component mounted by the PCF host (code-components-client.js) that observes the change.
 async function renderedContactForm() {
   const { renderComponent } = await import("../lib/platform.mjs");
   const fields = [
@@ -176,12 +177,11 @@ async function renderedContactForm() {
   return { html, spec: specs[0] };
 }
 
-test("$pages full name, rich text and code component controls read and write their values over platform.mjs output (FC3-31, RC4a-15)", async (t) => {
+test("$pages full name, rich text and code component controls read and write their values over platform.mjs output", async (t) => {
   const { html, spec } = await renderedContactForm();
   const { clientPortalObjectRuntime } = await import("../lib/portal-client-object.mjs");
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
   const page = await browser.newPage();
+  t.after(() => page.context().close());
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // setIsDirty is the native form script the rendered inputs call on change.

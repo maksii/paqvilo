@@ -1,8 +1,7 @@
-// Masking rules on secured columns (Learn create-manage-masking-rules, column-level-security#display-masked-data,
-// optional-parameters#return-unmasked-data): a reader with Read gets the masked value; UnMaskedData=true returns the clear
+// Masking rules on secured columns: a reader with Read gets the masked value; UnMaskedData=true returns the clear
 // value only with CanReadUnmasked (1 One Record: single-record reads; 3 All Records: every read); every principal,
-// System Administrators included, reads masked values until it asks. Invented schema and GUIDs only.
-import test from "node:test";
+// System Administrators included, reads masked values until it asks.
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { ADMIN, CUST, readFixture } from "./read-projection-fixture.mjs";
 import { dispatchSdkCall } from "../lib/plugin-clr.mjs";
@@ -39,8 +38,15 @@ async function setup(t, { unmasked = 0, expression = "." } = {}) {
   return { ...f, read, single, many, fetched };
 }
 
-test("a reader with CanRead and a masking rule gets the masked value on every read route", async (t) => {
-  const f = await setup(t);
+// Read-only tests share one organization per CanReadUnmasked level; tests that write or change the rule set up their own.
+const shared = {}, cleanup = [];
+before(async () => {
+  for (const unmasked of [0, 1, 3]) shared[unmasked] = await setup({ after: (fn) => cleanup.push(fn) }, { unmasked });
+});
+after(async () => { for (const fn of cleanup.reverse()) await fn(); });
+
+test("a reader with CanRead and a masking rule gets the masked value on every read route", async () => {
+  const f = shared[0];
   assert.equal(await f.single(), MASKED);
   assert.equal(await f.many(), MASKED);
   assert.equal(await f.fetched(), MASKED);
@@ -48,10 +54,10 @@ test("a reader with CanRead and a masking rule gets the masked value on every re
   assert.equal(await (await f.request("GET", `/x_items(${ITEM})/x_secret/$value`, undefined, {}, CUST)).text(), MASKED);
 });
 
-// Learn web-service-error-codes 0x80041155 CannotFilterOnMaskedAttribute: a masked column is never a filter (or order) operand,
+// 0x80041155 CannotFilterOnMaskedAttribute: a masked column is never a filter (or order) operand,
 // so prefix probes cannot recover the stored value.
-test("a filter, $apply filter, $orderby or FetchXML condition/order on a masked column answers 400 0x80041155", async (t) => {
-  const f = await setup(t);
+test("a filter, $apply filter, $orderby or FetchXML condition/order on a masked column answers 400 0x80041155", async () => {
+  const f = shared[0];
   const refused = async (path) => {
     const response = await f.request("GET", path, undefined, {}, CUST);
     const body = await response.json();
@@ -69,23 +75,23 @@ test("a filter, $apply filter, $orderby or FetchXML condition/order on a masked 
   assert.equal((await f.read(`/x_items?$select=x_name&$filter=startswith(x_secret,'TOP')&UnMaskedData=true`, ADMIN)).value.length, 1);
 });
 
-test("CanReadUnmasked 3 with UnMaskedData filters on the clear value; One Record does not unmask a collection filter", async (t) => {
-  const all = await setup(t, { unmasked: 3 });
+test("CanReadUnmasked 3 with UnMaskedData filters on the clear value; One Record does not unmask a collection filter", async () => {
+  const all = shared[3];
   assert.equal((await all.read(`/x_items?$select=x_name&$filter=x_secret eq '${SECRET}'&UnMaskedData=true`)).value.length, 1);
-  const one = await setup(t, { unmasked: 1 });
+  const one = shared[1];
   const response = await one.request("GET", `/x_items?$select=x_name&$filter=x_secret eq '${SECRET}'&UnMaskedData=true`, undefined, {}, CUST);
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, "0x80041155");
 });
 
-test("UnMaskedData=true with CanReadUnmasked 0 still returns masked", async (t) => {
-  const f = await setup(t, { unmasked: 0 });
+test("UnMaskedData=true with CanReadUnmasked 0 still returns masked", async () => {
+  const f = shared[0];
   assert.equal(await f.single("&UnMaskedData=true"), MASKED);
   assert.equal(await f.many("&UnMaskedData=true"), MASKED);
 });
 
-test("CanReadUnmasked 1 unmasks a single Retrieve but not RetrieveMultiple", async (t) => {
-  const f = await setup(t, { unmasked: 1 });
+test("CanReadUnmasked 1 unmasks a single Retrieve but not RetrieveMultiple", async () => {
+  const f = shared[1];
   assert.equal(await f.single("&UnMaskedData=true"), SECRET);
   assert.equal((await f.read(`/x_items(${ITEM})/x_secret?UnMaskedData=true`)).value, SECRET);
   assert.equal(await f.single(), MASKED, "without the parameter the value stays masked");
@@ -93,21 +99,21 @@ test("CanReadUnmasked 1 unmasks a single Retrieve but not RetrieveMultiple", asy
   assert.equal(await f.fetched("&UnMaskedData=true"), MASKED);
 });
 
-test("CanReadUnmasked 3 unmasks collections and FetchXML", async (t) => {
-  const f = await setup(t, { unmasked: 3 });
+test("CanReadUnmasked 3 unmasks collections and FetchXML", async () => {
+  const f = shared[3];
   assert.equal(await f.many("&UnMaskedData=true"), SECRET);
   assert.equal(await f.fetched("&UnMaskedData=true"), SECRET);
   assert.equal(await f.many(), MASKED);
 });
 
-test("a System Administrator reads masked values until it asks for UnMaskedData", async (t) => {
-  const f = await setup(t);
+test("a System Administrator reads masked values until it asks for UnMaskedData", async () => {
+  const f = shared[0];
   assert.equal(await f.single("", ADMIN), MASKED);
   assert.equal(await f.many("&UnMaskedData=true", ADMIN), SECRET);
 });
 
-test("unmaskeddata (wrong case) answers 0x80060888", async (t) => {
-  const f = await setup(t, { unmasked: 3 });
+test("unmaskeddata (wrong case) answers 0x80060888", async () => {
+  const f = shared[3];
   const response = await f.request("GET", `/x_items?$select=x_secret&unmaskeddata=true`, undefined, {}, CUST);
   assert.equal(response.status, 400);
   const body = await response.json();
@@ -126,8 +132,8 @@ test("each match of the expression becomes one masked character", async (t) => {
   assert.equal(await f.single(), "*-*-123");
 });
 
-test("SOAP Retrieve honours the UnMaskedData request parameter", async (t) => {
-  const f = await setup(t, { unmasked: 1 });
+test("SOAP Retrieve honours the UnMaskedData request parameter", async () => {
+  const f = shared[1];
   const envelope = (unmask) => `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><Execute xmlns="http://schemas.microsoft.com/xrm/2011/Contracts/Services"><request i:type="a:RetrieveRequest" xmlns:a="http://schemas.microsoft.com/xrm/2011/Contracts" xmlns:i="http://www.w3.org/2001/XMLSchema-instance"><a:Parameters xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic"><a:KeyValuePairOfstringanyType><b:key>Target</b:key><b:value i:type="a:EntityReference"><a:Id>${ITEM}</a:Id><a:LogicalName>x_item</a:LogicalName><a:Name i:nil="true"/></b:value></a:KeyValuePairOfstringanyType><a:KeyValuePairOfstringanyType><b:key>ColumnSet</b:key><b:value i:type="a:ColumnSet"><a:AllColumns>false</a:AllColumns><a:Columns xmlns:c="http://schemas.microsoft.com/2003/10/Serialization/Arrays"><c:string>x_secret</c:string></a:Columns></b:value></a:KeyValuePairOfstringanyType>${unmask ? '<a:KeyValuePairOfstringanyType><b:key>UnMaskedData</b:key><b:value i:type="c:boolean" xmlns:c="http://www.w3.org/2001/XMLSchema">true</b:value></a:KeyValuePairOfstringanyType>' : ""}</a:Parameters><a:RequestId i:nil="true"/><a:RequestName>Retrieve</a:RequestName></request></Execute></s:Body></s:Envelope>`;
   // The SOAP endpoint (/XRMServices/2011/Organization.svc/web) takes the same bearer; the dot segments leave /api/data/v9.2.
   const send = async (unmask) => {
@@ -141,8 +147,8 @@ test("SOAP Retrieve honours the UnMaskedData request parameter", async (t) => {
   assert.match(await send(true), new RegExp(SECRET));
 });
 
-test("the exported read projection applies masking to an SDK-shaped row", async (t) => {
-  const f = await setup(t, { unmasked: 1 });
+test("the exported read projection applies masking to an SDK-shaped row", async () => {
+  const f = shared[1];
   const user = f.store.state.tables.systemuser.find((row) => String(row.applicationid ?? "").toLowerCase() === CUST);
   const project = (options) => f.api.records.projectRow({ user, identity: {} }, "x_item", { x_itemid: ITEM, x_secret: SECRET, x_name: "Invented" }, options);
   assert.equal(project({}).x_secret, MASKED);
@@ -151,7 +157,7 @@ test("the exported read projection applies masking to an SDK-shaped row", async 
   assert.deepEqual(Object.keys(project({ select: ["x_name"] })).sort(), ["x_itemid", "x_name"]);
 });
 
-// Learn create-manage-masking-rules: "Audit log shows masked values in the before-and-after update events".
+// The audit log shows masked values in the before-and-after update events.
 test("audit details show the masked old and new values of a masked column", async (t) => {
   const f = await setup(t);
   await f.store.transact(() => {
@@ -171,9 +177,9 @@ test("audit details show the masked old and new values of a masked column", asyn
   assert.equal(detail.OldValue.x_secret, MASKED);
 });
 
-// Learn optional-parameters#return-unmasked-data: request["UnMaskedData"] = true on Retrieve and RetrieveMultiple, under the
+// request["UnMaskedData"] = true on Retrieve and RetrieveMultiple, under the
 // same CanReadUnmasked rule as the Web API.
-test("SDK Retrieve and RetrieveMultiple honour the UnMaskedData request parameter", async (t) => {
+test("SDK Retrieve and RetrieveMultiple honour the UnMaskedData request parameter", async () => {
   const execute = (f, requestName, values) => {
     const user = f.store.state.tables.systemuser.find((row) => String(row.applicationid ?? "").toLowerCase() === CUST);
     const profile = { userId: user.systemuserid, evidence: "invented masking test", grants: [{ entity: "x_item", operations: ["read"] }] };
@@ -182,13 +188,13 @@ test("SDK Retrieve and RetrieveMultiple honour the UnMaskedData request paramete
   };
   const retrieve = (unmask) => ({ Target: { $type: "EntityReference", logicalName: "x_item", id: ITEM }, ColumnSet: { $type: "ColumnSet", allColumns: true }, ...(unmask ? { UnMaskedData: true } : {}) });
   const query = (unmask) => ({ Query: { $type: "QueryExpression", entityName: "x_item", columnSet: { $type: "ColumnSet", allColumns: true } }, ...(unmask ? { UnMaskedData: true } : {}) });
-  const one = await setup(t, { unmasked: 1 });
+  const one = shared[1];
   assert.match(execute(one, "Retrieve", retrieve(true)), new RegExp(SECRET));
   assert.doesNotMatch(execute(one, "Retrieve", retrieve(false)), new RegExp(SECRET));
   assert.doesNotMatch(execute(one, "RetrieveMultiple", query(true)), new RegExp(SECRET), "One Record does not unmask RetrieveMultiple");
-  const all = await setup(t, { unmasked: 3 });
+  const all = shared[3];
   assert.match(execute(all, "RetrieveMultiple", query(true)), new RegExp(SECRET));
   assert.doesNotMatch(execute(all, "RetrieveMultiple", query(false)), new RegExp(SECRET));
-  const none = await setup(t, { unmasked: 0 });
+  const none = shared[0];
   assert.doesNotMatch(execute(none, "Retrieve", retrieve(true)), new RegExp(SECRET), "without CanReadUnmasked the value stays masked");
 });

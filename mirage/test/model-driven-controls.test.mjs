@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { controlDescriptor } from '../lib/model-driven/control-descriptors.mjs';
+import { compileForm } from '../lib/model-driven/solution.mjs';
 
 test('registered native column types select scalar controls without redundant presentation metadata', () => {
   for (const [dataverseType, type] of [['int', 'number'], ['nvarchar', 'text'], ['bit', 'boolean'], ['datetime', 'date'], ['lookup', 'lookup'], ['ntext', 'textarea']])
     assert.equal(controlDescriptor({ dataverseType }).type, type);
 });
-import { compileForm } from '../lib/model-driven/solution.mjs';
 
 test('control capabilities preserve explicit write restrictions and unknown placeholders', () => {
   assert.deepEqual(controlDescriptor({ type: 'text', validForUpdate: false }), { type: 'text', supported: true, create: true, update: false });
@@ -25,6 +25,7 @@ test('supported scalar, lookup and choice controls have no unsupported reason; u
   assert.equal(fields[3].supported, false); assert.equal(fields[3].reason, 'Column metadata is unavailable.');
   assert.equal(fields[4].supported, false); assert.equal(fields[4].reason, 'This control is not supported locally yet.');
 });
+
 test('compiled forms retain custom bindings and event dependencies for explicitly trusted hosts', () => {
   const xml = '<form><formLibraries><Library name="x_library" libraryUniqueId="lib"/></formLibraries><events><event name="onload"><Handlers><Handler functionName="neverExecute" libraryName="x_library"/></Handlers></event></events><tabs><tab name="main"><columns><column><sections><section><rows><row><cell><control id="custom" uniqueid="invented-control" classid="invented-class" datafieldname="x_name"><parameters><Unknown future="yes">opaque value</Unknown></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="invented-control"><customControl name="Invented.FutureControl" formFactor="0"><parameters><prop type="Bound">x_name</prop></parameters></customControl></controlDescription></controlDescriptions></form>';
   const form = compileForm({ id: 'invented-form', xml }, { x_name: { type: 'text' } });

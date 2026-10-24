@@ -1,5 +1,5 @@
-// In-memory upload session bounds (03-B4): the maxUploadSessions cap, the maxUploadBytes budget and the idle TTL that each use
-// of a session restarts. Invented schema and GUIDs; no network.
+// In-memory upload session bounds: the maxUploadSessions cap, the maxUploadBytes budget and the idle TTL that each use
+// of a session restarts.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

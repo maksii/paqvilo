@@ -517,7 +517,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
     const entry = refreshTokens.get(form.refresh_token);
     if (!entry || entry.appId !== app.appId.toLowerCase()) return failure(9002313, MALFORMED);
     refreshTokens.delete(form.refresh_token);
-    // unverified: AADSTS700082 for an expired refresh token follows the Entra error code list; no captured response.
+    // AADSTS700082 follows the Entra error code list; the native response for an expired refresh token is not captured.
     if (entry.expiresAt <= now) return failure(700082, "The refresh token has expired due to inactivity.");
     const user = entry.userOid ? interactiveUser(entry.userOid) : null;
     if (entry.userOid && !user) return failure(9002313, MALFORMED);
@@ -619,7 +619,7 @@ export function createAuthority({ tenantId, applications, users, federatedIssuer
     if (!clientId) return failure(900144, "The request body must contain the following parameter: 'client_id'.");
     const app = findApp(clientId);
     if (!app) {
-      // An unregistered client on the on-behalf-of grant is reported as no consent (AADSTS65001), per the milestone 2 contract.
+      // An unregistered client on the on-behalf-of grant is reported as no consent (AADSTS65001).
       if (form.grant_type === JWT_BEARER) return failure(65001, `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`);
       return failure(700016, `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`);
     }

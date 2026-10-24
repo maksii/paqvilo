@@ -2,16 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { GRANT_TYPES, dataverseSettings, dataverseStatus, grantAllowed } from "../lib/dataverse-settings.mjs";
 import { uuidV5 } from "../lib/dataverse-security.mjs";
-test("grantAllowed maps short grant names onto OAuth grant_type values and accepts both spellings", () => {
-  assert.equal(grantAllowed({}, "client_credentials"), true, "unset allows every grant");
-  assert.equal(grantAllowed({ allowedGrants: ["client_credentials"] }, "client_credentials"), true);
-  assert.equal(grantAllowed({ allowedGrants: ["client_credentials"] }, "password"), false);
-  assert.equal(grantAllowed({ allowedGrants: ["device_code"] }, "urn:ietf:params:oauth:grant-type:device_code"), true);
-  assert.equal(grantAllowed({ allowedGrants: ["on_behalf_of"] }, "urn:ietf:params:oauth:grant-type:jwt-bearer"), true);
-  assert.equal(grantAllowed({ allowedGrants: ["urn:ietf:params:oauth:grant-type:device_code"] }, "urn:ietf:params:oauth:grant-type:device_code"), true);
-  assert.equal(grantAllowed({ allowedGrants: [] }, "client_credentials"), false);
-});
-
 const APP = "22222222-2222-2222-2222-222222222222";
 const USER_OBJECT = "33333333-3333-3333-3333-333333333333";
 
@@ -45,10 +35,17 @@ test('nullable optional defaults do not weaken required values or invalid-type v
   assert.equal(nullable.gitRemoteDirectory, null);
   assert.equal(nullable.applications[0].secretEnvironmentVariable, null);
   assert.deepEqual(nullable.serviceProtection, { requestsPer300s: null, executionMsPer300s: null, concurrentRequests: null });
-  for (const raw of [{ gitRemoteDirectory: '' }, { gitRemoteDirectory: false }, { friendlyName: null }, { localeId: null },
-    { applications: [{ appId: null, displayName: 'Missing app ID' }] }, { managedIdentities: [{ clientId: null, displayName: 'Missing client ID' }] },
-    { applications: [{ appId: APP, displayName: null }] }, { applications: [{ appId: APP, displayName: 'Invalid', secretEnvironmentVariable: 12 }] },
-    { serviceProtection: { concurrentRequests: '' } }, { serviceProtection: { requestsPer300s: 0 } }]) assert.throws(() => dataverseSettings(raw));
+  for (const [raw, message] of [
+    [{ gitRemoteDirectory: '' }, /dataverse\.gitRemoteDirectory must be non-empty text$/],
+    [{ gitRemoteDirectory: false }, /dataverse\.gitRemoteDirectory must be non-empty text$/],
+    [{ friendlyName: null }, /dataverse\.friendlyName must be non-empty text$/],
+    [{ localeId: null }, /dataverse\.localeId must be an integer from 1 to 65535$/],
+    [{ applications: [{ appId: null, displayName: 'Missing app ID' }] }, /dataverse\.applications\[0\]\.appId is required$/],
+    [{ managedIdentities: [{ clientId: null, displayName: 'Missing client ID' }] }, /dataverse\.managedIdentities\[0\]\.clientId is required$/],
+    [{ applications: [{ appId: APP, displayName: null }] }, /dataverse\.applications\[0\]\.displayName is required$/],
+    [{ applications: [{ appId: APP, displayName: 'Invalid', secretEnvironmentVariable: 12 }] }, /dataverse\.applications\[0\]\.secretEnvironmentVariable must be non-empty text$/],
+    [{ serviceProtection: { concurrentRequests: '' } }, /dataverse\.serviceProtection\.concurrentRequests must be an integer from 1/],
+  ]) assert.throws(() => dataverseSettings(raw), message, JSON.stringify(raw));
 });
 
 test("absent and false disable the simulator; true enables defaults", () => {
@@ -72,7 +69,7 @@ test("normalizes GUIDs to lowercase and fills application and user defaults", ()
   assert.equal(settings.applications[0].appId, APP);
   assert.deepEqual(settings.applications[0].roles, []);
   assert.equal(settings.applications[0].publicClient, false);
-  assert.equal(settings.applications[0].allowedGrants.length, 6);
+  assert.deepEqual(settings.applications[0].allowedGrants, ["client_credentials", "authorization_code", "device_code", "refresh_token", "password", "on_behalf_of"]);
   assert.deepEqual(settings.users[0].roles, ["Basic User"]);
   assert.equal(settings.users[0].objectId, USER_OBJECT);
 });
@@ -154,7 +151,7 @@ test("GRANT_TYPES maps setting names to their token endpoint forms", () => {
   });
 });
 
-test("grantAllowed matches names and URN forms; a missing list allows every grant", () => {
+test("grantAllowed matches names and URN forms; a missing list allows every grant and an empty one none", () => {
   const app = dataverseSettings({ applications: [{ appId: APP, displayName: "x", allowedGrants: ["device_code", "on_behalf_of"] }] }).applications[0];
   assert.equal(grantAllowed(app, GRANT_TYPES.device_code), true);
   assert.equal(grantAllowed(app, "device_code"), true);
@@ -163,6 +160,7 @@ test("grantAllowed matches names and URN forms; a missing list allows every gran
   assert.equal(grantAllowed(app, "urn:ietf:params:oauth:grant-type:unknown"), false);
   assert.equal(grantAllowed({ allowedGrants: [GRANT_TYPES.device_code] }, "device_code"), true);
   assert.equal(grantAllowed({}, "password"), true);
+  assert.equal(grantAllowed({ allowedGrants: [] }, "client_credentials"), false);
 });
 
 test("status exposes runtime and derived identity without secrets", () => {
@@ -233,5 +231,11 @@ test('managed identity endpoint modes are validated and survive configuration no
     const settings = dataverseSettings({ managedIdentity: { mode } });
     assert.deepEqual(dataverseSettings(settings).managedIdentity, { mode });
   }
-  for (const managedIdentity of [null, true, [], { mode: 'remote' }, { unknown: true }]) assert.throws(() => dataverseSettings({ managedIdentity }));
+  for (const [managedIdentity, message] of [
+    [null, /dataverse\.managedIdentity must be an object$/],
+    [true, /dataverse\.managedIdentity must be an object$/],
+    [[], /dataverse\.managedIdentity must be an object$/],
+    [{ mode: 'remote' }, /dataverse\.managedIdentity\.mode must be appservice, imds or arc$/],
+    [{ unknown: true }, /dataverse\.managedIdentity\.unknown is not a supported setting$/],
+  ]) assert.throws(() => dataverseSettings({ managedIdentity }), message);
 });

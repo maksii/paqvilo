@@ -6,8 +6,8 @@ import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns } from '../lib/flow-runs.mjs';
 import { executeFlowDefinition, runTrackedFlow } from '../lib/flow-runtime.mjs';
 
-// Task 46: the branch scheduler. Terminate stops the run in any key order; a Wait holds only its own branch, so a concurrent
-// Response answers before the run suspends, and the resume completes the waiting branch. Invented flows only.
+// The branch scheduler. Terminate stops the run in any key order; a Wait holds only its own branch, so a concurrent
+// Response answers before the run suspends, and the resume completes the waiting branch.
 const FLOW = '77777777-7777-4777-8777-0000000000b1';
 const manual = { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object' } } } };
 const wait = runAfter => ({ type: 'Wait', runAfter, inputs: { interval: { count: 1, unit: 'Minute' } } });

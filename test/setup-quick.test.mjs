@@ -1,5 +1,5 @@
 // Quick setup (lense/setup/quick.mjs, preview.mjs): export detection, the documents and edits it writes, and the guards of
-// the preview operation endpoint. Invented folders and names only.
+// the preview operation endpoint.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -60,7 +60,8 @@ test('quick setup finds portal exports, Solutions and pack modules, written as t
   assert.deepEqual(found.portals.map(item => [item.name, item.path, item.value]), [['Invented Site', './exports/site', 'site']]);
   assert.deepEqual(found.solutions.map(item => [item.name, item.path, item.value]), [['InventedCore', './exports/core', 'core']]);
   assert.deepEqual(found.packs.map(item => item.value), ['./data/pack.mjs'], 'node_modules and dot folders are not searched');
-  assert.ok(Number.isInteger(await freePort()));
+  const port = await freePort();
+  assert.ok(Number.isInteger(port) && port > 0 && port < 65536, String(port));
   // The folder picker lists visible folders with what each holds, and writes the chosen folder from the source root.
   const top = await listFolders({ directory: root, sourceRoot: path.join(root, 'exports') });
   assert.deepEqual(top.folders.map(item => item.name), ['data', 'exports'], 'dot folders and node_modules are hidden');
@@ -124,5 +125,5 @@ test('preview operations need the setup token, a known action and a configured t
   const status = await (await fetch(new URL('api/preview', server.url))).json();
   assert.deepEqual(status, { sessions: [], operation: null });
   assert.equal((await fetch(new URL('api/folders', server.url))).status, 200, 'the folder picker lists the project folder');
-  await assert.rejects(fs.stat(path.join(directory, '.paqvilo', 'setup', 'preview-operation.json')), 'a refused request starts nothing');
+  await assert.rejects(fs.stat(path.join(directory, '.paqvilo', 'setup', 'preview-operation.json')), { code: 'ENOENT' }, 'a refused request starts nothing');
 });

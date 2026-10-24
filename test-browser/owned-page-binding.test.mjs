@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -12,15 +12,41 @@ import { browserLaunchOptions } from "../mirage/lib/browser-launch.mjs";
 import { createOwnedPageBindings } from "../lense/owned-page-binding.mjs";
 import { comparison } from "../lense/panel.mjs";
 
-async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "owned-binding-test-"));
-  const server = http.createServer((request, response) =>
-    response
-      .writeHead(200, { "content-type": "text/html" })
-      .end("<!doctype html><h1>Invented</h1>"),
-  );
+const server = http.createServer((request, response) =>
+  response
+    .writeHead(200, { "content-type": "text/html" })
+    .end("<!doctype html><h1>Invented</h1>"),
+);
+let browser, origin;
+before(async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = "http://127.0.0.1:" + server.address().port;
+  origin = "http://127.0.0.1:" + server.address().port;
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
+after(async () => {
+  await browser?.close();
+  await new Promise((resolve) => server.close(resolve));
+});
+
+// A fresh context per test on the shared browser.
+async function fixture(t) {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.goto(origin);
+  return { context, page, origin };
+}
+
+// The rejection message of one owned call, or null when it resolves.
+const rejectionOf = (page, value) =>
+  page.evaluate(
+    (value) => inventedEcho(value).then(() => null, (error) => error.message),
+    value,
+  );
+
+// Only the external-owner test needs a persistent profile with a debugging port.
+async function persistentFixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "owned-binding-test-"));
   const reservation = net.createServer();
   await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
   const port = reservation.address().port;
@@ -36,7 +62,6 @@ async function fixture(t) {
   await page.goto(origin);
   t.after(async () => {
     await context.close();
-    await new Promise((resolve) => server.close(resolve));
     await fs.rm(root, { recursive: true, force: true });
   });
   return { context, page, origin, port };
@@ -46,7 +71,7 @@ test(
   "owned raw binding survives independent persistent-browser CDP owners and observers",
   { timeout: 20000 },
   async (t) => {
-    const f = await fixture(t);
+    const f = await persistentFixture(t);
     const helper = new URL("../lense/owned-page-binding.mjs", import.meta.url)
       .href;
     const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');let observer;try{const p=await b.contexts()[0].newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
@@ -88,26 +113,12 @@ test(
     t.after(() => bridge.close());
     assert.equal(await f.page.evaluate(() => inventedEcho("valid")), "valid");
     assert.equal(
-      await f.page.evaluate(async () => {
-        try {
-          await inventedEcho("x".repeat(300));
-          return false;
-        } catch {
-          return true;
-        }
-      }),
-      true,
+      await rejectionOf(f.page, "x".repeat(300)),
+      "The owned page request is too large.",
     );
     assert.equal(
-      await f.page.evaluate(async () => {
-        try {
-          await inventedEcho("large-result");
-          return false;
-        } catch {
-          return true;
-        }
-      }),
-      true,
+      await rejectionOf(f.page, "large-result"),
+      "The owned page request failed.",
     );
     await f.page.evaluate(() => {
       const frame = document.createElement("iframe");
@@ -196,15 +207,8 @@ test(
     });
     t.after(() => bridge.close());
     assert.equal(
-      await f.page.evaluate(async () => {
-        try {
-          await inventedEcho("never");
-          return false;
-        } catch {
-          return true;
-        }
-      }),
-      true,
+      await rejectionOf(f.page, "never"),
+      "The owned page request failed.",
     );
     const debuggerSession = await f.context.newCDPSession(f.page);
     let pauses = 0;
@@ -365,7 +369,7 @@ test(
         Array.from({ length: 32 }, () =>
           inventedEcho("held").then(
             () => "incorrect-success",
-            () => "rejected",
+            (error) => error.message,
           ),
         ),
       );
@@ -374,6 +378,7 @@ test(
     while (delayed.length < 32 && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(delayed.length, 32);
+    // Past the 1.5 s reply deadline, in Node and in the page's expiresAt stamp.
     await new Promise((resolve) => setTimeout(resolve, 1600));
     blocked = false;
     assert.equal(
@@ -383,7 +388,7 @@ test(
     for (const params of delayed) await send("Runtime.callFunctionOn", params);
     assert.deepEqual(
       await f.page.evaluate(() => window.ownedDeliveryProbe),
-      Array(32).fill("rejected"),
+      Array(32).fill("The owned page reply expired."),
     );
   },
 );
@@ -423,15 +428,8 @@ test(
       removed: valid.removed,
     });
     assert.equal(
-      await f.page.evaluate(async () => {
-        try {
-          await inventedEcho("oversized");
-          return false;
-        } catch {
-          return true;
-        }
-      }),
-      true,
+      await rejectionOf(f.page, "oversized"),
+      "The owned page request failed.",
     );
   },
 );

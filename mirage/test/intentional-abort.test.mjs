@@ -156,7 +156,7 @@ test("The runner's request record may trail the browser's send by the measured l
     f.resources[0].started += lag;
     return reconcileIntentionalReadAbort(f.failure, f)?.replacementRequestId ?? null;
   };
-  // 1625 ms was the largest lag measured in saved evidence; the old 1 s window rejected it.
+  // Lags up to 1625 ms have been measured, so a 1 s window is too short.
   assert.equal(at(1625), "new");
   assert.equal(at(REQUEST_EVENT_LAG.afterMs), "new");
   assert.equal(at(REQUEST_EVENT_LAG.afterMs + 1), null);

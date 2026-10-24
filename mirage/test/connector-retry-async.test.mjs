@@ -1,6 +1,5 @@
-// Tasks 68 and 69: a retry policy retries 408 like 429 and 5xx; an HTTP 202 with Location is polled (Retry-After honoured,
+// A retry policy retries 408 like 429 and 5xx; an HTTP 202 with Location is polled (Retry-After honoured,
 // loopback only, bounded by the run deadline) to its final answer unless the action disables the asynchronous pattern.
-// Loopback servers only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -54,7 +53,7 @@ test('a status URL outside loopback is refused and a Retry-After beyond the run 
   await assert.rejects(call(slow + '/x'), { code: 'ProviderTimeout' });
 });
 
-// RC4b-04: a relative Location resolves against the URI of the response that carried it (RFC 9110 section 10.2.2), so a
+// A relative Location resolves against the URI of the response that carried it (RFC 9110 section 10.2.2), so a
 // chain across two loopback origins polls the second origin, not the first request's.
 test('a relative Location in a 202 chain resolves against the previous status URL on another loopback origin', async t => {
   const seen = [];

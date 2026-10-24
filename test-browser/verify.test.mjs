@@ -1,4 +1,4 @@
-// Exercises the real verify command against disposable loopback fixtures, never a catalogue site.
+// Exercises the real verify command against disposable fixtures.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

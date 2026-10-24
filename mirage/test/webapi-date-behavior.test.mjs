@@ -15,7 +15,7 @@ test('portal round trips preserve five date behaviors and per-request formatted 
     daylightyear:0,daylightmonth:3,daylightday:5,daylightdayofweek:0,daylighthour:3,daylightminute:0,daylightsecond:0,
     standardyear:0,standardmonth:10,standardday:5,standarddayofweek:0,standardhour:4,standardminute:0,standardsecond:0};
   const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',evidence:'Invented portal culture regression'},initial:{settings:{permissionMode:'permissive',formattedValueTimeZone:{evidence:'Invented zone rules',rules:[rule]}},mappings:{event:{entitySet:'events',idColumn:'eventid',fields}},tables:{event:[]}}});ownedFixture(t).add(()=>app.close());
-  const headers={'content-type':'application/json',__RequestVerificationToken:app.state().csrf};
+  const headers={'content-type':'application/json',__RequestVerificationToken:app.csrf};
   const body={local:'7/7/2025 10:30',localdate:'2025-07-06T22:30:00Z',independent:'7/7/2025 10:30',independentdate:'2025-07-06T22:30:00Z',calendar:'2025-7-7'};
   const created=await fetch(app.url+'/_api/events',{method:'POST',headers,body:JSON.stringify(body)});assert.equal(created.status,204,await created.text());
   const url=app.url+`/_api/events(${created.headers.get('entityid')})`,read=await fetch(url).then(r=>r.json());
@@ -32,7 +32,7 @@ test('month-first range errors preserve submitted text and the configured native
   await fs.writeFile(join(source,'sitesetting.yml'),'- adx_name: Webapi/event/enabled\n  adx_value: true\n- adx_name: Webapi/event/fields\n  adx_value: date\n- adx_name: Webapi/error/innererror\n  adx_value: true\n');
   for (const invalidDate of ['invalid-format','crm-minimum']) {
     const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',webApiInvalidDate:invalidDate,evidence:'Synthetic date range regression'},initial:{settings:{permissionMode:'permissive'},mappings:{event:{entitySet:'events',idColumn:'eventid',fields:{date:{type:'datetime',behavior:3,format:'date'}}}},tables:{event:[]}}});ownedFixture(t).add(()=>app.close());
-    const headers={'content-type':'application/json',__RequestVerificationToken:app.state().csrf};
+    const headers={'content-type':'application/json',__RequestVerificationToken:app.csrf};
     const good=await fetch(app.url+'/_api/events',{method:'POST',headers,body:JSON.stringify({date:'2/7/2025'})});assert.equal(good.status,204,await good.text());
     const rowUrl=app.url+`/_api/events(${good.headers.get('entityid')})`,before=await fetch(rowUrl).then(r=>r.json());
     assert.equal(before.date,'2025-02-07T00:00:00Z');assert.equal(before['date@OData.Community.Display.V1.FormattedValue'],'2/7/2025');

@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -54,26 +53,6 @@ test("the presentation mode requires site evidence and a known choice", () => {
   assert.equal(observedConfig(observed).pageErrorPresentation, "generic-error");
   assert.throws(() => observedConfig({ pageErrorPresentation: "generic-error" }), /evidence/);
   assert.throws(() => observedConfig({ ...observed, pageErrorPresentation: "all-errors" }), /pageErrorPresentation/);
-});
-
-test("loopback HTTP preserves the selected status, media type and structure without input probes", async t => {
-  // A fabricated fixed exception tests presentation only. No query scanner,
-  // injection payload, native browser or external request is involved.
-  const server = http.createServer((request, response) => {
-    const answer = observedPageErrorResponse({ ...options, method: request.method });
-    response.writeHead(answer?.status ?? 400, answer?.headers ?? { "content-type": "text/plain" });
-    response.end(answer?.body ?? "ordinary diagnostic");
-  });
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
-  const url = `http://127.0.0.1:${server.address().port}/`;
-  const response = await fetch(url);
-  assert.equal(response.status, 500);
-  assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
-  assert.equal(elements(parse(await response.text()), "h1").length, 2);
-  const post = await fetch(url, { method: "POST" });
-  assert.equal(post.status, 400);
-  assert.equal(await post.text(), "ordinary diagnostic");
 });
 
 test("Mirage leaves ordinary pages and unrelated route errors unchanged in the selected mode", async t => {

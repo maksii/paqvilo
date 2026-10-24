@@ -171,5 +171,5 @@ test('browser code construction keeps hostile JSON values as data', async () => 
     return { probeValue };
   };
   const found = await __testing.discoverTarget(driver, { discover: { from: 'page', selector: hostile, attribute: hostile, path: '/' } });
-  assert.ok(found, 'discovery executes the quoted selector and attribute as data');
+  assert.deepEqual(found, { path: '/record?id=one' }, 'discovery executes the quoted selector and attribute as data');
 });

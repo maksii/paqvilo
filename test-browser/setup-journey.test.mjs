@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -15,8 +15,11 @@ import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 const allSettings = page => page.context().addInitScript(() => { try { localStorage.setItem('paqvilo-setup-view', 'all'); } catch { /* no storage */ } });
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
-// One loopback origin serving /_setup/ (mounted as Mirage mounts it) and invented /_sim/ answers, so the page runs in live mode.
+// One loopback origin serving /_setup/ (mounted as Mirage mounts it) and stub /_sim/ answers, so the page runs in live mode.
 async function journeyServer(directory) {
   const fake = { live: false, requests: 0, preflight: [] };
   const handler = await createSetupHandler({ directory, processEnv: {}, runtime: { product: 'Mirage', sourceDir: path.join(directory, 'portal-export') } });
@@ -63,11 +66,12 @@ const stageLink = (page, name) => page.getByRole('navigation', { name: 'Setup st
 test('setup journey: template, stage rail, packs, setting editor, restart command and planned-to-live system map', { timeout: 120000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
   const server = await journeyServer(directory);
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(async () => { await browser.close(); });
+  const context = await browser.newContext();
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { await server.close(); });
   ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1280, height: 900 });
   await allSettings(page);
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -127,7 +131,8 @@ test('setup journey: template, stage rail, packs, setting editor, restart comman
   await page.locator('#providers summary').filter({ hasText: 'More settings · Outside services' }).click();
   assert.equal(await page.locator('form[data-form=setting][data-key=localServices]').count(), 0, 'local services have a form of their own');
   const unset = page.locator('form[data-form=setting][data-key=connectorScripts][data-site=invented-portal] [name=value]');
-  if (await unset.count()) { assert.equal(await unset.inputValue(), ''); assert.match(await unset.getAttribute('placeholder'), /^Not set/); }
+  assert.equal(await unset.count(), 1);
+  assert.equal(await unset.inputValue(), ''); assert.match(await unset.getAttribute('placeholder'), /^Not set/);
 
   // The system map shows the plan from the settings file until a preview runs, then the same live map as the simulator's
   // Infrastructure view, so setup and the simulator never show different states.
@@ -151,7 +156,7 @@ test('setup journey: template, stage rail, packs, setting editor, restart comman
     await page.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-journey-desktop.png'), fullPage: true });
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  // Every disclosure open, including the setting examples whose rows hold visually hidden labels (RU3-12).
+  // Every disclosure open, including the setting examples whose rows hold visually hidden labels.
   await page.evaluate(() => { for (const node of document.querySelectorAll('details')) node.open = true; });
   if (process.env.PAQVILO_SETUP_SCREENSHOTS) {
     await page.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-journey-mobile.png'), fullPage: true });
@@ -167,11 +172,11 @@ test('identity and persona forms write only changed keys and leave declared user
   const application = { appId: '00000000-0000-4000-8000-000000000001', displayName: 'Invented client', secretEnvironmentVariable: 'INVENTED_CLIENT_SECRET' };
   await fs.writeFile(file, YAML.stringify({ sourceRoot: '.', defaultSite: 'invented', sites: { invented: { source: '.', defaultEnv: 'local', environments: { local: 'http://127.0.0.1:8787' }, mirage: { port: 0, runtime: { kind: 'power-pages' }, simulation: { level: 'dry-run' }, dataverse: { enabled: true, port: 0, applications: [application] } } } } }));
   const server = await startSetupServer({ directory, processEnv: {} });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(async () => { await browser.close(); });
+  const context = await browser.newContext();
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { await server.close(); });
   ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
-  const page = await browser.newPage();
+  const page = await context.newPage();
   await allSettings(page);
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -212,11 +217,11 @@ test('setting rows show current values, references only for secrets, and Setting
   await fs.writeFile(file, YAML.stringify({ sourceRoot: '.', defaultSite: 'invented', includeCaution: true, sourceMaps: true, editor: 'code', defaults: { mirage: { simulation: { level: 'dry-run' } } },
     sites: { invented: { webFiles: { enabled: true }, mirage: { port: 0, runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true }, secrets, project: './alpha.project.yml' } } } }));
   const server = await startSetupServer({ directory, processEnv: {} });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(async () => { await browser.close(); });
+  const context = await browser.newContext();
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { await server.close(); });
   ownedFixture(t).remove(async () => { await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
-  const page = await browser.newPage();
+  const page = await context.newPage();
   await allSettings(page);
   page.setDefaultTimeout(10_000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));

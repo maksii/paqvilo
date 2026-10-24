@@ -104,11 +104,12 @@ test('setup readiness resolves configured, personal and explicit browser choices
   };
   await check('chromium');
   await fs.writeFile(path.join(directory, '.env'), 'PAQVILO_BROWSER=chrome\n');
-  await check('chrome');
-  await check('msedge', { env: { PAQVILO_BROWSER: 'msedge' } });
-  await check('chromium', { env: { PAQVILO_BROWSER: 'msedge' }, args: ['--browser', 'chromium'] });
-  for(const browser of ['', 'unexpected']){
-    const result=await run([cli,'doctor','--setup','--config',configFile,'--browser='+browser,'--json'],{cwd:directory,env:cleanEnv()});
+  const invalid = browser => run([cli,'doctor','--setup','--config',configFile,'--browser='+browser,'--json'],{cwd:directory,env:cleanEnv()});
+  const [, , , ...rejected] = await Promise.all([
+    check('chrome'), check('msedge', { env: { PAQVILO_BROWSER: 'msedge' } }), check('chromium', { env: { PAQVILO_BROWSER: 'msedge' }, args: ['--browser', 'chromium'] }),
+    invalid(''), invalid('unexpected'),
+  ]);
+  for(const result of rejected){
     assert.equal(result.status,1);
     assert.equal(JSON.parse(result.stdout).error.code,'SETUP_CHECK_FAILED');
     assert.match(JSON.parse(result.stdout).error.message,/--browser must be/);

@@ -238,21 +238,10 @@ test("enhanced comparison measures every documented component type against the i
   const portal = await importPortal(dir);
   const comparison = compareImport(census, portal);
   const row = (kind) => comparison.rows.find((item) => item.kind === kind);
-  // Whatever the importer currently recognises, the comparison reports it against the census.
-  assert.equal(row("redirect").expected, 1);
-  assert.equal(row("redirect").imported, portal.redirects.length);
-  assert.equal(row("redirect").unexplained, 1 - portal.redirects.length);
-  assert.equal(row("websitelanguage").expected, 1);
-  assert.equal(row("websitelanguage").imported, portal.websiteLanguages.length);
-  assert.equal(row("columnpermissionprofile").expected, 1);
-  assert.equal(row("columnpermissionprofile").imported, 1);
-  assert.deepEqual(
-    comparison.unrecognizedComponentTypes.map((item) => item.kind).sort(),
-    [...new Set(portal.records.map((record) => record.kind).filter((kind) => kind.startsWith("component:")))].sort(),
-  );
-  for (const item of comparison.unrecognizedComponentTypes) assert.equal(item.documented, COMPONENT_TYPES[item.kind.split(":")[1]] ?? null);
-  assert.deepEqual([row("webpage").expected, row("webpage").imported], [1, 1]);
-  assert.equal(row("webfile").unexplained, 0);
+  const counts = (kind) => [row(kind).expected, row(kind).imported, row(kind).unexplained];
+  for (const kind of ["redirect", "websitelanguage", "columnpermissionprofile", "webpage", "webfile"]) assert.deepEqual(counts(kind), [1, 1, 0], kind);
+  assert.deepEqual(comparison.unexplained, []);
+  assert.deepEqual(comparison.unrecognizedComponentTypes, []);
 });
 
 test("missing includes are classified as absent, inactive or present but unresolved", () => {

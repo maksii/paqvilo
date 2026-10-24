@@ -159,7 +159,7 @@ test('web files map by parent page and partial URL to the file under filecontent
   assert.equal(model.findWebFile('/portal-logo.svg').file, path.join(dir, 'powerpagecomponents', 'f1', 'filecontent', 'Example Logo.svg'));
   assert.equal(model.findWebFile('/portal-logo.svg').mimeType, 'image/svg+xml');
   // parent given as the language copy of the page
-  assert.ok(model.findWebFile('/robots.txt'));
+  assert.equal(model.findWebFile('/robots.txt').file, path.join(dir, 'powerpagecomponents', 'f2', 'filecontent', 'robots.txt'));
   assert.equal(model.findWebFile('/orphan.json'), null);
   assert.ok(model.warnings.some((w) => w.includes('orphan') && w.includes('no parent page')));
 });

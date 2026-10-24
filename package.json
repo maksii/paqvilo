@@ -41,6 +41,7 @@
     "CONTRIBUTING.md",
     "LICENSE",
     "NOTICE",
+    "licenses/",
     "docs/",
     "examples/",
     "templates/",

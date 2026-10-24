@@ -1,6 +1,6 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The dev panel in Mirage mode on an enhanced-data-model export (powerpagecomponents,
-// test-browser/fixtures/enhanced). Synthetic data on a disposable loopback Mirage only.
+// test-browser/fixtures/enhanced).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -56,10 +56,11 @@ test('Mirage panel inspects an enhanced-data-model export and opens its componen
     sourceDir: FIXTURE, origin: app.url, site: structuredClone(SITE), sourceMaps: false, siteName: 'enhanced Mirage', envName: 'local', stateDir: work, browser: {},
     mirage: true, mirageSourceRoots: [FIXTURE],
   });
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+  const page = await context.newPage();
   detach = await attachSession(context, session);
   const opened = [];
   panel = enablePanel(context, session, { open: async (...args) => { opened.push(args); return null; } });
-  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
@@ -68,7 +69,14 @@ test('Mirage panel inspects an enhanced-data-model export and opens its componen
     if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
     await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
   };
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+  // Resolves with what the panel asked the editor to open after one click.
+  const openedBy = async (locator) => {
+    const before = opened.length;
+    await locator.click();
+    for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(opened.length, before + 1, 'the panel opened one source');
+    return opened.at(-1);
+  };
   const evidence = async (name) => {
     if (!process.env.PAQVILO_EVIDENCE_DIR) return;
     fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
@@ -89,12 +97,8 @@ test('Mirage panel inspects an enhanced-data-model export and opens its componen
   await evidence('panel-inspect-enhanced-home');
 
   // Sources are the component XML files, opened at the JSON field the row describes.
-  await panelLocator('[data-group="runtime-chain"] .row').filter({ hasText: 'Partial' }).locator('button.main').click();
-  await settle();
-  assert.deepEqual(opened.at(-1).slice(1, 3), [component(ID.partial), lineOf(component(ID.partial), '"source":')]);
-  await panelLocator('[data-group="runtime-snippets"] .row').filter({ hasText: 'Greeting' }).locator('button.main').click();
-  await settle();
-  assert.deepEqual(opened.at(-1).slice(1, 3), [component(ID.greeting), lineOf(component(ID.greeting), '"value":')]);
+  assert.deepEqual((await openedBy(panelLocator('[data-group="runtime-chain"] .row').filter({ hasText: 'Partial' }).locator('button.main'))).slice(1, 3), [component(ID.partial), lineOf(component(ID.partial), '"source":')]);
+  assert.deepEqual((await openedBy(panelLocator('[data-group="runtime-snippets"] .row').filter({ hasText: 'Greeting' }).locator('button.main'))).slice(1, 3), [component(ID.greeting), lineOf(component(ID.greeting), '"value":')]);
 
   // Signed in as the member, the restricted page is allowed by its enhanced access rule, and
   // its related web link and site marker (mspp_ field names) are listed with their sources.
@@ -107,15 +111,11 @@ test('Mirage panel inspects an enhanced-data-model export and opens its componen
   await panelLocator('.card').filter({ hasText: 'Current persona' }).getByText('allowed', { exact: true }).waitFor();
   const rule = panelLocator('[data-group="runtime-access"] .row').filter({ hasText: 'Members only' });
   await rule.getByText('current persona', { exact: true }).waitFor();
-  await rule.locator('button.main').click();
-  await settle();
-  assert.equal(opened.at(-1)[1], component(ID.membersOnly));
+  assert.equal((await openedBy(rule.locator('button.main')))[1], component(ID.membersOnly));
   const related = panelLocator('[data-group="runtime-related"]');
   await related.getByText('Secure link', { exact: true }).waitFor();
   await related.getByText('Secure area', { exact: true }).waitFor();
-  await related.locator('.row').filter({ hasText: 'Secure link' }).locator('button.main').click();
-  await settle();
-  assert.equal(opened.at(-1)[1], component(ID.secureLink));
+  assert.equal((await openedBy(related.locator('.row').filter({ hasText: 'Secure link' }).locator('button.main')))[1], component(ID.secureLink));
   await evidence('panel-inspect-enhanced-secure');
   assert.deepEqual(errors, []);
 });

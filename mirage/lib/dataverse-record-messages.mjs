@@ -9,7 +9,7 @@ import { parseEntityReference } from "./data.mjs";
 import { contextUrl, preferenceApplied } from "./dataverse-odata.mjs";
 import { relationshipsOf } from "./dataverse-standard.mjs";
 
-// unverified: the Merge reference lists account and contact only; lead and incident follow the gap review.
+// Only account and contact are documented for Merge; lead and incident are assumed to merge too.
 const MERGE_TABLES = new Set(["account", "contact", "lead", "incident"]);
 // Never copied by a merge: ownership, audit and state columns.
 const SYSTEM_COLUMNS = new Set(["createdby", "createdon", "createdonbehalfby", "modifiedby", "modifiedon", "modifiedonbehalfby", "ownerid", "owninguser", "owningteam", "owningbusinessunit", "versionnumber", "statecode", "statuscode", "masterid"]);
@@ -19,7 +19,7 @@ const TARGET_FIELD_TYPES = ["All", "ValidForCreate", "ValidForUpdate", "ValidFor
 const LOOKUP_TYPES = new Set(["lookup", "customer", "owner"]);
 const ROLLUP_SOURCE_TYPE = 2;
 const EDM_OBJECT = "EdmEntityObject passed should have the key property value set.";
-// unverified: 0x80040203 is assumed for every 400 below; the reference pages give no inner codes.
+// 0x80040203 is a guess for every 400 below; the reference pages give no inner codes.
 const INVALID = "0x80040203";
 
 const invalid = (message, innerCode = INVALID) => new DataError(message, 400, "InvalidRequest", { innerCode });
@@ -77,7 +77,7 @@ function lookupBindNav(api, mapping, name) {
   return nav && Object.hasOwn(relationships, nav) && !relationships[nav].many ? nav : null;
 }
 
-// unverified: entitymap/attributemap column names are not in the reference pages.
+// The entitymap/attributemap column names are not documented; they are guesses.
 function attributeMaps(api, source, target) {
   const ids = new Set(api.store.tableRows("entitymap")
     .filter((row) => row.sourceentityname === source && row.targetentityname === target)
@@ -87,7 +87,7 @@ function attributeMaps(api, source, target) {
     .map((row) => [row.sourceattributename, row.targetattributename]);
 }
 
-// unverified: validForUpdate and validForRead follow the validForCreate flag name on metadata definitions.
+// Assumed: validForUpdate and validForRead follow the validForCreate flag name on metadata definitions.
 function allowedFor(api, mapping, column, fieldType) {
   if (fieldType === "All") return true;
   return fieldOf(api, mapping, column)[FIELD_TYPE_FLAG[fieldType]] ?? true;
@@ -108,7 +108,7 @@ async function merge(api, ctx) {
   const body = ctx.body ?? {};
   const target = typedRef(api, body.Target, MERGE_TABLES);
   const subordinate = typedRef(api, body.Subordinate, MERGE_TABLES);
-  // unverified: the same-table and same-record rules are not on the Merge reference page.
+  // The same-table and same-record rules are not documented; they are guesses.
   if (target.mapping.logicalName !== subordinate.mapping.logicalName) throw invalid("Target and Subordinate must be records of the same table.");
   if (sameId(target.id, subordinate.id)) throw invalid("Target and Subordinate must be different records.");
   // The reference marks PerformParentingChecks as required.
@@ -118,12 +118,13 @@ async function merge(api, ctx) {
   const fields = mapping.fields ?? {};
   const targetRow = rowOf(api, mapping, target.id);
   const subRow = rowOf(api, mapping, subordinate.id);
-  // unverified: the Merge reference names no dedicated privilege; update on both records and append on moved children are kept.
+  // Merge has no documented privilege of its own: update on both records and append on moved children are checked.
   authorize(api, ctx, mapping, "update", targetRow);
   authorize(api, ctx, mapping, "update", subRow);
 
   if (body.PerformParentingChecks) {
-    // unverified: the reference says only "check if the parent information is different"; two different non-null values on the table's self lookup conflict.
+    // Only "check if the parent information is different" is documented; two different non-null values on the table's self lookup
+    // are taken to conflict.
     for (const [nav, rel] of Object.entries(relationshipsOf(api.store, mapping.logicalName, mapping.relationships))) {
       if (rel.many || rel.entity !== mapping.logicalName) continue;
       const column = rel.from ?? nav;
@@ -212,7 +213,7 @@ async function initializeFrom(api, ctx) {
 // CalculateRollupField: recalculates through api.rollups.recalculate when dataverse-rollup.mjs is installed; otherwise reruns
 // the column's FetchXML aggregate and stores the value with its date and state.
 // Reads under the read privilege and keeps modifiedon. ponytail: the aggregate itself ignores FLS.
-// unverified: the {id} placeholder, the aggregate alias convention and the Calculated state (1) are assumed.
+// The {id} placeholder, the aggregate alias convention and the Calculated state (1) are assumed.
 async function calculateRollupField(api, ctx) {
   const params = ctx.params ?? {};
   const target = referenceOf(api, params.Target, "Target");
@@ -244,7 +245,7 @@ async function calculateRollupField(api, ctx) {
 // IsValidStateTransition: the new status must exist, carry the proposed state and, when the
 // current status lists TransitionData, be one of its allowed targets. NewState is the statecode
 // value as a string, or the invariant name or label of that statecode option.
-// unverified: TransitionData is read as an array of allowed status values; metadata today exports it as null.
+// TransitionData is assumed to be an array of allowed status values; the exported metadata carries it as null.
 // Exported: dataverse-state-transitions.mjs calls this evaluator for its enforced-table answer.
 export async function isValidStateTransition(api, ctx) {
   const params = ctx.params ?? {};
@@ -255,7 +256,7 @@ export async function isValidStateTransition(api, ctx) {
   const options = fieldOf(api, entity.mapping, "statuscode").options ?? [];
   const status = Number(params.NewStatus);
   const next = options.find((option) => Number(option.value) === status);
-  // unverified: 0x8004F00E (InvalidStateCodeStatusCode) for an unknown status; 0x80044331 is StringLengthTooLong.
+  // 0x8004F00E (InvalidStateCodeStatusCode) for an unknown status is a guess (0x80044331 is StringLengthTooLong, not a status error).
   if (!next) throw new DataError(`The status ${params.NewStatus} is not valid for ${entity.mapping.logicalName}.`, 400, "InvalidValue", { innerCode: "0x8004F00E" });
   const current = options.find((option) => Number(option.value) === Number(row.statuscode));
   const allowed = current?.TransitionData;
@@ -269,7 +270,7 @@ export async function isValidStateTransition(api, ctx) {
 }
 
 // ponytail: US layout only; per-country formats need a table.
-// unverified: the layout (street, city and state, postal code, country on separate lines) is the gap review's form.
+// The layout (street, city and state, postal code, country on separate lines) is a guess.
 async function formatAddress(api, ctx) {
   const params = ctx.params ?? {};
   const [line1, city, state, postal, country] = ["Line1", "City", "StateOrProvince", "PostalCode", "Country"].map((name) => {
@@ -283,7 +284,7 @@ async function formatAddress(api, ctx) {
 }
 
 // CSDL per operation; the registry joins the fragments into the service schema.
-// unverified: the mscrm entity and enum names are assumed to be declared elsewhere in the schema.
+// The mscrm entity and enum names are assumed to be declared elsewhere in the schema.
 const csdlOf = (tag, name, parameters, returns = null) => [
   `<${tag} Name="${name}">`,
   ...parameters.map(([param, type]) => `  <Parameter Name="${param}" Type="${type}" />`),

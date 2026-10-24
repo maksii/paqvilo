@@ -88,7 +88,7 @@ test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root an
  const xml=`<ImportExportXml>${assemblyXml}${step(21,'<SdkMessageFilterId/>')}${step(22,'<PrimaryEntity>none</PrimaryEntity>')}${step(23,'')}${step(24,`<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25,'<SdkMessageFilterId/>','Create')}</ImportExportXml>`;
  const parsed=parsePluginDocument(xml),plugins=importSolutionPlugins([{documents:[{file:'/invented/global.xml',facts:{plugins:parsed}}]}]);
  for(const id of [21,22]){const declaration=plugins.steps.find(step=>step.id===pluginId(id));assert.equal(declaration.unfiltered,true);assert.equal(declaration.entity,null);assert.equal(declaration.unsupported,null);assert.equal(pluginStepMatchesEntity(declaration,'fixture'),true);}
- for(const id of [23,24,25])assert.ok(plugins.steps.find(step=>step.id===pluginId(id)).unsupported);
+ for(const id of [23,24,25])assert.match(plugins.steps.find(step=>step.id===pluginId(id)).unsupported,/explicit logical table binding is required|Unfiltered execution requires an explicit null filter/,String(id));
  const seen=[],handlers=pluginHandlers([{id:'invented-explicit-global',pluginSteps:{[pluginId(21)]:event=>{seen.push(event.entity);},[pluginId(22)]:event=>{seen.push(event.entity);}}}]);
  const items=pluginCatalogue({plugins,handlers}),store=new DataStore({state:{mappings:{fixture:{idColumn:'fixtureid',entitySet:'fixtures'},other:{idColumn:'otherid',entitySet:'others'}},tables:{fixture:[{fixtureid:pluginId(40)}],other:[]},plugins:[],permissions:[],settings:{permissionMode:'enforce'}}});
  store.setPluginPipeline(event=>runPluginPhase({...event,store,items,handlers}),event=>items.some(item=>item.enabled&&pluginStepMatchesEntity(item,event.entity)&&item.message.toLowerCase()===event.operation));
@@ -146,7 +146,7 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
 
 test('automatic plugin placeholders and editable mocks are inventoried, CSRF protected, and prevent bad CRUD writes', async t => {
   const { app } = await pluginFixture(t);
-  const csrf = app.state().csrf;
+  const csrf = app.csrf;
   const admin = (route, method = 'GET', value) => fetch(app.url + '/__sim/api' + route, { method, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf }, body: value === undefined ? undefined : JSON.stringify(value) });
   const write = (method, route, value, token = csrf) => fetch(app.url + '/_api/' + route, { method, headers: { 'content-type': 'application/json', __RequestVerificationToken: token }, body: value === undefined ? undefined : JSON.stringify(value) });
   const items = (await (await admin('/operations')).json()).items;

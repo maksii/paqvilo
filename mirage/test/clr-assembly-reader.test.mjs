@@ -1,5 +1,5 @@
-// The CLR assembly reader (P5): identity, strong-name state and plug-in / workflow-activity types, on images built by
-// clr-assembly-fixture.mjs, plus one real compiled assembly when dotnet is installed. Invented names only; nothing is loaded.
+// The CLR assembly reader: identity, strong-name state and plug-in / workflow-activity types, on images built by
+// clr-assembly-fixture.mjs, plus one real compiled assembly when dotnet is installed. Nothing is loaded.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -67,7 +67,7 @@ const TYPES = {
   ],
 };
 
-describe('CLR assembly reader (P5)', () => {
+describe('CLR assembly reader', () => {
   it('reads the identity of a strong-named assembly and the plug-in types it declares', () => {
     const facts = inspectAssembly(buildAssembly({ name: 'Contoso.Plugins', version: '2.1.0.0', culture: 'en-US', publicKey: fakePublicKey, ...TYPES }));
     assert.equal(facts.name, 'Contoso.Plugins');

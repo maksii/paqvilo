@@ -1,6 +1,5 @@
 // Business rules (lib/dataverse-business-rules.mjs): server-scope rules of workflow category 2 evaluated inside the write.
 // Set value / default / error / required on create and update, client-only rules as diagnostics, pack override, rollback.
-// Invented x_ schema and GUIDs only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, businessRulesFor, parseBusinessRule, validateBusinessRules } from "../lib/dataverse-business-rules.mjs";

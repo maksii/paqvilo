@@ -15,10 +15,9 @@
 // already stored. Upgrade: a re-base pass over the rows that hold the currency.
 // ponytail: money values are converted as JavaScript numbers; a decimal with more digits than a double keeps loses them. Upgrade:
 // the exact-numeric helpers in dataverse-values.mjs.
-// unverified: the rate direction (base = value / exchangerate) comes from the module brief, not Microsoft Learn.
-// unverified: the rounding mode (half away from zero assumed).
-// unverified: the 400 status for an unknown transactioncurrency on write (other lookup misses answer 404).
-// unverified: the messages for a non-positive exchange rate and a currency binding that names no id.
+// Assumptions, not confirmed against the platform: the rate direction (base = value / exchangerate), the rounding mode
+// (half away from zero), the 400 status for an unknown transactioncurrency on write (other lookup misses answer 404), and
+// the messages for a non-positive exchange rate and a currency binding that names no id.
 import { DataError } from "./data-error.mjs";
 import { fieldKind } from "./dataverse-values.mjs";
 import { isExactNumeric } from "./exact-numeric.mjs";
@@ -35,10 +34,10 @@ const refId = (value) => (value !== null && typeof value === "object" ? value.id
 const empty = (value) => value === null || value === undefined || value === "";
 const isCount = (value) => !empty(value) && Number.isInteger(Number(value)) && Number(value) >= 0;
 
-const notFound = (id) => new DataError(`transactioncurrency With Id = ${id} Does Not Exist`, 400, "InvalidRequest", { id, innerCode: NOT_FOUND_CODE }); // unverified: status
+const notFound = (id) => new DataError(`transactioncurrency With Id = ${id} Does Not Exist`, 400, "InvalidRequest", { id, innerCode: NOT_FOUND_CODE }); // status assumed (see header)
 const bindId = (value) => {
   const match = /\(([^()]+)\)\s*$/.exec(String(value ?? ""));
-  if (!match) throw new DataError(`The transactioncurrencyid binding '${value}' names no currency.`, 400, "InvalidRequest"); // unverified: message text
+  if (!match) throw new DataError(`The transactioncurrencyid binding '${value}' names no currency.`, 400, "InvalidRequest"); // native message text not known
   return bare(match[1]);
 };
 
@@ -162,7 +161,7 @@ function reset(api) {
   state.diagnostics.length = 0;
 }
 
-/** Capability record (ARCH §2.4). RetrieveExchangeRate executes in dataverse-predefined.mjs; listed here as the currency contract. */
+/** Capability record. RetrieveExchangeRate executes in dataverse-predefined.mjs; listed here as the currency contract. */
 function describe() {
   return {
     name: "dataverse-currency",

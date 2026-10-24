@@ -3,27 +3,31 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspectProjectBoundary } from '../scripts/project-boundary.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const cli = path.join(root, 'bin/paqvilo.mjs');
-const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
 
-test('public command namespaces select Lense and Mirage independently', () => {
-  for (const product of ['lense', 'mirage']) {
-    const result = run(product, '--help');
+test('public command namespaces select Lense and Mirage independently', async () => {
+  const portal = path.join(root, 'examples/project/portal');
+  // Independent processes: run them together.
+  const runAsync = (...args) => new Promise(resolve => execFile(process.execPath, [cli, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+    (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr })));
+  const [lense, mirage, invalid, inventory, status] = await Promise.all([
+    runAsync('lense', '--help'), runAsync('mirage', '--help'), runAsync('dev', '--json'),
+    runAsync('mirage', 'liquid-inventory', '--portal', portal, '--json'), runAsync('mirage', 'status', '--json')]);
+  for (const [product, result] of [['lense', lense], ['mirage', mirage]]) {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, new RegExp(product, 'i'));
   }
-  const invalid = run('dev', '--json');
   assert.equal(invalid.status, 1);
   assert.equal(JSON.parse(invalid.stdout).error.code, 'UNKNOWN_PRODUCT');
-  const inventory = run('mirage', 'liquid-inventory', '--portal', path.join(root, 'examples/project/portal'), '--json');
   assert.equal(inventory.status, 0, inventory.stderr);
-  assert.doesNotThrow(() => JSON.parse(inventory.stdout));
-  const status = run('mirage', 'status', '--json');
+  const report = JSON.parse(inventory.stdout);
+  assert.deepEqual([report.portal, report.format], [portal, 'standard']);
+  assert.ok(report.sources.total > 0 && report.tags.length > 0, 'the Mirage inventory read the example portal');
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).action, 'status');
 });

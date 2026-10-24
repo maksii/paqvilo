@@ -1,6 +1,5 @@
 // Workflows in the Dataverse API: seeded workflow rows from Solution sources, activation on PATCH, ExecuteWorkflow (background
-// and real-time, classic and cloud), the documented refusals, and the trusted classic handler contract. Invented schema
-// (contoso_widget), GUIDs and users only; loopback only.
+// and real-time, classic and cloud), the documented refusals, and the trusted classic handler contract.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -25,7 +24,7 @@ const WIDGET = "aaaaaaaa-0000-0000-0000-000000000011";
 const WF = (n) => `bbbbbbbb-0000-0000-0000-0000000001${String(n).padStart(2, "0")}`;
 const CRM = "Microsoft.Dynamics.CRM.";
 
-// Definitions of the invented cloud flows: an on-demand Dataverse trigger, and a request (powerpages) trigger.
+// Definitions of the cloud flows: an on-demand Dataverse trigger, and a request (powerpages) trigger.
 const DATAVERSE_FLOW = {
   triggers: { row: { type: "OpenApiConnectionWebhook", inputs: { host: { apiId: "/apis/shared_commondataserviceforapps", operationId: "SubscribeWebhookTrigger" }, parameters: { "subscriptionRequest/message": 1, "subscriptionRequest/entityname": "contoso_widget", "subscriptionRequest/scope": 4 } } } },
   actions: {},
@@ -293,9 +292,11 @@ describe("dataverse workflows: rows, activation and ExecuteWorkflow over HTTP", 
     assert.equal((await errorOf(response)).code, "0x8004500d"); // the error body is lower-cased, as every code is
   });
 
-  it("refuses to create a classic workflow with XAML through the Web API", async () => {
+  it("refuses to create a classic workflow through the Web API", async () => {
     const response = await call(webApi("workflows"), { method: "POST", body: { name: "Invented create", category: 0, type: 1, primaryentity: "contoso_widget" } });
     assert.equal(response.status, 400);
+    assert.deepEqual(await errorOf(response), { code: "0x80040203", message: "Creating a classic workflow with XAML through the Web API is not supported with Dataverse." });
+    assert.equal(store.tableRows("workflow").some((item) => item.name === "Invented create"), false);
   });
 
   it("copies a workflow template into a new draft definition, and refuses a definition that is not a template", async () => {
@@ -308,7 +309,9 @@ describe("dataverse workflows: rows, activation and ExecuteWorkflow over HTTP", 
     assert.equal(copy.statecode, 0);
     assert.equal(copy.statuscode, 1);
     assert.equal(copy.primaryentity, "contoso_widget");
-    await errorOf(await call(webApi(`workflows(${WF(3)})/${CRM}CreateWorkflowFromTemplate`), { method: "POST", body: { WorkflowName: "Invented copy" } }));
+    const refused = await errorOf(await call(webApi(`workflows(${WF(3)})/${CRM}CreateWorkflowFromTemplate`), { method: "POST", body: { WorkflowName: "Invented refused copy" } }));
+    assert.equal(refused.message, "Only a workflow template can be copied.");
+    assert.equal(store.tableRows("workflow").some((item) => item.name === "Invented refused copy"), false);
   });
 
   it("deactivates an on-demand definition by PATCH (its activation row goes), then activates it again", async () => {
@@ -363,7 +366,7 @@ describe("dataverse workflows: Solution sources and handler packs", () => {
   });
 });
 
-// ---- W4: classic triggers on Dataverse writes ------------------------------------------------------------------------
+// ---- Classic triggers on Dataverse writes
 
 const TRIGGER_APP_ID = "55555555-5555-5555-5555-555555555555";
 const TRIGGER_SECRET_VAR = "PAQVILO_WORKFLOW_TRIGGERS_SECRET";
@@ -566,10 +569,11 @@ describe("dataverse workflows: a portal write is unchanged by a background trigg
         app.store.transact(() => {
           app.store.state.dataverse.workflowOverrides = overrides;
         });
-        const headers = { "content-type": "application/json", __RequestVerificationToken: app.state().csrf };
+        const headers = { "content-type": "application/json", __RequestVerificationToken: app.csrf };
         const response = await fetch(`${app.url}/_api/contoso_widgets(${widget})`, { method: "PATCH", headers, body: JSON.stringify({ name: "renamed" }) });
         const bytes = Buffer.from(await response.arrayBuffer());
-        const started = await until(() => app.store.tableRows("asyncoperation").some((job) => job.operationtype === 10), 300);
+        // With no definitions nothing can start a job, so only the trigger run waits for one.
+        const started = await until(() => app.store.tableRows("asyncoperation").some((job) => job.operationtype === 10), workflow.length ? 2000 : 0);
         // Per-run values only: the Date, the trace id and this run's origin (the port differs between the two runs).
         return {
           status: response.status,

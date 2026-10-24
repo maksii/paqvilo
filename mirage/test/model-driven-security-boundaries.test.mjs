@@ -40,7 +40,7 @@ async function fixture(t, enabled = true, presets, unflaggedCore = false) {
       settings: { permissionMode: 'enforce' }, simulator: { mode: 'local', pageMode: 'local', permissionSource: 'exported', identity: { roles: [] }, contactRoles: [{ contactId: A, roleId: ROLE }, { contactId: B, roleId: ROLE }] } } });
   ownedFixture(t).add(() => sim.close());
   const request = (route, { method = 'GET', body, cookie, etag, bearer } = {}) => fetch(sim.url + route, { method,
-    headers: { 'x-sim-csrf': sim.state().csrf, ...(body ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(etag ? { 'if-match': etag } : {}), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    headers: { 'x-sim-csrf': sim.csrf, ...(body ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(etag ? { 'if-match': etag } : {}), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const json = async (response, expected = 200) => { const text = await response.text(); assert.equal(response.status, expected, text); return text ? JSON.parse(text) : null; };
   const select = async id => { const response = await request('/_sim/api/dataverse/session', { method: 'POST', body: { userId: id } }); await json(response); return response.headers.get('set-cookie').split(';')[0]; };
   return { sim, request, json, select, files, directory };
@@ -53,7 +53,7 @@ test('portal MDA keeps canonical staff security and source record versions with 
   const one = await select(staff.find(user => user.name === 'Staff A').id), two = await select(staff.find(user => user.name === 'Staff B').id);
   const made = await json(await request('/_apps/api/tables/new_business', { method: 'POST', cookie: one, body: { new_name: 'Headless owned record' } }), 201);
   assert.equal((await json(await request(`/_apps/api/tables/new_business/${made.id}`, { cookie: one }))).row.new_name, 'Headless owned record');
-  assert.ok([403, 404].includes((await request(`/_apps/api/tables/new_business/${made.id}`, { cookie: two })).status));
+  assert.equal((await json(await request(`/_apps/api/tables/new_business/${made.id}`, { cookie: two }), 403)).error.code, 'AccessDenied');
   await json(await request(`/_apps/api/tables/new_business/${made.id}`, { method: 'PATCH', etag: made.etag, body: { new_secret: 'Invented protected value' } }));
   const query = '/_apps/api/tables/new_business?query=' + encodeURIComponent(JSON.stringify({ scope: 'odata', options: '?$select=new_name,new_secret&$filter=contains(new_name,\'owned\')' }));
   const ownerQuery = await json(await request(query, { cookie: one }));
@@ -107,7 +107,7 @@ test('API, model app and contact portal share records while preserving each secu
   await json(await api(`new_businesses(${id})`, { method: 'PATCH', body: { new_secret: 'Privileged value', 'new_contactid@odata.bind': `/contacts(${A})` } }));
   const mda = await json(await request(`/_apps/api/tables/new_business/${id}`, { cookie: one }));
   assert.equal(mda.row.new_secret, null); assert.equal(mda.capabilities.fields.new_secret.update, false);
-  assert.ok([403, 404].includes((await request(`/_apps/api/tables/new_business/${id}`, { cookie: two })).status));
+  assert.equal((await json(await request(`/_apps/api/tables/new_business/${id}`, { cookie: two }), 403)).error.code, 'AccessDenied');
   await json(await request(`/_apps/api/tables/new_business/${id}`, { cookie: one, method: 'PATCH', etag: mda.etag, body: { new_name: 'Changed by staff' } }));
   assert.equal((await json(await api(`new_businesses(${id})`))).new_name, 'Changed by staff');
   const portalRoute = '/_api/new_businesses?$select=new_name';
@@ -125,9 +125,7 @@ test('API, model app and contact portal share records while preserving each secu
   assert.match(await (await request('/', { cookie: `${portalA}; ${two}` })).text(), /Changed by staff/, 'Staff choice cannot replace the contact session.');
   const allowlist = await json(await request(`/_apps/api/tables/adx_sitesetting/${FIELDS}`));
   await json(await request(`/_apps/api/tables/adx_sitesetting/${FIELDS}`, { method: 'PATCH', etag: allowlist.etag, body: { adx_value: 'new_businessid' } }));
-  const disallowedField = await request(portalRoute, { cookie: portalA });
-  assert.equal(disallowedField.status, 403);
-  assert.match((await disallowedField.json()).error.message, /new_name|field|column/i);
+  assert.deepEqual((await json(await request(portalRoute, { cookie: portalA }), 403)).error, { code: '90040101', message: 'Attribute new_name in table new_business is not enabled for Web Api.' });
   await json(await api(`adx_sitesettings(${FIELDS})`, { method: 'PATCH', body: { adx_value: 'new_name,new_contactid' } }));
   assert.equal((await request(portalRoute, { cookie: portalA })).status, 200);
   const ledger = structuredClone(sim.store.state.permissions);

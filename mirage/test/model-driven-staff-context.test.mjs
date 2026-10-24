@@ -11,7 +11,7 @@ import { ownedFixture } from "../testing/owned-fixture.mjs";
 
 const USER = '77777777-7777-4777-8777-777777777777', ROLE = '77777777-7777-4777-8777-777777777778', EURO = '77777777-7777-4777-8777-777777777779';
 
-// An invented organization: one user with an invented role, a German usersettings row in Central European time and a euro currency.
+// An organization: one user with a custom role, a German usersettings row in Central European time and a euro currency.
 function runtime({ settings = true } = {}) {
   const tables = {
     organization: [{ organizationid: 'org', languagecode: 1033, localeid: 1033, basecurrencyid: { id: 'usd' } }],
@@ -52,7 +52,8 @@ test('PCF userSettings, PCF formatting and Xrm userSettings read the same staff 
   assert.deepEqual(settings.securityRoles, pcf.securityRoles); assert.equal(settings.languageId, pcf.languageId); assert.equal(settings.isRTL, false);
   assert.deepEqual(settings.roles.get().map(role => [role.id, role.name]), [[ROLE, 'Invented reviewer']]);
   assert.deepEqual(settings.transactionCurrency, { id: EURO, entityType: 'transactioncurrency', name: 'Invented euro' });
-  assert.equal(typeof settings.getTimeZoneOffsetMinutes(), 'number');
+  // Xrm takes no date: today's Berlin offset is standard or daylight time.
+  assert.ok([60, 120].includes(settings.getTimeZoneOffsetMinutes()));
 });
 
 test('an unknown session answers the documented anonymous context', () => {
@@ -72,7 +73,7 @@ test('the staff session payload carries the server-built context and record capa
   const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [path.join(root, 'solution')], projectRoot: root, port: 0, watch: false, simulation: { level: 'dry-run' },
     dataverse: { enabled: false, tds: { enabled: false }, users: [{ objectId: USER, domainname: 'staff@example.test', fullname: 'Invented staff', roles: ['Basic User'] }] } });
   ownedFixture(t).add(() => sim.close());
-  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf };
+  const headers = { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf };
   const session = await (await fetch(sim.url + '/_sim/api/dataverse/session', { headers })).json();
   const staff = session.users.find(entry => entry.name === 'Invented staff');
   const selected = await fetch(sim.url + '/_sim/api/dataverse/session', { method: 'POST', headers, body: JSON.stringify({ userId: staff.id }) });

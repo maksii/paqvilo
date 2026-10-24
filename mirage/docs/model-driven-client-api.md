@@ -1,4 +1,4 @@
-# Model-driven client extension baseline
+# Model-driven client API
 
 Mirage can execute explicitly trusted JavaScript WebResources from the selected
 local Solution sources. Configure top-level `modelDriven: { trustedExtensions: true }`
@@ -36,7 +36,7 @@ commands disabled with an explanation.
 
 ## Bounded client API
 
-| Area | Supported baseline |
+| Area | Supported |
 | --- | --- |
 | Attributes | Get/set values, initial values, dirty state, metadata-derived type, required level, choice options/text, add/remove/fire OnChange, attribute control collection. Only the columns bound on the selected form (body, header and footer controls) are attributes: `getAttribute(name)` and `getControl(name)` return `null` for any other column, including the primary id when it is not on the form. Header and footer columns have the controls `header_<column>` and `footer_<column>`; they are not rendered, so their getters answer the column defaults and their setters throw a named error. Business process flow stage columns are not attributes |
 | Controls | Get/set visibility, disabled state and label; focus; notifications; bound attribute |
@@ -74,8 +74,8 @@ normalizes selections before the shared Dataverse pipeline validates them.
 Saving recursively from an active form lifecycle handler is rejected; finish the
 event before saving. Ribbon commands may call `PrimaryControl.data.save()`.
 Quick-create forms, separate form windows, unsupported client APIs and unsupported
-event parameter expressions fail visibly. This baseline does not claim complete
-Xrm, PCF, modern-command or client scripting compatibility.
+event parameter expressions fail visibly. Xrm, PCF, modern-command and client
+scripting APIs not listed here are not supported.
 
 Client methods cannot enable writes denied by metadata, source ownership or staff
 field security. Held form contexts are revoked when their form is disposed or the

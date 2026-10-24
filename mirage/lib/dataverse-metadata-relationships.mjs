@@ -2,7 +2,7 @@
 // global option sets and the option actions. Each write checks its privilege, validates, then mutates inside one
 // store transaction under api.change. metadataWriteRoutes(api) feeds api.addRoute; metadataWriteOperations(api) feeds
 // the operation registry. Metadata ids match dataverse-metadata.mjs (uuidV5 over the organization).
-// unverified: marks messages, status codes and parameter rules that Microsoft Learn does not confirm.
+// Refusal messages, status codes and parameter rules without a documented native form are guesses.
 //
 // Canonical choice storage (dataverse-metadata.mjs reads this shape):
 //   global set:   state.dataverse.globalOptionSets[name] = { name, type: "picklist", displayLabels: { <lcid>: text },
@@ -20,13 +20,13 @@ import { assertElasticManyToMany, assertElasticOneToMany, isElastic, partitionCo
 import { metadataComponentId } from "./dataverse-metadata.mjs";
 
 const ROUTE = /^\/api\/data\/v[\d.]+\/(RelationshipDefinitions|GlobalOptionSetDefinitions)(?:\(([^()]*)\))?\/?$/i;
-const FIRST_VALUE = 100000000; // unverified: option values start from a publisher prefix base; the base is not modelled
-const LCID = 1033; // unverified: language code assumed for labels without a LanguageCode
+const FIRST_VALUE = 100000000; // option values start from a publisher prefix base; the base is not modelled
+const LCID = 1033; // assumed language code for labels without a LanguageCode
 const LIST_KEY = { picklist: "options", status: "statuses", state: "states" };
 
 const lower = (value) => String(value ?? "").toLowerCase();
-const bad = (message) => new DataError(message, 400, "InvalidRequest"); // unverified: InvalidRequest code
-const missing = (what) => new DataError(`${what} does not exist.`, 404, "NotFound"); // unverified: NotFound code
+const bad = (message) => new DataError(message, 400, "InvalidRequest");
+const missing = (what) => new DataError(`${what} does not exist.`, 404, "NotFound");
 const orgId = (api) => api.settings.organizationId;
 // Every metadata id is the reader's MetadataId (dataverse-metadata.mjs metadataComponentId).
 const relationshipId = (api, schemaName) => metadataComponentId(orgId(api), "relationship", schemaName);
@@ -39,7 +39,7 @@ const globalSets = (api) => {
 };
 
 function requiredText(value, name) {
-  if (value == null || String(value).trim() === "") throw bad(`${name} is required.`); // unverified: message
+  if (value == null || String(value).trim() === "") throw bad(`${name} is required.`);
   return String(value).trim();
 }
 
@@ -51,11 +51,11 @@ export function logMetadataChange(api, op, kind, logical, name = null) {
   log.push({ seq: (log.at(-1)?.seq ?? 0) + 1, at, op, kind, logical, name });
 }
 
-// Managed layer stacks (Learn power-platform/alm/solution-layers-alm). state.dataverse.managedLayers is keyed by the component's
+// Managed layer stacks. state.dataverse.managedLayers is keyed by the component's
 // metadata id (managedLayerId, the id the metadata reader gives it) and holds { kind, logical, name, stack, activeOnTop, seq }:
 // stack is the ordered managed layers [{ solutionid, version, body, seq }], the last entry on top. A non-empty stack makes the
 // component managed (managedOwner); dataverse-solutions.mjs pushes on a managed import and dataverse-solution-messages.mjs pops on
-// uninstall and promote. A record of the earlier single-layer shape ({ body, solutionid }) reads as a one-entry stack.
+// uninstall and promote. A record in the legacy single-layer shape ({ body, solutionid }) reads as a one-entry stack.
 export const managedLayerId = (api, kind, logical, name = null) => metadataComponentId(orgId(api), kind, logical, name);
 export function layerStack(layer) {
   if (!layer) return [];
@@ -71,14 +71,13 @@ export const managedLayerOf = (api, kind, logical, name = null) => api.store.sta
 export function managedOwner(api, kind, logical, name = null) {
   return layerStack(managedLayerOf(api, kind, logical, name)).at(-1)?.solutionid ?? null;
 }
-// A managed component may be deleted only by the uninstall or upgrade that owns its layer (Learn: solution-concepts-alm, "You
-// can't edit components directly within a managed solution"; removing-dependencies, "Managed components").
+// A managed component may be deleted only by the uninstall or upgrade that owns its layer.
 export function assertNotManaged(api, kind, logical, name, label) {
   const owner = managedOwner(api, kind, logical, name);
   if (!owner) return;
   const solution = (api.store.state.tables?.solution ?? []).find((row) => lower(row.solutionid) === lower(owner))?.uniquename ?? owner;
   const noun = { entity: "Entity", attribute: "Attribute", relationship: "Relationship", key: "EntityKey" }[kind] ?? kind;
-  // Learn web-service-error-codes InvalidDeleteOnProtectedComponent; unverified: the HTTP status and the solution name in the text.
+  // InvalidDeleteOnProtectedComponent; the HTTP status and the solution name in the text are guesses.
   throw new DataError(`You cannot delete ${noun} ${label}. Deletion cannot be performed when ${noun} is managed (solution ${solution}).`, 400,
     "ManagedComponentModification", { innerCode: "0x8004F013" });
 }
@@ -132,14 +131,13 @@ export function addSolutionComponents(api, solution, entries, options) {
   addSolutionComponentRows(api, solution, entries, options);
 }
 
-// solutioncomponent rows (Learn: solutioncomponent table). A component joins the named solution and the Default solution (Learn:
-// the solution header adds it to the default solution too). objectid is the component's MetadataId (Learn
-// AddSolutionComponentRequest.ComponentId: for MetadataBase components the component id is the MetadataId), the id the metadata
-// reader returns, so it is stable across export and import into the same organization.
+// solutioncomponent rows. A component joins the named solution and the Default solution (the solution header adds it to the
+// default solution too). objectid is the component's MetadataId (for MetadataBase components the component id is the
+// MetadataId), the id the metadata reader returns, so it is stable across export and import into the same organization.
 // ponytail: the Default solution row is created on first use with no publisher; the bag above stays the export source.
 export const SOLUTION_COMPONENT_TYPE = { entity: 1, attribute: 2, optionset: 9, relationship: 10, key: 14 };
 export const DEFAULT_SOLUTION = "Default";
-export const DEFAULT_SOLUTION_ID = "fd140aaf-4df4-11dd-bd17-0019b9312238"; // the Default solution's fixed id (Learn: Work with solutions)
+export const DEFAULT_SOLUTION_ID = "fd140aaf-4df4-11dd-bd17-0019b9312238"; // the Default solution's fixed id
 /** The solution component id (MetadataId) of a metadata component entry { kind, logical, name } in an organization. */
 export const componentObjectId = (entry, organizationId) => metadataComponentId(organizationId, entry.kind, lower(entry.logical), entry.name == null ? null : lower(entry.name));
 export function solutionRowOf(store, uniquename, { create = false } = {}) {
@@ -168,13 +166,13 @@ export function addSolutionComponentRows(api, solution, entries, { defaultSoluti
     }
   }
 }
-// Patch lock (Learn: create patches): a base solution that has patches is locked, so it cannot be changed or exported.
+// Patch lock: a base solution that has patches is locked, so it cannot be changed or exported.
 // Throws 0x80048538 when the row has patches. The caller passes the base solution row.
 export function assertUnpatched(store, row) {
   const patches = (store.state.tables.solution ?? []).filter((s) => s.parentsolutionid != null && lower(s.parentsolutionid) === lower(row.solutionid));
   if (!patches.length) return;
   const names = patches.map((p) => p.friendlyname ?? p.uniquename).join(", ");
-  throw new DataError(`Cannot modify solution because it has the following patches: ${names}.`, 400, "InvalidRequest", { innerCode: "0x80048538" }); // unverified: message text
+  throw new DataError(`Cannot modify solution because it has the following patches: ${names}.`, 400, "InvalidRequest", { innerCode: "0x80048538" });
 }
 
 // Runs a synchronous metadata write and records the components it created under the request's solution header, if any.
@@ -195,12 +193,12 @@ export function withSolutionMembership(api, headers, fn) {
 
 // Privilege for a metadata write: the seeded prv*Entity / prv*Attribute names that System Administrator and System Customizer
 // hold (dataverse-security.mjs). Every metadata write and metadata message checks here. A request without a caller is refused.
-// Impersonation (Learn impersonate-another-user): the impersonator (c.caller) needs prvActOnBehalfOfAnotherUser, and the
+// Impersonation: the impersonator (c.caller) needs prvActOnBehalfOfAnotherUser, and the
 // privileges that apply are the intersection of the impersonator's and the impersonated user's (c.user), so the write is
 // allowed only when both hold the privilege (principals.effectivePrincipal / privileges).
 export function requireMetadataPrivilege(api, c, privilege, entity) {
   const caller = c.caller ?? c.user, user = c.user ?? caller;
-  if (!caller) throw new DataError(`A metadata write needs an authenticated caller for ${privilege}.`, 403, "PrivilegeDenied"); // unverified
+  if (!caller) throw new DataError(`A metadata write needs an authenticated caller for ${privilege}.`, 403, "PrivilegeDenied");
   const impersonating = lower(caller.systemuserid) !== lower(user.systemuserid);
   if (impersonating && !api.principals.canImpersonate(caller)) {
     throw privilegeDeniedError(caller, "prvActOnBehalfOfAnotherUser", "systemuser", { roleCount: api.principals.roles(caller).length, privilegeCount: api.principals.privileges(caller).size });
@@ -230,7 +228,7 @@ function tableOf(api, name) {
 // Only tables this API created are changed here; seeded and Solution tables keep their mappings.
 function writable(table, logical) {
   if (table?.dataverseOnly !== true || table.dataverseMetadata?.createdByMetadataApi !== true) {
-    throw bad(`${logical} is a solution table and cannot be changed through the Web API.`); // unverified
+    throw bad(`${logical} is a solution table and cannot be changed through the Web API.`);
   }
 }
 
@@ -260,13 +258,13 @@ const primaryHit = (hits) => hits.find((hit) => !hit.rel.many) ?? hits[0];
 // also owns its intersect table, which must be one this API created.
 function guardHits(api, schema, hits) {
   if (hits.some(({ rel }) => rel.isManaged !== false || rel.isCustomizable !== true)) {
-    throw bad(`${schema} is a managed Solution relationship and cannot be changed or deleted.`); // unverified: no relationship-specific code on Microsoft Learn
+    throw bad(`${schema} is a managed Solution relationship and cannot be changed or deleted.`); // no documented relationship-specific code
   }
   for (const { rel } of hits) if (rel.intersect) writable(mappings(api)[rel.intersect.entity], rel.intersect.entity);
 }
 
 function lookupNameOf(lookup) {
-  // unverified: a missing LogicalName is derived from SchemaName, lowercased
+  // Assumed: a missing LogicalName is derived from SchemaName, lowercased.
   return lower(requiredText(lookup?.LogicalName ?? lookup?.SchemaName, "Lookup.LogicalName"));
 }
 
@@ -290,15 +288,15 @@ function planOneToMany(api, body, { lookupName, referencingNav }) {
   const referencing = tableOf(api, referencingLogical);
   writable(referencing, referencingLogical);
   const cascade = assertElasticOneToMany({ referencing, referenced, cascade: body.CascadeConfiguration }); // elastic rules (dataverse-elastic.mjs)
-  const referencedAttribute = lower(body.ReferencedAttribute ?? referenced.idColumn); // unverified: defaults to the key
+  const referencedAttribute = lower(body.ReferencedAttribute ?? referenced.idColumn); // assumed default: the key
   const referencedNav = body.ReferencedEntityNavigationPropertyName ?? schemaName;
-  if (entriesOf(api, schemaName).length) throw bad(`A relationship named ${schemaName} already exists.`); // unverified
+  if (entriesOf(api, schemaName).length) throw bad(`A relationship named ${schemaName} already exists.`);
   if (!hasField(referenced, referencedAttribute)) throw missing(`Attribute ${referencedLogical}.${referencedAttribute}`);
-  if (hasField(referencing, lookupName)) throw bad(`${referencingLogical}.${lookupName} already exists.`); // unverified
-  if (navTaken(api, referenced, referencedNav)) throw bad(`${referencedLogical} already has navigation ${referencedNav}.`); // unverified
-  if (navTaken(api, referencing, referencingNav)) throw bad(`${referencingLogical} already has navigation ${referencingNav}.`); // unverified
+  if (hasField(referencing, lookupName)) throw bad(`${referencingLogical}.${lookupName} already exists.`);
+  if (navTaken(api, referenced, referencedNav)) throw bad(`${referencedLogical} already has navigation ${referencedNav}.`);
+  if (navTaken(api, referencing, referencingNav)) throw bad(`${referencingLogical} already has navigation ${referencingNav}.`);
   const hierarchical = body.IsHierarchical === true;
-  // unverified: IsHierarchical is allowed once per table
+  // Assumed: IsHierarchical is allowed once per table.
   if (hierarchical && Object.values(relationshipsOf(api.store, referencing.logicalName, referencing.relationships)).some((rel) => rel.hierarchical)) {
     throw bad(`${referencingLogical} already has a hierarchical relationship.`);
   }
@@ -315,7 +313,7 @@ function writeOneToMany(api, plan, field) {
   const referencing = mappings(api)[plan.referencingLogical];
   if (field) {
     (referencing.fields ??= {})[plan.lookupName] = field;
-    // A lookup to an elastic table also gets <lookup>pid, the partitionid of the row it points at (Learn, create-elastic-tables).
+    // A lookup to an elastic table also gets <lookup>pid, the partitionid of the row it points at.
     if (isElastic(referenced)) referencing.fields[partitionColumnOf(plan.lookupName)] = { dataverseType: "nvarchar" };
     logMetadataChange(api, "add", "attribute", plan.referencingLogical, plan.lookupName);
   }
@@ -348,19 +346,19 @@ export function createOneToMany(api, body) {
 // A lookup whose targets are the referenced tables of one-to-many relationships; the first relationship creates the column.
 function createPolymorphic(api, body) {
   const pairs = body.OneToManyRelationships ?? [];
-  if (!Array.isArray(pairs) || !pairs.length) throw bad("A multi-table lookup needs at least one OneToManyRelationships entry."); // unverified
+  if (!Array.isArray(pairs) || !pairs.length) throw bad("A multi-table lookup needs at least one OneToManyRelationships entry.");
   const lookupName = lookupNameOf(body.Lookup);
   const plans = pairs.map((rel) => planOneToMany(api, rel, {
     lookupName,
-    // unverified: each navigation is named per target so the relationships do not collide
+    // Assumed default: each navigation is named per target so the relationships do not collide.
     referencingNav: rel.ReferencingEntityNavigationPropertyName ?? `${lookupName}_${lower(rel.ReferencedEntity)}`,
   }));
   const [first] = plans;
-  if (plans.some((p) => p.referencingLogical !== first.referencingLogical)) throw bad("All relationships must reference the same table."); // unverified
+  if (plans.some((p) => p.referencingLogical !== first.referencingLogical)) throw bad("All relationships must reference the same table.");
   const targets = plans.map((p) => p.referencedLogical);
-  if (new Set(targets).size !== targets.length) throw bad("The relationships must reference different tables."); // unverified
-  if (new Set(plans.map((p) => p.schemaName)).size !== plans.length) throw bad("The relationships must have distinct schema names."); // unverified
-  if (new Set(plans.map((p) => p.referencingNav)).size !== plans.length) throw bad("The relationships must have distinct navigation names."); // unverified
+  if (new Set(targets).size !== targets.length) throw bad("The relationships must reference different tables.");
+  if (new Set(plans.map((p) => p.schemaName)).size !== plans.length) throw bad("The relationships must have distinct schema names.");
+  if (new Set(plans.map((p) => p.referencingNav)).size !== plans.length) throw bad("The relationships must have distinct navigation names.");
   writeOneToMany(api, first, lookupField(body.Lookup, targets, "customer"));
   for (const plan of plans.slice(1)) writeOneToMany(api, plan, null);
   return {
@@ -370,7 +368,7 @@ function createPolymorphic(api, body) {
 }
 
 function createCustomerRelationships(api, body) {
-  if ((body.OneToManyRelationships ?? []).length !== 2) throw bad("CreateCustomerRelationships needs exactly two OneToManyRelationships."); // unverified
+  if ((body.OneToManyRelationships ?? []).length !== 2) throw bad("CreateCustomerRelationships needs exactly two OneToManyRelationships.");
   return createPolymorphic(api, body);
 }
 
@@ -381,17 +379,17 @@ export function createManyToMany(api, body) {
   const intersect = lower(requiredText(body.IntersectEntityName, "IntersectEntityName"));
   const e1 = tableOf(api, l1);
   const e2 = tableOf(api, l2);
-  assertElasticManyToMany(e1, e2); // Learn: no N:N with an elastic table (dataverse-elastic.mjs)
-  if (entriesOf(api, schemaName).length || mappings(api)[intersect]) throw bad(`${schemaName} already exists.`); // unverified
+  assertElasticManyToMany(e1, e2); // no N:N with an elastic table (dataverse-elastic.mjs)
+  if (entriesOf(api, schemaName).length || mappings(api)[intersect]) throw bad(`${schemaName} already exists.`);
   const attr1 = lower(body.Entity1IntersectAttribute ?? e1.idColumn);
   const attr2 = lower(body.Entity2IntersectAttribute ?? e2.idColumn);
   const nav1 = body.Entity1NavigationPropertyName ?? schemaName;
   const nav2 = body.Entity2NavigationPropertyName ?? schemaName;
   // A self-referencing relationship has both sides on one table: its intersect columns and navigation names must differ.
   if (l1 === l2 && (!body.Entity1IntersectAttribute || !body.Entity2IntersectAttribute || attr1 === attr2 || nav1 === nav2)) {
-    throw bad("A self-referencing many-to-many relationship needs distinct Entity1 and Entity2 intersect attributes and navigation names."); // unverified
+    throw bad("A self-referencing many-to-many relationship needs distinct Entity1 and Entity2 intersect attributes and navigation names.");
   }
-  if (navTaken(api, e1, nav1) || navTaken(api, e2, nav2)) throw bad("A navigation property is already in use."); // unverified
+  if (navTaken(api, e1, nav1) || navTaken(api, e2, nav2)) throw bad("A navigation property is already in use.");
 
   mappings(api)[intersect] = {
     logicalName: intersect,
@@ -433,7 +431,7 @@ function updateRelationship(api, c, key) {
   const schema = schemaByKey(api, key);
   const body = c.body ?? {};
   const merge = mergeLabelsHeader(c);
-  if (body.SchemaName && lower(body.SchemaName) !== lower(schema)) throw bad("SchemaName cannot change."); // unverified
+  if (body.SchemaName && lower(body.SchemaName) !== lower(schema)) throw bad("SchemaName cannot change.");
   const hits = entriesOf(api, schema);
   guardHits(api, schema, hits);
   for (const { rel } of hits) {
@@ -519,9 +517,9 @@ export function createGlobalSet(api, body) {
   const name = requiredText(body.Name, "Name");
   // A standard global option set (the standard file) is taken too, by name, whatever the case.
   const standard = Object.keys(standardGlobalOptionSets()).some((set) => lower(set) === lower(name));
-  if (findSet(api, name) || standard) throw bad(`A global option set named ${name} already exists.`); // unverified
+  if (findSet(api, name) || standard) throw bad(`A global option set named ${name} already exists.`);
   if (body.OptionSetType !== undefined && lower(body.OptionSetType) !== "picklist") {
-    throw bad("Only Picklist global option sets are supported."); // unverified
+    throw bad("Only Picklist global option sets are supported.");
   }
   const options = [];
   for (const item of body.Options ?? []) options.push(optionFrom(item, assignValue(options, item.Value)));
@@ -536,8 +534,8 @@ function updateGlobalSet(api, c, key) {
   const set = setByKey(api, key);
   const body = c.body ?? {};
   const merge = mergeLabelsHeader(c);
-  if (body.Name && lower(body.Name) !== lower(set.name)) throw bad("Name cannot change."); // unverified
-  if (body.OptionSetType !== undefined && lower(body.OptionSetType) !== "picklist") throw bad("OptionSetType cannot change."); // unverified
+  if (body.Name && lower(body.Name) !== lower(set.name)) throw bad("Name cannot change.");
+  if (body.OptionSetType !== undefined && lower(body.OptionSetType) !== "picklist") throw bad("OptionSetType cannot change.");
   // Only base properties are updated. Options are not part of OptionSetMetadataBase; the option actions change them.
   if (body.DisplayName) set.displayLabels = mergedLabels(set.displayLabels, body.DisplayName, merge);
   if (body.Description) set.descriptionLabels = mergedLabels(set.descriptionLabels, body.Description, merge);
@@ -548,7 +546,7 @@ function updateGlobalSet(api, c, key) {
 function deleteGlobalSet(api, key) {
   const set = setByKey(api, key);
   const users = boundFields(api, set.name).map(([logical, attr]) => `${logical}.${attr}`);
-  if (users.length) throw bad(`Global option set ${set.name} is used by ${users.join(", ")}.`); // unverified
+  if (users.length) throw bad(`Global option set ${set.name} is used by ${users.join(", ")}.`);
   dropGlobalSet(api, set.name);
   return { status: 204 };
 }
@@ -563,8 +561,8 @@ export function dropGlobalSet(api, name) {
 export function assignValue(list, requested) {
   if (requested == null) return Math.max(FIRST_VALUE - 1, ...list.map((o) => o.value)) + 1;
   const value = Number(requested);
-  if (!Number.isInteger(value)) throw bad("Value must be an integer."); // unverified
-  if (list.some((o) => o.value === value)) throw bad(`Option value ${value} already exists.`); // unverified
+  if (!Number.isInteger(value)) throw bad("Value must be an integer.");
+  if (list.some((o) => o.value === value)) throw bad(`Option value ${value} already exists.`);
   return value;
 }
 
@@ -593,10 +591,10 @@ function choiceHolder(api, body, types) {
   const field = table.fields?.[attr];
   if (!field) throw missing(`Attribute ${logical}.${attr}`);
   const type = lower(field.dataverseType);
-  if (!types.includes(type)) throw bad(`${attr} is not a ${types.join(" or ")} column.`); // unverified
+  if (!types.includes(type)) throw bad(`${attr} is not a ${types.join(" or ")} column.`);
   const users = [[logical, attr]];
   const optionSet = field.columnMetadata?.optionSet;
-  if (optionSet?.isGlobal) throw bad(`${attr} uses a global choice; change it with OptionSetName.`); // unverified
+  if (optionSet?.isGlobal) throw bad(`${attr} uses a global choice; change it with OptionSetName.`);
   if (type === "picklist" && optionSet) return { holder: optionSet, key: "options", users };
   return { holder: field, key: type !== "picklist" && Array.isArray(field[LIST_KEY[type]]) ? LIST_KEY[type] : "options", users };
 }
@@ -657,7 +655,7 @@ function deleteOption(api, c) {
   const option = findOption(list, body.Value);
   for (const [logical, attr] of users) {
     for (const row of api.store.state.tables?.[logical] ?? []) {
-      if (storesValue(row[attr], option.value)) throw bad(`Option ${option.value} is used by ${logical}.${attr}.`); // unverified
+      if (storesValue(row[attr], option.value)) throw bad(`Option ${option.value} is used by ${logical}.${attr}.`);
     }
   }
   list.splice(list.indexOf(option), 1);
@@ -670,9 +668,9 @@ function orderOptions(api, c) {
   const { holder, key } = choiceHolder(api, body, ["picklist"]);
   const list = holder[key] ?? [];
   const order = Array.isArray(body.Values) ? body.Values.map(Number) : null;
-  // unverified: the order must name every option value exactly once
+  // Assumed: the order must name every option value exactly once.
   if (!order || order.length !== list.length || new Set(order).size !== order.length || order.some((v) => !list.some((o) => o.value === v))) {
-    throw bad("Values must list every option value once."); // unverified message
+    throw bad("Values must list every option value once.");
   }
   list.sort((a, b) => order.indexOf(a.value) - order.indexOf(b.value));
   logChoice(api, body);
@@ -683,7 +681,7 @@ function insertStatus(api, c) {
   const body = c.body ?? {};
   const { holder, key } = choiceHolder(api, body, ["status", "picklist"]);
   const state = Number(body.StateCode);
-  if (body.StateCode == null || !Number.isInteger(state) || state < 0) throw bad("StateCode must be a state code."); // unverified
+  if (body.StateCode == null || !Number.isInteger(state) || state < 0) throw bad("StateCode must be a state code.");
   const list = (holder[key] ??= []);
   const value = assignValue(list, body.Value);
   list.push(optionFrom(body, value, { state }));
@@ -732,7 +730,7 @@ function relationshipCreate(api, c) {
   let schemaName;
   if (type.endsWith("onetomanyrelationshipmetadata")) schemaName = createOneToMany(api, body);
   else if (type.endsWith("manytomanyrelationshipmetadata")) schemaName = createManyToMany(api, body);
-  else throw bad("RelationshipDefinitions needs a OneToManyRelationshipMetadata or ManyToManyRelationshipMetadata @odata.type."); // unverified
+  else throw bad("RelationshipDefinitions needs a OneToManyRelationshipMetadata or ManyToManyRelationshipMetadata @odata.type.");
   return { status: 204, headers: { "OData-EntityId": location(c, "RelationshipDefinitions", relationshipId(api, schemaName)) } };
 }
 

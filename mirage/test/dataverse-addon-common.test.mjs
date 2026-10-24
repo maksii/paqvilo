@@ -1,6 +1,5 @@
 // Add-on message plumbing (lib/dataverse-addon-common.mjs): pack handlers, the default and fallback errors, the 204 rule and the
-// GC stub for internal-only messages. Invented contoso_ names and loopback only; the HTTP cases start two simulated APIs,
-// one with a trusted pack and one without.
+// GC stub for internal-only messages. The HTTP cases start two simulated APIs, one with a trusted pack and one without.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -21,7 +20,7 @@ const APP_ID = "33333333-3333-3333-3333-333333333333";
 const SECRET_VAR = "PAQVILO_ADDON_COMMON_SECRET";
 const ORIGIN_VERSION = "v9.2";
 
-// Invented operations: an echo action with a response, a void action, a predict-style action with no handler, and an
+// Operations: an echo action with a response, a void action, a predict-style action with no handler, and an
 // internal-only action with no handler.
 function testAddons() {
   return {

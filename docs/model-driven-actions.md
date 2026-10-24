@@ -17,7 +17,7 @@ Start [model-driven Lense](../mirage/docs/model-driven-customizations.md#preview
 | Session and target ownership | Agent status, debugger access and Stop retain the existing origin/tab ownership rules. The shared environment selector offers only explicitly declared model-driven targets. Selecting alone does not navigate; REAL DATA targets require confirmation. Switching retires the previous identity, action transport and agent before activating the next target. Source baselines, mode, Live and panel preferences remain per target. Native comparison bytes are released on retirement; equality is unknown again until reobserved. Authentication redirects are intermediate states; their origins are never intercepted. |
 | Portal-specific content | Liquid execution, portal snippets, page languages and portal persona setup have no native model-driven equivalent. Source deployment requirements remain diagnostics; Lense does not upload or publish. |
 
-Configured mappings and source coverage do not prove a resource executed. Inspect the current revision's applications, unmatched requests, diagnostics, actual native behavior and screenshots. Loopback UI regressions establish the shared implementation contract; native acceptance remains separately source-bound.
+Configured mappings and source coverage do not prove a resource executed. Inspect the current revision's applications, unmatched requests, diagnostics, actual native behavior and screenshots.
 
 Actions use the signed-in native environment. Each action describes its effect and explains missing native API support. Inspection results stay in the browser panel until cleared, the native target changes, or the Lense session ends. Favorites and recent action names contain no record values. Browser agent status, events and inspection snapshots do not include action results, command code, or the selected request identity.
 
@@ -53,23 +53,21 @@ Without `--env`, the declared default reference is selected. General references 
 
 These declarations authorize local source overlays, not deployment or live record writes. Browser actions still use the selected native environment. Confirm sign-in and the intended account after a switch; a login document is not application proof.
 
-## Review and adoption map
+## Available actions
 
-The initial review used [Level Up 4.1.3 source at commit 7cec0f8](https://github.com/rajyraman/Levelup-for-Dynamics-CRM/tree/7cec0f8aa09bcafed675684731d7291ca3a38258). It identified 35 main UI actions, an admin-center shortcut, identity and custom-command workflows, and supporting preferences. Paqvilo implements native operations in its own action registry and browser runner; it does not load the extension, React/MUI, or its Chrome service worker. The [MIT attribution](../lense/LICENSE-levelup.txt) accompanies the reviewed action vocabulary.
+Actions that need a record form (field, draft and form tools) are listed last on list pages, with the reason they are
+unavailable there. Search, favorites and recent action names help find the rest.
 
-| Usage | Level Up functionality | Lense integration |
-| --- | --- | --- |
-| Inspect a field or draft | Logical names / clear names, changed fields, choice values | Inspect group; temporary clickable names, searchable browser result tables, explicit distinction between draft values and server values |
-| Inspect a record and environment | Record ID, record URL, Web API, all fields; user/org/client helpers | Inspect results and Open record Web API; actual API version and entity-set metadata, bounded reads, environment and user details on demand |
-| Work with a form | God Mode, refresh subgrids, clone, refresh without autosave | Workflows group; reversible client form overrides, actual subgrid refresh, typed unsaved clone, separate discard-refresh and autosave guard |
-| Navigate | Open by ID, new record, table list, security, jobs, solutions, processes, mailboxes, home, Advanced Find, legacy mobile, solution history, side pane, admin center | Open and Workflows groups with validated table/GUID inputs; native SDK navigation and feature detection |
-| Edit and inspect processes | Form editor; workflows, flows, business rules, BPFs, actions, custom APIs | Current form editor link and bounded active process results; no hardcoded default solution ID |
-| Diagnose | Monitor, command checker, performance center, disable handlers/rules/libraries, dark theme, clear flags | Diagnose group; preserve unrelated URL parameters and flags, confirm discard when the native form is dirty |
-| Test request visibility | User search, impersonation start/stop/status | Identity view; explicit user selection and visible active banner; same-origin Dataverse Web API requests in this owned tab only |
-| Run developer commands | Command CRUD, Run/Test, JSON import/export | Custom view; local editor/list, validated versioned JSON, explicit asynchronous Run and browser-only output |
-| Organize tools | Favorites, recents, display preferences | Search, groups, favorites and recent labels; compact tooling alongside the app |
+| Group | Actions |
+| --- | --- |
+| Inspect | Logical names (clickable, removable), changed fields, choice values, record ID and URL, all saved fields of the record, table processes (workflows, business rules, flows, actions and bound custom APIs), environment and signed-in user |
+| Open | Record by ID, table list, record Web API, form editor, security, solutions, solution history, system jobs, processes, mailboxes, app home, Advanced Find, legacy mobile client, Power Platform admin center |
+| Workflows | Form overrides and restore, refresh subgrids, prepare clone, discard and refresh, autosave guard, new record, pin to the native side pane, find users |
+| Diagnose | Forms monitor, command checker, performance center, disable form handlers, business rules or form libraries, native dark theme, reset diagnostics; each reloads and asks before discarding a dirty form |
+| Identity | Act as another user for Web API requests of this tab (see [Request identity](#request-identity)) |
+| Custom | Your own JavaScript commands (see [Custom commands](#custom-commands)) |
 
-The upstream community installer contains a TODO command and its component is not mounted in the reviewed main UI. System health/report entries have no corresponding working handler. They are not presented as functioning operations. Support/community links are references, not automated messages or submissions. Lense does not post issues or publish command code.
+Support and community links only open pages; Lense never posts or submits anything.
 
 ## Form workflows
 
@@ -98,5 +96,3 @@ Custom commands are trusted JavaScript in the live app and can perform native op
 ## Implementation boundaries
 
 The fixed action registry validates allowed actions and parameters. The dispatch binding checks the owned main frame, exact origin, session token and request identifier. It returns acknowledgements only. Native record/form identity is captured in the browser after an explicit action, and asynchronous results are rejected if the target or session changes. Passive inspection does not call attribute-value or record-ID getters.
-
-Loopback regressions use invented schemas and native API doubles for typed clones, exact restore, autosave modes, navigation, stale results, request identity boundaries and asynchronous commands. Power Pages inspector and interception suites remain part of the full validation gate. Private app data and native screenshot acceptance remain in the separate project.

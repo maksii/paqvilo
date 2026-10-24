@@ -25,13 +25,16 @@ test('internal descriptors bind the selected form and resolved record, leaving H
 
 test('descriptor snapshots cannot mutate fields, rendered actions or server context', async () => {
   const o = options();
+  let checked = 0;
   await renderComponent('entityform', 'First', { request: { params: { row: 'owned' } } }, { ...o, onNativePostbackDescriptor: item => {
+    checked++;
     assert(Object.isFrozen(item));
     assert.throws(() => { item.context.recordId = 'forged'; }, TypeError);
     assert.throws(() => { item.descriptor.actions[0].target = 'forged'; }, TypeError);
     assert.throws(() => { item.descriptor.fields.push({ name: 'forged' }); }, TypeError);
     assert.throws(() => { item.descriptor.ids.buttons = 'forged'; }, TypeError);
   } });
+  assert.equal(checked, 1);
   assert.equal(o.schemas.first.fields[0].name, 'name');
 });
 

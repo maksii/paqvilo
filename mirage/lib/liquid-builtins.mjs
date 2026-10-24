@@ -1,10 +1,8 @@
-// Embedded Liquid templates of the Power Pages runtime (Adxstudio.Xrm "Liquid" resources).
-//
-// Power Pages resolves {% include %}/{% extends %} names against active web templates first and
-// then against these embedded resources (Web/Mvc/Liquid/EmbeddedResourceFileSystem.cs). Sources are
-// the MIT-licensed Adxstudio portal templates (C:\Work\portal_old\Portals\Framework\Adxstudio.Xrm\Liquid),
-// read without their UTF-8 byte order mark as StreamReader does; line endings are preserved.
-// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+// Embedded Liquid templates of the Power Pages runtime. Power Pages resolves {% include %} and
+// {% extends %} names against active web templates first, then against these. Line endings are kept
+// as in the originals.
+// From xRM Portals Community Edition (Framework/Adxstudio.Xrm/Liquid and Samples/MasterPortal/Areas/Cms/Views),
+// MIT License, Copyright (c) 2017 Microsoft and contributors; see licenses/xrm-portals-community-edition.txt.
 export const EMBEDDED_TEMPLATES = Object.freeze({
   page_copy: "{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %}",
   page_header: "<div class=\"page-header\">\r\n\t<h1>{{ page.title | h }}{% block title %}{% endblock %}</h1>\r\n</div>",
@@ -25,11 +23,8 @@ export const EMBEDDED_TEMPLATES = Object.freeze({
   random_poll: "{% unless placement %}\r\n  {% if id %}\r\n    {% assign placement = polls.placements[id] %}\r\n  {% elsif name %}\r\n    {% assign placement = polls.placements[name] %}\r\n  {% endif %}\r\n{% endunless %}\r\n\r\n{% if placement %}\r\n<div class=\"poll\" data-url=\"{{ placement.random_url | h }}\" data-submit-url=\"{{ placement.submit_url | h }}\"></div>\r\n{% endif %}",
 });
 
-// Default ad and poll markup of the ad and poll services and placements (MasterPortal Areas/Cms:
-// AdController and PollController render Views/{Ad,Poll}/{Ad,Poll,AdPlacement,PollPlacement}.ascx,
-// which use the item's or placement's web template or these Liquid templates; AdPlacementTemplate
-// writes the AdTemplate partial where it calls Html.RenderPartial). Text after the <%@ %> directives of
-// C:\Work\portal_old\Portals\Samples\MasterPortal\Areas\Cms\Views\{Ad\AdTemplate,Poll\PollTemplate,Ad\AdPlacementTemplate,Poll\PollPlacementTemplate}.ascx.
+// Default ad and poll markup, used when the ad, poll or placement has no web template of its own
+// (Views/{Ad,Poll}/*Template.ascx without their <%@ %> directives).
 export const CMS_VIEW_TEMPLATES = Object.freeze({
   ad: "\r\n{% if ad %}\r\n<div>\r\n\t{% if ad.redirect_url %}<a class=\"ad-link\" href=\"{{ ad.redirect_url | h }}\" title=\"{{ ad.title | h }}\">{% endif %}\n\t{% if ad.title %}\r\n\t<h5 class=\"ad-title\">{{ ad.title | h }}</h5>\r\n\t{% endif %}\r\n\t{% if ad.image.url %}\r\n\t<img class=\"ad-link-image center-block\" src=\"{{ ad.image.url | h }}\" alt=\"{{ ad.image.alternate_text | h }}\"{% if ad.image.height %} height=\"{{ ad.image.height }}\"{% endif %}{% if ad.image.width %} width=\"{{ ad.image.width }}\"{% endif %} style=\"{% if ad.image.height %}height:{{ ad.image.height }}px;{% endif %}{% if ad.image.width %}width:{{ ad.image.width }}px;{% endif %}\">\r\n\t{% endif %}\r\n\t{% if ad.redirect_url %}</a>{% endif %}\r\n\t{% if show_copy %}{% if ad.copy %}\r\n\t<div class=\"ad-copy\">{{ ad.copy }}</div>\r\n\t{% endif %}{% endif %}\r\n</div>\r\n{% endif %}",
   poll: "\r\n\r\n{% if poll %}\r\n<div>\r\n\t{% unless poll.user_selected_option %}\r\n\t<div class=\"poll-questionpanel\" data-id=\"{{ poll.id | h }}\" data-name=\"{{ poll.name | h }}\">\r\n\t\t<h5 class=\"poll-question\">{{ poll.question }}</h5>\r\n\t\t<ul class=\"poll-options list-unstyled\">\r\n\t\t\t{% for option in poll.options %}\r\n\t\t\t<li class=\"radio\">\r\n\t\t\t\t<label for=\"poll_option_{{ option.id | h }}\">\r\n\t\t\t\t\t<input type=\"radio\" name=\"{{ poll.name | h }}\" value=\"{{ option.id | h }}\" id=\"poll_option_{{ option.id | h }}\" />\r\n\t\t\t\t\t<span class=\"sr-only\">{{ poll.question }}</span>\r\n\t\t\t\t\t{{ option.answer | h }}\r\n\t\t\t\t</label>\r\n\t\t\t</li>\r\n\t\t\t{% endfor %}\r\n\t\t</ul>\r\n\t\t<button type=\"button\" class=\"btn btn-primary poll-submit\">{{ poll.submit_button_label | default: resx.Submit_Button_Label_Text | h }}</button>\r\n\t\t<button type=\"button\" class=\"btn btn-default poll-viewresults\">{{ snippets[\"polls/resultslabel\"] | default: resx.Poll_Results_Label | h }}</button>\r\n\t</div>\r\n\t{% endunless %}\r\n\t<div class=\"poll-resultspanel\">\r\n\t\t<h5 class=\"poll-question\">{{ poll.question }}</h5>\r\n\t\t<div class=\"poll-results\">\r\n\t\t\t{% for option in poll.options %}\r\n\t\t\t<div class=\"poll-result\">\r\n\t\t\t\t<span class=\"poll-option\">{{ option.answer | h }}</span>\r\n\t\t\t\t<span class=\"poll-percentage pull-right\">{{ option.percentage | max_decimals: 0 }}%</span>\r\n\t\t\t\t<div class=\"progress\">\t\t\t\t\t\r\n\t\t\t\t\t<div class=\"bar progress-bar\" style=\"min-width:2em;width:{{ option.percentage | invariant_culture_decimal_value: 2 }}%\">{{ option.percentage | max_decimals: 0 }}%</div>\r\n\t\t\t\t</div>\r\n\t\t\t</div>\r\n\t\t\t{% endfor %}\r\n\t\t</div>\r\n\t\t<p>{{ snippets[\"polls/totalslabel\"] | default: resx.Poll_Totals_Label | h }} {{ poll.votes }}</p>\r\n\t\t{% unless poll.user_selected_option %}\r\n\t\t<button type=\"button\" class=\"btn btn-default poll-return\">{{ snippets[\"polls/returnlabel\"] | default: resx.Poll_Return_Label | h }}</button>\r\n\t\t{% endunless %}\r\n\t</div>\r\n</div>\r\n{% endif %}",

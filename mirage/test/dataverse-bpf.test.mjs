@@ -1,5 +1,5 @@
 // Business process flows (lib/dataverse-bpf.mjs): category-4 inventory, instance rows through createInstance, the existing BPF
-// messages and the SetProcess 501 with its pack override. Invented x_ schema and GUIDs only; loopback fixture.
+// messages and the SetProcess 501 with its pack override.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, createInstance } from "../lib/dataverse-bpf.mjs";

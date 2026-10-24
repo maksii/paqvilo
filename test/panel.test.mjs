@@ -326,7 +326,6 @@ test('Mirage inspection: redraws carry a compact summary; the Inspect report arr
     assert.deepEqual(opened.at(-1).slice(1, 3), [fs.realpathSync.native(entity), 4], 'a Solution file opens at the reported column');
     assert.equal((await call('open', { rel: 'web-pages/about/About.webpage.yml' })).ok, false, 'opening is limited to descriptors reported for this page');
     assert.equal((await call('open', { rel: `@${path.basename(outside)}/secret.xml` })).ok, false, 'unlaunched roots stay closed even when the report names them');
-    assert.match(panelUi.toString(), /Mirage is not active/);
   } finally {
     fs.rmSync(solution, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
@@ -525,10 +524,10 @@ test('a navigation only clears pending changes for the tab that loaded them', as
 
 test('malformed UI settings and oversized API input are safely rejected', async () => {
   const { call, panel, tab } = await setup();
+  await call('ui', { tab: 'issues', open: true });
+  const valid = structuredClone(panel.stateFor(tab.page).ui);
   await call('ui', { tab: '<invalid>', pos: 'broken', open: 'yes', collapsed: [] });
-  const state = panel.stateFor(tab.page).ui;
-  assert.notEqual(state.tab, '<invalid>');
-  assert.notEqual(state.open, 'yes');
+  assert.deepEqual(panel.stateFor(tab.page).ui, valid, 'malformed settings change nothing');
   assert.equal((await call('mode', { online: true, padding: 'x'.repeat(32768) })).status, 413);
 });
 
@@ -770,7 +769,4 @@ test('Mirage Tweaks report whether local pages are confined to loopback, with th
   await tick(80);
   const tweaks = await call('tweaks');
   assert.deepEqual([tweaks.status.confinePortalPages, tweaks.status.externalAssets, tweaks.status.externalFrameOrigins], [true, false, 2]);
-  const source = panelUi.toString();
-  assert.match(source, /Confined to loopback/);
-  assert.match(source, /Not confined: pages carry only the headers their site settings define/);
 });

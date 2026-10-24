@@ -1,10 +1,9 @@
-// Copilot Studio (Pva*) bots and Teams chat linking: the 20 messages of the native base-environment $metadata (add-on family F7)
+// Copilot Studio (Pva*) bots and Teams chat linking: the 20 messages of the native base-environment $metadata
 // that are not on the flows module. Registered through registerAddon or registerInternalMessage (dataverse-addon-common.mjs).
-// Contract: the Web API reference pages of each message, read 2026-10-20 (where Learn gives one).
-// The C messages (Learn: "For internal use only.") answer the not-simulated default unless a store-backed behaviour is given; the
-// others answer featureNotEnabled(). A trusted pack's dataverseMessages handler replaces any of them.
-// unverified: the sharing role mapping (1 is Read, Write and Share, else Read), the ShareOrUnshare value, the bot list format,
-// the snapshot id, and the shared workspace response.
+// The internal-only messages (documented "For internal use only.") answer the not-simulated default unless a store-backed
+// behaviour is given; the others answer featureNotEnabled(). A trusted pack's dataverseMessages handler replaces any of them.
+// Guesses, not confirmed natively: the sharing role mapping (1 is Read, Write and Share, else Read), the ShareOrUnshare value,
+// the bot list format, the snapshot id, and the shared workspace response.
 // Bot publishing and the chat service require trusted pack handlers.
 import { createHash, randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
@@ -12,20 +11,21 @@ import { argsOf, featureNotEnabled, idOf, registerAddon, registerInternalMessage
 import { contextUrl } from "./dataverse-odata.mjs";
 import { ACCESS_RIGHTS, grantAccess, revokeAccess } from "./dataverse-security.mjs";
 
-const key = (value) => String(value ?? "").toLowerCase();
+// Lookup columns hold { id, logical_name } references; ids compare without case.
+const key = (value) => String((value !== null && typeof value === "object" ? value.id : value) ?? "").toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
-const invalid = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x80040203" }); // unverified: message
+const invalid = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x80040203" }); // native message not known
 const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
-const SHARING_OWNER = ACCESS_RIGHTS.Read | ACCESS_RIGHTS.Write | ACCESS_RIGHTS.Share; // unverified: SharingRoleType 1
+const SHARING_OWNER = ACCESS_RIGHTS.Read | ACCESS_RIGHTS.Write | ACCESS_RIGHTS.Share; // SharingRoleType 1
 const plain = (entry) => Object.fromEntries(Object.entries(entry ?? {}).filter(([name]) => !name.startsWith("@")));
 
-// name: [spec] pairs, in the order of the brief. bound(...) and unbound(...) build a registerAddon spec.
+// bound(...) and unbound(...) build a registerAddon spec.
 const unbound = (name, kind, params, out = {}) => ({ name, kind, binding: "unbound", signature: { params, ...out } });
 const bound = (name, kind, entity, params, out = {}) => ({ name, kind, binding: "entity", entity, signature: { params, ...out } });
 const CRM = "mscrm.crmbaseentity";
 const USERS = `Collection(${CRM})`;
 
-// C messages (internal-only, GC policy) with their store-backed behaviour where the brief gives one.
+// Internal-only messages, with a store-backed behaviour where one is modelled.
 const INTERNAL = [
   unbound("GetEntityLinkChatConfig", "action", [["RegardingEntityName", "Edm.String"]], { returns: CRM }),
   unbound("GetLinkedChats", "action", [["RegardingEntity", CRM]], { response: [["LinkedChatDetails", "Edm.String"]] }),
@@ -45,7 +45,7 @@ const INTERNAL = [
   unbound("PvaStartConversation", "action", [["Version", "Edm.String"], ["Request", CRM]], { returns: CRM }),
 ];
 
-// A messages: a store-backed behaviour where given, else featureNotEnabled().
+// Public messages: a store-backed behaviour where one is modelled, else featureNotEnabled().
 const ACTIVE = [
   bound("PvaComponentCollectionAuthorize", "action", "botcomponentcollection", [["Users", USERS], ["SharingRoleType", "Edm.Int32"], ["ShareOrUnshare", "Edm.Boolean"]]),
   bound("PvaDeleteBotComponentCollection", "action", "botcomponentcollection", []),
@@ -111,7 +111,7 @@ function operations(api) {
 
     PvaCreateContentSnapshot: async (c) => {
       const bot = boundRow(c, "bot");
-      // unverified: the snapshot id is the sha1 of the bot's component rows.
+      // The snapshot id is the sha1 of the bot's component rows.
       const SnapshotId = createHash("sha1").update(JSON.stringify(componentsOf(bot.botid))).digest("hex");
       return { SnapshotId };
     },
@@ -136,14 +136,14 @@ function operations(api) {
       return undefined;
     },
 
-    // The bots the caller owns, as a JSON list of { botid, name }. unverified: the list format and RoleType (ignored).
+    // The bots the caller owns, as a JSON list of { botid, name }; RoleType is ignored.
     PvaGetUserBots: async (c) => {
       const owner = c.user?.systemuserid;
       const bots = tableOf("bot").filter((row) => sameId(row.ownerid, owner)).map((row) => ({ botid: row.botid, name: row.name }));
       return { Bots: JSON.stringify(bots) };
     },
 
-    // Find the workspace by its name, or create it. unverified: the matching rule and the new row's columns.
+    // Find the workspace by its name, or create it. The matching rule and the new row's columns are guesses.
     GetOrCreateSharedWorkspace: async (c) => {
       const name = argsOf(c).target?.name;
       let row = tableOf("sharedworkspace").find((item) => key(item.name) === key(name));

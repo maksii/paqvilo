@@ -58,7 +58,7 @@ export const WEBAPI_UNSUPPORTED_TABLES = new Set([
  * default on all instances of Microsoft Dataverse"). Entity set names are the logical
  * names with "s" (mspp_websiteaccesses), as the Dataverse table reference lists them.
  * A request for one that the local data doesn't hold answers like any table that isn't
- * enabled (observed live: /_api/mspp_webpages, 404 9004010C, segment mspp_webpage).
+ * enabled (e.g. /_api/mspp_webpages answers 404 9004010C, segment mspp_webpage).
  */
 export const POWER_PAGES_TABLES = new Map(
   [
@@ -126,7 +126,7 @@ export function webApiPolicy(portal, store, entity) {
   // request names fails with 90040101 (the primary key stays readable).
   // The `*` value is unsupported on every hosted site from 14 September 2026 unless an
   // admin exemption applies (troubleshoot: migrate-web-api-wildcard), so requests for
-  // such a table fail by default. A site with an observed, evidenced exemption
+  // such a table fail by default. A site observed with an exemption
   // (observed.webApiWildcard "exempt") keeps exposing every column.
   if (fields.has("*") && portal.observed?.webApiWildcard !== "exempt")
     denied(
@@ -136,7 +136,7 @@ export function webApiPolicy(portal, store, entity) {
       { table: mapping.logicalName },
     );
   const writeFields = new Set(fields);
-  // Some captured sites require the wire property to be explicitly enabled.
+  // Some sites require the wire property to be explicitly enabled.
   // Keep the usual metadata-derived aliases unless that site observation opts in.
   for (const field of portal.observed?.webApiLookupFields === 'explicit-wire' ? [] : fields)
     if (
@@ -222,7 +222,6 @@ export function webApiPolicy(portal, store, entity) {
         );
       // Optional empty All Column Permissions retains table-level operations for
       // unspecified columns; explicit child columns remain independently restricted.
-      // MicrosoftDocs July 2026 examples document this default (see README evidence).
       const defaults = values(portalField(profile, "allcolumnpermissions"));
       return (
         defaults.length === 0 || defaults.includes(operationValue[operation])
@@ -655,7 +654,7 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, {structuralJoi
           "WebApiFetchEntityMismatch",
           { innerCode: "0x80040203" },
         );
-      // The evidenced native lane permits relationship keys to join tables
+      // The native lane permits relationship keys to join tables
       // without enabling those keys for projected/filter/order API access.
       // Dataverse column/type validation remains in the query executor.
       if (!structuralJoinFields && node.attrs.from) policy.assert(node.attrs.from);

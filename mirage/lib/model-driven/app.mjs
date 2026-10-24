@@ -14,7 +14,7 @@ const storage = {
 let catalogue, app, table, current, query = {}, selected = new Set(), record, recordCapabilities, etag, formId, activeTab, activeArea, activeNavigationItem, controls = [], dirty = false, pending = false, generation = 0, tabObserver, commandObserver, staffIdentity, staffSession, staffSessionError = '';
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
 let touchedFields = new Set();
-// Tab and section visibility changed by client scripts, for the open form only (Learn tab.setVisible, section.setVisible).
+// Tab and section visibility changed by client scripts, for the open form only (tab.setVisible, section.setVisible).
 const layoutState = new Map();
 const layoutVisible = item => (layoutState.has(item) ? layoutState.get(item) : item.visible !== false);
 let loadedFormType = 1;
@@ -124,7 +124,7 @@ function renderOffline() {
   toggle.textContent = `${offline ? 'Offline' : 'Online'}${pending ? ` · ${pending} pending` : ''}${problems ? ` · ${problems} sync issues` : ''}`;
   toggle.setAttribute('aria-pressed', String(offline)); toggle.dataset.mode = offline ? 'offline' : 'online';
   toggle.title = offlineState?.error ?? `Mobile offline profile ${offlineState?.profile ?? ''}${offlineState?.lastSync ? ` · last sync ${offlineState.lastSync}` : ' · not synced'}`;
-  // Learn setup-mobile-offline: the sync interval is how often a connected device syncs.
+  // The sync interval is how often a connected device syncs.
   if (!offline && offlineState?.nextSync) offlineTimer = setTimeout(() => offlineAction({ action: 'sync' }).catch(error => notice(error.message, true)), Math.max(1000, Date.parse(offlineState.nextSync) - Date.now()));
 }
 async function loadOffline() {
@@ -586,7 +586,7 @@ function editFilters(initialField) {
     for (const [index, filter] of filters.entries()) {
       const row = document.createElement('div'); row.className = 'filter-row';
       const definition = table.fields[filter.field], operators = operatorsFor(definition);
-      // Retain old explicitly-authored pattern filters when editing saved preferences.
+      // Keep explicitly authored like/not-like filters of saved preferences editable.
       if (['like', 'not-like'].includes(filter.operator)) operators.splice(2, 0, [filter.operator, filter.operator === 'like' ? 'Matches pattern' : 'Does not match pattern']);
       const field = pickerButton(definition?.label ?? filter.field, Object.values(table.fields).map(definition => ({ label: definition.label ?? definition.name, value: definition.name })), { label: `Filter ${index + 1} column`, selected: filter.field, choose: name => { filter.field = name; filter.value = ''; if (!operatorsFor(table.fields[name]).some(([value]) => value === filter.operator)) filter.operator = 'eq'; render(); }, className: 'filter-picker' });
       const operator = pickerButton(operators.find(([value]) => value === filter.operator)?.[1] ?? filter.operator, operators.map(([value, label]) => ({ label, value })), { label: `Filter ${index + 1} operator`, selected: filter.operator, choose: value => { filter.operator = value; render(); }, className: 'filter-picker' });
@@ -981,7 +981,7 @@ async function persistRecord(close) {
   const existing = Boolean(record[table.idColumn]), values = {};
   // Client scripts may explicitly write source-disabled presentation controls.
   // Column permissions and staff capabilities still govern the resulting write.
-  // Header and footer columns are form attributes like body columns (Learn formContext.data.entity.attributes: every
+  // Header and footer columns are form attributes like body columns (formContext.data.entity.attributes: every
   // column bound on the form); a header-only column a client script set is saved on the same path.
   const savedForm = table.forms.find(form => form.id === formId);
   const layoutFields = new Set([...(savedForm?.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(field => field.supported).map(field => field.name) ?? []),
@@ -1027,7 +1027,7 @@ function pageUrl(input) {
   const params = new URLSearchParams({ appname: app.uniqueName ?? app.id, pagetype: input.pageType });
   if (input.pageType === 'webresource') { params.set('webresourceName', input.webresourceName); if (input.data !== undefined) params.set('data', input.data); }
   else if (input.pageType === 'dashboard') params.set('id', input.dashboardId);
-  // unverified: the live main.aspx address of an inline custom page was not captured; Mirage keeps name, entityName, recordId.
+  // The native main.aspx address of an inline custom page is not known; Mirage keeps name, entityName, recordId.
   else if (input.pageType === 'custom') { params.set('name', input.name); if (input.entityName) params.set('entityName', input.entityName); if (input.recordId) params.set('recordId', input.recordId); }
   else {
     params.set('etn', input.entityName);
@@ -1054,7 +1054,7 @@ async function openPage(input, options = { target: 1 }, navigationItem) {
     const close = () => element.close();
     heading.append(title, button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' })); element.append(heading, frame); document.body.append(element);
     element.addEventListener('close', () => {
-      // Learn navigateTo: only a record opened in create mode resolves with savedEntityReference, once it was saved (the frame
+      // navigateTo: only a record opened in create mode resolves with savedEntityReference, once it was saved (the frame
       // address gained an id); other pages resolve with no value.
       // ponytail: the saved record is read from the frame's final address; a record saved and then left inside the dialog is not reported. Upgrade: the framed form posts its saves to the opener.
       let saved; try { const params = new URLSearchParams(frame.contentWindow.location.search); if (input.pageType === 'entityrecord' && !input.entityId && params.get('id')) saved = { savedEntityReference: [{ entityType: params.get('etn'), id: `{${params.get('id')}}`, name: frame.contentDocument.querySelector('.record-title h1')?.textContent ?? '' }] }; } catch { saved = undefined; }
@@ -1092,7 +1092,7 @@ async function renderDashboardPage(id) {
     subgrid: { entity: component.entity, view: component.view, pageSize: component.pageSize, searchEnabled: component.searchEnabled, viewPickerEnabled: component.viewPickerEnabled, views: component.views } }));
   contentLoaded(); remember({ label: dashboard.name, app: app.uniqueName, url: pageUrl({ pageType: 'dashboard', dashboardId: dashboard.id }) });
 }
-/** A custom page is a canvas app (Learn "Model-driven app custom page overview"); its logical name is the canvas app's
+/** A custom page is a canvas app; its logical name is the canvas app's
  * unique name. The page must be one of this app's own type-300 components that the canvas host holds (the catalogue's
  * app.customPages, model-driven/solution.mjs customPageResolution); any other name answers the shell's missing-page
  * error with the failed check, as a missing dashboard does. */
@@ -1143,7 +1143,7 @@ function renderWebResourcePage(name, data) {
   const frame = document.createElement('iframe'); frame.className = 'webresource-page'; frame.title = activeNavigationItem?.title ?? name;
   frame.src = page.url + (data != null ? '?data=' + encodeURIComponent(data) : ''); content.append(frame); contentLoaded();
 }
-/** Xrm.App.sidePanes (Learn: xrm-app/xrm-app-sidepanes): panes beside the workspace that host the same page types. */
+/** Xrm.App.sidePanes: panes beside the workspace that host the same page types. */
 const panes = [];
 let selectedPane;
 const sidePanes = {

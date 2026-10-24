@@ -1,17 +1,8 @@
 // Azurite storage provider: the storage contract over the Azure Blob REST API with native fetch and Shared Key
 // authorization (node:crypto). Loopback endpoints only; Paqvilo never starts Azurite. The account key lives in this
 // module's closure only: never in descriptors, state, diagnostics, errors or /_sim payloads.
-// REST references (Learn):
-//   Shared Key: https://learn.microsoft.com/rest/api/storageservices/authorize-with-shared-key
-//   Put Blob / Put Block / Put Block List: https://learn.microsoft.com/rest/api/storageservices/put-blob, .../put-block, .../put-block-list
-//   Get Blob (x-ms-range) / Get Blob Properties / Delete Blob / List Blobs / Create Container / List Containers:
-//     https://learn.microsoft.com/rest/api/storageservices/get-blob, .../get-blob-properties, .../delete-blob, .../list-blobs,
-//     .../create-container, .../list-containers2
-//   Conditional headers: https://learn.microsoft.com/rest/api/storageservices/specifying-conditional-headers-for-blob-service-operations
-//   Error codes: https://learn.microsoft.com/rest/api/storageservices/blob-service-error-codes
-//   Service SAS: https://learn.microsoft.com/rest/api/storageservices/create-service-sas
-// Azurite: https://learn.microsoft.com/azure/storage/common/storage-use-azurite#differences-between-azurite-and-azure-storage
-//   connection strings and the well-known account: https://learn.microsoft.com/azure/storage/common/storage-connect-azurite
+// Blob REST reference: https://learn.microsoft.com/rest/api/storageservices/blob-service-rest-api; Azurite differences:
+// https://learn.microsoft.com/azure/storage/common/storage-use-azurite#differences-between-azurite-and-azure-storage
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { ProviderError, STORAGE_OPERATIONS, validateKey } from './storage-provider.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
@@ -91,7 +82,7 @@ export function sharedKeyStringToSign({ method, url, headers = {}, accountName }
   const h = new Headers(headers);
   const standard = SIGNED_HEADERS.map(name => { const value = h.get(name) ?? ''; return name === 'content-length' && value === '0' ? '' : value; });
   // Array.prototype.sort compares UTF-16 code units: ordinal (ASCII) order for header names, as the spec's lexicographic sort.
-  // unverified: the service's comparer for names with '_' or '-' next to letters (ordinal vs culture order) was not captured live.
+  // The service's comparer for names with '_' or '-' next to letters (ordinal vs culture order) is not known.
   const canonicalHeaders = [...h.keys()].filter(name => name.startsWith('x-ms-')).sort()
     .map(name => `${name}:${h.get(name).replace(/\s+/g, ' ').trim()}\n`).join('');
   const target = new URL(url);
@@ -105,7 +96,7 @@ const hmac = (accountKey, text) => createHmac('sha256', Buffer.from(accountKey, 
 const decodeXml = text => text.replace(/&(lt|gt|quot|apos|amp);/g, (_, name) => ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' })[name]);
 const xmlValue = (xml, tag) => { const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml); return match ? decodeXml(match[1]) : null; };
 const iso = text => { const time = Date.parse(text ?? ''); return Number.isFinite(time) ? new Date(time).toISOString() : null; };
-// unverified: List Blobs returns <Etag> without quotes while the ETag header is quoted; quoting both keeps them comparable.
+// List Blobs may return <Etag> without quotes while the ETag header is quoted; quoting both keeps them comparable.
 const quoted = etag => (etag && !etag.startsWith('"') ? `"${etag}"` : etag);
 const sasTime = time => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
@@ -178,7 +169,7 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     const message = `Azure Blob ${operation} answered ${response.status} ${azure}.`;
     const status = response.status;
     // Learn: an unmet If-None-Match on a write is 412; a create-only write (If-None-Match: *) is the contract's Conflict.
-    // unverified: whether Azurite answers 412 ConditionNotMet or 409 BlobAlreadyExists for Put Blob with If-None-Match: *.
+    // Azurite may answer 412 ConditionNotMet or 409 BlobAlreadyExists for Put Blob with If-None-Match: *; both are Conflict.
     if ((status === 412 || azure === 'BlobAlreadyExists') && ifNoneMatch === '*') return fail('Conflict', message, azure);
     if (status === 412) return fail('PreconditionFailed', message, azure);
     // A conditional write on a missing blob fails its condition (the contract), whatever 404 the service gives.
@@ -430,8 +421,8 @@ export const create = createAzuriteStorage;
  * Service SAS StringToSign for a blob (create-service-sas, version 2020-12-06 and later): signedPermissions, signedStart,
  * signedExpiry, canonicalizedResource (/blob/<account>/<container>/<blob>, URL-decoded), signedIdentifier, signedIP,
  * signedProtocol, signedVersion, signedResource, signedSnapshotTime, signedEncryptionScope, rscc, rscd, rsce, rscl, rsct.
- * unverified: the 2020-12-06 field list was read from Learn's section headings and the user delegation SAS layout; Azurite's
- * acceptance of these SAS URLs was not captured live.
+ * The 2020-12-06 field list is inferred from Learn's section headings and the user delegation SAS layout; Azurite's
+ * acceptance of these SAS URLs is not verified.
  */
 export function serviceSasStringToSign({ sp, st = '', se, accountName, container, key, sv = BLOB_API_VERSION, sr = 'b' }) {
   return [sp, st, se, `/blob/${accountName}/${container}/${key}`, '', '', '', sv, sr, '', '', '', '', '', '', ''].join('\n');

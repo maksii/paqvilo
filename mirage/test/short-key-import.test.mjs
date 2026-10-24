@@ -13,9 +13,8 @@ import { serverLogicName } from "../lib/server-logic.mjs";
 import { createSimulator } from "../server.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-// The short-key .powerpages-site dialect imports like any other export (ecosystem review
-// docs/runtime-evidence.md, X1): the synthetic code site
-// test-browser/fixtures/code-site (NOTICE.md) follows the layout of the MIT-licensed
+// The short-key .powerpages-site dialect imports like any other export: the synthetic code site
+// test-browser/fixtures/code-site follows the layout of the MIT-licensed
 // microsoft/power-pages-samples code sites.
 
 const here = path.dirname(fileURLToPath(import.meta.url));

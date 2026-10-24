@@ -1,6 +1,6 @@
-// Task 42: custom connector policy templates applied in order (set host URL, route request with method, set header/query,
+// Custom connector policy templates applied in order (set host URL, route request with method, set header/query,
 // set property, convert array to object and object to array) and the OAuth authorization code flow with a loopback redirect
-// listener, PKCE and refresh, against a loopback fake authorization server. Invented connector, hosts and credentials.
+// listener, PKCE and refresh, against a loopback fake authorization server.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -41,7 +41,7 @@ test('policy templates apply in order to the request and the response', () => {
     sets: [{ people: { PQR: { Age: '32' } } }, { people: { MNO: { Age: '26' } } }] } });
   assert.deepEqual(answer.body.peopleObject, { XYZ: { Age: '30' }, ABC: { Age: '23' } });
   assert.deepEqual(answer.body.sets, [{ people: [{ Name: 'PQR', Details: { Age: '32' } }], tag: 'x' }, { people: [{ Name: 'MNO', Details: { Age: '26' } }], tag: 'x' }]);
-  // A policy expression Learn does not list blocks the connector.
+  // A policy expression the platform does not document blocks the connector.
   assert.equal(compiled(OPENAPI, [policy('setheader', { name: 'x', value: '@unknownFunction()' }, 'Request')])[0].blocked.code, 'CONNECTOR_POLICY_UNSUPPORTED');
 });
 

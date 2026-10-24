@@ -11,7 +11,7 @@ const SHA256_WITH_RSA = '1.2.840.113549.1.1.11';
 const DEFAULT_COMMON_NAME = 'Paqvilo Mirage Dataverse simulator';
 const DEFAULT_HOSTS = ['127.0.0.1', '::1', 'localhost'];
 
-// ---- DER encoding ----
+// ---- DER encoding
 
 function length(n) {
   if (n < 0x80) return Buffer.from([n]);
@@ -112,7 +112,7 @@ function pem(label, der) {
   return `-----BEGIN ${label}-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END ${label}-----\n`;
 }
 
-// ---- certificate ----
+// ---- certificate
 
 export function createSelfSignedCertificate({
   commonName = DEFAULT_COMMON_NAME,

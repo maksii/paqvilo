@@ -1,5 +1,5 @@
 // localServices: loopback-only validation, probes against a loopback stub, a closed port and a redirect, the
-// Service Bus declaration without printing its connection string, and the capability records. Loopback only.
+// Service Bus declaration without printing its connection string, and the capability records.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

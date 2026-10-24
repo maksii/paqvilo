@@ -6,7 +6,7 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { ADMIN_CSP } from "../lib/runtime-admin.mjs";
 
-// The four view modules run in a minimal harness page (app.mjs wiring is separate): the harness builds the D3 ctx,
+// The four view modules run in a minimal harness page (app.mjs wiring is separate): the harness builds the ctx,
 // renders a module into #content, delegates click/submit/change/input to handle(), keeps section open state from
 // `toggle` events and confirms through a <dialog>. Modules, the kit and the help content are served from disk.
 const HARNESS = `

@@ -1,7 +1,6 @@
-// Alternate-key upsert precedence (dataverse-records.mjs upsertNow). Learn (power-apps/developer/data-platform/
-// use-upsert-insert-update-record): when the record exists the server removes the body values for the key columns the URL
-// addresses (the key cannot change through the key that addresses it); when it does not, the body's key values are used even
-// when they differ from the URL and only missing ones are copied from the URL. Invented table, loopback only.
+// Alternate-key upsert precedence (dataverse-records.mjs upsertNow): when the record exists the server removes the body
+// values for the key columns the URL addresses (the key cannot change through the key that addresses it); when it does not,
+// the body's key values are used even when they differ from the URL and only missing ones are copied from the URL.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

@@ -1,4 +1,4 @@
-// GET /_sim/api/dashboard: the read-only infrastructure feed both hosts serve (D5). The shared part is
+// GET /_sim/api/dashboard: the read-only infrastructure feed both hosts serve. The shared part is
 // organizationHost.topology() (organization-host.mjs, memoised per store revision and counters tick); the host adds its own
 // listeners, runtimes and rings through extras(). Every part but `activity` is redacted like the messaging routes; `activity`
 // is reduced to numbers (plus the few named strings below), so a diagnostic code or counter named like a credential keeps

@@ -7,7 +7,7 @@ import { createSimulator } from '../server.mjs';
 import { applyPortalOverrides, validatePortalOverrides } from '../lib/portal-overrides.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
-export async function setupPortalOverrides(t) {
+async function setupPortalOverrides(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-portal-overrides-'));
   let app;
   t.after(async () => { await app?.close(); await fs.rm(directory, { recursive: true, force: true }); });
@@ -40,7 +40,8 @@ test('portal overrides validate names/types and leave source immutable', () => {
   const source = { settings: { a: 'source' }, snippets: { hello: 'source' } };
   const result = applyPortalOverrides(source, { settings: { a: null }, snippets: { hello: 'edited' } });
   assert.equal(result.settings.a, undefined); assert.equal(result.snippets.hello, 'edited'); assert.equal(source.snippets.hello, 'source');
-  for (const value of [[], { wrong: {} }, { settings: { a: 42 } }, { snippets: JSON.parse('{"__proto__":"bad"}') }]) assert.throws(() => validatePortalOverrides(value));
+  for (const [value, message] of [[[], /must be an object/], [{ wrong: {} }, /support settings, snippets/], [{ settings: { a: 42 } }, /string or null/], [{ snippets: JSON.parse('{"__proto__":"bad"}') }, /valid name/]])
+    assert.throws(() => validatePortalOverrides(value), message);
 });
 
 test('local web role changes control contact memberships and actual API read grants', async t => {

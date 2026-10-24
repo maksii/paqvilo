@@ -11,7 +11,7 @@ const PLUGIN_SUBERROR = -2146233088;
 // Native plug-in faults, with the annotations native sends (they appear only when Prefer asks for them). The plug-in's
 // own InvalidPluginExecutionException is 0x80040265 with its message; an errorCode it names is not the top-level code but
 // the signed SubErrorCode. Any other throw is unhandled (0x80040224), and so is a timeout, whose message names the type.
-// unverified: the assembly is the type's namespace (true of the provisioned probe), and the trace block is the one-line
+// Assumed: the assembly is the type's namespace, and the trace block is the one-line
 // layout native sends; the timeout annotations are the unhandled ones.
 export function pluginFailure(error, plugin, timeoutMs) {
   const { name, id, type, traces } = plugin;

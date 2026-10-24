@@ -82,11 +82,6 @@ describe("dataverse API router", () => {
     assert.ok(document.token_endpoint.startsWith(`${origin}/`));
   });
 
-  it("issues a client_credentials token that the API accepts", async () => {
-    assert.equal(typeof token, "string");
-    assert.equal(token.split(".").length, 3);
-  });
-
   it("answers WhoAmI with the application user and the root business unit", async () => {
     const response = await get(apiPath("WhoAmI"));
     assert.equal(response.status, 200);
@@ -230,11 +225,15 @@ describe("dataverse API router", () => {
     assert.equal(owner.AttributeType, "Owner");
   });
 
-  it("returns the user privileges wrapped as RolePrivileges", async () => {
-    const response = await get(apiPath(`systemusers(${appUserId})/Microsoft.Dynamics.CRM.RetrieveUserPrivileges()`));
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.ok(Array.isArray(body.RolePrivileges));
+  it("returns each user's role privileges at their depth through RetrieveUserPrivileges", async () => {
+    const privileges = async (userId) => {
+      const response = await get(apiPath(`systemusers(${userId})/Microsoft.Dynamics.CRM.RetrieveUserPrivileges()`));
+      assert.equal(response.status, 200);
+      return (await response.json()).RolePrivileges;
+    };
+    const admin = await privileges(appUserId);
+    assert.equal(admin.find((entry) => entry.PrivilegeName === "prvReadWidget")?.Depth, "Global");
+    assert.deepEqual(await privileges(makerUserId), [], "a user without roles holds no privileges");
   });
 
   it("passes collection reads to the record handler with the caller", async () => {
@@ -282,7 +281,7 @@ describe("dataverse API router", () => {
     assert.equal(unknownRight.status, 400);
   });
 
-  it("P14: GrantAccess and RevokeAccess accept a systemuser or team principal keyed by ownerid", async () => {
+  it("GrantAccess and RevokeAccess accept a systemuser or team principal keyed by ownerid", async () => {
     const widgetId = "aaaaaaaa-0000-0000-0000-000000000002";
     const target = { widgetid: widgetId, "@odata.type": "Microsoft.Dynamics.CRM.widget" };
     const principal = { ownerid: makerUserId, "@odata.type": "Microsoft.Dynamics.CRM.systemuser" };
@@ -294,7 +293,7 @@ describe("dataverse API router", () => {
     assert.equal(store.state.tables.principalobjectaccess.find((row) => row.objectid === widgetId), undefined);
   });
 
-  it("P13: RetrievePrincipalAccess answers for a team (its shares and roles) and for the organization instead of 501", async () => {
+  it("RetrievePrincipalAccess answers for a team (its shares and roles) and for the organization", async () => {
     const widgetId = "aaaaaaaa-0000-0000-0000-000000000001";
     const teamId = "bbbbbbbb-0000-4000-8000-0000000000a1";
     const target = { widgetid: widgetId, "@odata.type": "Microsoft.Dynamics.CRM.widget" };
@@ -426,11 +425,17 @@ describe("dataverse API router", () => {
     assert.equal(loopback.status, 200);
   });
 
-  it("logs requests without authorization data", async () => {
-    const entries = api.requests();
-    assert.ok(entries.length > 0);
-    assert.ok(entries.every((entry) => !("authorization" in entry)));
-    assert.ok(!JSON.stringify(entries).includes(token));
+  it("logs each request's kind without authorization data", async () => {
+    const from = api.requests().length;
+    await (await fetch(`${origin}/${tenantId}/v2.0/.well-known/openid-configuration`)).arrayBuffer();
+    await (await get(apiPath("WhoAmI"))).arrayBuffer();
+    await (await get("/api/discovery/v2.0/Instances")).arrayBuffer();
+    await (await fetch(`${origin}/XRMServices/2011/Organization.svc/web`, { method: "POST", body: "<x/>" })).arrayBuffer();
+    await (await fetch(`${origin}${apiPath("widgets")}`, { method: "OPTIONS", headers: { origin: "http://other.test" } })).arrayBuffer();
+    const entries = api.requests().slice(from);
+    assert.deepEqual(entries.map((entry) => entry.kind), ["sts", "data", "discovery", "soap", "options"]);
+    assert.equal(entries[1].userId, appUserId);
+    assert.ok(!JSON.stringify(api.requests()).includes(token), "no entry holds the bearer token");
   });
 
   it("answers a cross-origin OPTIONS with CORS headers", async () => {
@@ -479,26 +484,16 @@ describe("dataverse API router", () => {
     const suffixOf = async (path) => (await (await get(apiPath(path))).json())["@odata.context"].split("$metadata#")[1];
     assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')?$select=LogicalName,EntitySetName"), "EntityDefinitions(LogicalName,EntitySetName)/$entity");
     assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')?$select=LogicalName&$expand=OneToManyRelationships"), "EntityDefinitions(LogicalName,OneToManyRelationships())/$entity");
-      const expanded = await (await get(apiPath("EntityDefinitions(LogicalName='widget')?$select=LogicalName&$expand=OneToManyRelationships,ManyToManyRelationships"))).json();
-      assert.ok(Array.isArray(expanded.OneToManyRelationships));
-      assert.ok(Array.isArray(expanded.ManyToManyRelationships));
-      assert.equal(expanded.DisplayName, undefined, "unselected scalar metadata stays omitted");
+    const expanded = await (await get(apiPath("EntityDefinitions(LogicalName='widget')?$select=LogicalName&$expand=OneToManyRelationships,ManyToManyRelationships"))).json();
+    assert.ok(Array.isArray(expanded.OneToManyRelationships));
+    assert.ok(Array.isArray(expanded.ManyToManyRelationships));
+    assert.equal(expanded.DisplayName, undefined, "unselected scalar metadata stays omitted");
     assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')/Attributes?$select=LogicalName"), "EntityDefinitions('widget')/Attributes(LogicalName)");
     assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')/Keys?$select=LogicalName"), "EntityDefinitions('widget')/Keys(LogicalName)");
     assert.equal(
       await suffixOf("EntityDefinitions(LogicalName='widget')/Attributes/Microsoft.Dynamics.CRM.StringAttributeMetadata?$select=LogicalName"),
       "EntityDefinitions('widget')/Attributes/Microsoft.Dynamics.CRM.StringAttributeMetadata(LogicalName)",
     );
-  });
-
-  it("records the kind of each request", async () => {
-    const kinds = new Set(api.requests().map((entry) => entry.kind));
-    for (const kind of ["sts", "data", "discovery", "soap", "options"]) assert.ok(kinds.has(kind), `expected a ${kind} entry`);
-  });
-
-  it("closes all listeners", async () => {
-    await api.close();
-    api = null;
   });
 });
 
@@ -582,6 +577,14 @@ describe("dataverse API batch, metadata and sign-in", () => {
       body: new URLSearchParams({ grant_type: "client_credentials", client_id: APP_ID, client_secret: process.env[SECRET_VAR], scope: `${origin}/.default` }),
     });
     token = (await response.json()).access_token;
+    // The maker's delegated token, for the tests that need a caller without privileges.
+    store.state.dataverse.passwords = { [makerUserId]: hashSecret(PASSWORD) };
+    const signIn = await fetch(`${origin}/${tenantId}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: form,
+      body: new URLSearchParams({ grant_type: "password", client_id: PUBLIC_APP_ID, username: "maker@example.test", password: PASSWORD, scope: `${origin}/.default` }),
+    });
+    userToken = (await signIn.json()).access_token;
   });
 
   after(async () => {
@@ -589,6 +592,7 @@ describe("dataverse API batch, metadata and sign-in", () => {
     await api?.close();
   });
 
+  let userToken;
   const bearer = (value) => ({ authorization: `Bearer ${value}` });
   // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
   const send = (path, init = {}) => fetch(`${origin}${path}`, { signal: AbortSignal.timeout(10_000), ...init });
@@ -773,69 +777,48 @@ describe("dataverse API batch, metadata and sign-in", () => {
       code_challenge_method: "S256",
     });
   const authorizePath = () => `/${tenantId}/oauth2/v2.0/authorize?${authorizeQuery()}`;
-  let code;
-  let userToken;
-
-  it("shows the account picker for an interactive sign-in", async () => {
-    const response = await send(authorizePath());
-    assert.equal(response.status, 200);
-    assert.ok(response.headers.get("content-type").startsWith("text/html"));
-    assert.ok((await response.text()).includes("Maker User"));
-  });
-
-  it("redirects with a code and the state once the picker is submitted", async () => {
-    const response = await send(authorizePath(), {
+  it("signs in through the account picker and exchanges the code with PKCE for a user token that WhoAmI resolves", async () => {
+    const picker = await send(authorizePath());
+    assert.equal(picker.status, 200);
+    assert.ok(picker.headers.get("content-type").startsWith("text/html"));
+    assert.ok((await picker.text()).includes("Maker User"));
+    const submitted = await send(authorizePath(), {
       method: "POST",
       redirect: "manual",
       headers: form,
       body: new URLSearchParams({ ...Object.fromEntries(authorizeQuery()), oid: MAKER_OID }),
     });
-    assert.equal(response.status, 302);
-    const location = new URL(response.headers.get("location"));
+    assert.equal(submitted.status, 302);
+    const location = new URL(submitted.headers.get("location"));
     assert.equal(`${location.origin}${location.pathname}`, REDIRECT);
     assert.equal(location.searchParams.get("state"), "s1");
-    code = location.searchParams.get("code");
-    assert.ok(code);
-  });
-
-  it("exchanges the code with PKCE for a user access token and an id token", async () => {
     const { status, body } = await tokenRequest({
       grant_type: "authorization_code",
       client_id: PUBLIC_APP_ID,
-      code,
+      code: location.searchParams.get("code"),
       redirect_uri: REDIRECT,
       code_verifier: VERIFIER,
     });
     assert.equal(status, 200);
-    assert.ok(body.id_token);
-    userToken = body.access_token;
-    assert.equal(claimsOf(userToken).upn, "maker@example.test");
+    assert.equal(claimsOf(body.id_token).nonce, "n1");
+    assert.equal(claimsOf(body.access_token).upn, "maker@example.test");
+    const whoAmI = await send(apiPath("WhoAmI"), { headers: bearer(body.access_token) });
+    assert.equal(whoAmI.status, 200);
+    assert.equal((await whoAmI.json()).UserId, makerUserId);
   });
 
-  it("answers WhoAmI with the interactive user's systemuserid", async () => {
-    const response = await send(apiPath("WhoAmI"), { headers: bearer(userToken) });
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).UserId, makerUserId);
-  });
-
-  let device;
-  const poll = () => tokenRequest({ grant_type: DEVICE_GRANT, client_id: PUBLIC_APP_ID, device_code: device.device_code });
-
-  it("issues a device code and reports authorization_pending before approval", async () => {
+  it("reports authorization_pending for a device code until the verification page approves it", async () => {
     const response = await send(`/${tenantId}/oauth2/v2.0/devicecode`, {
       method: "POST",
       headers: form,
       body: new URLSearchParams({ client_id: PUBLIC_APP_ID, scope: `${origin}/.default openid` }),
     });
     assert.equal(response.status, 200);
-    device = await response.json();
-    assert.ok(device.user_code);
+    const device = await response.json();
+    const poll = () => tokenRequest({ grant_type: DEVICE_GRANT, client_id: PUBLIC_APP_ID, device_code: device.device_code });
     const pending = await poll();
     assert.equal(pending.status, 400);
     assert.equal(pending.body.error, "authorization_pending");
-  });
-
-  it("issues a token once the verification page approves the code", async () => {
     const approve = await send("/common/oauth2/deviceauth", {
       method: "POST",
       redirect: "manual",
@@ -861,21 +844,16 @@ describe("dataverse API batch, metadata and sign-in", () => {
     assert.ok(wrong.body.error_description.startsWith("AADSTS50126"));
   });
 
-  it("answers an alternate key with non-Latin text as JSON, never a hang", async () => {
+  it("answers an undeclared alternate key with non-Latin text as a JSON 400, never a hang", async () => {
     const response = await send(apiPath("widgets(code='日本')"), {
       method: "PATCH",
       headers: { ...bearer(token), "content-type": "application/json" },
       body: JSON.stringify({ name: "x" }),
       signal: AbortSignal.timeout(5000),
     });
-    if (response.status === 204) {
-      // Any id header must be a plain ASCII value that Node could send.
-      assert.match(response.headers.get("odata-entityid") ?? "", /^[\x20-\x7e]*$/);
-    } else {
-      assert.ok(response.status >= 400);
-      assert.equal(response.headers.get("content-type").split(";")[0], "application/json");
-      assert.ok(JSON.parse(await response.text()).error.code !== undefined);
-    }
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("content-type").split(";")[0], "application/json");
+    assert.equal((await response.json()).error.code, "0x80060888");
   });
 
   it("reports Dataverse error codes inside batch parts", async () => {
@@ -937,7 +915,7 @@ describe("dataverse API batch, metadata and sign-in", () => {
   });
 
   it("answers impersonation of an unknown target with 404 in the _error body and a caller without the privilege with the full 403", async () => {
-    // Native (headers.impersonation-invalid): 404 Record Is Unavailable, not the 400 envelope this test used to expect.
+    // Native answers 404 Record Is Unavailable, not a 400 envelope.
     const unknown = await send(apiPath("WhoAmI"), { headers: { ...bearer(token), MSCRMCallerID: "99999999-9999-4999-8999-999999999999" } });
     assert.equal(unknown.status, 404);
     assert.equal((await unknown.json())._error.Code, "0x80040217");
@@ -1168,7 +1146,7 @@ describe("dataverse API change tracking and shares inside batches", () => {
     assert.equal(sharesOf(OWNED_ID).length, 1);
   });
 
-  it("expires the tokens issued before a reseed (the /_sim/ reset path)", async () => {
+  it("expires the delta tokens issued before a reseed (the /_sim/ reset path)", async () => {
     const link = (await (await read(apiPath("widgets?$select=name"), TRACK)).json())["@odata.deltaLink"];
     await api.reseed();
     token = await tokenFrom(api);

@@ -54,8 +54,9 @@ test('custom API rows immediately update canonical HTTP routing, CSDL, parameter
   assert.doesNotMatch(action((await schema()).xml, 'new_Live') ?? '', /ReturnType/);
   await json(await call('POST', 'new_Live', { Changed: 'No output contract' }), 204);
   await json(await call('PATCH', `customapis(${api.customapiid})`, { uniquename: 'new_Renamed' }));
-  assert.equal(action((await schema()).xml, 'new_Live'), undefined);
-  assert.ok(action((await schema()).xml, 'new_Renamed'));
+  const renamed = (await schema()).xml;
+  assert.equal(action(renamed, 'new_Live'), undefined);
+  assert.ok(action(renamed, 'new_Renamed'));
   await json(await call('POST', 'new_Live', { Changed: 'Old name' }), 404);
   await json(await call('POST', 'new_Renamed', { Changed: 'New name' }), 204);
   await json(await call('DELETE', `customapirequestparameters(${parameter.customapirequestparameterid})`), 204);

@@ -92,7 +92,7 @@ function adopt(created, name, value) {
   } else if (value && (typeof value === 'object' || typeof value === 'function') && !created.some(entry => entry.item === value)) created.push({ name, item: value });
   return value;
 }
-// A resource is registered once: a factory that passes its returned instance through own() is closed once (RC4a-21).
+// A resource is registered once: a factory that passes its returned instance through own() is closed once.
 const owner = (created, name) => resource => { if (resource && !created.some(entry => entry.item === resource)) created.push({ name: `${name}/owned`, item: resource }); return resource; };
 
 /**
@@ -107,7 +107,7 @@ function packFactory(packs, exportName, kind) {
 }
 
 /**
- * Builds the providers object once from validated config and packs (ARCH 18). Every key is present; a provider that is not
+ * Builds the providers object once from validated config and packs. Every key is present; a provider that is not
  * configured is null. config: { connections, secrets, providers, localServices }. stateDirectory anchors local storage; when it
  * is not given it is derived from { stateFile, simulation } (stateDirectoryOf). organizationUri() names the organization in bus
  * messages (the Dataverse origin, else the host's local origin).
@@ -519,7 +519,7 @@ async function hostContext({ store, packs = [], config = {}, stateDirectory, sta
     canvas: { enabled: config.canvas?.enabled !== false, records: [], diagnostics: [] } };
   c.providers = await composeProviders({ store, packs, config, stateDirectory, clock: clock ?? store.clock ?? systemClock, ids: ids ?? store.ids ?? systemIds, diagnostic, env,
     organizationUri: () => c.dataverse?.origin ?? localOrigin() ?? null });
-  // The composed providers are closed when the rest of the context fails to build, so a failed host leaks none (RC4a-21).
+  // The composed providers are closed when the rest of the context fails to build, so a failed host leaks none.
   try { return hostContextRest(c, { store, clock, ids, scheduler, diagnostic, inventory }); } catch (error) {
     await closeProviders(c.providers).catch(cleanup => diagnostic({ code: cleanup.code, severity: 'error', providers: cleanup.providers, message: cleanup.message }));
     throw error;
@@ -544,7 +544,7 @@ function hostContextRest(c, { store, clock, ids, scheduler, diagnostic, inventor
 
 /**
  * Step 2: the catalogues, memoised on the committed store revision, the sources and overrides identities and the CLR runtimes
- * epoch (01-P1); inside an isolated transaction they are rebuilt, since its uncommitted writes are not in the revision.
+ * epoch; inside an isolated transaction they are rebuilt, since its uncommitted writes are not in the revision.
  */
 function hostCatalogues(c) {
   const { store, sources, handlers, overrides } = c;
@@ -573,7 +573,7 @@ function hostCatalogues(c) {
 }
 
 /**
- * Step 3: the one capability registry of this host (ARCH 4), rebuilt with the catalogues: host surfaces, the installed modules
+ * Step 3: the one capability registry of this host, rebuilt with the catalogues: host surfaces, the installed modules
  * (describe(api) sees what this runtime wired), operations, providers, services, inventory and pack records. A record
  * name another source already used is kept once (first wins), so a pack cannot shadow a module.
  */
@@ -692,7 +692,7 @@ function hostLifecycle(c) {
 /**
  * Applies an operations overrides map: CLR runtimes the new map selects are prepared first (refused when the item has
  * no trusted descriptor), commit() stores the map, and runtimes it no longer selects are closed. A failed commit
- * closes what was prepared. Both hosts go through here, so a runtime switch to clr always prepares (01-B4).
+ * closes what was prepared. Both hosts go through here, so a runtime switch to clr always prepares.
  */
 async function applyOperationOverrides(c, next, commit) {
   const { runtimes, diagnostic } = c;
@@ -736,7 +736,7 @@ function hostReports(c) {
     /**
      * The shared part of GET /_sim/api/dashboard (sim-dashboard-routes.mjs): { runtime, nodes, edges, activity } from the
      * registry, providers, configuration, the Dataverse listener and cheap table counts. Memoised on the store revision, the
-     * counters tick and a 5-second time bucket (RC-63); never reads a secret value, connection settings or a service endpoint URL beyond its hostname.
+     * counters tick and a 5-second time bucket; never reads a secret value, connection settings or a service endpoint URL beyond its hostname.
      */
     topology: () => {
       // A 5-second time bucket refreshes counts that change with time alone (message locks and schedules, overdue waits).
@@ -801,7 +801,7 @@ function hostReports(c) {
  *   projectRoot; diagnostic.
  * Returns { runtime, host, surfaces, registry, operations, providers, bindings, graph, canvas, preflight({ scenario, strict,
  * env, diagnostics }), close() }. A pack provider factory that throws rejects with PROVIDER_FACTORY_FAILED. The caller closes it.
- * The one honest difference from GET /_sim/api/preflight: operation modes are the source defaults (no /_sim/ overrides).
+ * The one difference from GET /_sim/api/preflight: operation modes are the source defaults (no /_sim/ overrides).
  */
 export async function composeHostDescription({ sources = {}, config = {}, packs = [], deploymentProfile = null, host, runtime, simulation = null,
   projectRoot = process.cwd(), portal = null, operationPortal = null, diagnostic = () => {}, env = process.env, preset = null } = {}) {
@@ -865,7 +865,7 @@ const portOf = text => { try { return text ? Number(new URL(text).port) || null 
 const attempt = (fn, fallback) => { try { return fn(); } catch { return fallback; } };
 
 /**
- * The shared dashboard topology (D5 node ids): Dataverse listener, organization core and modules, providers, connections,
+ * The shared dashboard topology: Dataverse listener, organization core and modules, providers, connections,
  * web hook targets, local services, fixtures and apps, plus activity from cheap counters and single passes over the bus,
  * outbox, flow run and asyncoperation tables. Safe facts only: counts, names, levels, ports and hostnames. Each builder
  * below adds its nodes and edges to the shared graph and returns the facts `activity` needs.
@@ -961,7 +961,7 @@ function orgNodes({ node, edge, nodes, rows, count, store, clock, organization, 
   return { runs, overdueWaits, jobs, asyncRows };
 }
 
-/** Storage routes, the message bus (one pass over its table, RC-48) and the outbox. Storage counts are writes since start. */
+/** Storage routes, the message bus (one pass over its table) and the outbox. Storage counts are writes since start. */
 function providerNodes({ node, edge, rows, count, clock, providers, store, config = {} }) {
   const storage = attempt(() => providers.storage?.describe?.() ?? null, null);
   const storageActivity = (storage?.providers ?? []).map(entry => ({ id: entry.id, writes: count(`storage.${entry.id}.writes`), deletes: count(`storage.${entry.id}.deletes`),

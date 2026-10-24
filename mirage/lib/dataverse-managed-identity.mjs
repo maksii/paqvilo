@@ -6,9 +6,6 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { uuidV5 } from "./dataverse-security.mjs";
 
-// Sources: learn.microsoft.com/azure/app-service/overview-managed-identity#rest-endpoint-reference
-//          learn.microsoft.com/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
-//          learn.microsoft.com/azure/azure-arc/servers/managed-identity-authentication
 const APP_SERVICE_PATH = "/msi/token";
 const IMDS_PATH = "/metadata/identity/oauth2/token";
 // App Service names the resource selector mi_res_id; IMDS names it msi_res_id. Both are accepted.
@@ -30,13 +27,13 @@ export function createManagedIdentityEndpoints({ authority, settings, origin, se
   const pending = new Map(); // secret -> file path of the unused Arc challenges
   const identities = () => settings.managedIdentities ?? [];
 
-  // unverified: the docs give no body for an unknown identity; 401 unauthorized_client is the documented error for a misconfigured identity.
+  // The docs give no body for an unknown identity; 401 unauthorized_client is the documented error for a misconfigured one.
   const unknownIdentity = () => failure(401, "unauthorized_client", "Identity not found");
 
   // One selector at most. With none, the first configured identity stands in for the system-assigned one (ponytail: settings carry no system-assigned identity).
   const selectIdentity = (searchParams) => {
     const given = SELECTORS.filter(([name]) => searchParams.get(name) !== null);
-    if (given.length > 1) return { error: failure(400, "invalid_request", "Only one identity selector may be given.") }; // unverified: body shape
+    if (given.length > 1) return { error: failure(400, "invalid_request", "Only one identity selector may be given.") }; // native body shape is a guess
     if (given.length === 0) return identities()[0] ? { identity: identities()[0] } : { error: unknownIdentity() };
     const [name, field] = given[0];
     const value = searchParams.get(name).toLowerCase();
@@ -51,15 +48,15 @@ export function createManagedIdentityEndpoints({ authority, settings, origin, se
     const picked = selectIdentity(searchParams);
     if (picked.error) return picked.error;
     const token = authority.issueManagedIdentityToken({ origin, clientId: picked.identity.clientId, resource });
-    if (!token) return failure(400, "invalid_resource", `AADSTS50001: The application named ${resource} wasn't found.`); // unverified: wording beyond the code
+    if (!token) return failure(400, "invalid_resource", `AADSTS50001: The application named ${resource} wasn't found.`); // wording after the AADSTS code is a guess
     return reply(200, shape(token));
   };
 
-  // Checked before any side effect (the Arc challenge writes a file). unverified: wording
+  // Checked before any side effect (the Arc challenge writes a file). Native wording is a guess.
   const missingApiVersion = () => failure(400, "invalid_request", "Required query variable 'api-version' is missing");
 
   const appService = ({ searchParams, headers }) => {
-    if (headers["x-identity-header"] !== identityHeader) return failure(401, "unauthorized_client", "Missing or wrong X-IDENTITY-HEADER."); // unverified: status and body
+    if (headers["x-identity-header"] !== identityHeader) return failure(401, "unauthorized_client", "Missing or wrong X-IDENTITY-HEADER."); // native status and body are a guess
     if (!searchParams.has("api-version")) return missingApiVersion();
     return issue(searchParams, (token) => ({
       access_token: token.access_token,
@@ -84,12 +81,12 @@ export function createManagedIdentityEndpoints({ authority, settings, origin, se
       rmSync(oldestPath, { force: true });
     }
     pending.set(secret, path);
-    // unverified: the 401 body is not in the Arc docs
+    // The Arc docs give no 401 body; this one is a guess.
     return failure(401, "unauthorized", "Authorization required", { "www-authenticate": `Basic realm=${path}` });
   };
 
   const imds = (req) => {
-    // unverified: the docs table lists bad_request_102 in the error column; the body follows the task brief's invalid_request form.
+    // The docs list bad_request_102 as the error; the invalid_request body is a guess.
     if (req.headers.metadata !== "true") return failure(400, "invalid_request", "Required metadata header not specified");
     if (!req.searchParams.has("api-version")) return missingApiVersion();
     if (secretFile !== undefined) {
@@ -125,14 +122,14 @@ export function createManagedIdentityEndpoints({ authority, settings, origin, se
   return { handle, env, close };
 }
 
-// The managedidentity table (Microsoft Learn: reference/entities/managedidentity). One row per configured identity; an
-// identity's application user is created by the security seeding (dataverse-security.mjs applicationUser).
-// unverified: live capture. credentialsource 2 (IsManaged) and subjectscope 1 are the docs' example values; version 0 is a placeholder.
+// The managedidentity table: one row per configured identity; an identity's application user is created by the security
+// seeding (dataverse-security.mjs applicationUser).
+// credentialsource 2 (IsManaged) and subjectscope 1 are the docs' example values; version 0 is a placeholder.
 const MANAGED_IDENTITY_FIELDS = {
   managedidentityid: { dataverseType: "uniqueidentifier" }, name: { dataverseType: "nvarchar" },
   applicationid: { dataverseType: "uniqueidentifier" }, tenantid: { dataverseType: "uniqueidentifier" },
   credentialsource: { dataverseType: "picklist", options: [{ value: 0, label: "ClientSecret" }, { value: 1, label: "KeyVault" }, { value: 2, label: "IsManaged" }, { value: 3, label: "MicrosoftFirstPartyCertificate" }] },
-  // unverified: the docs table spells value 1 "EnviornmentScope"; the configure-app article says "EnvironmentScope".
+  // The table reference spells value 1 "EnviornmentScope"; the configure-app article says "EnvironmentScope".
   subjectscope: { dataverseType: "picklist", options: [{ value: 0, label: "GlobalScope" }, { value: 1, label: "EnvironmentScope" }, { value: 2, label: "DevOnlyScope" }] },
   version: { dataverseType: "int" },
   statecode: { dataverseType: "int", options: [{ value: 0, label: "Active" }, { value: 1, label: "Inactive" }] },

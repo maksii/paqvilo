@@ -55,7 +55,8 @@ test('reference parity uses explicit local visitors, membership and override rol
   }
   assert.deepEqual(app.store.state.simulator.identity, identity);
   app.store.state.simulator.identity = { contactId: 'other', roleSource: 'override', roles: ['Reader'] };
-  assert.equal((await compareReferenceContracts({ ...options, localVisitor: { configuredPersona: true } })).passed, true, 'configured override roles remain visitor-local');
+  const override = await compareReferenceContracts({ ...options, localVisitor: { configuredPersona: true } });
+  assert.equal(override.passed, true, JSON.stringify(override));
   app.store.state.simulator.identity = identity;
   const changedScope = await compareReferenceContracts({ ...options, bridge: { request: async () => {
     app.store.state.simulator.identityScope = 'configured';
@@ -142,7 +143,7 @@ test('anonymous parity requires session controls and refuses runtime-state redir
     await fs.rm(directory, { recursive: true, force: true });
   });
   const options = { localUrl: `http://127.0.0.1:${server.address().port}`, origin: 'https://reference.invalid', outputDir: directory, contracts: [{ id: 'read', path: '/_api/widgets', statusOnly: true }], bridge: { request: async () => { referenceRequests++; return { status: 200, body: '{}' }; } } };
-  await assert.rejects(compareReferenceContracts(options));
+  await assert.rejects(compareReferenceContracts(options), error => /redirect/i.test(error.cause?.message ?? error.message));
   assert.equal(forwardedRequests, 0);
   redirect = false;
   await assert.rejects(compareReferenceContracts(options), /did not provide session controls/);

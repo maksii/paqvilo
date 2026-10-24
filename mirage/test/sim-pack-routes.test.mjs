@@ -1,5 +1,5 @@
-// GET /_sim/api/packs: an invented pack with export counts, preset provenance, DATA ownership and relative module paths on
-// the standalone host (no portal: matched null), and portal matching on the Power Pages host. Invented data only.
+// GET /_sim/api/packs: a pack with export counts, preset provenance, DATA ownership and relative module paths on
+// the standalone host (no portal: matched null), and portal matching on the Power Pages host.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -62,7 +62,7 @@ test('standalone /packs lists an invented pack with exports, presets provenance 
   assert.deepEqual(body.library.find(item => item.id === 'invented-preset'), { id: 'invented-preset', name: 'Invented preset', pack: 'invented-pack', source: 'builtin' });
   assert.ok(body.library.some(item => item.pack === null), 'generic presets have no pack');
   assert.ok(!JSON.stringify(body).includes(root.replaceAll('\\', '\\\\')) && !JSON.stringify(body).includes(root), 'no absolute project paths');
-  const refused = await fetch(`${sim.url}/_sim/api/packs`, { method: 'DELETE', headers: { 'x-sim-csrf': sim.state().csrf } });
+  const refused = await fetch(`${sim.url}/_sim/api/packs`, { method: 'DELETE', headers: { 'x-sim-csrf': sim.csrf } });
   assert.equal(refused.status, 405);
   assert.equal(refused.headers.get('allow'), 'GET, HEAD');
   const head = await fetch(`${sim.url}/_sim/api/packs`, { method: 'HEAD' });

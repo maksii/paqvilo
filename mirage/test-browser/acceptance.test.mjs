@@ -75,7 +75,7 @@ test('acceptance opens and settles a modal without counting frame lifecycle requ
   await fs.writeFile(path.join(root,'Create.basicform.yml'),'adx_entityformid: create\nadx_name: Create\nadx_entityname: sample\nadx_mode: 100000000');
   const app=await createSimulator({sourceDir:root,stateFile:path.join(root,'state.json'),watch:false,initial:{settings:{permissionMode:'permissive'},mappings:{sample:{idColumn:'sampleid'}},tables:{sample:[]},simulator:{mode:'local',pageMode:'local',live:{allowWrites:false},endpoints:[],componentSchemas:{create:{entity:'sample',fields:[{name:'name',type:'text'}]}}}}});ownedFixture(t).add(()=>app.close());
   const report=await runAcceptance({localUrl:app.url,outputDir:path.join(root,'evidence'),flows:[{name:'Modal',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#open'},{action:'visible',frame:'#modal',selector:'#name'},{action:'settle'}]}]});
-  assert.equal(report.passed,true,JSON.stringify(report.flows.map(flow=>({error:flow.error,failedResponses:flow.failedResponses,pageErrors:flow.pageErrors,failedRequests:flow.failedRequests}))));
+  assert.equal(report.passed,true,JSON.stringify({sourceChanged:report.sourceChanged,implementationChanged:report.implementationChanged,flows:report.flows.map(flow=>({passed:flow.passed,error:flow.error,failedResponses:flow.failedResponses,pageErrors:flow.pageErrors,failedRequests:flow.failedRequests}))}));
   assert.equal(report.flows[0].failedRequests.length,0);
 });
 
@@ -282,8 +282,8 @@ test(
       }
       if (url.pathname === "/never-finishes.png") {
         res.setHeader("content-type", "image/png");
-        res.write(Buffer.from("R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=", "base64"));
-        return setTimeout(() => res.end(), 2500);
+        // The response stays open until the fixture closes its connections.
+        return res.write(Buffer.from("R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=", "base64"));
       }
       res.setHeader("content-type", "text/html");
       res.end('<h1 id="ready">DOM is ready</h1><img src="/never-finishes.png">');

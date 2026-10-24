@@ -1,12 +1,7 @@
 import { createHash } from "node:crypto";
 import { siteSetting } from "./redirects.mjs";
 
-/**
- * External sign-in configuration derived from the portal's site settings (Learn: "Local
- * authentication, registration, and other settings", "Set up site authentication" and the
- * OpenID Connect, OAuth 2.0, SAML 2.0 and WS-Federation provider articles).
- * docs/sim-administration.md, "External sign-in", describes the flow these feed.
- */
+/** External sign-in configuration derived from the portal's site settings. */
 
 const lower = (value) => String(value ?? "").trim().toLowerCase();
 const flag = (value, fallback) => (lower(value) === "true" ? true : lower(value) === "false" ? false : fallback);
@@ -29,8 +24,7 @@ export function timeSpanMs(value) {
 /** Registration and sign-in switches with their documented defaults. */
 export function authenticationSettings(portal) {
   const s = (name) => siteSetting(portal, `Authentication/Registration/${name}`);
-  // RequiresInvitation (and RequiresConfirmation) turn open registration off (Learn,
-  // "Configure site settings": "enables invitation code feature and disables open registration").
+  // RequiresInvitation (and RequiresConfirmation) turn open registration off.
   const requiresInvitation = flag(s("RequiresInvitation"), false);
   return {
     registration: flag(s("Enabled"), true),
@@ -101,13 +95,13 @@ function sourceAuthorities(portal) {
 // Katana's OAuth 2.0 middlewares answer on /signin-<provider> by default.
 const OAUTH_CALLBACKS = { microsoft: "/signin-microsoft", google: "/signin-google", facebook: "/signin-facebook", twitter: "/signin-twitter", linkedin: "/signin-linkedin", yahoo: "/signin-yahoo" };
 const ONE_HOUR = 60 * 60 * 1000;
-/** Prompt values Learn lists for Authentication/OpenIdConnect/{Provider}/Prompt and the ExternalLogin prompt parameter. */
+/** Documented prompt values for Authentication/OpenIdConnect/{Provider}/Prompt and the ExternalLogin prompt parameter. */
 export const PROMPT_VALUES = Object.freeze(["none", "login", "consent", "select_account", "create"]);
 const PARAMETER_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /**
- * The authorization code flow and request options of an OpenID Connect provider (Learn, "Set up
- * an OpenID Connect provider"): ClientSecret (client_secret_post, the default), or
+ * The authorization code flow and request options of an OpenID Connect provider:
+ * ClientSecret (client_secret_post, the default), or
  * TokenEndPointAuthenticatedMethod private_key_jwt with PrivateKeyJwt/CertificateObject
  * {"kid":"<thumbprint>"}; UseUserInfoEndpointforClaims and UserInfoEndpoint; Prompt (none,
  * login, consent, select_account or create); AcrValues; AllowedDynamicAuthorizationParameters
@@ -155,7 +149,7 @@ export function oidcOptions(fields = {}) {
  *   AuthenticationType is its authority: the setting, else the project's observed authority,
  *   else the authority the portal's own sign-in forms post, else the multi-tenant authority
  *   (reported as authoritySource "default"). The adapter posts back to the site root with
- *   scope "openid profile" (capture: signin-chain/summary.json).
+ *   scope "openid profile".
  * - OpenID Connect providers with Authentication/OpenIdConnect/<name>/Authority.
  * - OAuth 2.0 providers with Authentication/OpenAuth/<Name>/ClientId (ConsumerKey, AppId).
  * - SAML 2.0 and WS-Federation providers with an AuthenticationType setting.
@@ -293,7 +287,7 @@ export function presetSubject(provider, contactId) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** The email claims Learn lists for contact mapping with email: email, emails or upn. */
+/** The documented email claims for contact mapping: email, emails or upn. */
 export function emailClaim(claims) {
   for (const name of ["email", "emails", "upn"]) {
     const value = Array.isArray(claims?.[name]) ? claims[name][0] : claims?.[name];
@@ -304,11 +298,11 @@ export function emailClaim(claims) {
 
 /**
  * Contact fields from claims. A RegistrationClaimsMapping/LoginClaimsMapping value
- * ("firstname=given_name,lastname=family_name") maps text and boolean claims (Learn: claims
- * mapping supports only text and boolean contact attributes); without one, registration
- * fills first name, last name and primary email from given_name, family_name and the
- * email claim (local default). "field = userinfo.claim" reads the UserInfo response
- * (`userinfo`), and is ignored without one (Learn: only with UseUserInfoEndpointforClaims).
+ * ("firstname=given_name,lastname=family_name") maps text and boolean claims (the platform
+ * maps only text and boolean contact attributes); without one, registration fills first
+ * name, last name and primary email from given_name, family_name and the email claim
+ * (local default). "field = userinfo.claim" reads the UserInfo response (`userinfo`), and is
+ * ignored without one (natively only with UseUserInfoEndpointforClaims).
  */
 export function contactFieldsFromClaims(claims, mapping, { defaults = true, userinfo = null } = {}) {
   const pairs = text(mapping)

@@ -1,6 +1,6 @@
 # Local state storage
 
-Mirage streams legacy JSON reads and checkpoint writes. The total document never needs
+Mirage streams JSON state reads and checkpoint writes. The total document never needs
 to fit in one JavaScript string or Buffer. As with other in-memory stores, the decoded
 rows, active operations and any snapshots requested by callers must fit in available RAM;
 one scalar string is still subject to the engine's string limit.
@@ -8,7 +8,6 @@ one scalar string is still subject to the engine's string limit.
 States below 16 MiB remain plain JSON. At or above that size, the same state path holds a
 `mirage-state-journal-v1` checkpoint followed by committed row transactions. The file is
 self-contained: copying or backing it up includes the checkpoint and every committed edit.
-Older toolkit releases cannot read this format. Use 0.9.4 or newer when reopening it.
 
 Use the supported reader for both formats:
 
@@ -21,8 +20,8 @@ await store.update('items', 'record-id', { name: 'Updated' });
 await store.compact(); // schedule during an idle period, when desired
 ```
 
-`readStateFile` is also exported by `paqvilo/mirage/fixtures`. JSON parsing a state file
-directly is no longer supported. Section projections avoid retaining unselected checkpoint
+`readStateFile` is also exported by `paqvilo/mirage/fixtures`. Do not `JSON.parse` a state
+file yourself: a large state is a journal, not JSON. Section projections avoid retaining unselected checkpoint
 rows and skip reconstructing discarded fragmented values, although integrity verification
 still reads and checksums every journal byte. Small JSON values use a bounded native parse;
 larger documents retain streaming parsing. `snapshot()` intentionally

@@ -1,11 +1,10 @@
 # Your portal project, data packs and tests
 
-Maintain a separate repository for your portal and business behavior. A typical structure is:
-
-Generate the empty layout with `npx paqvilo init ./my-portal-project --name my-portal-project`.
-The [scaffold command](project-scaffold.md) includes `AGENTS.md`, `.env.example`, scripts,
-editor files, `support/mirage.mjs`, pack tests and per-site `test-browser/fixtures/<site>/`.
-One pack uses `pack/`; several explicit `--pack` options use `packs/<id>/`.
+Maintain a separate repository for your portal and business behavior. Generate the empty layout with
+`npx paqvilo init ./my-portal-project --name my-portal-project`. The [scaffold command](project-scaffold.md)
+includes `AGENTS.md`, `.env.example`, scripts, editor files, `support/mirage.mjs`, pack tests and per-site
+`test-browser/fixtures/<site>/`. One pack uses `pack/`; several explicit `--pack` options use `packs/<id>/`.
+A typical structure is:
 
 ```text
 my-portal-project/
@@ -94,7 +93,7 @@ The plug-in annotations (`Prefer: odata.include-annotations`) follow the native 
 
 ## Plug-in type handlers
 
-A trusted pack can run the plug-in steps that a Dataverse client registered through the API, and every step of one plug-in type. Export `pluginTypes: { '<Namespace.TypeName>': handler }`. The key is the exact CLR type name of the registered type (`plugintype.typename`), matched case-sensitively; the handler is synchronous (an async function is refused). A type name claimed by two packs is an error. Packs without `pluginTypes` behave as before.
+A trusted pack can run the plug-in steps that a Dataverse client registered through the API, and every step of one plug-in type. Export `pluginTypes: { '<Namespace.TypeName>': handler }`. The key is the exact CLR type name of the registered type (`plugintype.typename`), matched case-sensitively; the handler is synchronous (an async function is refused). A type name claimed by two packs is an error.
 
 A step whose type has a handler runs it at its stage, mode and rank, when its message, table and filtering attributes match. A step on a type with no handler is stored and skipped (`PLUGIN_STEP_PLACEHOLDER`). A handler keyed by the exported step id (`pluginSteps`) takes precedence over a type handler for that step.
 
@@ -118,4 +117,4 @@ A trusted pack can answer a Dataverse message that the simulator registers, incl
 
 `ctx` has `name`, `args` (the request body merged with the URL parameters), `target` (`{ logicalName, id, row }` for a bound call, `null` otherwise), `caller`, `user`, `origin`, `version` and `api`. Return an object to set the response body (the `@odata.context` is added); return `undefined` for 204 No Content. Two packs naming the same message is an error. A key that no simulated message registers fails the start: `Data pack <id>: dataverseMessages names unknown message <Name>`.
 
-Some messages are marked "For internal use only" in Microsoft Learn. The simulator registers them with their native signature, so they appear in `$metadata`. Without a pack handler they answer 501 `NotImplemented` with inner code `0x80040216` and the message `<Name> is for internal use only and is not simulated.` The 501 default is unverified against a live environment.
+Some messages are marked "For internal use only" in Microsoft Learn. The simulator registers them with their native signature, so they appear in `$metadata`. Without a pack handler they answer 501 `NotImplemented` with inner code `0x80040216` and the message `<Name> is for internal use only and is not simulated.` Live Dataverse may answer these messages differently.

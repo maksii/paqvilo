@@ -1,9 +1,7 @@
 // QueryExpression (SOAP RetrieveMultiple, QueryByAttribute) and the BulkDelete
 // JSON QuerySet become one FetchXML string, which the store already runs. The
 // SDK enums are indexed by their numeric values, so named and numeric operators
-// resolve through the same table. Mappings checked against the Microsoft Learn
-// ConditionOperator and JoinOperator enum pages and the FetchXML operator,
-// link-entity, condition and fetch references (2026-10-19).
+// resolve through the same table.
 import { DataError } from "./data-error.mjs";
 
 const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode });
@@ -56,14 +54,14 @@ const CONDITION_TABLE = [
   ["NotEqualUserId", "ne-userid"],
   ["EqualBusinessId", "eq-businessid"],
   ["NotEqualBusinessId", "ne-businessid"],
-  ["ChildOf", null], // unverified: "for internal use only" in the SDK; no FetchXML operator documented
-  ["Mask", null], // unverified: bit-mask operator is not in the FetchXML operator list
-  ["NotMask", null], // unverified: as Mask
-  ["MasksSelect", null], // unverified: "for internal use only" in the SDK
-  ["Contains", "like", "%"], // unverified: no FetchXML contains operator; a like with wrapping wildcards is assumed
-  ["DoesNotContain", "not-like", "%"], // unverified: as Contains
+  ["ChildOf", null], // "for internal use only" in the SDK; no FetchXML operator documented
+  ["Mask", null], // no FetchXML bit-mask operator
+  ["NotMask", null], // as Mask
+  ["MasksSelect", null], // "for internal use only" in the SDK
+  ["Contains", "like", "%"], // no FetchXML contains operator; a like with wrapping wildcards is assumed
+  ["DoesNotContain", "not-like", "%"], // as Contains
   ["EqualUserLanguage", "eq-userlanguage"],
-  ["NotOn", null], // unverified: "for internal use only" in the SDK
+  ["NotOn", null], // "for internal use only" in the SDK
   ["OlderThanXMonths", "olderthan-x-months"],
   ["BeginsWith", "begins-with"],
   ["DoesNotBeginWith", "not-begin-with"],
@@ -100,7 +98,7 @@ const CONDITION_TABLE = [
   ["OlderThanXMinutes", "olderthan-x-minutes"],
   ["ContainValues", "contain-values"],
   ["DoesNotContainValues", "not-contain-values"],
-  ["EqualRoleBusinessId", null], // unverified: "for internal use only" in the SDK
+  ["EqualRoleBusinessId", null], // "for internal use only" in the SDK
 ];
 const CONDITIONS = new Map(CONDITION_TABLE.map(([name, op, wrap], value) => [name, { value, op, wrap }]));
 
@@ -108,7 +106,7 @@ const CONDITIONS = new Map(CONDITION_TABLE.map(([name, op, wrap], value) => [nam
 const JOIN_TABLE = [
   ["Inner", "inner"],
   ["LeftOuter", "outer"],
-  ["Natural", "inner"], // unverified: no FetchXML link-type is documented for Natural; inner is a placeholder, not checked against the service
+  ["Natural", "inner"], // no FetchXML link-type is documented for Natural; inner is a placeholder
   ["MatchFirstRowUsingCrossApply", "matchfirstrowusingcrossapply"],
   ["In", "in"],
   ["Exists", "exists"],
@@ -144,7 +142,7 @@ function joinTypeOf(joinOperator = "Inner") {
 
 // Native Object {Type, Value} (SDK ConditionExpression.Values), typed codec values ({type, value}, EntityReference by id)
 // and Date objects reduce to their text before escaping. Plain scalars pass through unchanged.
-// unverified: booleans render as "true"; the FetchXML text form of booleans is not checked against the service.
+// Booleans render as "true"; the native FetchXML text form of booleans is a guess.
 const scalar = (v) => (v instanceof Date ? v.toISOString() : v && typeof v === "object" ? (v.type === "EntityReference" ? v.id : "Value" in v ? v.Value : v.value) : v);
 
 function conditionXml(condition) {
@@ -200,7 +198,7 @@ function rootColumnsXml(columnSet, entityName, primaryIdOf) {
 export function toFetchXml(model, { primaryIdOf = () => null } = {}) {
   const page = model.pageInfo ?? {};
   // "Paging set" means a value is present, matching plugin-sdk-query.mjs; an all-default PageInfo is not paging.
-  // unverified: the SDK documents that a query with both PageInfo and TopCount throws; the service message text is not documented.
+  // The SDK refuses a query with both PageInfo and TopCount; the message text is a guess.
   if (model.topCount != null && (page.count > 0 || page.pageNumber > 0 || page.pagingCookie || page.returnTotalRecordCount === true)) {
     throw invalid("TopCount cannot be combined with PageInfo paging in one QueryExpression.");
   }

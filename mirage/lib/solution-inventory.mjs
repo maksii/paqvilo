@@ -51,7 +51,7 @@ export const INVENTORY_FOLDERS = Object.freeze([
   { component: 'bot', componentType: null, folders: ['bots'], files: ANY, name: 'folder', level: 'inventory', code: 'SOLUTION_COMPONENT_INVENTORY', reason: 'BOT_NOT_HOSTED' },
   { component: 'botcomponent', componentType: null, folders: ['botcomponents'], files: ANY, name: 'folder', level: 'inventory', code: 'SOLUTION_COMPONENT_INVENTORY', reason: 'BOT_NOT_HOSTED' },
   { component: 'pluginpackage', componentType: null, folders: ['pluginpackages'], files: ANY, name: 'folder', level: 'inventory', code: 'SOLUTION_COMPONENT_INVENTORY', reason: 'PLUGIN_PACKAGE_NOT_LOADED' },
-  // unverified: the SolutionPackager folder name of mobile offline profiles (component type 161).
+  // The SolutionPackager folder name of mobile offline profiles (component type 161) is a guess.
   // Mobile offline profiles drive the model-driven host's offline sessions (model-driven/offline.mjs).
   { component: 'mobileofflineprofile', componentType: 161, folders: ['mobileofflineprofiles'], files: DATA, name: 'file', level: 'behaviour', code: null, reason: null },
 ].map(Object.freeze));
@@ -194,7 +194,7 @@ function rolePrivilegesOf(node) {
 }
 // <MobileOfflineProfileItem> columns (Learn entities/mobileofflineprofileitem and mobileofflineprofileitemassociation):
 // -> [{ entity, distribution, filter, ownedByMe, ownedByMyTeam, ownedByMyBusinessUnit, syncIntervalMinutes, relationships }].
-// unverified: the exported element layout (column-named child elements, associations nested in the item).
+// The exported element layout (column-named child elements, associations nested in the item) is a guess.
 function offlineProfileItems(node) {
   const flag = text => /^(?:1|true)$/i.test(String(text ?? ''));
   return descendantsNamed(node, 'mobileofflineprofileitem').map(item => {

@@ -1,6 +1,6 @@
 // The organization composes its internal tables (message bus queue rows, outbox entries, flow runs) at startup,
 // independent of the simulation level: at level `simulation` the first send and the first outbox capture write rows
-// without a schema change. Invented x_ schema and pack only.
+// without a schema change.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -46,7 +46,7 @@ test('a standalone runtime at level simulation sends one message and captures on
 
   const appId = '99999999-9999-4999-8999-999999999992';
   const registered = await fetch(`${sim.url}/_sim/api/dataverse/applications`, {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId, displayName: 'Invented internal table test', roles: ['System Administrator'] }),
     signal: AbortSignal.timeout(10000),
   });

@@ -1,4 +1,4 @@
-// SharePoint / Microsoft Graph driveItem contract fixture (adapter B): a bounded route set answered from an in-memory store
+// SharePoint / Microsoft Graph driveItem contract fixture: a bounded route set answered from an in-memory store
 // seeded by project fixtures. Never mounted by default: a connection that declares it serves these routes behind a connector
 // `http` provider URL rewrite, or a project test starts createSharePointFixtureServer on loopback. Never reaches a tenant.
 //
@@ -6,18 +6,12 @@
 // upload and delete; @microsoft.graph.conflictBehavior fail|rename|replace. Everything else answers 501 notSupported with
 // inner code ProviderOperationUnsupported and a diagnostic once per method and route shape.
 //
-// Sources:
-//   https://learn.microsoft.com/graph/api/resources/driveitem (id, name, eTag, cTag, size, folder, file, parentReference)
-//   https://learn.microsoft.com/graph/api/driveitem-list-children
-//   https://learn.microsoft.com/graph/api/driveitem-put-content
-//   https://learn.microsoft.com/graph/api/driveitem-post-children (201 Created, conflictBehavior)
-//   https://learn.microsoft.com/graph/api/driveitem-delete (204, if-match -> 412)
-//   https://learn.microsoft.com/graph/errors (error body { error: { code, message, innerError } })
-//   https://learn.microsoft.com/onedrive/developer/rest-api/concepts/errors (itemNotFound, nameAlreadyExists, resourceModified)
-// unverified: the eTag/cTag text ("{<id>},<version>"), item id format and parentReference.path for the root.
-// unverified: error bodies carry only code and message (no innerError date / request-id); 412 uses resourceModified.
-// unverified: PUT content to a path whose parent folder does not exist answers 404 itemNotFound (Graph may create it).
-// unverified: POST children defaults to conflictBehavior fail; replace on an existing folder answers 200 with that folder.
+// Contract: https://learn.microsoft.com/graph/api/resources/driveitem and its list-children, put-content,
+// post-children and delete operations; error bodies per https://learn.microsoft.com/graph/errors.
+// Guessed: the eTag/cTag text ("{<id>},<version>"), item id format and parentReference.path for the root.
+// Guessed: error bodies carry only code and message (no innerError date / request-id); 412 uses resourceModified.
+// Guessed: PUT content to a path whose parent folder does not exist answers 404 itemNotFound (Graph may create it).
+// Guessed: POST children defaults to conflictBehavior fail; replace on an existing folder answers 200 with that folder.
 // ponytail: simple upload bodies are capped at 4 MiB in the fixture server (413); createUploadSession is not modelled.
 import http from "node:http";
 import { systemClock, systemIds } from "./runtime-clock.mjs";

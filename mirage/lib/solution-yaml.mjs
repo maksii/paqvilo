@@ -4,10 +4,10 @@
 // Learn: https://learn.microsoft.com/power-platform/alm/solution-source-control-yaml-format ("Components stored as XML
 // internally are automatically converted between XML and YAML"); the documented publisher.yml shows the conversion: an
 // element is a key, an attribute is an '@name' key, a repeated element is a list and an empty element is null.
-// unverified: Learn documents per-file key shapes only for publisher.yml. Entity, attribute, form, view, option set and
+// Learn documents per-file key shapes only for publisher.yml. Entity, attribute, form, view, option set and
 // relationship files are read by the same rule; a file that yields no component is reported (SOLUTION_YAML_COMPONENT_NOT_IMPORTED)
 // instead of guessed. Mixed text and attributes on one element ('#text') follow the common XML→YAML convention.
-// unverified: the file layout of modernflows/ (Power Automate cloud flows, YAML format only) is not described on Learn, so a
+// The file layout of modernflows/ (Power Automate cloud flows, YAML format only) is not described on Learn, so a
 // modern flow stays an inventory record (solution-inventory.mjs, MODERNFLOW_YAML_NOT_IMPORTED) that strict preflight blocks on.
 import YAML from 'yaml';
 import { child, descendants } from './solution-xml.mjs';

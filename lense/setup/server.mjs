@@ -18,7 +18,7 @@ async function localPorts(count, taken = []) {
 // Browser files of this folder by allowlist (a new server-side module is never served), plus the shared, import-free admin modules.
 const BROWSER_FILES = { '/_setup/': 'index.html', '/_setup/index.html': 'index.html', '/_setup/app.mjs': 'app.mjs', '/_setup/quick.mjs': 'quick.mjs', '/_setup/style.css': 'style.css',
   '/_setup/ui-kit.mjs': '../../mirage/admin/ui-kit.mjs', '/_setup/ui-kit.css': '../../mirage/admin/ui-kit.css', '/_setup/shell.css': '../../mirage/admin/shell.css',
-  '/_setup/dashboard-view.mjs': '../../mirage/admin/dashboard-view.mjs', '/_setup/help-content.mjs': '../../mirage/admin/help-content.mjs',
+  '/_setup/help-content.mjs': '../../mirage/admin/help-content.mjs',
   '/_setup/dashboard-map.mjs': '../../mirage/admin/dashboard-map.mjs', '/_setup/dashboard-icons.mjs': '../../mirage/admin/dashboard-icons.mjs', '/_setup/dashboard.css': '../../mirage/admin/dashboard.css' };
 const TYPES = { mjs: 'text/javascript', css: 'text/css', html: 'text/html' };
 const asset = pathname => (Object.hasOwn(BROWSER_FILES, pathname) ? BROWSER_FILES[pathname] : null);
@@ -50,7 +50,7 @@ function restartCommand(runtime, store, value) {
   const { site } = commandArgs(runtime, store, value);
   return `npx paqvilo ${runtime.command} ${store.kind === 'project' ? '--project' : '--config'} ${quote(store.file)}${site ? ` ${site}` : ''}`;
 }
-// What the restart comparison covers, named in the banner (RU3-20).
+// What the restart comparison covers, named in the banner.
 const RESTART_SCOPE = { Mirage: 'Mirage runtime settings, sources, Solutions, packs, port and startup preset of the running target',
   Lense: 'the site environments, start page, scope, routes and browser settings Lense loaded, plus the Mirage runtime settings' };
 const loopback = name => ['127.0.0.1', 'localhost', '[::1]'].includes(name);
@@ -98,8 +98,8 @@ export async function createSetupHandler(options = {}) {
   const store = options.store ?? new SetupStore(options);
   const csrf = randomBytes(32).toString('hex');
   const runtime = runningRuntime({ ...options, store });
-  // Restart drift compares what the preview loaded (store.runtimeIdentity), not the file revision (RB-08).
-  // An identity that cannot be computed makes the comparison unknown (null with a reason), never a silent false (RU3-02).
+  // Restart drift compares what the preview loaded (store.runtimeIdentity), not the file revision.
+  // An identity that cannot be computed makes the comparison unknown (null with a reason), never a silent false.
   const identity = () => store.runtimeIdentity(runtime?.site, runtime?.product).then(value => ({ value }), error => ({ error: error.message }));
   const initialIdentity = runtime ? await identity() : null;
   const drift = async () => {

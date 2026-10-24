@@ -1,4 +1,4 @@
-// Preflight report (ARCH decision 14): what a run of these sources requires and whether this runtime can satisfy it.
+// Preflight report: what a run of these sources requires and whether this runtime can satisfy it.
 // buildPreflightReport is pure; preflight() loads the sources once (no listeners), composes the listener-free host
 // description (organization-host.mjs composeHostDescription) and asks it, so offline and live preflight share one
 // composition. The report names requirements by id and status only: secrets, connection ids and other configured values

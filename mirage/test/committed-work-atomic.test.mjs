@@ -10,7 +10,7 @@ import { committedJobs, stageCommittedJobs } from '../lib/committed-work.mjs';
 import { createScheduler, fixedClock, storeScheduler } from '../lib/runtime-clock.mjs';
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-// Learn "Asynchronous service": Dataverse saves the asynchronous context in the System Job (AsyncOperation) table as part
+// Dataverse saves the asynchronous context in the System Job (AsyncOperation) table as part
 // of processing the event, so a committed write always carries its Ready job (or the write does not happen).
 const A = '77777777-7777-4777-8777-7777777777a1', B = '77777777-7777-4777-8777-7777777777a2';
 const step = (id, entity) => ({ id, name: 'Invented async step', enabled: true, contract: { mode: 1 }, mode: 'handler', entity, message: 'Create', stage: 40, filteringAttributes: [], rank: 1 });
@@ -27,9 +27,10 @@ function invented() {
 async function open(file, state) {
   const store = await new DataStore({ file, ...(state ? { state } : {}) }).init();
   storeScheduler(store, createScheduler({ clock: fixedClock(), manual: true }));
-  const notes = [];
-  const runner = createAsyncPluginRunner({ store, items: () => items, handlers: new Map(), runtimes: new Map(), diagnostic: note => notes.push(note) });
-  return { store, notes, runner };
+  const notes = [], ran = [];
+  const handlers = new Map(items.map(item => [item.id, context => { ran.push(context.record[context.record.x_itemid ? 'x_itemid' : 'x_readingid']); }]));
+  const runner = createAsyncPluginRunner({ store, items: () => items, handlers, runtimes: new Map(), diagnostic: note => notes.push(note) });
+  return { store, notes, ran, runner };
 }
 
 async function fixture(t) {
@@ -64,7 +65,8 @@ test('the Ready job row is saved in the same commit as its triggering row and a 
   committedJobs(restarted.store).resume();
   await restarted.store.scheduler.runDue();
   assert.equal(jobsOf(restarted.store.state).length, 0);
-  assert.ok(restarted.notes.some(note => /^PLUGIN_ASYNC_(COMPLETED|FAILED)$/.test(note.code)));
+  assert.deepEqual(restarted.ran, [A]);
+  assert.deepEqual(restarted.notes.filter(note => note.code.startsWith('PLUGIN_ASYNC_')).map(note => note.code), ['PLUGIN_ASYNC_COMPLETED']);
 });
 
 test('a failed commit stores neither the row nor its job', async t => {
@@ -124,7 +126,7 @@ test('stageCommittedJobs: the bookkeeping applies only after the commit; a rolle
   const ledger = { runs: new Map(), accepted: new Set(), own: new Set() }, reported = [];
   const stageOnce = () => stageCommittedJobs(store, { kind: 'x_probe', entries: [{ id: A, chain: { id: 'x-chain', depth: 0 }, event: { entity: 'x_item' } }],
     diagnostics: ['x-note'], report: note => reported.push(note), counts: new Map([['x-chain', 1]]), ledger });
-  await assert.rejects(store.transact(() => { stageOnce(); throw new Error('invented rollback'); }));
+  await assert.rejects(store.transact(() => { stageOnce(); throw new Error('invented rollback'); }), /invented rollback/);
   assert.deepEqual([store.state.tables.asyncoperation?.length ?? 0, ledger.own.size, reported.length], [0, 0, 0]);
   let after;
   await store.transact(() => { after = stageOnce(); });
@@ -134,5 +136,4 @@ test('stageCommittedJobs: the bookkeeping applies only after the commit; a rolle
   after();
   assert.deepEqual([[...ledger.own], ledger.runs.get('x-chain'), ledger.accepted.has('x-chain'), reported], [[A], 1, true, ['x-note']]);
   assert.equal(stageCommittedJobs(store, { entries: [] }), null, 'nothing staged: the commit is not forced to save');
-  assert.equal(typeof committedJobs(store).enqueue, 'undefined');
 });

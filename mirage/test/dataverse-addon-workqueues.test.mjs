@@ -1,5 +1,5 @@
 // Work-queue messages (lib/dataverse-addon-workqueues.mjs) over HTTP: enqueue, dequeue (priority, FIFO, delay and expiry, FetchXML),
-// clear, SLA computation and processing history. Invented queue and item rows, loopback only.
+// clear, SLA computation and processing history.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -19,8 +19,8 @@ const MINUTE = 60000;
 
 const queueId = (n) => `e1000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const itemId = (n) => `f1000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const Q = { main: queueId(1), paused: queueId(2), order: queueId(3), delay: queueId(4), fetch: queueId(5), clear: queueId(6), other: queueId(7), sla: queueId(8), nosla: queueId(9) };
-const I = { x: itemId(1), y: itemId(2), z: itemId(3), delayed: itemId(4), expired: itemId(5), ok: itemId(6), f1: itemId(7), f2: itemId(8), c1: itemId(9), c2: itemId(10), o1: itemId(11), inSla: itemId(12), atRisk: itemId(13), out: itemId(14), done: itemId(15), noSla: itemId(16) };
+const Q = { main: queueId(1), paused: queueId(2), order: queueId(3), delay: queueId(4), fetch: queueId(5), clear: queueId(6), other: queueId(7), sla: queueId(8), nosla: queueId(9), waiting: queueId(10) };
+const I = { x: itemId(1), y: itemId(2), z: itemId(3), delayed: itemId(4), expired: itemId(5), ok: itemId(6), f1: itemId(7), f2: itemId(8), c1: itemId(9), c2: itemId(10), o1: itemId(11), inSla: itemId(12), atRisk: itemId(13), out: itemId(14), done: itemId(15), noSla: itemId(16), waitDelayed: itemId(17), waitExpired: itemId(18) };
 
 const queue = (id, extra) => ({ workqueueid: id, name: `Invented queue ${id.slice(-2)}`, statecode: 0, statuscode: 1, inputschematype: 0, ...extra });
 const item = (id, queueOf, extra) => ({ workqueueitemid: id, workqueueid: queueOf, statecode: 0, statuscode: 0, priority: 1, createdon: T0, ...extra });
@@ -35,6 +35,7 @@ const SEED_QUEUES = [
   queue(Q.other),
   queue(Q.sla, { defaultitemtimetoliveinminutes: 60 }),
   queue(Q.nosla),
+  queue(Q.waiting),
 ];
 const SEED_ITEMS = [
   item(I.x, Q.order, { priority: 2, createdon: T0, name: "x" }),
@@ -53,6 +54,8 @@ const SEED_ITEMS = [
   item(I.out, Q.sla, { expirydate: PAST, slathresholddate: PAST, slastatus: 0 }),
   item(I.done, Q.sla, { statecode: 2, statuscode: 2, expirydate: PAST, slastatus: 1 }),
   item(I.noSla, Q.nosla, { slastatus: 1 }),
+  item(I.waitDelayed, Q.waiting, { delayuntil: FUTURE }),
+  item(I.waitExpired, Q.waiting, { expirydate: PAST }),
 ];
 
 describe("dataverse work-queue messages over HTTP", () => {
@@ -242,9 +245,9 @@ describe("dataverse work-queue messages over HTTP", () => {
   });
 
   it("FetchXML consumers skip delayed/expired rows and reject a scalar request", async () => {
-    const request = JSON.stringify({ query: `<fetch><entity name="workqueueitem"><attribute name="workqueueitemid"/><filter><condition attribute="workqueueid" operator="eq" value="${Q.delay}"/></filter></entity></fetch>` });
-    assert.equal((await queueCall(Q.delay, "Dequeue", { request })).status, 204);
-    assert.equal((await queueCall(Q.delay, "Dequeue", { request: "null" })).status, 400);
+    const request = JSON.stringify({ query: `<fetch><entity name="workqueueitem"><attribute name="workqueueitemid"/><filter><condition attribute="workqueueid" operator="eq" value="${Q.waiting}"/></filter></entity></fetch>` });
+    assert.equal((await queueCall(Q.waiting, "Dequeue", { request })).status, 204);
+    assert.equal((await queueCall(Q.waiting, "Dequeue", { request: "null" })).status, 400);
     assert.equal((await queueCall(Q.main, "EnqueueWorkQueueItem", { workQueueItem: "invalid" })).status, 400);
   });
 });

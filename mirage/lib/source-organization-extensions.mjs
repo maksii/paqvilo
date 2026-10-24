@@ -59,7 +59,7 @@ export async function sourceOrganizationExtensions({ layers = [], plugins, custo
   // Category): catalogs/<uniquename>/catalog.xml and the catalogassignments.xml file of the Assets folder
   // (https://learn.microsoft.com/power-apps/developer/data-platform/catalog-catalogassignment#create-catalog-and-catalog-assignments-by-editing-solution-files).
   // A custom API assignment's object is the customapiid of that unique name among the Solution's custom APIs.
-  // unverified: the exported file layout beyond the Learn examples (the Assets folder name's case, a catalog.xml that is the
+  // Guessed: the exported file layout beyond the Learn examples (the Assets folder name's case, a catalog.xml that is the
   // root element itself or wrapped); row ids are name-derived UUIDs (uuidV5), not the exported ids.
   const readSolutionCatalogs = (layers, customapis) => {
     const rows = { catalog: [], catalogassignment: [] }, NS = '6ba7b811-9dad-11d1-80b4-00c04fd430c8', idOf = name => uuidV5(NS, 'catalog:' + String(name).toLowerCase());

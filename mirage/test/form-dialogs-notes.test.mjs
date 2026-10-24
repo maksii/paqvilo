@@ -1,5 +1,5 @@
 // Bootstrap 5 subgrid dialogs, notes control, attach-file control, entity references and the
-// calendar/inactive-list page regions (invented "gadget"/"part" tables and loopback fixtures).
+// calendar/inactive-list page regions ("gadget"/"part" tables).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
@@ -130,7 +130,7 @@ test("the attach-file control renders the platform upload control from the form'
   // The WebForms form posts multipart and loads the upload control script after the form scripts.
   const form = webFormsForm({ content: `<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">${single}</div>`, variant: "BootstrapV5" });
   assert.match(form, /^<form method="post" action="\/" onsubmit="javascript:return WebForm_OnSubmit\(\);" id="liquid_form" enctype="multipart\/form-data">/);
-  assert.ok(form.indexOf("/xrm-adx/js/crmentityformview.js") < form.indexOf('<script src="/xrm-adx/js/fileuploadcontrol.js" type="text/javascript"></script>'));
+  assert.match(form, /\/xrm-adx\/js\/crmentityformview\.js[^]*<script src="\/xrm-adx\/js\/fileuploadcontrol\.js" type="text\/javascript"><\/script>/);
   assert.doesNotMatch(webFormsForm({ content: '<!--pp-native-form--><div></div>' }), /enctype|fileuploadcontrol/);
 });
 
@@ -148,8 +148,7 @@ test("a calendar list runs inside the WebForms form with its resources and no ev
   const regions = nativePageRegions({ content, action: "/calendar/", formScripts: '<script src="/Areas/EntityList/js/entitylist-calendar.js" type="text/javascript"></script>' });
   assert.equal(regions.kind, "calendar-list");
   assert.match(regions.content, /^<form method="post" action="\/calendar\/" id="liquid_form">/);
-  assert.ok(regions.content.indexOf("/js/jquery.blockUI.js") < regions.content.indexOf("/Areas/EntityList/js/entitylist-calendar.js"));
-  assert.ok(regions.content.indexOf("entitylist-calendar.js") < regions.content.indexOf('data-calendar-url'));
+  assert.match(regions.content, /\/js\/jquery\.blockUI\.js[^]*\/Areas\/EntityList\/js\/entitylist-calendar\.js[^]*data-calendar-url/);
   assert.doesNotMatch(regions.content, /__EVENTVALIDATION|crmentityformview\.js/);
   assert.match(regions.content, /__VIEWSTATEENCRYPTED" value="" \/>\n<\/div><\/form>$/);
 });

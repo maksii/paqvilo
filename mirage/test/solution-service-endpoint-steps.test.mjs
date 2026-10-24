@@ -1,6 +1,6 @@
-// A Solution's SdkMessageProcessingStep whose <EventHandler> is a service endpoint (Learn, sdkmessageprocessingstep.eventhandler:
-// Targets plugintype, serviceendpoint) is delivered like a registered one: a contract 2 queue through the core Service Bus emulator
-// bus to the fake broker, a contract 8 web hook to a loopback receiver. Invented x_widget table, ids and keys only.
+// A Solution's SdkMessageProcessingStep whose <EventHandler> is a service endpoint (eventhandler targets plugintype and
+// serviceendpoint) is delivered like a registered one: a contract 2 queue through the core Service Bus emulator
+// bus to the fake broker, a contract 8 web hook to a loopback receiver.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -92,7 +92,7 @@ test('a bare EventHandler that names neither a plug-in type nor a service endpoi
   assert.match(step.unsupported, /handler unresolved/);
   const [item] = pluginCatalogue({ plugins: { ...plugins, steps: [step] } });
   assert.notEqual(item.mode, 'webhook', 'a missing dependency never becomes a web hook that only warns');
-  assert.ok(item.unsupported);
+  assert.match(item.unsupported, /handler unresolved/);
 });
 
 test('Solution service endpoint steps deliver to the emulator queue and to the loopback web hook after commit', async (t) => {

@@ -57,8 +57,8 @@ export function validateMatrix(matrix) {
 export const scenarioDir = boundedScenarioDirectory;
 
 /** Loopback receiver for raw evidence posted by the runner inside the bridge process. Each run has its own nonce:
- * a bridge call that timed out keeps running in the bridge, and its late post must not resolve the next run's wait
- * (it once wrote a step2-back capture into the resume folder). Late posts answer 409 and are recorded in `late`. */
+ * a bridge call that timed out keeps running in the bridge, and its late post must not resolve the next run's wait.
+ * Late posts answer 409 and are recorded in `late`. */
 export async function startSaver() {
   const token = randomBytes(16).toString('hex');
   let waiting = null, closePromise, closed = false;

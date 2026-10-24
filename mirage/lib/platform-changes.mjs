@@ -1,6 +1,6 @@
 /*
  * Source-level detection of Power Pages platform changes that the local runtime doesn't model,
- * or that change what an exported setting does (docs/dataverse-parity.md, "Platform changes").
+ * or that change what an exported setting does.
  * Each finding is one portal diagnostic (bootstrap-report, inspect and the panel list them). A finding the
  * local runtime does not run carries `requirement: { id, status, level }`, which the source graph turns into a
  * preflight requirement row (strict preflight blocks on it):

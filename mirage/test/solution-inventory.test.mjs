@@ -183,7 +183,9 @@ test('a Solution ZIP keeps .msapp entries as name and size and inventories the c
   assert.equal(entry.size, msapp().length);
   assert.equal(entry.xml, undefined);
   assert.equal(entry.componentName, 'x_app');
-  assert.doesNotThrow(() => parseSchemaDocument(entry.xml, entry));
+  // A binary entry is never parsed as XML: it becomes the canvas app's inventory record only.
+  const parsed = parseSchemaDocument(entry.xml, entry);
+  assert.deepEqual([parsed.entities, parsed.inventory.map(item => [item.component, item.name, item.msapp])], [[], [['canvasapp', 'x_app', { size: entry.size }]]]);
   assert.deepEqual(inventoryEntry(entry.name, { size: entry.size, component: 'canvasapp', componentName: 'x_app' })[0].msapp, { size: entry.size });
 
   const scan = await scanSolutionSources([archive]);
@@ -198,7 +200,7 @@ test('a YAML source-control repository is detected, imports its tables and envir
   const root = await tempDir(t);
   await writeTree(root, {
     'solutions/InventedYaml/solution.yml': 'SolutionManifest:\n  UniqueName: InventedYaml\n  Version: 3.0.0.1\n',
-    // solutioncomponents.yml lists every component path of the solution (Learn, solution-source-control-yaml-format).
+    // solutioncomponents.yml lists every component path of the solution.
     'solutions/InventedYaml/solutioncomponents.yml': ['canvasapps/x_yamlapp', 'modernflows/x_yamlflow', 'connectionreferences/x_yamlref', 'entities/x_item',
       'environmentvariabledefinitions/x_Url'].map(entry => `- Path: ${entry}\n`).join(''),
     'publishers/InventedPublisher/publisher.yml': 'Publisher:\n  UniqueName: inventedpublisher\n  CustomizationPrefix: x\n',
@@ -222,7 +224,7 @@ test('a YAML source-control repository is detected, imports its tables and envir
   assert.equal(records['connectionreference:x_yamlref'].connectorId, '/providers/Microsoft.PowerApps/apis/shared_fxyaml');
   const schema = buildSolutionSchema(scan);
   assert.equal(schema.tables.x_item.origin, 'solution');
-  // Modern flows stay inventory with their diagnostic: Learn does not document the modernflows/ file shape.
+  // Modern flows stay inventory with their diagnostic: the modernflows/ file shape is not documented.
   assert.equal(records['modernflow:x_yamlflow'].level, 'inventory');
   assert.ok(scan.diagnostics.some(item => item.code === 'SOLUTION_MODERNFLOW_INVENTORY'));
   assert.equal(schema.environmentVariables[0].schemaName, 'x_Url');

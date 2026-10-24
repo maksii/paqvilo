@@ -56,7 +56,7 @@ export function solutionApps(scan, { lcid = 1033, projectRoot = null } = {}) {
       && (component.id && component.id === profile.id || component.entity && component.entity === profile.name.toLowerCase()))) }));
 }
 
-/** Stable JSON contract consumed by the shell and future control/command registries. */
+/** Stable JSON contract consumed by the shell. */
 function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault, clientExtensions, settings = {}, canvasApps = null } = {}) {
   const tables = Object.assign({}, ...providers.filter(Boolean).map(provider => structuredClone(provider.tables ?? {})));
   for (const [entity, mapping] of Object.entries(mappings)) {
@@ -121,7 +121,7 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
       .map(component => [component.entity, customPageResolution(app, component.entity, canvasApps)]));
     for (const area of app.navigation) for (const group of area.groups) for (const item of group.items) {
       if (item.kind === 'custom') { const resolved = customPageResolution(app, item.page, canvasApps); item.supported = resolved.supported; if (resolved.reason) item.reason = resolved.reason; else delete item.reason; }
-      // A dashboard page opens its definition, or the app's first dashboard when the SubArea names none (unverified: native picks the default dashboard).
+      // A dashboard page opens its definition, or the app's first dashboard when the SubArea names none (a guess at how native picks the default dashboard).
       if (item.kind === 'dashboard') {
         const dashboard = item.dashboard ? app.dashboards.find(candidate => candidate.id === item.dashboard) : app.dashboards[0];
         if (dashboard) { item.dashboard = dashboard.id; item.supported = true; delete item.reason; item.title ??= dashboard.name; }

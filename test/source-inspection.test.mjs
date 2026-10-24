@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { createSourceInspector, inspectionSources, inspectRenderedPage } from '../lense/source-inspection.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
@@ -273,11 +274,17 @@ test('missing or mismatched Solution configuration preserves portal inspection a
   const sources = await inspectionSources({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [path.join(fx.work, 'missing')] } });
   assert.deepEqual(sources.roots, []);
   assert.equal(sources.diagnostics[0].code, 'INSPECT_SOLUTION_UNAVAILABLE');
-  assert.doesNotThrow(() => new Function(`return (${inspectRenderedPage.toString()})`));
   const other = inspectionFixture(); t.after(other.cleanup);
   const mismatched = await inspectionSources({ sourceDir: other.portal, mirageConfig: { project: fx.project } });
   assert.deepEqual(mismatched.roots, []);
   assert.equal(mismatched.diagnostics[0].code, 'INSPECT_PROJECT_UNAVAILABLE');
+});
+
+test('the rendered-page reader runs self-contained in a page realm and keeps only same-origin Web API set names', () => {
+  // page.evaluate serializes the function, so module-scope helpers would be missing in the browser.
+  const page = { document: { children: [], URL: 'https://portal.invalid/' }, location: new URL('https://portal.invalid/'), URL,
+    performance: { getEntriesByType: () => [{ name: 'https://portal.invalid/_api/fx_widgets?$top=1' }, { name: 'https://other.invalid/_api/foreign' }] } };
+  assert.deepEqual(structuredClone(vm.runInNewContext(`(${inspectRenderedPage})()`, page)), { assets: [], controls: [], apiSets: ['fx_widgets'], ids: [], markupTokens: [], truncated: false });
 });
 
 test('displayed Liquid code and component manifests do not produce component or operation bindings while emitted raw assets remain discoverable', async (t) => {

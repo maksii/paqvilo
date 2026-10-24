@@ -14,11 +14,11 @@ function fixture() {
 // Plug-in bypass (MSCRM.BypassCustomPluginExecution): Dataverse writes set bypassCustomPlugins; portal writes never do.
 test("bypassCustomPlugins skips exported plug-in phases; ordinary writes still run them", async () => {
   const store = fixture();
-  let calls = 0;
-  store.setPluginPipeline(() => { calls += 1; });
+  const phases = [];
+  store.setPluginPipeline((context) => { phases.push(`${context.entity}.${context.operation}.${context.stage}`); });
   await store.createRecord("note", { noteid: "b", text: "two" }, { admin: true }, { bypassCustomPlugins: true });
-  assert.equal(calls, 0);
+  assert.deepEqual(phases, []);
   await store.createRecord("note", { noteid: "c", text: "three" }, { admin: true }, {});
-  assert.ok(calls > 0);
+  assert.deepEqual(phases, ["note.create.10", "note.create.20", "note.create.40"]);
   assert.deepEqual(store.tableRows("note").map((row) => row.noteid), ["a", "b", "c"]);
 });

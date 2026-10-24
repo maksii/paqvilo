@@ -11,14 +11,14 @@ export const NS = {
   a: "http://schemas.microsoft.com/xrm/2011/Contracts",
   svc: "http://schemas.microsoft.com/xrm/2011/Contracts/Services",
   g: "http://schemas.microsoft.com/crm/2011/Contracts",
-  l: "http://schemas.microsoft.com/xrm/2012/Contracts", // ExecuteMultipleSettings, ExecuteMultipleResponseItem (SDK docs)
-  o: "http://schemas.microsoft.com/xrm/7.1/Contracts", // KeyAttributeCollection, ExecuteTransactionFault, OrganizationResponseCollection (SDK docs)
-  x9: "http://schemas.microsoft.com/xrm/9.0/Contracts", // OptionSetValueCollection (SDK docs)
-  x14: "http://schemas.microsoft.com/xrm/2014/Contracts", // OrganizationDetail (SDK docs: Microsoft.Xrm.Sdk.Organization)
+  l: "http://schemas.microsoft.com/xrm/2012/Contracts", // ExecuteMultipleSettings, ExecuteMultipleResponseItem
+  o: "http://schemas.microsoft.com/xrm/7.1/Contracts", // KeyAttributeCollection, ExecuteTransactionFault, OrganizationResponseCollection
+  x9: "http://schemas.microsoft.com/xrm/9.0/Contracts", // OptionSetValueCollection
+  x14: "http://schemas.microsoft.com/xrm/2014/Contracts", // OrganizationDetail (Microsoft.Xrm.Sdk.Organization)
   b: "http://schemas.datacontract.org/2004/07/System.Collections.Generic",
   c: "http://www.w3.org/2001/XMLSchema",
   e: "http://schemas.microsoft.com/2003/10/Serialization/",
-  f: "http://schemas.microsoft.com/2003/10/Serialization/Arrays", // unverified: ColumnSet.Columns item namespace
+  f: "http://schemas.microsoft.com/2003/10/Serialization/Arrays", // ColumnSet.Columns items (assumed)
   i: "http://www.w3.org/2001/XMLSchema-instance",
 };
 const PREFIX = new Map(Object.entries(NS).map(([prefix, uri]) => [uri, prefix]));
@@ -294,7 +294,7 @@ const DECODERS = new Map([
   })],
   ["a:Entity", decodeEntity],
   ["a:EntityCollection", decodeCollection],
-  // Serialization/Arrays: a SOAP array of scalars (unverified: the item element names are the scalar names).
+  // Serialization/Arrays: a SOAP array of scalars (item element names are assumed to be the scalar names).
   ["f:ArrayOfstring", (n) => ({ type: "Array", values: n.children.map((c) => (isNil(c) ? null : c.text)) })],
   ["f:ArrayOfint", (n) => ({ type: "Array", values: n.children.map((c) => (isNil(c) ? null : Number(c.text.trim()))) })],
   ["f:ArrayOfguid", (n) => ({ type: "Array", values: n.children.map((c) => (isNil(c) ? null : c.text.trim())) })],
@@ -444,7 +444,7 @@ export function executeResponse({ responseType, namespace, responseName, results
 /**
  * Full SOAP fault envelope. `errorCode` is the signed 32-bit code (for example -2147220969). With `faultedRequestIndex`
  * the detail is still an OrganizationServiceFault element (xrm/2011, the element WCF reads FaultException<T> from), typed
- * by i:type as ExecuteTransactionFault (xrm/7.1, DataContract name "ExecuteTransactionFault", Microsoft Learn). Its base
+ * by i:type as ExecuteTransactionFault (xrm/7.1, DataContract name "ExecuteTransactionFault"). Its base
  * members come first, then FaultedRequestIndex, the derived member. Without i:type WCF falls back to a plain FaultException.
  * The i and o prefixes are declared on the fault element: WCF reads the detail without the envelope's declarations, so an
  * i:type prefix declared only on the root resolves to no namespace ("contains data of the ':ExecuteTransactionFault' data contract").
@@ -474,7 +474,7 @@ const SOAP_HEADERS = (root) => {
   const header = kid(root, NS.s, "Header");
   const headers = {};
   for (const name of HEADER_NAMES) {
-    // unverified: header namespace; matched by local name only
+    // Header namespace not known: matched by local name only.
     const node = header?.children.find((c) => c.name === name);
     if (node) headers[name] = node.text.trim();
   }

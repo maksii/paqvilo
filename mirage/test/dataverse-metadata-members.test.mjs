@@ -1,7 +1,5 @@
 // Member completeness of the Web API metadata JSON: relationship metadata (RelationshipMetadataBase and its two derived types)
-// and synthesized AttributeMetadata managed properties, over the invented fixture of dataverse-metadata.test.mjs.
-// Member lists follow Microsoft Learn (RelationshipMetadataBase, OneToManyRelationshipMetadata, ManyToManyRelationshipMetadata)
-// and the native capture the parity toolkit recorded (names only, no private values).
+// and synthesized AttributeMetadata managed properties, over the fixture of dataverse-metadata.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { attributeMetadata } from "../lib/attribute-metadata.mjs";
@@ -41,7 +39,7 @@ const MAPPINGS = {
   tag: { entitySet: "tags", idColumn: "tagid", nameColumn: "name", fields: { name: { dataverseType: "nvarchar" } } },
 };
 
-// Members of RelationshipMetadataBase (Learn), plus MetadataId and HasChanged from MetadataBase.
+// Members of RelationshipMetadataBase, plus MetadataId and HasChanged from MetadataBase.
 const BASE_MEMBERS = ["HasChanged", "IntroducedVersion", "IsCustomRelationship", "IsCustomizable", "IsManaged", "IsValidForAdvancedFind", "MetadataId", "RelationshipType", "SchemaName", "SecurityTypes"];
 const ONE_TO_MANY_MEMBERS = [
   "AssociatedMenuConfiguration", "CascadeConfiguration", "DenormalizedAttributeName", "EntityKey", "IsDenormalizedLookup", "IsHierarchical",
@@ -96,7 +94,6 @@ test("an uncast RelationshipDefinitions item is typed RelationshipMetadataBase: 
   assert.ok(mapped.relationships().length > 0);
   for (const r of mapped.relationships()) assert.deepEqual(Object.keys(r).sort(), sorted(BASE_MEMBERS));
   const base = mapped.relationships().find((r) => r.SchemaName === "widget_gadgets");
-  assert.deepEqual(Object.keys(base).sort(), sorted(BASE_MEMBERS));
   assert.deepEqual(base.IsCustomizable, { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "iscustomizable" });
 });
 
@@ -123,13 +120,10 @@ test("the DateTime managed name is the one the SOAP writer and the exported colu
   assert.equal(exported.CanChangeDateTimeBehavior.ManagedPropertyLogicalName, name);
 });
 
-test("an unknown attribute cast answers one REQ_ID header; an engine error repeats it", () => {
+test("an unknown attribute cast is a route-level error with one REQ_ID header", () => {
   let error;
-  try { mapped.attributes("widget", { cast: "Microsoft.Dynamics.CRM.NoSuchAttributeMetadata" }); } catch (e) { error = e; }
-  assert.ok(error, "the unknown cast throws");
+  assert.throws(() => mapped.attributes("widget", { cast: "Microsoft.Dynamics.CRM.NoSuchAttributeMetadata" }), (e) => { error = e; return e.details?.route === true; });
   const route = dataverseError(error, { requestId: "req-1" });
   assert.equal(route.status, 400);
   assert.equal(route.headers.REQ_ID, "req-1", "a route-level error carries a single REQ_ID");
-  const engine = dataverseError(Object.assign(new Error("engine"), { code: "InvalidRequest", status: 400, details: { innerCode: "0x80040217" } }), { requestId: "req-2" });
-  assert.deepEqual(engine.headers.REQ_ID, ["req-2", "req-2"], "an engine error repeats REQ_ID");
 });

@@ -1,9 +1,8 @@
 // Power Automate desktop flows, flow machines, flow groups, plug-in generators and connector metadata: the 48 Power Automate
-// messages of the native base-environment $metadata (add-on family F2), plus LeaveGroup on flowmachine. Registered through
+// messages of the native base-environment $metadata, plus LeaveGroup on flowmachine. Registered through
 // registerAddon (dataverse-addon-common.mjs), so a trusted pack's dataverseMessages handler replaces any of them.
-// Contract: https://learn.microsoft.com/power-automate/developer/desktop-flow-public-apis (read 2026-10-20). Store-backed where
-// the brief gives a behaviour; every other message answers featureNotEnabled() (A) or the internal-only default (C, GC policy).
-// unverified: status values of flowsession and flowrun, the error codes of the rejected cases, and the response detail not in $metadata.
+// Store-backed where a behaviour is modelled; every other message answers featureNotEnabled() or the internal-only default.
+// Guesses: status values of flowsession and flowrun, the error codes of the rejected cases, and the response detail not in $metadata.
 // ponytail: RunDesktopFlow completes on the next tick with the pack's result; no machine, no timeout and no run queue.
 // ponytail: flow plug-ins, machines and connector metadata have no store behind them: pack handler or featureNotEnabled only.
 import { randomUUID } from "node:crypto";
@@ -13,9 +12,9 @@ import { isLoopbackUrl, loopbackFetch } from "./dataverse-webhooks.mjs";
 
 const key = (value) => String(value ?? "").toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
-const invalid = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x80040203" }); // unverified: message
+const invalid = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x80040203" }); // native message not known
 const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
-const RUN_OPEN = new Set(["Running", "Waiting", "Paused"]); // unverified: flowrun status values
+const RUN_OPEN = new Set(["Running", "Waiting", "Paused"]); // flowrun status values are guesses
 
 // The operation list. bound(name, kind, entity, params, out) and unbound(name, kind, params, out); out is { response } or { returns }.
 const unbound = (name, kind, params, out = {}) => ({ name, kind, binding: "unbound", signature: { params, ...out } });
@@ -23,7 +22,7 @@ const bound = (name, kind, entity, params, out = {}, binding = "entity") => ({ n
 const CRM = "mscrm.crmbaseentity";
 const COLLECTION = (entity) => `Collection(mscrm.${entity})`;
 
-// Pack or default messages (A) and internal-only messages (C) of the family. The store-backed ones are listed in operations().
+// Pack or default messages and internal-only messages of the family. The store-backed ones are listed in operations().
 const MESSAGES = [
   bound("AddRequiredDesktopFlowComponentsToSolutions", "action", "workflow", []),
   bound("AddRequiredUIElementCollectionComponentsToSolutions", "action", "desktopflowmodule", []),
@@ -47,7 +46,7 @@ const MESSAGES = [
   bound("GetNextRunsForFlowTrigger", "function", "flowtrigger", [], { response: [["response", "Edm.String"]] }),
   bound("GetPublicKey", "action", "flowmachinegroup", [], { response: [["groupPublicKey", "Edm.String"], ["groupSecondaryPublicKey", "Edm.String"]] }),
   bound("GetRunMap", "action", "businessprocess", [["continuationToken", "Edm.String"], ["runId", "Edm.Guid"], ["max", "Edm.Int32"]], { response: [["runMap", "Edm.String"], ["continuationToken", "Edm.String"]] }),
-  bound("InitializeModernFlowFromAsyncWorkflow", "action", "workflow", [], { returns: "mscrm.workflow" }), // C: Learn "For internal use only."
+  bound("InitializeModernFlowFromAsyncWorkflow", "action", "workflow", [], { returns: "mscrm.workflow" }), // documented "For internal use only."
   bound("ListChildDesktopFlows", "action", "workflow", [], { response: [["childFlows", "Edm.String"]] }),
   bound("ListConnectionReferences", "action", "workflow", [], { response: [["connections", "Edm.String"], ["connectionReferences", "Edm.String"], ["mappingBetweenLogicalNameAndName", "Edm.String"]] }),
   bound("ListCredentialDependencies", "function", "credential", [], { response: [["response", "Edm.String"]] }),
@@ -73,7 +72,7 @@ const MESSAGES = [
   bound("UpdateFlowMachineNetwork", "action", "flowmachinenetwork", [["extendedproperties", "Edm.String"], ["name", "Edm.String"], ["description", "Edm.String"]]),
   unbound("UpdateInstantPlugin", "action", [["Name", "Edm.String"], ["Parameters", "Edm.String"], ["EntityLogicalName", "Edm.String"], ["SolutionUniqueName", "Edm.String"], ["Context", "Edm.String"], ["Expression", "Edm.String"], ["FxExpressionUniqueName", "Edm.String"], ["Description", "Edm.String"]]),
   bound("UpdateProcessWithWfomJson", "action", "workflow", [["Entity", CRM], ["WfomJson", "Edm.String"]]),
-  // LeaveGroup is the store-backed flowmachine message of the same contract (the brief's flows list).
+  // LeaveGroup is the store-backed flowmachine message of the same contract.
   bound("LeaveGroup", "action", "flowmachine", []),
 ];
 
@@ -106,7 +105,7 @@ function operations(api) {
     return undefined;
   };
 
-  // Clone of a row under a new id and name (SaveAs*). Unverified: the cloned statecode and statuscode.
+  // Clone of a row under a new id and name (SaveAs*). The cloned statecode and statuscode are guesses.
   const saveAs = (logical, nameField, responseKey) => async (c) => {
     const source = boundRow(c, logical);
     const id = randomUUID();
@@ -151,7 +150,7 @@ function operations(api) {
       return undefined;
     },
 
-    // Only a session that is Paused, Running or Waiting (statuscode 1, 2, 3) can be cancelled. unverified: the rejection.
+    // Only a session that is Paused, Running or Waiting (statuscode 1, 2, 3) can be cancelled. The rejection is a guess.
     CancelDesktopFlowRun: async (c) => {
       const session = boundRow(c, "flowsession");
       if (![1, 2, 3].includes(session.statuscode)) throw invalid("The desktop flow run is not active and cannot be cancelled.");
@@ -162,7 +161,7 @@ function operations(api) {
     DeleteFlowMachineGroup: async (c) => {
       const group = boundRow(c, "flowmachinegroup");
       if (tableOf("flowmachine").some((machine) => sameId(machine.flowmachinegroupid, group.flowmachinegroupid))) {
-        throw invalid("The flow machine group still has machines."); // unverified: message and code
+        throw invalid("The flow machine group still has machines."); // native message and code not known
       }
       await write(() => removeRow("flowmachinegroup", group));
       return undefined;
@@ -172,7 +171,7 @@ function operations(api) {
       const machine = boundRow(c, "flowmachine");
       const groupId = randomUUID();
       await write(() => {
-        tableOf("flowmachinegroup").push({ flowmachinegroupid: groupId, name: "Default", statecode: 0, statuscode: 1 }); // unverified: name
+        tableOf("flowmachinegroup").push({ flowmachinegroupid: groupId, name: "Default", statecode: 0, statuscode: 1 }); // the group name is a guess
         rowOf("flowmachine", machine.flowmachineid).flowmachinegroupid = groupId;
       });
       return undefined;
@@ -185,7 +184,7 @@ function operations(api) {
 }
 
 // RunDesktopFlow: the pack path creates the session before answering. Without a pack handler the call answers 404 for an
-// unknown connection reference (connectionType 2), else the feature is not enabled (no machine). unverified: the 404 message.
+// unknown connection reference (connectionType 2), else the feature is not enabled (no machine).
 function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, runSession }) {
   const name = spec.name;
   api.registry.register({
@@ -197,7 +196,7 @@ function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, ru
       if (!packed) {
         const known = tableOf("connectionreference").some((row) => key(row.connectionreferencelogicalname) === key(args.connectionName));
         if (args.connectionType === 2 && args.connectionName && !known) {
-          throw new DataError(`Connection reference ${args.connectionName} does not exist.`, 404, "NotFound", { innerCode: "0x80040217" }); // unverified: message
+          throw new DataError(`Connection reference ${args.connectionName} does not exist.`, 404, "NotFound", { innerCode: "0x80040217" }); // native message not known
         }
         throw featureNotEnabled();
       }
@@ -209,7 +208,7 @@ function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, ru
         }),
       );
       setImmediate(() => runSession(c, packed, workflow, sessionId).catch(() => {}));
-      return respond(c, name, { flowsessionId: sessionId, licenseCheck: { code: "ValidLicenseCoverage", message: "Valid License Coverage" } }); // unverified: licenseCheck
+      return respond(c, name, { flowsessionId: sessionId, licenseCheck: { code: "ValidLicenseCoverage", message: "Valid License Coverage" } }); // licenseCheck is a guess
     },
   });
 }

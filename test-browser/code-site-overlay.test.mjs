@@ -1,7 +1,7 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The overlay treats a .powerpages-site (short-key) export like any other: its per-folder web
-// files and its content-pages/<language>/ page sources apply to the online page. Loopback only:
-// the synthetic code site (fixtures/code-site, NOTICE.md) in a temporary git repository.
+// files and its content-pages/<language>/ page sources apply to the online page, using
+// the synthetic code site (fixtures/code-site) in a temporary git repository.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

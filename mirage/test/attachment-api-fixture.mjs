@@ -1,5 +1,5 @@
-// A loopback Dataverse API over an invented fx_widget table, signed in as one System Administrator application user,
-// for the note and attachment block tests. Invented schema and GUIDs only.
+// A loopback Dataverse API over an fx_widget table, signed in as one System Administrator application user,
+// for the note and attachment block tests.
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";

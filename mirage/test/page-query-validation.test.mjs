@@ -80,9 +80,9 @@ test("the default retains page rendering and observed validation does not scan W
   assert.match(await response.text(), /PAGE-LIQUID-RENDERED:\[&lt;b&gt;owned&lt;\/b&gt;\]/);
   const app = await start(t, { observed });
   const title = '<b>API-only string</b><script>invented()</script>';
-  const created = await fetch(app.url + "/_api/validationwidgets", { method: "POST", headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf }, body: JSON.stringify({ title }) });
+  const created = await fetch(app.url + "/_api/validationwidgets", { method: "POST", headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf }, body: JSON.stringify({ title }) });
   assert.equal(created.status, 204);
-  const filtered = await fetch(app.url + "/_api/validationwidgets?$select=title&$filter=" + encodeURIComponent("contains(title,'<b>')"), { headers: { __RequestVerificationToken: app.state().csrf } });
+  const filtered = await fetch(app.url + "/_api/validationwidgets?$select=title&$filter=" + encodeURIComponent("contains(title,'<b>')"), { headers: { __RequestVerificationToken: app.csrf } });
   assert.equal(filtered.status, 200, await filtered.clone().text());
   assert.equal((await filtered.json()).value[0].title, title);
 });
@@ -101,7 +101,7 @@ test("GET-only query validation preserves page POST rendering and native form su
 
   const submitted = await fetch(app.url + "/__sim/forms/entityform/entry/submit" + query, {
     method: "POST",
-    headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf },
+    headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf },
     body: JSON.stringify({ values: { title: "Accepted form write" }, pageUrl: "/" + query }),
   });
   assert.equal(submitted.status, 201, await submitted.clone().text());

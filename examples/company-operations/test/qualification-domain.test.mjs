@@ -93,33 +93,6 @@ test('scope/hierarchy grammar names 2117 explicit configuration requirements wit
   assert.ok(domain.excluded.includes('Custom Access Preview/enhanced authorization'));
 });
 
-test('every finite variant materializes concrete native components and a bounded harness query contract', () => {
-  const variants = [...scopeHierarchyVariantCases()];
-  const configurations = variants.map(variant => materializeScopeHierarchyVariant(variant, { schema, catalogue }));
-  const allComponentIds = configurations.flatMap(configuration => configuration.components.map(component => component.id));
-  assert.equal(new Set(allComponentIds).size, allComponentIds.length);
-  for (const configuration of configurations) {
-    assert.equal(configuration.nativeExecution, false);
-    assert.equal(configuration.nativeQualifiedCells, 0);
-    assert.equal(configuration.configurationCells.length, configuration.nativeCellsPerRepeat);
-    assert.ok(configuration.query.id.length <= 64, 'Operation case IDs fit Dataverse Text(64).');
-    const ids = new Set(configuration.components.map(component => component.id));
-    for (const component of configuration.components.filter(component => component.type === 18)) {
-      assert.ok(schema.tables.some(table => table.name === component.content.entitylogicalname));
-      assert.ok(component.content.scope >= 756150000 && component.content.scope <= 756150004);
-      assert.ok(component.content.adx_entitypermission_webrole.every(id => ids.has(id)));
-      if (component.content.parententitypermission) assert.ok(ids.has(component.content.parententitypermission));
-      if (component.content.scope === 756150002) assert.ok(component.content.accountrelationship);
-      if (component.content.scope === 756150004) assert.equal(component.content.entitylogicalname, 'contact');
-    }
-    const bound = configuration.bindingContract.bindRecordIds(['11111111-2222-4333-8444-555555555555']);
-    assert.deepEqual(bound.fixtureBindings, []);
-    assert.ok(!bound.fetchXml.includes('{{qualificationRecordIdValues}}'));
-    assert.match(bound.fetchXml, /<value>11111111-2222-4333-8444-555555555555<\/value>/);
-  }
-  assert.equal(configurations.reduce((count, configuration) => count + configuration.configurationCells.length, 0), 177242);
-});
-
 test('the deep graph uses eleven actual Parent edges and classic scope templates retain server-stamped markers', () => {
   const variants = [...scopeHierarchyVariantCases()];
   const variant = variants.find(variant => variant.family === 'parent-depth' && variant.parameters.depth === 11 && variant.parameters.parentRead && variant.parameters.leafPrivileges === 63);

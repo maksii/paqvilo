@@ -30,12 +30,12 @@ test("bounded complete paging preserves cookie continuity and rejects missing/re
   ]);
   assert.equal(collect.complete, true);
   assert.equal(collect.records.length, 2);
-  for (const second of [
-    { entities: [{ id: "two" }], more_records: true, paging_cookie: "cookie" },
-    { entities: [{ id: "one" }], more_records: false },
-    { entities: [], more_records: true, paging_cookie: "second" },
-    { entities: [{}], more_records: false },
-    { entities: [{ id: "two" }], more_records: "false" },
+  for (const [second, message] of [
+    [{ entities: [{ id: "two" }], more_records: true, paging_cookie: "cookie" }, /cookie is missing or repeated/],
+    [{ entities: [{ id: "one" }], more_records: false }, /repeats a primary identifier/],
+    [{ entities: [], more_records: true, paging_cookie: "second" }, /returned an empty page/],
+    [{ entities: [{}], more_records: false }, /omits the requested primary identifier/],
+    [{ entities: [{ id: "two" }], more_records: "false" }, /explicit more-records boolean/],
   ])
     await assert.rejects(
       collectFetchXmlPages({
@@ -49,6 +49,7 @@ test("bounded complete paging preserves cookie continuity and rejects missing/re
               }
             : second,
       }),
+      message,
     );
   await assert.rejects(
     collectFetchXmlPages({
@@ -138,8 +139,7 @@ test("public FetchXML returns genuine continuation annotations while preserving 
       if (page === 1)
         assert.match(
           body["@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"],
-          // Dataverse publishes the doubly encoded cookie with lowercase escapes
-          // (count-rows and page-results documentation samples).
+          // Dataverse publishes the doubly encoded cookie with lowercase escapes.
           /^<cookie pagenumber="2" pagingcookie="%253ccookie%2520page%253d%25221%2522%253e/,
         );
       return {

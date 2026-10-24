@@ -214,7 +214,7 @@ test("anti-forgery endpoints return the native self-closing input with the cooki
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
     assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
-    assert.equal(await response.text(), `<input name="__RequestVerificationToken" type="hidden" value="${app.state().csrf}" />`);
+    assert.equal(await response.text(), `<input name="__RequestVerificationToken" type="hidden" value="${app.csrf}" />`);
     assert.match(response.headers.get("set-cookie"), /^__RequestVerificationToken=[\w-]+; path=\/; secure; HttpOnly; SameSite=None$/);
   }
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Layout/GetAntiForgeryToken`)).status, 404);
@@ -354,7 +354,7 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
   // Blank.aspx (Default.master) has no server form.
   const home = await body("/");
   assert.doesNotMatch(home, /content_form|liquid_form/);
-  const diagnostics = (await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.state().csrf } })).json());
+  const diagnostics = (await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.csrf } })).json());
   const entries = Array.isArray(diagnostics) ? diagnostics : diagnostics.diagnostics ?? [];
   assert.ok(entries.some((entry) => entry.code === "SYSTEMVIEW_UNRESOLVED" && entry.path === "/cases/"));
   assert.ok(entries.some((entry) => entry.code === "COMPONENT_NOT_EXPORTED" && entry.path === "/missing/"));
@@ -365,7 +365,7 @@ test("classic workflow execution reports its local limitation and Bootstrap glyp
   const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
   const workflow = await fetch(`${app.url}/_services/execute-workflow/${SITE}`, {
     method: "POST",
-    headers: { ...session, "content-type": "application/json", __RequestVerificationToken: app.state().csrf },
+    headers: { ...session, "content-type": "application/json", __RequestVerificationToken: app.csrf },
     body: JSON.stringify({ workflow: { LogicalName: "workflow", Id: "0a000000-0000-4000-8000-000000000099" }, entity: { LogicalName: "contact", Id: CONTACT } }),
   });
   assert.equal(workflow.status, 501);
@@ -484,7 +484,7 @@ test("pages load the platform bundles in live order per Bootstrap build; bundle 
     assert.equal(bootstrapCss.headers.get("x-sim-resource-provider"), "local-platform-placeholder");
     await get(expected.find((bundle) => bundle.id === "pcf").path);
     // One diagnostic per runtime and resource without a local equivalent.
-    const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.state().csrf } })).json();
+    const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.csrf } })).json();
     const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
     assert.deepEqual(
       entries.filter((entry) => entry.code === "PLATFORM_BUNDLE_PLACEHOLDER").map((entry) => entry.bundle).sort(),
@@ -518,7 +518,7 @@ test("form pages load the WebForms script resources at their native paths, serve
   assert.equal((await body(axd[3])).provider, "local-platform-placeholder");
   // A d value that is not a local equivalent is not served by them.
   assert.equal((await get("/ScriptResource.axd?d=unknown&t=0")).headers.get("x-sim-resource-provider"), null);
-  const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.state().csrf } })).json();
+  const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.csrf } })).json();
   const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
   assert.ok(entries.some((entry) => entry.code === "PLATFORM_BUNDLE_PLACEHOLDER" && entry.bundle === "paqvilo-microsoftajaxwebforms"));
 });
@@ -690,6 +690,7 @@ test("an HTML web resource is served as a page; other web resources keep their p
 test("the narrow-form stacking rule leaves the empty zero cell hidden (quick view frame)", async () => {
   const css = await fs.readFile(new URL("../lib/platform-chrome.css", import.meta.url), "utf8");
   assert.match(css, /\.crmEntityFormView \.cell\.zero-cell\{display:none\}/);
-  const narrow = /@media\(max-width:600px\)\{([^}]*)\{display:block/.exec(css)?.[1] ?? "";
-  for (const selector of narrow.split(",")) if (/td\.cell/.test(selector)) assert.match(selector, /:not\(\.zero-cell\)/);
+  const cells = [...css.matchAll(/@media\(max-width:\d+px\)\{[^@]*?([^{}]*td\.cell[^{}]*)\{display:block/g)].flatMap((match) => match[1].split(",")).filter((selector) => /td\.cell/.test(selector));
+  assert.ok(cells.length > 0, "the narrow rule stacks table cells");
+  for (const selector of cells) assert.match(selector, /:not\(\.zero-cell\)/);
 });

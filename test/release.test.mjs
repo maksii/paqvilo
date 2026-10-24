@@ -65,7 +65,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
   for (const requiredPath of ['mirage/lib/model-driven/icons.mjs', 'mirage/lib/model-driven/control-descriptors.mjs',
     'mirage/lib/model-driven/providers.mjs', 'mirage/lib/standalone-runtime.mjs', 'mirage/docs/standalone-organization.md',
     'lense/model-driven-actions.mjs', 'lense/model-driven-action-runner.mjs', 'lense/model-driven-actions-ui.mjs',
-    'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', 'lense/LICENSE-levelup.txt', 'docs/model-driven-actions.md',
+    'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', 'docs/model-driven-actions.md',
     'lense/model-driven-panel.mjs', 'lense/model-driven-native-comparison.mjs', 'lense/model-driven-targets.mjs', 'lense/owned-page-binding.mjs'])
     assert.throws(() => validateReleaseFiles(required.filter(file => file.path !== requiredPath)), /Required release file/);
   for (const file of ['mirage/lib/model-driven/unreviewed.mjs', 'mirage/lib/model-driven/reference.json', 'mirage/lib/model-driven/screenshot.png']) assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);

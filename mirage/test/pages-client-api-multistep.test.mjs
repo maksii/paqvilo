@@ -1,5 +1,5 @@
-// The step facts $pages multistep forms read (Learn, client-api/forms-tabs-sections "Multistep form": hasNextStep,
-// hasPreviousStep): platform.mjs writes them into the form's local configuration script. Invented data.
+// The step facts $pages multistep forms read (hasNextStep, hasPreviousStep): platform.mjs writes them into the form's
+// local configuration script.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";

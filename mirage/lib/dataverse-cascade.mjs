@@ -12,18 +12,18 @@
 // rolls back with the write. Before each child is written the caller's Assign privilege on it is checked
 // (api.principals.authorize, operation assign); a refusal fails the whole write, the parent included. The store write itself
 // is marked admin: that skips only the portal table-permission layer (the delete cascade in data.mjs does the same).
-// unverified: Learn documents the Assign privilege check on the primary row; that native Assign also checks it on each
-// cascaded row is assumed here. A host without api.principals (portal only) cascades without the check.
+// Assumption: native Assign checks the privilege on each cascaded row as well as on the primary row (only the latter is
+// documented). A host without api.principals (portal only) cascades without the check.
 // The owner before the write is kept per request context (WeakMap), so a write that fails between beforeWrite and afterWrite
 // leaves nothing behind for a later afterWrite to consume.
 // Share, Unshare, Reparent and Merge are not simulated: nothing is granted, revoked, re-parented or merged. install and
 // every reseed report CASCADE_<ACTION>_NOT_SIMULATED once per table that declares such a cascade; describe() lists the
 // seam each one needs in the host (listed in describe().seams).
-// unverified: Learn does not say whether a child's own Assign cascade also runs for grandchildren; the recursion follows
-// the parental model. Learn words UserOwned as "owned by the same user as the primary row"; after the write that row has
-// the new owner, so the owner from before the write is compared.
+// Assumption: a child's own Assign cascade also runs for grandchildren (the recursion follows the parental model).
+// UserOwned means "owned by the same user as the primary row"; after the write that row has the new owner, so the owner
+// from before the write is compared.
 // A cascaded child takes the same ownership columns a direct Assign writes (ownershipOptions).
-// ponytail: active workflows and business rules on reassigned rows are not deactivated (Learn says they are); add when a
+// ponytail: active workflows and business rules on reassigned rows are not deactivated (natively they are); add when a
 // test reads them.
 import { onceReporter } from "./dataverse-addon-common.mjs";
 
@@ -122,8 +122,7 @@ function cascadeAssign(api, writes, sync) {
 
 // The child's ownership columns through the pipeline a direct Assign uses (dataverse-records.mjs systemColumns ->
 // principals.systemColumns -> ownerColumns): ownerid, owninguser or owningteam, owningbusinessunit (the new owner's business
-// unit) on a user-owned table, plus modifiedby/modifiedonbehalfby. Learn (configure-entity-relationship-cascading-behavior):
-// Assign gives the related rows the referenced row's new owner. A host without api.principals writes ownerid only.
+// unit) on a user-owned table, plus modifiedby/modifiedonbehalfby. A host without api.principals writes ownerid only.
 function ownershipOptions(api, c, newOwner) {
   if (!api.principals || !c.user) return {};
   const owner = { id: refId(newOwner), logical_name: newOwner?.logical_name ?? "systemuser" };
@@ -162,7 +161,7 @@ function reset(api) {
   scanDeclared(api, state);
 }
 
-/** Capability record (ARCH §2.4). Module level is behaviour because Assign executes; operationLevels is per operation. */
+/** Capability record. Module level is behaviour because Assign executes; operationLevels is per operation. */
 function describe() {
   return {
     name: "dataverse-cascade",

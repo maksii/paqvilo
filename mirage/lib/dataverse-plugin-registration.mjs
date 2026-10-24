@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { organizationRecord } from './organization-context.mjs';
-// Plug-in registration through the Dataverse API (Learn: plug-in registration tables). Seeds sdkmessage and
+// Plug-in registration through the Dataverse API. Seeds sdkmessage and
 // sdkmessagefilter, mirrors the Solution's registrations into rows, and checks writes to the registration tables with
 // the documented errors. A row runs nothing by itself: overlayRegisteredSteps decides which steps join the pipeline. Seeding is insert-or-replace
 // by id, so reseeding is idempotent and the Solution's rows win on reseed.
@@ -22,10 +22,10 @@ const EXTERNAL_MESSAGES = ['OnExternalCreated', 'OnExternalUpdated', 'OnExternal
 const STAGE_NAME = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
 // Mirage's own system tables and intersect tables take no custom processing step.
 const NO_CUSTOM_STEP = new Set(['organization', 'privilege', 'roleprivileges']);
-// Read-only from the API: Learn lists only Retrieve, RetrieveMultiple, Associate and Disassociate for these tables.
+// Read-only from the API: only Retrieve, RetrieveMultiple, Associate and Disassociate are documented for these tables.
 const READ_ONLY = new Set(['sdkmessage', 'sdkmessagefilter']);
 const VERB = { create: 'Create', update: 'Update', delete: 'Delete' };
-// Learn's image table (register-plug-in): the request property each message's image may read.
+// The documented request property each message's image may read.
 const IMAGE_PROPERTIES = {
   Assign: ['Target'], Create: ['Target'], Delete: ['Target'], DeliverIncoming: ['EmailId'], DeliverPromote: ['EmailId'],
   Merge: ['Target', 'SubordinateId'], Route: ['Target'], Send: ['FaxId', 'EmailId', 'TemplateId'], SetState: ['EntityMoniker'], Update: ['Target'],
@@ -35,7 +35,7 @@ const IMPERSONATE = 'prvSetImpersonatingUserIdOnSdkMessageProcessingStep';
 const STAGE_TEXT = 'Invalid plug-in registration stage. Steps can only be modified in stages BeforeMainOperationOutsideTransaction, BeforeMainOperationInsideTransaction, AfterMainOperationInsideTransaction and AfterMainOperationOutsideTransaction.';
 const KNOWN_MESSAGE_IDS = new Map(Object.entries(SDK_MESSAGES).map(([id, name]) => [name, id]));
 
-const messageId = (name) => KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // unverified: live capture (LC-P1a) for the non-platform ids
+const messageId = (name) => KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
 const filterId = (org, message, table) => uuidV5(org, `sdkmessagefilter:${message}:${table}`);
 // A lookup is stored as its id (Solution rows) or as { id, logical_name, name } (rows the API wrote).
 const idOfValue = (value) => (value !== null && typeof value === 'object' ? value.id : value);
@@ -44,7 +44,7 @@ const same = (a, b) => {
   return x != null && y != null && String(x).toLowerCase() === String(y).toLowerCase();
 };
 const fail = (message, innerCode) => new DataError(message, 400, 'InvalidRequest', { innerCode });
-// unverified: live capture. Records do not check required columns, so this is the 0x80040203 invalid-argument default.
+// Records do not check required columns; the 0x80040203 invalid-argument default is a guess.
 const required = (column) => fail(`The '${column}' attribute is required.`, '0x80040203');
 const notFound = (logical, id) => new DataError(`Entity '${logical}' With Id = ${id} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
 // ponytail: a linear scan per lookup; index the registration tables by id if their row counts grow.
@@ -72,7 +72,7 @@ function handlerOf(data, existing) {
 
 const columnsOf = (store, table) => new Set([...Object.keys(standardTableDef(table)?.attributes ?? {}), ...Object.keys(store.state.mappings?.[table]?.fields ?? {})]);
 
-// Assembly facts without the content (P5 reads content): the major and minor from version, the culture and public key token from FullName.
+// Assembly facts without the content: the major and minor from version, the culture and public key token from FullName.
 const versionParts = (version) => { const [major, minor] = String(version ?? '').split('.'); return [Number.isInteger(Number(major)) && major !== '' ? Number(major) : null, Number.isInteger(Number(minor)) && minor !== '' ? Number(minor) : null]; };
 function assemblyFacts(assembly) {
   const [major, minor] = versionParts(assembly.version);
@@ -116,7 +116,7 @@ function filterRows(store, org) {
 
 /**
  * The Solution's registrations as rows (solution-metadata plugins, from importSolutionPlugins). Keyed by table; the
- * content is never read (P5). Steps keep their facts even when unsupported: P3 decides what runs.
+ * content is never read. Steps keep their facts even when unsupported: overlayRegisteredSteps decides what runs.
  */
 export function solutionPluginRows(plugins, { organizationId } = {}) {
   const org = organizationId;
@@ -156,7 +156,7 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
         sdkmessageprocessingstepimageid: uuidV5(org, `sdkmessageprocessingstepimage:${step.id}:${image.alias || image.name}`),
         sdkmessageprocessingstepid: step.id, name: image.name || image.alias, entityalias: image.alias || image.name,
         imagetype: image.type ?? 0, attributes: (image.attributes ?? []).join(',') || null,
-        // unverified: live capture (LC-P1b). Learn lists Target only; a Create post image is written with Id.
+        // Only Target is documented; writing a Create post image with Id is assumed native behavior.
         messagepropertyname: step.message === 'Create' && (image.type ?? 0) !== 0 ? 'Id' : 'Target', organizationid: org,
       });
     }
@@ -164,7 +164,7 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
   return rows;
 }
 
-// The mutable step fields a row carries (P3). Stored values are read back in the form solutionPluginRows writes them.
+// The mutable step fields a row carries. Stored values are read back in the form solutionPluginRows writes them.
 const lowerList = (value) => String(value ?? '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
 function mutableOf(row, images) {
   return {
@@ -175,14 +175,14 @@ function mutableOf(row, images) {
   };
 }
 
-// A step the Dataverse API registered, shaped like importSolutionPlugins' steps. A web hook step (eventhandler is a service endpoint,
-// P6) has no plug-in type and carries serviceEndpointId instead.
+// A step the Dataverse API registered, shaped like importSolutionPlugins' steps. A web hook step (eventhandler is a service endpoint)
+// has no plug-in type and carries serviceEndpointId instead.
 function stepFromRow(store, row, images) {
   const id = String(row.sdkmessageprocessingstepid).toLowerCase();
   const message = rowById(store, 'sdkmessage', 'sdkmessageid', row.sdkmessageid);
   const filter = rowById(store, 'sdkmessagefilter', 'sdkmessagefilterid', row.sdkmessagefilterid);
   const type = rowById(store, 'plugintype', 'plugintypeid', row.plugintypeid ?? row.eventhandler);
-  // P6: a web hook step's eventhandler is its service endpoint. The endpoint's secrets stay in the row; the step carries only its id.
+  // A web hook step's eventhandler is its service endpoint. The endpoint's secrets stay in the row; the step carries only its id.
   const endpoint = type ? null : rowById(store, 'serviceendpoint', 'serviceendpointid', row.eventhandler);
   const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', type?.pluginassemblyid);
   const entity = filter && filter.primaryobjecttypecode !== 'none' ? filter.primaryobjecttypecode : null;
@@ -198,7 +198,7 @@ function stepFromRow(store, row, images) {
 }
 
 /**
- * The plug-in steps the pipeline runs when the Dataverse API is on (P3). Rows are the source of truth:
+ * The plug-in steps the pipeline runs when the Dataverse API is on. Rows are the source of truth:
  * - a Solution step whose row matches the seeded row (and its images) keeps its Solution object unchanged, so zero API writes
  *   gives the Solution's own list;
  * - a Solution step whose row changed takes the row's mutable fields (enabled, stage, mode, rank, filtering attributes,
@@ -271,7 +271,7 @@ function seed(api, plugins = null) {
     upsert(store, logical, `${logical}id`, rows);
 }
 
-// Cascade (LC-P2g: Learn's restrict wording is not followed): removing an assembly removes its types' steps, and a type
+// Cascade (the documented restrict behavior is not followed): removing an assembly removes its types' steps, and a type
 // removes its steps, before the store's own cascade runs. The store then removes the steps' images and the types.
 function removeDependents(store, c, logical, existing) {
   const types = logical === 'pluginassembly'
@@ -285,12 +285,12 @@ function removeDependents(store, c, logical, existing) {
   }
 }
 
-// The content's identity (P5). The bytes are read, never loaded. Content that is not an assembly, or declares no plug-in and
+// The content's identity. The bytes are read, never loaded. Content that is not an assembly, or declares no plug-in and
 // no workflow activity, is refused.
 function assemblyContent(content) {
   let facts = null;
   try { facts = inspectAssembly(Buffer.from(content, 'base64')); } catch (error) { if (!(error instanceof InvalidAssembly)) throw error; }
-  // The code and text are the brief's citation of Learn's error table, not live-captured. ponytail: the TypeDef scan is re-run per plugintype write; cache per assembly id if it shows up.
+  // The code and text follow the documented error table. ponytail: the TypeDef scan is re-run per plugintype write; cache per assembly id if it shows up.
   if (!facts?.types.some((type) => type.isPlugin || type.isWorkflowActivity))
     throw fail('Plug-in assembly does not contain the required types or assembly content cannot be updated.', '0x8004418b');
   return facts;
@@ -298,13 +298,13 @@ function assemblyContent(content) {
 
 function validateAssembly({ store, data, existing }) {
   const val = (column) => valueOf(data, existing, column);
-  // unverified: live capture (LC-P2d). The text and code of the size error are not documented.
+  // The text and code of the size error are not documented; both are guesses.
   if (typeof val('content') === 'string') {
     const content = val('content');
     const bytes = Math.floor((content.length * 3) / 4) - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
     if (bytes > SIXTEEN_MB) throw fail('Plug-in assembly content is larger than 16 MB.', '0x80040203');
   }
-  // P5: supplied content sets the identity, so a content-only create works. Strong-name signing is required unless a package owns it.
+  // Supplied content sets the identity, so a content-only create works. Strong-name signing is required unless a package owns it.
   if (typeof data.content === 'string' && data.content !== '') {
     const facts = assemblyContent(data.content);
     Object.assign(data, { name: facts.name, version: facts.version, culture: facts.culture, publickeytoken: facts.publicKeyToken, major: facts.major, minor: facts.minor });
@@ -323,14 +323,14 @@ function validateAssembly({ store, data, existing }) {
 
 function validateType({ store, data, existing }) {
   if (!valueOf(data, existing, 'typename')) throw required('typename');
-  // The read-only columns come from the assembly (isworkflowactivity needs the content, P5).
+  // The read-only columns come from the assembly (isworkflowactivity needs the content).
   const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', ref(data, existing, 'pluginassemblyid'));
   if (assembly) Object.assign(data, { assemblyname: assembly.name, version: assembly.version, culture: assembly.culture, publickeytoken: assembly.publickeytoken });
-  // P5 / LC-P2e: with content, the type must be declared in the assembly (a TypeDef), and isworkflowactivity comes from it.
+  // With content, the type must be declared in the assembly (a TypeDef), and isworkflowactivity comes from it.
   if (assembly && typeof assembly.content === 'string' && assembly.content !== '') {
     const typename = valueOf(data, existing, 'typename');
     const type = assemblyContent(assembly.content).types.find((candidate) => candidate.fullName === typename);
-    // unverified: live capture (LC-P2e). Learn gives the code 0x8004418c and no message.
+    // The code 0x8004418c is documented; the message is a guess.
     if (!type) throw fail(`The plug-in type '${typename}' is not declared in assembly '${assembly.name}'.`, '0x8004418c');
     data.isworkflowactivity = type.isWorkflowActivity;
   }
@@ -348,7 +348,7 @@ function validateImage({ store, data, existing }) {
   if (!properties) throw fail(`Message '${name}' does not support image registration.`, '0x80044189');
   const type = Number(val('imagetype')), property = String(val('messagepropertyname'));
   const post = type === 1 || type === 2, pre = type === 0 || type === 2;
-  // unverified: live capture (LC-P1b). A Create post image is read as Id.
+  // Assumed native behavior: a Create post image is read as Id.
   if (!properties.includes(property) && !(name === 'Create' && post && property === 'Id'))
     throw fail(`Message property name '${property}' is not valid on message ${name}.`, '0x8004416b');
   if (post && [10, 20].includes(Number(step.stage))) throw fail('PreEvent step registration does not support Post Image.', '0x8004416e');
@@ -357,13 +357,13 @@ function validateImage({ store, data, existing }) {
 
 function validateStep({ store, principals, c, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
-  // Learn (register-plug-in): a Microsoft registered step is read-only. Seeded rows carry ismanaged and customizationlevel 0.
+  // A Microsoft registered step is read-only. Seeded rows carry ismanaged and customizationlevel 0.
   if (operation === 'update' && existing?.ismanaged === true && Number(existing.customizationlevel) === 0)
     throw fail('A Microsoft registered SDK message processing step cannot be modified.', '0x8004419a');
   const messageRefId = ref(data, existing, 'sdkmessageid');
   const filterRefId = ref(data, existing, 'sdkmessagefilterid');
   const handler = handlerOf(data, existing);
-  if (operation === 'create' && data.rank === undefined) data.rank = 1; // LC-P2f: PRT sends rank; the default is 1
+  if (operation === 'create' && data.rank === undefined) data.rank = 1; // the Plug-in Registration Tool sends rank; the default is 1
   for (const [column, present] of [['sdkmessageid', messageRefId], ['stage', val('stage')], ['eventhandler', handler.id]])
     if (present == null || present === '') throw required(column);
   const stage = Number(val('stage')), mode = Number(val('mode') ?? 0), rank = Number(val('rank'));
@@ -371,10 +371,10 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   if (EXTERNAL_MESSAGES.includes(messageName) && (stage !== 40 || mode !== 1)) {
     throw fail('External virtual table events support only asynchronous PostOperation steps.', '0x80090303');
   }
-  // unverified: live capture (LC-P2f). Only a whole number of at least 1 is accepted for rank.
+  // Assumed native behavior: only a whole number of at least 1 is accepted for rank.
   if (!Number.isInteger(rank) || rank < 1) throw fail('The rank must be a whole number of at least 1.', '0x80040203');
   if (![10, 20, 40].includes(stage)) throw fail(STAGE_TEXT, '0x80044184');
-  // unverified: live capture (LC-P2a). The rule is Learn's; the error text and code are not documented.
+  // The rule is documented; the error text and code are guesses.
   if (mode === 1 && stage !== 40) throw fail('Asynchronous plug-ins can only be registered for the PostOperation stage.', '0x80040203');
   const filter = rowById(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRefId);
   if (filterRefId) {
@@ -383,7 +383,7 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   } else if (messageRefId && !store.tableRows('sdkmessagefilter').some((row) => same(row.sdkmessageid, messageRefId))) {
     throw fail('Custom Sdkmessageprocessingsteps are not allowed for this message.', '0x80090307');
   }
-  // unverified: live capture (LC-P2b). The attributes must be columns of the filter's table; any message is accepted.
+  // Assumed native behavior: the attributes must be columns of the filter's table; any message is accepted.
   const table = filter?.primaryobjecttypecode;
   if (table && table !== 'none') {
     const columns = columnsOf(store, table);
@@ -397,14 +397,14 @@ function validateStep({ store, principals, c, data, existing, operation }) {
     const allowed = principals.roles(c.user).some((role) => ADMIN_ROLES.has(role.name)) || principals.privileges(c.user).has(IMPERSONATE);
     if (!allowed) throw privilegeDeniedError(c.user, IMPERSONATE, 'sdkmessageprocessingstep');
   }
-  // unverified: live capture. The Learn page says a web hook step has no configuration; the text and code are not documented.
+  // A web hook step takes no configuration (documented); the text and code are guesses.
   if (handler.table === 'serviceendpoint' || rowById(store, 'serviceendpoint', 'serviceendpointid', handler.id)) {
     if (val('configuration')) throw fail('A web hook step cannot have a configuration.', '0x80040203');
   }
 }
 
-// A web hook (contract 8, Learn register-web-hook) needs its endpoint URL and one of its three authentication types: WebhookKey (4),
-// HttpHeader (5) or HttpQueryString (6). unverified: LC-P6d, the codes and texts of these two errors; Learn names no error.
+// A web hook (contract 8) needs its endpoint URL and one of its three authentication types: WebhookKey (4),
+// HttpHeader (5) or HttpQueryString (6). The codes and texts of these two errors are guesses.
 const WEBHOOK_AUTH = new Set([4, 5, 6]);
 function validateEndpoint({ data, existing }) {
   const val = (column) => valueOf(data, existing, column);
@@ -446,7 +446,7 @@ export function install(api) {
     },
     handle(c) {
       // Platform CSDL defines the response. An unsigned component has no signing certificate; strong-name keys are unrelated.
-      // unverified: native DN formatting, segment representation and errors. Inspection never executes the image or
+      // Native DN formatting, segment representation and errors are guesses. Inspection never executes the image or
       // asserts certificate/image trust; it identifies the CMS signer by issuer+serial, not the first certificate in its chain.
       const logical = String(c.params?.ComponentName ?? '').toLowerCase();
       if (!['pluginassembly', 'pluginpackage'].includes(logical)) throw fail('ComponentName must be pluginassembly or pluginpackage.', '0x80040203');
@@ -468,10 +468,10 @@ export function install(api) {
   return api.store.transact(() => seed(api));
 }
 
-// TriggerServiceEndpointCheck (P7): probes a web hook endpoint. Only a contract 8 (webhook) endpoint on a loopback URL is contacted
+// TriggerServiceEndpointCheck: probes a web hook endpoint. Only a contract 8 (webhook) endpoint on a loopback URL is contacted
 // (the guard is shared with the webhook delivery in dataverse-webhooks.mjs); the probe is a POST answered with any 2xx.
 // Queue (2), Topic (5) and Queue Persistent (6) endpoints pass when a messaging provider (api.providers.messaging) maps them to
-// a bus entity; nothing is sent. unverified: LC-P7a, the probe body, the headers and the error texts; the 2/5/6 answer reuses
+// a bus entity; nothing is sent. The probe body, headers and error texts are guesses; the 2/5/6 answer reuses
 // the web hook's success shape (204).
 const WEBHOOK_CONTRACT = 8;
 const BUS_CONTRACTS = new Set([2, 5, 6]);

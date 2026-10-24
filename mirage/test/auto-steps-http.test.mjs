@@ -1,6 +1,5 @@
 // Auto-generated steps over the WebForms postback: Next/Previous re-render another tab without a
-// save, the earlier tabs' values travel in __VIEWSTATE and the last tab's Insert saves them all
-// (invented loopback fixture, "sample" table).
+// save, the earlier tabs' values travel in __VIEWSTATE and the last tab's Insert saves them all.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +30,7 @@ test('auto-generated steps post back tab by tab and save every tab on Insert', a
   t.after(async () => { await app.close(); await fs.rm(root, { recursive: true, force: true }); });
   const ids = nativeFormControlIds('entityform', 'stepped');
   const viewStateOf = (html) => /name="__VIEWSTATE" id="__VIEWSTATE" value="([^"]*)"/.exec(html)[1];
-  const post = (entries) => fetch(app.url + '/', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams([['__RequestVerificationToken', app.state().csrf], ...entries]) });
+  const post = (entries) => fetch(app.url + '/', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams([['__RequestVerificationToken', app.csrf], ...entries]) });
 
   const first = await (await fetch(app.url + '/')).text();
   assert.match(first, /<h2 class="tab-title">first<\/h2>/);

@@ -1,6 +1,6 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 // mirage dev with portals=all: several local Mirages and live targets in one browser
-// context, switched through the panel's portal selector. Loopback fixtures only.
+// context, switched through the panel's portal selector.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

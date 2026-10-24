@@ -488,7 +488,7 @@ function placeLabels(edges) {
   return edges;
 }
 
-// Which activity counters move each edge kind (D7 counters):
+// Which activity counters move each edge kind:
 // http/reads → requests.total, dataverseRequests.total; bus → messages.* and outbox.*; storage → storage.byProvider writes/deletes/bytesWritten;
 // webhook → webhooks.*; process → plugins.executions/failures, flows.*, jobs.*. An edge into `org:plugins|flows|jobs` uses that counter only.
 const sum = value => (value && typeof value === 'object' ? Object.values(value).reduce((total, item) => total + (typeof item === 'number' ? item : 0), 0) : Number(value) || 0);
@@ -821,7 +821,7 @@ function hero(payload, { planned, starting, preflight, now, icons, compact }) {
 }
 
 /**
- * Compose the dashboard. `mode`: 'live' reads the D5 payload, 'planned' renders configuration only, 'starting' (or a
+ * Compose the dashboard. `mode`: 'live' reads the GET /_sim/api/dashboard payload, 'planned' renders configuration only, 'starting' (or a
  * `{ status: 'starting' }` payload) shows the waiting state. `history`: earlier `activity` objects, oldest first (the
  * caller keeps the last 11 or more); sparklines use the last 12 points including the current one. `preflight`: the last
  * preflight report, for the blocking count in the header. `icons`: the dashboard-icons.mjs module. `parts` turns sections off

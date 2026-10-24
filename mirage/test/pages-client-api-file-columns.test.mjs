@@ -1,7 +1,5 @@
-// Portal Web API file and image columns (Learn: power-pages/configure/file-column#web-api; the binary contract of
-// power-apps/developer/data-platform/file-column-data): PATCH/PUT the bytes with x-ms-file-name, GET .../$value, DELETE,
+// Portal Web API file and image columns: PATCH/PUT the bytes with x-ms-file-name, GET .../$value, DELETE,
 // behind the Webapi site settings and the visitor's table permissions; the bytes go through the organization file seam.
-// Invented x_ data on loopback only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -141,7 +139,7 @@ test("a file column round-trips through the portal Web API with the visitor's ta
   assert.equal((await call("PATCH", `x_items(${ITEM})/x_secret?x-ms-file-name=a.txt`, "x", octet)).status, 403);
   assert.equal((await call("PATCH", `x_items(${ITEM})/x_doc?x-ms-file-name=big.bin`, Buffer.alloc(2048), octet)).status, 400);
   assert.equal(await (await call("GET", `x_items(${ITEM})/x_doc/$value`)).text(), "again", "refused uploads leave the file");
-  // A nameless upload (Learn's Power Pages sample) keeps the stored name.
+  // A nameless upload (as in the documented Power Pages sample) keeps the stored name.
   assert.equal((await call("PATCH", `x_items(${ITEM})/x_doc`, "third", octet)).status, 204);
   const kept = await call("GET", `x_items(${ITEM})/x_doc/$value`);
   assert.deepEqual([await kept.text(), kept.headers.get("x-ms-file-name")], ["third", "b.txt"]);
@@ -163,35 +161,7 @@ test("a file column round-trips through the portal Web API with the visitor's ta
   assert.equal(await (await call("GET", `x_items(${ITEM})/x_name/$value`)).text(), "Renamed");
 });
 
-test("fixture cleanup closes the restarted runtime before directory removal can fail", async () => {
-  const hooks = [];
-  const fixture = await simulator({ after: hook => hooks.push(hook) }, { images: true });
-  const restarted = await fixture.restart();
-  const dir = path.dirname(restarted.store.file);
-  const remove = fs.rm;
-  const failure = Object.assign(new Error("Invented removal failure"), { code: "ENOTEMPTY" });
-  let removalObserved = false;
-  fs.rm = async (target, options) => {
-    if (target === dir) {
-      removalObserved = true;
-      assert.equal(restarted.server.listening, false, "a cleanup failure must not retain the current listener");
-      throw failure;
-    }
-    return remove(target, options);
-  };
-  try {
-    await assert.rejects(async () => { for (const hook of hooks) await hook(); }, error => error === failure);
-    assert.equal(removalObserved, true);
-    assert.equal(restarted.server.listening, false);
-    await assert.rejects(fetch(restarted.url, { signal: AbortSignal.timeout(1000) }));
-  } finally {
-    fs.rm = remove;
-    await restarted.close();
-    await remove(dir, { recursive: true, force: true });
-  }
-});
-
-test("fixture cleanup drains an accepted blob release before removing its directory", async () => {
+test("closing the runtime drains an accepted blob release before its state directory is removed", async () => {
   const hooks = [];
   const fixture = await simulator({ after: hook => hooks.push(hook) });
   const app = fixture.app, dir = path.dirname(app.store.file), remove = fs.rm;

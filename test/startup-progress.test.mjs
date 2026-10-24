@@ -52,13 +52,18 @@ test('startup diagnostics begin immediately and retain command-total across phas
   assert.equal(lines.length, 3);
 });
 
-test('slow startup phases emit bounded heartbeats until closed, independently of phase changes', async () => {
-  const lines = [], progress = startupProgress({ intervalMs: 10, write: line => lines.push(line) });
-  await new Promise(resolve => setTimeout(resolve, 35));
-  assert.ok(lines.some(line => line.endsWith('…')), JSON.stringify(lines));
+test('slow startup phases emit heartbeats until closed, independently of phase changes', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let time = 0;
+  const lines = [], progress = startupProgress({ intervalMs: 10, now: () => time, write: line => lines.push(line) });
+  const heartbeats = () => lines.filter(line => line.endsWith('…'));
+  time = 10; t.mock.timers.tick(10);
+  progress.phase('process ownership');
+  time = 30; t.mock.timers.tick(20);
+  assert.deepEqual(heartbeats(), ['startup     configuration (0.0s total; 0.0s phase)…', 'startup     process ownership (0.0s total; 0.0s phase)…', 'startup     process ownership (0.0s total; 0.0s phase)…']);
   progress.fail('cancelled during discovery');
   const count = lines.length;
-  await new Promise(resolve => setTimeout(resolve, 25));
+  t.mock.timers.tick(50);
   assert.equal(lines.length, count);
 });
 

@@ -1,6 +1,6 @@
 // RetrieveEnvironmentVariableSecretValue through api.secrets (secret-resolver.mjs): resolved, denied, missing, unbound,
 // expired, wrong type and the 501 without a secrets configuration; metadata reads and the /_sim environment table carry
-// the reference only. Invented schema, vault, principals and values only.
+// the reference only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -127,7 +127,7 @@ test('the /_sim environment table carries no value for secret definitions', asyn
   };
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state', 'state.json'), port: 0, watch: false, initial });
   ownedFixture(t).add(() => app.close());
-  const response = await fetch(app.url + '/__sim/api/environment', { headers: { 'x-sim-csrf': app.state().csrf } });
+  const response = await fetch(app.url + '/__sim/api/environment', { headers: { 'x-sim-csrf': app.csrf } });
   const text = await response.text();
   assert.equal(response.status, 200, text);
   const byName = Object.fromEntries(JSON.parse(text).environmentVariables.definitions.map((item) => [item.schemaName, item]));

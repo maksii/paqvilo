@@ -1,5 +1,5 @@
 // A site setting with an environment variable lookup binds only when adx_source is 1 (Environment variable). A missing
-// source keeps the static value (native default 0, unverified against a real export). Invented names and values only.
+// source keeps the static value (native default 0, a guess).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

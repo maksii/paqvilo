@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createAuthority, hashSecret, newClientSecret } from '../lib/dataverse-auth.mjs';
 
-// Invented identifiers and a loopback origin only. The clock is controlled through state.now.
+// The clock is controlled through state.now.
 const ORIGIN = 'https://127.0.0.1:9443';
 const TENANT = '7e1a2b3c-4d5e-4f60-8a71-92b3c4d5e6f7';
 const APP_ID = '5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d';
@@ -44,13 +44,6 @@ const pkce = () => {
   const verifier = randomBytes(32).toString('base64url');
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
 };
-
-test('an expired refresh token is answered as expired while no insert has pruned it', () => {
-  const { auth, state } = fixture();
-  const old = auth.issueRefreshToken({ appId: APP_ID, userOid: USER_OID, resource: ORIGIN, scope: SCOPE, now: state.now });
-  state.now += REFRESH_LIFETIME_MS + 1;
-  assert.deepEqual(call(auth, refreshForm(old)).body.error_codes, [700082]);
-});
 
 test('an expired refresh token stays expired (700082) after other tokens are issued; pruning waits for the cap', () => {
   const { auth, state } = fixture();
@@ -104,7 +97,7 @@ test('an expired device code is answered as expired after another device code is
   assert.deepEqual(poll.body.error_codes, [70019]);
 });
 
-test('R3-15: client assertion ids are capped at 1000 like the other maps', () => {
+test('client assertion ids are capped at 1000 like the other maps', () => {
   const { auth, state, applications } = fixture();
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const der = pair.publicKey.export({ type: 'spki', format: 'der' });

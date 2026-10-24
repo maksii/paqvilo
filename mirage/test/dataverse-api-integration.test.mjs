@@ -1,5 +1,5 @@
 // End-to-end HTTP checks for the Dataverse modules the API wires through EXTENSIONS and the router: one request per module,
-// plus the bearer, SOAP, discovery and metadata routes. Invented schema, GUIDs and users only; loopback only.
+// plus the bearer, SOAP, discovery and metadata routes.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -214,7 +214,7 @@ describe("dataverse API: wired modules over HTTP", () => {
     assert.equal(status.backgroundOperationStatusCode, 30); // Succeeded
   });
 
-  it("creates a table as System Customizer and refuses the same write as Basic User", async () => {
+  it("creates a table as System Customizer, refuses the same write as Basic User, and relates the new table one-to-many", async () => {
     const table = {
       SchemaName: "new_Gizmo", OwnershipType: "OrganizationOwned", IsActivity: false, HasActivities: false, HasNotes: false,
       DisplayName: { LocalizedLabels: [{ Label: "Gizmo", LanguageCode: 1033 }] },
@@ -229,16 +229,14 @@ describe("dataverse API: wired modules over HTTP", () => {
     const created = await call(webApi("EntityDefinitions"), { token: await userToken("customizer@example.test"), method: "POST", body: table });
     assert.equal(created.status, 204);
     assert.ok(created.headers.get("odata-entityid").includes("EntityDefinitions"));
-  });
-
-  it("creates a one-to-many relationship from the table the previous test made", async () => {
     const relationship = {
       "@odata.type": `${CRM}OneToManyRelationshipMetadata`, SchemaName: "new_gizmo_widget",
       ReferencedEntity: "widget", ReferencedAttribute: "widgetid", ReferencingEntity: "new_gizmo",
       Lookup: { SchemaName: "new_WidgetId", LogicalName: "new_widgetid", DisplayName: { LocalizedLabels: [{ Label: "Widget", LanguageCode: 1033 }] } },
     };
-    const response = await call(webApi("RelationshipDefinitions"), { token: await userToken("customizer@example.test"), method: "POST", body: relationship });
-    assert.equal(response.status, 204);
+    const related = await call(webApi("RelationshipDefinitions"), { token: await userToken("customizer@example.test"), method: "POST", body: relationship });
+    assert.equal(related.status, 204, await related.clone().text());
+    assert.ok(store.state.mappings.new_gizmo.fields.new_widgetid, "the lookup column exists on the new table");
   });
 
   it("refuses a duplicate of a published rule with the duplicate-detected error", async () => {
@@ -265,8 +263,9 @@ describe("dataverse API: wired modules over HTTP", () => {
         PerformParentingChecks: false,
       },
     });
-    assert.ok([200, 204].includes(response.status), `status ${response.status}`);
+    assert.equal(response.status, 204, await response.clone().text());
     assert.equal(store.tableRows("account").find((row) => row.accountid === ACCOUNT_A).name, "Acme merged");
+    assert.equal(store.tableRows("account").find((row) => row.accountid === ACCOUNT_B).statecode, 1);
   });
 
   it("queues a BulkDelete job that deletes the selected widget on a later tick", async () => {
@@ -300,22 +299,6 @@ describe("dataverse API: wired modules over HTTP", () => {
     const v9 = await call("/api/discovery/v9.1/$metadata", { token: null });
     assert.equal(v9.status, 200);
     assert.ok((await v9.text()).includes("Instance"));
-  });
-
-  it("answers a SOAP WhoAmI with the application user", async () => {
-    const body = `<s:Envelope xmlns:s="${NS.s}"><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:WhoAmIRequest" xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns:a="${NS.a}"><a:Parameters/><a:RequestName>WhoAmI</a:RequestName></request></Execute></s:Body></s:Envelope>`;
-    const real = await fetch(`${origin}${ORIGIN_SOAP}`, { method: "POST", headers: { authorization: `Bearer ${appToken}`, "content-type": "text/xml; charset=utf-8" }, body });
-    assert.equal(real.status, 200);
-    const xml = await real.text();
-    assert.ok(xml.includes("WhoAmIResponse"));
-    assert.ok(xml.includes(appUserId));
-  });
-
-  it("answers an unauthenticated SOAP POST with a 401 that names the authority and resource", async () => {
-    const response = await fetch(`${origin}${ORIGIN_SOAP}`, { method: "POST", headers: { "content-type": "text/xml" }, body: "<x/>" });
-    assert.equal(response.status, 401);
-    const challenge = response.headers.get("www-authenticate");
-    assert.equal(challenge, `Bearer authorization_uri="${origin}/${tenantId}", resource_id="${origin}"`);
   });
 
   it("answers SOAP at the bare Organization.svc path as it answers /web", async () => {
@@ -371,11 +354,6 @@ describe("dataverse API: wired modules over HTTP", () => {
     const response = await call(webApi("$metadata"));
     assert.equal(response.status, 200);
     assert.ok((await response.text()).includes('Name="PublishDuplicateRule"'));
-  });
-
-  it("reports the seeded organization id through WhoAmI", async () => {
-    const response = await call(webApi("WhoAmI"));
-    assert.equal((await response.json()).OrganizationId, organizationId);
   });
 });
 

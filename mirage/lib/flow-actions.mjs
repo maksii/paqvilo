@@ -19,7 +19,7 @@ const array = (value, ctx, type) => {
   return value;
 };
 const escapeHtml = value => text(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-// unverified: the native CSV quoting rule; RFC 4180 quoting is applied (a value with a comma, quote or line break is quoted).
+// The native CSV quoting rule is not known; RFC 4180 quoting is applied (a value with a comma, quote or line break is quoted).
 const escapeCsv = value => { const s = text(value); return /[",\r\n]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s; };
 
 /** The interpreter's own action types (flow-runtime.mjs runs them); the data operations are in FLOW_ACTIONS. */
@@ -29,7 +29,7 @@ export const CONTROL_ACTIONS = Object.freeze(['Compose', 'InitializeVariable', '
 const RESERVED = new Set([...CONTROL_ACTIONS, 'OpenApiConnection', 'OpenApiConnectionWebhook', 'ApiConnection', 'ApiConnectionWebhook', 'Http', 'HttpWebhook', 'Workflow', 'Function']);
 
 export const FLOW_ACTIONS = Object.freeze({
-  // unverified: the native error code and message of a schema mismatch; ValidationFailed is used locally.
+  // The native error code and message of a schema mismatch are not known; ValidationFailed is local.
   ParseJson(action, ctx) {
     const inputs = action.inputs ?? {}, content = ctx.resolve(inputs.content);
     let body = content;
@@ -56,7 +56,7 @@ export const FLOW_ACTIONS = Object.freeze({
     return { body: from.map(text).join(joinWith) };
   },
   // columns: [{ header, value }] (value resolved per item) or the keys of the first item (format CSV or HTML).
-  // unverified: the native HTML markup and the header row of automatic columns.
+  // The native HTML markup and the header row of automatic columns are a guess.
   Table(action, ctx) {
     const inputs = action.inputs ?? {}, from = array(ctx.resolve(inputs.from), ctx, 'Table'), format = String(inputs.format ?? '').toUpperCase();
     if (!['CSV', 'HTML'].includes(format)) fail("Table 'format' must be CSV or HTML.");

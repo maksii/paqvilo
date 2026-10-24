@@ -1,8 +1,7 @@
 // Webhook RemoteExecutionContext transaction flags (dataverse-webhooks.mjs remoteExecutionContext): IsInTransaction comes from
-// the pipeline's transaction state, Mode from the delivery. Learn (scalable-customization-design/database-transactions, Plug-in
-// transaction use summary): a PreValidation step outside an existing transaction does not participate, PreOperation and
-// PostOperation steps participate, asynchronous steps never do. Learn (use-webhooks sample, an asynchronous PostOperation step):
-// Mode 1; RemoteExecutionContext.IsExecutingOffline is true only for the offline Outlook client. Invented table, loopback only.
+// the pipeline's transaction state, Mode from the delivery. A PreValidation step outside an existing transaction does not
+// participate, PreOperation and PostOperation steps participate, asynchronous steps never do. An asynchronous PostOperation
+// step has Mode 1; RemoteExecutionContext.IsExecutingOffline is true only for the offline Outlook client.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';

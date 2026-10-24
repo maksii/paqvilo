@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,6 +15,10 @@ import { SITE } from '../test/fixture.mjs';
 import { inspectionFixture } from '../test/source-inspection-fixture.mjs';
 import { assemblyXml, stepXml } from '../mirage/test/plugin-fixture.mjs';
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 for (const mirage of [false, true]) test(`${mirage ? 'Mirage' : 'live-source Lense'} Inspect opens applicable plugin metadata and explicitly mapped C# source`, { timeout: 45_000 }, async t => {
   const fx = inspectionFixture();
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
@@ -26,10 +30,10 @@ for (const mirage of [false, true]) test(`${mirage ? 'Mirage' : 'live-source Len
   const observed = { evidence: 'Invented source navigation fixture', pluginSources: { 'Invented.WidgetRules.Validate': { path: 'components/Plugins/Rules.cs', root: fx.work, evidence: 'Exact invented C# mapping' } } };
   const project = path.join(fx.work, 'project.json');
   fs.writeFileSync(project, JSON.stringify({ version: 2, portals: [{ id: 'fixture', path: './portal', observed }], solutions: [{ id: 'sample', path: './solution' }] }));
-  let app, server, browser, panel, detach;
+  let app, server, context, panel, detach;
   ownedFixture(t).add(async () => { await panel?.dispose(); });
   ownedFixture(t).add(async () => { await detach?.(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
   ownedFixture(t).add(async () => { await app?.close(); });
   ownedFixture(t).add(async () => { if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } });
   ownedFixture(t).remove(async () => { fx.cleanup(); });
@@ -45,15 +49,15 @@ for (const mirage of [false, true]) test(`${mirage ? 'Mirage' : 'live-source Len
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
     origin = `http://127.0.0.1:${server.address().port}`;
   }
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 } });
+  context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 } });
   context.setDefaultTimeout(10_000);
   await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.fallback() : route.abort());
   const session = new OverlaySession({ sourceDir: fx.portal, origin, site: structuredClone(SITE), sourceMaps: false, siteName: 'Plugin fixture', envName: 'loopback', stateDir: fx.work, browser: {}, mirage, mirageSourceRoots: [fx.portal, fx.solution], mirageConfig: { project } });
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+  const page = await context.newPage();
   detach = await attachSession(context, session);
   const opened = [];
   panel = enablePanel(context, session, { open: async (...args) => { opened.push(args); return null; } });
-  const page = await context.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin);
   const scope = page.locator('#paqvilo-panel');
@@ -63,8 +67,10 @@ for (const mirage of [false, true]) test(`${mirage ? 'Mirage' : 'live-source Len
   await logic.getByText('Widget step 7', { exact: true }).waitFor();
   assert.match(await logic.innerText(), /fx_widget Update.*PreValidation.*input attributes: fx_title.*live execution unknown/);
   for (const [suffix, exact] of [['update.xml', step], ['Synthetic.xml', assembly], ['Rules.cs', code]]) {
+    const before = opened.length;
     await logic.locator(`[data-rel$="${suffix}"] [data-act="open"]`).first().click();
-    await page.waitForTimeout(100);
+    for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(opened.length, before + 1, suffix);
     assert.equal(opened.at(-1)[1], exact);
   }
   assert.deepEqual(errors, []);

@@ -72,10 +72,10 @@ export function buildBlueprint(schema, catalogue) {
     if(parent.table!=='pqvd_accesspermission')parent.privileges.appendTo=true;
   }
   for(const role of ['COMPANYMANAGER','BRANCHMANAGER','IT','CTO'])for(const n of nodes.filter(n=>n.role===role&&n.table==='pqvd_room'))n.privileges.appendTo=true;
-  // Account-to-Equipment binding failed with scoped Append To alone. Qualify
-  // the additional scoped Append; Account scalar writes remain unavailable.
+  // Binding Account to Equipment fails with scoped Append To alone, so the Account
+  // also gets scoped Append; Account scalar writes stay unavailable.
   nodes.find(n=>n.key==='IT-WORKFORCE-ACCOUNT').privileges.append=true;
-  // The next qualified binding reached Room and rejected its Append To alone.
+  // Binding Room fails with Append To alone in the same way.
   nodes.find(n=>n.key==='IT-LOCATIONS-ROOM').privileges.append=true;
   if(schema.relationships.some(r=>r.name==='pqvd_access_currencies'))for(const role of referenceRoles){
     const rights=['HR','PROCUREMENT'].includes(role)?'RT':'R';

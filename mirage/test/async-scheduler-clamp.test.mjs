@@ -25,7 +25,6 @@ test('a postponed job 30 days ahead arms a clamped, unref-ed timer', async t => 
   defaultSchedule(api, () => { ran = true; }, THIRTY_DAYS);
   assert.equal(created.length, 1);
   assert.equal(created[0].delay, MAX_TIMER_DELAY);
-  assert.ok(created[0].delay <= MAX_TIMER_DELAY);
   assert.equal(created[0].unrefed, true);
   assert.equal(ran, false);
 });

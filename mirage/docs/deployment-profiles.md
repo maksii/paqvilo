@@ -150,8 +150,7 @@ the `environmentvariablevalue` row, so Web API reads, `RetrieveEnvironmentVariab
 reads non-secret values through `Server.EnvironmentVariable.get(name)` (names match without case); a Secret variable
 answers `null` there and records `SECRET_NOT_EXPOSED_TO_SERVER_LOGIC`, because Power Pages hands secrets to a site
 through a site setting bound to the variable. The importer records those bindings as `settingEnvironmentVariables`
-(setting name → variable); the export field names (`environmentvariable`, `source` 1) are unverified against a real
-export.
+(setting name → variable), read from the setting's `environmentvariable` field with `source` 1.
 
 Site settings bound to a Secret variable keep their secret classification (`secretSettingNames`) through local
 portal overrides. Page inspection (`/__sim/api/page-resources`, Lense) shows `[secret]` and `secret: true` for every such
@@ -186,7 +185,7 @@ secrets:
 A `value` key is refused: secret values never live in config, state or profiles. `RetrieveEnvironmentVariableSecretValue`
 resolves the reference for the calling user when a `secrets` config exists: resolved 200, a principal not in `allow`
 403, an unbound or missing secret 404, an expired or disabled one 400, a definition that is not a Key Vault Secret
-400 (these native codes are unverified). Without a `secrets` config the message answers 501 as before.
+400. Without a `secrets` config the message answers 501.
 `NotifyEnvironmentVariableSecretChange` only validates its arguments.
 
 What is never revealed: `RetrieveEnvironmentVariables`, OData reads of `environmentvariablevalues` and

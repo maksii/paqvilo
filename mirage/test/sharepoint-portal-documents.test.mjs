@@ -1,6 +1,6 @@
-// Power Pages document control at contract (Learn, configure/manage-sharepoint-documents): the documented operations under
+// Power Pages document control at contract: the documented operations under
 // the local /_apps/portal-documents/ route, the parent and Document Location table permissions, the SharePoint upload size
-// settings and the 501 answer without storage. Invented x_ data only.
+// settings and the 501 answer without storage.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

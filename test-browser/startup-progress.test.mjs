@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -7,8 +7,12 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { startupProgress, waitForStartupPage } from '../lense/startup-progress.mjs';
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+async function newContext(t) { const context = await browser.newContext(); ownedFixture(t).add(() => context.close()); return context; }
+
 test('startup separates delayed navigation, delayed usable application, failures and sign-in redirects', async t => {
-  let browser;
   const server = http.createServer((req, res) => {
     if (req.url === '/redirect') { res.writeHead(302, { location: '/signin' }).end(); return; }
     if (req.url === '/hang') return;
@@ -17,12 +21,11 @@ test('startup separates delayed navigation, delayed usable application, failures
     setTimeout(() => res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><p id="notice">${req.url === '/main.aspx?error' ? 'Invented catalogue failure' : ''}</p>${req.url.startsWith('/main.aspx') ? `<script>setTimeout(() => document.documentElement.dataset.mirageAppState = '${req.url.includes('error') ? 'error' : 'ready'}', 150)</script>` : req.url === '/slow-app' ? '<script>fetch("/app-data")</script>' : ''}`), delay);
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  const context = await newContext(t);
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  const page = await browser.newPage();
+  const page = await context.newPage();
   const run = async (pathname, settings) => {
     const events = [], progress = startupProgress({ structured: true, intervalMs: 20, write: line => events.push(JSON.parse(line)) });
     try { const loaded = await waitForStartupPage(page, origin + pathname, { progress, ...settings }); return { events, loaded }; }
@@ -45,7 +48,7 @@ test('startup separates delayed navigation, delayed usable application, failures
   await page.goto(origin);
   const cancelled = await run('/hang', { stopped: new Promise(resolve => setTimeout(resolve, 30)), timeout: 1000 });
   assert.equal(cancelled.loaded, false);
-  const closingPage = await browser.newPage();
+  const closingPage = await context.newPage();
   await closingPage.route('**/main.aspx', route => route.fulfill({ contentType: 'text/html', body: '<p>Still loading application</p>' }));
   const progress = startupProgress({ write() {} });
   const closing = waitForStartupPage(closingPage, origin + '/main.aspx', { progress, modelDriven: true, timeout: 1000 });
@@ -99,19 +102,14 @@ test("real browser replacement finishes after current data despite missing old t
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const browser = await chromium.launch(
-    browserLaunchOptions({ headless: true }),
-  );
-  ownedFixture(t).add(async () => {
-    await browser.close();
-  });
+  const context = await newContext(t);
   ownedFixture(t).add(async () => {
     server.closeAllConnections();
   });
   ownedFixture(t).add(async () => {
     await new Promise((r) => server.close(r));
   });
-  const page = await browser.newPage(),
+  const page = await context.newPage(),
     origin = "http://127.0.0.1:" + server.address().port;
   const wrapped = hideOrphanTerminalEvents(page);
   const loading = waitForStartupPage(wrapped, origin + "/first", {
@@ -153,19 +151,14 @@ test("real browser detached frame orphan cannot hide current parent fetch", asyn
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const browser = await chromium.launch(
-    browserLaunchOptions({ headless: true }),
-  );
-  ownedFixture(t).add(async () => {
-    await browser.close();
-  });
+  const context = await newContext(t);
   ownedFixture(t).add(async () => {
     server.closeAllConnections();
   });
   ownedFixture(t).add(async () => {
     await new Promise((r) => server.close(r));
   });
-  const page = await browser.newPage();
+  const page = await context.newPage();
   assert.equal(
     await waitForStartupPage(
       hideOrphanTerminalEvents(page),

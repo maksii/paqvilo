@@ -56,7 +56,7 @@ test('a dataset PCF links an imported table and opens its records', async () => 
 test('the view query engine joins linked tables for dataset components', async t => {
   const { origin, sim } = await modelDrivenFixture(t);
   const input = { view: 'children-view', links: [{ name: 'x_item', from: 'x_itemid', to: 'x_parentid', linkType: 'inner', alias: 'parent', columns: ['x_name'] }] };
-  const response = await fetch(`${origin}/_apps/api/tables/x_child?query=${encodeURIComponent(JSON.stringify(input))}`, { headers: { 'x-sim-csrf': sim.state().csrf } });
+  const response = await fetch(`${origin}/_apps/api/tables/x_child?query=${encodeURIComponent(JSON.stringify(input))}`, { headers: { 'x-sim-csrf': sim.csrf } });
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
   assert.deepEqual(body.rows.map(row => [row.x_name, row['parent.x_name']]).sort(), [['Copper child', 'Copper'], ['Silver child', 'Silver']]);

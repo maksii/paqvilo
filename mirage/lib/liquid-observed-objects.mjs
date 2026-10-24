@@ -1,5 +1,5 @@
 // Opt-in portal drop behavior established by a site's reference observations.
-// Defaults retain the existing DotLiquid object model. Missing service metadata,
+// Without observations the DotLiquid object model applies. Missing service metadata,
 // cache versions/timestamps and identity data are intentionally not fabricated.
 import { LiquidDrop, LIQUID_HIDDEN, lookupMember } from "./liquid-engine.mjs";
 
@@ -65,7 +65,7 @@ class ObservedEventsDrop extends LiquidDrop {}
 
 /**
  * Source-derived language content identity for Liquid member lookup. Host reads
- * keep the root navigation ID; every other member uses the existing guarded
+ * keep the root navigation ID; every other member uses the standard guarded
  * lookup, including exact attributes, hidden properties and unsafe-key checks.
  * This does not infer page.entity or JSON serialization identity behavior.
  */

@@ -57,6 +57,7 @@ test('shell capture owns an anonymous temporary CDP browser and closes it after 
     const report = await captureShell({ config: path.join(root, 'paqvilo.config.yml'), site: 'invented', createLocalSimulator: options => createSimulator({ ...options, liveBridge: bridge }) });
     assert.equal(report.complete, true);
     assert.equal(bridge.context, null);
-    await assert.rejects(fetch(endpoint + '/json/version', { signal: AbortSignal.timeout(1000) }));
+    // The owned browser's CDP endpoint is gone: its port refuses connections.
+    await assert.rejects(fetch(endpoint + '/json/version', { signal: AbortSignal.timeout(1000) }), /fetch failed/);
   } finally { await bridge.close(); await fs.rm(root, { recursive: true, force: true }); }
 });

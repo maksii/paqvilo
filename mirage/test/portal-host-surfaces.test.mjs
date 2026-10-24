@@ -1,4 +1,4 @@
-// Host-level regressions for the portal surfaces (RA3-P-02, P-03, P-06): document uploads against the organization's
+// Host-level regressions for the portal surfaces: document uploads against the organization's
 // blocked extensions, the ServerLogic/* site settings and the InvokeCustomApi principal, through a running simulator.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -62,7 +62,7 @@ const LOGIC = `async function get(){ const out = {};
 async function serverLogicHost(t, { settings = [], itemRead = false } = {}) {
   const sim = await host(t, { settings, files: { 'portal/sample.serverlogic.yml': `adx_serverlogicid: sample\nadx_name: sample\nadx_serverlogic_adx_webrole:\n- ${ROLE}`, 'portal/sample.js': LOGIC },
     initial: { permissions: itemRead ? [{ id: 'item', entity: 'x_item', scope: 'global', roles: ['Member'], operations: ['read'] }] : [] } });
-  const csrf = sim.state().csrf;
+  const csrf = sim.csrf;
   for (const item of (await (await fetch(sim.url + '/__sim/api/operations')).json()).items.filter(entry => entry.kind === 'server-logic'))
     await fetch(sim.url + '/__sim/api/operations/' + encodeURIComponent(item.key), { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf }, body: '{"mode":"exported"}' });
   const member = signInHeaders(sim, 'alex', { roles: ['Member'] });
@@ -89,7 +89,7 @@ test('InvokeCustomApi runs as the portal application user and needs the caller\'
   const denied = await serverLogicHost(t);
   assert.equal(denied.data.bound.StatusCode, 403);
   const allowed = await serverLogicHost(t, { itemRead: true });
-  assert.ok([200, 204].includes(allowed.data.bound.StatusCode), JSON.stringify(allowed.data.bound));
+  assert.equal(allowed.data.bound.StatusCode, 204, JSON.stringify(allowed.data.bound));
   const users = allowed.sim.store.tableRows('systemuser');
   assert.ok(users.some(user => user.fullname === '# Portals-Invented host' && user.applicationid), 'the site application user exists');
   // The capability record names the bridge levels.
@@ -98,15 +98,15 @@ test('InvokeCustomApi runs as the portal application user and needs the caller\'
   assert.equal(record.principal, 'portal-application-user');
 });
 
-// Learn (security/unify-pages-security-with-dataverse): "Dataverse operations execute on behalf of the site user by using
-// impersonation rather than the application user". x_Gated needs a privilege only System Administrator holds.
+// Under enhanced authorization Dataverse operations run on behalf of the site user by impersonation, not as the
+// application user. x_Gated needs a privilege only System Administrator holds.
 test('under enhanced authorization InvokeCustomApi runs as the mapped site user and the bound row needs table-permission read', async t => {
   const gated = { 'solution/customapis/x_Gated/customapi.xml': '<customapi uniquename="x_Gated"><bindingtype>0</bindingtype><isfunction>0</isfunction><name>x_Gated</name><executeprivilegename>prvActOnBehalfOfAnotherUser</executeprivilegename></customapi>',
     'portal/sample.serverlogic.yml': `adx_serverlogicid: sample\nadx_name: sample\nadx_serverlogic_adx_webrole:\n- ${ROLE}`,
     'portal/sample.js': `function get(){ return JSON.stringify({ gated: JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_Gated', '{}')), bound: JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_items(${ITEM})/Microsoft.Dynamics.CRM.x_Bound', '')) }); }` };
   const run = async (authorization, itemRead) => {
     const sim = await host(t, { authorization, files: gated, initial: { permissions: itemRead ? [{ id: 'item', entity: 'x_item', scope: 'global', roles: ['Member'], operations: ['read'] }] : [] } });
-    const csrf = sim.state().csrf;
+    const csrf = sim.csrf;
     for (const item of (await (await fetch(sim.url + '/__sim/api/operations')).json()).items.filter(entry => entry.kind === 'server-logic'))
       await fetch(sim.url + '/__sim/api/operations/' + encodeURIComponent(item.key), { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf }, body: '{"mode":"exported"}' });
     const member = signInHeaders(sim, 'alex', { roles: ['Member'] });
@@ -115,10 +115,10 @@ test('under enhanced authorization InvokeCustomApi runs as the mapped site user 
     return [data.gated.StatusCode, data.bound.StatusCode];
   };
   const [standardGated] = await run(0, true);
-  assert.ok([200, 204].includes(standardGated), 'the application user (System Administrator) holds the privilege');
+  assert.equal(standardGated, 204, 'the application user (System Administrator) holds the privilege');
   const [enhancedGated, readable] = await run(3, true);
   assert.equal(enhancedGated, 403, 'the mapped site user lacks the privilege');
-  assert.ok([200, 204].includes(readable));
+  assert.equal(readable, 204);
   assert.equal((await run(3, false))[1], 403);
 });
 

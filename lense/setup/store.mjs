@@ -33,7 +33,7 @@ const PROJECT_KEYS = new Set(['version', 'defaultPortal', 'default_portal', 'por
 /** A linked file is shown and editable only when it is a Mirage project document: version 1 or 2 with project keys only. */
 const projectDocument = raw => plain(raw) && [1, 2].includes(raw.version) && Object.keys(raw).every(key => PROJECT_KEYS.has(key));
 /**
- * Settings as the structured status carries them (D20): secrets become { kind } markers and connection settings
+ * Settings as the structured status carries them: secrets become { kind } markers and connection settings
  * their key names. The verbatim YAML editor (layers.*.text) is the only place a secret reference appears.
  */
 export function redactSettings(mirage) {
@@ -45,7 +45,7 @@ export function redactSettings(mirage) {
 }
 const redactDefaults = defaults => (plain(defaults) ? { ...defaults, ...(plain(defaults.mirage) ? { mirage: redactSettings(defaults.mirage) } : {}) } : defaults);
 
-/** The section of /_setup/ that fixes a finding (RB-04). */
+/** The section of /_setup/ that fixes a finding. */
 function sectionOf(finding, kind) {
   // A missing file is created in the project status strip; linked-project documents and the catalogue's mirage.project are
   // edited in the Settings file.
@@ -157,7 +157,7 @@ export class SetupStore {
     const env = this.kind === 'catalogue' ? await textFile(envFile) : null;
     const ignores = await textFile(path.join(this.directory, '.gitignore'));
     // Linked project files (sites.<id>.mirage.project) are layers of the same session and revision.
-    // Only files inside the catalogue folder, outside .paqvilo/, that are project documents become layers (RU3-01);
+    // Only files inside the catalogue folder, outside .paqvilo/, that are project documents become layers;
     // any other linked file is refused with a finding and its text never leaves the store.
     const projects = {}, refused = {};
     for (const [site, file] of Object.entries(this.linkedProjects(shared, personal))) {
@@ -193,7 +193,7 @@ export class SetupStore {
    * Digest of what a running preview loaded from this configuration: the registered identity settings
    * (runtimeIdentity, as lense/commands/mirage.mjs compares them) plus sources, Solutions, packs, port and
    * startup preset. Edits elsewhere (.gitignore, comments, other sites) leave it unchanged. A Lense runtime also
-   * loaded the site's environments, start page, scope and routes and the catalogue browser (RU3-20).
+   * loaded the site's environments, start page, scope and routes and the catalogue browser.
    */
   async runtimeIdentity(siteId = null, product = 'Mirage') {
     const files = await this.files();
@@ -237,7 +237,7 @@ export class SetupStore {
       schemaVersion: 1, kind: this.kind, directory: this.directory, version: docs.version, docs: setupDocs,
       revision: files.revision, ready: false, layers: { shared: { file: this.file, exists: files.shared !== null, text: files.shared ?? '' },
         ...(this.localFile ? { personal: { file: this.localFile, exists: files.personal !== null, text: files.personal ?? '' } } : {}),
-        // values: the parsed linked document with secrets reduced to references (RU3-09), for the setting editor.
+        // values: the parsed linked document with secrets reduced to references, for the setting editor.
         ...Object.fromEntries(Object.entries(files.projects).map(([site, item]) => [`project:${site}`, { file: item.file, exists: item.text !== null, text: item.text ?? '', site, values: redactSettings(item.raw ?? {}) }])) },
       sites: [], findings: [], settings: {},
     };
@@ -256,7 +256,7 @@ export class SetupStore {
           dataPacks: valid.dataPacks, solutionRoots: valid.solutionRoots,
           // Resolved setting rows the file sets (connections, providers, secrets by reference, …) for the planned topology.
           mirage: redactSettings(Object.fromEntries(projectKeys().filter(key => valid[key] !== undefined).map(key => [key, valid[key]]))),
-          // Authored project-only keys (RU3-07), as the file writes them.
+          // Authored project-only keys, as the file writes them.
           lcid: authored.lcid, watch: authored.watch, stateDirectory: authored.stateDirectory ?? authored.state_directory,
           references: authored.references ?? authored.referenceEnvironments, presets: authored.presets, portals: authored.portals };
         result.solutions = await Promise.all(valid.solutionRoots.map(folder => inspectSource(folder)));
@@ -273,7 +273,7 @@ export class SetupStore {
         result.settings = { sourceRoot: catalogue.root.sourceRoot ?? '.', resolvedSourceRoot: catalogue.sourceRoot,
           defaultSite: catalogue.root.defaultSite ?? '', browser: catalogue.root.browser, portals: catalogue.root.portals,
           liveReload: catalogue.root.liveReload, panel: catalogue.root.panel,
-          // Root keys the guided Settings form shows (RU3-06); defaults carries references only.
+          // Root keys the guided Settings form shows; defaults carries references only.
           includeCaution: catalogue.root.includeCaution, agent: catalogue.root.agent ?? {}, editor: catalogue.root.editor, sourceMaps: catalogue.root.sourceMaps,
           defaults: redactDefaults(catalogue.root.defaults ?? {}),
           solutionRoots: catalogue.root.defaults?.mirage?.solutionRoots ?? [],
@@ -378,7 +378,7 @@ export class SetupStore {
         text = /\.json$/i.test(file) ? JSON.stringify(created, null, 2) + '\n' : YAML.stringify(created);
       } else if (typeof input.text === 'string') text = input.text;
       else {
-        // A new layer starts as an empty block mapping, so guided edits write block-style YAML (RU3-17).
+        // A new layer starts as an empty block mapping, so guided edits write block-style YAML.
         const { doc } = layerText(before) === null ? { doc: new YAML.Document({}) } : document(layerText(before), 'Configuration');
         if (!Array.isArray(input.operations) || input.operations.length > 100) throw setupError('Send at most 100 configuration edits.');
         for (const edit of input.operations) {

@@ -1,4 +1,4 @@
-// MCP stdio client regression: a tiny fake server in a temp dir, no network.
+// MCP stdio client regression against a tiny fake server in a temp dir.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

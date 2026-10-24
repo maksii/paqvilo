@@ -33,6 +33,6 @@ Module: `mirage/lib/service-fixtures.mjs`, created with `createServiceFixtureReg
 
 **Capability report.** Each service record is read into the capability registry (`fromServices`), so every service and its level appear in the preflight report. See [capabilities and preflight](capabilities-and-preflight.md).
 
-**Unverified.** None. The error code `ServiceDisabled` and the diagnostic code are local names, not native Power Platform codes.
+The error code `ServiceDisabled` and the diagnostic codes are local names, not Power Platform codes.
 
 Related guides: [data packs](data-packs.md) for the pack export contract and trust rules.

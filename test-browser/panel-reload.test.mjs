@@ -1,6 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Panel refresh controls must never repeat a form POST, including URLs with fragments.
-// All submissions below go to a disposable loopback fixture, never a portal environment.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -54,9 +53,10 @@ test('panel reload, mode, scope and override toggles refresh through GET after a
   context.setDefaultTimeout(10_000);
   await context.route('**/*', async (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
   const session = new OverlaySession({ sourceDir: fx.dir, origin, site: structuredClone(SITE), sourceMaps: false, siteName: 'fixture', envName: 'loopback', stateDir: work, browser: {} });
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
+  const page = await context.newPage();
   detach = await attachSession(context, session);
   panel = enablePanel(context, session);
-  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin, { waitUntil: 'load' });

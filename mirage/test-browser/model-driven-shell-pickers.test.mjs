@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
 
 test('native shell selectors filter, navigate, dismiss and preserve keyboard focus', async t => {
   const fixture = await modelDrivenFixture(t);
@@ -15,8 +16,7 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
   const formFile = path.join(fixture.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', '<row><cell visible="false"><labels><label description="Hidden quantity" languagecode="1033"/></labels><control datafieldname="x_quantity"/></cell></row></rows>'));
   const sim = await fixture.start(); t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -66,8 +66,7 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
 
 test('column menu applies sorting, reordering, widths and column-specific filters', async t => {
   const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   // Keep the old Copper row visible while a filtered refresh is in flight.
@@ -139,7 +138,7 @@ test('filter drawer uses typed scalar values, literal contains, null conditions 
   for (const [x_name, x_available, x_stage, x_quantity] of [['Literal %_[box]', false, 3, 3], ['Ready for review', true, 7, 6]]) {
     const response = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name, x_available, x_stage, x_quantity, x_due: '2026-04-12' }) }); assert.equal(response.status, 201, await response.clone().text());
   }
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } }); page.setDefaultTimeout(5000);
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } }); page.setDefaultTimeout(5000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item'); await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   const drawer = page.getByRole('dialog', { name: /^Edit filters:/ });
@@ -185,7 +184,7 @@ test('new required owner controls default to the active organization staff princ
   const userRoot = path.join(initial.solutionDir, 'Entities/systemuser'); await fs.mkdir(userRoot, { recursive: true });
   await fs.writeFile(path.join(userRoot, 'Entity.xml'), '<Entity><Name>systemuser</Name><EntityInfo><entity Name="systemuser"><EntitySetName>systemusers</EntitySetName><PrimaryIdAttribute>systemuserid</PrimaryIdAttribute><PrimaryNameAttribute>fullname</PrimaryNameAttribute><attributes><attribute PhysicalName="systemuserid"><Name>systemuserid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="fullname"><Name>fullname</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>');
   const sim = await initial.start(); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
   await page.getByLabel('Owner', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('Owner', { exact: true }).inputValue(), 'Local administrator');
@@ -223,7 +222,7 @@ test('subgrid exported view picker preserves its named parent relationship acros
   for (const [x_name, x_parentid, x_otherparentid] of [['Reviewed own child', parent, otherParent], ['Reviewed foreign child', otherParent, parent]]) {
     const response = await fetch(origin + '/_apps/api/tables/x_child', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name, x_parentid, x_otherparentid }) }); assert.equal(response.status, 201, await response.clone().text());
   }
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage(); page.setDefaultTimeout(5000);
+  const page = await chrome.page(t); page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + parent); await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   const grid = page.locator('.related-grid'), picker = grid.getByRole('button', { name: 'View for Related children', exact: true }); await grid.getByRole('button', { name: 'Copper child', exact: true }).waitFor();
   const toolbarGap = await grid.evaluate(node => node.querySelector('[data-action=new-related]').getBoundingClientRect().left - node.querySelector('.subgrid-view-picker').getBoundingClientRect().right);
@@ -253,7 +252,7 @@ test('populated grids preserve source widths, numeric alignment, compact rows an
   const session = await (await fetch(origin + '/_sim/api/dataverse/session')).json(), userId = session.current.principalId ?? session.current.id, userName = session.current.name;
   const ownerRecord = await (await fetch(origin + '/_apps/api/tables/systemuser/' + userId)).json(), ownerName = ownerRecord.row.fullname;
   const createdResponse = await fetch(origin + '/_apps/api/tables/x_item', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ x_name: 'Owned wide row', x_quantity: 4, ownerid: { id: userId, entity: 'systemuser', name: userName } }) }); assert.equal(createdResponse.status, 201, await createdResponse.clone().text());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage({ viewport: { width: 1100, height: 800 } });
+  const page = await chrome.page(t, { viewport: { width: 1100, height: 800 } });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item'); const row = page.locator('.grid-scroll tbody tr').filter({ has: page.getByRole('button', { name: 'Owned wide row', exact: true }) }); await row.waitFor();
   const geometry = await page.locator('.grid-scroll').evaluate(node => ({ viewport: node.clientWidth, scroll: node.scrollWidth, table: node.querySelector('table').getBoundingClientRect().width, document: document.documentElement.scrollWidth, window: innerWidth }));
   assert.ok(geometry.scroll > geometry.viewport, 'wide exported columns scroll inside the grid'); assert.ok(geometry.table >= 1698, 'the exported column widths are not squeezed into percentages'); assert.equal(geometry.document, geometry.window);
@@ -277,7 +276,7 @@ test('a view without its primary-name column opens the selected record by double
   const view = path.join(fixture.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   await fs.writeFile(view, (await fs.readFile(view, 'utf8')).replace('<cell name="x_name" width="200"/>', ''));
   const sim = await fixture.start(); t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const row = page.locator('tbody tr').filter({ has: page.getByRole('checkbox', { name: 'Select Copper', exact: true }) }); await row.waitFor();
   assert.equal(await row.getByRole('button').count(), 0);
@@ -300,7 +299,7 @@ test('authored app areas isolate their groups and 137 records paginate through s
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(entityFile, (await fs.readFile(entityFile, 'utf8')).replace('</Entity>', '<CustomControlDefaultConfigs><CustomControlDefaultConfig><ControlDescriptionXML><controlDescriptions><controlDescription><customControl name="Microsoft.PowerApps.PowerAppsOneGrid" formFactor="0"><parameters><EnablePagination static="true" type="Enum">yes</EnablePagination></parameters></customControl></controlDescription></controlDescriptions></ControlDescriptionXML></CustomControlDefaultConfig></CustomControlDefaultConfigs></Entity>'));
   const sim = await fixture.start({ initial }); t.after(() => sim.close()); const origin = sim.origin ?? sim.url;
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } }); page.setDefaultTimeout(6000);
+  const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } }); page.setDefaultTimeout(6000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const change = async (action, entity, expectedPage, expectedCount, expectedTotal) => {
     const response = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === '/_apps/api/tables/' + entity);
@@ -354,7 +353,6 @@ test('authored app areas isolate their groups and 137 records paginate through s
   assert.deepEqual(errors, []);
 });
 
-
 test('source infinite grid fetches additional server chunks and rejects stale chunks after keyword reset', async t => {
   const fixture = await modelDrivenFixture(t); await fixture.sim.close();
   const initial = structuredClone(fixture.sim.store.state);
@@ -362,7 +360,7 @@ test('source infinite grid fetches additional server chunks and rejects stale ch
   await fs.writeFile(fixture.stateFile, JSON.stringify(initial));
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(entityFile, (await fs.readFile(entityFile, 'utf8')).replace('</Entity>', '<CustomControlDefaultConfigs><CustomControlDefaultConfig><ControlDescriptionXML><controlDescriptions><controlDescription><customControl name="Microsoft.PowerApps.PowerAppsOneGrid" formFactor="0"><parameters><EnablePagination static="true" type="Enum">no</EnablePagination></parameters></customControl></controlDescription></controlDescriptions></ControlDescriptionXML></CustomControlDefaultConfig></CustomControlDefaultConfigs></Entity>'));
-  const sim = await fixture.start(); t.after(() => sim.close()); const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage();
+  const sim = await fixture.start(); t.after(() => sim.close()); const page = await chrome.page(t);
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const scroll = page.locator('.grid-scroll'); await page.getByRole('button', { name: 'Item 001', exact: true }).waitFor();
   assert.equal(await scroll.getAttribute('data-paging'), 'infinite'); assert.equal(await page.getByRole('button', { name: 'Next page', exact: true }).count(), 0); assert.equal(await page.getByRole('combobox', { name: 'Rows per page', exact: true }).count(), 0);
@@ -382,10 +380,9 @@ test('source infinite grid fetches additional server chunks and rejects stale ch
   assert.equal(await page.locator('.grid-scroll tbody tr').count(), 1); assert.equal(await page.getByRole('button', { name: 'Item 137', exact: true }).count(), 1);
 });
 
-
 test('compact form command overflow retains Share and executes supported Save through More', async t => {
-  const fixture = await modelDrivenFixture(t), browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const fixture = await modelDrivenFixture(t);
+  const page = await chrome.page(t, { viewport: { width: 390, height: 844 } });
   await page.goto(fixture.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByLabel('Name', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Share', exact: true }).isVisible(), true); assert.equal(await page.getByRole('button', { name: 'More commands', exact: true }).isVisible(), true);

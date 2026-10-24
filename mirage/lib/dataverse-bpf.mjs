@@ -17,10 +17,9 @@
 // Stage validation and stage moves are not implemented: there is no moveStage. A stage move would rewrite activestageid and
 // traversedpath of an existing instance row, the same two columns createInstance writes.
 //
-// unverified: the clientdata shape (a stages array of { stageid, stagename, entityname }) is assumed. The designer's clientdata of
-// a business process flow is not read from a live export.
-// unverified: the instance primary key (businessprocessflowinstanceid unless the mapping names one) and the lookup
-// bpf_<primaryentity>id on the instance row are assumed from the existing message code, not from Learn.
+// Assumption: the clientdata shape (a stages array of { stageid, stagename, entityname }); a live designer export was not read.
+// Assumption: the instance primary key (businessprocessflowinstanceid unless the mapping names one) and the lookup
+// bpf_<primaryentity>id on the instance row follow the existing message code.
 // ponytail: the inventory is re-parsed on every call (no parse cache). Fine for the definition counts a site holds.
 // ponytail: a stage with no entity name takes the flow's primary entity.
 // ponytail: an instance row carries no statecode or statuscode.
@@ -52,7 +51,7 @@ function stateOf(api) {
 // Diagnostics: once per code and flow, then never again until reset.
 const report = (state, entry) => state.reporter.report(entry, `${entry.code}\u0000${entry.workflowId}`);
 
-// ---- Stage list ------------------------------------------------------------------------------------------------------
+// ---- Stage list
 
 function jsonOf(text) {
   const source = String(text ?? "").trim();
@@ -91,7 +90,7 @@ function stagesOf(row, primaryentity) {
   return entries.map((entry) => ({ id: bare(entry.id), name: String(entry.name).trim(), entity: String(entry.entity ?? primaryentity).trim().toLowerCase() }));
 }
 
-// ---- Inventory -------------------------------------------------------------------------------------------------------
+// ---- Inventory
 
 // Every category-4 workflow row, with its activation kept internal. Unparsed flows report BPF_DEFINITION_UNPARSED.
 function definitionsOf(store, state) {
@@ -110,7 +109,7 @@ function definitionsOf(store, state) {
 
 const publicOf = ({ activated, ...definition }) => definition;
 
-// ---- Instances -------------------------------------------------------------------------------------------------------
+// ---- Instances
 
 /**
  * createInstance(api, workflowid, targetId): inserts one instance of the flow for the record targetId (a GUID) at its first
@@ -163,7 +162,7 @@ export async function createInstance(api, workflowid, targetId) {
   }, { nested: true }));
 }
 
-// ---- Extension -------------------------------------------------------------------------------------------------------
+// ---- Extension
 
 /** install(api, { diagnostic }): exposes api.businessProcessFlows = { list(), for(table), diagnostics() }. */
 function install(api, { diagnostic } = {}) {

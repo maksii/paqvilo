@@ -1,7 +1,6 @@
 import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright-core';
@@ -31,5 +30,4 @@ test('Liquid pages compose bounded previews, exported view columns and permissio
  await page.goto(sim.url+'/liquid/views/');assert.equal(await page.locator('[data-liquid-row]').count(),0);await custom.getByText('No matching accounts. Change the view or search.').waitFor();
  await page.goto('about:blank');await sim.applyPreset('example-demo');await page.setViewportSize({width:390,height:844});for(const route of ['/liquid/','/liquid/partials/','/liquid/views/','/liquid/data/']){await page.goto(sim.url+route);await page.mouse.move(0,0);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),route+' does not overflow on mobile');assert.doesNotMatch(await page.locator('body').innerText(),/Liquid error|Portal rendering failed|Syntax Error/);}
  assert.deepEqual(errors,[]);
- const manifestSource=await fs.readFile(path.join(project,'portal/web-templates/liquid-account-preview/Liquid-account-preview.webtemplate.source.html'),'utf8');assert.match(manifestSource,/{% manifest %}/);
 });

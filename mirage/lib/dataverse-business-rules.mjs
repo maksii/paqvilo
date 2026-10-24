@@ -21,7 +21,7 @@
 //   Client-only steps (no server behaviour; BUSINESS_RULE_CLIENT_ONLY once per rule): <SetVisibilityStep>,
 //   <SetDisplayModeStep> (lock/unlock), <RecommendationStep>. The rule's server steps still run.
 // Value text is read as JSON when it parses (numbers, true/false, null), else as text.
-// unverified: the designer's exported XAML wraps steps in Windows Workflow ActivityReference/argument structures, and the
+// The designer's exported XAML wraps steps in Windows Workflow ActivityReference/argument structures, and the
 // rule's clientdata is generated JavaScript. Neither is read: exported designer rules report BUSINESS_RULE_UNSUPPORTED and
 // a pack businessRules handler supplies their behaviour.
 // Steps nest at most 64 condition branches deep; a deeper rule reports BUSINESS_RULE_UNSUPPORTED.
@@ -61,13 +61,13 @@ const valueOf = (text) => {
 class Unsupported extends Error {}
 const unsupported = (message) => { throw new Unsupported(message); };
 
-// unverified: the native fault of a server-side business rule's "Show error message". The plug-in fault code 0x80040265
-// (InvalidPluginExecutionException) is used, with the rule's message as the error message.
+// The native fault of a server-side rule's "Show error message" is not known; the plug-in fault code 0x80040265
+// (InvalidPluginExecutionException) stands in, with the rule's message as the error message.
 const ruleError = (message) => new DataError(String(message), 400, "BusinessRuleError", { innerCode: "0x80040265" });
-// unverified: the native answer when a rule made a column required and the merged row leaves it empty.
+// The native answer when a rule made a column required and the merged row leaves it empty is not known.
 const requiredError = (table, column) => new DataError(`A value for the '${column}' column of '${table}' is required by a business rule.`, 400, "InvalidRequest", { innerCode: "0x80040203" });
 
-// ---- Parser ---------------------------------------------------------------------------------------------------------
+// ---- Parser
 
 function parseSteps(nodes, client, depth = 0) {
   if (depth >= MAX_DEPTH) unsupported(`The business rule nests deeper than ${MAX_DEPTH} condition branches.`);
@@ -114,7 +114,7 @@ export function parseBusinessRule(xaml) {
   }
 }
 
-// ---- Evaluator ------------------------------------------------------------------------------------------------------
+// ---- Evaluator
 
 const comparable = (value) => {
   value = refId(value);
@@ -156,7 +156,7 @@ function apply(steps, { data, merged, creating, required }) {
   }
 }
 
-// ---- Rules of a table ----------------------------------------------------------------------------------------------
+// ---- Rules of a table
 
 const states = new WeakMap();
 function stateOf(api) {
@@ -209,7 +209,7 @@ export function businessRulesFor(store, table, parsed = new Map()) {
   return store.tableRows("workflow").filter((row) => isRule(row) && tableOf(row) === logical).map((row) => ruleOf(row, parsed));
 }
 
-// ---- Pack export ----------------------------------------------------------------------------------------------------
+// ---- Pack export
 
 /** Validates a pack's businessRules export: workflow GUID keys mapping to synchronous (ctx) => ({ target?, error? }). */
 export function validateBusinessRules(map) {
@@ -225,7 +225,7 @@ export function validateBusinessRules(map) {
   return result;
 }
 
-// ---- Extension ------------------------------------------------------------------------------------------------------
+// ---- Extension
 
 function runRule(state, c, mapping, rule, { operation, data, merged, creating, required }) {
   const override = state.overrides[rule.workflowId];

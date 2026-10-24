@@ -1,5 +1,5 @@
 // Simulated Dataverse security model: seeding, principal resolution, depth-based
-// authorization, role-privilege introspection. Invented schema and GUIDs only.
+// authorization, role-privilege introspection.
 import test from "node:test";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import assert from "node:assert/strict";
@@ -169,11 +169,11 @@ test("System Administrator passes every operation and reads unfiltered", async (
   const admin = p.resolve({ oid: ADMIN_OID }).user;
   const foreign = { widgetid: "w-foreign", ownerid: { id: "bbbbbbbb-0000-4000-8000-000000000000" } };
   for (const operation of ["read", "create", "update", "delete", "append", "appendto", "assign", "share"]) {
-    p.authorize({ user: admin, entity: "widget", operation, row: foreign });
+    assert.equal(p.authorize({ user: admin, entity: "widget", operation, row: foreign }), DEPTH.Global, operation);
   }
   // Organization-owned tables have no Assign or Share privilege.
   for (const operation of ["read", "create", "update", "delete"]) {
-    p.authorize({ user: admin, entity: "region", operation, row: { regionid: "r1" } });
+    assert.equal(p.authorize({ user: admin, entity: "region", operation, row: { regionid: "r1" } }), DEPTH.Global, operation);
   }
   assert.equal(p.readFilter({ user: admin, entity: "widget" }), null);
 });
@@ -327,7 +327,7 @@ test("shares open a row for the rights in the mask, directly or through a team, 
   assert.throws(() => p.authorize({ user: basic, entity: "widget", operation: "update", row: theirs }), denied);
 });
 
-test("P13: a team subject reports its own roles at team depth and its shares; an organization reports rights only on org-owned tables", async () => {
+test("a team subject reports its own roles at team depth and its shares; an organization reports rights only on org-owned tables", async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
   const admin = p.resolve({ oid: ADMIN_OID }).user;
@@ -988,7 +988,7 @@ test("syncGroupMembership adds the user to group teams in the token, removes it 
   assert.deepEqual(teamsOfUser(store, member.systemuserid), [owner]);
 });
 
-test("SetBusinessSystemUser removes role assignments, moves the user's owned records, and refuses a disabled business unit", async () => {
+test("setBusinessUnit removes role assignments, moves the user's owned records, and refuses a disabled business unit", async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
   const basic = p.resolve({ oid: BASIC_OID }).user;
@@ -1034,7 +1034,7 @@ test("platform tables: Basic User reads only its own system jobs, cannot write b
   );
   assert.equal(p.authorize({ user: basic, entity: "userquery", operation: "create" }), 1);
   assert.equal(p.privileges(basic).get("prvCreateUserQuery"), DEPTH.Basic);
-  // Saved views (SavedQuery) are read at Global; the brief's depths for the other platform tables leave Basic User without a grant.
+  // Saved views (SavedQuery) are read at Global; the seeded depths for the other platform tables leave Basic User without a grant.
   assert.equal(p.privileges(basic).get("prvReadSavedQuery"), DEPTH.Global);
   assert.equal(p.privileges(basic).has("prvReadAuditSummary"), false);
   assert.equal(p.privileges(basic).has("prvReadBulkDeleteOperation"), false);
@@ -1055,7 +1055,7 @@ test("prvBulkDelete is System Administrator only; the bulk-delete name and the s
   assert.equal(privilegeNounOf("widget", { schemaName: "Widget" }), "Widget");
 });
 
-// T5 (standard-tables-plan 4.3): the standard file seeds the tables, and the security model is generated from them.
+// The standard file seeds the tables, and the security model is generated from them.
 async function standardSeeded() {
   const store = new DataStore({ state: fixtureState() });
   seedStandard(store);
@@ -1063,7 +1063,7 @@ async function standardSeeded() {
   return store;
 }
 
-test("T5: activity tables use the Activity privileges, notes Note, email templates EmailTemplate, None-owned tables none", async () => {
+test("activity tables use the Activity privileges, notes Note, email templates EmailTemplate, None-owned tables none", async () => {
   const store = await standardSeeded();
   const names = new Set(store.state.tables.privilege.map((p) => p.name));
   for (const table of ["task", "email", "phonecall", "appointment", "activitypointer"]) assert.equal(privilegeNounOf(table), "Activity", table);
@@ -1085,7 +1085,7 @@ test("T5: activity tables use the Activity privileges, notes Note, email templat
   assert.equal(ownershipTypeName("systemuser"), "BusinessOwned");
 });
 
-test("T5: a Basic User creating a task is checked for prvCreateActivity and holds it at Basic", async () => {
+test("a Basic User creating a task is checked for prvCreateActivity and holds it at Basic", async () => {
   const store = await standardSeeded();
   const p = createPrincipals(store, SETTINGS);
   const basic = p.resolve({ oid: BASIC_OID }).user;
@@ -1094,7 +1094,7 @@ test("T5: a Basic User creating a task is checked for prvCreateActivity and hold
   assert.equal(p.authorize({ user: basic, entity: "task", operation: "create" }), DEPTH.Basic);
 });
 
-test("T5: System Customizer reads only its own accounts (Basic) but custom tables at Global", async () => {
+test("System Customizer reads only its own accounts (Basic) but custom tables at Global", async () => {
   const store = await standardSeeded();
   const p = createPrincipals(store, SETTINGS);
   const admin = p.resolve({ oid: ADMIN_OID }).user;
@@ -1129,7 +1129,7 @@ test("standard plug-in and process tables get privileges named from their Learn 
   const names = new Set(store.state.tables.privilege.map((row) => row.name));
   for (const name of ["prvCreatePluginAssembly", "prvReadSdkMessageProcessingStep", "prvCreateWorkflow", "prvReadSystemForm", "prvReadKbArticle", "prvReadKnowledgeArticle"])
     assert.ok(names.has(name), name);
-  // Without a schema argument the privilege noun still follows the Learn SchemaName (knowledgearticle, not Knowledgearticle).
+  // Without a schema argument the privilege noun still follows the documented SchemaName (knowledgearticle, not Knowledgearticle).
   for (const entity of ["pluginassembly", "sdkmessageprocessingstep", "workflow", "systemform", "knowledgearticle"])
     assert.equal(p.authorize({ user: admin, entity, operation: "create", mapping: store.resolveMapping(entity) }), DEPTH.Global, entity);
 });
@@ -1206,7 +1206,7 @@ test("a Solution table's mixed-case SchemaName names its privileges, its access 
   const p = createPrincipals(store, SETTINGS);
   const admin = p.resolve({ oid: ADMIN_OID }).user;
   assert.equal(p.privileges(admin).get("prvReadnew_BankAccount"), DEPTH.Global);
-  assert.doesNotThrow(() => p.authorize({ user: admin, entity: "new_bankaccount", operation: "read" }));
+  assert.equal(p.authorize({ user: admin, entity: "new_bankaccount", operation: "read" }), DEPTH.Global);
   assert.match(p.principalAccess({ user: admin, entity: "new_bankaccount" }), /ReadAccess/);
 
   // A table made through the metadata API is administrator-only: a Basic User's read is refused naming the SchemaName privilege.
@@ -1220,8 +1220,8 @@ test("a Solution table's mixed-case SchemaName names its privileges, its access 
   );
 });
 
-// None-owned platform tables: they take their parent's privilege (Learn: OwnershipType None, with the parent lookup), and the timezone
-// tables are open reads. The mapping of each to its parent is unverified: live capture. Administrators pass all ten; a Basic User reads the timezone tables.
+// None-owned platform tables: they take their parent's privilege (OwnershipType None, with the parent lookup), and the timezone
+// tables are open reads. The mapping of each to its parent is a guess. Administrators pass all ten; a Basic User reads the timezone tables.
 test("None-owned platform tables: administrators read each through its parent privilege; a Basic User reads the timezone tables", async () => {
   const store = await standardSeeded();
   const p = createPrincipals(store, SETTINGS);
@@ -1232,22 +1232,22 @@ test("None-owned platform tables: administrators read each through its parent pr
     timezonedefinition: null, timezonerule: null, timezonelocalizedname: null,
   };
   for (const entity of Object.keys(parents)) {
-    assert.doesNotThrow(() => p.authorize({ user: admin, entity, operation: "read" }), entity);
-    assert.ok(!store.state.tables.privilege.some((row) => row.name === `prvRead${entity}`), `no table privilege of its own: ${entity}`);
+    assert.equal(p.authorize({ user: admin, entity, operation: "read" }), DEPTH.Global, entity);
+    assert.ok(!store.state.tables.privilege.some((row) => row.name.toLowerCase() === `prvread${entity}`), `no table privilege of its own: ${entity}`);
   }
   assert.equal(privilegeNounOf("calendarrule", undefined, store.state.mappings.calendarrule), "Calendar");
   assert.equal(privilegeNounOf("solutioncomponent"), "Solution");
   assert.equal(privilegeNounOf("activitymimeattachment"), "Activity");
   for (const entity of ["timezonedefinition", "timezonerule", "timezonelocalizedname"]) {
-    assert.doesNotThrow(() => p.authorize({ user: basic, entity, operation: "read" }), entity);
+    assert.equal(p.authorize({ user: basic, entity, operation: "read" }), DEPTH.Global, entity);
     assert.equal(p.readFilter({ user: basic, entity }), null, `no row filter on ${entity}`);
   }
   // Writes on the timezone tables stay denied: only reads are open.
   assert.throws(() => p.authorize({ user: basic, entity: "timezonerule", operation: "create" }), denial("PrivilegeDenied", "0x80040220"));
 });
 
-// Skip sweep 2026-10-20: the None-owned tables added to the standard file, and queue membership, resolve to their parent's privilege noun.
-test("skip-sweep None-owned and intersect tables take their parent's privilege noun", () => {
+// The None-owned tables of the standard file, and queue membership, resolve to their parent's privilege noun.
+test("None-owned and intersect tables take their parent's privilege noun", () => {
   const parents = {
     postregarding: "post", privilegecheckerlog: "privilegecheckerrun", knowledgearticleviews: "knowledgearticle", processstage: "workflow",
     reportcategory: "report", rollupfield: "metric", duplicaterecord: "duplicaterule", queuemembership: "queue",
@@ -1275,6 +1275,6 @@ test("a Solution table seeded at startup: the create check with no schema argume
   const p = createPrincipals(store, { ...SETTINGS, schema: () => schema });
   const admin = p.resolve({ oid: ADMIN_OID }).user;
   assert.equal(p.privileges(admin).get("prvCreatenew_BankAccount"), DEPTH.Global);
-  assert.doesNotThrow(() => p.authorize({ user: admin, entity: "new_bankaccount", operation: "create" }));
+  assert.equal(p.authorize({ user: admin, entity: "new_bankaccount", operation: "create" }), DEPTH.Global);
   assert.equal(p.privilegeNoun("new_bankaccount"), "new_BankAccount");
 });

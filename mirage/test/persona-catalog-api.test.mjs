@@ -36,7 +36,7 @@ test('persona shortcuts reject unsafe redirects and require a CSRF post',async t
   const get=await fetch(target);assert.equal(get.status,200);assert.match(await get.text(),/name="personaKey" value="person-1"/);
   const padded=await fetch(app.url+'/_sim/sign-in?persona=%20person-1%09');assert.equal(padded.status,200);assert.match(await padded.text(),/name="personaKey" value="person-1"/);
   const rejected=await fetch(app.url+'/_sim/sign-in',{method:'POST',body:new URLSearchParams({personaKey:'person-1'}),redirect:'manual'});assert.equal(rejected.status,403);
-  const signed=await fetch(app.url+'/_sim/sign-in',{method:'POST',body:new URLSearchParams({personaKey:'person-1',ReturnUrl:'/?welcome=1',__RequestVerificationToken:app.state().csrf}),redirect:'manual'});
+  const signed=await fetch(app.url+'/_sim/sign-in',{method:'POST',body:new URLSearchParams({personaKey:'person-1',ReturnUrl:'/?welcome=1',__RequestVerificationToken:app.csrf}),redirect:'manual'});
   assert.equal(signed.status,302);assert.equal(signed.headers.get('location'),app.url+'/?welcome=1');assert.ok(signed.headers.get('set-cookie'));
   const missingCsrf=await fetch(app.url+'/_sim/api/personas/launch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({personaKey:'person-1'})});assert.equal(missingCsrf.status,403);
 });
@@ -116,7 +116,7 @@ test('isolated setups follow the parent source-watch setting without losing loca
 test('native catalogue sign-in honors startPath unless a return URL was explicitly requested',async t=>{
   const {app}=await personaFixture(t);
   await app.store.transact(()=>{app.store.state.personaCatalog.personas[0].startPath='/?persona-default=1';});
-  const submit=returnUrl=>fetch(app.url+'/SignIn',{method:'POST',body:new URLSearchParams({personaKey:'person-1',ReturnUrl:returnUrl,__RequestVerificationToken:app.state().csrf}),redirect:'manual'});
+  const submit=returnUrl=>fetch(app.url+'/SignIn',{method:'POST',body:new URLSearchParams({personaKey:'person-1',ReturnUrl:returnUrl,__RequestVerificationToken:app.csrf}),redirect:'manual'});
   const native=await fetch(app.url+'/SignIn').then(r=>r.text());assert.match(native,/name="ReturnUrl" value=""/);
   assert.equal((await submit('')).headers.get('location'),app.url+'/?persona-default=1');
   const explicit=await fetch(app.url+'/SignIn?ReturnUrl=%2F').then(r=>r.text());assert.match(explicit,/name="ReturnUrl" value="\/"/);assert.equal((await submit('/')).headers.get('location'),app.url+'/');

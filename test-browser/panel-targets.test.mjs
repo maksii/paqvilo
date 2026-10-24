@@ -1,5 +1,5 @@
 import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
-// Two loopback portals prove the selector without visiting any configured environment.
+// Two loopback portals exercise the selector.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

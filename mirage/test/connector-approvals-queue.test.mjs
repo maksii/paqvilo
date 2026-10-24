@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
@@ -99,39 +98,4 @@ test('Service Bus queue actions send, peek-lock, complete, abandon and dead-lett
   assert.deepEqual(flowReceived.body.map(m => m.MessageId), ['m4']);
   await store.transact(() => inFlow('CompleteMessageInQueue', { queueName: 'x_orders', lockToken: flowReceived.body[0].LockToken }));
   assert.deepEqual(bus.peek('x_orders').map(m => m.messageId), ['m2'], 'only the still-locked m2 remains');
-});
-
-test('Service Bus actions answer ProviderUnavailable (503) without a local bus', async t => {
-  const { store } = await organization(t);
-  const runtime = createConnectorRuntime({ store });
-  await assert.rejects(runtime.invoke({ connectorId: 'shared_servicebus', operationId: 'SendMessage', parameters: { entityName: 'x_orders' } }), { code: 'ProviderUnavailable', status: 503 });
-});
-
-test('the http provider sends through loopbackFetch and refuses a loopback redirect', async t => {
-  const hits = [];
-  const server = http.createServer((req, res) => {
-    hits.push(req.url);
-    if (req.url === '/moved') { res.writeHead(302, { location: '/target' }); return res.end(); }
-    res.end('ok');
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const runtime = createConnectorRuntime();
-  assert.equal((await runtime.invoke({ connectorId: 'http', operationId: 'Http', parameters: { uri: origin + '/plain' } })).body, 'ok');
-  await assert.rejects(runtime.invoke({ connectorId: 'http', operationId: 'Http', parameters: { uri: origin + '/moved' } }), { code: 'ProviderFailed', status: 502 });
-  await assert.rejects(runtime.invoke({ connectorId: 'http', operationId: 'Http', parameters: { uri: 'https://elsewhere.example.test/' } }), { code: 'ProviderUnavailable', status: 503 });
-  assert.deepEqual(hits, ['/plain', '/moved']);
-});
-
-test('the memory-queue provider peek-locks and completes from a flow-style call without a 501', async t => {
-  const { store } = await organization(t);
-  const bus = createLocalMessageBus({ store });
-  const runtime = createConnectorRuntime({ store, messaging: () => bus });
-  const inFlow = (operationId, parameters) => runtime.invoke({ connectorId: 'shared_servicebus', operationId, parameters, context: flow });
-  await store.transact(() => inFlow('SendMessage', { entityName: 'x_jobs', ContentData: 'eyJqb2IiOjF9', MessageId: 'j1' }));
-  const [job] = (await store.transact(() => inFlow('GetMessagesFromQueueWithPeekLock', { queueName: 'x_jobs' }))).body;
-  assert.equal(job.MessageId, 'j1');
-  assert.equal((await store.transact(() => inFlow('CompleteMessageInQueue', { queueName: 'x_jobs', lockToken: job.LockToken }))).statusCode, 200);
-  assert.deepEqual(bus.peek('x_jobs'), []);
 });

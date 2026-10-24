@@ -5,6 +5,13 @@ import {renderComponent} from '../lib/platform.mjs';
 import {deletePortalSubgridRecord,subgridActionUrl} from '../lib/subgrid-actions.mjs';
 import {subgridModel,gridData,formCells} from '../lib/native-services.mjs';
 import {model,simulatorFixture,parentId,pendingId,acceptedId,foreignId} from './fixtures/subgrid.mjs';
+import {signInHeaders} from '../testing/session.mjs';
+
+const layoutsOf = (html) => {
+  const start = html.indexOf('class="entity-grid subgrid');
+  const encoded = /data-view-layouts="([^"]*)"/.exec(html.slice(start))[1];
+  return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+};
 
 test('configured native dataset PCF is diagnosed rather than silently presented as a supported native grid', async () => {
   const {portal,schemas,state}=model(),store=await new DataStore({state}).init(),diagnostics=[];
@@ -29,8 +36,7 @@ test('subgrid quick search derives from the exported form control and filters re
   cell.searchEnabled=true;cell.recordsPerPage=4;
   const store=await new DataStore({state}).init(),identity=state.simulator.identity;
   const html=await renderComponent('entityform','Parent',{request:{url:'http://localhost/?id='+parentId,params:{id:parentId}},user:identity},{portal,store,schemas});
-  const start=html.indexOf('class="entity-grid subgrid');
-  const [layout]=JSON.parse(Buffer.from(/data-view-layouts="([^"]*)"/.exec(html.slice(start))[1],'base64').toString('utf8'));
+  const [layout]=layoutsOf(html);
   assert.equal(layout.Configuration.Search.Enabled,true);
   assert.equal(layout.Configuration.PageSize,4);
   const grid=subgridModel({portal,schemas,metadata:{},store,kind:'entityform',formId:'parent',gridId:'Children'});
@@ -39,14 +45,8 @@ test('subgrid quick search derives from the exported form control and filters re
   cell.searchEnabled=false;
   assert.equal(subgridModel({portal,schemas,metadata:{},store,kind:'entityform',formId:'parent',gridId:'Children'}).search.enabled,false);
 });
-import {signInHeaders} from '../testing/session.mjs';
 
 test('exported grid redirects, labels and row filters retain source actions and declared permissions',async()=>{
-  const layoutsOf = (html) => {
-  const start = html.indexOf('class="entity-grid subgrid');
-  const encoded = /data-view-layouts="([^"]*)"/.exec(html.slice(start))[1];
-  return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
-};
   const {portal,schemas,state}=model(),store=await new DataStore({state}).init(),identity=state.simulator.identity;
   const html=await renderComponent('entityform','Parent',{request:{url:'http://localhost/?id='+parentId,params:{id:parentId}},user:identity},{portal,store,schemas});
   // Native subgrid shell: relationship reference attributes and configuration-only layouts.
@@ -85,17 +85,12 @@ test('native grid deletes reject unrelated rows, immutable action-filter failure
 });
 
 test('HTTP native grid services enforce CSRF, declared actions and relationship scope independent of Web API settings',async t=>{
-  const layoutsOf = (html) => {
-  const start = html.indexOf('class="entity-grid subgrid');
-  const encoded = /data-view-layouts="([^"]*)"/.exec(html.slice(start))[1];
-  return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
-};
   const app=await simulatorFixture(t);
   // Portal requests are signed in explicitly as the fixture's Editor persona.
   const session=signInHeaders(app,'editor',{roles:['Editor']});
   const page=await (await fetch(app.url+'/?id='+parentId,{headers:session})).text();
   const secure=layoutsOf(page)[0].Base64SecureConfiguration;
-  const call=(action,body,headers={__RequestVerificationToken:app.state().csrf})=>fetch(app.url+'/_services/'+action+'/site',{method:'POST',headers:{'Content-Type':'application/json',...session,...headers},body:JSON.stringify(body)});
+  const call=(action,body,headers={__RequestVerificationToken:app.csrf})=>fetch(app.url+'/_services/'+action+'/site',{method:'POST',headers:{'Content-Type':'application/json',...session,...headers},body:JSON.stringify(body)});
   assert.equal((await fetch(app.url+'/_api/children')).status,404);
   const request={base64SecureConfiguration:secure,sortExpression:'',search:'',page:1,pageSize:10,pagingCookie:'',filter:null,metaFilter:null,nlSearchFilter:'',timezoneOffset:0,customParameters:[]};
   assert.equal((await call('entity-subgrid-data.json',request,{})).status,403);

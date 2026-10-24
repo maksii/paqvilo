@@ -15,13 +15,13 @@ test('platform budgets are per-store, preserve aggregate semantics and validate 
  const a=new DataStore({state:initial()}),b=new DataStore({state:initial()});
  assert.throws(()=>a.fetchXml(xml(16)),e=>e.details.innerCode==='0x8004430d');
  await a.replaceState({...a.snapshot(),simulator:{...a.state.simulator,platformOverrides:{QueryLinkEntityLimit:30,AggregateQueryRecordLimit:1}}});
- assert.equal(a.fetchXml(xml(16)).entities.length,1);assert.throws(()=>b.fetchXml(xml(16)));
+ assert.equal(a.fetchXml(xml(16)).entities.length,1);assert.throws(()=>b.fetchXml(xml(16)),e=>e.details.innerCode==='0x8004430d');
  const query={$type:'QueryExpression',entityName:'item',columnSet:{columns:['itemid']},linkEntities:Array.from({length:16},(_,i)=>({$type:'LinkEntity',linkFromEntityName:'item',linkToEntityName:'item',linkFromAttributeName:'itemid',linkToAttributeName:'itemid',entityAlias:'j'+i}))};
  const call=store=>dispatchSdkCall({store,profile:{userId:id,evidence:'Invented test-only backend grants',grants:[{entity:'item',operations:['read']}]},message:{method:'RetrieveMultiple',userId:id,arguments:[query]}});
  assert.equal(call(a).entities.length,1);assert.throws(()=>call(b),e=>e.details.innerCode==='0x8004430d');
  const next=a.snapshot();next.tables.item.push({itemid:'10000000-0000-4000-8000-000000000002'});await a.replaceState(next);
  assert.throws(()=>a.fetchXml('<fetch aggregate="true"><entity name="item"><attribute name="itemid" alias="total" aggregate="count"/></entity></fetch>'),e=>e.code==='AggregateQueryRecordLimit');
- assert.throws(()=>validatePlatformOverrides({QueryLinkEntityLimit:'30'}));assert.throws(()=>validatePlatformOverrides({QueryLinkEntityLimit:0}));assert.throws(()=>validatePlatformOverrides(JSON.parse('{"__proto__":1}')));
+ for(const value of ['30',0])assert.throws(()=>validatePlatformOverrides({QueryLinkEntityLimit:value}),/Invalid value for platform setting QueryLinkEntityLimit/);assert.throws(()=>validatePlatformOverrides(JSON.parse('{"__proto__":1}')),/Unknown platform setting: __proto__/);
  assert.match(platformSettingEntries(a.state).find(x=>x.key==='QueryLinkEntityLimit').access,/support/);
  const legacy=initial();legacy.settings.fetchJoinRowLimit=9;assert.equal(platformSettingEntries(legacy).find(x=>x.key==='FetchJoinRowLimit').value,9);
 });

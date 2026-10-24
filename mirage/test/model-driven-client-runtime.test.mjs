@@ -151,8 +151,10 @@ test('form XML compiles native handler metadata and ribbon preserves unsupported
 
 test('save reentrancy is rejected during lifecycle events but allowed from ribbon-style form API calls', async () => {
   const { runtime, writes } = runtimeFixture();
-  runtime.formContext.data.entity.addOnSave(async context => { await assert.rejects(async () => context.getFormContext().data.save(), /active onsave/); });
-  await runtime.dispatch('onsave'); await runtime.formContext.data.save(); assert.deepEqual(writes, [{ save: false }]);
+  let refused = false;
+  runtime.formContext.data.entity.addOnSave(async context => { await assert.rejects(async () => context.getFormContext().data.save(), /active onsave/); refused = true; });
+  await runtime.dispatch('onsave'); assert.equal(refused, true);
+  await runtime.formContext.data.save(); assert.deepEqual(writes, [{ save: false }]);
 });
 
 test('overlapping async form events release their save guard even when they finish out of order', async () => {

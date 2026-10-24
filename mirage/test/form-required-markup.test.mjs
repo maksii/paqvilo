@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent, captchaRefreshDelta } from "../lib/platform.mjs";
 
-// Invented "ticket" insert form on a Bootstrap 5 site where every column is required.
+// A "ticket" insert form on a Bootstrap 5 site where every column is required.
 test("required boxes: validator order and the required markers per box type", async () => {
   const fields = [
     { name: "title", label: "Title", dataverseType: "nvarchar", maxLength: 50, required: true },
@@ -127,7 +127,7 @@ test("a captcha shown to the visitor marks the form; signed-in visitors see it o
   assert.doesNotMatch(await render({}, null), /pp-captcha/);
 });
 
-// Invented read-only and postback renders of a ticket form (live reader, save and error pages).
+// Read-only and postback renders of a ticket form (live reader, save and error pages).
 const ticketForm = async ({ mode = 100000001, metadata = {}, rows = [], fields, record, nativePostbackState, user = { id: "current" }, solution } ) => {
   const store = {
     resolveMapping: (entity) => (entity === "team" ? { entitySet: "teams", idColumn: "teamid", nameColumn: "name" } : { entitySet: "tickets", idColumn: "ticketid" }),

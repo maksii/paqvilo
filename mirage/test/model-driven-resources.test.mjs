@@ -53,7 +53,8 @@ test('selected unpacked and ZIP WebResources resolve declared filenames, layers 
 
 test('client extension trust is explicit, validated and cannot be inferred from imported metadata', () => {
   assert.deepEqual(modelDrivenSettings(), { trustedExtensions: false });
-  for (const input of [true, [], { trustedExtensions: 'true' }, { trusted: true }]) assert.throws(() => modelDrivenSettings(input));
+  for (const [input, message] of [[true, /must be an object/], [[], /must be an object/], [{ trustedExtensions: 'true' }, /trustedExtensions must be true or false/], [{ trusted: true }, /Unknown modelDriven key 'trusted'/]])
+    assert.throws(() => modelDrivenSettings(input), message, JSON.stringify(input));
   assert.equal(clientExtensionCatalogue({ resources: [] }, modelDrivenSettings()).trusted, false);
 });
 
@@ -104,7 +105,7 @@ test('explicit client sources are independent of metadata, ordered, confined and
   assert.equal(absent.assets.size, 0); assert.equal(absent.diagnostics[0].code, 'MODEL_CLIENT_SOURCE_INVALID');
   assert.equal((await importModelDrivenResources(layers, { clientSources: [] })).resources.length, 0);
   assert.deepEqual(modelDrivenSettings({ clientSources: ['./local'] }, 'modelDriven', metadata).clientSources, [path.join(metadata, 'local')]);
-  for (const clientSources of [true, [null], Array(129).fill(selected)]) assert.throws(() => modelDrivenSettings({ clientSources }));
+  for (const clientSources of [true, [null], Array(129).fill(selected)]) assert.throws(() => modelDrivenSettings({ clientSources }), /clientSources must be an ordered array of at most 128 local source paths/);
 });
 
 test('PCF client budgets include manifests, RESX and images and reuse the admitted JS snapshot', async t => {

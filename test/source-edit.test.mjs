@@ -42,8 +42,8 @@ test('enhanced edits preserve unrelated fields and metadata, and failed edits le
   const raw = fs.readFileSync(file, 'utf8');
   assert.deepEqual(componentContent(raw), { customjavascript: updated, customcss: 'untouched', settings: { enabled: true } });
   assert.ok(raw.includes(outer));
-  for (const change of [() => { throw new Error('transform failed'); }, () => undefined, () => Promise.resolve('async')]) {
-    assert.throws(() => editSource({ file, field: 'customjavascript' }, change));
+  for (const [change, message] of [[() => { throw new Error('transform failed'); }, /transform failed/], [() => undefined, /must return text/], [() => Promise.resolve('async'), /must return text/]]) {
+    assert.throws(() => editSource({ file, field: 'customjavascript' }, change), message);
     assert.equal(fs.readFileSync(file, 'utf8'), raw);
   }
   assert.throws(() => editSource({ file, field: 'settings' }, () => 'wrong'), /not text/);
@@ -141,7 +141,7 @@ test('localized YAML JSON edits preserve languages, settings, records and commen
   const records = YAML.parse(updated);
   assert.deepEqual(JSON.parse(records[0].adx_description), [{ ...localized[0], Value: '<a title="Quoted & text">After</a>\n' }, localized[1]]);
   assert.deepEqual(records[1], { id: 'two', adx_description: 'Untouched' });
-  for (const jsonPath of [[], [3, 'Value'], [0, 'Extra']]) assert.throws(() => editSource({ ...source, jsonPath }, () => 'wrong'));
+  for (const [jsonPath, message] of [[[], /valid explicit JSON field path/], [[3, 'Value'], /missing JSON field/], [[0, 'Extra'], /not text/]]) assert.throws(() => editSource({ ...source, jsonPath }, () => 'wrong'), message);
   assert.equal(fs.readFileSync(file, 'utf8'), updated);
 });
 
@@ -231,4 +231,24 @@ test('duplicate JSON keys cannot be collapsed and lost by component or localized
   assert.equal(transforms, 0);
   assert.equal(fs.readFileSync(component, 'utf8'), xml);
   assert.equal(fs.readFileSync(metadata, 'utf8'), yaml);
+});
+
+test('discovered component descriptors edit one field at a time and XML edits require an explicit field', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-source-edit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'powerpagecomponent.xml');
+  fs.writeFileSync(file, '<component><content><![CDATA[{"customjavascript":"old","customcss":"red"}]]></content><name>Keep me</name></component>');
+  const source = (field) => ({ file, rel: `component.xml#${field}`, field, extract: (xml) => componentContent(xml)?.[field] ?? null });
+  editSource(source('customjavascript'), (text) => text + '\nif (a < b && c > d) {}');
+  editSource(source('customcss'), () => 'body {color: blue}');
+  const xml = fs.readFileSync(file, 'utf8');
+  assert.deepEqual(componentContent(xml), { customjavascript: 'old\nif (a < b && c > d) {}', customcss: 'body {color: blue}' });
+  assert.match(xml, /<name>Keep me<\/name>/);
+  assert.match(xml, /&lt;/, 'markup characters in the content are escaped');
+  editSource({ path: file, relativePath: 'powerpagecomponent.xml', field: 'customcss' }, () => 'body {color: green}');
+  const edited = fs.readFileSync(file, 'utf8');
+  assert.deepEqual(componentContent(edited), { customjavascript: 'old\nif (a < b && c > d) {}', customcss: 'body {color: green}' });
+  assert.match(edited, /<name>Keep me<\/name>/);
+  assert.throws(() => editSource({ path: file }, () => 'would replace XML'), /explicit field/);
+  assert.equal(fs.readFileSync(file, 'utf8'), edited);
 });

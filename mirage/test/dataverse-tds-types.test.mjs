@@ -99,8 +99,8 @@ test('negative decimal: sign byte 0 and little-endian magnitude', () => {
 });
 
 test('decimal rejects more fraction digits than the scale and overflowing precision', () => {
-  assert.throws(() => encodeTypedValue({ type: 'decimal', precision: 10, scale: 2 }, '1.234'), RangeError);
-  assert.throws(() => encodeTypedValue({ type: 'decimal', precision: 4, scale: 0 }, '10000'), RangeError);
+  assert.throws(() => encodeTypedValue({ type: 'decimal', precision: 10, scale: 2 }, '1.234'), /more than 2 fraction digits/);
+  assert.throws(() => encodeTypedValue({ type: 'decimal', precision: 4, scale: 0 }, '10000'), /exceeds precision 4/);
 });
 
 test('datetime and date day counts: 1900-01-01 is 693595 days after 0001-01-01', () => {
@@ -113,9 +113,9 @@ test('datetime minimum is -53690 days from 1900, signed little-endian', () => {
 });
 
 test('out-of-range temporal values are rejected', () => {
-  assert.throws(() => encodeTypedValue({ type: 'datetime' }, '1752-12-31 23:59:59.000'), RangeError);
-  assert.throws(() => encodeTypedValue({ type: 'date' }, '0000-01-01'), RangeError);
-  assert.throws(() => encodeTypedValue({ type: 'smalldatetime' }, '2079-06-07 00:00:00'), RangeError);
+  assert.throws(() => encodeTypedValue({ type: 'datetime' }, '1752-12-31 23:59:59.000'), /datetime value out of range/);
+  assert.throws(() => encodeTypedValue({ type: 'date' }, '0000-01-01'), /date value out of range/);
+  assert.throws(() => encodeTypedValue({ type: 'smalldatetime' }, '2079-06-07 00:00:00'), /smalldatetime value out of range/);
 });
 
 test('nvarchar(max) uses PLP chunks with a total length and a zero terminator', () => {
@@ -135,13 +135,13 @@ test('NULL markers: 0xFFFF for fixed nvarchar, all 0xFF for PLP, 0x00 for other 
 });
 
 test('non-nullable columns reject NULL', () => {
-  assert.throws(() => encodeTypedValue({ name: 'a', type: 'int', nullable: false }, null), TypeError);
-  assert.throws(() => nbcRow([{ name: 'a', type: 'int', nullable: false }], [null]), TypeError);
+  assert.throws(() => encodeTypedValue({ name: 'a', type: 'int', nullable: false }, null), /column a is not nullable/);
+  assert.throws(() => nbcRow([{ name: 'a', type: 'int', nullable: false }], [null]), /column a is not nullable/);
 });
 
 test('unsupported types and wrong value counts are rejected', () => {
-  assert.throws(() => encodeTypedValue({ type: 'xml' }, 'x'), TypeError);
-  assert.throws(() => row([{ type: 'int' }, { type: 'int' }], [1]), RangeError);
+  assert.throws(() => encodeTypedValue({ type: 'xml' }, 'x'), /unsupported TDS column type: xml/);
+  assert.throws(() => row([{ type: 'int' }, { type: 'int' }], [1]), /expected 2 values, got 1/);
 });
 
 test('COLMETADATA carries the token, count, UserType, flags, TYPE_INFO and name', () => {

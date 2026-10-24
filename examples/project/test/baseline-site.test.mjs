@@ -64,7 +64,7 @@ test('site identity is read from a file and leaves derived record ids unchanged'
  assert.equal(b.manifest.website,other.websiteId);
  assert.match(b.files.get('website.yml'),/adx_name: Other/);
  for(const content of a.files.values()) assert.ok(!String(content).includes(other.websiteId));
- assert.throws(()=>readIdentity(new URL('../baseline/site.mjs',import.meta.url)));
+ assert.throws(()=>readIdentity(new URL('../baseline/site.mjs',import.meta.url)),/not valid JSON/);
 });
 
 test('basic form metadata carries the server-assigned name and the manifest names the target only',()=>{

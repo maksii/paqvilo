@@ -700,7 +700,7 @@ test("while a share is open several caches of one process parse a Solution root 
 });
 
 test("one-to-many relationships keep the Solution's cascade configuration on the relationship, both navigation sides and the bootstrap report", async (t) => {
-  // Other/Relationships XML states one CascadeType per kind (Learn: CascadeConfiguration).
+  // Other/Relationships XML states one CascadeType per kind (CascadeConfiguration).
   const cascading = (schema, lookup, values) =>
     oneToMany(schema, "sample_item", "sample_parent", lookup).replace(
       "<ReferencingAttributeName>",

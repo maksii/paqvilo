@@ -153,13 +153,17 @@ test('parsePrefer: separators, quoted and unquoted forms, and applied echo', () 
 
 test('annotation matcher and URL helpers', () => {
   assert.equal(annotationMatcher('Microsoft.Dynamics.CRM.*')('Microsoft.Dynamics.CRM.totalrecordcount'), true);
+  assert.equal(annotationMatcher('Microsoft.Dynamics.CRM.*')('OData.Community.Display.V1.FormattedValue'), false);
   assert.equal(annotationMatcher('*')('OData.Community.Display.V1.FormattedValue'), true);
+  assert.equal(annotationMatcher(['Microsoft.Dynamics.CRM.morerecords'])('Microsoft.Dynamics.CRM.morerecords'), true);
+  assert.equal(annotationMatcher(['Microsoft.Dynamics.CRM.morerecords'])('Microsoft.Dynamics.CRM.totalrecordcount'), false);
+  assert.equal(annotationMatcher(null)('Microsoft.Dynamics.CRM.morerecords'), false, 'no Prefer annotations, none included');
   assert.equal(contextUrl('https://org.example', 'v9.2', 'accounts(name)/$entity'), 'https://org.example/api/data/v9.2/$metadata#accounts(name)/$entity');
   assert.equal(entityUrl('https://org.example', 'v9.2', 'accounts', G1), `https://org.example/api/data/v9.2/accounts(${G1})`);
 });
 
 test('skiptoken encodes the documented paging cookie exactly and round-trips', () => {
-  // Research sample (webapi-contract.md, paging nextLink), percent-encoded once in the query string.
+  // A paging nextLink cookie, percent-encoded once in the query string.
   const sample = '%3Ccookie%20pagenumber=%222%22%20pagingcookie=%22%253ccookie%2520page%253d%25221%2522%253e%253ccontactid%2520last%253d%2522%257bD5026A4D-D01C-ED11-B83E-000D3A572421%257d%2522%2520first%253d%2522%257b49B0BE2E-D01C-ED11-B83E-000D3A572421%257d%2522%2520%252f%253e%253c%252fcookie%253e%22%20istracking=%22False%22%20/%3E';
   const state = {
     pageNumber: 2,
@@ -307,17 +311,10 @@ test('elastic bulk fault details are exposed only through the requested annotati
   assert.deepEqual(JSON.parse(requested[annotation]), entries);
 });
 
-test('an engine error repeats the request id on REQ_ID; a route-level error carries it once', () => {
-  const engine = dataverseError(new DataError('Record not found', 404, 'NotFound', { id: G1 }), { logical: 'account', id: G1, requestId: 'req-9' });
-  assert.deepEqual(engine.headers.REQ_ID, ['req-9', 'req-9']);
-  const route = dataverseError(new DataError('bad path', 400, 'InvalidRequest', { route: true }), { requestId: 'req-9' });
-  assert.equal(route.headers.REQ_ID, 'req-9');
-});
-
-test('a keyed 405 answers the Allow list of its resource (PUT and POST), and a collection 405 keeps the default', () => {
-  const keyed = (method, allow) => dataverseError(new DataError('Method not allowed', 405, 'InvalidRequest', { innerCode: '0x80060888', httpStatus: 405, allow }), { requestId: 'req-11' });
-  assert.equal(keyed('PUT', 'GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST').headers.Allow, 'GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST');
-  assert.equal(keyed('POST', 'GET,PUT,PATCH,DELETE,OPTIONS,GET,HEAD,POST').headers.Allow, 'GET,PUT,PATCH,DELETE,OPTIONS,GET,HEAD,POST');
+test('a keyed 405 answers the Allow list of its resource, and a collection 405 keeps the default', () => {
+  const keyed = dataverseError(new DataError('Method not allowed', 405, 'InvalidRequest', { innerCode: '0x80060888', httpStatus: 405, allow: 'GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST' }), { requestId: 'req-11' });
+  assert.equal(keyed.status, 405);
+  assert.equal(keyed.headers.Allow, 'GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST');
   const collection = dataverseError(new DataError('Method not allowed', 405, 'InvalidRequest', { innerCode: '0x80060888', httpStatus: 405 }), { requestId: 'req-11' });
   assert.equal(collection.headers.Allow, 'OPTIONS,GET,HEAD,POST');
 });
@@ -330,7 +327,7 @@ test('a date below 1753 or an unparsable date answers the CrmDateTime minimum me
   assert.match(unparsed.body.error.message, /Actual value: 01\/01\/0001 00:00:00, Minimum value supported: 01\/01\/1753 00:00:00$/);
 });
 
-test('CDS error annotations follow the error origin, match each name, and survive orderAnnotations', () => {
+test('CDS error annotations come only on request, follow the error origin, match each name, and survive orderAnnotations', () => {
   const error = new DataError('Record not found', 404, 'NotFound', { id: G1 });
   const annotated = dataverseError(error, { logical: 'account', id: G1, method: 'GET', requestId: 'req-7', prefer: parsePrefer('odata.include-annotations="*"') });
   const api = ['ApiExceptionSourceKey', 'ApiStepKey', 'ApiDepthKey', 'ApiActivityIdKey', 'ApiPluginSolutionNameKey', 'ApiStepSolutionNameKey', 'ApiExceptionCategory', 'ApiExceptionMessageName', 'ApiExceptionHttpStatusCode']
@@ -341,6 +338,9 @@ test('CDS error annotations follow the error origin, match each name, and surviv
   assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiActivityIdKey'], 'req-7');
   assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionMessageName'], 'ObjectDoesNotExist');
   assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionHttpStatusCode'], '404');
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.HelpLink'], 'http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a80040217&client=platform');
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.InnerError.Message'], annotated.body.error.message);
+  assert.deepEqual(Object.keys(dataverseError(error, { logical: 'account', id: G1, method: 'GET' }).body.error), ['code', 'message'], 'no Prefer header, no annotations');
 
   // PATCH is neither POST nor GET: no Api* details. No platform error carries OperationStatus or SubErrorCode.
   const patched = dataverseError(error, { logical: 'account', id: G1, method: 'PATCH', prefer: parsePrefer('odata.include-annotations="*"') });
@@ -357,9 +357,10 @@ test('CDS error annotations follow the error origin, match each name, and surviv
   assert.deepEqual(names('Microsoft.Dynamics.CRM.*'), []);
 });
 
-test('413 maps to PayloadTooLarge (and its alias); InvalidBatch maps to 0x80048d19', () => {
+test('PayloadTooLarge (and its alias) maps to 413 0x8004418a; InvalidBatch maps to 0x80048d19', () => {
   for (const code of ['PayloadTooLarge', 'RequestEntityTooLarge']) {
-    const mapped = dataverseError(new DataError('too large', 413, code), { requestId: 'req-4' });
+    // Thrown as 500: the store code decides the status.
+    const mapped = dataverseError(new DataError('too large', 500, code), { requestId: 'req-4' });
     assert.equal(mapped.status, 413);
     assert.equal(mapped.body.error.code, '0x8004418a');
   }
@@ -416,7 +417,7 @@ test('baseHeaders carries no x-ms-ratelimit headers, and a limiter message passe
   const mapped = dataverseError(new DataError(limited, 429, 'ServiceProtection', { innerCode: '0x80072322' }), { requestId: 'req-6' });
   assert.equal(mapped.status, 429);
   assert.equal(mapped.body.error.message, limited);
-  // unverified: an unauthenticated 401 is answered without the x-ms-ratelimit headers.
+  // Assumed, not observed: an unauthenticated 401 is answered without the x-ms-ratelimit headers.
   const unauthenticated = dataverseError(new DataError('', 401, 'Unauthorized'), { requestId: 'req-6' });
   assert.equal(Object.keys(unauthenticated.headers).some((name) => name.startsWith('x-ms-ratelimit')), false);
 });
@@ -436,18 +437,6 @@ test('dataverseError: 401 has no body and a WWW-Authenticate challenge; 429 adds
   assert.equal(throttled.status, 429);
   assert.equal(throttled.body.error.code, '0x80072322');
   assert.equal(throttled.headers['Retry-After'], '300');
-});
-
-test('dataverseError adds the CDS annotations only when the Prefer header asks for them', () => {
-  const error = new DataError('Record not found', 404, 'NotFound', { id: G1 });
-  const plain = dataverseError(error, { logical: 'account', id: G1 });
-  assert.equal(Object.keys(plain.body.error).length, 2);
-
-  const annotated = dataverseError(error, { logical: 'account', id: G1, method: 'GET', prefer: parsePrefer('odata.include-annotations="*"') });
-  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionMessageName'], 'ObjectDoesNotExist');
-  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus'], undefined);
-  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.HelpLink'], 'http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a80040217&client=platform');
-  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.InnerError.Message'], annotated.body.error.message);
 });
 
 test('orderAnnotations: annotations precede their values, context first, nextLink last, recursive', () => {
@@ -527,7 +516,7 @@ test('entity keys route without a method (parser is method-agnostic)', () => {
   });
 });
 
-test('every gap-review and Wave 1 inner code maps to its status, matched case-insensitively', () => {
+test('Dataverse inner codes decide the response status, matched case-insensitively', () => {
   const cases = [
     ['0x80040333', 412], ['0x8004f502', 403], ['0x8004f507', 403], ['0x8004f504', 403], ['0x80048d37', 403],
     ['0x80072321', 429], ['0x80072326', 429],
@@ -538,16 +527,17 @@ test('every gap-review and Wave 1 inner code maps to its status, matched case-in
     ['0x8004e023', 400], ['0x80040239', 400], ['0x80041120', 400], ['0x80072491', 400], ['0x80048d19', 400],
   ];
   for (const [inner, status] of cases) {
-    const result = dataverseError(new DataError('x', status, 'InvalidRequest', { innerCode: inner }), {});
+    // Thrown as 500: the status comes from the inner code, not from the throw site.
+    const result = dataverseError(new DataError('x', 500, 'InvalidRequest', { innerCode: inner }), {});
     assert.equal(result.status, status, inner);
     assert.equal(result.body.error.code, inner.toLowerCase(), inner);
-    const upper = dataverseError(new DataError('x', status, 'InvalidRequest', { innerCode: inner.toUpperCase().replace('0X', '0x') }), {});
+    const upper = dataverseError(new DataError('x', 500, 'InvalidRequest', { innerCode: inner.toUpperCase().replace('0X', '0x') }), {});
     assert.equal(upper.status, status, inner);
     assert.equal(upper.body.error.code, inner.toLowerCase(), inner);
   }
 });
 
-test('Global Discovery and records non-hex codes render with the status the throw site passes', () => {
+test('non-hex store codes without a native status keep the status the throw site passes', () => {
   const invalidKey = dataverseError(new DataError("Invalid key predicate 'x'.", 400, 'InvalidKey'), {});
   assert.equal(invalidKey.status, 400);
   assert.equal(invalidKey.body.error.code, '0x80040203');

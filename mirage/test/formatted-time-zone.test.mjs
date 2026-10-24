@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {compileFormattedTimeZone} from '../lib/formatted-time-zone.mjs';
 import {formattedValue} from '../lib/dataverse-values.mjs';
 
-// Invented zone, UTC+4 in winter and UTC+5 in summer. Last Sunday transitions.
+// A zone at UTC+4 in winter and UTC+5 in summer. Last Sunday transitions.
 const rule={effectivedatetime:'1753-01-01T00:00:00Z',bias:-240,standardbias:0,daylightbias:-60,
   daylightyear:0,daylightmonth:3,daylightday:5,daylightdayofweek:0,daylighthour:3,daylightminute:0,daylightsecond:0,
   standardyear:0,standardmonth:10,standardday:5,standarddayofweek:0,standardhour:4,standardminute:0,standardsecond:0};

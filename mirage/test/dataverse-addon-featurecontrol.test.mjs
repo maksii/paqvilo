@@ -1,5 +1,4 @@
 // Feature-control, mobile-offline clone, card, NPS and default-error messages (lib/dataverse-addon-featurecontrol.mjs) over HTTP.
-// Invented namespaces, settings, profiles and cards; loopback only.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

@@ -75,9 +75,14 @@ test('a render cache preserves every RetrieveMultiple plugin invocation', async 
 
 test('render settings validate catalogue defaults and site options and resolve programmatically', () => {
   assert.deepEqual(renderSettings(), {timeLimitMs: 60000});
-  for (const label of ['defaults.mirage', 'sites.demo.mirage']) mirageSettings({render: {timeLimitMs: 120000}}, label);
+  for (const label of ['defaults.mirage', 'sites.demo.mirage']) {
+    mirageSettings({render: {timeLimitMs: 120000}}, label);
+    assert.throws(() => mirageSettings({render: {timeLimitMs: 0}}, label), /mirage\.render\.timeLimitMs must be an integer/);
+  }
   assert.deepEqual(resolveMirageConfig({render: {timeLimitMs: 120000}}, {configDir: process.cwd(), sourceRoot: process.cwd()}).render, {timeLimitMs: 120000});
-  for (const value of [null, [], {unknown: 1}, {timeLimitMs: 0}, {timeLimitMs: Infinity}, {timeLimitMs: 1.5}, {timeLimitMs: '5000'}]) assert.throws(() => renderSettings(value));
+  for (const value of [null, []]) assert.throws(() => renderSettings(value), /mirage\.render must be an object/);
+  assert.throws(() => renderSettings({unknown: 1}), /Unknown setting mirage\.render\.unknown/);
+  for (const value of [{timeLimitMs: 0}, {timeLimitMs: Infinity}, {timeLimitMs: 1.5}, {timeLimitMs: '5000'}]) assert.throws(() => renderSettings(value), /timeLimitMs must be an integer/, JSON.stringify(value));
 });
 
 test('render caches invalidate for mutations and identities, preserve returned totals and do not cache results', async () => {

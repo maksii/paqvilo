@@ -14,7 +14,7 @@ import { contentDisposition, fileNameHeader } from "./response-headers.mjs";
 import { authorizeGrant, validateServiceProfile } from "./local-organization-service.mjs";
 
 const CHUNK_SIZE = 4194304;
-const BLOCK_LIMIT = 4194304; // unverified: per-block bound (the docs say under 4 MB)
+const BLOCK_LIMIT = 4194304; // The docs say a block is under 4 MB; the exact native bound is a guess.
 const BLOCK_ID_LIMIT = 64;
 const DEFAULT_MAX_KB = { file: 32768, image: 10240 };
 const CRM = "Microsoft.Dynamics.CRM.";
@@ -33,10 +33,10 @@ const MAGIC = [
 ];
 const EXPOSE = "x-ms-file-size, x-ms-file-name, mimetype";
 const EXPOSE_RANGE = "x-ms-file-size, x-ms-file-name, x-ms-chunk-size, mimetype";
-// ponytail: the 15-minute idle TTL is a guess [unverified]; it counts from a session's last use, and expired sessions are
+// ponytail: the 15-minute idle TTL is a guess; it counts from a session's last use, and expired sessions are
 // dropped on the next session start or lookup.
 const SESSION_TTL_MS = 15 * 60 * 1000;
-// CSDL for the six actions, so $metadata lists their parameters and response types (Web API action reference).
+// CSDL for the six actions, so $metadata lists their parameters and response types.
 const CSDL = {
   InitializeTemporaryFileBlocksUpload: `<ComplexType Name="InitializeTemporaryFileBlocksUploadResponse"><Property Name="FileContinuationToken" Type="Edm.String" /><Property Name="RecordId" Type="Edm.Guid" /></ComplexType><Action Name="InitializeTemporaryFileBlocksUpload"><Parameter Name="FileSize" Type="Edm.Int32" Nullable="false" /><Parameter Name="FileName" Type="Edm.String" Nullable="false" /><ReturnType Type="mscrm.InitializeTemporaryFileBlocksUploadResponse" Nullable="false" /></Action>`,
   InitializeFileBlocksUpload: `<ComplexType Name="InitializeFileBlocksUploadResponse">
@@ -88,7 +88,7 @@ const CSDL = {
   DeleteFile: `<Action Name="DeleteFile">
   <Parameter Name="FileId" Type="Edm.Guid" Nullable="false" />
 </Action>`,
-  // unverified: the response property sets are from the Learn pages' summaries (see the message notes in the module).
+  // These response property sets follow the message documentation's summaries; the native CSDL may differ.
   InitializeAnnotationBlocksUpload: `<ComplexType Name="InitializeAnnotationBlocksUploadResponse">
   <Property Name="FileContinuationToken" Type="Edm.String" />
 </ComplexType>
@@ -151,7 +151,7 @@ const imageFailure = (logical, id, column) => invalid(
   `Error occured when processing image. Reason: Update image properties failed for objectid: ${id}, logicalName: ${logical}, attribute: ${column}`,
   IMAGE_INNER,
 );
-const mb = (bytes) => Number((bytes / 1048576).toFixed(2)); // unverified: MB rounding in the image size message
+const mb = (bytes) => Number((bytes / 1048576).toFixed(2)); // The native MB rounding in the image size message is a guess.
 const sameGuid = (a, b) => guidKey(a) != null && guidKey(a) === guidKey(b);
 const header = (c, name) => {
   if (typeof c.headers?.get === "function") return c.headers.get(name) ?? undefined;
@@ -180,7 +180,6 @@ const mimeOfName = (name) => {
   return Object.hasOwn(MIME_BY_EXTENSION, extension) ? MIME_BY_EXTENSION[extension] : null;
 };
 
-// unverified: column types are dataverseType "file" and "image"; MaxSizeInKB sits on the field definition
 const kindOf = (def) => {
   const type = String(def?.dataverseType ?? def?.columnMetadata?.type ?? "").toLowerCase();
   return type === "file" || type === "image" ? type : null;
@@ -192,7 +191,7 @@ const fileColumn = (mapping, column) => {
   return kind ? { column, kind, def } : null;
 };
 const imageColumns = (mapping) => Object.entries(columnsOf(mapping)).filter(([, def]) => kindOf(def) === "image");
-// unverified: the primary image column is named entityimage
+// Without an isPrimary flag, the column named entityimage is taken as the primary image.
 const isPrimary = (column, def) => def?.isPrimary === true || column === "entityimage";
 const maxBytes = (kind, def) => Number(def?.MaxSizeInKB ?? def?.columnMetadata?.MaxSizeInKB ?? DEFAULT_MAX_KB[kind]) * 1024;
 
@@ -227,7 +226,7 @@ function prepared({ logical, id = null, column, kind, def, name, size, head, mim
 const filesOf = (store) => (store.state.dataverse ??= {}).files ??= {};
 const filesRead = (store) => store.state.dataverse?.files ?? {};
 
-// ---- Storage routes -----------------------------------------------------------------------------------------------------
+// ---- Storage routes
 // api -> { files, annotations, released(keys) }: guarded providers for the dataverseFiles and annotations routes, and the
 // routing module's post-commit release (it deletes the keys no committed row references).
 const storageByApi = new WeakMap();
@@ -328,7 +327,6 @@ function targetOf(store, target) {
   return { mapping, id };
 }
 
-// unverified: ctx.body arrives as the parsed JSON object (text when the router does not parse it)
 function bodyOf(c) {
   if (typeof c.body !== "string") return c.body ?? {};
   try {
@@ -388,7 +386,7 @@ export function reset(api) {
 
 export function install(api) {
   const { store, change, principals, recordHooks, registry } = api;
-  // Upload and download sessions keyed by continuation token (in memory, see header comment).
+  // Upload and download sessions keyed by continuation token.
   const sessions = new Map();
   const sasInline = new Map();
   sasInlineByApi.set(api, sasInline);
@@ -407,7 +405,7 @@ export function install(api) {
     for (const [key, entry] of sasInline) if (entry.expiresAt <= clock()) sasInline.delete(key);
   };
   // Memory bounds (simulator settings maxUploadSessions and maxUploadBytes): open upload sessions, and bytes held in memory by
-  // upload sessions plus inline note/attachment SAS copies. unverified: native limits and wording; refusals use the module's
+  // upload sessions plus inline note/attachment SAS copies. Native limits and wording are not known; refusals use the module's
   // 400 InvalidRequest, as its other size limits do.
   const maxSessions = () => api.settings?.maxUploadSessions ?? MAX_UPLOAD_SESSIONS;
   const maxBuffered = () => api.settings?.maxUploadBytes ?? MAX_UPLOAD_BYTES;
@@ -474,7 +472,7 @@ export function install(api) {
   };
   const sizeOf = (block) => (typeof block === "number" ? block : block?.length ?? 0);
   // A routed upload session stages its blocks in the provider under the key its bytes will have; in memory otherwise.
-  // The A7 caps still count a routed session's bytes, so open sessions bound the provider's staging area too.
+  // The memory caps above still count a routed session's bytes, so open sessions bound the provider's staging area too.
   // ponytail: blocks of a session that expires or is reset stay in the provider's staging area; clear staging by age in
   // the provider if abandoned uploads pile up.
   const stageBlock = async (session, blockId, body) => {
@@ -558,7 +556,7 @@ export function install(api) {
     const [start, end, total] = match.slice(1).map(Number);
     const bytes = Buffer.from(c.bodyBuffer ?? []);
     if (start !== session.received || end < start || end >= total || bytes.length !== end - start + 1) {
-      throw invalid("Content-Range does not continue the upload."); // unverified: error wording
+      throw invalid("Content-Range does not continue the upload."); // Native wording not known.
     }
     if (session.total === null) {
       assertSize(kind, maxBytes(kind, def), total);
@@ -600,7 +598,7 @@ export function install(api) {
       if (kind === "file") throw plain(missing(`No file attachment found for attribute: ${column} EntityId: ${id}.`));
       return { status: 204 };
     }
-    // unverified: canStoreFullImage defaults to false, as the metadata does, so size=full answers 204 unless the column stores full images.
+    // canStoreFullImage defaults to false, as the metadata does, so size=full answers 204 unless the column stores full images.
     if (kind === "image" && c.url.searchParams.get("size") === "full" && def?.canStoreFullImage !== true) return { status: 204 };
     const size = entry.data != null ? Buffer.from(String(entry.data), "base64").length : entry.size;
     // Simple token names retain the organization file-column wire format. Other
@@ -610,7 +608,7 @@ export function install(api) {
       "Content-Disposition": contentDisposition("inline", entry.name, { tokenFilename: true }), "Access-Control-Expose-Headers": EXPOSE,
     };
     const range = header(c, "range");
-    // observed: parity case image.thumbnail; an image without size=full answers the thumbnail with no file headers at all.
+    // An image without size=full answers the thumbnail with no file headers at all.
     const thumbnail = kind === "image" && c.url.searchParams.get("size") !== "full";
     if (range === undefined) return { status: 200, headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) }, body: await readStoredBytes(api, entry) };
     const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
@@ -647,7 +645,7 @@ export function install(api) {
    * row, upload its update grant. Both run the Web API download and single-request upload closures (size limits, storage
    * routing, released bytes, the 204 of an empty image). A download answers the flow file shape { $content-type, $content }
    * (base64); an upload takes content as a Buffer, base64 text or that shape, and answers 204 with {}.
-   * unverified: the connector's exact response shapes for these two actions.
+   * The connector's exact response shapes for these two actions are a guess.
    */
   // The portal Web API (webapi-handler.mjs fileColumnRequest) also calls it, with operation 'delete' (the column's DELETE)
   // and contentType (the upload's Content-Type); fileContentInternal.kindOf(entity, column) answers 'file', 'image' or null.
@@ -676,8 +674,8 @@ export function install(api) {
     const raw = shaped ? content.$content : content;
     if (raw == null) throw invalid("The file content is required.");
     const bytes = Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), "base64");
-    // defaultName (the portal /_api, whose Learn sample sends no name): the stored file's name, else <column>.bin.
-    // unverified: the name the platform stores for a nameless portal upload.
+    // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else <column>.bin.
+    // The name the platform stores for a nameless portal upload is a guess.
     const name = fileName || (defaultName ? filesRead(store)[row[column]]?.name ?? `${column}.bin` : null);
     if (!name) throw invalid("x-ms-file-name is required.");
     const type = shaped ? content["$content-type"] : contentType;
@@ -716,7 +714,7 @@ export function install(api) {
         );
       }
       const bytes = Buffer.from(value, "base64");
-      // unverified: a record write with bytes that are not a supported image answers "Invalid argument." (0x80040203), not the $value wording.
+      // A guess: a record write with bytes that are not a supported image answers "Invalid argument." (0x80040203), not the $value wording.
       if (!sniffImage(bytes)) throw invalid("Invalid argument.");
       const fileId = uuid();
       const entry = files[fileId] = prepared({ logical: mapping.logicalName, id, column, kind: "image", def, name: column, size: bytes.length, head: bytes, now: clock() });
@@ -772,7 +770,7 @@ export function install(api) {
         if (!Object.hasOwn(row, column)) continue;
         const fileId = raw?.[column] ?? null;
         const entry = fileId ? files[fileId] : null;
-        const stamp = entry ? Date.parse(entry.createdOn) : null; // unverified: _timestamp format
+        const stamp = entry ? Date.parse(entry.createdOn) : null; // The native _timestamp format is a guess.
         if (entry?.data == null && entry?.key) deferBytes(c, row, column, async () => {
           // A blob the provider no longer has reads as null with a diagnostic, like storage routing (STORAGE_OBJECT_MISSING).
           try { return (await readStoredBytes(api, entry)).toString("base64"); }
@@ -794,8 +792,8 @@ export function install(api) {
 
   // Annotation and attachment block messages. Their size limit is platform-settings assertAttachmentSize (MaxUploadFileSize
   // against the Base64 length, /_sim overrides honoured), checked per block here and again by the record pipeline at commit.
-  // Learn: Initialize*BlocksUpload takes Target and answers a continuation token. Upload is create-only, so the
-  // session names the table being created and the Target the new row regards. unverified: Target semantics.
+  // Initialize*BlocksUpload takes Target and answers a continuation token. Upload is create-only, so the
+  // session names the table being created and the Target the new row regards (a guess at the native Target semantics).
   function initBlocksUpload(c, logical, name) {
     const input = bodyOf(c);
     const { mapping, id } = targetOf(store, input.Target);
@@ -810,9 +808,9 @@ export function install(api) {
 
   // Commit creates one row (annotation or activitymimeattachment) regarding the session's Target, with the joined bytes as base64
   // text, through the record create pipeline (blocked extensions and MIME types, size, ownership, plug-ins, audit, hooks, events).
-  // Learn: the commit's Target carries filename and mimetype; FileName/MimeType parameters are also read. The mimetype falls
+  // The commit's Target carries filename and mimetype; FileName/MimeType parameters are also read. The mimetype falls
   // back to the file name's extension. objectid (and an attachment's activityid) is the lookup { id, logical_name } of the session's
-  // Target, as other note writers store it. unverified: the activityid mapping.
+  // Target, as other note writers store it. The activityid mapping is a guess.
   async function commitRowBlocks(c, logical, name) {
     const input = bodyOf(c);
     const token = String(input.FileContinuationToken ?? "");
@@ -848,8 +846,8 @@ export function install(api) {
     return reply(c, name, { ...answer, FileSizeInBytes: size });
   }
 
-  // Learn: Initialize*BlocksDownload takes Target (the annotation or activitymimeattachment row) and answers the same shape as
-  // InitializeFileBlocksDownload. unverified: the answer shape and error wording for a row with no bytes.
+  // Initialize*BlocksDownload takes Target (the annotation or activitymimeattachment row) and answers the same shape as
+  // InitializeFileBlocksDownload. The answer shape and error wording for a row with no bytes are a guess.
   async function initBlocksDownload(c, logical, column, name) {
     const input = bodyOf(c);
     const { mapping, id } = targetOf(store, input.Target);
@@ -971,7 +969,7 @@ export function install(api) {
       const row = recordOf(store, mapping, id);
       authorize(c, mapping, "read", row);
       const entry = row[found.column] ? filesRead(store)[row[found.column]] : null;
-      if (!entry) throw missing(`No file found for ${found.column} of ${mapping.logicalName} record ${id}.`); // unverified: error wording
+      if (!entry) throw missing(`No file found for ${found.column} of ${mapping.logicalName} record ${id}.`); // Native wording not known.
       const token = uuid();
       openSession(token, { mode: "download", fileId: row[found.column], entity: mapping.logicalName, id });
       return reply(c, "InitializeFileBlocksDownload", {
@@ -992,7 +990,7 @@ export function install(api) {
       if (!Number.isInteger(offset) || !Number.isInteger(length) || length <= 0) {
         throw invalid("Offset must be a whole number and BlockLength one or more.");
       }
-      // unverified: a negative Offset answers the whole file and ignores BlockLength (native: Offset -1, BlockLength 16 returned all 23 bytes).
+      // Native answers a negative Offset with the whole file and ignores BlockLength.
       const size = entry.data != null ? Buffer.from(String(entry.data), "base64").length : entry.size;
       const block = offset >= size ? Buffer.alloc(0)
         : await readStoredBytes(api, entry, offset < 0 ? undefined : { start: offset, end: Math.min(offset + length, size) - 1 });
@@ -1041,7 +1039,7 @@ export function install(api) {
     registry.register({ name, kind: "action", binding: "unbound", handle, csdl: CSDL[name], ...(name === "InitializeTemporaryFileBlocksUpload" ? { signature: { params: [["FileSize", "Edm.Int32"], ["FileName", "Edm.String"]], response: [["FileContinuationToken", "Edm.String"], ["RecordId", "Edm.Guid"]] } } : {}) });
   }
 
-  // Learn: download-a-file-or-an-image - the returned URL permits anonymous download for one hour. It grants access
+  // The returned URL permits anonymous download for one hour. It grants access
   // only to the signed file id; the API request that mints it still authorizes the table and record.
   registry.register({ name: "GetFileSasUrl", kind: "function", binding: "unbound", csdl: `<ComplexType Name="FileSasUrlResponse"><Property Name="FileName" Type="Edm.String" /><Property Name="FileSizeInBytes" Type="Edm.Int64" /><Property Name="MimeType" Type="Edm.String" /><Property Name="SasUrl" Type="Edm.String" /></ComplexType><ComplexType Name="GetFileSasUrlResponse"><Property Name="Result" Type="mscrm.FileSasUrlResponse" /></ComplexType><Function Name="GetFileSasUrl"><Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" /><Parameter Name="FileAttributeName" Type="Edm.String" Nullable="false" /><Parameter Name="DataSource" Type="Edm.String" /><ReturnType Type="mscrm.GetFileSasUrlResponse" Nullable="false" /></Function>`, handle: (c) => {
     const input = { ...bodyOf(c), ...(c.params ?? {}) }, { mapping, id } = targetOf(store, input.Target);
@@ -1080,7 +1078,7 @@ export function install(api) {
     return reply(c, "GetFileSasUrl", { Result: { FileName: entry.name, FileSizeInBytes: entry.size, MimeType: entry.mimeType, SasUrl: sasUrl(c, key, "r") } });
   } });
   // Native CSDL declares Result: InitializeUploadUsingSasResponse. The local upload URL streams one block; callers
-  // finish with CommitFileBlocksUpload. The storage-provider details of the hosted service remain unverified.
+  // finish with CommitFileBlocksUpload.
   registry.register({ name: "GetFileSasUrlForUpload", kind: "function", binding: "unbound", csdl: `<ComplexType Name="InitializeUploadUsingSasResponse"><Property Name="SasUrl" Type="Edm.String" /><Property Name="FileContinuationToken" Type="Edm.String" /></ComplexType><ComplexType Name="GetFileSasUrlForUploadResponse"><Property Name="Result" Type="mscrm.InitializeUploadUsingSasResponse" /></ComplexType><Function Name="GetFileSasUrlForUpload"><Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" /><Parameter Name="FileAttributeName" Type="Edm.String" Nullable="false" /><Parameter Name="FileName" Type="Edm.String" Nullable="false" /><ReturnType Type="mscrm.GetFileSasUrlForUploadResponse" Nullable="false" /></Function>`, handle: async (c) => {
     const result = await actions.InitializeFileBlocksUpload({ ...c, body: { ...bodyOf(c), ...(c.params ?? {}) } });
     const token = result.body.FileContinuationToken;

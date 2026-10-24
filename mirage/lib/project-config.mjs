@@ -45,7 +45,7 @@ function validateOrigin(value, label, allowLoopback = false) {
   return url.origin;
 }
 
-/** Observed values that are a choice between documented behaviours (B: Web API, data). */
+/** Observed values that are a choice between documented behaviours. */
 const OBSERVED_CHOICES = {
   formSubmissionErrorMarkup: ['inline', 'paragraph'],
   webApiInnerError: ["all-errors", "dataverse-errors"],
@@ -60,7 +60,7 @@ const OBSERVED_CHOICES = {
   // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
   webApiErrorDetails: ["diagnostic", "odata-wrapper"],
   anonymousDataAccess: ["allowed", "blocked"],
-  // Replay a captured inactive-parent defect only for that evidenced site.
+  // Replay a recorded inactive-parent defect only for a site observed to have it.
   // Normal exported permission graphs keep incomplete parent chains closed.
   tablePermissionOrphans: ["closed", "unrestricted"],
   tablePermissionQueryPipeline: ["row-filtered", "native-classic"],
@@ -221,7 +221,7 @@ export function observedConfig(value, label = "observed") {
     if (!name || name.length > 200) throw new Error(`${label}.portalApplicationUser must be the application user's display name`);
     observed.portalApplicationUser = name;
   }
-  // portalApplicationUserId: that application user's systemuser id (the createdby id live reports).
+  // portalApplicationUserId: that application user's systemuser id (the createdby id the platform reports).
   if (value.portalApplicationUserId != null) {
     const id = String(value.portalApplicationUserId).trim().replace(/[{}]/g, "").toLowerCase();
     if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id)) throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);

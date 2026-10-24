@@ -8,8 +8,8 @@ import { DataStore } from "../lib/data.mjs";
 import { webApiPolicy, webApiFetchPolicy } from "../lib/webapi-policy.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
 
-// HTTP errors carry the documented Power Pages code in the body
-// (web-api-http-requests-handle-errors); the simulator's own classification
+// HTTP errors carry the documented Power Pages code in the body;
+// the simulator's own classification
 // travels in the X-Sim-Error-Code header.
 const apiError = async (response) => ({
   code: (await response.json()).error.code,
@@ -539,12 +539,13 @@ test("HTTP optional profile default inherits table grants while explicit sensiti
     watch: false,
   });
   ownedFixture(t).add(() => app.close());
+  const csrf = app.csrf;
   const request = (route, method = "GET", body) =>
     fetch(app.url + route, {
       method,
       headers: {
         "content-type": "application/json",
-        __RequestVerificationToken: app.state().csrf,
+        __RequestVerificationToken: csrf,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -646,11 +647,12 @@ test("native lookup bindings do not publish target endpoints and enforce source 
     watch: false,
   });
   ownedFixture(t).add(() => app.close());
+  const csrf = app.csrf;
   const call = (route, method = "GET", body) =>
     fetch(app.url + route, {
       method,
       headers: {
-        __RequestVerificationToken: app.state().csrf,
+        __RequestVerificationToken: csrf,
         "content-type": "application/json",
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -751,11 +753,12 @@ test("HTTP Web API field gates cover projection, selects, filters, expands, Fetc
     watch: false,
   });
   ownedFixture(t).add(() => app.close());
+  const csrf = app.csrf;
   const request = (route, method = "GET", body) =>
     fetch(app.url + route, {
       method,
       headers: {
-        __RequestVerificationToken: app.state().csrf,
+        __RequestVerificationToken: csrf,
         "content-type": "application/json",
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

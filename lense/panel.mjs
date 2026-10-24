@@ -201,12 +201,6 @@ export function openInEditor(editor, file, line = 1, col = 1) {
 }
 
 /**
- * Shows the dev panel in every portal tab and keeps it up to date.
- * @param {import('playwright-core').BrowserContext} context
- * @param {import('./session.mjs').OverlaySession} session
- * @param {{open?: typeof openInEditor}} [opts]
- */
-/**
  * Runs in a portal page: the portal's own sign-in or sign-out, as a person would run it. Sign-out
  * navigates to its URL. Sign-in ends a current session first (the platform links an external
  * login to a signed-in account instead of switching), reads an antiforgery token the way the
@@ -240,6 +234,12 @@ async function runSessionFlow(flow) {
   return true;
 }
 
+/**
+ * Shows the dev panel in every portal tab and keeps it up to date.
+ * @param {import('playwright-core').BrowserContext} context
+ * @param {import('./session.mjs').OverlaySession} session
+ * @param {{open?: typeof openInEditor}} [opts]
+ */
 export function enablePanel(context, session, opts = {}) {
   const { cfg } = session;
   const open = opts.open ?? openInEditor;
@@ -399,7 +399,7 @@ export function enablePanel(context, session, opts = {}) {
     };
   };
 
-  // ------------------------------------------------------------------------------ what a tab shows
+  // ---- what a tab shows
   const pageInfo = (pathname) => {
     const key = pageKey(pathname, session.model);
     const index = indexSources();
@@ -422,7 +422,7 @@ export function enablePanel(context, session, opts = {}) {
     return null;
   };
 
-  // ------------------------------------------------------------------------------ Mirage inspection
+  // ---- Mirage inspection
   // The Mirage reports what a page is made of. Its files open only when they lie in a root this
   // toolkit launched the Mirage with (portal source and Solution roots), so a report can never
   // widen what the editor action may open.
@@ -888,7 +888,7 @@ export function enablePanel(context, session, opts = {}) {
   };
   const scheduleAll = () => portalPages().forEach(schedule);
 
-  // ------------------------------------------------------------------------------ what went wrong on a page
+  // ---- what went wrong on a page
   const problem = (page, entry) => {
     if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
     const list = problems.get(page) ?? [];
@@ -1009,7 +1009,7 @@ export function enablePanel(context, session, opts = {}) {
     scheduleAll();
   });
 
-  // ------------------------------------------------------------------------------ what the buttons do
+  // ---- what the buttons do
   const saveUi = () => {
     if (!uiFile) return;
     try {

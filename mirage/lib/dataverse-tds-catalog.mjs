@@ -1,6 +1,5 @@
 // Dataverse TDS (SQL) catalog: the columns the read-only SQL endpoint exposes for each store table,
 // and how a Web API formatted row projects onto those SQL column names.
-// Docs: "Use SQL to query data" and "How Dataverse SQL differs from Transact-SQL" (tds-spike.md section 4).
 import { FORMATTED, LOOKUP_LOGICAL } from "./webapi-format.mjs";
 import { DataError } from "./data-error.mjs";
 import { relationshipsOf } from "./dataverse-standard.mjs";
@@ -14,7 +13,7 @@ const MAX = -1; // nvarchar(max): multi-line text.
 const TEXT_TYPES = new Set(["nvarchar", "string", "text", "textarea", "email", "entityname"]);
 const MEMO_TYPES = new Set(["memo", "ntext"]);
 const CHOICE_TYPES = new Set(["picklist", "state", "status"]);
-// customer and owner are polymorphic: the `<x>type` column is unverified in the docs (tds-spike.md), emitted anyway.
+// customer and owner are polymorphic: the docs do not list the `<x>type` column; it is emitted as a guess.
 const POLYMORPHIC = new Set(["customer", "owner"]);
 const LOOKUP_TYPES = new Set(["lookup", ...POLYMORPHIC]);
 // [sqlType, precision, scale]. Money is decimal(19,4); datetime is UTC.

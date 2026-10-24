@@ -2,7 +2,6 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Guide — Paqvilo, step by step</title><meta name="description" content="A walkthrough you can follow on your own machine: start the demo, work from VS Code, explore the Mirage simulation, build a feature, connect your own export, preview on a deployed portal with Lense, debug, test and automate."><meta name="theme-color" content="#182d2a"><link rel="stylesheet" href="style.css"><script src="guide.js" defer></script></head><body class="shell-ps">
 <a class="skip" href="#main">Skip to content</a><header class="nav wrap"><a class="brand" href="index.html" aria-label="Paqvilo home"><span class="mark">p.</span> paqvilo</a><nav aria-label="Main"><a href="guide.html" aria-current="page">Guide</a><a href="coverage.html">Capabilities</a><a href="https://github.com/maksii/paqvilo/blob/main/docs/index.md">Docs</a><a href="https://github.com/maksii/paqvilo">GitHub ↗</a></nav></header>
 <main id="main" class="wrap guide">
-<!-- Sources: marketing articles 01–09 (verified walkthroughs), docs/*.md, mirage/README.md, mirage/docs/*.md. Media: marketing recordings, see scripts in the marketing repository. -->
 <div class="guide-head">
 <p class="eyebrow">THE GUIDE · PAQVILO 0.9.5</p><h1>From one command<br>to <em>your own portal.</em></h1>
 <p class="lead">A walkthrough you can follow on your own machine. Start the demo portal, work on it from VS Code, take the simulation apart, build a feature, connect your own export, preview changes on a deployed portal, then debug, test and automate.</p>
@@ -34,7 +33,6 @@
 <div class="chapters">
 
 <section class="chapter" id="before" aria-labelledby="before-title">
-<!-- source: article 01 "Two tools, one export", "How this differs"; README.md "Scope"; docs/coverage.md -->
 <p class="number">BEFORE YOU START</p><h2 id="before-title">Two tools.<br>One export.</h2>
 <p>There is no local runtime for a Power Pages portal. To see a Liquid change, a form tweak or a permission fix you normally upload it with <code>pac pages upload</code>, wait, refresh and try again, and to see what a reader sees you need a second account and an environment you are allowed to change. Paqvilo shortens that loop in two ways, both reading the same input: the PAC export of your site, plus optional unpacked Dataverse Solutions.</p>
 <img class="overview" src="assets/overview.svg" alt="Local project sources connect to Lense browser overlays on a live portal or Mirage rendering with simulated Dataverse." loading="lazy" width="760" height="380">
@@ -54,7 +52,6 @@
 </section>
 
 <section class="chapter" id="route" aria-labelledby="route-title">
-<!-- source: docs/getting-started.md; docs/project-scaffold.md; docs/lense.md "Your edit-preview loop" -->
 <p class="number">CHOOSE YOUR ROUTE</p><h2 id="route-title">Pick a starting point.<br>Tick off the steps.</h2>
 <p>New to Paqvilo? Start with the demo; it needs no portal, export or account. Already have an export? Take the second route. Need to see local changes against the real backend? Take the third. Each step links to the part of the guide that walks through it; your ticks stay in this browser.</p>
 <form class="pickers" id="pickers">
@@ -146,7 +143,6 @@ npx paqvilo doctor --setup --json</code></pre></div><p class="small">New project
 
 <!-- ===================================================== 1 -->
 <section class="chapter" id="demo" aria-labelledby="demo-title">
-<!-- source: article 02 "Before you start", "Install into a working folder"; article 01 "One command", "Behind the scenes"; docs/getting-started.md "1. Install", "Try the demo" -->
 <p class="number">01 / START THE DEMO</p><h2 id="demo-title">A complete portal<br>from one command.</h2>
 <p class="intro">You install Paqvilo into an empty folder and start the bundled demo: an invented Power Pages project with native forms and lists, a Web API workspace, PCF controls, Liquid examples, server logic and a data pack. You need no Power Pages licence, no portal export and no Microsoft account.</p>
 
@@ -191,7 +187,6 @@ npx --no-install paqvilo --help</code></pre></div>
 
 <!-- ===================================================== 2 -->
 <section class="chapter" id="sign-in" aria-labelledby="sign-in-title">
-<!-- source: article 01 "Sign in and change data"; docs/getting-started.md "Try the demo" steps 1–4; 03a frame 02 -->
 <p class="number">02 / SIGN IN AND EDIT DATA</p><h2 id="sign-in-title">An invented user.<br>A real write.</h2>
 <p class="intro">The demo's workspaces need a signed-in contact. Locally, signing in means choosing an invented contact from the simulated data: nothing authenticates you and no credentials are used.</p>
 
@@ -221,7 +216,6 @@ npx --no-install paqvilo --help</code></pre></div>
 
 <!-- ===================================================== 3 -->
 <section class="chapter" id="inspect" aria-labelledby="inspect-title">
-<!-- source: article 01 "Where does this come from?"; article 06 "X-ray", "Behind the scenes: candidates, not proof"; docs/lense.md X-ray paragraphs -->
 <p class="number">03 / INSPECT AND X-RAY</p><h2 id="inspect-title">From the page<br>back to its sources.</h2>
 <p class="intro">Two tools answer "where does this come from?". <b>Inspect</b> lists the sources and exported rules behind the whole page; <b>X-ray</b> names the likely source of one element under your pointer. Both work the same in Mirage and in Lense.</p>
 
@@ -250,7 +244,6 @@ npx --no-install paqvilo --help</code></pre></div>
 
 <!-- ===================================================== 4 -->
 <section class="chapter" id="vscode" aria-labelledby="vscode-title">
-<!-- source: article 02 "The VS Code variant", "Behind the scenes: what the scaffold wrote", "Press F5", "Inspect opens the source", "What is in the project", "First edit with live reload", "Behind the scenes: how the reload works", "Stopping"; docs/demo.md "Prefer VS Code tasks" -->
 <p class="number">04 / WORK FROM VS CODE</p><h2 id="vscode-title">F5, a jump to the file,<br>and the page follows.</h2>
 <p class="intro">For daily work you want the demo as a VS Code workspace: tasks and a debugger behind F5, Inspect opening files in the editor, and the browser following every save.</p>
 
@@ -323,7 +316,6 @@ npx --no-install paqvilo --help</code></pre></div>
 
 <!-- ===================================================== 5 -->
 <section class="chapter" id="mirage" aria-labelledby="mirage-title">
-<!-- source: article 03 (all sections); mirage/docs/sim-administration.md; mirage/docs/configuration-experiments.md; mirage/docs/operations.md; mirage/docs/dataverse-plugins.md; mirage/docs/persona-catalog.md; docs/configuration.md "Local runtime options" -->
 <p class="number">05 / THE MIRAGE SIMULATION</p><h2 id="mirage-title">Who you are, what you may do,<br>which rows exist.</h2>
 <p class="intro">A local portal is useful when you control four things: who the browser is, what that identity may do, which rows exist and what the backend does on a write. Mirage lets you change all four at runtime without touching the export. Most of it happens in <code>/_sim/</code>, the loopback administration workspace titled <b>Portal Studio</b>; open it from <b>Manage data and personas</b> on any demo page. It opens in its own tab.</p>
 
@@ -460,7 +452,6 @@ export const pluginSteps = { 'b4700000-0000-4000-8000-370000000100': validateAcc
 
 <!-- ===================================================== 6 -->
 <section class="chapter" id="feature" aria-labelledby="feature-title">
-<!-- source: article 04 (all sections); docs/dataverse-provisioning.md; mirage/docs/data-packs.md; mirage/docs/forms-lists-parity.md -->
 <p class="number">06 / BUILD A FEATURE</p><h2 id="feature-title">A table, a page, a list,<br>forms and permissions.</h2>
 <p class="intro">A real feature touches every layer. Here you add "Service requests" to the demo on a Git branch: account teams log requests with a title, account, priority, due date and description; editors create and edit them, readers only see them. The table is <code>pqvd_servicerequest</code>, because <code>pqvd</code> is the demo Solution's publisher prefix. You watch each layer arrive in Mirage, try it as both personas and commit, with no environment and no upload.</p>
 <aside class="boundary">
@@ -562,7 +553,6 @@ git log --oneline -2</code></pre></div>
 
 <!-- ===================================================== 7 -->
 <section class="chapter" id="own-portal" aria-labelledby="own-title">
-<!-- source: article 05 (all sections); docs/project-scaffold.md; docs/configuration.md; docs/setup.md; docs/getting-started.md "2. Scaffold your project", "3. Work locally with Mirage"; mirage/docs/bootstrap-and-sources.md -->
 <p class="number">07 / YOUR OWN PORTAL</p><h2 id="own-title">Scaffold, connect,<br>run and configure.</h2>
 <p class="intro">The demo arrives wired up; your portal does not. Here you scaffold an empty project, connect a PAC export and its unpacked Solutions, check what Mirage reads, run it and change the configuration through forms. Three commands start three different things:</p>
 <div class="table-wrap"><table class="grid-table"><caption class="sr-only">Starting commands</caption><thead><tr><th scope="col">Command</th><th scope="col">What you get</th></tr></thead><tbody>
@@ -606,7 +596,6 @@ npm run setup</code></pre></div>
 
 <div class="beat" id="catalogue">
 <h3>The catalogue, annotated</h3>
-<!-- source: docs/configuration.md; docs/setup.md; docs/getting-started.md "Troubleshooting" (editor) -->
 <p>Keep one shared <code>paqvilo.config.yml</code> in your portal project. It connects source exports, live environments and local runtimes. Unknown settings are rejected; restart running previews after a change. Open the entries below for what each key does, or fill in the builder to get a starting file.</p>
 <div class="config-grid">
 <div class="tree" role="group" aria-label="Annotated catalogue">
@@ -697,7 +686,6 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal 
 
 <!-- ===================================================== 8 -->
 <section class="chapter" id="lense" aria-labelledby="lense-title">
-<!-- source: articles 06 and 07 (all sections except the manual live segment); docs/lense.md; docs/faq.md -->
 <p class="number">08 / LENSE ON A DEPLOYED PORTAL</p><h2 id="lense-title">Your files over the real backend,<br>one key from what is deployed.</h2>
 <p class="intro">Mirage runs a portal on your machine. Sooner or later you need to see a change against the real backend: real sign-in, real records, real Liquid. <b>Lense</b> opens a dedicated browser on the deployed site, answers requests for your mapped sources from your working tree and lets you flip back to what is deployed with one shortcut.</p>
 <div class="walk">
@@ -870,7 +858,6 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
 
 <!-- ===================================================== 9 -->
 <section class="chapter" id="debug" aria-labelledby="debug-title">
-<!-- source: article 08 (all sections except the launch.json type note); docs/lense.md "Local source debugging"; docs/demo.md "Prefer VS Code tasks"; docs/project-extensions.md -->
 <p class="number">09 / DEBUG WITH BREAKPOINTS</p><h2 id="debug-title">A breakpoint in the export file,<br>hit from the portal.</h2>
 <p class="intro">On a deployed portal, a web file reaches the browser under a URL that has nothing to do with your export, and a breakpoint set in VS Code never binds. Paqvilo serves scripts with source maps that point at your export files, so the breakpoint lands in the file you edit.</p>
 
@@ -896,7 +883,6 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
 
 <!-- ===================================================== 10 -->
 <section class="chapter" id="automation" aria-labelledby="automation-title">
-<!-- source: article 09 (all sections; the demo's deep import is replaced by the supported entry point); docs/lense.md "Commands at a glance", "Automation and evidence", "Agent API reference"; docs/public-api.md -->
 <p class="number">10 / TESTS, GATES AND AGENTS</p><h2 id="automation-title">Hand the clicking<br>to scripts.</h2>
 <p class="intro">So far a person signed in, clicked, saved and read the panel. Here scripts take over: acceptance tests against a local runtime, two offline readiness checks before every merge, and a bounded, token-protected handle on a running Lense browser for coding agents.</p>
 
@@ -956,7 +942,6 @@ npx paqvilo lense agent screenshot --session ./.paqvilo/agents/&lt;session&gt;.j
 
 <!-- ===================================================== reference -->
 <section class="chapter" id="extend" aria-labelledby="extend-title">
-<!-- source: docs/project-extensions.md; docs/public-api.md (entry point table); mirage/docs/data-packs.md; mirage/docs/persona-catalog.md; docs/lense.md "Agent API reference" -->
 <p class="number">REFERENCE / EXTEND</p><h2 id="extend-title">Business behavior<br>stays in your project.</h2>
 <p class="intro">Keep your portal and its business behavior in a separate repository. Install Paqvilo as a dependency, register your pack and run your own tests from that project.</p>
 <div class="cards">
@@ -980,7 +965,6 @@ npx paqvilo lense agent screenshot --session ./.paqvilo/agents/&lt;session&gt;.j
 </section>
 
 <section class="chapter" id="shortcuts" aria-labelledby="shortcuts-title">
-<!-- source: docs/getting-started.md, docs/lense.md "Your edit-preview loop", X-ray paragraphs, "Local source debugging" (target selection), docs/demo.md "Prefer VS Code tasks" -->
 <p class="number">REFERENCE / SHORTCUTS</p><h2 id="shortcuts-title">Keys to remember.</h2>
 <table class="keys"><caption class="sr-only">Keyboard shortcuts</caption><thead><tr><th scope="col">Keys</th><th scope="col">Where</th><th scope="col">What it does</th></tr></thead><tbody>
 <tr><td><kbd>Alt+Shift+P</kbd></td><td>Development browser (Lense and Mirage)</td><td>Opens the panel: <b>Inspect</b> in both, <b>Tweaks</b> in Mirage, <b>Online / Local</b> in Lense.</td></tr>
@@ -997,7 +981,6 @@ npx paqvilo lense agent screenshot --session ./.paqvilo/agents/&lt;session&gt;.j
 </section>
 
 <section class="chapter" id="limits" aria-labelledby="limits-title">
-<!-- source: marketing style guide claims table; docs/coverage.md; docs/lense.md; README.md "Scope" -->
 <p class="number">REFERENCE / BOUNDARIES</p><h2 id="limits-title">What to rely on,<br>and what to verify.</h2>
 <div class="table-wrap"><table class="grid-table"><caption class="sr-only">Boundaries</caption><tbody>
 <tr><th scope="row">Lense and Liquid</th><td>Lense overlays JavaScript, CSS, images and supported literal HTML. Liquid and Dataverse still run on the online portal.</td></tr>

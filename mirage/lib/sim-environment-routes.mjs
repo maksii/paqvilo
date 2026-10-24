@@ -1,4 +1,4 @@
-// /_sim/api/environment administration shared by both hosts (D11): environment variable definitions with their local values
+// /_sim/api/environment administration shared by both hosts: environment variable definitions with their local values
 // and secret reference status, local overrides (PUT/DELETE /environment/variables/<schemaName>) and the deployment profile
 // selection (PUT /environment/profiles). A host passes `environment`; a piece it cannot serve answers { supported: false, reason }.
 import { parseSecretReference } from './secret-resolver.mjs';

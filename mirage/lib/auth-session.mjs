@@ -1,8 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /**
- * Local browser sign-in sessions (docs/sim-administration.md, "Sign-in, sign-out and
- * sessions"). The session cookie (HttpOnly, SameSite=Lax, Path=/, browser-session
+ * Local browser sign-in sessions (mirage/docs/sim-administration.md). The session cookie (HttpOnly, SameSite=Lax, Path=/, browser-session
  * lifetime) carries the signed-in contact id, or an explicit anonymous marker after
  * sign-out, signed with a per-process key: restarting the mirage signs every browser
  * out. Optional manual roles make an "override for this browser session". Browsers do
@@ -164,8 +163,8 @@ const ACCOUNT_TABS_SCRIPT = `<script type="text/javascript">(function () {
 })();</script>`;
 
 /**
- * Content region of the platform's sign-in page (rendered inside the site's header and footer;
- * live evidence: the platform account layout). #content-container > #content holds the account
+ * Content region of the platform's sign-in page (rendered inside the site's header and footer,
+ * as the platform account layout). #content-container > #content holds the account
  * tabs (Sign in, Register when open registration is on, Redeem invitation when invitations are
  * on) and #mainContent: the page copy, then the external sign-in form.
  * - External providers: one form (POST /Account/Login/ExternalLogin?ReturnUrl=...,
@@ -248,7 +247,7 @@ export function signInContent({
     `<div id="content-container" class="container wrapper-body" role="main"><div id="content">${tabs}<div class="page-content" id="mainContent">`,
     `<div class="xrm-editable-html xrm-attribute${copy ? "" : " no-value"} page-copy"><div class="xrm-attribute-value">${copy}</div></div>`,
     external ? `<div class="row"><div class="col-md-6">${external}</div></div>` : "",
-    // On ready the page takes the active tab's text as its title and refreshes the anti-forgery token (live sign-in).
+    // On ready the page takes the active tab's text as its title and refreshes the anti-forgery token, as the platform does.
     `<script type="text/javascript">(function () { var run = function () { var active = document.querySelector(".nav-tabs > li > a.active"); document.querySelector("title").textContent = active ? active.textContent : ""; if (window.shell && typeof window.shell.refreshToken === "function") window.shell.refreshToken(); }; if (window.jQuery) window.jQuery(run); else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run); else run(); })();</script>`,
     // The local persona sign-in is the simulator's stand-in for local accounts (visibly marked).
     local ? `<section class="paqvilo-mirage-sign-in" aria-label="${escapeHtml(title)}">${error && !external ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : ""}${local}</section>` : "",

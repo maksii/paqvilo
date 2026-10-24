@@ -1,6 +1,5 @@
 // Exact JSON request bodies: decimal, money and Int64 literals a double cannot hold keep their digits on the direct
-// Web API path and in JSON and multipart $batch (Learn web-api-properties: Edm.Decimal fixed precision, Edm.Int64).
-// Invented schema and GUIDs only.
+// Web API path and in JSON and multipart $batch (Edm.Decimal fixed precision, Edm.Int64).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isExactNumeric } from "../lib/exact-numeric.mjs";

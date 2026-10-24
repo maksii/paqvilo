@@ -445,7 +445,7 @@ export const pageRunnerSource = () => pageRunner.toString();
 /** Redact raw evidence and write the scenario folder. Returns the capture meta. */
 export async function writeCapture({ summary, raw }, { outDir, outputRoot = outDir, origin, side, meta = {}, scenarioId = null }) {
   ({ summary, raw } = redactCaptureQueryValues(redactCaptureControlEvidence({ summary, raw })));
-  // Evidence of another scenario never lands in this folder (a late post of an abandoned bridge run once did).
+  // Evidence of another scenario (a late post of an abandoned bridge run) never lands in this folder.
   if (scenarioId && summary?.id !== scenarioId) throw new Error(`Capture of ${summary?.id ?? "(unknown)"} refused for scenario ${scenarioId}`);
   await ensureCaptureDestination(outDir, outputRoot, { files: ["requests.json", "dom.html", "elements.json", "frames.json", "console.json", "screenshot.png", "meta.json"] });
   const origins = [origin];

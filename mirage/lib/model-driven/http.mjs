@@ -68,7 +68,7 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
         return true;
       }
       if (dataApi) {
-        // Learn (Web API from client-side script): same-origin requests carry the signed-in session. Only GET and HEAD are
+        // Same-origin requests carry the signed-in session. Only GET and HEAD are
         // served here, so a page cannot change data through the session cookie; scripts write through Xrm.WebApi.
         if (!['GET', 'HEAD'].includes(req.method)) throw Object.assign(fail('The Web API on the app address accepts GET only; use Xrm.WebApi or the Dataverse Web API listener to change data.', 405), { code: 'AppAddressReadOnly' });
         const actor = principal(req);
@@ -104,8 +104,8 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
         if (!input || typeof input !== 'object' || !['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(input.method) || typeof input.path !== 'string'
           || !/^\/api\/data\/v9\.\d(?:\/|$)/.test(input.path) || input.path.length > 32768 || (input.body !== undefined && typeof input.body !== 'string')) throw fail('Provide a Web API method, /api/data/v9.x path and text body.', 400);
         if (!webApi) throw Object.assign(fail('This host does not provide the in-process Web API for Xrm.WebApi.execute.', 501), { code: 'WebApiExecuteUnavailable' });
-        // Learn xrm-webapi/online: execute and executeMultiple are online only; nothing reaches the organization while the
-        // app's session is offline. unverified: the native code (the offline family's OfflineModeRequired is used).
+        // execute and executeMultiple are online only; nothing reaches the organization while the app's session is offline.
+        // The native error code is not known (the offline family's OfflineModeRequired is used).
         if (typeof req.headers['x-mirage-app'] === 'string' && offline.recordsFor(actor, req.headers['x-mirage-app']))
           throw Object.assign(fail('Xrm.WebApi.execute and executeMultiple work only while the app is online.', 409), { code: 'OfflineModeRequired' });
         const headers = Object.fromEntries(Object.entries(input.headers ?? {}).filter(([name, value]) => /^(?:content-type|prefer|if-match|if-none-match|accept)$/i.test(name) && typeof value === 'string').map(([name, value]) => [name.toLowerCase(), value]));

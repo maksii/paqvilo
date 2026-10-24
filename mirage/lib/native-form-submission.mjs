@@ -33,7 +33,7 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   const query = Object.fromEntries(page.searchParams);
   // Only the page's resolved record and session can reach the submission service.
   // A record query parameter the page URL carries is pinned to the resolved record; one it does not
-  // carry stays absent, so step URLs keep the page's own query (live: ?stepid=… after Previous).
+  // carry stays absent, so step URLs keep the page's own query (e.g. ?stepid=… after Previous).
   if (context.recordQueryName && context.recordId && page.searchParams.has(context.recordQueryName)) query[context.recordQueryName] = context.recordId;
   if (context.stepId) query.stepid = context.stepId;
   else delete query.stepid;
@@ -73,7 +73,7 @@ export async function submitNativePostback(entries, rendered, options) {
   if (schema?.steps) schema = schema.steps.find(step => step.stepId === submission.context.stepId);
   // A basic form or step that requires the captcha (for a signed-in visitor only with "show
   // captcha for authenticated users") rejects its save postback with the captcha message and
-  // re-renders with the posted values (live multistep-survey step1-submit and captcha-all insert: 200).
+  // re-renders with the posted values (status 200).
   // The local challenge has no verifiable answer; keep CAPTCHA-required saves closed.
   const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
   if (submission.body.action === 'submit' && truthy(portalField(captchaSettings, 'captcharequired', false))) {
@@ -144,6 +144,6 @@ export function nativePostbackResponse({ result, error, context, values, observe
   if (['redirect', 'step'].includes(outcome?.type) && typeof outcome.url === 'string' && outcome.url)
     return { status: 302, location: outcome.url };
   if (outcome?.type === 'tab') return { status: 200, state: { ...context, values, outcome: { type: 'none' } } };
-  // A form that stays visible after its save re-renders the posted values (live insert captures).
+  // A form that stays visible after its save re-renders the posted values.
   return { status: 200, state: { ...context, ...(outcome?.type === 'message' && outcome.hideForm === false && values ? { values } : {}), outcome: outcome ?? { type: 'none' }, savedId: result?.recordId ?? null, savedName: result?.name ?? null } };
 }

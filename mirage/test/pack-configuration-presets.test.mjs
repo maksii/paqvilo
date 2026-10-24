@@ -68,7 +68,7 @@ test('startup applies a linked configuration only when explicitly selected',asyn
 test('a saved preset collision remains readable and removable after a pack upgrade',async t=>{
  const root=await fs.mkdtemp(join(tmpdir(),'mirage-config-collision-'));ownedFixture(t).remove(()=>fs.rm(root,{recursive:true,force:true}));await fixture(root);const file=join(root,'state.json');
  let app=await createSimulator({sourceDir:root,stateFile:file,initial:initial(),watch:false});
- const call=async(path,body={},method='POST')=>{const response=await fetch(app.url+'/__sim/api'+path,{method,headers:{'content-type':'application/json','x-sim-csrf':app.state().csrf},body:JSON.stringify(body)});return {status:response.status,result:await response.json()};};
+ const call=async(path,body={},method='POST')=>{const response=await fetch(app.url+'/__sim/api'+path,{method,headers:{'content-type':'application/json','x-sim-csrf':app.csrf},body:JSON.stringify(body)});return {status:response.status,result:await response.json()};};
  assert.equal((await call('/experiments',{id:'feature',name:'Saved feature'})).status,201);await app.close();
  app=await createSimulator({sourceDir:root,stateFile:file,initial:initial(),watch:false,packs:[syntheticPack()]});ownedFixture(t).add(()=>app.close());
  const listed=await fetch(app.url+'/__sim/api/experiments');assert.equal(listed.status,200);assert.ok((await listed.json()).some(p=>p.id==='feature'&&p.shadowed&&p.diagnostics[0].code==='CONFIGURATION_PRESET_COLLISION'));

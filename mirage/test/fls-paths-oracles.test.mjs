@@ -1,8 +1,7 @@
 // Column security on every query path: a navigation, lambda, $expand option, $apply step or FetchXML link-entity/root
 // condition, order or aggregate over a secured column must not tell a right guess from a wrong one. Hidden columns (no read
 // permission) evaluate as null; masked columns (read with a masking rule, no unmask) are refused as operands with 400
-// 0x80041155 (Learn web-service-error-codes CannotFilterOnMaskedAttribute). Lookups cannot be secured (Learn
-// field-level-security), so joins still work. CUST is a System Customizer. Invented schema and GUIDs only.
+// 0x80041155 (CannotFilterOnMaskedAttribute). Lookups cannot be secured, so joins still work. CUST is a System Customizer.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CUST, readFixture } from "./read-projection-fixture.mjs";
@@ -109,7 +108,7 @@ test("a masked column on any of those paths, an order or an aggregate answers 40
   };
   for (const [name, right, build] of GUESSES) assert.equal(await refused(build(right), right), await refused(build(WRONG), WRONG), name);
   await refused(linkOrder(false));
-  // unverified: Learn names filtering only; min/max/groupby over the clear value are the same order and equality oracle.
+  // Only filtering is documented; min/max/groupby over the clear value are assumed to be the same order and equality oracle.
   for (const apply of ["aggregate(x_secret with max as m)", "aggregate(x_secret with min as m)", "groupby((x_secret))", "groupby((x_name),aggregate(x_secret with max as m))"])
     await refused(`/x_items?$apply=${q(apply)}`);
   await refused(`/x_children?$apply=${q("groupby((x_itemid/x_secret))")}`);
@@ -118,9 +117,15 @@ test("a masked column on any of those paths, an order or an aggregate answers 40
     '<fetch aggregate="true"><entity name="x_item"><attribute name="x_secret" aggregate="max" alias="m"/></entity></fetch>',
     '<fetch aggregate="true"><entity name="x_item"><attribute name="x_secret" groupby="true" alias="g"/><attribute name="x_itemid" aggregate="count" alias="n"/></entity></fetch>',
   ]) await refused(fx("x_items", xml));
-  // A presence count reads nothing of the clear value and stays allowed.
+  // A presence count reads nothing of the clear value and is not refused.
   const counted = await f.answer(fx("x_items", '<fetch aggregate="true"><entity name="x_item"><attribute name="x_secret" aggregate="countcolumn" alias="n"/></entity></fetch>'));
   assert.equal(counted.status, 200, counted.body);
+});
+
+test("a FetchXML presence count over a masked column is allowed and answers the count itself", async (t) => {
+  const f = await setup(t, "masked");
+  const counted = await f.answer(fx("x_items", '<fetch aggregate="true"><entity name="x_item"><attribute name="x_secret" aggregate="countcolumn" alias="n"/></entity></fetch>'));
+  assert.equal(JSON.parse(counted.body).value[0].n, 2);
 });
 
 test("FetchXML distinct over a masked column answers 400 0x80041155", async (t) => {

@@ -1,5 +1,5 @@
 // Native error answers for bulk actions and If-Match / If-None-Match on PATCH: the status, the Dataverse code and the
-// message the parity capture recorded, with no write before the error. Invented schema (widget) and GUIDs only.
+// message the platform answers, with no write before the error.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -110,8 +110,8 @@ test("CreateMultiple accepts targets typed as its own table, with or without the
   assert.equal(res.body.Ids.length, 2);
 });
 
-// unverified: live capture (only CreateMultiple recorded): UpdateMultiple and UpsertMultiple take the same refusals as CreateMultiple,
-// with their own message name in the 0x80040800 text.
+// Only CreateMultiple was observed natively; UpdateMultiple and UpsertMultiple are assumed to take the same refusals, with
+// their own message name in the 0x80040800 text.
 for (const name of ["UpdateMultiple", "UpsertMultiple"]) {
   const action = `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.${name}`;
   const id = "00000000-0000-4000-8000-0000000000aa";

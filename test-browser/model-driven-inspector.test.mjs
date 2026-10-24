@@ -1,11 +1,12 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { modelDrivenInspectorUi } from '../lense/model-driven-inspector-ui.mjs';
@@ -17,6 +18,10 @@ const appId = '33333333-3333-4333-8333-333333333333';
 const nativeCommandName = '55555555-5555-4555-8555-555555555555!55555555555545558555555555555555';
 const nativeCommandId = `inv_item|NoRelationship|Form|${nativeCommandName}`;
 const modernCommand = () => parseAppActionCommand(`<appaction uniquename="inv__${nativeCommandName}!inv_item!0"><buttonlabeltext default="Review"/><context>1</context><contextentity><logicalname>inv_item</logicalname></contextentity><location>0</location><name>${nativeCommandName}</name><onclickeventjavascriptfunctionname>Invented.review</onclickeventjavascriptfunctionname><onclickeventjavascriptparameters>[]</onclickeventjavascriptparameters><onclickeventjavascriptwebresourceid><webresourceid>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</webresourceid></onclickeventjavascriptwebresourceid><onclickeventtype>2</onclickeventtype><type>0</type></appaction>`, { webresourcesById: new Map([['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'inv_events.js']]) });
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
 const imported = () => ({ assets: new Map([
   ['/script', { name: 'inv_events.js', file: '/invented/solution/WebResources/inv_events.js', mime: 'text/javascript', data: Buffer.from('') }],
   ['/pcf', { name: 'inv.Controls.Input/bundle.js', file: '/invented/solution/Controls/Input/bundle.js', mime: 'text/javascript', data: Buffer.from('') }],
@@ -37,12 +42,10 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  const browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
   const context = await browser.newContext(), page = await context.newPage(), unrelated = await context.newPage();
   let inspector;
   ownedFixture(t).add(async () => { await inspector?.close(); });
-  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   ownedFixture(t).remove(async () => { await fs.rm(root, { recursive: true, force: true, maxRetries: 5 }); });
@@ -105,7 +108,7 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   await cdp.send('Debugger.resume'); await cdp.detach();
   await page.waitForFunction(() => !document.getElementById('paqvilo-panel'));
   await page.evaluate(modelDrivenInspectorUi, retiredData);
-  assert.equal(await page.locator('#paqvilo-panel').count(), 0); await assert.rejects(fs.readFile(inspector.agent.discoveryFile));
+  assert.equal(await page.locator('#paqvilo-panel').count(), 0); await assert.rejects(fs.readFile(inspector.agent.discoveryFile), { code: 'ENOENT' });
   assert.equal(methods.some(method => method !== 'GET'), false);
 });
 
@@ -114,12 +117,11 @@ test('model-driven X-ray reports delayed refresh, settles pending state and offe
   const server = http.createServer((_request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><title>Invented app</title><input data-id="inv_title"/>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
   const context = await browser.newContext({ reducedMotion: 'reduce' }), page = await context.newPage();
   let inspector, release, fail = false, block = false;
   ownedFixture(t).add(async () => { release?.(); });
   ownedFixture(t).add(async () => { await inspector?.close(); });
-  ownedFixture(t).add(async () => { await browser.close(); });
+  ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
   ownedFixture(t).remove(async () => { await fs.rm(root, { recursive: true, force: true, maxRetries: 5 }); });

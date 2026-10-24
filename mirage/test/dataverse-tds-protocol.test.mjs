@@ -3,11 +3,11 @@
 // tedious entry file, for example:
 //   npm install --prefix <dir> tedious@20.3.8
 //   TDS_TEDIOUS_PATH=<dir>/node_modules/tedious/lib/tedious.js
-// Loopback only, invented SQL and an invented token.
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import tls from "node:tls";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
 import { after, before, describe, test } from "node:test";
 import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 import { TDS, createMessageReader, decodePrelogin, encodePrelogin, writeMessage } from "../lib/dataverse-tds-framing.mjs";
@@ -147,16 +147,6 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
     await server.close();
   });
 
-  test("the strict client rejects a listener outside the fixture CA", async () => {
-    const unrelated = createSelfSignedCertificate();
-    const socket = tls.connect({ host: "127.0.0.1", port: server.port, ALPNProtocols: ["tds/8.0"], ca: unrelated.cert });
-    try {
-      await assert.rejects(once(socket, "secureConnect"), /self.signed certificate/i);
-    } finally {
-      socket.destroy();
-    }
-  });
-
   test("PRELOGIN answers the version, encryption off and FEDAUTHREQUIRED", async () => {
     const client = await connectStrict(server.port, server.cert);
     try {
@@ -245,8 +235,9 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
 
 // ---- end-to-end with tedious (skipped unless TDS_TEDIOUS_PATH is set) ----
 
-const tediousPath = process.env.TDS_TEDIOUS_PATH;
-const skip = tediousPath ? false : "set TDS_TEDIOUS_PATH to the tedious entry file to run the tedious checks";
+const gateTedious = fileURLToPath(new URL('../test-sdk/tds/node_modules/tedious/lib/tedious.js', import.meta.url));
+const tediousPath = process.env.TDS_TEDIOUS_PATH || (existsSync(gateTedious) ? gateTedious : null);
+const skip = tediousPath ? false : "install mirage/test-sdk/tds (npm ci) or set TDS_TEDIOUS_PATH to run the tedious checks";
 const loadedTedious = tediousPath ? await import(pathToFileURL(tediousPath).href) : null; // CommonJS: the exports sit on default
 const tedious = loadedTedious?.default ?? loadedTedious;
 

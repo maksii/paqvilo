@@ -1,5 +1,5 @@
 // Dataverse search through the Web API and the legacy endpoints: searchquery, searchsuggest, searchautocomplete, searchstatus,
-// the /api/search/v1.0 and v2.0 routes, the search-disabled error and the privilege rule. Invented schema and loopback only.
+// the /api/search/v1.0 and v2.0 routes, the search-disabled error and the privilege rule.
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -258,7 +258,7 @@ describe("Dataverse search", () => {
     assert.equal(JSON.parse(json.response).Count, 3);
   });
 
-  it("answers the search status: provisioned while on, not provisioned when off", async () => {
+  it("answers the search status while on: provisioned, with each indexed table and its Quick Find column", async () => {
     const on = await (await dv.admin(`${WEB}searchstatus`, { method: "GET" })).json();
     const status = JSON.parse(on.response).value;
     assert.equal(status.status, "provisioned");

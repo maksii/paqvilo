@@ -35,7 +35,7 @@ test('the catalogue opens imported trusted HTML web resources and lists inventor
   assert.equal(catalogue.capabilities.offline, true); assert.equal(catalogue.capabilities.customPages, false);
 });
 
-test("a custom page resolves only against the app's own canvas app components and the canvas host (RC4a-10)", () => {
+test("a custom page resolves only against the app's own canvas app components and the canvas host", () => {
   const app = components => ({ id: '77777777-7777-4777-8777-777777777777', uniqueName: 'x_app', navigation: parseSiteMap(siteMap), components });
   const custom = (components, canvasApps) => {
     const catalogue = appCatalogue({ metadata: { modelDrivenApps: [app(components)], entities: {} }, mappings: {}, canvasApps });
@@ -62,7 +62,7 @@ test('navigateTo validates page input; custom pages pass name, entityName and re
   assert.deepEqual(opened[1][0], { pageType: 'entityrecord', entityName: 'x_item', entityId: '77777777-7777-4777-8777-77777777777a' });
   await Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_invented_page', entityName: 'x_item', recordId: '{77777777-7777-4777-8777-77777777777A}' }, { target: 2 });
   assert.deepEqual(opened[2], [{ pageType: 'custom', name: 'x_invented_page', entityName: 'x_item', recordId: '77777777-7777-4777-8777-77777777777a' }, { target: 2, position: 1 }]);
-  // Learn (custom page examples): the recordId must be a GUID.
+  // The recordId must be a GUID.
   await assert.rejects(Xrm.Navigation.navigateTo({ pageType: 'custom', name: 'x_invented_page', recordId: 'invented' }), /GUID/);
   await assert.rejects(Xrm.Navigation.navigateTo({ pageType: 'custom' }), /logical name/);
   await assert.rejects(Xrm.Navigation.navigateTo({ pageType: 'dashboard' }), error => error.code === 'DashboardPageUnsupported');

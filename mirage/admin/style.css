@@ -305,7 +305,7 @@
 
 
 
-/* Wave 2: classes that replace inline styles (the admin CSP has no 'unsafe-inline'). */
+/* Classes that replace inline styles (the admin CSP has no 'unsafe-inline'). */
 .full-width { width: 100%; }
 td.depth-0 { padding-left: 12px; }
 td.depth-1 { padding-left: 30px; }

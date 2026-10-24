@@ -1,4 +1,4 @@
-// One registry of recognised data-pack exports (ARCH decision 13). Each row says how an export is shaped
+// One registry of recognised data-pack exports. Each row says how an export is shaped
 // (kind), how its keys are normalised (key), how its value is validated (check, throws) and what happens
 // when two packs register the same key (collide). Unknown pack keys produce PACK_EXPORT_UNKNOWN.
 import { validateEndpoints } from './extensions.mjs';
@@ -64,7 +64,7 @@ const row = spec => Object.freeze({ kind: 'map', key: exact, collide: 'error', p
 export const PACK_EXPORTS = {
   serverLogics: row({ key: lower, check: mapOf(named, 'serverLogics must map exported names to functions') }),
   cloudFlows: row({ key: lower, check: mapOf(named, 'cloudFlows must map exported names to functions') }),
-  // As the collector before the registry: any key (a GUID or a unique name, brace-stripped and lowercased) and a null export.
+  // Any key (a GUID or a unique name, brace-stripped and lowercased) and a null export.
   flowIdentities: row({ key: canonicalGuid, entries: value => Object.entries(value ?? {}),
     check: (value, packId) => { if (value !== null) mapOf((key, entry) => Boolean(canonicalGuid(key).trim()) && isMap(entry), 'flowIdentities must map flow IDs or names to explicit trusted descriptors')(value, packId); } }),
   pluginSteps: row({ key: canonicalGuid, check: mapOf((id, handler) => GUID.test(id.replace(/[{}]/g, '')) && isSync(handler), 'pluginSteps must map exported step IDs to synchronous functions') }),

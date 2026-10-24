@@ -109,7 +109,7 @@ test('credentials cannot enter plans, requests, captures or response headers', a
   assert.equal(run.results[0].outcome, 'invalid-evidence'); assert.doesNotMatch(JSON.stringify(run), /sensitive/);
   assert.equal(run.results[0].response.status,200);
   const challenge=sealResponse(response({error:{code:'Unauthorized'}},401,{'WWW-Authenticate':'Bearer authorization_uri="https://example.invalid/authorize", resource_id="https://example.invalid"'}));
-  assert.equal(challenge.status,401);assert.ok(challenge.headers['www-authenticate']);
+  assert.equal(challenge.status,401);assert.equal(challenge.headers['www-authenticate'],'Bearer authorization_uri="https://example.invalid/authorize", resource_id="https://example.invalid"');
 });
 
 test('encoded request credentials are rejected before any plan or variables reach the journal', async () => {
@@ -187,7 +187,7 @@ test('nested batch faults are diffed by inner status/code/message and raw bytes'
 });
 
 test('nonstandard error envelopes and JSON-looking strings are preserved without rewriting', async () => {
-  const input = plan([readCase()]), native = { Message: 'Controlled header error', ErrorCode: '0xTEST' };
+  const input = plan([readCase()]), native = { Message: 'Controlled header error', ErrorCode: '0xTEST', Detail: '{"error":{"code":"0xNESTED"}}' };
   const run = await runSuite(input, { transport: async () => response(native, 400) });
   assert.deepEqual(run.results[0].response.json, native);
   assert.equal(run.results[0].response.json.error, undefined);

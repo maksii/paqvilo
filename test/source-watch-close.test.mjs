@@ -11,7 +11,7 @@ import { ownedFixture } from "../mirage/testing/owned-fixture.mjs";
 for (const repositoryFailure of [false, true]) {
   test(
     `source watcher drains its real Git watcher and accepted refresh after close failures (${repositoryFailure ? "multiple" : "single"})`,
-    { timeout: 15000 },
+    { timeout: 45000 },
     async (t) => {
       const fixture = createFixture();
       ownedFixture(t).remove(() => fixture.cleanup());

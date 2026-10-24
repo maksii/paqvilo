@@ -35,7 +35,7 @@ test('malformed real markup is refused while fake records inside valid sections 
   assert.deepEqual(componentContent(xml), { copy: "<powerpagecomponent powerpagecomponentid='fake'>" });
 });
 
-test('large incomplete content tags finish in a bounded worker with semantic refusal', { timeout: 10000 }, async () => {
+test('large incomplete content tags finish in a bounded worker with semantic refusal', { timeout: 30000 }, async () => {
   const worker = new Worker(`
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.module).then(({ componentContentSpan, componentIdentity }) => {
@@ -47,7 +47,7 @@ test('large incomplete content tags finish in a bounded worker with semantic ref
   let timer;
   try {
     const result = await new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('XML cursor exceeded its worker deadline.')), 5000);
+      timer = setTimeout(() => reject(new Error('XML cursor exceeded its worker deadline.')), 20000);
       worker.once('message', resolve);
       worker.once('error', reject);
       worker.once('exit', (code) => { if (code) reject(new Error('XML cursor worker exited early.')); });

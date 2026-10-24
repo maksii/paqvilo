@@ -1,5 +1,4 @@
 // Service fixtures (lib/service-fixtures.mjs): resolution order, the disabled default, pack validation, describe and list.
-// Invented pack ids and operations only; no loopback or Dataverse state is involved.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServiceFixtureRegistry, validateServiceFixtures } from "../lib/service-fixtures.mjs";

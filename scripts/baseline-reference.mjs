@@ -36,9 +36,7 @@ export const redact = (text) => String(text).replace(GUID, "{guid}").replace(EMA
 export const leaks = (text) => [...new Set([GUID, EMAIL, HOST].flatMap((pattern) => [...String(text).matchAll(pattern)].map((match) => match[0])))];
 const clip = (text, max = 160) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-// ---------------------------------------------------------------------------
-// dom.html lookup by the inventory's selector paths (`tag#id>tag:nth-of-type(n)>…`).
-// ---------------------------------------------------------------------------
+// ---- dom.html lookup by the inventory's selector paths (`tag#id>tag:nth-of-type(n)>…`).
 const children = (node) => (node.childNodes ?? []).filter((child) => child.tagName);
 function textOf(node) {
   if (node.nodeName === "#text") return node.value;
@@ -79,9 +77,7 @@ function resolve({ byId, body }, selector) {
 }
 const CSS_unescape = (text) => text.replace(/\\(.)/g, "$1");
 
-// ---------------------------------------------------------------------------
-// Rendered summary from the visible inventory.
-// ---------------------------------------------------------------------------
+// ---- Rendered summary from the visible inventory.
 const MESSAGE_CLASSES = ["validation-summary", "alert", "message", "text-danger", "calendar-error"];
 function renderSummary(elements, dom, scenario) {
   const visible = elements.filter((e) => e.visible);

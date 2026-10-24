@@ -1,6 +1,6 @@
-// RC4a-02: going online replays the queue; a queued entry refused before or instead of an answer (a 4xx: its table left the
+// Going online replays the queue; a queued entry refused before or instead of an answer (a 4xx: its table left the
 // catalogue, the user was disabled) is an answered failure: listed, removed, and the replay goes on. Only a call without a
-// client-error status (transport) stops the replay with the entry still queued. Invented x_ tables, in-process Web API.
+// client-error status (transport) stops the replay with the entry still queued. In-process Web API.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

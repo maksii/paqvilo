@@ -1,5 +1,5 @@
 // Admin workspace API: inspection, personas, scenarios, access rules, environment, state
-// transfer and the live log stream. Synthetic loopback fixtures only; no portal requests.
+// transfer and the live log stream.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -77,7 +77,7 @@ async function setup(t, options = {}) {
     await app.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
-  const csrf = app.state().csrf;
+  const csrf = app.csrf;
   const call = async (route, method = "GET", body, headers = {}) => {
     const response = await fetch(app.url + route, {
       method,
@@ -138,13 +138,13 @@ test("status is cheap, carries CSRF, revision, diagnostics, presets and the effe
   const { app, call } = await setup(t);
   const { status, json } = await call("/__sim/api/status");
   assert.equal(status, 200);
-  assert.equal(json.csrf, app.state().csrf);
-  assert.equal(typeof json.revision, "number");
+  assert.equal(json.csrf, app.csrf);
+  assert.equal(json.revision, app.state().status.revision);
   assert.equal(json.sourceFingerprint, app.state().status.sourceFingerprint);
   assert.equal(json.permissionMode, "enforce");
   assert.ok(json.presets.some((preset) => preset.id === "two-contacts"));
   assert.equal(json.identity.roleSource, "override");
-  assert.equal(typeof json.diagnostics.total, "number");
+  assert.equal(json.diagnostics.total, app.state().diagnostics.length);
   assert.equal(json.adminUrl, `${app.url}/_sim/`);
   assert.deepEqual([json.confinePortalPages, json.externalAssets, json.externalFrameOrigins], [false, false, 0], "local pages are not confined by default");
   assert.equal((await call("/_sim/api/status")).status, 200, "the short admin alias serves the same API");
@@ -377,10 +377,10 @@ test("the log channel streams requests, Liquid reads, plugin evaluations and dia
   await fetch(app.url + "/");
   await waitFor((event) => event.type === "request" && event.entry.path === "/", "page request");
   await waitFor((event) => event.type === "liquid" && event.entry.entity === "contact", "Liquid FetchXML");
-  const rejected = await fetch(app.url + "/_api/contacts", { method: "POST", headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf }, body: JSON.stringify({ firstname: "No last name" }) });
+  const rejected = await fetch(app.url + "/_api/contacts", { method: "POST", headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf }, body: JSON.stringify({ firstname: "No last name" }) });
   assert.equal(rejected.status, 403, "members cannot create contacts");
   await call("/__sim/api/config", "PATCH", { permissionMode: "permissive" });
-  await fetch(app.url + "/_api/contacts", { method: "POST", headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf }, body: JSON.stringify({ firstname: "No last name" }) });
+  await fetch(app.url + "/_api/contacts", { method: "POST", headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf }, body: JSON.stringify({ firstname: "No last name" }) });
   const plugin = await waitFor((event) => event.type === "plugin" && event.outcome === "rejected", "plugin rejection");
   assert.deepEqual(plugin.plugins, ["require-lastname"]);
   assert.match(plugin.error.message, /Last name is required/);
@@ -426,7 +426,7 @@ test("local environment variable values persist over Solution re-seeding until r
   await fs.writeFile(path.join(variable, "environmentvariablevalues.json"), JSON.stringify({ environmentvariablevalues: { environmentvariablevalue: [{ schemaname: "sample_Seeded", value: "solution" }] } }));
   const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state", "state.json"), watch: false, solutionRoots: [solution] });
   ownedFixture(t).add(() => app.close());
-  const csrf = app.state().csrf;
+  const csrf = app.csrf;
   const call = async (route, method = "GET", body) => {
     const response = await fetch(app.url + route, { method, headers: { "content-type": "application/json", "x-sim-csrf": csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, json: await response.json().catch(() => null) };

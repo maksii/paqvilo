@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // `verify` is the set of probes the live side repeats until the portal's permission cache reflects the role change: every
 // probe must pass in one attempt. The portal refreshes its cache per page and the previous persona lingers on the pages
-// not probed yet (run 5b: the role-less persona was denied the edit form while the modal list still served the reader's
+// not probed yet (the role-less persona was denied the edit form while the modal list still served the reader's
 // rows), so each persona is told apart from the editor and from the persona captured before it (run order: editor, reader,
 // none, contact-scope, account-scope, parent-scope, anonymous) with the fixture's table permissions:
 // item1 is the tester contact's and the fixture account's; item5 is the account's only (contact-scope is denied it, account-scope
@@ -26,9 +26,9 @@ const UPDATE = "input[name$='UpdateButton']";
 const probe = (goto, expect) => ({ steps: [{ goto }, { wait: 1500 }], expect });
 const edit = (alias) => `/baseline/item-edit/?id={id:${alias}}`;
 // The live side may clear the portal cache after each persona switch (`live.refresh`); without a refresh the permission
-// cache lagged minutes to over an hour in runs 5-6b. The personas hold no Administrators role (it carries a site-wide
-// grant-change page rule), so the clear control is not offered to them; role writes landed within 20-35 s without one
-// (project evidence, Phase G). Every persona also proves the Administrators role is gone: the about page offers its
+// cache can lag minutes to over an hour. The personas hold no Administrators role (it carries a site-wide
+// grant-change page rule), so the clear control is not offered to them; role writes landed within 20-35 s without one.
+// Every persona also proves the Administrators role is gone: the about page offers its
 // Clear cache control to that role only.
 const ADMINLESS = probe("/_services/about", { absent: ["input[name=\"clearCache\"]"] });
 const verify = (...probes) => ({ probes: [...probes, ADMINLESS], attempts: 8, delay: 10000, settleMs: 3000 });
@@ -106,8 +106,8 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
   const page = record.path + recordQuery(record);
   const mode = /insert/i.test(record.variation ?? "") || /Insert/.test(record.name) ? "insert" : /read/i.test(record.variation ?? record.name) ? "read-only" : "edit";
   // The project's live refresh steps (portal "Clear cache") as harness steps (their requests are not evidence), optional
-  // because Mirage has no such control (the click is
-  // skipped there). Run 7 A2: a reload 16 s after a save still served the pre-save record from the portal cache.
+  // because Mirage has no such control (the click is skipped there). A reload 16 s after a save can still serve the
+  // pre-save record from the portal cache.
   const clearCache = (project.live?.refresh?.steps ?? []).map((step) => ({ ...step, optional: true, harness: true }));
   const idSuffix = (state, persona = "editor") => `${record.slug}/${state}/${persona}`;
   const open = (alias) => `${page}${page.includes("?") ? "&" : "?"}id={id:${alias}}`;
@@ -143,7 +143,7 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     if (full) out.push(scenario(`basic-form/${idSuffix("minimal")}`, { ...parts, state: "minimal" }, [{ goto: open(T.minimal) }], { present: [FORM] }));
     if (full) out.push(scenario(`basic-form/${idSuffix("inactive-record")}`, { ...parts, state: "inactive-record" }, [{ goto: open(T.inactive) }], {}));
     // The configured record-not-found message renders when the page has no (or an empty or malformed) id; a well-formed id
-    // no record has (`missing`, the zero GUID) renders the platform exception instead (live, 2026-10-15).
+    // no record has (`missing`, the zero GUID) renders the platform exception instead.
     if (cites(record, "pp.basicform.record-not-found-message")) {
       out.push(scenario(`basic-form/${idSuffix("record-not-found")}`, { ...parts, state: "record-not-found" }, [{ goto: page }], {}));
       out.push(scenario(`basic-form/${idSuffix("record-missing-id")}`, { ...parts, state: "record-missing-id" }, [{ goto: open("missing") }], {}));
@@ -154,7 +154,7 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     if (full || /summary/i.test(record.variation ?? "")) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: open(T.record) }, { clear: T.required }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
     rules(() => [], [{ goto: open(T.record) }]);
     if (full && T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-update-${stage}`)}`, { ...parts, state: `plugin-error-update-${stage}` }, [{ goto: open(T.record) }, { fill: "#pqvd_text", value: `plugin-fail-update-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
-    // The live portal serves the record from its read cache for a few seconds after the save (run 7a: pre-save values 3 s
+    // The live portal serves the record from its read cache for a few seconds after the save (pre-save values 3 s
     // later; the plugin's write showed after 4 s and a navigation), so the reload waits 6 s and expects the plugin's text.
     // The update postback re-renders the posted values (the ticker is upper-cased on the client), so the plugin's write
     // ("mutate-me" → "mutated by plugin" on the text area) shows only when the record is reopened after the save.
@@ -172,7 +172,7 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     // State actions run on a row reserved for this variant (T.actionRecords, deactivated in the fixture): the portal's
     // record cache would otherwise serve one variant's state change to the next capture of a shared record.
     // The reset restores the row's inactive state in Dataverse, but the portal kept serving the state the previous scenario
-    // left (live run: deactivate found item11 active, Mirage found it inactive, so only Mirage clicked Activate): both
+    // left (deactivate found item11 active on live and inactive on Mirage, so only Mirage clicked Activate): both
     // state scenarios clear the portal cache first, so both sides start from the fixture's inactive row.
     const own = T.actionRecords?.[context.actionSlot?.get(record.path) ?? 0] ?? T.inactive;
     if (cites(record, "pp.basicform.action.activate")) out.push(scenario(`basic-form/${idSuffix("activate")}`, { ...parts, state: "activate" }, [...clearCache, { goto: open(own) }, { click: "button.activate-link" }, { wait: 3000 }], {}));
@@ -213,7 +213,7 @@ function listScenarios(record, project = {}) {
   }
   s("default", [{ goto: page }, { wait: { selector: `${grid} table, ${grid} .table`, state: "visible" } }, { wait: 1500 }], { present: [grid] });
   // An account-filtered list also renders its default state under the editor (no account rows): the list's item-action
-  // configuration (DisabledItemActionLinks) is persona-dependent (K wave Q).
+  // configuration (DisabledItemActionLinks) is persona-dependent.
   if (editor !== "editor") s("default", [{ goto: page }, { wait: { selector: `${grid} table, ${grid} .table`, state: "visible" } }, { wait: 1500 }], { present: [grid] }, "editor");
   // The view selector and the search box exist only when the list record configures them.
   if (cites(record, "pp.list.views.selector")) s("view-selector", [{ goto: page }, { wait: 1500 }, { click: ".view-toolbar .dropdown-toggle, .entitylist .view-selector .dropdown-toggle, .btn-group .dropdown-toggle" }, { wait: 600 }, { click: ".dropdown-menu a:has-text('All'), .dropdown-menu li:nth-child(2) a" }, { wait: 2000 }], { present: [grid] });
@@ -288,7 +288,7 @@ function pageScenarios(record, manifest) {
   const restrictRead = cites(rule, "pp.pagerule.right.restrictread");
   for (const persona of [...named, ...(excluded ? [excluded] : []), "anonymous"]) {
     const expect = restrictRead && !named.includes(persona) ? { present: [SIGNED_IN] } : expectText;
-    // The anonymous visitor of a restrict-read page lands on the sign-in page (run 7a: 302 → /SignIn?ReturnUrl=…); a
+    // The anonymous visitor of a restrict-read page lands on the sign-in page (302 → /SignIn?ReturnUrl=…); a
     // grant-change-only page renders for it. `signIn` tells the live runner not to treat the sign-in page as a failure.
     const anonymous = restrictRead ? { present: SIGN_IN, absent: [], signIn: true } : { ...expect, absent: [] };
     out.push(scenario(`page/${record.slug}/access/${persona}`, { ...parts, persona, state: "access" }, [{ goto: record.path }], persona === "anonymous" ? anonymous : expect));

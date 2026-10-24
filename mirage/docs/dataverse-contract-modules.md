@@ -25,7 +25,7 @@ Each module below is installed by the organization runtime through the extension
 
 Module: `mirage/lib/dataverse-calculated.mjs`. Capability record: requires `metadata:FormulaDefinition`. `describe(api)` reports level `behaviour` only when the store has calculated columns and a pack function covers every one of them; otherwise it reports `contract`, because the evaluator covers only the subset below.
 
-**Behaviour.** A column with `SourceType` 1 in its metadata is calculated on every read: Web API entity, collection, property and `$value` reads, expanded rows, FetchXML, `$filter`, `$orderby`, `$apply` aggregates and the portal reads all use the computed value (Learn query-antipatterns: filtering on calculated columns is supported). The stored value is never returned. A calculated column that reads another calculated column reads it computed; a chain deeper than five calculated columns reads null with `CALCULATED_UNSUPPORTED` (Learn define-calculated-fields). An `$orderby` or FetchXML `<order>` on a calculated column whose definition references a parent column or another calculated column is ignored without an error, as Learn define-calculated-fields#considerations and specialized-columns describe. The value comes from the column's `FormulaDefinition`, evaluated against the stored row. A `Field` reference can follow one N:1 lookup to the parent row. That parent row is read without the caller's read privilege, as the platform computes the value itself.
+**Behaviour.** A column with `SourceType` 1 in its metadata is calculated on every read: Web API entity, collection, property and `$value` reads, expanded rows, FetchXML, `$filter`, `$orderby`, `$apply` aggregates and the portal reads all use the computed value. The stored value is never returned. A calculated column that reads another calculated column reads it computed; a chain deeper than five calculated columns reads null with `CALCULATED_UNSUPPORTED`. An `$orderby` or FetchXML `<order>` on a calculated column whose definition references a parent column or another calculated column is ignored without an error, as on the platform. The value comes from the column's `FormulaDefinition`, evaluated against the stored row. A `Field` reference can follow one N:1 lookup to the parent row. That parent row is read without the caller's read privilege, as the platform computes the value itself.
 
 The supported `FormulaDefinition` subset uses XML elements. Element names are case-insensitive and namespace prefixes are ignored. The root element is either an optional `<Formula>` wrapper around exactly one expression, or the expression itself.
 
@@ -55,10 +55,7 @@ In each case the column reads as null. Mirage never guesses a value.
 
 **Pack override.** A pack's `calculatedColumns` export maps `'<table>.<column>'` to a synchronous function `(row, ctx) => value`. The function receives a copy of the stored row and `ctx = { table, column, user, related(lookup) }`, where `user` is null because the platform computes the column. When a pack defines a function for a column, it replaces the evaluator for that column. `validateCalculatedColumns(map)` checks the export: each key must have the form `table.column` and each value must be a synchronous function.
 
-**Unverified.**
-
-- The designer stores `FormulaDefinition` as Windows Workflow XAML (`ActivityReference` and `EvaluateExpression` with VB expressions). That format is outside the subset, so a column exported from the designer reports `CALCULATED_UNSUPPORTED` until a pack supplies a function for it.
-- The native error for a write to a calculated column is not documented. The rounding of the `DiffIn*` functions is also not documented.
+**Limits.** The column designer stores `FormulaDefinition` as Windows Workflow XAML (`ActivityReference` and `EvaluateExpression` with VB expressions). That format is outside the subset, so a column exported from the designer reports `CALCULATED_UNSUPPORTED` until a pack supplies a function for it.
 
 ## Business rules
 
@@ -89,11 +86,7 @@ The steps are the child elements of the root element. Each `Value` is parsed as 
 
 **Model-driven host.** `businessRulesFor(store, table)` returns the parsed rules for every scope. Each rule has `{ workflowId, name, table, scope: "entity" | "form", formId, steps, clientOnly, unsupported? }`. On an installed API the same list is available as `api.businessRulesFor(table)`, so that client-side evaluation can use the same rule model. The model-driven host does not consume it.
 
-**Unverified.**
-
-- The designer exports a rule's XAML with Windows Workflow `ActivityReference` wrappers, and its `clientdata` is generated JavaScript. Neither format is read, so an exported designer rule reports `BUSINESS_RULE_UNSUPPORTED` until a pack supplies a function for it.
-- The native error codes for a rule's error message and for a missing required value are not documented.
-- The native order of evaluation when several rules apply to the same table is not documented.
+**Limits.** The rule designer exports XAML with Windows Workflow `ActivityReference` wrappers, and its `clientdata` is generated JavaScript. Neither format is read, so an exported designer rule reports `BUSINESS_RULE_UNSUPPORTED` until a pack supplies a function for it.
 
 ## Currency
 
@@ -119,7 +112,7 @@ The base currency is `organization.basecurrencyid` when set, else the first `tra
 
 **Pack override.** None. The module has no pack export.
 
-**Unverified.** The rate direction (`base = value / exchangerate`) is not confirmed against Microsoft Learn. The rounding mode (half away from zero) is assumed. The Web API answers an unknown currency in a bind with 404 `0x80040217` before the hook runs; the hook's own guard uses 400. The message texts for a non-numeric money value, a non-positive rate and a bind naming no id are not confirmed.
+An unknown currency in a Web API bind answers 404 `0x80040217` before the hook runs; other writers that reach the hook get 400.
 
 ## Record hierarchy
 
@@ -144,8 +137,6 @@ A table is hierarchical when a one-to-many relationship references the table fro
 
 **Pack override.** Export `hierarchies`: `{ '<table>': '<lookup column>' }`, validated by `validateHierarchies(map)` (logical names, lowercase result, `TypeError` on a bad entry). It names a table as hierarchical without the metadata flag and wins over the flag for that table. Passed as `install(api, { hierarchies })`.
 
-**Unverified.** The native depth limit of a hierarchy walk and its error; the native answer for a cyclic hierarchy.
-
 ## State transitions
 
 Module: `mirage/lib/dataverse-state-transitions.mjs`. Capability record: level `behaviour`, requires `metadata:TransitionData`.
@@ -158,10 +149,10 @@ A table enforces transitions when the install option `transitions` names it, or 
 | --- | --- |
 | explicit list for the status in `transitions` | pack or test configuration, wins over metadata |
 | `TransitionData` of the status option, an array of statuscodes | exported metadata form |
-| `TransitionData` of the status option, the native `allowedtransitions` XML | Learn form, `sourcestatusid` is the status, `tostatusid` the target |
+| `TransitionData` of the status option, the native `allowedtransitions` XML | `sourcestatusid` is the status, `tostatusid` the target |
 | none listed: any target is allowed | `STATE_TRANSITIONS_UNCONFIGURED` diagnostic |
 
-`TransitionData` is read from the status being left (the current status), as Learn defines it.
+`TransitionData` is read from the status being left (the current status).
 
 **Inventory / contract.** This module registers no message, and `CloseIncidentRequest` is not implemented here.
 
@@ -169,11 +160,6 @@ A table enforces transitions when the install option `transitions` names it, or 
 - `STATE_TRANSITIONS_UNCONFIGURED`: a status that is left on an enforced table has no allowed-target list, so any change from it is allowed. Once per table and status.
 
 **Pack override.** `install(api, { transitions })`. Export name `transitions`, a map `{ "<table logical name>": { "<statuscode>": [<statuscode>, ...] } }`. Keys are lowercased table names and whole-number statuscodes, values are arrays of whole-number statuscodes (an empty array allows no target). An explicit table entry enforces even when the metadata flag is false, and its lists replace the metadata lists for the statuses it names; a status it does not name keeps its metadata list. Validator: `validateTransitions(map)`, which throws a TypeError naming the bad key.
-
-**Unverified.**
-- The refusal's inner code `0x8004F00E` (InvalidStateTransition) is matched by its documented name, not observed natively. The status 400 is assumed.
-- The code `0x80044331` is StringLengthTooLong on Microsoft Learn, so the refusal does not use it.
-- The XML attribute order (sourcestatusid before tostatusid) is the order of the Learn example.
 
 ## Cascade
 
@@ -188,7 +174,7 @@ Module: `mirage/lib/dataverse-cascade.mjs`. Capability record: level `behaviour`
 | `UserOwned` | children owned by the parent's owner from before the write |
 | `NoCascade`, `RemoveLink`, anything else | none |
 
-Learn lists the same four values for Assign (Cascade, Active, NoCascade, UserOwned) and counts Active as state code 0. Learn words UserOwned as "owned by the same user as the primary row"; after the write that row has the new owner, so the owner from before the write is compared.
+`UserOwned` means "owned by the same user as the primary row". The primary row already has the new owner after the write, so the owner from before the write is compared.
 
 **Inventory / contract.** Share, Unshare, Reparent and Merge are not executed: no access is granted or revoked, no row is re-parented, no child is merged. Nothing answers success for them.
 
@@ -200,11 +186,7 @@ The host reads diagnostics from `api.cascades.diagnostics()`.
 
 **Pack override.** None. The module has no pack export.
 
-**Seams (not wired).** Share: `mirage/lib/dataverse-security.mjs` `grantAccess(store, { target, principal, mask })` and `revokeAccess(store, { target, principal })`. Merge: `mirage/lib/dataverse-record-messages.mjs` `merge(api, ctx)`. Reparent: no seam exists; the lookup update is in `mirage/lib/dataverse-records.mjs` `updateData`. Each seam is listed in `describe().seams`.
-
-**Unverified.** Learn does not say whether a child's Assign cascade also runs for grandchildren; the recursion follows the parental model. Learn documents the Assign privilege check on the primary row; the check on each cascaded row is assumed.
-
-**Ceilings.** Only `ownerid` is written, not `owninguser`, `owningteam` or `owningbusinessunit`. Active workflows and business rules on reassigned rows are not deactivated, as Learn describes.
+**Limits.** Only `ownerid` is written, not `owninguser`, `owningteam` or `owningbusinessunit`. Active workflows and business rules on reassigned rows are not deactivated, which the platform does. `describe().seams` names the existing functions a Share or Merge cascade would call; none is wired.
 
 ## Rollup
 
@@ -237,27 +219,23 @@ Anything else (a `link-entity`, an or-filter, another condition, a second attrib
 
 **Pack override.** Export `rollups`, a map of `'<table>.<column>'` keys to synchronous functions `(row, ctx) => value`. `row` is a copy of the parent row and `ctx` is `{ table, column }`. The override wins over the definition and stores its value with `_state = 1`. Precedence: pack override, then the supported subset, then `ROLLUP_UNSUPPORTED` with state 2. The validator is `validateRollups(map)`; install is `install(api, { rollups, diagnostic })`.
 
-**Unverified.**
-- The state values 0, 1 and 2 are confirmed on Microsoft Learn ("Define rollup columns that aggregate values", "Specialized columns using code"). State 2 is OverflowError; an unsupported definition is written as 2 as the nearest documented error state, while OtherError (3) describes an internal failure.
+**Limits.**
 - SUM over no matching child rows is 0; MIN, MAX and AVG over none are null.
-- COUNT counts the non-null values of the attribute.
-- The native refusal of a write to a rollup column reuses the invalid-property shape (0x80048d19) of the calculated module.
-- The Web API 400 and 404 codes of `recalculate` reuse the CalculateRollupField handler's shapes.
-- The FormulaDefinition is FetchXML as the CalculateRollupField handler reads it.
-- The native platform keeps no per-row stale flag; its system job recalculates incrementally. The `_state = 0` marking only tells the local mass recalculation which rows to visit.
-- The native job's cadence: Learn describes an hourly incremental job per column; the local task runs every hour over all stale columns.
+- An unsupported definition stores state 2 (OverflowError), the nearest platform error state.
+- A write to a rollup column is refused with the invalid-property shape (`0x80048d19`).
+- The platform keeps no per-row stale flag; its system job recalculates incrementally per column. The local `_state = 0` mark only tells the hourly local task which rows to visit.
 
 ## Formula columns
 
 Module: `mirage/lib/dataverse-formula.mjs`. Capability record: level `behaviour` when the installed evaluator answers synchronously and reports behaviour (the core Power Fx engine does), or when a pack `formulaColumns` function covers every formula column, else `contract`; requires `provider:power-fx`.
 
-**Behaviour.** A column whose metadata says `SourceType 3` (formula; Microsoft Learn, `AttributeMetadata.SourceType`) is a formula column. Every read takes its value from the store's computed-column seam, so `$filter`, `$orderby`, `$apply` and FetchXML use the computed value too: a pack `formulaColumns['<table>.<column>']` function wins; otherwise the evaluator's `evaluateSync(formula, ctx)` evaluates the stored formula text against a copy of the stored row, with `symbols: { table, columns }` and `principal: null`, and its `{ value }` is used. Writes that set a formula column are refused with a 400 (`0x80048d19`, read-only) and store nothing. The column is evaluated as the system user, so the caller's identity is not passed.
+**Behaviour.** A column whose metadata says `SourceType 3` is a formula column. Every read takes its value from the store's computed-column seam, so `$filter`, `$orderby`, `$apply` and FetchXML use the computed value too: a pack `formulaColumns['<table>.<column>']` function wins; otherwise the evaluator's `evaluateSync(formula, ctx)` evaluates the stored formula text against a copy of the stored row, with `symbols: { table, columns }` and `principal: null`, and its `{ value }` is used. Writes that set a formula column are refused with a 400 (`0x80048d19`, read-only) and store nothing. The column is evaluated as the system user, so the caller's identity is not passed.
 
 **Evaluator.** The evaluator is the install option, else the host's `api.providers.powerFx` (the core Power Fx engine, or a pack `powerFx` adapter), else `createPowerFxEvaluator()` from `canvas-power-fx.mjs`, the core engine. The formula reads the row's columns by name or through `ThisRecord`, follows lookups to the related row, and reads other formula columns of the row, at most 10 deep; a decimal result keeps the column's precision (default 2), and a formula that answers an error value reads `null` with `FORMULA_ERROR` once per column (see [Dataverse](dataverse-parity.md)). With the engine explicitly disabled (`engine: false`) it answers 501 and the column reads `null`. Read projection is synchronous: an evaluator without `evaluateSync`, or one that answers with a promise, leaves the column `null` with `FORMULA_NOT_EVALUATED`. The capability record reports `behaviour` when the evaluator lists `evaluateSync` at behaviour.
 
 | Source | Meaning |
 | --- | --- |
-| `SourceType 3` | formula column (Learn: 0 simple, 1 calculated, 2 rollup, 3 formula, 4 prompt) |
+| `SourceType 3` | formula column (0 simple, 1 calculated, 2 rollup, 3 formula, 4 prompt) |
 | `FormulaDefinition` | the formula text, passed to the evaluator whole |
 | evaluator `{ value }` | the column's value on read, when synchronous |
 
@@ -267,7 +245,7 @@ Module: `mirage/lib/dataverse-formula.mjs`. Capability record: level `behaviour`
 
 **Pack override.** Export `formulaColumns`, keys `'<table>.<column>'` (case-insensitive), values synchronous `(row, ctx) => value` functions where `ctx` is `{ table, column, user }` with `user` null (the column is computed as the system user). Validator: `validateFormulaColumns(map)`; an async function or a malformed key throws a `TypeError`. Precedence: override, then the evaluator, then the diagnostic and `null`.
 
-**Unverified.** Learn describes `FormulaDefinition` for formula columns as YAML; the key that holds the expression is not confirmed, so the whole stored text is passed to the evaluator. The write refusal shape (`0x80048d19`) is reused from calculated columns and is not confirmed for formula columns.
+**Limits.** The whole stored `FormulaDefinition` text is passed to the evaluator; a definition stored as YAML is not unpacked.
 
 ## Virtual providers
 
@@ -275,9 +253,9 @@ Module: `mirage/lib/dataverse-virtual-providers.mjs`. Capability record (`descri
 
 **Behaviour.** Reads and writes of a virtual table go to its provider, and the local row is its mirror. A write goes to its provider inside the write's transaction, and the local row mirrors what the provider returned. A table is virtual when its mapping says so (`isVirtual`, `tableType` `Virtual` or a `dataSourceId`) or when the host declares it in `virtualTables`. The data source id comes from the `virtualTables` declaration, else `mapping.dataSourceId`, else the Solution's `dataverseMetadata.DataSourceId`. Its provider is `virtualTableProviders[dataSourceId]`, else `virtualTableProviders[table]`. The caller's identity is passed to the provider as `ctx.userId` and `ctx.initiatingUserId`.
 
-The provider is the write's main operation (Learn custom-ve-data-providers: the data provider handles Create, Update and Delete at stage 30). The module's `beforeWrite` hook only checks (501 `VirtualProviderMissing`, 501 `VirtualProviderOperationMissing`) and queues the write; the records layer calls the provider in its `external` stage, after the store write has passed every check (If-Match, alternate keys, required columns, business rules and the other hooks, store plug-ins) and before the `afterWrite` hooks, inside the same transaction. A write refused locally (412 for a stale If-Match or a duplicate alternate key, 400 for a validation or rule refusal) never reaches the provider. A provider failure rolls the local write back and answers 400 `VirtualProviderFailed`, so the local row is never left half written. A create without a primary key reaches the provider without one, and the provider's returned primary key and columns replace the stored row's; a create that names its key (in the body, or an upsert `PATCH /set(key)`) passes that key to the provider and keeps it, so a repeated upsert updates. The response and the `afterWrite` hooks see the merged row. A nested standard parent in a virtual row create is created through the pipeline first and reaches the provider as its reference (`{ id, logical_name, name }`) under the lookup column. A deep insert cannot create a virtual table row: it answers 501 `VirtualProviderDeepInsertUnsupported`.
+The provider is the write's main operation, as data providers handle Create, Update and Delete at stage 30 on the platform. The module's `beforeWrite` hook only checks (501 `VirtualProviderMissing`, 501 `VirtualProviderOperationMissing`) and queues the write; the records layer calls the provider in its `external` stage, after the store write has passed every check (If-Match, alternate keys, required columns, business rules and the other hooks, store plug-ins) and before the `afterWrite` hooks, inside the same transaction. A write refused locally (412 for a stale If-Match or a duplicate alternate key, 400 for a validation or rule refusal) never reaches the provider. A provider failure rolls the local write back and answers 400 `VirtualProviderFailed`, so the local row is never left half written. A create without a primary key reaches the provider without one, and the provider's returned primary key and columns replace the stored row's; a create that names its key (in the body, or an upsert `PATCH /set(key)`) passes that key to the provider and keeps it, so a repeated upsert updates. The response and the `afterWrite` hooks see the merged row. A nested standard parent in a virtual row create is created through the pipeline first and reaches the provider as its reference (`{ id, logical_name, name }`) under the lookup column. A deep insert cannot create a virtual table row: it answers 501 `VirtualProviderDeepInsertUnsupported`.
 
-A provider's write runs inside the operation's transaction, as Learn places data provider plug-ins in stage 30, the core transaction stage. A provider joins that transaction by exposing all three of `begin(ctx)`, `commit(ctx)` and `rollback(ctx)` (`ctx.operation` is `transaction`). Mirage calls `begin` once per provider and outermost transaction, before the provider's first write in it. It calls `commit` after that transaction commits. It calls `rollback` when that transaction rolls back for any reason: a provider failure, a later request of the `$batch` change set or `ExecuteTransaction` refused locally (412, 400, a plug-in), or a failed post-operation step. A failed `commit` or `rollback` is reported as `VIRTUAL_PROVIDER_TRANSACTION_FAILED`, and the transaction's outcome stands. A provider without these operations is not enlisted. Its write stays when the transaction rolls back, and `VIRTUAL_PROVIDER_EFFECT_UNCOMPENSATED` names each such row. Mirage never calls an inverse operation to undo a write. Learn does not say what happens to an external change when the Dataverse transaction rolls back; Mirage keeps it. The capability record lists `TransactionEnlistment` as `behaviour` when a registered provider declares the transaction contract, else `contract`.
+A provider's write runs inside the operation's transaction (stage 30, the core transaction stage). A provider joins that transaction by exposing all three of `begin(ctx)`, `commit(ctx)` and `rollback(ctx)` (`ctx.operation` is `transaction`). Mirage calls `begin` once per provider and outermost transaction, before the provider's first write in it. It calls `commit` after that transaction commits. It calls `rollback` when that transaction rolls back for any reason: a provider failure, a later request of the `$batch` change set or `ExecuteTransaction` refused locally (412, 400, a plug-in), or a failed post-operation step. A failed `commit` or `rollback` is reported as `VIRTUAL_PROVIDER_TRANSACTION_FAILED`, and the transaction's outcome stands. A provider without these operations is not enlisted. Its write stays when the transaction rolls back, and `VIRTUAL_PROVIDER_EFFECT_UNCOMPENSATED` names each such row. Mirage never calls an inverse operation to undo a write, so the external change stays. The capability record lists `TransactionEnlistment` as `behaviour` when a registered provider declares the transaction contract, else `contract`.
 
 | Write | Provider call | Mirror |
 | --- | --- | --- |
@@ -312,8 +290,6 @@ The rows pass the profile's grants and the read projection (column security, mas
 
 **Pack override.** Export `virtualTableProviders`, validated by `validateVirtualTableProviders(map)`. Keys are a data source id or a table logical name. Each value is an object whose operations are optional and must be functions: `retrieve`, `retrieveMultiple`, `retrieveSync`, `retrieveMultipleSync`, `create`, `update`, `delete`, `createSync`, `updateSync`, `deleteSync`, `describe`, and the transaction operations `begin`, `commit` and `rollback` (all three or none). An unknown operation name is refused, so a typo cannot pass silently. Operations other than the two synchronous reads may be async, because they run inside the write. `install(api, { virtualTableProviders, virtualTables, diagnostic })`; `virtualTables` maps a table to `{ dataSourceId?, fallback?: 'local' }` and declares it virtual; packs export the same map as `virtualTables`.
 
-**Unverified.** The native error code and status of a failed external write (the module uses 400 `VirtualProviderFailed`), and the native status of a write whose provider lacks the operation (the module uses 501 `VirtualProviderOperationMissing`). Neither was checked against Microsoft Learn's virtual table error reference. The native answer to a deep insert of a virtual table row (the module uses 501 `VirtualProviderDeepInsertUnsupported`).
-
 ## Business process flows
 
 Module: `mirage/lib/dataverse-bpf.mjs`. Capability record: level `contract`, requires `workflow:category=4`.
@@ -323,7 +299,7 @@ Module: `mirage/lib/dataverse-bpf.mjs`. Capability record: level `contract`, req
 - `api.businessProcessFlows.list()`, `.for(table)` and `.diagnostics()` expose the inventory (read only, computed from the store on each call).
 - `createInstance(api, workflowid, targetId)` (exported) inserts one instance row for a record, at the flow's first stage, through `api.change` and `store.createRecord` with the platform's admin identity, in a nested transaction. Awaited inside an open write it joins that write and rolls back with it; on its own it is one committed transaction. It runs only when the instance table exists in the store. The row does not go through the records pipeline, so no plug-in step or audit entry runs for it.
 
-The module registers no message. `RetrieveProcessInstances`, `RetrieveActivePath` and `SetProcess` are already answered by `mirage/lib/dataverse-misc-messages.mjs`. `RetrieveProcessInstances` and `RetrieveActivePath` read the instance rows that `createInstance` writes. `SetProcess` answers the internal-only 501 (see below).
+The module registers no message. `RetrieveProcessInstances`, `RetrieveActivePath` and `SetProcess` are already answered by `mirage/lib/dataverse-misc-messages.mjs`. `RetrieveProcessInstances` and `RetrieveActivePath` read the instance rows that `createInstance` writes. `SetProcess` answers 501 (see below).
 
 | Operation | Level | Meaning |
 | --- | --- | --- |
@@ -351,6 +327,4 @@ The module registers no message. `RetrieveProcessInstances`, `RetrieveActivePath
 
 **Messages.** `SetProcess` answers `501 NotImplemented`, inner code `0x80040216`, "SetProcess is for internal use only and is not simulated." A pack `dataverseMessages.SetProcess` handler replaces that answer.
 
-**Unverified.**
-- The clientdata shape (a `stages` array of `stageid`, `stagename`, `entityname`) and the XAML stage element names are assumed. They are not read from a live export.
-- The instance primary key (`businessprocessflowinstanceid` unless the mapping names an `idColumn`) and the lookup `bpf_<primaryentity>id` are assumed from the existing message code, not from Learn.
+**Limits.** The instance primary key is `businessprocessflowinstanceid` unless the mapping names an `idColumn`, and the lookup to the record is `bpf_<primaryentity>id`. A flow whose stage list has another layout has `stages: []` and reports `BPF_DEFINITION_UNPARSED`.

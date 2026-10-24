@@ -1,28 +1,26 @@
-// Custom connector compilation (contract): a Solution custom connector's OpenAPI 2.0 definition, policy template instances,
+// Custom connector compilation: a Solution custom connector's OpenAPI 2.0 definition, policy template instances,
 // connection parameters and C# script become one JSON-serialisable record that connector-runtime.mjs turns into a provider
 // (`custom-connector:<name>`). Data only: every function here is pure.
 //
-// Custom connectors are defined from OpenAPI 2.0 (https://learn.microsoft.com/connectors/custom-connectors/define-openapi-definition).
 // Parts of a connector: swagger file, API properties (connectionParameters, scriptOperations, policyTemplateInstances) and an
-// optional C# script (https://learn.microsoft.com/connectors/custom-connectors/paconn-cli#custom-connector-directory-and-files).
-// Policy templates run locally in their instance order, per section (https://learn.microsoft.com/connectors/custom-connectors/policy-templates):
+// optional C# script.
+// Policy templates run locally in their instance order, per section:
 // setheader (Request, Response), setqueryparameter (Request), routerequesttoendpoint (Request, with its optional httpMethod),
 // dynamichosturl (Set Host URL), setproperty, convertarraytoobject and convertobjecttoarray (Request or Response body). Their
 // values may use @headers('n') / @header('n'), @queryParameters('n'), @connectionParameters('n', 'default'),
-// @environmentVariables("n") (https://learn.microsoft.com/connectors/custom-connectors/policy-templates/expressions/expressions),
-// and the body templates the paths @body(), @body().a.b and @item().a. Any other template, section or expression, and a body
+// @environmentVariables("n"), and the body templates the paths @body(), @body().a.b and @item().a. Any other template, section or expression, and a body
 // whose `consumes` media type is not JSON, application/x-www-form-urlencoded or multipart/form-data, blocks the whole
 // connector with a named diagnostic; nothing is approximated.
-// A C# script (script.csx) runs for its scriptOperations (all operations when the list is empty, Learn paconn-cli) through the
-// local .NET SDK (custom-connector-script.mjs); the script replaces the backend request (Learn define-blank, step 4).
+// A C# script (script.csx) runs for its scriptOperations (all operations when the list is empty) through the
+// local .NET SDK (custom-connector-script.mjs); the script replaces the backend request.
 // Execution reaches only loopback URLs (connection rewrites) or pack httpFixtures, as the http provider does.
 // OAuth: a static token reference, the client credentials flow (OpenAPI 2.0 `flow: application`) or the authorization code
 // flow (`flow: accessCode`: signed in through the loopback redirect with PKCE, refreshed with its refresh token;
 // connector-runtime.mjs); the implicit and password flows answer 501 OperationUnsupported.
-// unverified: the managed API id a flow uses for a Solution custom connector; both the connector name and
+// The managed API id a flow uses for a Solution custom connector is not known, so both the connector name and
 // shared_<name with _ encoded as -5f> are accepted.
 export const SUPPORTED_POLICIES = Object.freeze(['setheader', 'setqueryparameter', 'routerequesttoendpoint', 'dynamichosturl', 'setproperty', 'convertarraytoobject', 'convertobjecttoarray']);
-// The sections each template runs in (Learn: each template page's "Run policy on"; the routing templates have no section).
+// The sections each template runs in (the routing templates document none and run on the request).
 const SECTIONS = { setheader: ['Request', 'Response'], setqueryparameter: ['Request'], routerequesttoendpoint: ['Request'], dynamichosturl: ['Request'],
   setproperty: ['Request', 'Response'], convertarraytoobject: ['Request', 'Response'], convertobjecttoarray: ['Request', 'Response'] };
 const BODY_POLICIES = ['setproperty', 'convertarraytoobject', 'convertobjecttoarray'];
@@ -167,7 +165,7 @@ function build(connector, operationId, parameters, connection) {
       });
       if (p.httpMethod) method = String(p.httpMethod).toUpperCase();
     } else if (policy.templateId === 'dynamichosturl') {
-      // unverified: the evaluated URL replaces the definition's host and base path; the operation path follows it.
+      // Assumed: the evaluated URL replaces the definition's host and base path; the operation path follows it.
       base = evaluate(p.urlTemplate).replace(/\/$/, '');
       try { new URL(base); } catch { fail('ProviderFailed', 'The Set Host URL policy produced no absolute URL.'); }
     } else if (BODY_POLICIES.includes(policy.templateId)) body = transformBody(policy, body, connection);
@@ -220,7 +218,7 @@ function build(connector, operationId, parameters, connection) {
  * map that host to, so credentials never reach another host. Authentication and the Request setheader policies are
  * reapplied; a setqueryparameter policy only when the link lacks the parameter.
  */
-// unverified: which policies the native gateway reapplies to a nextLink or status request; nothing was captured live.
+// Which policies the native gateway reapplies to a nextLink or status request is a guess.
 export function buildContinuation(connector, operationId, nextLink, parameters = {}, connection = {}, rewrites = {}) {
   const { request, set } = build(connector, operationId, parameters, connection);
   const url = assertContinuationOrigin(nextLink, request.url, rewrites), first = new URL(request.url);
@@ -273,7 +271,7 @@ function expressionValue(source, { name, arg, fallback, path }, item) {
   return found ?? fallback ?? null;
 }
 // An expression match as text: only @body() and @item() take a property path; after any other expression the dotted text is
-// literal (Learn: http://@headers('subdomain').azure.net).
+// literal (e.g. http://@headers('subdomain').azure.net).
 const render = (source, m, item) => {
   const value = expressionValue(source, { name: m[1], arg: m[3], fallback: m[5], path: m[6] }, item);
   const text = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
@@ -298,9 +296,9 @@ function setPath(target, parts, value) {
   if (!unsafe(last)) node[last] = value;
 }
 
-// ---- body templates (setproperty, convertarraytoobject, convertobjecttoarray) ----------------------------------------
+// ---- body templates (setproperty, convertarraytoobject, convertobjecttoarray)
 // A path parameter: @body()[.a.b] (from the body), @item()[.a] (from the current element of the parent collection) or a plain
-// a.b relative to that element (Learn examples: peopleObject, @body().peopleArray, @item().people).
+// a.b relative to that element (e.g. peopleObject, @body().peopleArray, @item().people).
 function pathOf(value) {
   const text = String(value ?? '').trim(), m = /^@(body|item)\(\)((?:\.[A-Za-z_$][\w$-]*)*)$/.exec(text);
   if (m) return { root: m[1], parts: m[2] ? m[2].slice(1).split('.') : [] };
@@ -323,8 +321,7 @@ function transformBody(policy, input, connection) {
   if (!input || typeof input !== 'object') return input;
   const body = structuredClone(input), p = policy.parameters, source = { connection, query: {}, headers: {}, body };
   if (policy.templateId === 'setproperty') {
-    // https://learn.microsoft.com/connectors/custom-connectors/policy-templates/setproperty/setproperty: the value is a
-    // constant, a path, or a template with {path} parts; on a collection it applies to each element.
+    // setproperty: the value is a constant, a path, or a template with {path} parts; on a collection it applies to each element.
     for (const element of parents(body, p.newPropertyParentPathTemplate)) {
       const template = String(p.propertyValuePathTemplate ?? ''), whole = [...template.matchAll(EXPRESSION)];
       const value = whole.length === 1 && whole[0][0] === template.trim() && ['body', 'item'].includes(whole[0][1])
@@ -334,10 +331,9 @@ function transformBody(policy, input, connection) {
     }
     return body;
   }
-  // https://learn.microsoft.com/connectors/custom-connectors/policy-templates/convertarraytoobject/convertarraytoobject and
-  // .../convertobjecttoarray/convertobjecttoarray: per parent element, the subpath's array (object) becomes an object keyed by
+  // convertarraytoobject and convertobjecttoarray: per parent element, the subpath's array (object) becomes an object keyed by
   // each item's key (an array of { keyName, valueName }) written to the new property path. retainKey defaults to true.
-  // unverified: the key and value property names convertobjecttoarray uses when keyName or valueName is empty ('key', 'value').
+  // The key and value property names convertobjecttoarray uses when keyName or valueName is empty ('key', 'value') are a guess.
   const sub = p.propertySubPath ? String(p.propertySubPath).split('.') : [];
   for (const element of parents(body, p.propertyParentPath)) {
     const value = walk(element, sub);

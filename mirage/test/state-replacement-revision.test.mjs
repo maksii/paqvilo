@@ -66,7 +66,7 @@ test('runtime configuration rejects stale publication while retaining an SDK com
     return replace(state, options);
   };
   t.after(() => { sim.store.replaceState = replace; });
-  const response = await fetch(`${sim.url}/_sim/api/config`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ mode: 'local', pageMode: 'local', permissionMode: before === 'permissive' ? 'enforce' : 'permissive' }) });
+  const response = await fetch(`${sim.url}/_sim/api/config`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify({ mode: 'local', pageMode: 'local', permissionMode: before === 'permissive' ? 'enforce' : 'permissive' }) });
   assert.equal(response.status, 409, await response.clone().text());
   assert.equal(sim.store.state.tables.x_item.find(row => row.x_itemid === 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa').x_name, 'Committed SDK write');
   assert.equal(sim.store.state.settings.permissionMode, before);
@@ -86,7 +86,7 @@ test('operation configuration reapplies only its delta after a background job co
     return replace(state, options);
   };
   t.after(() => { app.store.replaceState = replace; });
-  const response = await fetch(`${app.url}/__sim/api/operations/${encodeURIComponent(operationKey)}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, body: JSON.stringify({ mode: 'mock', body: { target: { fx_title: 'Configured' } } }) });
+  const response = await fetch(`${app.url}/__sim/api/operations/${encodeURIComponent(operationKey)}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf }, body: JSON.stringify({ mode: 'mock', body: { target: { fx_title: 'Configured' } } }) });
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(attempts, 2, 'the stale full snapshot is rejected before the explicit delta retries');
   assert.equal(app.store.state.simulator.operations[operationKey].mode, 'mock');

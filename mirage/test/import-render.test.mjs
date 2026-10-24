@@ -581,39 +581,24 @@ test("shell profile preserves captured dependency phases around source content a
   });
   const result = await renderer.renderPage("/work/");
   assert.equal(result.status, 200);
-  assert.ok(
-    result.html.indexOf("/resource/font-awesome.css") <
-      result.html.indexOf("/bootstrap.min.css"),
-  );
-  assert.ok(
-    result.html.indexOf("/scripts/jquery.min.js") <
-      result.html.indexOf("<body "),
-  );
-  assert.ok(
-    result.html.indexOf("/resource/bootstrap.bundle.js") >
-      result.html.indexOf("</footer>"),
-  );
-  assert.ok(
-    result.html.indexOf("/resource/jquery-ui.min.js") >
-      result.html.indexOf("<body "),
-  );
-  assert.ok(
-    result.html.indexOf("/resource/jquery-ui.min.js") <
-      result.html.indexOf("/resource/legacy-before-footer.js"),
-  );
-  assert.ok(
-    result.html.indexOf("/resource/legacy-before-footer.js") <
-      result.html.indexOf("<footer>"),
-  );
+  // Each marker is present (indexOf -1 would pass a bare comparison) and the phases keep their order.
+  const at = (marker) => {
+    const index = result.html.indexOf(marker);
+    assert.notEqual(index, -1, `${marker} is rendered`);
+    return index;
+  };
+  assert.ok(at("/resource/font-awesome.css") < at("/bootstrap.min.css"));
+  assert.ok(at("/scripts/jquery.min.js") < at("<body "));
+  assert.ok(at("<body ") < at("/resource/jquery-ui.min.js"));
+  assert.ok(at("/resource/jquery-ui.min.js") < at("/resource/legacy-before-footer.js"));
+  assert.ok(at("/resource/legacy-before-footer.js") < at("<footer>"));
+  assert.ok(at("</footer>") < at("/resource/bootstrap.bundle.js"));
   // The authored footer is not annotated; the local footer-spacing repair is part of the
   // platform app bundle's local equivalent, which follows the captured after-footer phase.
   assert.match(result.html, /<footer>2026<\/footer>/);
   assert.doesNotMatch(result.html, /\/__sim-static\//);
   assert.equal(result.html.split("/resource/powerappsportal/dist/app.bundle-").length, 2);
-  assert.ok(
-    result.html.indexOf("/resource/powerappsportal/dist/app.bundle-") >
-      result.html.indexOf("/resource/bootstrap.bundle.js"),
-  );
+  assert.ok(at("/resource/bootstrap.bundle.js") < at("/resource/powerappsportal/dist/app.bundle-"));
   assert.equal(renderer.inspectCapabilities().diagnostics.length, 0);
   const invalid = await createPortalRenderer(portal, {
     shellProfile: { headScripts: ["javascript:alert(1)"] },

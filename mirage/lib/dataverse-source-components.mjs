@@ -39,7 +39,7 @@ export function createSourceSolutionComponentStorage({ store, components, entity
   const materialize = (state = store.state) => {
     const settings = settingsOf(state), previous = settings.baseline;
     // Workflow rows have one writer, dataverse-workflows.mjs (exported activation state and activation rows): materializing the
-    // Draft source shape here reverted them on every state replacement. Workflow components still count for app membership.
+    // Draft source shape here would revert them on every state replacement. Workflow components still count for app membership.
     const selected = new Map(withSolutionAppMembers(components() ?? [], state, entityId).filter(component => component.logical !== WORKFLOW)
       .map(component => [keyOf(component.logical, component.id), component]));
     const staleByTable = new Map();

@@ -1,7 +1,7 @@
 // The core Power Fx engine end to end through the Web API: formula columns (read, $filter, lookup navigation, error values),
 // a Dataverse Function (custom API with fxexpressionid) reading and writing tables as the caller inside its transaction,
 // automated low-code plug-ins (Set on ThisRecord, Error refusing the write), delegation push-down against the in-memory
-// read with the delegation warning. Invented x_ schema, loopback only.
+// read with the delegation warning.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -62,7 +62,7 @@ async function organization(t) {
   };
   state.mappings.x_log = { logicalName: 'x_log', entitySet: 'x_logs', idColumn: 'x_logid', nameColumn: 'x_name', fields: { x_name: { dataverseType: 'nvarchar' } } };
   state.mappings.x_bulk = { logicalName: 'x_bulk', entitySet: 'x_bulks', idColumn: 'x_bulkid', nameColumn: 'x_name', fields: { x_name: { dataverseType: 'nvarchar' }, x_number: { dataverseType: 'int' }, x_when: { dataverseType: 'datetime' }, x_price: { dataverseType: 'money' } } };
-  // A secured column, a formula column over it and an automated plug-in that sets it (column security, RC1-04/05).
+  // A secured column, a formula column over it and an automated plug-in that sets it (column security).
   state.mappings.x_memo = { logicalName: 'x_memo', entitySet: 'x_memos', idColumn: 'x_memoid', nameColumn: 'x_name', ownership: 'UserOwned',
     fields: { x_name: { dataverseType: 'nvarchar' }, x_secret: { dataverseType: 'nvarchar', columnMetadata: { isSecured: true } } } };
   state.tables.x_memo = [];
@@ -193,7 +193,7 @@ test('an automated low-code plug-in changes the target with Set and refuses the 
   const created = await call('POST', 'x_items', { x_name: 'invented', x_quantity: 1 });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(created.body.x_name, 'INVENTED');
-  assert.equal(created.body.x_amount, 7, 'Set(column) reaches a column the payload does not name (RC1-07)');
+  assert.equal(created.body.x_amount, 7, 'Set(column) reaches a column the payload does not name');
   const refused = await call('PATCH', `x_items(${ITEM})`, { x_quantity: -1 });
   assert.equal(refused.status, 400, JSON.stringify(refused.body));
   assert.equal(refused.body.error.message, 'Quantity must not be negative');
@@ -229,7 +229,7 @@ test('a table whose mapping is keyed by logical name without a logicalName field
   assert.equal(answer.body.Found, 'b');
 });
 
-test('a refused write inside ForAll fails the Function with the privilege error and writes nothing (RC1-03, RC1-06)', async (t) => {
+test('a refused write inside ForAll fails the Function with the privilege error and writes nothing', async (t) => {
   const { call, store } = await organization(t);
   const answer = await call('POST', 'x_Each', {}, 'limited');
   assert.equal(answer.status, 403, JSON.stringify(answer.body));
@@ -238,7 +238,7 @@ test('a refused write inside ForAll fails the Function with the privilege error 
   assert.equal(store.tableRows('x_log').length, 0);
 });
 
-test('delegation follows the Learn Dataverse table: text functions push down; Now() and currency read 500 rows with the warning (RC1-08)', async (t) => {
+test('delegation follows the Learn Dataverse table: text functions push down; Now() and currency read 500 rows with the warning', async (t) => {
   const { call, diagnostics } = await organization(t);
   const answer = await call('POST', 'x_Deleg', {});
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
@@ -254,7 +254,7 @@ test('delegation follows the Learn Dataverse table: text functions push down; No
   assert.ok(warnings.every((entry) => entry.truncated === true));
 });
 
-test('column security: a formula column over a secured column is reported; a plug-in Set on a secured column passes the caller column security (RC1-04, RC1-05)', async (t) => {
+test('column security: a formula column over a secured column is reported; a plug-in Set on a secured column passes the caller column security', async (t) => {
   const { call, store, diagnostics } = await organization(t);
   const reported = diagnostics.filter((entry) => entry.code === 'FORMULA_COLUMN_OVER_SECURED_COLUMN');
   assert.deepEqual(reported.map((entry) => [entry.table, entry.column, entry.columns]), [['x_vault', 'x_shown', ['x_vault.x_secret']]]);

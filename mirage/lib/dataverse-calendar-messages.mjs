@@ -1,11 +1,9 @@
 // Simulated Dataverse time zone and calendar messages: LocalTimeFromUtcTime, GetTimeZoneCodeByLocalizedName,
-// GetAllTimeZonesWithDisplayName, ExpandCalendar, QuerySchedule, Book, Reschedule, Validate, AddRecurrence, CreateInstance,
-// CreateException, DeleteOpenInstances and ValidateRecurrenceRule. Contracts: the Web API reference pages for each message and
-// the response complex types they name (read 2026-10-20). Invented data only.
+// GetAllTimeZonesWithDisplayName, ExpandCalendar, QuerySchedule, Search, RetrieveExchangeAppointments, Book, Reschedule,
+// Validate, AddRecurrence, CreateInstance, CreateException, DeleteOpenInstances and ValidateRecurrenceRule.
 //
-// Time conversion: Learn documents that conversion is done by Windows and that the timezonerule table is deprecated, so the
-// simulator converts with the platform's IANA zones (Intl) for every platform time zone code (lib/platform-time-zones.mjs,
-// TIME_ZONE_IDS). Learn publishes no code-to-zone list; that export is joined from the Learn pages cited there.
+// Time conversion: natively Windows converts and the timezonerule table is deprecated, so the simulator converts with IANA
+// zones (Intl) for every platform time zone code (platform-time-zones.mjs TIME_ZONE_IDS).
 // Recurrence expands on demand from the series rule. Materialised instance rows win over generated occurrences.
 // ponytail: calendar rules repeat by RRULE FREQ=DAILY or WEEKLY only (other frequencies are refused), a lower rank trims a higher
 // one on the same span, and Book on a series validates attendees against the first occurrence only.
@@ -23,22 +21,22 @@ const LOCALE_EN_US = 1033;
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
 const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
 const MAX_DAYS = 366 * 100;
-// Learn: RecurrencePatternType 0 Daily, 1 Weekly, 2 Monthly, 3 Yearly. PatternEndType 1 No End Date, 2 Occurrences, 3 Pattern End Date.
+// RecurrencePatternType 0 Daily, 1 Weekly, 2 Monthly, 3 Yearly. PatternEndType 1 No End Date, 2 Occurrences, 3 Pattern End Date.
 const PATTERN = { daily: 0, weekly: 1, monthly: 2, yearly: 3 };
 const END = { noEnd: 1, occurrences: 2, endDate: 3 };
-// Learn: TimeCode enum 0 Available, 1 Busy, 2 Unavailable, 3 Filter.
+// TimeCode enum 0 Available, 1 Busy, 2 Unavailable, 3 Filter.
 const TIME_CODE = { Available: 0, Busy: 1, Unavailable: 2, Filter: 3 };
 const BUSY = TIME_CODE.Busy;
-// Learn: appointment InstanceTypeCode 2 is Recurring Instance. unverified: live capture for 1 (series master) and 3 (exception).
+// appointment InstanceTypeCode 2 is Recurring Instance (documented); 1 (series master) and 3 (exception) are a guess.
 const INSTANCE = { master: 1, instance: 2, exception: 3 };
-// Learn: SubCode 7 is Appointment.
+// SubCode 7 is Appointment.
 const SUBCODE_APPOINTMENT = 7;
-// unverified: live capture (the object type code of appointment in TimeInfo.SourceTypeCode).
+// The object type code of appointment in TimeInfo.SourceTypeCode is a guess.
 const APPOINTMENT_OTC = 4201;
 
-// Learn ErrorInfo and ValidationResult carry no fixed error-code strings: the names below are unverified: live capture.
+// ErrorInfo and ValidationResult carry no documented error-code strings; this name is a guess.
 const ERROR_RESOURCE_BUSY = "ResourceBusy";
-// Learn: Book or Reschedule failed due to invalid data (0x80060914), the documented scheduling error.
+// Book or Reschedule failed due to invalid data (0x80060914), the documented scheduling error.
 const SCHEDULING_INVALID_DATA = { code: "0x80060914", message: "Book or Reschedule operation failed due to invalid data." };
 
 // Every platform code: Windows standard name and IANA zone (TIME_ZONE_IDS). Display names come from TIME_ZONE_DEFINITIONS.
@@ -125,11 +123,11 @@ const offsetText = (minutes) => {
 
 function zoneOf(code) {
   const zone = ZONE_BY_CODE.get(Number(code));
-  if (!zone) throw invalid(`TimeZoneCode ${code} is not a supported time zone.`); // unverified: live capture (wording).
+  if (!zone) throw invalid(`TimeZoneCode ${code} is not a supported time zone.`); // Native wording not known.
   return zone;
 }
 
-// Seeds the timezonedefinition and timezonelocalizedname rows for the seeded subset. The rule table is deprecated by Learn, so
+// Seeds the timezonedefinition and timezonelocalizedname rows for the seeded subset. The rule table is deprecated, so
 // timezonerule has no rows.
 function seedTimeZones(store) {
   const organizationId = organizationRecord(store)?.organizationid ?? ZERO_GUID;
@@ -139,7 +137,7 @@ function seedTimeZones(store) {
   localized.length = 0;
   for (const zone of ZONES) {
     const timezonedefinitionid = uuidV5(organizationId, `timezonedefinition:${zone.code}`);
-    // unverified: live capture (bias sign). Bias is minutes west of UTC: the smaller of the January and July 2026 offsets, negated.
+    // Bias is minutes west of UTC (the sign is a guess): the smaller of the January and July 2026 offsets, negated.
     const bias = -Math.min(offsetMinutes(zone.iana, Date.UTC(2026, 0, 15)), offsetMinutes(zone.iana, Date.UTC(2026, 6, 15))) || 0;
     definitions.push({
       timezonedefinitionid, timezonecode: zone.code, standardname: zone.standardName, userinterfacename: zone.userInterfaceName,
@@ -157,7 +155,7 @@ function seedTimeZones(store) {
 const dayNumber = (y, m, d) => Math.floor(Date.UTC(y, m - 1, d) / DAY);
 const weekdayOf = (y, m, d) => new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 const daysInMonth = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
-// The nth weekday of a month: 1..4, with 5 meaning the last. unverified: live capture (the instance picklist values).
+// The nth weekday of a month: 1..4, with 5 meaning the last. The instance picklist values are a guess.
 const nthMatches = (instance, d, y, m) => (instance === 5 ? d + 7 > daysInMonth(y, m) : Math.floor((d - 1) / 7) + 1 === instance);
 
 // The rule fields a series needs, checked the way the service checks a recurrence rule before it stores one.
@@ -367,7 +365,7 @@ function expandRules(store, calendarId, fromMs, toMs, base = null, depth = 0) {
   return blocks;
 }
 
-// Blocks from a lower rank trim the higher-rank blocks they cover (unverified: rank direction).
+// Blocks from a lower rank trim the higher-rank blocks they cover (the rank direction is a guess).
 function calendarBlocks(store, calendarId, fromMs, toMs) {
   const blocks = expandRules(store, calendarId, fromMs, toMs);
   const out = [];
@@ -407,12 +405,12 @@ function setAttendees(store, activityId, attendeeIds) {
   }
 }
 
-// Conflicts of the given attendees with the window, as ErrorInfo-shaped entries (Learn: ErrorInfoList, ResourceList).
+// Conflicts of the given attendees with the window, as ErrorInfo-shaped entries (ErrorInfoList, ResourceList).
 function conflictsFor(store, attendeeIds, startMs, endMs, exceptActivity) {
   const errors = [];
   for (const resourceId of attendeeIds) {
     const clash = busyBlocks(store, resourceId, startMs, endMs, exceptActivity);
-    if (clash.length) errors.push({ ErrorCode: ERROR_RESOURCE_BUSY, ResourceList: [{ ResourceId: resourceId }] }); // unverified: live capture
+    if (clash.length) errors.push({ ErrorCode: ERROR_RESOURCE_BUSY, ResourceList: [{ ResourceId: resourceId }] });
   }
   return errors;
 }
@@ -463,7 +461,7 @@ function describeRule(rule) {
   const type = checkRule(rule);
   const every = Number(rule.interval ?? 1);
   const names = ["day", "week", "month", "year"];
-  return `Every ${every} ${names[type]}${every === 1 ? "" : "s"}`; // unverified: live capture (the description wording).
+  return `Every ${every} ${names[type]}${every === 1 ? "" : "s"}`; // Native description wording not known.
 }
 
 // ---- operations ----
@@ -502,7 +500,7 @@ function operations(api) {
     },
     {
       name: "GetTimeZoneCodeByLocalizedName", kind: "function", binding: "unbound",
-      // unverified: live capture (the not-found wording and code; matching is on the standard or display name, case-insensitive).
+      // Matches the standard or display name, case-insensitive. The native not-found wording and code are not known.
       handle: (c) => {
         const args = argsOf(c);
         const name = String(args.LocalizedStandardName ?? "");
@@ -515,7 +513,7 @@ function operations(api) {
     },
     {
       name: "GetAllTimeZonesWithDisplayName", kind: "function", binding: "collection", entity: "timezonedefinition",
-      // Learn: returns the display name attribute only. unverified: live capture (the order; the store order is used).
+      // Returns the display name attribute only, in store order (the native order is not known).
       handle: (c) => ({
         status: 200,
         body: { "@odata.context": contextUrl(c.origin, c.version, "timezonedefinitions"), value: tableOf(store, "timezonedefinition").map((row) => ({ userinterfacename: row.userinterfacename })) },
@@ -545,7 +543,7 @@ function operations(api) {
       name: "QuerySchedule", kind: "function", binding: "unbound",
       // Busy blocks of the resource (its appointments and series occurrences). Available is the resource's calendar minus Busy;
       // Unavailable is the window minus Available. A resource with no calendar has Busy blocks only.
-      // unverified: live capture (whether native splits Available around Busy).
+      // Whether native splits Available around Busy is a guess.
       handle: (c) => {
         need(c, "appointment", "Read");
         const args = argsOf(c);
@@ -591,9 +589,9 @@ function operations(api) {
     },
     {
       name: "Search", kind: "function", binding: "unbound",
-      // Learn: proposes times when every required resource is free. Free means inside its Available calendar blocks (or the
-      // whole window without a calendar) and outside its Busy blocks. ponytail: 15-minute steps. unverified: live capture
-      // (the defaults for Direction and NumberOfResults, the error codes). The service and resource specification tables are
+      // Proposes times when every required resource is free. Free means inside its Available calendar blocks (or the
+      // whole window without a calendar) and outside its Busy blocks. ponytail: 15-minute steps. The defaults for Direction
+      // and NumberOfResults and the error codes are a guess. The service and resource specification tables are
       // absent natively, so a ServiceId or ResourceSpecId is refused (400 0x80040203).
       signature: { params: [["AppointmentRequest", "Edm.String"]], response: [["SearchResults", "Edm.String"]] },
       handle: (c) => {
@@ -643,7 +641,7 @@ function operations(api) {
     {
       name: "RetrieveExchangeAppointments", kind: "function", binding: "unbound",
       // The caller's appointments overlapping [StartDate, EndDate). ponytail: the store stands in for Exchange.
-      // unverified: live capture (LC-G6-3: the response shape, and whether activityid is present on each row).
+      // The response shape, and whether activityid is present on each row, are a guess.
       signature: { params: [["StartDate", "Edm.DateTimeOffset"], ["EndDate", "Edm.DateTimeOffset"]], response: [["BusinessEntityCollection", "Edm.String"]] },
       handle: (c) => {
         need(c, "appointment", "Read");
@@ -658,7 +656,7 @@ function operations(api) {
     {
       name: "Book", kind: "action", binding: "unbound",
       // A new appointment or series is written when no attendee conflicts. A conflict answers 200 with ValidationSuccess false
-      // and writes nothing (Learn: ValidationResult). A missing or reversed time fails with the documented 0x80060914.
+      // and writes nothing. A missing or reversed time fails with the documented 0x80060914.
       handle: async (c) => {
         const args = argsOf(c);
         const isSeries = args.recurrencepatterntype !== undefined;
@@ -720,7 +718,7 @@ function operations(api) {
     },
     {
       name: "Validate", kind: "action", binding: "unbound",
-      // Learn: verifies that each appointment has available resources for its time. Activities is a collection of references.
+      // Verifies that each appointment has available resources for its time. Activities is a collection of references.
       handle: (c) => {
         need(c, "appointment", "Read");
         const activities = argsOf(c).Activities;
@@ -823,7 +821,7 @@ function operations(api) {
     {
       name: "DeleteOpenInstances", kind: "action", binding: "unbound",
       // Deletes open instances starting on or after SeriesEndDate, and moves open instances already past to StateOfPastInstances.
-      // unverified: live capture (the past-instance state mapping and the boundary).
+      // The past-instance state mapping and the boundary are a guess.
       handle: async (c) => {
         need(c, "appointment", "Write");
         const args = argsOf(c);

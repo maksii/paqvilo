@@ -86,8 +86,7 @@ export function localizedText(value, fallback = "", lcid = 1033) {
   return typeof value === "string" ? value : fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Minimal FetchXML tree (parse, edit and serialize without guessing by regex).
+// ---- Minimal FetchXML tree (parse, edit and serialize without guessing by regex).
 
 export function parseFetchTree(source) {
   if (/<!DOCTYPE|<!ENTITY/i.test(source))
@@ -147,8 +146,7 @@ const linkAliases = (node, out = new Map()) => {
   return out;
 };
 
-// ---------------------------------------------------------------------------
-// Opaque configuration. Native Power Pages protects the serialized view
+// ---- Opaque configuration. Native Power Pages protects the serialized view
 // configuration with its machine key; locally an HMAC with a process key binds
 // the identifiers that the server re-resolves from the selected sources.
 
@@ -192,8 +190,7 @@ export function unprotectConfiguration(token) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Metadata resolution shared by server rendering and the data services.
+// ---- Metadata resolution shared by server rendering and the data services.
 
 const ACTION_TYPES = {
   "CrmEntityFormView-DetailsAction": 1,
@@ -355,15 +352,15 @@ export function buildLayout({
     );
     // A platform lookup view names system columns the export does not describe.
     const field = known ?? (cell.dataverseType ? { dataverseType: cell.dataverseType, label: cell.label } : undefined);
-    // A view cell without a width serialises Width 0 (live: the ActionCards system view, every column 0, total 0).
+    // A view cell without a width serialises Width 0 (a system view such as ActionCards has every column at 0, total 0).
     const width = Number(override?.Width) || (cell.widthless ? 0 : Number(cell.width) || 100);
     columns.push({
       LogicalName: cell.name,
       Name: localizedText(override?.DisplayName, field?.label ?? cell.label ?? attribute),
       Metadata: compactAttributeMetadata(table, attribute, field, primaryName),
       Width: width,
-      // Multi-select choice columns cannot sort; memo columns can (live subgrid evidence).
-      // disableSorting="1" view cells cannot sort either (live: ActionCards cardtypeid).
+      // Multi-select choice columns cannot sort; memo columns can.
+      // disableSorting="1" view cells cannot sort either (e.g. ActionCards cardtypeid).
       // A column the reader reads masked cannot sort (masked = gridMasked; the order would be refused with 0x80041155).
       SortDisabled: Boolean(cell.sortDisabled) || /^multiselectpicklist$/i.test(field?.dataverseType ?? "") || Boolean(masked?.(table, attribute)),
       Type: 0,
@@ -381,7 +378,7 @@ export function buildLayout({
       SortDisabled: true,
       Type: 2,
     });
-  // A zero total (every column widthless) serialises each share as .NET's "NaN" (live ActionCards layout).
+  // A zero total (every column widthless) serialises each share as .NET's "NaN".
   const total = columns.reduce((sum, column) => sum + column.Width, 0);
   for (const column of columns)
     column.WidthAsPercent = total ? (column.Width / total) * 100 : "NaN";
@@ -398,9 +395,9 @@ export function buildLayout({
   };
 }
 
-/** Native action link objects (subset of the managed ViewActionLink contract). */
-// The platform's default action tooltips (live list layouts).
+// The platform's default action tooltips.
 const ACTION_TOOLTIPS = { 1: "View details", 2: "Edit", 3: "Create", 4: "Delete" };
+/** Native action link objects (subset of the managed ViewActionLink contract). */
 export function actionLinks(settings, { portal, requestUrl, website }) {
   const actions = [];
   for (const [position, list] of [
@@ -558,7 +555,6 @@ function approximateListView(list, metadata, store) {
   };
 }
 
-/** Resolve a list by id/name with its selected solution views and settings. */
 /** An explicit (admin or imported) component schema as a list view. */
 function schemaView(schema, list, store) {
   const entity = canonical(schema.entity ?? list.entityName);
@@ -579,6 +575,7 @@ function schemaView(schema, list, store) {
   };
 }
 
+/** Resolve a list by id/name with its selected solution views and settings. */
 export function listModel({ portal, metadata, store, list, schemas = {} }) {
   const explicit = schemas[list.id] ?? schemas[list.name];
   // Imported savedquery schemas describe the default view (adx_view); the list's
@@ -649,7 +646,7 @@ async function handleCalendarService(req, res, url, context, websiteId) {
   const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? "en-US";
   if (route.kind === "language") {
     const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : "en-US"));
-    // Live: a day of private caching from the render time; Vary: * on every answer (live).
+    // A day of private caching from the render time; Vary: * on every answer.
     const now = Date.now();
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", expires: new Date(now + 86400000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "*", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] ?? "SAMEORIGIN", "content-length": body.length });
     res.end(req.method === "HEAD" ? undefined : body);
@@ -659,7 +656,7 @@ async function handleCalendarService(req, res, url, context, websiteId) {
   if (!list) return false;
   try {
     const model = listModel({ portal: context.portal, metadata: context.metadata, store: context.store, list, schemas: context.schemas });
-    // The platform feed answers a list without its start or end date column with this error (live).
+    // The platform feed answers a list without its start or end date column with this error.
     if (!model.calendar?.start || !model.calendar?.end) return sendJson(res, 200, { success: 0, error: "Calendars require both a start and end date." }), true;
     const from = Date.parse(url.searchParams.get("from") ?? "");
     const to = Date.parse(url.searchParams.get("to") ?? "");
@@ -765,10 +762,9 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
 
 /**
  * The platform's own default lookup views (savedquery type 64) of the system tables a portal
- * ships without exporting them, as Dataverse defines them: columns, labels, widths and order
- * (Learn: Contact, Account and Currency default views; live lookup dialogs render exactly
- * these). Ids are the platform's fixed savedquery ids, identical in every environment. The
- * Account Lookup View carries no order (live evidence).
+ * ships without exporting them, as Dataverse defines them: columns, labels, widths and order.
+ * Ids are the platform's fixed savedquery ids, identical in every environment. The Account
+ * Lookup View carries no order.
  */
 const PLATFORM_LOOKUP_VIEWS = Object.freeze({
   contact: { id: "a2d479c5-53e3-4c69-addd-802327e67a0d", name: "Contacts Lookup View", idColumn: "contactid", order: "fullname", fields: [
@@ -877,13 +873,12 @@ export function associateModel(context) {
   const view = solutionView(context.metadata, action.ViewId, grid.entity) ?? {
     ...grid.views[0],
   };
-  // The associate dialog pages like a lookup dialog, not like its subgrid (live parent-edit/associate-dialog: pageSize 10).
+  // The associate dialog pages like a lookup dialog (pageSize 10), not like its subgrid.
   const pageSize = Number(context.portal?.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10;
   return { ...grid, kind: "associate", views: [view], action, pageSize };
 }
 
-// ---------------------------------------------------------------------------
-// Query construction.
+// ---- Query construction.
 
 function conditionNode(attrs, values) {
   return {
@@ -944,7 +939,7 @@ function applySort(fetch, sort) {
 /**
  * The (table, column) => masked predicate of a grid's reader (portal-authorization maskedColumn, the operand rule of a portal
  * read), or null. A masked column is left out of quick search and is SortDisabled, so a search or sort never sends an operand
- * the read refuses with 0x80041155. unverified: not captured live (the portal's own search/sort over a masked view column).
+ * the read refuses with 0x80041155. The portal's own search/sort over a masked view column is assumed, not observed.
  */
 export function gridMasked(context) {
   const auth = context?.store?.portalAuthorization;
@@ -1087,7 +1082,7 @@ function applyUserFilters(fetch, model, request, identity, website) {
 function applyRelationship(fetch, model, parentId, store) {
   if (model.kind !== "subgrid" && model.kind !== "associate") return;
   // A subgrid without a relationship (empty RelationshipName) lists its whole view: no parent
-  // filter, table permissions decide (live Contact form ActionCards).
+  // filter, table permissions decide.
   if (model.kind === "subgrid" && !String(model.cell?.relationship ?? "").trim()) return;
   const relation = model.relationship;
   if (!relation || !relation.many)
@@ -1125,8 +1120,7 @@ function applyRelationship(fetch, model, parentId, store) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Record shaping (EntityRecord contract).
+// ---- Record shaping (EntityRecord contract).
 
 const NET_TYPES = {
   nvarchar: "System.String",
@@ -1383,12 +1377,9 @@ export function gridRecord(row, model, layout, context) {
 // The platform assesses record privileges only for grids with item actions. Records it does not
 // assess report every privilege false, StatusCode 0 and StateCode 0 (the statecode/statuscode
 // attributes keep their values): grids without item actions (lookup dialogs, lists and subgrids
-// configured without ItemActions; evidence: list/item-list-filters, item-list-odata, item-list-mine,
-// basic-form/item-edit/lookup-search entity-lookup-grid-data.json, multistep-insert subgrid, the item-read and
-// item-edit-actions children subgrids). The associate dialog is a selection grid like a lookup dialog: its records are
-// unassessed although it shares the subgrid's ItemActions (live basic-form/parent-edit/associate-dialog #21 vs the
-// subgrid's own #20/#22). A subgrid with item actions is assessed whatever the grant's scope (live
-// basic-form/item-edit/populated and item-edit/permission/parent-scope: children reached through the parent chain
+// configured without ItemActions). The associate dialog is a selection grid like a lookup dialog:
+// its records are unassessed although it shares the subgrid's ItemActions. A subgrid with item
+// actions is assessed whatever the grant's scope (children reached through the parent chain
 // report CanRead/CanWrite/CanDelete true).
 const UNASSESSED = { CanRead: false, CanWrite: false, CanDelete: false, CanAppend: false, CanAppendTo: false, StatusCode: 0 };
 const hasItemActions = (model) => (model.settings?.ItemActions ?? []).some((action) => ACTION_TYPES[action?.Type]);
@@ -1403,7 +1394,6 @@ function recordCurrency(context, entity, row, id) {
   }
 }
 
-/** Execute one native grid data request. */
 /** Whether the persona has any read grant for a table (native AccessDenied result). */
 export function readDenied(context, entity) {
   const { store, identity } = context;
@@ -1482,6 +1472,7 @@ export async function executeGridQuery(model, request, context) {
   };
 }
 
+/** Execute one native grid data request. */
 export async function gridData(model, request, context) {
   const query = await executeGridQuery(model, request, context);
   if (query.accessDenied) return { AccessDenied: true };
@@ -1527,8 +1518,7 @@ export async function gridData(model, request, context) {
 const downloadText = (attribute) =>
   !attribute ? "" : attribute.FormattedValue && !/OptionSetValueCollection$/.test(attribute.Type) ? attribute.FormattedValue : (attribute.DisplayValue ?? "");
 
-// ---------------------------------------------------------------------------
-// Request handling.
+// ---- Request handling.
 
 const SERVICE = /^\/_services\/([a-z-]+(?:\.json)?)\/([0-9a-f-]{36}|[\w-]+)\/?$/i;
 const STATIC = new Map([
@@ -1541,7 +1531,7 @@ const STATIC = new Map([
 const JAVASCRIPT = "application/javascript; charset=utf-8";
 const staticType = (path) => (path.endsWith(".css") ? "text/css; charset=utf-8" : JAVASCRIPT);
 
-// A transparent 1x1 PNG for the offline notification bar icons (platform CDN images).
+// A transparent 1x1 GIF for the offline notification bar icons (platform CDN images).
 const GIF_PIXEL = Buffer.from("R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 const PNG_PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
 /**
@@ -1615,8 +1605,8 @@ async function serveSolutionWebResource(req, res, url, context) {
     if (!body) continue;
     const type = /\.js$/i.test(match[1]) ? JAVASCRIPT : /\.css$/i.test(match[1]) ? "text/css; charset=utf-8" : "text/plain; charset=utf-8";
     const now = Date.now();
-    // An HTML web resource is served as a page: text/html with the page cache headers (live
-    // pqvd_baseline_banner.html, 60 captures); other types keep the private 30-day caching.
+    // An HTML web resource is served as a page: text/html with the page cache headers; other types
+    // keep the private 30-day caching.
     if (/\.html?$/i.test(match[1])) res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...PAGE_HEADERS, "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
     else res.writeHead(200, { "content-type": type, "cache-control": "private", expires: new Date(now + 30 * 86400 * 1000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "Accept-Encoding", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
     res.end(req.method === "HEAD" ? undefined : body);
@@ -1656,18 +1646,18 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && (!equivalent.bundle.local.length || equivalent.bundle.partial) ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
   // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
-  // The platform's /xrm-adx/samples/ images are static files too (live map list loader image).
+  // The platform's /xrm-adx/samples/ images are static files too.
   const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key) ? "static" : null;
   // A local equivalent file dates its response by its own modification time, so a browser reuses
-  // it within its heuristic freshness as it does the platform's (live: no second request from
-  // the quick view document) and a conditional request is answered 304.
+  // it within its heuristic freshness as it does the platform's and a conditional request is
+  // answered 304.
   const modified = equivalent.file && !equivalent.bundle ? (await fs.stat(fileURLToPath(equivalent.file)).catch(() => null))?.mtimeMs : null;
   const headers = kind
     ? platformResourceHeaders(kind, { pathname: key, body, contentType: equivalent.type, frameOptions: siteHeaders(context.portal ?? {})["x-frame-options"], modified })
     : { "content-type": equivalent.type, "cache-control": "no-cache" };
-  // Script resources registered by a control carry their own type (live: the RadCaptcha resources are text/javascript).
+  // Script resources registered by a control carry their own type (the RadCaptcha resources are text/javascript).
   if (kind === "axd" && localAspNetScript(url)?.contentType) headers["content-type"] = localAspNetScript(url).contentType;
-  // Calendar assets (live): scripts and stylesheets cache for a week, templates are not cached.
+  // Calendar assets: scripts and stylesheets cache for a week, templates are not cached.
   if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers["cache-control"] = "public,max-age=604800";
   if (/^\/areas\/entitylist\/tmpls\//.test(key)) Object.assign(headers, { "cache-control": "no-cache, no-store, must-revalidate", expires: "-1", pragma: "no-cache" });
   const unchanged = Boolean(kind && kind !== "resource-manager" && notModified(req.headers, headers));
@@ -1781,7 +1771,7 @@ export function noteStamp(date) {
   return date.toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "") + " UTC";
 }
 
-// An empty answer is never compressed, so it carries no Vary: Accept-Encoding (live: the native add-note 201).
+// An empty answer is never compressed, so it carries no Vary: Accept-Encoding (the native add-note 201).
 function sendEmpty(res, status) {
   const { vary, ...headers } = PAGE_HEADERS;
   res.writeHead(status, { ...headers, "x-frame-options": "SAMEORIGIN", "content-length": 0 });
@@ -1810,7 +1800,7 @@ async function readJson(req, limit = 4 * 1024 * 1024) {
 
 function sendJson(res, status, value, headers = {}) {
   const body = Buffer.from(JSON.stringify(value));
-  // The services answer with the page no-cache policy and frame confinement (live grid data responses).
+  // The services answer with the page no-cache policy and frame confinement.
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     ...PAGE_HEADERS,
@@ -1820,10 +1810,9 @@ function sendJson(res, status, value, headers = {}) {
   });
   res.end(body);
 }
-// A grid service's AccessDenied answer is cache-control: private, without the no-cache pragma/expires
-// (live list/item-list/permission/anonymous and item-list-modal/permission/anonymous entity-grid-data.json).
-// The subgrid service answers its denial with the page no-cache policy instead (live
-// basic-form/contact-read-current entity-subgrid-data.json #22: no-cache, no-store, must-revalidate, expires -1, pragma).
+// A grid service's AccessDenied answer is cache-control: private, without the no-cache pragma/expires.
+// The subgrid service answers its denial with the page no-cache policy instead (no-cache, no-store,
+// must-revalidate, expires -1, pragma).
 const sendSubgridAccessDenied = (res) => sendJson(res, 200, { AccessDenied: true });
 function sendAccessDenied(res) {
   const body = Buffer.from(JSON.stringify({ AccessDenied: true }));
@@ -1917,15 +1906,14 @@ export function portalNotes(rows, identity, prefix = "*WEB*") {
   });
 }
 
-// The notes service orders by createdon as the request's orders say (Direction 1 descending, null ascending;
-// live basic-form/item-edit/lookup-clear vs item-edit-actions/create-related-dialog); notes of the same instant keep
-// creation order ascending and its reverse descending.
+// The notes service orders by createdon as the request's orders say (Direction 1 descending, null
+// ascending); notes of the same instant keep creation order ascending and its reverse descending.
 async function annotationRows(context, entity, id, descending = true) {
   const mapping = mappingFor(context.store, "annotation");
   const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/></entity></fetch>`;
   const result = await context.readProvider.fetchXml(xml, context.identity);
-  // Notes of the same instant (seeded together) keep the order they were created in, as the live
-  // reset's sequential creates do; the query's own tie-break is the table's key order.
+  // Notes of the same instant (seeded together) keep the order they were created in, as sequential
+  // creates do natively; the query's own tie-break is the table's key order.
   let created = new Map();
   try {
     created = new Map((context.store?.tableRows?.("annotation") ?? []).map((row, index) => [canonical(row[mapping.idColumn]), index]));
@@ -1943,10 +1931,10 @@ async function annotationRows(context, entity, id, descending = true) {
   ).map((row) => ({ ...row, [mapping.idColumn]: row[mapping.idColumn] }));
 }
 
-// The notes service's record Attributes (live entity-notes responses): the note row's columns in the
-// platform's order, as grid attribute entries. The service resolves AttributeMetadata by column name on the
-// regarding table, not on annotation (live basic-form/item-read/read-only: createdon/modifiedon/createdby carry
-// pqvd_baselineitem metadata, EntityLogicalName included; subject, notetext, objectid... report null).
+// The notes service's record Attributes: the note row's columns in the platform's order, as grid
+// attribute entries. The service resolves AttributeMetadata by column name on the regarding table,
+// not on annotation: createdon/modifiedon/createdby carry the regarding table's metadata,
+// EntityLogicalName included; subject, notetext, objectid... report null.
 const NOTE_COLUMNS = [
   ["objectid", "lookup"], ["modifiedon", "datetime"], ["subject", "nvarchar"], ["isdocument", "bit"], ["filesize", "int"],
   ["createdon", "datetime"], ["filename", "nvarchar"], ["objecttypecode", "nvarchar"], ["notetext", "memo"],
@@ -1967,7 +1955,7 @@ function noteAttributes(row, context, zone, regarding) {
     entry.AttributeMetadata = attributeMetadata(regarding, name, regardingFields[name]) ?? null;
     // The regarding reference carries no name and no formatted value.
     if (name === "objectid" && entry.Value) { entry.Value.Name = null; entry.FormattedValue = entry.DisplayValue = ""; }
-    // The table type shows the table's display name (live: "Baseline Item"), else its logical name.
+    // The table type shows the table's display name, else its logical name.
     if (name === "objecttypecode") {
       const labels = mappingFor(context.store, String(scalar(value)))?.labels ?? {};
       entry.FormattedValue = entry.DisplayValue = labels[1033] ?? Object.values(labels)[0] ?? String(scalar(value));
@@ -2001,7 +1989,7 @@ async function handleNotes(action, req, res, context) {
     const page = Math.max(1, Number(body.page) || 1);
     const prefix = notesFilter(context.portal);
     // The notes request reports no offset: the user's zone comes from the timeZoneCode cookie, else the
-    // loopback browser shares this machine's zone (live formats the dates in the user's local time).
+    // loopback browser shares this machine's zone (the platform formats the dates in the user's local time).
     const zone = { timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) ?? (body.timezoneOffset == null ? Intl.DateTimeFormat().resolvedOptions().timeZone : null) };
     const order = Array.isArray(body.orders) ? body.orders.find((entry) => String(entry?.Attribute ?? "").toLowerCase() === "createdon") : null;
     const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
@@ -2015,8 +2003,8 @@ async function handleNotes(action, req, res, context) {
       const mine = Boolean(contact) && String(row.subject ?? "").toLowerCase().includes(`[contact:${contact}]`);
       const raw = String(row.notetext ?? "");
       const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
-      // Live entity-notes records (basic-form/item-edit/note-add, plugin-mutation): attachment fields first,
-      // AttachmentSize serialised as an empty object, CreatedOn as a WCF date, append rights granted.
+      // Native entity-notes records: attachment fields first, AttachmentSize serialised as an empty
+      // object, CreatedOn as a WCF date, append rights granted.
       return {
         AttachmentUrl: row.filename ? `/_entity/annotation/${id}/${context.portal.website?.id ?? ""}` : null,
         AttachmentContentType: row.mimetype ?? null,
@@ -2311,7 +2299,7 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (normalized === "entity-grid-delete") {
-      // A form action bar posts { entityReference: { LogicalName, Id } } (live); grids post the reference itself.
+      // A form action bar posts { entityReference: { LogicalName, Id } }; grids post the reference itself.
       const reference = body.entityReference ?? body;
       const entity = reference.LogicalName ?? reference.logicalName;
       const id = reference.Id ?? reference.id;
@@ -2342,7 +2330,7 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (normalized === "action-deactivate" || normalized === "action-activate") {
-      // A form action bar posts { entityReference: { LogicalName, Id } } (live); grids post the reference itself.
+      // A form action bar posts { entityReference: { LogicalName, Id } }; grids post the reference itself.
       const reference = body.entityReference ?? body;
       const entity = reference.LogicalName ?? reference.logicalName;
       const id = reference.Id ?? reference.id;
@@ -2389,8 +2377,7 @@ export async function handleNativeService(req, res, url, context) {
       if (canonical(secure.w) !== websiteId) fail("Invalid_Request", 403, "Invalid_Request");
       const model = modelFor(secure, context);
       // ADX downloads ignore the request's page and pageSize: page 1 of up to
-      // Grid/Download/MaximumResults records (default 5000), read in 5000-record fetch pages
-      // (docs/platform-internals-reference.md, download routes and §5.4 paging).
+      // Grid/Download/MaximumResults records (default 5000), read in 5000-record fetch pages.
       const maximum = Math.max(1, Math.floor(Number(siteSetting(context.portal, "Grid/Download/MaximumResults")) || 5000));
       const records = [];
       for (let page = 1; records.length < maximum; page++) {

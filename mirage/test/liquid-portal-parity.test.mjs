@@ -1,7 +1,7 @@
 // Power Pages Liquid parity. Expected values follow DotLiquid (master sources at
 // SyntaxCompatibility.DotLiquid20), the Adxstudio Liquid layer (MIT ADX sources: Web/Mvc/Liquid,
-// Cms/*DataAdapter.cs) and Microsoft Learn vectors; mirage/docs/liquid-parity.md lists the
-// source of each decision and the items that still need a live observation.
+// Cms/*DataAdapter.cs) and the documented examples; mirage/docs/liquid-parity.md lists the
+// source of each behaviour and the items that still need a live observation.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -261,7 +261,7 @@ test("string and escape filters match .NET encoders", async () => {
 
 test("math filters promote real operands to decimal, divide integers, round to even and format decimals without trailing zeros", async () => {
   const render = plain();
-  // DotLiquid >= 2.1 DoMathsOperation (Microsoft Learn still lists the 2.0 truncating vectors).
+  // DotLiquid >= 2.1 DoMathsOperation (the Power Pages docs still list the 2.0 truncating examples).
   assert.equal(await render("{{ 10 | plus: 1.1 }}|{{ 10 | minus: 1.1 }}|{{ 10 | times: 2.2 }}"), "11.1|8.9|22");
   assert.equal(await render("{{ 10 | divided_by: 3 }}|{{ 10.0 | divided_by: 3 }}|{{ 10 | modulo: 3 }}|{{ 5 | divided_by: 2.0 }}"), "3|3.3333333333333333333333333333|1|2.5");
   assert.equal(await render("{{ 1 | divided_by: 0 }}"), "Liquid error: Attempted to divide by zero.");
@@ -476,7 +476,7 @@ test("page, sitemap, weblinks, sitemarkers, settings and snippets objects", asyn
   );
   assert.equal((await render("{{ sitemarkers['Child Marker'].url }}|[{{ sitemarkers['Nope'] }}]")).html, "/child/|[]");
   assert.equal((await render("{{ settings['Search/Enabled'] }}|{{ settings['Custom/Value'] }}|[{{ settings['Missing'] }}]")).html, "true|abc|[]");
-  // Snippet values are rendered as Liquid in the current context (Microsoft Learn: content snippets).
+  // Snippet values are rendered as Liquid in the current context.
   assert.equal((await render("{{ snippets['Plain'] }}|{{ snippets.Liquid }}|[{{ snippets['Missing'] }}]")).html, "Plain <b>text</b>|Sum 2|[]");
   assert.equal((await render("{{ page }}|{{ website }}")).html, "|");
   // Snippet values are rendered on access; a snippet that includes itself stops with an inline error.
@@ -963,7 +963,7 @@ test("the platform layout carries the language attributes and links content styl
 
 test("website languages follow the import and the request: the wet-boew bilingual export", async (t) => {
   // test/fixtures/wet-boew-bilingual: an unmodified subset of alfredofosu/wet-boew-power-pages-template
-  // (MIT, commit b568a61; see the fixture's README.md and LICENSE). English (en) is the default
+  // (MIT, commit b568a61; see its README.md and licenses/wet-boew-power-pages-template.txt). English (en) is the default
   // language, French (fr) the second; MultiLanguage/DisplayLanguageCodeInURL is true. Its website
   // languages share their portal language's ID and take code, LCID and display name from
   // .portalconfig/portallanguage.yml.

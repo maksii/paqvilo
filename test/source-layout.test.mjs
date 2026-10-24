@@ -10,7 +10,7 @@ import { detectFormat, PortalModel, portalSourceDir, unsupportedSourceLayout, ya
 // The toolkit reads .powerpages-site short-key exports like PAC YAML, and a code-site project
 // through its .powerpages-site/ folder (`mirage init/dev/start`, `dev`, `doctor` and the other
 // catalogue commands resolve sources through loadConfig). A layout it cannot read (mspp_ YAML) is
-// refused with its layout named (ecosystem review docs/runtime-evidence.md, X1).
+// refused with its layout named.
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'test-browser', 'fixtures', 'code-site');
 const write = (root, files) => {

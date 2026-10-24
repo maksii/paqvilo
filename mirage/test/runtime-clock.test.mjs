@@ -48,7 +48,7 @@ test('sequential ids are valid, distinct version 5 GUIDs and refuse an invalid n
   const values = [ids.uuid(), ids.uuid(), ids.uuid()];
   assert.equal(new Set(values).size, 3);
   assert.deepEqual([again.uuid(), again.uuid(), again.uuid()], values);
-  assert.throws(() => sequentialIds('not-a-guid'));
+  assert.throws(() => sequentialIds('not-a-guid'), /Invalid namespace GUID/);
 });
 
 test('a manual scheduler runs due tasks in due order on runDue and advance', async () => {

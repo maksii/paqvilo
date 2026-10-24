@@ -28,5 +28,6 @@ test('public background rule remains confined to exact owned loopback lifecycle 
   const origin = 'http://127.0.0.1:8787';
   assert.equal(simulatorBackgroundRequest('/__sim/events', origin), true);
   assert.equal(simulatorBackgroundRequest('/__sim/frame-ready/12345678-1234-1234-1234-123456789abc', origin), true);
-  for (const value of ['/__sim/events/extra', '/__sim/frame-ready/not-a-token', '/_api/contacts', 'http://127.0.0.1:9999/__sim/events', 'https://external.example.test/__sim/events']) assert.equal(simulatorBackgroundRequest(value, origin), false, value);
+  assert.equal(simulatorBackgroundRequest(origin + '/__sim/frame-ready/12345678-1234-1234-1234-123456789abc?reason=dom-ready', origin), true);
+  for (const value of ['/__sim/events/extra', 'https://foreign.invalid/__sim/frame-ready/12345678-1234-1234-1234-123456789abc', '/__sim/frame-ready/not-a-token', '/_api/contacts', 'http://127.0.0.1:9999/__sim/events', 'https://external.example.test/__sim/events']) assert.equal(simulatorBackgroundRequest(value, origin), false, value);
 });

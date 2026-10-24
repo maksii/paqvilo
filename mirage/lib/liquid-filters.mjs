@@ -53,9 +53,7 @@ import {
   ownKey,
 } from "./liquid-engine.mjs";
 
-// ---------------------------------------------------------------------------
-// Strainer signatures
-// ---------------------------------------------------------------------------
+// ---- Strainer signatures
 /**
  * The parameter lists Power Pages' Strainer holds for each filter name: DotLiquid `master`
  * StandardFilters, then the Adxstudio classes in LiquidExtensions registration order (Filters,
@@ -189,9 +187,7 @@ export function createFilterSignatures(host = {}) {
     ? { ...FILTER_SIGNATURES, currency: ["@context, value, record, attribute, format?"] }
     : FILTER_SIGNATURES;
 }
-// ---------------------------------------------------------------------------
-// Strainer parameter conversion
-// ---------------------------------------------------------------------------
+// ---- Strainer parameter conversion
 const isConvertible = (value) =>
   typeof value === "string" || typeof value === "boolean" || isNumber(value) || isDate(value);
 function cannotConvert(value, target) {
@@ -237,9 +233,7 @@ function asNullableDate(value) {
 }
 const isNullOrWhiteSpace = (value) => value == null || !String(value).trim();
 
-// ---------------------------------------------------------------------------
-// Math (DotLiquid DoMathsOperation, DotLiquid20 string rules)
-// ---------------------------------------------------------------------------
+// ---- Math (DotLiquid DoMathsOperation, DotLiquid20 string rules)
 function integerResult(value, kindA, kindB) {
   if (!Number.isSafeInteger(value)) throw new LiquidError("Arithmetic operation resulted in an overflow.", "System.OverflowException");
   if (kindA === "int" && kindB === "int" && (value < -2147483648 || value > 2147483647))
@@ -311,9 +305,7 @@ const decimalToInt = (decimal) => {
   return value;
 };
 
-// ---------------------------------------------------------------------------
-// Members used by where/except/group_by/order_by/select (EnumerableFilters.Get)
-// ---------------------------------------------------------------------------
+// ---- Members used by where/except/group_by/order_by/select (EnumerableFilters.Get)
 async function memberOf(item, key, context) {
   if (item == null || key == null) return null;
   if (item instanceof LiquidHash) return item.get(key) ?? null;
@@ -390,9 +382,7 @@ async function orderBy(items, key, direction, context, previous) {
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// URL helpers (Microsoft.Xrm.Portal UrlBuilder / QueryStringCollection)
-// ---------------------------------------------------------------------------
+// ---- URL helpers (Microsoft.Xrm.Portal UrlBuilder / QueryStringCollection)
 const PLACEHOLDER = "http://example.com";
 function parseUrl(url) {
   const text = String(url);
@@ -460,9 +450,7 @@ const portOf = (url) => {
   return { "http:": 80, "https:": 443, "ftp:": 21 }[url.protocol] ?? -1;
 };
 
-// ---------------------------------------------------------------------------
-// Text helpers
-// ---------------------------------------------------------------------------
+// ---- Text helpers
 /** TextInfo.ToTitleCase (en-US): words in all capitals are kept. */
 function toTitleCase(input) {
   return input.replace(/[\p{L}\p{Mn}\p{Nd}']+/gu, (word) => {
@@ -544,9 +532,7 @@ function formatNumberString(value, format) {
   throw new LiquidError("Format specifier was invalid.", "System.FormatException");
 }
 
-// ---------------------------------------------------------------------------
-// html_safe_escape: closest local equivalent of the managed HTML sanitizer.
-// ---------------------------------------------------------------------------
+// ---- html_safe_escape: closest local equivalent of the managed HTML sanitizer.
 function sanitizeHtml(input, { htmlSafeInput } = {}) {
   return sanitize(String(input), {
     allowedTags: [...sanitize.defaults.allowedTags, "img", ...(htmlSafeInput === "observed" ? ["input"] : [])],
@@ -596,18 +582,16 @@ function htmlVoidSerialization(markup) {
   return markup;
 }
 
-// ---------------------------------------------------------------------------
-// json output contract:
+// ---- json output contract:
 // - a value from a user or request root (the values the platform HTML-encodes on output) passes
 //   through verbatim: untrimmed, unquoted, unescaped ('-', ' - ', '"-"', '[]', 'true', '1.50', '01');
 //   the output is then HTML-encoded like other request output;
 // - other strings lose their surrounding whitespace and are wrapped in double quotes without any
 //   escaping: a capture holding only the line breaks DotLiquid20 whitespace control leaves renders
-//   "", the report configurations render "" "" (stored " ") and "`…"…"…`" (a backtick-delimited
-//   multi-line text with inner double quotes, raw newlines and tabs, no backslash);
+//   "", a stored " " renders "", and a multi-line text keeps its inner double quotes, raw newlines
+//   and tabs (no backslash);
 // - other values are written like Json.NET defaults: nil as null, booleans and numbers as JSON, ISO
 //   dates, nested arrays and objects; a self-referencing graph raises Json.NET's loop error.
-// ---------------------------------------------------------------------------
 // Json.NET also escapes NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR.
 const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCharCode(0x85, 0x2028, 0x2029)}]`, "g");
 const jsonString = (text) =>
@@ -641,13 +625,11 @@ function jsonSerialize(value, seen, property = null) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Filter catalogue
-// ---------------------------------------------------------------------------
+// ---- Filter catalogue
 /** `this` is the LiquidContext for every filter. */
 export function createFilters(host = {}) {
   const filters = {
-    // ---- DotLiquid StandardFilters (DotLiquid20) ----
+    // ---- DotLiquid StandardFilters (DotLiquid20)
     size: (input) => (typeof input === "string" ? input.length : isEnumerable(input) ? toList(input).length : 0),
     slice(input, offset, length = 1) {
       const start = asInt(offset),
@@ -945,7 +927,7 @@ export function createFilters(host = {}) {
       }
     },
 
-    // ---- Adxstudio Filters ----
+    // ---- Adxstudio Filters
     default: (input, fallback) => input ?? fallback ?? null,
     file_size(value, precision = 1) {
       if (value == null) return null;
@@ -967,7 +949,7 @@ export function createFilters(host = {}) {
       return host.renderWebTemplate(id, this);
     },
 
-    // ---- Adxstudio DateFilters ----
+    // ---- Adxstudio DateFilters
     date_add_days: (date, value) => addTime(date, asDouble(value) * 86400000),
     date_add_hours: (date, value) => addTime(date, asDouble(value) * 3600000),
     date_add_minutes: (date, value) => addTime(date, asDouble(value) * 60000),
@@ -989,7 +971,7 @@ export function createFilters(host = {}) {
       return value == null ? null : formatNetDate(value, "ddd, dd MMM yyyy HH:mm:ss 'Z'");
     },
 
-    // ---- Adxstudio EntityListFilters ----
+    // ---- Adxstudio EntityListFilters
     current_sort(sortExpression, attribute) {
       const expression = asString(sortExpression),
         name = asString(attribute);
@@ -1008,7 +990,7 @@ export function createFilters(host = {}) {
       return host.metafilters ? host.metafilters(entityList, asString(query), entityView, this) : [];
     },
 
-    // ---- Adxstudio EnumerableFilters ----
+    // ---- Adxstudio EnumerableFilters
     all: (input) => input,
     batch(input, batchSize) {
       const list = asEnumerable(input) ?? [];
@@ -1102,7 +1084,7 @@ export function createFilters(host = {}) {
     recent: (input) => input,
     popular: (input) => input,
 
-    // ---- Adxstudio MathFilters ----
+    // ---- Adxstudio MathFilters
     ceil(value) {
       if (value == null) return 0;
       const decimal = toDecimalValue(value);
@@ -1128,7 +1110,7 @@ export function createFilters(host = {}) {
       return places === 0 ? decimalToInt(rounded) : rounded;
     },
 
-    // ---- Adxstudio TypeFilters ----
+    // ---- Adxstudio TypeFilters
     boolean(input) {
       if (input == null) return null;
       try {
@@ -1172,7 +1154,7 @@ export function createFilters(host = {}) {
       return formatItem(input);
     },
 
-    // ---- Adxstudio StringFilters ----
+    // ---- Adxstudio StringFilters
     text_to_html(input, linkifyUrls = true) {
       const s = asString(input);
       if (s == null) return null;
@@ -1198,7 +1180,7 @@ export function createFilters(host = {}) {
       return host.htmlVoidSerialization === "html" ? htmlVoidSerialization(sanitized) : sanitized;
     },
 
-    // ---- Adxstudio NumberFormatFilters (en-US current UI culture) ----
+    // ---- Adxstudio NumberFormatFilters (en-US current UI culture)
     format(number, format) {
       return formatNumberString(toNetDecimal(number), asString(format));
     },
@@ -1216,7 +1198,7 @@ export function createFilters(host = {}) {
     },
     base_currency: (value) => formatNumberString(toNetDecimal(value ?? 0), "C"),
 
-    // ---- Adxstudio UrlFilters ----
+    // ---- Adxstudio UrlFilters
     add_query(url, parameterName, value) {
       const target = asString(url);
       if (target == null) return null;
@@ -1275,7 +1257,7 @@ export function createFilters(host = {}) {
       return host.isSitemapCurrent ? host.isSitemapCurrent(asString(url), this) : false;
     },
 
-    // ---- Adxstudio SearchFilterOptionFilters ----
+    // ---- Adxstudio SearchFilterOptionFilters
     search_filter_options(input) {
       const text = input == null ? "" : formatItem(input);
       if (!text) return null;

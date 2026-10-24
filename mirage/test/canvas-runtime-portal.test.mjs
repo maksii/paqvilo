@@ -1,6 +1,6 @@
 // A signed-in portal visitor drives a canvas app on the Power Pages host as the Dataverse user enhanced authorization maps
 // the contact to (portal-authorization.mjs), never SYSTEM; an anonymous visitor, or a visitor the standard model does not
-// map, is refused with 401 CanvasPrincipalRequired. Invented site, table and data only.
+// map, is refused with 401 CanvasPrincipalRequired.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -48,7 +48,7 @@ async function site(t, state) {
   return sim;
 }
 const api = (sim, headers = {}, body) => fetch(`${sim.url}/_apps/api/canvas/fx_portalapp`, body
-  ? { method: 'POST', headers: { ...headers, 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify(body) } : { headers });
+  ? { method: 'POST', headers: { ...headers, 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify(body) } : { headers });
 
 test('a signed-in portal visitor runs the app as the mapped Dataverse user (enhanced authorization)', async t => {
   const sim = await site(t, 1);

@@ -1,5 +1,5 @@
 // Dataverse TDS request messages: SQL_BATCH and RPC decoding, sp_executesql mapping, DONE/RETURNSTATUS/ERROR/ATTENTION
-// encodings. Buffers are built byte by byte from MS-TDS 2.2.6 and 2.2.7, not with the module under test. Invented SQL only.
+// encodings. Buffers are built byte by byte from MS-TDS 2.2.6 and 2.2.7, not with the module under test.
 import test from "node:test";
 import assert from "node:assert/strict";
 

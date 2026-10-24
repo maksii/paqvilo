@@ -538,7 +538,7 @@ test("an absent form tab falls back to the first visible tab; unknown declaratio
   });
   const p = portal();
   p.forms[0].metadata.adx_tabname = "Absent";
-  // Legacy tab selection (platform-internals-reference.md 6.1.3): name, else label, else
+  // Legacy tab selection: name, else label, else
   // the first visible tab; the fallback is reported.
   const result = await importSolutionMetadata(root, { portal: p });
   const schema = result.componentSchemas["basic-form"];
@@ -671,7 +671,7 @@ test("a control naming a target table and a view is a dataset subgrid without th
   // Layout cells without a width are zero-width columns; disableSorting="1" disables the sort.
   assert.deepEqual(cell.fields.map(field => [field.name, field.widthless === true, field.sortDisabled === true]), [['fullname', true, false], ['firstname', true, true]]);
   assert.deepEqual({type: cell.type, entity: cell.entity, relationship: cell.relationship, showLabel: cell.showLabel, rowspan: cell.rowspan, recordsPerPage: cell.recordsPerPage}, {type: 'subgrid', entity: 'contact', relationship: '', showLabel: false, rowspan: 6, recordsPerPage: 4});
-  assert.ok(cell.fetchXml);
+  assert.match(cell.fetchXml, /<entity name="contact">/);
 });
 
 test("systemFormSchemaFor selects the Main systemform of a table and form name, not a same-named card form", async t => {

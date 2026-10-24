@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
 import { createWebFormSessions, webFormSession } from "../lib/form-service.mjs";
 
-// Invented "survey" multistep form on a Bootstrap 5 site: one insert step with a metadata
+// A "survey" multistep form on a Bootstrap 5 site: one insert step with a metadata
 // description and a required radio choice, then a second step.
 const portal = {
   website: { id: "site" },

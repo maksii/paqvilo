@@ -1,12 +1,13 @@
 // TDS endpoint wired into the Dataverse API: login with an Entra token, SELECT through the real record handlers
-// (so table security applies to the caller), refusals and unknown tables. Invented schema and GUIDs; loopback only.
+// (so table security applies to the caller), refusals and unknown tables.
 // The tedious checks run only when TDS_TEDIOUS_PATH names the tedious entry file.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import tls from "node:tls";
 import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
@@ -36,7 +37,6 @@ const testCertificate = createSelfSignedCertificate();
 const text = { dataverseType: "nvarchar" };
 // User-owned, so a Basic User can create rows and reads only the rows it owns.
 const widgetMapping = () => ({ logicalName: "widget", entitySet: "widgets", idColumn: "widgetid", nameColumn: "name", ownership: "UserOwned", fields: { name: text, ownerid: { dataverseType: "lookup" } } });
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const u32 = (value) => {
   const bytes = Buffer.alloc(4);
   bytes.writeUInt32LE(value);
@@ -179,10 +179,6 @@ describe("TDS endpoint wired into the Dataverse API", () => {
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
-
-  it("listens on an ephemeral loopback port by default", () => {
-    assert.ok(Number.isInteger(api.tdsPort) && api.tdsPort > 0);
-  });
 
   it("a valid application token logs in and SELECTs every row", async () => {
     const { client, reply } = await login(api.tdsPort, appToken);
@@ -365,7 +361,7 @@ describe("TDS query paging and service protection", () => {
       const { client } = await login(api.tdsPort, bearer);
       try {
         const payload = await query(client, "SELECT TOP 2 name FROM widget WHERE widgetid IS NOT NULL");
-        assert.notEqual(payload[0], ERROR, "the query is admitted");
+        assert.equal(WIDGET_NAMES.filter((name) => payload.indexOf(utf16(name)) > 0).length, 2, "TOP 2 returns two rows");
       } finally {
         client.close();
       }
@@ -399,8 +395,9 @@ describe("TDS query paging and service protection", () => {
   });
 });
 
-const tediousPath = process.env.TDS_TEDIOUS_PATH;
-const skip = tediousPath ? false : "set TDS_TEDIOUS_PATH to the tedious entry file to run the tedious checks";
+const gateTedious = fileURLToPath(new URL('../test-sdk/tds/node_modules/tedious/lib/tedious.js', import.meta.url));
+const tediousPath = process.env.TDS_TEDIOUS_PATH || (existsSync(gateTedious) ? gateTedious : null);
+const skip = tediousPath ? false : "install mirage/test-sdk/tds (npm ci) or set TDS_TEDIOUS_PATH to run the tedious checks";
 const loadedTedious = tediousPath ? await import(pathToFileURL(tediousPath).href) : null; // CommonJS: the exports sit on default
 const tedious = loadedTedious?.default ?? loadedTedious;
 

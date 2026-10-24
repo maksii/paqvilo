@@ -1,5 +1,5 @@
 // Elastic tables over HTTP and SOAP: TableType on create and read back, the documented restrictions, the built-in key and
-// system columns, and time-to-live expiry. Invented schema (new_sensorreading, new_gizmo) and loopback only.
+// system columns, and time-to-live expiry.
 // The store stamps modifiedon with Date.now, so the TTL cases replace Date.now for their duration and restore it.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -35,6 +35,12 @@ const tableBody = (schema, extra = {}) => ({
   Attributes: [textColumn("new_SensorType", { IsPrimaryName: true })], ...extra,
 });
 const column = (type, extra = {}) => ({ "@odata.type": `${CRM}${type}AttributeMetadata`, SchemaName: "new_Refused", DisplayName: label("Refused"), ...extra });
+// A lookup from the standard table to the elastic one, with the none cascade an elastic table requires.
+const readingLookup = (schemaName, lookupSchema, lookupLogical) => ({
+  "@odata.type": `${CRM}OneToManyRelationshipMetadata`, SchemaName: schemaName, ReferencedEntity: ELASTIC, ReferencedAttribute: `${ELASTIC}id`,
+  ReferencingEntity: GIZMO, Lookup: { SchemaName: lookupSchema, LogicalName: lookupLogical, DisplayName: label("Reading") },
+  CascadeConfiguration: { Assign: "NoCascade", Delete: "NoCascade", Merge: "NoCascade", Reparent: "NoCascade", Share: "NoCascade", Unshare: "NoCascade", Archive: "NoCascade", RollupView: "NoCascade" },
+});
 
 describe("elastic tables over HTTP and SOAP", () => {
   let api;
@@ -76,6 +82,16 @@ describe("elastic tables over HTTP and SOAP", () => {
     customizer = await userToken("customizer@example.test");
     basic = await userToken("basic@example.test");
     admin = await userToken("admin@example.test");
+    // The schema the tests share: the elastic table with a text column, a standard table and a lookup between them.
+    for (const [path, body] of [
+      [webApi("EntityDefinitions"), tableBody("new_SensorReading", { TableType: "Elastic" })],
+      [webApi(`${definition(ELASTIC)}/Attributes`), column("String", { SchemaName: "new_Note", MaxLength: 200 })],
+      [webApi("EntityDefinitions"), tableBody("new_Gizmo")],
+      [webApi("RelationshipDefinitions"), readingLookup("new_gizmo_sensorreading", "new_SensorReadingId", "new_sensorreadingid")],
+    ]) {
+      const response = await call(path, { method: "POST", body });
+      assert.equal(response.status, 204, await response.text());
+    }
   });
 
   after(async () => {
@@ -111,10 +127,10 @@ describe("elastic tables over HTTP and SOAP", () => {
   }
 
   it("creates an elastic table as System Customizer and reads TableType back", async () => {
-    const created = await createTable(tableBody("new_SensorReading", { TableType: "Elastic" }));
+    const created = await createTable(tableBody("new_SensorProbe", { TableType: "Elastic" }));
     assert.equal(created.status, 204, await created.clone().text());
     assert.ok(created.headers.get("odata-entityid").includes("EntityDefinitions"));
-    const read = await call(webApi(`${definition(ELASTIC)}?$select=LogicalName,TableType,CanCreateCharts,IsDuplicateDetectionEnabled,CanManyToMany`));
+    const read = await call(webApi(`${definition("new_sensorprobe")}?$select=LogicalName,TableType,CanCreateCharts,IsDuplicateDetectionEnabled,CanManyToMany`));
     assert.equal(read.status, 200, await read.clone().text());
     const body = await read.json();
     assert.equal(body.TableType, "Elastic");
@@ -175,9 +191,9 @@ describe("elastic tables over HTTP and SOAP", () => {
   });
 
   it("still takes a plain string column and a whole number with the None format", async () => {
-    const plain = await call(webApi(`${definition(ELASTIC)}/Attributes`), { method: "POST", body: { ...column("String", { SchemaName: "new_Note", MaxLength: 200 }) } });
+    const plain = await call(webApi(`${definition(ELASTIC)}/Attributes`), { method: "POST", body: column("String", { SchemaName: "new_Remark", MaxLength: 200 }) });
     assert.equal(plain.status, 204, await plain.clone().text());
-    const none = await call(webApi(`${definition(ELASTIC)}/Attributes`), { method: "POST", body: { ...column("Integer", { SchemaName: "new_Count", Format: "None" }) } });
+    const none = await call(webApi(`${definition(ELASTIC)}/Attributes`), { method: "POST", body: column("Integer", { SchemaName: "new_Tally", Format: "None" }) });
     assert.equal(none.status, 204, await none.clone().text());
   });
 
@@ -195,9 +211,7 @@ describe("elastic tables over HTTP and SOAP", () => {
     assert.equal(store.state.mappings.new_charted, undefined);
   });
 
-  it("creates a standard table to relate to, then refuses N:N with an elastic table", async () => {
-    const created = await createTable(tableBody("new_Gizmo"));
-    assert.equal(created.status, 204, await created.clone().text());
+  it("refuses N:N with an elastic table", async () => {
     const response = await call(webApi("RelationshipDefinitions"), {
       method: "POST",
       body: {
@@ -224,16 +238,9 @@ describe("elastic tables over HTTP and SOAP", () => {
   });
 
   it("creates a lookup from a standard table to an elastic table with the none cascade and the partitionid companion column", async () => {
-    const response = await call(webApi("RelationshipDefinitions"), {
-      method: "POST",
-      body: {
-        "@odata.type": `${CRM}OneToManyRelationshipMetadata`, SchemaName: "new_gizmo_sensorreading", ReferencedEntity: ELASTIC, ReferencedAttribute: `${ELASTIC}id`,
-        ReferencingEntity: GIZMO, Lookup: { SchemaName: "new_SensorReadingId", LogicalName: "new_sensorreadingid", DisplayName: label("Reading") },
-        CascadeConfiguration: { Assign: "NoCascade", Delete: "NoCascade", Merge: "NoCascade", Reparent: "NoCascade", Share: "NoCascade", Unshare: "NoCascade", Archive: "NoCascade", RollupView: "NoCascade" },
-      },
-    });
+    const response = await call(webApi("RelationshipDefinitions"), { method: "POST", body: readingLookup("new_gizmo_backupreading", "new_BackupReadingId", "new_backupreadingid") });
     assert.equal(response.status, 204, await response.clone().text());
-    assert.equal(store.state.mappings[GIZMO].fields.new_sensorreadingidpid.dataverseType, "nvarchar");
+    assert.equal(store.state.mappings[GIZMO].fields.new_backupreadingidpid.dataverseType, "nvarchar");
   });
 
   it("creates an elastic table over SOAP with TableType Elastic", async () => {

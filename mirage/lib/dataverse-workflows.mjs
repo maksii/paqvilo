@@ -1,14 +1,13 @@
 import { organizationRecord } from './organization-context.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { createRequestContext, currentRequest, runWithRequest } from './request-context.mjs';
-// Workflows in the Dataverse API (briefs W1-W4): workflow rows from the Solution's Workflows folder with their activation
-// rows (W1), the activation rules on PATCH (W1), ExecuteWorkflow (W2), the run of a classic workflow (W3) and the classic
-// triggers on writes (W4: background jobs from committed writes, real-time runs inside the Web API write only).
+// Workflows in the Dataverse API: workflow rows from the Solution's Workflows folder with their activation rows, the
+// activation rules on PATCH, ExecuteWorkflow, the run of a classic workflow and the classic triggers on writes (background
+// jobs from committed writes, real-time runs inside the write).
 //  - A classic workflow (category 0) is XAML. Mirage never interprets it: a run is a trusted pack handler (the `workflows`
 //    export), a mock, or a placeholder that ends the job Canceled. Its writes are one store transaction.
 //  - A cloud flow (category 5) runs its exported definition through flow-runtime, as a job. Its activation is the workflow
 //    row's statecode, which workflowsWithActivation copies onto the exported flow map (the portal trigger path reads that map).
-// Invented data only. Loopback only: nothing here makes an outbound request.
 import { systemIds } from "./runtime-clock.mjs";
 import path from "node:path";
 import { DataError } from "./data-error.mjs";
@@ -39,7 +38,7 @@ const PLACEHOLDER_MESSAGE = "Simulator: classic workflow XAML is not executed; r
 const DISABLED_MESSAGE = "Simulator: classic workflow is disabled in this simulator.";
 const PLACEHOLDER_CANCEL = "Simulator: operation has no local simulation; the job is canceled.";
 const DEPTH_MESSAGE = "This workflow job was canceled because the workflow that started it included an infinite loop. Correct the workflow logic and try again. For information about workflow logic, see Help.";
-const NOT_SUPPORTED_XAML = "Creating a classic workflow with XAML through the Web API is not supported with Dataverse."; // unverified: LC-W1c
+const NOT_SUPPORTED_XAML = "Creating a classic workflow with XAML through the Web API is not supported with Dataverse.";
 const EXECUTE_ROUTE = /^\/api\/data\/v[\d.]+\/workflows\(([^)]+)\)\/Microsoft\.Dynamics\.CRM\.ExecuteWorkflow$/i;
 const EXECUTE_CSDL = `<Action Name="ExecuteWorkflow" IsBound="true">
   <Parameter Name="entity" Type="mscrm.workflow" />
@@ -53,7 +52,7 @@ const isGuid = (value) => /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(v
 const sameId = (a, b) => bare(a) === bare(b);
 const lookup = (logical, id) => ({ id, logical_name: logical });
 const lookupId = (value) => bare(value?.id ?? value);
-const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode }); // unverified: codes outside W1/W2
+const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode });
 const native = (innerCode, message) => new DataError(message, 400, "InvalidRequest", { innerCode });
 const flag = (value) => ["1", "true"].includes(String(value ?? "").trim().toLowerCase());
 const numeric = (value, fallback) => (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? fallback : Number(value));
@@ -76,7 +75,7 @@ const errorNumber = (error) => {
 const canceled = (message, innerCode = "0x0") => Object.assign(new DataError(message, 400, "InvalidRequest", { innerCode }), { jobStatus: JOB_STATUS.canceled });
 const failure = (message) => new DataError(message, 400, "InvalidRequest", { innerCode: "0x0" });
 
-// ---- Solution sources (W1) --------------------------------------------------------------------------------------------
+// ---- Solution sources
 
 // A field of a Workflow element: an attribute or a child element, matched without case.
 function fieldOf(node, name) {
@@ -192,8 +191,8 @@ function activationRowOf(definition, id, activationId) {
 }
 
 // Solution rows win on reseed: a Solution definition's row, and the activation rows of a Solution definition, are replaced.
-// A definition an earlier seed wrote (state.dataverse.sourceSeeded.workflow) that is gone from the sources is deactivated and
-// removed with its activation rows, as a Solution upgrade removes absent components. Returns { added, changed, removed }.
+// A definition an earlier seed wrote (state.dataverse.sourceSeeded.workflow) that is gone from the sources is removed with its
+// activation rows, as a Solution upgrade removes absent components. Returns { added, changed, removed }.
 function seedWorkflows(store, facts) {
   const organizationId = organizationIdOf(store);
   const counts = { added: 0, changed: 0, removed: 0 };
@@ -216,9 +215,9 @@ function seedWorkflows(store, facts) {
   return counts;
 }
 
-// ---- Activation (W1) -------------------------------------------------------------------------------------------------
+// ---- Activation
 
-// Rules for the workflow table's writes, run inside the write's transaction. Codes are Learn's web-service error codes.
+// Rules for the workflow table's writes, run inside the write's transaction. Codes are the documented web service error codes.
 function workflowWriteRule(c, mapping, { operation, data, existing }) {
   if (operation === "delete") {
     if (Number(existing?.type) === TYPE.activation) throw native("0x80045004", "Cannot delete a workflow activation.");
@@ -226,7 +225,7 @@ function workflowWriteRule(c, mapping, { operation, data, existing }) {
   }
   if (operation === "create") {
     if (Number(data.type ?? TYPE.definition) === TYPE.definition && Number(data.category ?? CATEGORY_WORKFLOW) === CATEGORY_WORKFLOW) {
-      throw invalid(NOT_SUPPORTED_XAML, "0x80040203"); // unverified: LC-W1c, the native refusal and its code
+      throw invalid(NOT_SUPPORTED_XAML, "0x80040203"); // the native refusal and its code are a guess
     }
     return;
   }
@@ -287,7 +286,7 @@ export function workflowsWithActivation(workflows, store) {
   return value;
 }
 
-// ---- Pack handlers (W3) ----------------------------------------------------------------------------------------------
+// ---- Pack handlers
 
 /** Trusted classic workflow handlers: a pack's `workflows` maps a workflow id or unique name to a function (see docs). */
 export function workflowHandlers(packs = []) {
@@ -397,12 +396,12 @@ function runCloudFlow(api, config, run) {
     return null;
   }
   if (flow.mode !== "exported" || !flow.definition) throw canceled(PLACEHOLDER_CANCEL);
-  const input = { ...structuredClone(run.target.row), SdkMessage: "Update" }; // unverified: LC-W2g, the message the flow receives
+  const input = { ...structuredClone(run.target.row), SdkMessage: "Update" }; // the message the flow receives is a guess
   // Not isolated: each connector write is its own SDK boundary, so a later failed action keeps earlier completed writes
   // (the HTTP and trigger paths do the same; mirage/docs/operations.md).
   // Connector actions go through the host's connector runtime and the flow's own connection references. With the host's
   // run store (api.flowRuns) the run is a tracked flowrun that can wait and resume (flow-runtime.mjs runTrackedFlow).
-  // unverified: the flowrun triggertype text of an ExecuteWorkflow run.
+  // The flowrun triggertype text of an ExecuteWorkflow run is a guess.
   return runTrackedFlow({
     runs: api.flowRuns ?? null, processId: bare(run.row.workflowid), trigger: "ExecuteWorkflow",
     wrap: (fn) => api.change(() => api.store.transact(async () => await fn(), { cloneResult: false })),
@@ -412,20 +411,20 @@ function runCloudFlow(api, config, run) {
   });
 }
 
-// ---- ExecuteWorkflow (W2) --------------------------------------------------------------------------------------------
+// ---- ExecuteWorkflow
 
-// The InputArguments collection as a plain object of key to value. unverified: LC-W2h, the native item shape.
+// The InputArguments collection as a plain object of key to value; the native item shape is a guess.
 const inputsOf = (value) => Object.fromEntries((Array.isArray(value) ? value : []).map((item) => [item?.Key ?? item?.key ?? "", item?.Value ?? item?.value ?? null]).filter(([key]) => key));
 
 // The cloud flow trigger's declared input names (none for a Dataverse trigger, which takes the row).
 const cloudInputNames = (definition) => Object.keys(Object.values(definition?.triggers ?? {})[0]?.inputs?.schema?.properties ?? {});
 
-/** ExecuteWorkflow: validates in Learn's order, then starts the run. Returns the Web API body for the asyncoperation id. */
+/** ExecuteWorkflow: validates in the documented order, then starts the run. Returns the Web API body for the asyncoperation id. */
 async function executeWorkflow(api, config, c, workflowId, body = {}) {
   const { store } = api;
   api.principals.authorize({ user: c.user, entity: "workflow", operation: "read", mapping: store.resolveMapping("workflow") });
   let row = workflowRow(store, workflowId);
-  if (!row) throw native("0x8006040b", "Workflow does not exist."); // unverified: LC-W2b, the HTTP status
+  if (!row) throw native("0x8006040b", "Workflow does not exist."); // the 400 status is a guess
   if (Number(row.type) === TYPE.activation) row = workflowRow(store, lookupId(row.parentworkflowid));
   if (!row) throw native("0x8006040b", "Workflow does not exist.");
   const category = Number(row.category);
@@ -437,7 +436,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
   } else if (category === CATEGORY_MODERN_FLOW) {
     if (!row.ondemand) throw native("0x80060479", `Cannot execute Modern Flow '${name}' because it is not marked as on-demand.`);
   } else {
-    throw native("0x8006040a", "Invalid workflow or workflow does not exist."); // unverified: LC-W2c
+    throw native("0x8006040a", "Invalid workflow or workflow does not exist.");
   }
   const entityId = body?.EntityId;
   if (entityId === undefined || entityId === null || entityId === "") throw invalid("EntityId is required.");
@@ -467,7 +466,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
   const activation = activationOf(store, row.workflowid);
   if (realtime) {
     await attempt(api, config, { ...run, jobId: null });
-    return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "asyncoperations/$entity"), asyncoperationid: ZERO_GUID } }; // unverified: LC-W2f, the id of a real-time run
+    return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "asyncoperations/$entity"), asyncoperationid: ZERO_GUID } }; // the id of a real-time run is a guess
   }
   // The work runs on a later tick, after the job id is assigned.
   let jobId = null;
@@ -481,7 +480,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
   return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "asyncoperations/$entity"), asyncoperationid: jobId } };
 }
 
-// ---- CreateWorkflowFromTemplate (W1) -----------------------------------------------------------------------------------
+// ---- CreateWorkflowFromTemplate
 
 // CSDL as the native $metadata has it (bound to workflow, WorkflowName not null, returns workflow).
 const TEMPLATE_CSDL = `<Action Name="CreateWorkflowFromTemplate" IsBound="true">
@@ -495,8 +494,8 @@ async function createFromTemplate(api, c) {
   const { store } = api;
   const template = c.target?.row;
   const name = c.body?.WorkflowName;
-  if (typeof name !== "string" || !name) throw invalid("WorkflowName is required.", "0x80040203"); // unverified: message text
-  if (Number(template?.type) !== TYPE.template) throw invalid("Only a workflow template can be copied.", "0x80040203"); // unverified: LC
+  if (typeof name !== "string" || !name) throw invalid("WorkflowName is required.", "0x80040203"); // native message text is a guess
+  if (Number(template?.type) !== TYPE.template) throw invalid("Only a workflow template can be copied.", "0x80040203"); // native message text is a guess
   api.principals.authorize({ user: c.user, entity: "workflow", operation: "create", mapping: store.resolveMapping("workflow") });
   const id = (api.ids ?? systemIds).uuid();
   const copy = {
@@ -508,7 +507,7 @@ async function createFromTemplate(api, c) {
   return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "workflows/$entity"), workflowid: id, name, statecode: 0, statuscode: STATUS.draft, type: TYPE.definition } };
 }
 
-// ---- Triggers (W4) ---------------------------------------------------------------------------------------------------
+// ---- Triggers
 
 const idOf = (value) => (value === null || value === undefined ? "" : bare(value?.id ?? value));
 const lowerNames = (text) => String(text ?? "").split(",").map((name) => name.trim().toLowerCase()).filter(Boolean);
@@ -644,12 +643,12 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
       await runClassic(api, config, run);
     } catch (error) {
       if (error instanceof DataError) throw error;
-      throw native("0x80040265", error.message); // unverified: LC-W4a, the code a real-time workflow failure answers with
+      throw native("0x80040265", error.message); // the code of a real-time workflow failure is a guess
     }
   }
 }
 
-// ---- Run modes for /_sim/ (W3) -----------------------------------------------------------------------------------------
+// ---- Run modes for /_sim/
 
 export const RUN_MODES = ["handler", "placeholder", "mock", "disabled"];
 const MOCK_STATUSES = [JOB_STATUS.succeeded, JOB_STATUS.failed];
@@ -675,8 +674,10 @@ export function classicWorkflowsView(store, overrides = {}) {
   }));
 }
 
-// ---- Extension -------------------------------------------------------------------------------------------------------
+// ---- Extension
 
+// A store keeps one background-trigger subscription: a restart on the same store replaces the earlier one.
+const subscriptions = new WeakMap();
 /**
  * The extension for the Dataverse API (server.mjs passes it beside customApiExtension, since the Solution facts and the
  * pack handlers belong to one site). config: facts (readSolutionWorkflows), handlers (workflowHandlers), overrides (a map of
@@ -684,10 +685,8 @@ export function classicWorkflowsView(store, overrides = {}) {
  * flow's definition, mode, steps and service profile, or null), diagnostic(entry).
  * install registers ExecuteWorkflow (operation for $metadata and SOAP, route for the id-addressed call), seeds the rows and
  * subscribes the background triggers to the store's committed writes; reset seeds the rows again. Only Dataverse-enabled
- * runtimes install it, so the portal never starts a job.
+ * runtimes install it, so a portal-only runtime never starts a job.
  */
-// A store keeps one background-trigger subscription: a restart on the same store replaces the earlier one.
-const subscriptions = new WeakMap();
 export function workflowExtension(config = {}) {
   const settings = { handlers: new Map(), overrides: {}, cloudFlow: null, diagnostic: null, ...config };
   // facts: the Solution workflow facts, or a getter over the current sources (source-organization-extensions.mjs refresh).
@@ -723,7 +722,7 @@ export function workflowExtension(config = {}) {
         name: "CreateWorkflowFromTemplate", kind: "action", binding: "entity", entity: "workflow", csdl: TEMPLATE_CSDL,
         handle: (c) => createFromTemplate(api, c),
       });
-      // The id-addressed call. A missing row answers Learn's workflow code, which the generic entity lookup would not.
+      // The id-addressed call. A missing row answers the documented workflow code, which the generic entity lookup would not.
       api.addRoute((pathname, method) => method === "POST" && EXECUTE_ROUTE.test(pathname) && isGuid(bare(EXECUTE_ROUTE.exec(pathname)[1])), (c) => {
         const id = bare(EXECUTE_ROUTE.exec(c.url.pathname)[1]);
         return executeWorkflow(api, settings, c, id, c.body).then((result) => ({ ...result, headers: { "content-type": "application/json; charset=utf-8" } }));

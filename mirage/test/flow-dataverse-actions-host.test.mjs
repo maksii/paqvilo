@@ -1,6 +1,6 @@
-// Task 43 through a running host: a flow's Dataverse connector PerformUnboundAction and PerformBoundAction run a pack
+// Through a running host: a flow's Dataverse connector PerformUnboundAction and PerformBoundAction run a pack
 // custom API inside the run's change slot (the run owns it, so the handler joins its transaction instead of waiting on
-// it), as the flow profile's systemuser with an execute grant naming the message. Invented x_ Solution and data only.
+// it), as the flow profile's systemuser with an execute grant naming the message.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -45,7 +45,7 @@ async function host(t, profile) {
       mappings: { x_widget: { entitySet: 'x_widgets', idColumn: 'x_widgetid', fields: { x_name: { type: 'string' } } } } } });
   ownedFixture(t).add(() => sim.close());
   const call = async (method, suffix, payload) => {
-    const response = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify(payload) });
+    const response = await fetch(sim.url + '/_sim/api' + suffix, { method, headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: JSON.stringify(payload) });
     return { status: response.status, body: await response.json() };
   };
   for (const id of [UNBOUND, BOUND]) assert.equal((await call('PATCH', '/operations/' + encodeURIComponent('cloud-flow:' + id), { mode: 'exported' })).status, 200);

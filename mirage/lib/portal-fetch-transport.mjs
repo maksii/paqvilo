@@ -14,7 +14,7 @@ const httpSysBody=status=>[
   '</BODY></HTML>','',
 ].join('\r\n');
 
-/** An evidenced backend GET transport, distinct from FetchXML join admission.
+/** A per-site backend GET transport, distinct from FetchXML join admission.
  * Limits are effective encoded-XML budgets after the deployment's fixed URI
  * and header overhead; neither tokens nor captured query responses are inputs. */
 export function assertPortalFetchXmlTransport(xml,profile) {

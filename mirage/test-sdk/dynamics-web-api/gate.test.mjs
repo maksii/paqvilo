@@ -1,7 +1,7 @@
 // SDK verification gate: dynamics-web-api 2.5.1 + @azure/msal-node 7.1.0 against the Mirage Dataverse simulator.
 // Opt-in only (`npm test` in this folder); not part of `npm run validate`.
 // Variant B: msal uses authorityMetadata pointing at the http token endpoint, so no TLS is needed.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -16,6 +16,7 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FETCH_PAGING = "Microsoft.Dynamics.CRM.fetchxmlpagingcookie";
 
 const gate = await startGate();
+after(() => gate.close());
 const { origin, tenantId, clientId, clientSecret } = gate;
 
 const AUTHORITY_HOST = "login.sim.invalid";
@@ -201,12 +202,11 @@ test("$batch executes two creates and resolves with their ids", T, async () => {
   assert.equal(all.value.length, widgetTotal);
 });
 
-test("request log shows WhoAmI and never records an authorization header", T, async (t) => {
-  t.after(() => gate.close());
+test("request log shows WhoAmI and never records the bearer token", T, async () => {
   const log = gate.requests();
   // DynamicsWebApi.callFunction sends the parameterless function with empty parentheses.
   assert.ok(log.some((entry) => entry.path === "/api/data/v9.2/WhoAmI()"), "expected WhoAmI() in the request log");
-  for (const entry of log) assert.equal("authorization" in entry, false);
+  assert.equal(JSON.stringify(log).includes(token), false, "no request record carries the bearer token");
 });
 
 // Variant A: msal discovers the OIDC document over the simulator's TLS listener. Runs in a child process

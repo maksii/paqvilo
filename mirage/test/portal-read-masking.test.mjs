@@ -1,8 +1,7 @@
 // Every portal read path (store.get / store.query / store.fetchXml with portalRequest: forms, lists, the portal Web API with
 // $expand, Liquid fetchxml) masks secured columns through one rule (portal-authorization.mjs maskRow): column security of the
 // reading principal, which is the site's application user in the standard model and the visitor's mapped Dataverse user in the
-// enhanced model (Learn power-pages/security/unify-pages-security-with-dataverse), with masking rules applied because a portal
-// read never sends UnMaskedData (Learn power-platform/admin/create-manage-masking-rules). Invented site, tables and data only.
+// enhanced model, with masking rules applied because a portal read never sends UnMaskedData.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -89,8 +88,8 @@ async function site(t, state) {
     };
   };
   // Each read with an operand over a secured column: "status code innercode" of the answer. The portal Web API wraps a Dataverse
-  // error as 9004010D CDSError with the Dataverse code in innererror (Learn power-pages/configure/web-api-overview error codes);
-  // 0x80041155 is the masked-operand refusal (Learn web-service-error-codes CannotFilterOnMaskedAttribute).
+  // error as 9004010D CDSError with the Dataverse code in innererror; 0x80041155 is the masked-operand refusal
+  // (CannotFilterOnMaskedAttribute).
   const operands = async () => {
     const status = async (route) => { const response = await fetch(sim.url + route, { headers }); const body = await response.json(); return [response.status, body.error?.code, body.error?.innererror?.code].filter(Boolean).join(' '); };
     let liquid = '200';

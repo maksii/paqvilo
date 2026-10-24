@@ -1,5 +1,4 @@
-// Enhanced Power Pages authorization at run time (portal-authorization.mjs). Learn: security/unify-pages-security-with-dataverse,
-// security/column-security-profile, powerpagesite enhancedauthorization 0-3. Invented site, tables and data only.
+// Enhanced Power Pages authorization at run time (portal-authorization.mjs), powerpagesite enhancedauthorization 0-3.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -66,7 +65,7 @@ async function site(t, state) {
   const sim = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false, initial: initial() });
   ownedFixture(t).add(() => sim.close());
   const alex = signInHeaders(sim, 'alex');
-  const call = (method, route, body, headers = alex) => fetch(sim.url + route, { method, headers: { ...headers, ...(body ? { 'content-type': 'application/json', __RequestVerificationToken: sim.state().csrf } : method === 'GET' ? {} : { __RequestVerificationToken: sim.state().csrf }) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const call = (method, route, body, headers = alex) => fetch(sim.url + route, { method, headers: { ...headers, ...(body ? { 'content-type': 'application/json', __RequestVerificationToken: sim.csrf } : method === 'GET' ? {} : { __RequestVerificationToken: sim.csrf }) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const ids = async (route, headers) => { const response = await call('GET', route, undefined, headers); return response.status === 200 ? (await response.json()).value.map(row => Object.values(row).find(value => /^[iol]\d$/.test(value))).sort() : response.status; };
   return { sim, call, ids, alex };
 }
@@ -86,9 +85,10 @@ async function matrix({ call, ids }) {
   };
 }
 
-test('the same site grants exactly what its table permissions allow in states 0, 1, 2 and 3, and the models agree', async t => {
+// States 1 and 2 select the same enhanced model as 3 (portalAuthorizationModel, last test), so 0 and 3 cover both runtimes.
+test('the same site grants exactly what its table permissions allow in the standard and enhanced states, and the models agree', async t => {
   const expected = { items: ['i1', 'i2'], orders: ['o1'], lines: ['l1'], anonymous: 403, patchOwn: 204, patchForeign: 403, patchOrder: 403, deleteOwn: 403 };
-  for (const state of [0, 1, 2, 3]) {
+  for (const state of [0, 3]) {
     const fixture = await site(t, state);
     assert.deepEqual(await matrix(fixture), expected, `state ${state}`);
     const model = state ? 'enhanced' : 'standard';
@@ -185,18 +185,18 @@ test('the derived security roles mirror the current web roles', async t => {
   assert.ok(!fixture.sim.store.tableRows('roleprivileges').some(row => row.roleid.id === reviewer));
 });
 
-// RC2-01: every portal write runs through form-service.mjs portalRecordWrites (the mapped user, column security).
+// Every portal write runs through form-service.mjs portalRecordWrites (the mapped user, column security).
 test('server logic and list action writes run as the mapped user under column security', async t => {
   for (const state of [0, 3]) {
     const fixture = await site(t, state), { sim } = fixture;
     for (const item of (await (await fetch(sim.url + '/__sim/api/operations')).json()).items.filter(entry => entry.kind === 'server-logic'))
-      await fetch(sim.url + '/__sim/api/operations/' + encodeURIComponent(item.key), { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: '{"mode":"exported"}' });
+      await fetch(sim.url + '/__sim/api/operations/' + encodeURIComponent(item.key), { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf }, body: '{"mode":"exported"}' });
     const logic = async (body) => JSON.parse((await (await fixture.call('PUT', '/_api/serverlogics/sample?id=i1', body)).json()).data);
     const secret = await logic({ x_secret: 'by logic' });
     assert.equal(secret.StatusCode, state ? 403 : 204, `state ${state}: a secured column through server logic`);
     assert.equal((await logic({ x_name: 'by logic' })).StatusCode, 204);
     const deactivated = await fetch(`${sim.url}/_services/action-deactivate/${SITE}`, { method: 'POST',
-      headers: { ...fixture.alex, 'content-type': 'application/json', __RequestVerificationToken: sim.state().csrf }, body: JSON.stringify({ LogicalName: 'x_task', Id: TASK }) });
+      headers: { ...fixture.alex, 'content-type': 'application/json', __RequestVerificationToken: sim.csrf }, body: JSON.stringify({ LogicalName: 'x_task', Id: TASK }) });
     assert.equal(deactivated.status, 204, await deactivated.text());
     const task = sim.store.tableRows('x_task')[0], item = sim.store.tableRows('x_item').find(row => row.x_itemid === 'i1');
     assert.equal(task.statecode, 1);
@@ -220,7 +220,7 @@ test('portal modules write only through portalRecordWrites', async () => {
   assert.deepEqual(offenders, []);
 });
 
-// RC2-08: a failed role sync denies the visitor until a sync succeeds, whatever role links it still has.
+// A failed role sync denies the visitor until a sync succeeds, whatever role links it still has.
 test('a failed role sync fails closed until the next successful sync', async t => {
   const fixture = await site(t, 3), { sim } = fixture;
   assert.deepEqual(await fixture.ids('/_api/x_items?$select=x_name'), ['i1', 'i2']);
@@ -235,7 +235,7 @@ test('a failed role sync fails closed until the next successful sync', async t =
   assert.deepEqual(await fixture.ids('/_api/x_items?$select=x_name'), ['i1', 'i2']);
 });
 
-// Q1: the derived roles are platform-managed; a permission change rewrites a manually changed role and reports it once.
+// The derived roles are platform-managed; a permission change rewrites a manually changed role and reports it once.
 test('a table-permission change rewrites a manually changed mapped role and reports it once', async t => {
   const fixture = await site(t, 3), { sim } = fixture;
   await fixture.ids('/_api/x_items?$select=x_name');
@@ -252,7 +252,7 @@ test('a table-permission change rewrites a manually changed mapped role and repo
   assert.deepEqual(sim.state().diagnostics.filter(item => item.code === 'PORTAL_AUTHORIZATION_ROLE_RESYNCED').map(item => item.role), ['Member']);
 });
 
-// Q2: a wildcard table permission expands to every table at sync.
+// A wildcard table permission expands to every table at sync.
 test('a wildcard table permission grants every table in both models', async t => {
   for (const state of [0, 3]) {
     const fixture = await site(t, state);
@@ -261,7 +261,7 @@ test('a wildcard table permission grants every table in both models', async t =>
   }
 });
 
-// Q4: an undocumented value reads as the standard model and is reported.
+// An undocumented value reads as the standard model and is reported.
 test('an undocumented enhanced authorization value runs the standard model and is reported', async t => {
   const fixture = await site(t, 9);
   assert.deepEqual(await fixture.ids('/_api/x_items?$select=x_name'), ['i1', 'i2']);

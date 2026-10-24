@@ -7,13 +7,13 @@
 // A pack handler gets ctx { name, args, target, caller, user, origin, version, api }. target is { logicalName, id, row }
 // for a bound call, else null. A returned object is the response body (wrapped with its @odata.context); undefined is 204.
 //
-// GC policy (internal-only messages): Learn marks some messages "For internal use only" (quote and URL in a comment at the
-// call site), yet they exist in the native $metadata, so they are registered too. registerInternalMessage(api, spec) is
-// registerAddon with fallback = notSimulated(name): a pack handler still replaces it, and otherwise the call answers
-// 501 NotImplemented, innerCode 0x80040216, "<Name> is for internal use only and is not simulated." (unverified).
+// Internal-only messages: some messages are documented "For internal use only", yet they exist in the native $metadata,
+// so they are registered too. registerInternalMessage(api, spec) is registerAddon with fallback = notSimulated(name):
+// a pack handler still replaces it, and otherwise the call answers 501 NotImplemented, innerCode 0x80040216,
+// "<Name> is for internal use only and is not simulated." (a simulator answer, not a native one).
 //
-// Default errors: aiUnavailable is the Predict default from the code interpreter troubleshooting page (403 0x80048d06), and
-// featureNotEnabled is the web service error 0x80061113. The HTTP status of featureNotEnabled is unverified.
+// Default errors: aiUnavailable is the documented Predict error (403 0x80048d06), and featureNotEnabled is the web service
+// error 0x80061113. The HTTP status of featureNotEnabled is a guess.
 // ponytail: argsOf, idOf and respond are copies of the helpers in dataverse-app-messages.mjs (not exported there).
 import { DataError } from "./data-error.mjs";
 import { collectPackExport } from "./pack-exports.mjs";
@@ -92,7 +92,7 @@ export function registerAddon(api, spec) {
   });
 }
 
-// The GC stub: an internal-only message with its native signature, a pack override and the "not simulated" default.
+// An internal-only message with its native signature, a pack override and the "not simulated" default.
 export function registerInternalMessage(api, spec) {
   registerAddon(api, { ...spec, fallback: () => notSimulated(spec.name) });
 }
@@ -101,7 +101,7 @@ export function notSimulated(name) {
   return new DataError(`${name} is for internal use only and is not simulated.`, 501, "NotImplemented", { innerCode: "0x80040216" });
 }
 
-// Predict and the other AI messages without capacity: the documented error body from the Predict troubleshooting section.
+// Predict and the other AI messages without capacity: the documented Predict error body.
 export function aiUnavailable() {
   return new DataError(
     '{"operationStatus":"Error","error":{"type":"Error","code":"EntitlementNotAvailable","innerErrors":[{"scope":"Generic","target":null,"code":"NoCapacity","type":"Error","message":"No capacity was found."}]},"predictionId":null}',

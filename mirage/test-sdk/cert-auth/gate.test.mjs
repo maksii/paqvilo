@@ -2,7 +2,7 @@
 // A fresh RSA key pair and self-signed certificate are generated per run and registered for the gate application;
 // @azure/msal-node 7.1.0 and MSAL.NET (Microsoft.Identity.Client 4.91.0) each redeem their own client assertion over
 // the TLS authority and call WhoAmI. Opt-in (`npm test` in this folder or `npm run test:sdk`); never part of `npm run validate`.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { X509Certificate, constants, randomUUID, sign } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -25,6 +25,7 @@ const dotnet = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
 const dotnetSkip = dotnet.status === 0 ? false : "dotnet is not installed: MSAL.NET half of the gate skipped";
 
 const gate = await startGate({ tls: true });
+after(() => gate.close());
 const { tlsOrigin, tenantId, clientId } = gate;
 const TOKEN_PATH = `/${tenantId}/oauth2/v2.0/token`;
 const WHOAMI_PATH = "/api/data/v9.2/WhoAmI";
@@ -115,8 +116,4 @@ test("a tampered assertion is refused with AADSTS700027", T, async () => {
   assert.deepEqual(error.error_codes, [700027]);
   assert.match(error.error_description, /^AADSTS700027: /);
   assert.ok(recorded().some((e) => e.method === "POST" && e.path === TOKEN_PATH && e.status === 400), "the refused POST is in the request log");
-});
-
-test("gate shutdown", async () => {
-  await gate.close();
 });

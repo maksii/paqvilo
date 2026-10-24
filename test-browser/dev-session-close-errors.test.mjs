@@ -181,6 +181,7 @@ for (const multiple of [false, true]) {
         fetch(record.agent.endpoint + "/v1/session", {
           signal: AbortSignal.timeout(1000),
         }),
+        /fetch failed/,
         "the failed remover must not leave its HTTP listener open",
       );
       await assert.rejects(runtime.close(), (cause) => cause === failure);

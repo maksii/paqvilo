@@ -343,7 +343,7 @@ export function yamlKeyStyle(dir) {
 /**
  * A source layout the toolkit cannot treat as a portal: { dialect, label }, else null. PAC YAML
  * with adx_ keys, .powerpages-site short-key YAML and unpacked Solutions are portals; the
- * Mirage names the same layouts (mirage/lib/source-dialect.mjs, ECOSYSTEM-REVIEW.md X1).
+ * Mirage names the same layouts (mirage/lib/source-dialect.mjs).
  */
 export function unsupportedSourceLayout(dir) {
   if (!dir) return null;

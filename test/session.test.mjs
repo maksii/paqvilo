@@ -225,8 +225,10 @@ test('a web file is answered from disk and the portal is not asked', async () =>
   assert.equal(b.fetched.length, 0);
 });
 
-test('a page is fetched online with the request as the browser made it, rewritten, and answered once', async () => {
-  fx.write('web-pages/home/content-pages/Home.en-US.webpage.custom_css.css', '.hero {\n  color: blue;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n');
+test('a page is fetched online with the request as the browser made it, rewritten, and answered once', async (t) => {
+  const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css', original = fx.read(css);
+  t.after(() => fx.write(css, original));
+  fx.write(css,'.hero {\n  color: blue;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n');
   const b = fakeBrowser({
     [`${ORIGIN}/`]: { headers: { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip', 'content-length': '123', 'set-cookie': 'a=1' }, body: ONLINE_HOME },
   });
@@ -250,7 +252,6 @@ test('a page is fetched online with the request as the browser made it, rewritte
   assert.equal(answers[0].responseHeaders.find((h) => h.name === 'content-length').value, String(Buffer.byteLength(body)));
   assert.equal(hits[0].navigation, true);
   assert.equal(hits[0].page, tab.page);
-  fx.write('web-pages/home/content-pages/Home.en-US.webpage.custom_css.css', '.hero {\n  color: red;\n}\n.card {\n  margin: 0;\n}\n.footer {\n  padding: 1px;\n}\n');
 });
 
 test('a form post carries its body to the portal', async () => {
@@ -297,9 +298,10 @@ test('when the portal cannot be reached a page request goes back to the browser'
   assert.deepEqual(b.answers('r1').map((a) => a.method), ['Fetch.continueRequest']);
 });
 
-test('the first custom JavaScript file of a page is picked up when it is created', () => {
+test('the first custom JavaScript file of a page is picked up when it is created', (t) => {
   const s = session();
   const rel = 'web-pages/scripts/content-pages/Scripts.en-US.webpage.custom_javascript.js';
+  t.after(() => fs.rmSync(fx.file(rel), { force: true }));
   const page = '<html><head></head><body><p>scripts</p></body></html>';
   assert.equal(s.rewriter.rewrite(page, '/scripts/').applied.length, 0);
   fx.write(rel, 'console.log("first script of this page");\n');

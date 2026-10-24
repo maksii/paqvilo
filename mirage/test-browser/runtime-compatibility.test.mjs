@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -10,6 +10,9 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { injectRuntimeCompatibility } from "../lib/source-dependencies.mjs";
 
 const require = createRequire(import.meta.url);
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 const lib = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "lib");
 const BUNDLE = "/resource/powerappsportal/dist/bootstrap.bundle-105a4995b8.js";
 // Synthetic stand-in for a captured Bootstrap 3 bundle: the real plugin owns the dropdown data API.
@@ -52,8 +55,6 @@ test("header dropdowns open once with a captured native bundle, duplicate jQuery
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
   assert.equal((pages["/native"].match(/bootstrap-plugins-compat/g) ?? []).length, 0);
   assert.equal((pages["/local"].match(/bootstrap-plugins-compat/g) ?? []).length, 1);
   for (const route of Object.keys(pages)) {
@@ -102,9 +103,8 @@ test("local jQuery UI dialogs render the widget DOM that portal confirm dialogs 
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
   const page = await browser.newPage();
+  t.after(() => page.context().close());
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);

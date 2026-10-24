@@ -52,7 +52,7 @@ test('inspection API preserves summary HTTP errors and rejects malformed full re
   for(const value of [null,[],'invalid',{...full(),forms:{}}]){
     malformed=value;result=await call('inspect',{refresh:true});assert.equal(result.ok,false);assert.equal(result.error,'Page inspection returned an invalid full report.');
   }
-  mode='healthy';result=await call('inspect');assert.equal(result.ok,true);assert.ok(result.report);
+  mode='healthy';result=await call('inspect');assert.equal(result.ok,true);assert.equal(result.report.path,'/scripts');
 });
 
 test('late inspection responses cannot replace the current navigation report or source-open index',async t=>{

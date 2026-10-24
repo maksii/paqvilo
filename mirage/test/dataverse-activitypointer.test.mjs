@@ -1,5 +1,5 @@
 // The activitypointer view through the Dataverse Web API: rows from the activity tables with activitytypecode, $filter,
-// a by-id read, refused writes, and a Basic User who does not see another user's task. Invented site and loopback only.
+// a by-id read, refused writes, and a Basic User who does not see another user's task.
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

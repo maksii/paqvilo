@@ -8,7 +8,7 @@
 //              pushdown is null or { filters, top, orderBy } (see pushdownOf): predicates the scan may apply.
 //              columns is the catalog columns the statement reads, always with the id column.
 //   params     sp_executesql parameters such as { "@p1": 5 }. Visible in every batch.
-//   principal  accepted for the integration task (6.3); not read here.
+//   principal  accepted, not read here.
 //   signal     AbortSignal, checked between rows (error 3617).
 //   now        Date or () => Date, used by GETDATE and friends.
 // Returns { resultSets: [{ columns: [{ name, type, length, precision, scale, nullable }], rows: [[...values]] }], rowCount }.
@@ -20,6 +20,7 @@
 //   - @@ROWCOUNT is updated after each statement: the rows a SELECT returned (or the rows a variable assignment
 //     read), and 0 after DECLARE and SET.
 //   - Declared types that CAST converts (CAST_TYPES) are applied to assigned values.
+//   - Error numbers and messages follow SQL Server, written from memory; the endpoint's own refusals (40000) are guesses.
 // ponytail: a value with no static type (scalar subquery, unknown function) takes its kind from the JS value.
 // ponytail: CONTAINS is a case-insensitive substring test, with no full-text semantics.
 // ponytail: LIKE builds a RegExp per evaluation; no cache.
@@ -84,7 +85,7 @@ async function runStatement(statement, st, resultSets) {
     for (const variable of statement.variables) {
       const key = lower(variable.name);
       if (st.vars.has(key)) {
-        fail(134, `The variable name '${variable.name}' has already been declared. Variable names must be unique within a query batch or stored procedure.`); // unverified: text from memory
+        fail(134, `The variable name '${variable.name}' has already been declared. Variable names must be unique within a query batch or stored procedure.`);
       }
       const value = variable.value ? await evalExpr(variable.value, rootEnv(), st) : null;
       st.vars.set(key, { name: variable.name, type: variable.dataType, value: typedValue(variable.dataType, value) });
@@ -104,7 +105,7 @@ async function runStatement(statement, st, resultSets) {
   }
   for (const column of result.columns) {
     if (column.type === "varbinary" || column.type === "binary") {
-      fail(40000, `The data type ${column.type} is not supported.`); // unverified: live capture
+      fail(40000, `The data type ${column.type} is not supported.`);
     }
   }
   resultSets.push({ columns: result.columns, rows: result.rows });
@@ -113,7 +114,7 @@ async function runStatement(statement, st, resultSets) {
 
 function setVar(st, name, value) {
   const variable = st.vars.get(lower(name));
-  if (!variable) fail(137, `Must declare the scalar variable "${name}".`); // unverified: text from memory
+  if (!variable) fail(137, `Must declare the scalar variable "${name}".`);
   variable.value = typedValue(variable.type, value);
 }
 
@@ -182,7 +183,7 @@ async function scanTable(table, st, pushdown = null) {
   return st.scanCache.get(key);
 }
 
-// Pushdown (6.2f). The scan may narrow rows by the single-table predicates below; the evaluator still applies
+// Pushdown. The scan may narrow rows by the single-table predicates below; the evaluator still applies
 // the whole WHERE. A predicate is pushed only where the server keeps every row SQL keeps. exact means it keeps
 // exactly the rows SQL keeps, which TOP needs. Text is never compared for equality: SQL pads trailing spaces
 // and OData does not. Text is pushed only without cased letters, where no collation changes the result.
@@ -341,7 +342,6 @@ function bindColumns(node, env) {
   }
 }
 
-// True when an aggregate call or GROUP BY/HAVING sits in this SELECT's own expressions (not in a subquery).
 // Any aggregate call in the tree, subqueries included (ON clauses forbid aggregates even inside subqueries).
 function hasAggregate(node) {
   if (!node || typeof node !== "object") return false;
@@ -392,13 +392,13 @@ async function evalSetOperation(node, outer, st) {
   const left = await evalQuery(node.left, outer, st);
   const right = await evalQuery(node.right, outer, st);
   if (left.names.length !== right.names.length) {
-    fail(205, "All queries combined using a UNION, INTERSECT or EXCEPT operator must have an equal number of expressions in their target lists."); // unverified: number and text from memory
+    fail(205, "All queries combined using a UNION, INTERSECT or EXCEPT operator must have an equal number of expressions in their target lists.");
   }
   let entries = [...left.rows, ...right.rows].map((out) => ({ out }));
   if (!node.all) entries = dedupe(entries, (entry) => entry.out, st);
   const order = orderItems(node.orderBy, left.names);
   if (order.some((item) => item.expr)) {
-    fail(104, "ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator."); // unverified: number and text from memory
+    fail(104, "ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator.");
   }
   for (const entry of entries) entry.keys = order.map((item) => entry.out[item.index]);
   if (order.length) entries.sort((a, b) => compareEntries(a, b, order, st));
@@ -412,7 +412,7 @@ function orderItems(orderBy, names) {
     const desc = item.direction === "DESC";
     if (!isNull(item.ordinal)) {
       if (item.ordinal < 1 || item.ordinal > names.length) {
-        fail(149, `ORDER BY position number ${item.ordinal} is out of range of the number of items in the select list.`); // unverified: text from memory
+        fail(149, `ORDER BY position number ${item.ordinal} is out of range of the number of items in the select list.`);
       }
       return { desc, index: item.ordinal - 1 };
     }
@@ -439,7 +439,7 @@ function compareEntries(a, b, order, st) {
   return 0;
 }
 
-// ---- Static types (6.2d). A type is { type, length?, precision?, scale? }; 'null' is a bare NULL and
+// ---- Static types. A type is { type, length?, precision?, scale? }; 'null' is a bare NULL and
 // null means unknown, where the value-based inference (inferMeta) applies instead.
 const STRING_TYPES = new Set(["nvarchar", "varchar"]);
 const NUMERIC_PRECEDENCE = { float: 5, real: 5, decimal: 4, numeric: 4, money: 3, bigint: 2, int: 1, smallint: 1, tinyint: 1, bit: 1 };
@@ -620,7 +620,7 @@ async function stringAgg(node, group, st) {
 
 async function aggregateValue(node, group, st) {
   const name = node.name.toUpperCase();
-  if (UNSUPPORTED_AGGREGATES.has(name)) fail(195, `'${name}' is not supported in Dataverse SQL.`); // unverified: text from memory
+  if (UNSUPPORTED_AGGREGATES.has(name)) fail(195, `'${name}' is not supported in Dataverse SQL.`);
   if (node.star) return name === "COUNT_BIG" ? BigInt(group.tuples.length) : group.tuples.length;
   if (name === "STRING_AGG") return stringAgg(node, group, st);
   const arg = node.args[0];
@@ -674,7 +674,7 @@ function sumOrAvg(name, vals, meta) {
       if (digitCount(total) > 38) fail(8115, "Arithmetic overflow error converting numeric to data type numeric.");
       return { decimal: formatDecimal({ coef: total, scale: s }) };
     }
-    const t = meta.type === "money" ? 4 : Math.max(s, 6); // unverified: AVG(decimal) scale from memory
+    const t = meta.type === "money" ? 4 : Math.max(s, 6); // AVG(decimal) scale is assumed, not observed
     const coef = (total * 10n ** BigInt(t - s)) / BigInt(vals.length);
     return { decimal: formatDecimal({ coef, scale: t }) };
   }
@@ -737,7 +737,7 @@ function checkGrouped(node, groupExprs, clause, env) {
   if (node.type === "FunctionCall" && AGGREGATES.has(node.name.toUpperCase())) return;
   if (groupExprs.some((g) => sameExpr(g, node, env))) return;
   if (node.type === "ColumnRef") {
-    fail(8120, `Column '${node.parts.join(".")}' is invalid in the ${clause} because it is not contained in either an aggregate function or the GROUP BY clause.`); // unverified: text from memory
+    fail(8120, `Column '${node.parts.join(".")}' is invalid in the ${clause} because it is not contained in either an aggregate function or the GROUP BY clause.`);
   }
   for (const [key, value] of Object.entries(node)) {
     if (key !== "query" && key !== "subquery") checkGrouped(value, groupExprs, clause, env);
@@ -766,16 +766,16 @@ async function groupUnits(select, rel, tuples, outer, st) {
 
 async function evalSelect(select, outer, st) {
   const grouped = Boolean(select.groupBy || select.having || containsAggregate([select.columns, select.orderBy]));
-  if (select.groupBy && containsAggregate(select.groupBy)) fail(144, "An aggregate may not appear in the GROUP BY clause."); // unverified: text from memory
+  if (select.groupBy && containsAggregate(select.groupBy)) fail(144, "An aggregate may not appear in the GROUP BY clause.");
   if (select.where && containsAggregate(select.where)) {
-    fail(147, "An aggregate may not appear in the WHERE clause unless it is in a subquery contained in a HAVING or SELECT clause and the column being aggregated is an outer reference."); // unverified: text from memory
+    fail(147, "An aggregate may not appear in the WHERE clause unless it is in a subquery contained in a HAVING or SELECT clause and the column being aggregated is an outer reference.");
   }
   checkAggregates([select.columns, select.having, select.orderBy]);
   const rel = select.from ? await buildFrom(select.from, outer, st, pushdownOf(select, grouped, st)) : { templates: [], tuples: [[]] };
   const bindEnv = envOf(rel.templates, null, outer);
   const isAssign = select.columns.some((column) => column.kind === "Assign");
   if (isAssign && !select.columns.every((column) => column.kind === "Assign")) {
-    fail(141, "A SELECT statement that assigns a value to a variable must not be combined with data-retrieval operations."); // unverified: text from memory
+    fail(141, "A SELECT statement that assigns a value to a variable must not be combined with data-retrieval operations.");
   }
   const plan = [];
   const names = [];
@@ -784,7 +784,7 @@ async function evalSelect(select, outer, st) {
     if (column.kind === "Star") {
       const qualifier = column.qualifier === null ? null : lower(column.qualifier);
       if (qualifier !== null && !rel.templates.some((t) => t.alias === qualifier)) {
-        fail(4104, `The multi-part identifier "${column.qualifier}.*" could not be bound.`); // unverified: text from memory
+        fail(4104, `The multi-part identifier "${column.qualifier}.*" could not be bound.`);
       }
       rel.templates.forEach((t, ti) => {
         if (qualifier !== null && t.alias !== qualifier) return;
@@ -815,7 +815,7 @@ async function evalSelect(select, outer, st) {
     const seen = new Set();
     for (const name of names) {
       if (name === "") continue;
-      if (seen.has(lower(name))) fail(40000, "Duplicate column names are not supported."); // unverified: live capture
+      if (seen.has(lower(name))) fail(40000, "Duplicate column names are not supported.");
       seen.add(lower(name));
     }
   }
@@ -832,7 +832,7 @@ async function evalSelect(select, outer, st) {
           && lower(column.expr.parts.at(-1)) === lower(expr.parts.at(-1)))
       : select.columns.some((column) => column.kind === "Expr" && JSON.stringify(column.expr) === JSON.stringify(expr)));
     if (order.some((item) => item.expr && !listed(item.expr))) {
-      fail(145, "ORDER BY items must appear in the select list if SELECT DISTINCT is specified."); // unverified: text from memory
+      fail(145, "ORDER BY items must appear in the select list if SELECT DISTINCT is specified.");
     }
   }
   if (grouped) {
@@ -887,7 +887,7 @@ function valueAt(tuple, item) {
 async function topLimit(top, outer, st, total) {
   const value = await evalExpr(top.count, { frames: [], parent: outer }, st);
   const n = isNull(value) ? NaN : toNumber(value);
-  if (!(n >= 0)) fail(8016, "The TOP or FETCH clause contains an invalid value."); // unverified: number and text from memory
+  if (!(n >= 0)) fail(8016, "The TOP or FETCH clause contains an invalid value.");
   return top.percent ? Math.ceil((total * n) / 100) : Math.floor(n);
 }
 
@@ -999,7 +999,7 @@ async function sourceRel(source, outer, st, pushdown = null) {
 
 async function joinRel(left, join, outer, st) {
   if (join.on && hasAggregate(join.on)) {
-    fail(147, "An aggregate may not appear in the ON clause unless it is in a subquery contained in a HAVING clause or select list, and the column being aggregated is an outer reference."); // unverified: text from memory
+    fail(147, "An aggregate may not appear in the ON clause unless it is in a subquery contained in a HAVING clause or select list, and the column being aggregated is an outer reference.");
   }
   if (join.type === "Apply") {
     const template = templateOf(join.source.alias, queryNames(join.source.query, st), null);
@@ -1153,7 +1153,7 @@ function decimalShape(op, { scale: s1, precision: p1 }, { scale: s2, precision: 
     return { s, p: p1 - s1 + s2 + s };
   }
   const s = Math.max(s1, s2); // %
-  return { s, p: Math.min(p1 - s1, p2 - s2) + s }; // unverified: modulo precision rule from memory
+  return { s, p: Math.min(p1 - s1, p2 - s2) + s }; // modulo precision rule is assumed, not observed
 }
 
 // Caps precision at 38 and keeps min(scale, 6) fraction digits.
@@ -1202,7 +1202,7 @@ function dateArith(op, a, b) {
     return new Date(ms);
   }
   if (op !== "+" && op !== "-") fail(8117, `Operand data type datetime is invalid for ${OP_NAME[op] ?? op} operator.`);
-  if (!isDate(a) && (op === "-" || !isDate(b))) fail(206, "Operand type clash: datetime is incompatible with the operand."); // unverified: text from memory
+  if (!isDate(a) && (op === "-" || !isDate(b))) fail(206, "Operand type clash: datetime is incompatible with the operand.");
   const [base, delta] = isDate(a) ? [a, b] : [b, a];
   const ms = Math.round(base.getTime() + (op === "-" ? -1 : 1) * days(delta) * 86400000);
   if (!(ms >= DATETIME_MIN && ms <= DATETIME_MAX)) fail(517, "Adding a value to a 'datetime' column caused an overflow.");
@@ -1215,7 +1215,7 @@ const DATETIME_MAX = Date.UTC(9999, 11, 31, 23, 59, 59, 997);
 function arith(op, a, b, ma = null, mb = null, hints = {}) {
   if (isNull(a) || isNull(b)) return null;
   if (op === "+" && typeof a === "string" && typeof b === "string") return a + b;
-  if (Buffer.isBuffer(a) || Buffer.isBuffer(b)) fail(402, `The data types varbinary and ${typeof a === "string" || typeof b === "string" ? "nvarchar" : "int"} are incompatible in the ${OP_NAME[op] ?? op} operator.`); // unverified: text from memory
+  if (Buffer.isBuffer(a) || Buffer.isBuffer(b)) fail(402, `The data types varbinary and ${typeof a === "string" || typeof b === "string" ? "nvarchar" : "int"} are incompatible in the ${OP_NAME[op] ?? op} operator.`);
   if (a instanceof Date || b instanceof Date) return dateArith(op, a, b);
   if (!["+", "-", "*", "/", "%", ...BITWISE].includes(op)) fail(40000, `operator ${op} is not implemented.`);
   const kA = typeof a === "string" ? null : numKind(a, ma);
@@ -1225,7 +1225,7 @@ function arith(op, a, b, ma = null, mb = null, hints = {}) {
   else if (kA === null) kind = kB;
   else if (kB === null) kind = kA;
   else kind = NUM_RANK[kA] >= NUM_RANK[kB] ? kA : kB;
-  if (BITWISE.has(op) && (kind === "float" || kind === "decimal")) fail(402, `The ${OP_NAME[op] ?? "bitwise"} operator is not valid for a ${kind} operand.`); // unverified: text from memory
+  if (BITWISE.has(op) && (kind === "float" || kind === "decimal")) fail(402, `The ${OP_NAME[op] ?? "bitwise"} operator is not valid for a ${kind} operand.`);
   const x = operandAs(a, BITWISE.has(op) ? "bigint" : kind, hints.a ?? null);
   const y = operandAs(b, BITWISE.has(op) ? "bigint" : kind, hints.b ?? null);
   if ((op === "/" || op === "%") && (kind === "float" ? y === 0 : kind === "decimal" ? y.coef === 0n : y === 0n)) {
@@ -1318,7 +1318,7 @@ const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
 
 function singleColumn(result) {
   if (result.names.length !== 1) {
-    fail(116, "Only one expression can be specified in the select list when the subquery is not introduced with EXISTS."); // unverified: text from memory
+    fail(116, "Only one expression can be specified in the select list when the subquery is not introduced with EXISTS.");
   }
   return result;
 }
@@ -1333,7 +1333,7 @@ async function evalExpr(node, env, st) {
     }
     case "Variable": {
       const variable = st.vars.get(lower(node.name));
-      if (!variable) fail(137, `Must declare the scalar variable "${node.name}".`); // unverified: text from memory
+      if (!variable) fail(137, `Must declare the scalar variable "${node.name}".`);
       return variable.value;
     }
     case "GlobalVariable":
@@ -1423,7 +1423,7 @@ async function evalExpr(node, env, st) {
     case "Subquery": {
       const result = singleColumn(await evalQuery(node.query, env, st));
       if (result.rows.length > 1) {
-        fail(512, "Subquery returned more than 1 value. This is not permitted when the subquery follows =, !=, <, <= , >, >= or when the subquery is used as an expression."); // unverified: text from memory
+        fail(512, "Subquery returned more than 1 value. This is not permitted when the subquery follows =, !=, <, <= , >, >= or when the subquery is used as an expression.");
       }
       return result.rows.length ? result.rows[0][0] : null;
     }
@@ -1452,7 +1452,7 @@ async function evalExpr(node, env, st) {
     case "FunctionCall": {
       const name = node.name.toUpperCase();
       if (AGGREGATES.has(name)) {
-        if (!env.group) fail(40000, "aggregate outside a grouped query is not implemented."); // unverified: unreachable, grouping is decided per SELECT
+        if (!env.group) fail(40000, "aggregate outside a grouped query is not implemented."); // unreachable: grouping is decided per SELECT
         return aggregateValue(node, env.group, st);
       }
       const args = [];

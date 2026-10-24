@@ -1,11 +1,15 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import http from "node:http";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 
-// Synthetic loopback pages with jQuery and the local Bootstrap adapter only (no Bootstrap).
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
+
+// Pages with jQuery and the local Bootstrap adapter only (no Bootstrap).
 // Plugin calls follow Bootstrap 3.4.1; the data API also takes Bootstrap 5 data-bs-* markup.
 const SIGN_IN = `<div class='modal fade' id='SignInModal' tabindex='-1' role='dialog' data-keyboard="false" data-backdrop="static">
   <div class='modal-dialog' role='document'><div class='modal-content'>
@@ -70,9 +74,9 @@ async function open(t) {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   return { page, errors, origin: `http://127.0.0.1:${server.address().port}` };

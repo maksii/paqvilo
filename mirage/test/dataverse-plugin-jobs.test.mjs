@@ -1,5 +1,5 @@
-// Plug-in system jobs (P7): asyncoperation rows for async steps, plugintracelog rows, the Custom API plug-in type route (P4) and the
-// TriggerServiceEndpointCheck probe. Invented contoso_widget table, invented plug-in names and loopback endpoints only.
+// Plug-in system jobs: asyncoperation rows for async steps, plugintracelog rows, the Custom API plug-in type route and the
+// TriggerServiceEndpointCheck probe.
 import { describe, it, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -82,7 +82,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.ok(job.startedon && job.completedon);
   });
 
-  it('a failing run ends Completed/Failed with the message, the friendly message and an error code', async () => {
+  it('a failing run ends Completed/Failed with the message, the friendly message and error code 0 for an error without a Dataverse code', async () => {
     const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: () => { throw new Error('Invented asynchronous rejection'); } } }]);
     world_ = await world({ dataverse: true, handlers, steps: [step()] });
     await world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'beta' }, { admin: true });
@@ -92,7 +92,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.equal(job.statuscode, 31);
     assert.equal(job.message, 'Invented asynchronous rejection');
     assert.equal(job.friendlymessage, 'Invented asynchronous rejection');
-    assert.equal(Number.isInteger(job.errorcode), true);
+    assert.equal(job.errorcode, 0);
   });
 
   it('asyncautodelete removes a succeeded job row only, and a failed one stays', async () => {
@@ -170,8 +170,16 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
     const failing = await world({ dataverse: true, handlers: handlerWithTrace({ fail: true }), steps: [syncStep], traceLevel: 1 });
     try {
       await assert.rejects(write(failing, 'loud'), /Invented trace failure/);
-      assert.equal(failing.store.tableRows('plugintracelog').length, 0, 'a rolled-back write takes its trace row with it (ponytail)');
+      assert.equal(failing.store.tableRows('plugintracelog').length, 0, 'a rolled-back write takes its trace row with it');
     } finally { await failing.close(); }
+    // An asynchronous failure runs after commit, so its trace row stays.
+    const asyncFailing = await world({ dataverse: true, handlers: handlerWithTrace({ fail: true }), steps: [step()], traceLevel: 1 });
+    try {
+      await write(asyncFailing, 'later');
+      await asyncFailing.runner.drain();
+      const rows = asyncFailing.store.tableRows('plugintracelog');
+      assert.deepEqual(rows.map((row) => [row.mode, row.messageblock, row.exceptiondetails]), [[1, 'Invented trace line', 'Invented trace failure']]);
+    } finally { await asyncFailing.close(); }
   });
 
   it('setting 0 writes nothing, and a Dataverse-off store has no plugintracelog table to write to', async () => {
@@ -181,9 +189,10 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
       assert.equal(world_.store.tableRows('plugintracelog').length, 0);
     } finally { await world_.close(); }
     const portal = await world({ dataverse: false, handlers: handlerWithTrace({}), steps: [syncStep], traceLevel: 2 });
-    await write(portal, 'portal');
-    assert.equal(portal.store.state.tables.plugintracelog, undefined);
-    await portal.close();
+    try {
+      await write(portal, 'portal');
+      assert.equal(portal.store.state.tables.plugintracelog, undefined);
+    } finally { await portal.close(); }
   });
 
   it('a pluginTypes handler traces through context.trace as well', async () => {
@@ -196,7 +205,7 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
   });
 });
 
-describe('a Custom API whose plug-in type has a pluginTypes handler runs it (P4)', () => {
+describe('a Custom API whose plug-in type has a pluginTypes handler runs it', () => {
   const API_ID = 'cccccccc-0000-4000-8000-000000000001';
   const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
   const ORIGIN = 'http://127.0.0.1:5555';
@@ -236,9 +245,9 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it (P4)
     assert.deepEqual(calls, []);
   });
 
-  it('a plug-in type with no handler leaves the API without one', async () => {
+  it('a plug-in type with no handler leaves the API without one: the action answers 204 without running a handler', async () => {
     const { call, calls } = routed({ typeName: 'Contoso.Plugins.Unhandled' });
-    await call();
+    assert.deepEqual(await call(), { status: 204 });
     assert.deepEqual(calls, []);
   });
 });
@@ -271,7 +280,11 @@ describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () =>
   });
 
   it('a non-loopback URL and another contract are never contacted', async () => {
+    const seen = [];
+    server = createServer((req, res) => { seen.push(req.method); res.writeHead(200); res.end(); });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     await assert.rejects(probe({ contract: 8, url: 'https://example.test/hook' }), (error) => error.status === 400);
-    await assert.rejects(probe({ contract: 2, url: 'http://127.0.0.1:9/hook' }), (error) => error.status === 400);
+    await assert.rejects(probe({ contract: 2, url: `http://127.0.0.1:${server.address().port}/hook` }), (error) => error.status === 400);
+    assert.deepEqual(seen, []);
   });
 });

@@ -1,5 +1,5 @@
 // File-name headers on file downloads: x-ms-file-name and Content-Disposition stay valid HTTP headers for any
-// name (RFC 6266 quoted fallback plus filename*=UTF-8''), over HTTP. Invented schema and GUIDs only.
+// name (RFC 6266 quoted fallback plus filename*=UTF-8''), over HTTP.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { contentDisposition, fileNameHeader, rfc5987 } from "../lib/response-headers.mjs";

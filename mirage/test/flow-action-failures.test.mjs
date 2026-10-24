@@ -8,7 +8,7 @@ import { createFlowRunStore } from '../lib/flow-runs.mjs';
 import { createFlowTriggerRunner } from '../lib/flow-triggers.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 
-// Task 9: one failure rule for every provider-backed action (pack connector, Http, child flow): an answer of 400 or above
+// One failure rule for every provider-backed action (pack connector, Http, child flow): an answer of 400 or above
 // fails the action (ActionFailed), keeps its outputs and runs the runAfter Failed branch.
 const API = '/providers/Microsoft.PowerApps/apis/shared_fx-5fapi';
 const pack = (operations) => ({ id: 'fx-pack', connectors: { 'shared_fx-5fapi': { operations } } });

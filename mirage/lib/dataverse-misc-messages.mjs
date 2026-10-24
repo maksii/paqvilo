@@ -3,8 +3,8 @@ import { organizationRecord } from './organization-context.mjs';
 // validation, RetrieveTimestamp, the knowledge article and knowledge base article search functions, and the knowledge
 // version and view, rollup, virtual table event, composite data source, certificate credential, managed identity and
 // business process flow messages. install(api) registers them with the operation registry. Conversions are pure; reads go
-// through api.principals.authorize and store.rows. Learn gives no error codes for most of these, so the 400s below use
-// 0x80040203 and are marked unverified.
+// through api.principals.authorize and store.rows. Most of these have no documented error codes, so their 400s use
+// 0x80040203 and their texts are guesses.
 import { createHash, randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { idOf, registerInternalMessage, registerAddon } from "./dataverse-addon-common.mjs";
@@ -13,7 +13,7 @@ import { privilegeDeniedError, privilegeName, uuidV5 } from "./dataverse-securit
 import { toFetchXml } from "./dataverse-soap-query.mjs";
 import { parseXmlDocument, planFetch } from "./fetchxml-engine.mjs";
 
-const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode }); // unverified: codes and text
+const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode });
 const contextFor = (ctx, suffix) => contextUrl(ctx.origin, ctx.version, suffix);
 
 // FetchXML operator to the SDK ConditionOperator name (the inverse of dataverse-soap-query.mjs for the common operators).
@@ -31,7 +31,7 @@ const OPERATORS = {
 const JOINS = { inner: "Inner", outer: "LeftOuter", in: "In", exists: "Exists", any: "Any", "not any": "NotAny", all: "All", "not all": "NotAll" };
 const FETCH_ENTITY_CHILDREN = new Set(["attribute", "all-attributes", "order", "filter", "link-entity"]);
 
-// ---- QueryExpression JSON (Learn: QueryExpression, FilterExpression, ConditionExpression, OrderExpression, LinkEntity) ----
+// ---- QueryExpression JSON
 
 const columnsOf = (set) => (set ? { allColumns: set.AllColumns === true, columns: set.Columns ?? [] } : undefined);
 const ordersOf = (orders = []) => orders.map((o) => ({ attributeName: o.AttributeName, orderType: o.OrderType }));
@@ -48,9 +48,9 @@ const linkOf = (link) => ({
   linkCriteria: filterOf(link.LinkCriteria), linkEntities: (link.LinkEntities ?? []).map(linkOf), orders: ordersOf(link.Orders),
 });
 
-// The codec model that dataverse-soap-query.mjs toFetchXml renders. Values stay as Learn gives them: plain objects in Values.
+// The codec model that dataverse-soap-query.mjs toFetchXml renders. Values stay as the SDK shape gives them: plain objects in Values.
 export function modelOf(json) {
-  if (typeof json?.EntityName !== "string" || !json.EntityName) throw invalid("Query requires an EntityName."); // unverified
+  if (typeof json?.EntityName !== "string" || !json.EntityName) throw invalid("Query requires an EntityName.");
   if (json.SubQueryExpression != null) throw new DataError("SubQueryExpression is not simulated.", 501, "NotImplemented");
   const page = json.PageInfo;
   return {
@@ -66,16 +66,16 @@ export function modelOf(json) {
   };
 }
 
-// ---- FetchXML parse tree (fetchxml-engine.mjs parseXmlDocument: { name, attrs, children, text }) to QueryExpression JSON ----
+// ---- FetchXML parse tree (fetchxml-engine.mjs parseXmlDocument: { name, attrs, children, text }) to QueryExpression JSON
 
 const sdkOperator = (op) => {
   const name = OPERATORS[op];
-  if (!name) throw invalid(`FetchXML operator '${op}' has no QueryExpression equivalent in this simulator.`); // unverified
+  if (!name) throw invalid(`FetchXML operator '${op}' has no QueryExpression equivalent in this simulator.`);
   return name;
 };
 
 function conditionJson(node) {
-  if (node.attrs.valueof !== undefined) throw invalid("FetchXML condition 'valueof' has no QueryExpression equivalent in this simulator."); // unverified
+  if (node.attrs.valueof !== undefined) throw invalid("FetchXML condition 'valueof' has no QueryExpression equivalent in this simulator.");
   const values = node.children.some((c) => c.name === "value")
     ? node.children.filter((c) => c.name === "value").map((c) => c.text ?? "")
     : node.attrs.value !== undefined ? [node.attrs.value] : [];
@@ -87,12 +87,12 @@ function conditionJson(node) {
 
 function filterJson(node) {
   const type = (node.attrs.type ?? "and").toLowerCase();
-  if (type !== "and" && type !== "or") throw invalid(`Unknown filter type '${node.attrs.type}'.`); // unverified
+  if (type !== "and" && type !== "or") throw invalid(`Unknown filter type '${node.attrs.type}'.`);
   const conditions = [], filters = [];
   for (const child of node.children) {
     if (child.name === "condition") conditions.push(conditionJson(child));
     else if (child.name === "filter") filters.push(filterJson(child));
-    else throw invalid(`FetchXML element '${child.name}' is not allowed in a filter.`); // unverified
+    else throw invalid(`FetchXML element '${child.name}' is not allowed in a filter.`);
   }
   return { "@odata.type": "Microsoft.Dynamics.CRM.FilterExpression", FilterOperator: type === "or" ? "Or" : "And", Conditions: conditions, Filters: filters };
 }
@@ -116,18 +116,18 @@ function criteriaJson(children) {
 function ordersJson(children, entityName) {
   return children.filter((c) => c.name === "order").map((c) => ({
     "@odata.type": "Microsoft.Dynamics.CRM.OrderExpression", AttributeName: c.attrs.attribute, EntityName: entityName,
-    OrderType: c.attrs.descending === "true" ? "Descending" : "Ascending", // unverified: the enum's JSON form
+    OrderType: c.attrs.descending === "true" ? "Descending" : "Ascending", // the enum's JSON form is a guess
   }));
 }
 
 function checkChildren(node, allowed) {
-  for (const child of node.children) if (!allowed.has(child.name)) throw invalid(`FetchXML element '${child.name}' has no QueryExpression equivalent in this simulator.`); // unverified
+  for (const child of node.children) if (!allowed.has(child.name)) throw invalid(`FetchXML element '${child.name}' has no QueryExpression equivalent in this simulator.`);
 }
 
 function linkJson(node, parentName) {
   checkChildren(node, FETCH_ENTITY_CHILDREN);
   const join = JOINS[node.attrs["link-type"] ?? "inner"];
-  if (!join) throw invalid(`Unknown link-type '${node.attrs["link-type"]}'.`); // unverified
+  if (!join) throw invalid(`Unknown link-type '${node.attrs["link-type"]}'.`);
   const name = node.attrs.name;
   const alias = node.attrs.alias ?? null;
   return {
@@ -143,7 +143,7 @@ function linkJson(node, parentName) {
 export function queryJson(fetch) {
   checkChildren(fetch, new Set(["entity"]));
   const entity = fetch.children.find((c) => c.name === "entity");
-  if (!entity) throw invalid("FetchXML requires an entity element."); // unverified
+  if (!entity) throw invalid("FetchXML requires an entity element.");
   checkChildren(entity, FETCH_ENTITY_CHILDREN);
   const { attrs } = fetch;
   const hasPaging = attrs.page !== undefined || attrs.count !== undefined || attrs["paging-cookie"] !== undefined || attrs.returntotalrecordcount !== undefined;
@@ -163,18 +163,18 @@ export function queryJson(fetch) {
 
 // Parses and checks FetchXML the way Dataverse's Web API does (schema and limits). Malformed input raises the parser's 400.
 export function parsedFetch(xml) {
-  if (typeof xml !== "string" || !xml.trim()) throw invalid("FetchXml is required."); // unverified
+  if (typeof xml !== "string" || !xml.trim()) throw invalid("FetchXml is required.");
   const fetch = parseXmlDocument(xml, { root: "fetch" });
   planFetch(fetch, { profile: "webapi" });
   return fetch;
 }
 
-// ---- Knowledge and search helpers ----
+// ---- Knowledge and search helpers
 
 const contains = (value, text) => String(value ?? "").toLowerCase().includes(String(text).toLowerCase());
 const sameId = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
 
-// Rows the caller may read. Learn gives no privilege text, so the table read privilege is the one checked.
+// Rows the caller may read. No privilege is documented, so the table read privilege is the one checked.
 function readRows(api, ctx, logical) {
   const mapping = api.store.resolveMapping(logical);
   api.principals.authorize({ user: ctx.user, entity: logical, operation: "read", mapping });
@@ -198,10 +198,10 @@ function subjectIdOf(value) {
 
 const collection = (ctx, rows) => ({
   status: 200,
-  body: { "@odata.context": contextFor(ctx, "Collection(Microsoft.Dynamics.CRM.crmbaseentity)"), value: rows }, // unverified: the collection context
+  body: { "@odata.context": contextFor(ctx, "Collection(Microsoft.Dynamics.CRM.crmbaseentity)"), value: rows }, // the collection context is a guess
 });
 
-// ---- Handlers ----
+// ---- Handlers
 
 function fetchXmlToQueryExpression(api, ctx) {
   const query = queryJson(parsedFetch(ctx.params?.FetchXml));
@@ -223,34 +223,34 @@ function queryExpressionToFetchXml(api, ctx) {
 
 function validateFetchXmlExpression(api, ctx) {
   parsedFetch(ctx.params?.FetchXml);
-  // unverified: the performance checks Learn describes are not simulated, so no messages are reported.
+  // The documented performance checks are not simulated, so no messages are reported.
   return { status: 200, body: { "@odata.context": contextFor(ctx, "Microsoft.Dynamics.CRM.ValidateFetchXmlExpressionResponse"), ValidationResults: { Helplink: null, Messages: [] } } };
 }
 
-// A saved query is validated against the same FetchXML rules; Learn gives no response, so the action answers 204.
+// A saved query is validated against the same FetchXML rules; no response is documented, so the action answers 204.
 function validateSavedQuery(api, ctx) {
   api.principals.authorize({ user: ctx.user, entity: "savedquery", operation: "read", mapping: api.store.resolveMapping("savedquery") });
   const body = ctx.body ?? {};
   parsedFetch(body.FetchXml);
-  if (body.QueryType == null) throw invalid("QueryType is required."); // unverified
+  if (body.QueryType == null) throw invalid("QueryType is required.");
   return null;
 }
 
 function retrieveTimestamp(api, ctx) {
   const now = api.clock ? api.clock() : Date.now();
-  return { status: 200, body: { "@odata.context": contextFor(ctx, "Microsoft.Dynamics.CRM.RetrieveTimestampResponse"), Timestamp: new Date(now).toISOString() } }; // unverified: the timestamp format
+  return { status: 200, body: { "@odata.context": contextFor(ctx, "Microsoft.Dynamics.CRM.RetrieveTimestampResponse"), Timestamp: new Date(now).toISOString() } }; // the timestamp format is a guess
 }
 
 // ponytail: plain containment over the article text columns; UseInflection is ignored and QueryExpression refused. Add stem matching when a project's search needs it.
 function fullTextSearch(api, ctx) {
   const body = ctx.body ?? {};
-  if (typeof body.SearchText !== "string" || !body.SearchText) throw invalid("SearchText is required."); // unverified
+  if (typeof body.SearchText !== "string" || !body.SearchText) throw invalid("SearchText is required.");
   if (body.QueryExpression != null) throw new DataError("QueryExpression is not simulated for FullTextSearchKnowledgeArticle.", 501, "NotImplemented");
   let rows = readRows(api, ctx, "knowledgearticle").filter((row) =>
     ["title", "description", "keywords", "content"].some((column) => contains(row[column], body.SearchText)));
   if (body.StateCode != null) rows = rows.filter((row) => Number(row.statecode) === Number(body.StateCode));
   if (body.RemoveDuplicates === true) {
-    // One row per article family: the latest version, else the first seen. unverified: Learn does not say which version wins.
+    // One row per article family: the latest version, else the first seen (which version wins natively is undocumented).
     const kept = new Map();
     for (const row of rows) {
       const key = row.rootarticleid ?? row.knowledgearticleid;
@@ -265,7 +265,7 @@ function fullTextSearch(api, ctx) {
 function kbSearch(column) {
   return (api, ctx) => {
     const text = ctx.params?.SearchText;
-    if (typeof text !== "string" || !text) throw invalid("SearchText is required."); // unverified
+    if (typeof text !== "string" || !text) throw invalid("SearchText is required.");
     const subjectId = subjectIdOf(ctx.params?.Subject);
     let rows = readRows(api, ctx, "kbarticle").filter((row) => contains(row[column], text));
     if (subjectId != null) rows = rows.filter((row) => sameId(row.subjectid, subjectId));
@@ -273,18 +273,18 @@ function kbSearch(column) {
   };
 }
 
-// The top ten articles about the bound subject. Order is the table's order (unverified).
+// The top ten articles about the bound subject, in the table's order (the native order is a guess).
 function retrieveByTopIncidentSubject(api, ctx) {
   const rows = readRows(api, ctx, "kbarticle").filter((row) => sameId(row.subjectid, ctx.target?.id));
   return collection(ctx, rows.slice(0, 10));
 }
 
-// ---- CSDL (the registry joins the fragments into the service schema) ----
+// ---- CSDL (the registry joins the fragments into the service schema)
 
 const complex = (name, property, type) => `<ComplexType Name="${name}Response"><Property Name="${property}" Type="${type}" /></ComplexType>`;
 const CSDL = {
   FetchXmlToQueryExpression: [
-    complex("FetchXmlToQueryExpression", "Query", "Edm.Untyped"), // unverified: the QueryExpression type is not declared here
+    complex("FetchXmlToQueryExpression", "Query", "Edm.Untyped"), // the QueryExpression type is not declared here
     '<Function Name="FetchXmlToQueryExpression"><Parameter Name="FetchXml" Type="Edm.String" /><ReturnType Type="mscrm.FetchXmlToQueryExpressionResponse" Nullable="false" /></Function>',
   ].join("\n"),
   QueryExpressionToFetchXml: [
@@ -305,8 +305,8 @@ const CSDL = {
   RetrieveByTopIncidentSubjectKbArticle: '<Function Name="RetrieveByTopIncidentSubjectKbArticle" IsBound="true"><Parameter Name="entity" Type="mscrm.subject" /><ReturnType Type="Collection(mscrm.kbarticle)" Nullable="false" /></Function>',
 };
 
-// ---- G5a: knowledge versions and views, rollup, virtual table events, composite data sources, certificate credentials,
-// managed identity subjects and business process flows. The native signatures are in the registrations (the catalogue). ----
+// ---- Knowledge versions and views, rollup, virtual table events, composite data sources, certificate credentials,
+// managed identity subjects and business process flows. The native signatures are in the registrations.
 
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
 const key = (value) => String(value ?? "").toLowerCase();
@@ -348,8 +348,8 @@ function clearLatest(rows, root, language) {
   for (const row of rows) if (sameId(row.rootarticleid ?? row.knowledgearticleid, root) && key(row.languagelocaleid) === key(language)) row.islatestversion = false;
 }
 
-// Learn: IncrementKnowledgeArticleViewCount. unverified: whether Location is part of the day row's key (the day row is found
-// by article and UTC day, as the brief states), and the response shape. Invented data only.
+// IncrementKnowledgeArticleViewCount. The day row is found by article and UTC day; whether Location is part of its key, and
+// the response shape, are guesses.
 async function incrementViews(api, c) {
   need(api, c, "knowledgearticle", "Read");
   const { Source, ViewDate, Location, Count } = argsOf(c);
@@ -374,8 +374,8 @@ async function incrementViews(api, c) {
   return { status: 200, body: { "@odata.context": contextFor(c, "knowledgearticleviews/$entity"), ...view } };
 }
 
-// Learn: CreateKnowledgeArticleVersion. A major version adds one to the major number and resets the minor; otherwise the minor
-// number goes up. unverified: which copied fields are kept and the status of the draft.
+// CreateKnowledgeArticleVersion. A major version adds one to the major number and resets the minor; otherwise the minor
+// number goes up. Which copied fields are kept, and the status of the draft, are guesses.
 async function createVersion(api, c) {
   need(api, c, "knowledgearticle", "Create");
   const args = argsOf(c);
@@ -396,7 +396,7 @@ async function createVersion(api, c) {
   return { status: 200, body: { "@odata.context": contextFor(c, "knowledgearticles/$entity"), ...fresh } };
 }
 
-// Learn: CreateKnowledgeArticleTranslation. Error texts are unverified; the codes are from the Learn error list.
+// CreateKnowledgeArticleTranslation. The error codes are native; their texts are guesses.
 async function createTranslation(api, c) {
   need(api, c, "knowledgearticle", "Create");
   const args = argsOf(c);
@@ -421,7 +421,7 @@ async function createTranslation(api, c) {
   return { status: 200, body: { "@odata.context": contextFor(c, "knowledgearticles/$entity"), ...fresh } };
 }
 
-// Learn: RollupRequest. The Query entity and the target decide which RollupType values apply (base-environment subset).
+// RollupRequest. The Query entity and the target decide which RollupType values apply (base-environment subset).
 const ROLLUP_TYPES = ["None", "Related", "Extended"];
 const ROLLUP_RULES = {
   activitypointer: { account: ["Related", "Extended"], contact: ["Related", "Extended"] },
@@ -435,7 +435,7 @@ function rollupTypeOf(value) {
   const text = String(value ?? "");
   const name = /^\d+$/.test(text) ? ROLLUP_TYPES[Number(text)] : (text.match(/'(\w+)'$/)?.[1] ?? text);
   const type = ROLLUP_TYPES.find((entry) => entry.toLowerCase() === String(name).toLowerCase());
-  if (!type) throw invalid("The rollup type is invalid.", "0x80040234"); // unverified: the message text
+  if (!type) throw invalid("The rollup type is invalid.", "0x80040234");
   return type;
 }
 
@@ -465,7 +465,7 @@ async function rollup(api, c) {
   const entity = query?.EntityName;
   if (!Object.hasOwn(ROLLUP_RULES, entity)) throw notForRollup(entity);
   const allowed = Object.hasOwn(ROLLUP_RULES[entity], target.logical) ? ROLLUP_RULES[entity][target.logical] : null;
-  if (!allowed) throw notForRollup(target.logical); // unverified: the target check
+  if (!allowed) throw notForRollup(target.logical); // the target check is a guess
   const type = rollupTypeOf(args.RollupType);
   if (!allowed.includes(type)) throw invalid("The rollup type is invalid.", "0x80040234");
   const set = rollupSet(api.store, target.id, type);
@@ -481,8 +481,8 @@ async function rollup(api, c) {
   return collection(c, (result.body?.value ?? []).filter((row) => set.has(key(row[lookup]))));
 }
 
-// Learn: OnExternalUpdated, the event a virtual table's data source raises. ponytail: no plug-in or async dispatch, because
-// Learn says only async steps run for these events. unverified: the virtualentitymetadata match (its name column) and the codes.
+// OnExternalUpdated, the event a virtual table's data source raises. ponytail: no plug-in or async dispatch, because only
+// async steps run for these events. The virtualentitymetadata match (its name column) and the codes are guesses.
 function virtualEventMetadata(api, logical) {
   const metadataId = api.metadata?.entity(logical)?.MetadataId;
   return api.store.tableRows('virtualentitymetadata').find(row => row.extensionofrecordid != null
@@ -499,7 +499,7 @@ function onExternalEvent(name) { return async (api, c) => {
   if (name === "OnExternalUpdated" && !Array.isArray(args.ChangedFields)) throw invalid("ChangedFields is required.");
   const meta = virtualEventMetadata(api, logical);
   const enabled = `is${name.toLowerCase()}enabled`;
-  if (!meta || meta[enabled] !== true) throw invalid(`External event ${name} is not enabled for ${logical}.`, "0x80090309"); // unverified: fault text
+  if (!meta || meta[enabled] !== true) throw invalid(`External event ${name} is not enabled for ${logical}.`, "0x80090309");
   if (name === "OnExternalUpdated" && args.ChangedFields.length && meta.ischangedfieldsenabledforupdateevent !== true) {
     throw new DataError(`Changed fields are not enabled for the update event of ${logical}.`, 400, "InvalidRequest", { innerCode: "0x80073019" });
   }
@@ -520,7 +520,7 @@ const ENV_DEFINITION = "environmentvariabledefinition";
 const DATA_SOURCE_TYPE = 100000004;
 const definitionIdOf = (store, schema) => uuidV5(orgIdOf(store), `environmentvariabledefinition:${String(schema).toLowerCase()}`);
 const valueIdOf = (store, schema) => uuidV5(orgIdOf(store), `environmentvariablevalue:${String(schema).toLowerCase()}`);
-const missingComposite = (schema) => new DataError(`Failed to find environment variables with schema name(s) '${schema}'.`, 404, "NotFound", { innerCode: "0x80095004" }); // unverified: text
+const missingComposite = (schema) => new DataError(`Failed to find environment variables with schema name(s) '${schema}'.`, 404, "NotFound", { innerCode: "0x80095004" });
 
 function upsertDefinition(store, { schema, displayName, parameterKey, apiId, parentId }) {
   const id = definitionIdOf(store, schema);
@@ -551,7 +551,7 @@ const definitionOf = (store, schema) => findRow(store, ENV_DEFINITION, "environm
 async function upsertComposite(api, c) {
   need(api, c, ENV_DEFINITION, "Write");
   const a = argsOf(c);
-  if (!a.ParentSchemaName || !a.ParentParameterKey) throw invalid("ParentSchemaName and ParentParameterKey are required."); // unverified
+  if (!a.ParentSchemaName || !a.ParentParameterKey) throw invalid("ParentSchemaName and ParentParameterKey are required.");
   await write(api, () => {
     const parentId = upsertDefinition(api.store, { schema: a.ParentSchemaName, displayName: a.ParentDisplayName, parameterKey: a.ParentParameterKey, apiId: a.ParentApiId });
     upsertValue(api.store, parentId, a.ParentSchemaName, a.ParentValue);
@@ -582,9 +582,9 @@ function throwMissing(schema) {
 }
 
 // Certificate credentials belong to a managed identity (powerpagesmanagedidentity is absent, so only managedidentity is served).
-// Learn gives no texts for these, so every error below is unverified apart from the codes in the Learn-derived comments.
+// No texts are documented for these, so the error texts below are guesses.
 function ownerOf(store, logical, id) {
-  if (logical !== "managedidentity") throw invalid(`${logical} cannot hold certificate credentials.`); // unverified
+  if (logical !== "managedidentity") throw invalid(`${logical} cannot hold certificate credentials.`);
   return mustRow(store, "managedidentity", "managedidentityid", id);
 }
 
@@ -636,16 +636,16 @@ function netGuidBytes(guid) {
 }
 const FIC_COMPONENTS = { pluginassembly: "pluginassemblyid", pluginpackage: "pluginpackageid", serviceendpoint: "serviceendpointid" };
 
-// Learn: the federated identity subject of a managed identity bound to a component (set-up-managed-identity). unverified: the
-// h segment is a stand-in (native hashes the signing certificate); LC-G5-2 records the real value.
+// The federated identity subject of a managed identity bound to a component. The h segment is a stand-in: native hashes the
+// signing certificate.
 function ficSubject(api, c) {
   const a = argsOf(c);
   const logical = String(a.ComponentName ?? "").toLowerCase();
-  if (!Object.hasOwn(FIC_COMPONENTS, logical)) throw invalid(`${a.ComponentName} has no managed identity.`); // unverified
+  if (!Object.hasOwn(FIC_COMPONENTS, logical)) throw invalid(`${a.ComponentName} has no managed identity.`);
   need(api, c, logical, "Read");
   const id = idOf(a.ComponentId);
   const component = mustRow(api.store, logical, FIC_COMPONENTS[logical], id);
-  if (!idOf(component.managedidentityid)) throw invalid(`${logical} has no managed identity.`); // unverified
+  if (!idOf(component.managedidentityid)) throw invalid(`${logical} has no managed identity.`);
   const tenant = tenantOf(api);
   const environment = api.settings?.environmentId ?? `Default-${tenant}`;
   const hash = createHash("sha256").update(String(id).toLowerCase()).digest("hex");
@@ -668,7 +668,7 @@ function instanceMapping(store, name) {
   }
 }
 
-// Learn: RetrieveProcessInstances. The instances of the activated flows on this entity, newest first.
+// RetrieveProcessInstances. The instances of the activated flows on this entity, newest first.
 function processInstances(api, c) {
   const a = argsOf(c);
   const logical = a.EntityLogicalName;
@@ -687,7 +687,7 @@ function processInstances(api, c) {
   return collection(c, found);
 }
 
-// Learn: RetrieveActivePath. ponytail: no branch conditions, so every stage of the flow is on the path; the traversed stages come
+// RetrieveActivePath. ponytail: no branch conditions, so every stage of the flow is on the path; the traversed stages come
 // first, in order. ponytail: the entity name is not known from the instance id, so the not-found message omits it.
 function activePath(api, c) {
   need(api, c, "processstage", "Read");
@@ -725,7 +725,7 @@ export function install(api) {
   op("SearchByKeywordsKbArticle", "function", "collection", kbSearch("keywords"), CSDL.kbSearch("SearchByKeywordsKbArticle"), "kbarticle");
   op("SearchByBodyKbArticle", "function", "collection", kbSearch("content"), CSDL.kbSearch("SearchByBodyKbArticle"), "kbarticle");
   op("RetrieveByTopIncidentSubjectKbArticle", "function", "entity", retrieveByTopIncidentSubject, CSDL.RetrieveByTopIncidentSubjectKbArticle, "subject");
-  // G5a. Each is unbound and declared from its native signature (the registry builds the CSDL from it). Edm.Untyped stands in
+  // Each is unbound and declared from its native signature (the registry builds the CSDL from it). Edm.Untyped stands in
   // for the QueryBase and the RollupType enum, which are not declared here.
   const declare = (name, kind, handle, signature) => api.registry.register({ name, kind, binding: "unbound", signature, handle: (ctx) => handle(api, ctx) });
   declare("IncrementKnowledgeArticleViewCount", "function", incrementViews, {
@@ -767,7 +767,7 @@ export function install(api) {
   declare("GetComponentManagedIdentityFIC", "function", ficSubject, { params: [["ComponentName", "Edm.String"], ["ComponentId", "Edm.Guid"]], response: [["FICSubject", "Edm.String"]] });
   declare("RetrieveProcessInstances", "function", processInstances, { params: [["EntityId", "Edm.Guid"], ["EntityLogicalName", "Edm.String"]], returns: "Collection(mscrm.crmbaseentity)" });
   declare("RetrieveActivePath", "function", activePath, { params: [["ProcessInstanceId", "Edm.Guid"]], returns: "Collection(mscrm.processstage)" });
-  // SetProcess is internal-only (Learn: business-process-flows-code, "You can no longer use the SetProcess message"): in $metadata, answers 501 by default.
+  // SetProcess is internal-only (the public SetProcess message is retired): in $metadata, answers 501 by default.
   registerInternalMessage(api, {
     name: "SetProcess", kind: "action", binding: "unbound", signature: { params: [["Target", "mscrm.crmbaseentity"], ["NewProcess", "mscrm.crmbaseentity"], ["NewProcessInstance", "mscrm.crmbaseentity"]] },
   });

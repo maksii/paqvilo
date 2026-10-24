@@ -27,24 +27,13 @@ async function layers(t, { fileIn, embeddedIn }) {
 
 const variants = metadata => metadata.diagnostics.filter(entry => entry.code === 'SOLUTION_LAYER_VARIANTS');
 
-test('a later layer embedding a form wins over an earlier FormXml file, with one diagnostic', async t => {
-  const { root, metadata } = await layers(t, { fileIn: 'A', embeddedIn: 'B' });
+for (const [fileIn, embeddedIn, winner, title] of [
+  ['A', 'B', 'FROM_B_EMBEDDED', 'a later layer embedding a form wins over an earlier FormXml file, with one diagnostic'],
+  ['B', 'A', 'FROM_B_FILE', 'a later FormXml file wins over an earlier embedded form, with one diagnostic'],
+]) test(title, async t => {
+  const { root, metadata } = await layers(t, { fileIn, embeddedIn });
+  const layerOf = file => path.relative(root, file).split(path.sep)[0];
   const forms = metadata.forms.filter(form => form.entity === 'x_item');
-  assert.equal(forms.length, 1);
-  assert.equal(forms[0].name, 'FROM_B_EMBEDDED');
-  assert.equal(path.relative(root, forms[0].file).split(path.sep)[0], 'B');
-  const diagnostics = variants(metadata);
-  assert.equal(diagnostics.length, 1);
-  assert.equal(path.relative(root, diagnostics[0].selected).split(path.sep)[0], 'B');
-  assert.equal(path.relative(root, diagnostics[0].previous).split(path.sep)[0], 'A');
-});
-
-test('a later FormXml file wins over an earlier embedded form, with one diagnostic', async t => {
-  const { root, metadata } = await layers(t, { fileIn: 'B', embeddedIn: 'A' });
-  const forms = metadata.forms.filter(form => form.entity === 'x_item');
-  assert.equal(forms.length, 1);
-  assert.equal(forms[0].name, 'FROM_B_FILE');
-  const diagnostics = variants(metadata);
-  assert.equal(diagnostics.length, 1);
-  assert.equal(path.relative(root, diagnostics[0].selected).split(path.sep)[0], 'B');
+  assert.deepEqual(forms.map(form => [form.name, layerOf(form.file)]), [[winner, 'B']]);
+  assert.deepEqual(variants(metadata).map(entry => [layerOf(entry.selected), layerOf(entry.previous)]), [['B', 'A']]);
 });

@@ -27,7 +27,7 @@ export function validatePortalOverrides(value = {}) {
 }
 
 /**
- * E2: site settings bound to environment variables (importer `settingEnvironmentVariables`) take the effective value of
+ * Site settings bound to environment variables (importer `settingEnvironmentVariables`) take the effective value of
  * `state`; a Secret binding resolves through `resolver` as `principalId` and stays unset otherwise. Returns the source
  * with those settings, so applyPortalOverrides still lets portalOverrides.settings win. The bound source feeds rendering
  * only: /_sim site-setting entries read the unbound source, and page inspection redacts every name in the explicit

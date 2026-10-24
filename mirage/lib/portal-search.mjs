@@ -23,7 +23,7 @@ export const DEFAULT_SEARCH_TABLES = Object.freeze([
   "adx_communityforumthread", "adx_idea", "adx_ideacomment", "adx_ideaforum", "adx_webfile", "adx_webpage", "incident",
 ]);
 const MARKER_EXCEPTIONS = { incident: "Case", knowledgearticle: "Knowledge Article" };
-const KNOWLEDGE_PUBLISHED = 3; // unverified: knowledgearticle statecode Published (Learn knowledgearticle table reference state values)
+const KNOWLEDGE_PUBLISHED = 3; // knowledgearticle statecode Published
 
 const setting = (portal, name) => siteSetting(portal ?? {}, name) ?? null;
 const flag = (value, fallback) => (value == null || value === "" ? fallback : /^(?:true|1)$/i.test(String(value).trim()));

@@ -1,5 +1,5 @@
-// Virtual table writes that roll back (Task 28 re-review RB2-03/04/06/08): an asynchronous provider in a synchronous SDK write,
-// upsert-create keys, changeset rollback without a transaction contract and a nested standard parent. Invented x_ schema, GUIDs and loopback only.
+// Virtual table writes that roll back: an asynchronous provider in a synchronous SDK write,
+// upsert-create keys, changeset rollback without a transaction contract and a nested standard parent.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION } from "../lib/dataverse-virtual-providers.mjs";

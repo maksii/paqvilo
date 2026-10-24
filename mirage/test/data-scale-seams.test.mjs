@@ -1,7 +1,6 @@
 // Index and caching seams of the record store (runtime-performance.md, "Write-volume seams"): row indexes with
 // a validity check, the per-operation relationship graph, per-table revision counters, key-set paging,
 // SDK savepoints, journal section reuse, dirty-table persistence hashing and the service-protection window.
-// Invented x_ tables and GUIDs only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -39,7 +38,7 @@ test("the primary-key index answers through a validity check after an edit outsi
   const s = store([{ x_itemid: gid(1), x_name: "one" }, { x_itemid: gid(2), x_name: "two" }]);
   const rows = s.state.tables.x_item, mapping = s.resolveMapping("x_item");
   assert.equal(s.rowIndex(mapping, rows, gid(2)), 1);
-  // Same length, different rows: the cached position no longer carries the key (P12).
+  // Same length, different rows: the cached position no longer carries the key.
   rows.splice(0, 1);
   rows.push({ x_itemid: gid(3), x_name: "three" });
   assert.equal(s.rowIndex(mapping, rows, gid(2)), 0);
@@ -178,9 +177,8 @@ test("a failed SDK call inside a pipeline undoes its rows through a savepoint an
     assert.equal(s.state.settings.sdkMarker, undefined);
     assert.equal(s.rowIndex(s.resolveMapping("x_item"), rows, gid(3)), -1);
   });
-  assert.equal(rows[0].x_name, "one");
-  assert.notEqual(rows[0], undefined);
-  assert.ok(first);
+  assert.equal(rows[0], first, "the restored row is the object callers already hold");
+  assert.equal(first.x_name, "one");
 });
 
 test("journaled row transactions reuse the section copy the previous commit proved unchanged", async (t) => {

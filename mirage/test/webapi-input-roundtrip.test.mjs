@@ -1,6 +1,4 @@
-// Synthetic, loopback-only API regressions. Browser rendering and live parity
-// evidence belong to the external portal project, not this reusable fixture.
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -22,6 +20,8 @@ const INPUTS = [
   ["Unicode", "Résumé Київ 中文 😀 e\u0301 \u202eRTL\u202c", "Київ 中文 😀"],
   ["whitespace and control characters", "  first\tsecond\r\nthird\u0000end  ", "first\tsecond\r\nthird\u0000end"],
 ];
+// Rejected writes target probeentry; projecting it (with the row version) avoids cloning every system table per request.
+const probeState = (app) => ({ rows: app.store.snapshot({ tables: ["probeentry"] }).tables.probeentry, rowVersion: app.store.state.rowVersion });
 const literal = (value) => `'${value.replace(/'/g, "''")}'`;
 
 async function start(t) {
@@ -67,7 +67,9 @@ async function start(t) {
     },
   });
   ownedFixture(t).add(() => app.close());
-  const call = async (route, { method = "GET", body, rawBody, token = app.state().csrf } = {}) => {
+  // app.state() clones the whole state, so read the token once.
+  const csrf = app.csrf;
+  const call = async (route, { method = "GET", body, rawBody, token = csrf } = {}) => {
     const response = await fetch(app.url + route, {
       method,
       headers: {
@@ -82,6 +84,8 @@ async function start(t) {
   };
   return { app, call };
 }
+// Every test asserts on its own records or on before/after state, so one runtime serves the file.
+const shared = start({ after });
 
 async function assertReadable(call, record, id, values, fragment, label) {
   const read = await call(`${record}?$select=title,content`);
@@ -98,7 +102,7 @@ async function assertReadable(call, record, id, values, fragment, label) {
     assert.match(raw.headers.get("content-type"), /^text\/plain/);
     // Equality checks the complete input, including wildcard characters.
     // contains fragments deliberately omit SQL LIKE wildcards; their platform
-    // interpretation requires separate live evidence before a parity assertion.
+    // interpretation is not verified, so nothing asserts it.
     for (const filter of [`${field} eq ${literal(value)}`, `contains(${field},${literal(fragment)})`]) {
       const params = new URLSearchParams({ $select: "title,content", $filter: filter });
       const search = await call(`${COLLECTION}?${params}`);
@@ -108,9 +112,10 @@ async function assertReadable(call, record, id, values, fragment, label) {
   }
 }
 
-test("Web API preserves hostile-looking strings through create, update, reads, property values and escaped search", async (t) => {
-  const { app, call } = await start(t);
-  for (const [label, input, fragment] of INPUTS) {
+test("Web API preserves hostile-looking strings through create, update, reads, property values and escaped search", async () => {
+  const { app, call } = await shared;
+  // Each input owns its record and searches assert on that record id, so the inputs run concurrently.
+  await Promise.all(INPUTS.map(async ([label, input, fragment]) => {
     const original = { title: input, content: input };
     const created = await call(COLLECTION, { method: "POST", body: original });
     assert.equal(created.status, 204, `${label}: create`);
@@ -123,30 +128,30 @@ test("Web API preserves hostile-looking strings through create, update, reads, p
     const updated = await call(record, { method: "PATCH", body: changed });
     assert.equal(updated.status, 204, `${label}: update`);
     await assertReadable(call, record, id, changed, fragment, `${label}: update`);
-    const stored = app.store.snapshot().tables.probeentry.find((row) => row.probeentryid === id);
+    const stored = app.store.tableRows("probeentry").find((row) => row.probeentryid === id);
     assert.equal(stored.title, changed.title, `${label}: stored title`);
     assert.equal(stored.content, changed.content, `${label}: stored content`);
-  }
+  }));
 });
 
-test("malformed JSON and non-object Web API bodies reject create/update/property writes without mutation", async (t) => {
-  const { app, call } = await start(t);
+test("malformed JSON and non-object Web API bodies reject create/update/property writes without mutation", async () => {
+  const { app, call } = await shared;
   const invalidBodies = ['{"title":', '{"title":"unterminated}', '{"title":"x",}', "not JSON", "null", '"scalar"', "42", "true", "[]"];
   for (const [route, method] of [[COLLECTION, "POST"], [BASE_RECORD, "PATCH"], [`${BASE_RECORD}/title`, "PUT"]]) {
     for (const rawBody of invalidBodies) {
-      const before = app.store.snapshot().tables;
+      const before = probeState(app);
       const result = await call(route, { method, rawBody });
       assert.equal(result.status, 400, `${method} ${route}: ${rawBody}`);
       assert.equal(result.json.error.code, "9004010D", `${method}: error envelope`);
       assert.equal(result.json.error.message, "CDS error occurred.");
       assert.equal(typeof result.json.error.innererror.message, "string");
-      assert.deepEqual(app.store.snapshot().tables, before, `${method}: rejected input must not mutate rows or versions`);
+      assert.deepEqual(probeState(app), before, `${method}: rejected input must not mutate rows or versions`);
     }
   }
 });
 
-test("missing and wrong CSRF tokens reject each Web API write before any mutation", async (t) => {
-  const { app, call } = await start(t);
+test("missing and wrong CSRF tokens reject each Web API write before any mutation", async () => {
+  const { app, call } = await shared;
   const writes = [
     [COLLECTION, "POST", { title: "Unexpected new row" }],
     [BASE_RECORD, "PATCH", { title: "Unexpected update" }],
@@ -156,17 +161,17 @@ test("missing and wrong CSRF tokens reject each Web API write before any mutatio
   ];
   for (const [token, expected] of [[null, 401], ["wrong-local-token", 403]]) {
     for (const [route, method, body] of writes) {
-      const before = app.store.snapshot().tables;
+      const before = probeState(app);
       const result = await call(route, { method, body, token });
       assert.equal(result.status, expected, `${method}: ${token == null ? "missing" : "wrong"} token`);
       assert.equal(result.json.error.code, "90040107");
-      assert.deepEqual(app.store.snapshot().tables, before, `${method}: rejected token must not mutate rows or versions`);
+      assert.deepEqual(probeState(app), before, `${method}: rejected token must not mutate rows or versions`);
     }
   }
 });
 
-test("schema types accept observed scalar strings and email format normalizes after length validation", async (t) => {
-  const { app, call } = await start(t);
+test("schema types accept observed scalar strings and email format normalizes after length validation", async () => {
+  const { app, call } = await shared;
   const body = {
     count: "12", rate: "12.5", category: "1", flag: "true",
     address: "\u2028 Mixed@EXAMPLE.invalid \u2029", plainaddress: " Mixed@EXAMPLE.invalid ",
@@ -185,60 +190,60 @@ test("schema types accept observed scalar strings and email format normalizes af
   });
   assert.equal((await call(BASE_RECORD, { method: "PATCH", body: { flag: "false" } })).status, 204);
   assert.equal((await call(`${BASE_RECORD}/flag`)).json.value, false);
-  // Independent live probes also accepted surrounding integer whitespace and
+  // Live probes also accepted surrounding integer whitespace and
   // Boolean text in another case; these are wire conversions, not form parsing.
   assert.equal((await call(BASE_RECORD, { method: "PATCH", body: { count: " 12 ", flag: "TRUE" } })).status, 204);
   assert.equal((await call(`${BASE_RECORD}/count`)).json.value, 12);
   assert.equal((await call(`${BASE_RECORD}/flag`)).json.value, true);
   for (const rejected of [{ amount: "12.50" }, { price: "12.50" }, { flag: 1 }, { flag: 0 }, { count: "no" }, { rate: "no" }, { title: 5 }, { address: " ".repeat(31) }]) {
-    const before = app.store.snapshot().tables;
+    const before = probeState(app);
     assert.equal((await call(BASE_RECORD, { method: "PATCH", body: rejected })).status, 400, JSON.stringify(rejected));
-    assert.deepEqual(app.store.snapshot().tables, before);
+    assert.deepEqual(probeState(app), before);
   }
   assert.equal((await call(BASE_RECORD, { method: "PATCH", body: { address: " \u2028\u2029 " } })).status, 204);
   assert.equal((await call(`${BASE_RECORD}/address`)).status, 204, "whitespace email becomes null");
   // Internal fixture wrappers remain supported; the public policy separately
   // rejects object payloads before they reach the reusable store coercion.
   app.store.updateRecord("probeentry", BASE_ID, { category: { value: 1, label: "One" } }, {}, { coerce: true });
-  assert.equal(app.store.snapshot().tables.probeentry[0].category, 1);
+  assert.equal(app.store.tableRows("probeentry")[0].category, 1);
 });
 
-test("invalid calendar, clock, offset and GUID inputs reject atomically", async (t) => {
-  const { app, call } = await start(t);
+test("invalid calendar, clock, offset and GUID inputs reject atomically", async () => {
+  const { app, call } = await shared;
   const invalidDates = ["2026-02-30", "2026-13-10", "2026-10-10T24:00:00Z", "2026-10-10T12:60:00Z", "2026-10-10T12:00:60Z", "2026-10-10T12:00:00+24:00"];
   for (const value of invalidDates) {
     assert.equal(parseDateValue(value), null, value);
     for (const field of ["localdate", "reviewdate"]) {
-      const before = app.store.snapshot().tables;
+      const before = probeState(app);
       const result = await call(BASE_RECORD, { method: "PATCH", body: { [field]: value } });
       assert.equal(result.status, 400, `${field}: ${value}`);
       assert.equal(result.json.error.innererror.code, field === 'reviewdate' || value.includes('T') && !value.endsWith('+24:00') ? '0x80048d19' : '0x80040239', 'Edm.Date and timestamp clock/calendar errors fail the reader; other instant text reaches CRM validation');
-      assert.deepEqual(app.store.snapshot().tables, before);
+      assert.deepEqual(probeState(app), before);
     }
   }
   for (const value of ["not-guid", 42, {}, "00000000-0000-0000-0000-00000000000x"]) {
-    const before = app.store.snapshot().tables;
+    const before = probeState(app);
     assert.equal((await call(BASE_RECORD, { method: "PATCH", body: { referenceid: value } })).status, 400, JSON.stringify(value));
-    assert.deepEqual(app.store.snapshot().tables, before);
+    assert.deepEqual(probeState(app), before);
   }
   assert.ok(parseDateValue("2026-10-10T23:59:59+14:00"));
 });
 
-test("low-year date inputs cannot bypass the CRM minimum through the JavaScript 1900 offset", async (t) => {
-  const { app, call } = await start(t);
+test("low-year date inputs cannot bypass the CRM minimum through the JavaScript 1900 offset", async () => {
+  const { app, call } = await shared;
   for (const value of ["0000-01-01", "0026-01-01", "0099-01-01T12:00:00Z", "0004-02-29T12:00:00Z"]) {
     for (const field of ["localdate", "reviewdate"]) {
-      const before = app.store.snapshot().tables;
+      const before = probeState(app);
       const result = await call(BASE_RECORD, { method: "PATCH", body: { [field]: value } });
       assert.equal(result.status, 400, `${field}: ${value}`);
       assert.equal(result.json.error.innererror.code, field === 'reviewdate' && (value.startsWith('0000-') || value.includes('T')) ? '0x80048d19' : '0x80040239');
-      assert.deepEqual(app.store.snapshot().tables, before);
+      assert.deepEqual(probeState(app), before);
     }
   }
 });
 
-test("numeric and option validation messages identify the schema-derived column, value and bounds", async (t) => {
-  const { app, call } = await start(t);
+test("numeric and option validation messages identify the schema-derived column, value and bounds", async () => {
+  const { app, call } = await shared;
   const cases = [
     [{ count: -1 }, "A validation error occurred. The value -1 of 'count' on record of type 'probeentry' is outside the valid range. Minimum Value: 0, Maximum value: 100"],
     [{ count: 101 }, "A validation error occurred. The value 101 of 'count' on record of type 'probeentry' is outside the valid range. Minimum Value: 0, Maximum value: 100"],
@@ -248,10 +253,10 @@ test("numeric and option validation messages identify the schema-derived column,
     [{ category: 99 }, "A validation error occurred. The value 99 of 'category' on record of type 'probeentry' is outside the valid range. Accepted Values: 1"],
   ];
   for (const [body, message] of cases) {
-    const before = app.store.snapshot().tables;
+    const before = probeState(app);
     const result = await call(BASE_RECORD, { method: "PATCH", body });
     assert.equal(result.status, 400, JSON.stringify(body));
     assert.equal(result.json.error.innererror.message, message);
-    assert.deepEqual(app.store.snapshot().tables, before);
+    assert.deepEqual(probeState(app), before);
   }
 });

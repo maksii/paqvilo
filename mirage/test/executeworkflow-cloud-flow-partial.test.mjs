@@ -1,6 +1,5 @@
 // ExecuteWorkflow on an exported cloud flow: each connector write is its own boundary, so a later failed action fails the
 // job but keeps the earlier completed write (mirage/docs/operations.md; the HTTP and trigger paths behave the same).
-// Invented schema, GUIDs and users only; loopback only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";

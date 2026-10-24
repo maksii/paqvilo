@@ -112,7 +112,7 @@ because a table has no declared pack owner. Undeclared business writes fail with
 The control plane is private runtime state at every level: process definitions
 and their activation rows (`workflow`), environment variable definitions and
 values, connection references and the Power Pages configuration tables of both
-data models (the configuration tables Learn lists for the portals Web API, and
+data models (the configuration tables documented for the portals Web API, and
 the `powerpagesite`/`powerpagecomponent`/`mspp_*` tables), together with the
 deployment-profile pin and the operation choices (`/_sim/api/operations`,
 including explicit local flow activation). At level `simulation` only business
@@ -126,7 +126,7 @@ a business table needs a DATA owner only for the business table itself.
 Workflow rows have one writer: the organization seeds each Solution definition
 with its exported activation state and its activation row, and a state
 replacement (a `/_sim/` save) keeps them; the Solution component rows of forms,
-views, site maps and apps are materialized as before. A preset that replaces an
+views, site maps and apps are materialized from the Solution sources. A preset that replaces an
 organization table (for example `customapi`) keeps the rows the Solution sources
 seeded in that table: the preset's rows win by id, the Solution's other rows
 stay.

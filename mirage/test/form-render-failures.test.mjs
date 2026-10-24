@@ -1,5 +1,5 @@
 // Platform render failures that stop a native form at a cell, the reference entity read-only form
-// of a multistep step and server-rendered auto-generated steps (invented "gadget"/"holder" tables).
+// of a multistep step and server-rendered auto-generated steps ("gadget"/"holder" tables).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
@@ -108,8 +108,8 @@ test("the view state payload accepts only its own shape and string values", () =
   assert.deepEqual(decodeNativeViewState(forged), { form: "f", autoStep: 0, values: { ok: "x" } });
 });
 
-// UNVERIFIED until the post-fix live capture (Wave Q): inline rendering embeds an HTML web
-// resource's body content in the cell; any other type fails the form (the SVG test above).
+// Not observed natively, so a guess: inline rendering embeds an HTML web resource's body
+// content in the cell; any other type fails the form (the SVG test above).
 test("an inline HTML web resource embeds its body content and does not fail the form", async (t) => {
   const os = await import("node:os");
   const path = await import("node:path");

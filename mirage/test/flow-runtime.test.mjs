@@ -58,7 +58,7 @@ test('Valid unsupported execution settings and prohibited Response layouts fail 
  const loop=definition({loop:{type:'Foreach',foreach:[1],actions:{reply:{type:'Response',inputs:{body:1}}}}});assert.match(inspectFlowDefinition(loop).errors.join(' '),/Response is not allowed/);
  const action={type:'OpenApiConnection',inputs:{host:{apiId:'/apis/shared_commondataserviceforapps',operationId:'ListRecords'},parameters:{entityName:'widgets',x_unknown:'x'}}};assert.match(inspectFlowDefinition(definition({query:action})).errors.join(' '),/Unsupported Dataverse parameter/);
  assert.equal(inspectFlowDefinition(definition({value:{type:'Compose',inputs:1,runtimeConfiguration:{secureData:{properties:['inputs']}}}}),{value:{mode:'mock',outputs:2}}).supported,true);
- // Independent branches run in definition order (Task 46); only an interleaving-dependent pair still needs a mock.
+ // Independent branches run in definition order; only an interleaving-dependent pair needs a mock.
  assert.equal(inspectFlowDefinition(definition({left:{type:'Compose',inputs:1},right:{type:'Compose',inputs:2},reply:{type:'Response',runAfter:{left:['Succeeded'],right:['Succeeded']},inputs:{body:1}}})).supported,true);
  assert.match(inspectFlowDefinition(definition({left:{type:'Response',inputs:{body:1}},right:{type:'Response',inputs:{body:2}}})).errors.join(' '),/both answer a Response/);
 });

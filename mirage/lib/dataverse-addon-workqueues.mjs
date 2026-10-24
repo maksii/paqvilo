@@ -1,8 +1,7 @@
 // Simulated Dataverse work queues (Power Automate work queues): EnqueueWorkQueueItem, Dequeue, ClearWorkQueue,
 // ComputeSlaWorkQueueItem and AddWorkQueueItemProcessingHistoryEntry, over the workqueue and workqueueitem tables.
-// Contracts: the Web API reference pages of each message, work-queues-process and work-queues-manage (read 2026-10-20).
-// Invented data only. Every operation is registered through registerAddon (dataverse-addon-common.mjs), so a trusted pack's
-// dataverseMessages handler replaces it. unverified: the details each handler's comment marks, pending live capture (LC1).
+// Every operation is registered through registerAddon (dataverse-addon-common.mjs), so a trusted pack's
+// dataverseMessages handler replaces it. Each handler's comment names the details that are guesses.
 // ponytail: ClearWorkQueue is always synchronous (isDeletionGoingAsync false); no draft-3 schema validation of the input.
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
@@ -65,7 +64,7 @@ function operations(api) {
   return [
     {
       name: "EnqueueWorkQueueItem", kind: "action", binding: "entity", entity: "workqueue",
-      // Learn: adds an item to the queue. unverified: live capture (the paused-queue text, the duplicate error and the input check).
+      // Guesses: the paused-queue text, the duplicate error and the input check.
       signature: { params: [["workQueueItem", "mscrm.crmbaseentity"], ["returnCreated", "Edm.Boolean"]], response: [["workQueueItemId", "Edm.Guid"], ["workQueueItemRecord", "mscrm.workqueueitem"]] },
       handle: async (c) => {
         need(c, "workqueue", "Read");
@@ -110,9 +109,9 @@ function operations(api) {
     },
     {
       name: "Dequeue", kind: "action", binding: "entity", entity: "workqueue",
-      // Learn: takes the next item of the queue, or of a FetchXML query that must name workqueueitem and this queue, and marks it
+      // Takes the next item of the queue, or of a FetchXML query that must name workqueueitem and this queue, and marks it
       // Processing. Order: priority ascending, then created first (FIFO). Delayed and expired items are skipped. An empty queue
-      // answers 204. unverified: live capture (the empty-queue status and the returned keys).
+      // answers 204. Guesses: the empty-queue status and the returned keys.
       signature: { params: [["request", "Edm.String"]], returns: "mscrm.crmbaseentity" },
       handle: async (c) => {
         need(c, "workqueue", "Read");
@@ -164,7 +163,7 @@ function operations(api) {
     },
     {
       name: "ClearWorkQueue", kind: "action", binding: "entity", entity: "workqueue",
-      // Learn: removes every item of the queue. ponytail: always synchronous, so isDeletionGoingAsync is false. unverified: live capture.
+      // Removes every item of the queue. ponytail: always synchronous, so isDeletionGoingAsync is false.
       signature: { params: [], response: [["isDeletionGoingAsync", "Edm.Boolean"]] },
       handle: async (c) => {
         need(c, "workqueueitem", "Delete");
@@ -178,7 +177,7 @@ function operations(api) {
     },
     {
       name: "ComputeSlaWorkQueueItem", kind: "action", binding: "entity", entity: "workqueue",
-      // Learn: recomputes the SLA status of the queue's items that are not Processed. unverified: live capture (the boundaries).
+      // Recomputes the SLA status of the queue's items that are not Processed. The status boundaries are guesses.
       signature: { params: [] },
       handle: async (c) => {
         need(c, "workqueueitem", "Write");
@@ -193,8 +192,8 @@ function operations(api) {
     },
     {
       name: "AddWorkQueueItemProcessingHistoryEntry", kind: "action", binding: "entity", entity: "workqueueitem",
-      // Learn: appends a processing attempt to the item's executioncontext, a system-managed list kept as JSON. An unreadable list
-      // starts empty. unverified: live capture (the stored format of executioncontext).
+      // Appends a processing attempt to the item's executioncontext, a system-managed list kept as JSON. An unreadable list
+      // starts empty. The stored format of executioncontext is a guess.
       signature: { params: [["item", "mscrm.crmbaseentity"]] },
       handle: async (c) => {
         need(c, "workqueueitem", "Write");

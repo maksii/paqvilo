@@ -207,8 +207,11 @@ test('dismissed dialog events are origin-confined and never answer browser dialo
 });
 
 test('redaction strips query values, fragments, credentials and common credential formats', () => {
-  assert.equal(redactUrl('https://name:password@example.com/a?token=secret#private').includes('secret'), false);
-  for (const value of ['password="two words"', 'Authorization: Bearer abc', 'access_token=abc', 'eyJheader.eyJbody.signature']) assert.equal(redactText(value).includes('abc'), false);
+  assert.equal(redactUrl('https://name:password@example.com/a?token=secret#private'), 'https://example.com/a?token=%5Bredacted%5D');
+  for (const [value, secret] of [['password="two words"', 'two words'], ['Authorization: Bearer abc', 'abc'], ['access_token=abc', 'abc'], ['eyJheader.eyJbody.signature', 'signature']]) {
+    const redacted = redactText(value);
+    assert.match(redacted, /\[redacted/, value); assert.equal(redacted.includes(secret), false, value);
+  }
 });
 
 test('query-heavy URL redaction stays bounded and collapses duplicate keys without retaining values', () => {

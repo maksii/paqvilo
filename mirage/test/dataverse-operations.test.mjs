@@ -1,4 +1,4 @@
-// Extension operations, routes and install order for the Dataverse API. Invented schema and GUIDs; loopback only.
+// Extension operations, routes and install order for the Dataverse API.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -142,6 +142,13 @@ describe("operation registry", () => {
 
 describe("extension operations on the Web API", () => {
   let server;
+  // Registered last, so its fragment is the last one joined; the bound function must not get an import.
+  const csdl = captureExtension("csdl", (api) => {
+    api.registry.register({ name: "PaqFn", kind: "function", binding: "unbound", csdl: '<Function Name="PaqFn">\n</Function>', handle: async () => ({ status: 204 }) });
+    api.registry.register({ name: "PaqAct", kind: "action", binding: "unbound", csdl: '<Action Name="PaqAct">\n</Action>', handle: async () => ({ status: 204 }) });
+    api.registry.register({ name: "PaqBound", kind: "function", binding: "entity", entity: "widget", csdl: '<Function Name="PaqBound" IsBound="true">\n</Function>', handle: async () => ({ status: 204 }) });
+    api.registry.register({ name: "PaqFragment", kind: "function", binding: "unbound", csdl: '<Function Name="PaqFragment"/>', handle: async () => ({ status: 204 }) });
+  });
 
   before(async () => {
     server = await startServer({
@@ -190,6 +197,7 @@ describe("extension operations on the Web API", () => {
             handle: async (ctx) => ({ status: 200, body: { logical: ctx.target.mapping.logicalName, hasRow: "row" in ctx.target } }),
           });
         }),
+        csdl,
       ],
     });
   });
@@ -285,39 +293,21 @@ describe("extension operations on the Web API", () => {
     assert.equal((await response.json()).UserId, server.appUserId);
   });
 
-  it("exposes the CSDL fragments and the data revision on the api object", async () => {
-    const extension = captureExtension("csdl", (api) => {
-      api.registry.register({ name: "PaqFragment", kind: "function", binding: "unbound", csdl: '<Function Name="PaqFragment"/>', handle: async () => ({ status: 204 }) });
-    });
-    const probe = await startServer({ extensions: [extension] });
-    try {
-      // The core metadata functions are declared too, so the fragments carry the extension's line among them.
-      assert.ok(extension.api.registry.csdlFragments().endsWith('<Function Name="PaqFragment"/>'));
-      assert.equal(typeof extension.api.dataRevision(), "string");
-    } finally {
-      await probe.close();
-    }
+  it("exposes the CSDL fragments and a data revision that advances with a write on the api object", async () => {
+    // The core metadata functions are declared too, so the fragments carry the extension's line among them.
+    assert.ok(csdl.api.registry.csdlFragments().endsWith('<Function Name="PaqFragment"/>'));
+    const before = csdl.api.dataRevision();
+    await csdl.api.store.transact(() => { csdl.api.store.state.tables.widget.push({ widgetid: "aaaaaaaa-0000-0000-0000-0000000000a2", name: "two" }); });
+    assert.notEqual(csdl.api.dataRevision(), before);
   });
-});
 
-describe("extension CSDL imports", () => {
   it("imports each unbound extension function and action in the EntityContainer, and no bound one", async () => {
-    const extension = captureExtension("csdl-imports", (api) => {
-      api.registry.register({ name: "PaqFn", kind: "function", binding: "unbound", csdl: '<Function Name="PaqFn">\n</Function>', handle: async () => ({ status: 204 }) });
-      api.registry.register({ name: "PaqAct", kind: "action", binding: "unbound", csdl: '<Action Name="PaqAct">\n</Action>', handle: async () => ({ status: 204 }) });
-      api.registry.register({ name: "PaqBound", kind: "function", binding: "entity", entity: "widget", csdl: '<Function Name="PaqBound" IsBound="true">\n</Function>', handle: async () => ({ status: 204 }) });
-    });
-    const probe = await startServer({ extensions: [extension] });
-    try {
-      const xml = await (await probe.get(`${API}$metadata`)).text();
-      assert.match(xml, /<FunctionImport Name="PaqFn" Function="mscrm\.PaqFn" IncludeInServiceDocument="false" \/>/);
-      assert.match(xml, /<ActionImport Name="PaqAct" Action="mscrm\.PaqAct" \/>/);
-      assert.doesNotMatch(xml, /Import Name="PaqBound"/);
-      // The imports sit inside the EntityContainer, after the built-in ones.
-      assert.ok(xml.indexOf('<FunctionImport Name="PaqFn"') > xml.indexOf('<EntityContainer'));
-    } finally {
-      await probe.close();
-    }
+    const xml = await (await server.get(`${API}$metadata`)).text();
+    assert.match(xml, /<FunctionImport Name="PaqFn" Function="mscrm\.PaqFn" IncludeInServiceDocument="false" \/>/);
+    assert.match(xml, /<ActionImport Name="PaqAct" Action="mscrm\.PaqAct" \/>/);
+    assert.doesNotMatch(xml, /Import Name="PaqBound"/);
+    // The imports sit inside the EntityContainer, after the built-in ones.
+    assert.ok(xml.indexOf('<FunctionImport Name="PaqFn"') > xml.indexOf('<EntityContainer'));
   });
 });
 
@@ -444,10 +434,9 @@ describe("batch-aware api.change", () => {
       });
       assert.equal(response.status, 200);
       const text = await response.text();
-      assert.ok(text.includes("204"), "the operation's part answers 204");
+      assert.match(text, /HTTP\/1\.1 204/, "the operation's part answers 204");
       const names = probe.store.tableRows("widget").map((row) => row.name);
-      assert.ok(names.includes("direct"));
-      assert.ok(names.includes("from-batch"));
+      assert.deepEqual(names.filter((name) => name !== "one").sort(), ["direct", "from-batch"]);
     } finally {
       await probe.close();
     }

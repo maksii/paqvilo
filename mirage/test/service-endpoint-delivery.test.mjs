@@ -1,5 +1,4 @@
 // Service endpoint contracts 2 (Queue), 5 (Topic) and 6 (Queue Persistent) delivered to the local message bus.
-// Invented x_widget table, invented endpoints and steps; no network.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -24,7 +23,7 @@ function fixtureState() {
   return state;
 }
 
-// endpoints: providers.messaging.endpoints; bus false: no messaging provider (today's behaviour).
+// endpoints: providers.messaging.endpoints; bus false: no messaging provider.
 async function world(t, { mode = 1, contract = 2, endpoints = { [ENDPOINT]: 'local/x-queue' }, bus: withBus = true } = {}) {
   const store = await new DataStore({ state: fixtureState() }).init();
   const diagnostics = [];

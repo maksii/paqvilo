@@ -1,5 +1,5 @@
 // Runner request contexts (plugin-async.mjs): an asynchronous step runs in a child of the request that wrote the row, so
-// the plug-in trace log it writes carries the HTTP x-ms-correlation-request-id. Invented x_ table and GUIDs only.
+// the plug-in trace log it writes carries the HTTP x-ms-correlation-request-id.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAsyncPluginRunner } from "../lib/plugin-async.mjs";

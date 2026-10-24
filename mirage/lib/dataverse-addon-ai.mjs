@@ -1,18 +1,18 @@
-// Simulated Dataverse AI Builder, AI function, Copilot and process-mining messages (dataverse-addon-ai.mjs).
+// Simulated Dataverse AI Builder, AI function, Copilot and process-mining messages.
 // MESSAGES holds the native signatures, copied by a script from the native $metadata (platform names and types only).
 // Every message is registered through registerAddon (dataverse-addon-common.mjs), so a trusted pack's dataverseMessages
-// handler replaces it. The defaults: a runtime call answers aiUnavailable() (403 0x80048d06, Learn code interpreter
-// troubleshooting; unverified beyond Predict); AIModelPublish is internal-only (GC policy, registerInternalMessage).
-// Deterministic probes answer the capability flags (unverified, pending live capture LC4). AddToFeedbackLoop is store-backed.
+// handler replaces it. The defaults: a runtime call answers aiUnavailable() (403 0x80048d06; the code is known for Predict
+// only and a guess for the others); AIModelPublish is internal-only (registerInternalMessage).
+// Deterministic probes answer the capability flags with guessed values. AddToFeedbackLoop is store-backed.
 // ponytail: AddToFeedbackLoop does not write the prediction input and output file columns (upgrade via dataverse-files).
 // The probes ignore arguments when the corresponding cloud feature is unavailable.
 import { parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
 import { aiUnavailable, argsOf, idOf, registerAddon, registerInternalMessage } from "./dataverse-addon-common.mjs";
 
-// Learn (code interpreter, Predict): "This public message is for internal use only." for AIModelPublish.
+// Documented as "This public message is for internal use only."
 const INTERNAL = new Set(["AIModelPublish"]);
 
-// Capability probes: unverified answers for an organization without AI Builder or process mining.
+// Capability probes: guessed answers for an organization without AI Builder or process mining.
 const PROBES = {
   IsPaiEnabled: async () => ({ ispaienabled: false, templates: "[]", arePreviewScenarioEnabled: false, paigastatus: false, isdatamodelv2enabled: false }),
   IsPmEnabled: async () => ({ response: "false" }),

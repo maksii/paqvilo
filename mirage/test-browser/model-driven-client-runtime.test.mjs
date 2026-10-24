@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
 
 const script = `var InventedClient = {
   async load(executionContext) {
@@ -42,8 +43,7 @@ async function fixture(t, trusted = true) {
   await fs.writeFile(path.join(initial.solutionDir, 'AppActions/x_early/AppAction.xml'), '<appaction uniquename="x_early"><buttonlabeltext default="Early reviewed"/><context>1</context><contextvalue>x_item</contextvalue><location>0</location><sequence>0.0000000000</sequence><onclickeventjavascriptfunctionname>InventedClient.mark</onclickeventjavascriptfunctionname><onclickeventjavascriptparameters>[{"type":5,"value":null}]</onclickeventjavascriptparameters><onclickeventjavascriptwebresourceid><webresourceid>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</webresourceid></onclickeventjavascriptwebresourceid><onclickeventtype>2</onclickeventtype><type>0</type></appaction>');
   await fs.writeFile(path.join(initial.solutionDir, 'Entities/x_item/RibbonDiff.xml'), '<RibbonDiffXml><CustomActions><CustomAction><CommandUIDefinition><Button Id="x.Form.Mark" Command="x.Mark" LabelText="Mark reviewed"/></CommandUIDefinition></CustomAction><CustomAction><CommandUIDefinition><Button Id="x.Form.Unsupported" Command="x.Unsupported" LabelText="Unsupported API"/></CommandUIDefinition></CustomAction><CustomAction><CommandUIDefinition><Button Id="x.Form.Remote" Command="x.Remote" LabelText="Unsupported remote action"/></CommandUIDefinition></CustomAction></CustomActions><CommandDefinitions><CommandDefinition Id="x.Mark"><EnableRules><EnableRule Id="x.Existing"/></EnableRules><Actions><JavaScriptFunction Library="$webresource:x_/client.js" FunctionName="InventedClient.mark"><CrmParameter Value="PrimaryControl"/></JavaScriptFunction></Actions></CommandDefinition><CommandDefinition Id="x.Unsupported"><Actions><JavaScriptFunction Library="$webresource:x_/client.js" FunctionName="InventedClient.unsupported"><CrmParameter Value="PrimaryControl"/></JavaScriptFunction></Actions></CommandDefinition><CommandDefinition Id="x.Remote"><Actions><Url Address="https://example.invalid"/></Actions></CommandDefinition></CommandDefinitions><RuleDefinitions><EnableRules><EnableRule Id="x.Existing"><FormStateRule State="Existing"/></EnableRule></EnableRules></RuleDefinitions></RibbonDiffXml>');
   const sim = await initial.start(); sim.origin = sim.origin ?? sim.url; t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = [], external = [];
+  const page = await chrome.page(t); const errors = [], external = [];
   page.on('pageerror', error => errors.push(error.message)); page.on('request', request => { if (new URL(request.url()).origin !== sim.origin) external.push(request.url()); });
   await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
@@ -180,7 +180,7 @@ test('application form and view components select the authored surface before ge
   const viewFile = path.join(initial.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   await fs.writeFile(path.join(path.dirname(viewFile), '0-excluded.xml'), (await fs.readFile(viewFile, 'utf8')).replace('{items-view}', '{excluded-view}').replace('Stocked items', 'Excluded view'));
   const sim = await initial.start(); t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage();
+  const page = await chrome.page(t);
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   await page.getByRole('button', { name: 'View', exact: true }).click();
@@ -201,8 +201,7 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
   const appFile = path.join(initial.solutionDir, 'AppModules/x_example/AppModule.xml');
   await fs.writeFile(appFile, (await fs.readFile(appFile, 'utf8')).replace('</AppModuleComponents>', `<AppModuleComponent type="60" id="{item-form}"/><AppModuleComponent type="60" id="{${reviewId}}"/></AppModuleComponents>`));
   const sim = await initial.start(); t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), errors = []; page.on('pageerror', error => errors.push(error.message));
+  const page = await chrome.page(t), errors = []; page.on('pageerror', error => errors.push(error.message));
   const route = sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   await page.goto(route + '&formid=' + encodeURIComponent(`{${reviewId.toUpperCase()}}`));
   await page.getByRole('tab', { name: 'Review details', exact: true }).waitFor();
@@ -260,8 +259,7 @@ test('a persisted inactive two-state record disables its default UI while explic
     mappings: { x_item: { entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name' }, x_child: { entitySet: 'x_children', idColumn: 'x_childid', nameColumn: 'x_name' } },
     tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Copper', x_quantity: 2, statecode: 1 }], x_child: [] },
   } }); t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(), errors = [], writes = [];
+  const page = await chrome.page(t), errors = [], writes = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (request.url().includes('/_apps/api/tables/x_item') && ['POST', 'PATCH'].includes(request.method())) writes.push(request.method()); });
   const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -344,17 +342,16 @@ test('a persisted inactive two-state record disables its default UI while explic
   assert.deepEqual(errors, []);
 });
 
-test('a header-only column set through the client API is saved with the record; dirty clears for persisted values (FC3-62)', async t => {
+test('a header-only column set through the client API is saved with the record; dirty clears for persisted values', async t => {
   const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } }); await initial.sim.close();
   const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   let xml = await fs.readFile(formFile, 'utf8');
-  // x_quantity moves from the body to the form header (Learn: header controls are named header_<column>).
+  // x_quantity moves from the body to the form header (header controls are named header_<column>).
   xml = xml.replace('<row><cell><labels><label description="Quantity" languagecode="1033"/></labels><control datafieldname="x_quantity"/></cell></row>', '')
     .replace('<form><tabs>', '<form><header><rows><row><cell><control id="header_x_quantity" datafieldname="x_quantity"/></cell></row></rows></header><tabs>');
   await fs.writeFile(formFile, xml);
   const sim = await initial.start(); sim.origin = sim.origin ?? sim.url; t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const page = await chrome.page(t); const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
@@ -370,7 +367,7 @@ test('a header-only column set through the client API is saved with the record; 
   assert.deepEqual(errors, []);
 });
 
-test('a save that cannot carry every changed column still runs Save & Close, then names the columns (RC4a-14)', async t => {
+test('a save that cannot carry every changed column still runs Save & Close, then names the columns', async t => {
   const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } }); await initial.sim.close();
   const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   // x_quantity is bound to a custom control the shell does not host: it stays a form attribute a client script can set,
@@ -378,8 +375,7 @@ test('a save that cannot carry every changed column still runs Save & Close, the
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('<control datafieldname="x_quantity"/>', '<control datafieldname="x_quantity" uniqueid="{77777777-7777-4777-8777-7777777777c1}"/>')
     .replace('</form>', '<controlDescriptions><controlDescription forControl="{77777777-7777-4777-8777-7777777777c1}"><customControl formFactor="2" name="x_Invented.Phone"/></controlDescription></controlDescriptions></form>'));
   const sim = await initial.start(); sim.origin = sim.origin ?? sim.url; t.after(() => sim.close());
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const page = await chrome.page(t); const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(sim.origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));

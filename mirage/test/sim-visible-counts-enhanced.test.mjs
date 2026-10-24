@@ -1,6 +1,6 @@
-// Ruling 6 (RC4a): the /_sim permission view counts the records the session's visitor reads. On an enhanced-authorization
+// The /_sim permission view counts the records the session's visitor reads. On an enhanced-authorization
 // site that is the visitor's mapped Dataverse user; before a portal request has mapped the visitor, /_sim evaluates the
-// mapping it would get and writes nothing (it never provisions). Invented site, tables and data only.
+// mapping it would get and writes nothing (it never provisions).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

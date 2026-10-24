@@ -796,13 +796,13 @@ export async function importPortal(
   const settings = {};
   // Enhanced data model: a site setting can name an environment variable instead of a static value. The binding is
   // recorded here (no environment variable state exists at import time); secret-resolver.mjs bindSiteSettings applies
-  // the effective value, or resolves a Secret type through the secrets resolver. unverified: the export field names
-  // (`environmentvariable` lookup, `source` 1 = Environment variable) need confirming against a real export.
+  // the effective value, or resolves a Secret type through the secrets resolver. The export field names
+  // (`environmentvariable` lookup, `source` 1 = Environment variable) are a guess not yet checked against a real export.
   const settingEnvironmentVariables = {};
   for (const r of byKind("sitesetting")) {
     settings[r.name] = String(field(r, "value", ""));
     const bound = id(field(r, "environmentvariable"));
-    // unverified: native default for adx_sitesetting source is the static value (0)
+    // Assumed native default for adx_sitesetting source: the static value (0).
     if (bound && Number(field(r, "source", 0)) === 1) settingEnvironmentVariables[r.name] = bound;
   }
   const webFiles = [];
@@ -1263,6 +1263,6 @@ export function pageTemplateKind(template) {
   const value = field(template?.metadata ?? {}, "type");
   if (Number(value) === 756150000) return "rewrite";
   if (Number(value) === 756150001) return "web-template";
-  // Older or partial exports omit the choice; retain their existing source inference.
+  // Older or partial exports omit the choice; infer the source from the references.
   return template?.webTemplateId ? "web-template" : template?.rewriteUrl ? "rewrite" : null;
 }

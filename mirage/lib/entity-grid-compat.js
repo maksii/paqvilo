@@ -52,7 +52,7 @@
     return { text: formatLocal(date, pattern), iso: isoLocal(date) };
   }
 
-  // ---- events --------------------------------------------------------------
+  // ---- events
   function trigger(element, name, extra) {
     const $ = jq();
     if ($) $(element).trigger(name, extra === undefined ? [] : [extra]);
@@ -164,9 +164,9 @@
   window.addEventListener("scroll", closeActionMenus, { passive: true });
   window.addEventListener("resize", closeActionMenus, { passive: true });
 
-  // ---- token and transport ------------------------------------------------
+  // ---- token and transport
   // The token reaches the grid one task after the shell resolves it, so a quick view frame that an
-  // earlier token callback replaces navigates before the notes and grid loads (live request order).
+  // earlier token callback replaces navigates before the notes and grid loads.
   function token() {
     return new Promise((ready, reject) => {
       const resolve = (value) => setTimeout(() => ready(value), 0);
@@ -203,7 +203,7 @@
    * entityform.js record actions (button.*-link in .form-custom-actions): Delete opens the
    * form's delete dialog whose primary button posts the record reference to the button URL;
    * Activate/Deactivate post it directly; Create related record posts to the button's (empty)
-   * URL. Every success reloads the page (live request evidence).
+   * URL. Every success reloads the page.
    */
   function formActionClick(event) {
     const button = event.target.closest("button");
@@ -288,7 +288,7 @@
     return `${Math.round(years)} years ago`;
   }
 
-  // ---- bootstrap modal (native Bootstrap when present) ----------------------
+  // ---- bootstrap modal (native Bootstrap when present)
   function showModal(modal) {
     const $ = jq();
     if ($ && $.fn.modal) {
@@ -312,7 +312,7 @@
     trigger(modal, "shown.bs.modal");
   }
   // The Bootstrap 5 bundle appends a status announcer to the body, after the backdrop, when a dialog
-  // other than a lookup opens (live DOM).
+  // other than a lookup opens.
   function announceDialog(modal) {
     if (!document.querySelector('link[href*=".BootstrapV5."]') || modal.classList.contains("modal-lookup")) return;
     let announcer = document.getElementById("modal-status-announcer");
@@ -322,7 +322,7 @@
       document.body.append(announcer);
     }
     announcer.textContent = "Dialog opened";
-    // It leaves the page when the dialog closes (live DOM after the note dialog).
+    // It leaves the page when the dialog closes.
     const drop = () => document.getElementById("modal-status-announcer")?.remove();
     const $ = jq();
     if ($) $(modal).one("hidden.bs.modal", drop);
@@ -350,7 +350,7 @@
     }
   });
 
-  // ---- notifications ------------------------------------------------------------
+  // ---- notifications
   function notify(grid, message, kind = "error") {
     const host = document.querySelector("#content-container, .page-heading") || grid.parentElement || document.body;
     let box = host.querySelector(":scope > .notifications");
@@ -368,7 +368,7 @@
     if (kind !== "error") setTimeout(() => alert.remove(), 5000);
   }
 
-  // ---- layouts ------------------------------------------------------------------
+  // ---- layouts
   function parseLayouts(value) {
     if (!value) return [];
     try {
@@ -387,7 +387,7 @@
     return target.origin === location.origin ? target.pathname + target.search : target.href;
   };
 
-  // ---- grid ---------------------------------------------------------------------------
+  // ---- grid
   const ACTION = { Details: 1, Edit: 2, Insert: 3, Delete: 4, Associate: 5, Disassociate: 6, Workflow: 7, Download: 8, Deactivate: 17, Activate: 18 };
 
   class EntityGrid {
@@ -440,8 +440,8 @@
         this.layouts[0]
       );
     }
-    // The list's own record filter (live data requests): "user" when the view filters by the portal
-    // user's column, "account" when it filters by the user's account column, else none.
+    // The list's own record filter: "user" when the view filters by the portal user's column,
+    // "account" when it filters by the user's account column, else none.
     userFilter() {
       const config = this.config;
       return config.FilterPortalUserAttributeName ? "user" : config.FilterAccountAttributeName ? "account" : null;
@@ -542,8 +542,8 @@
       if (this.enableActions)
         for (const action of config.ViewActionLinks ?? []) {
           if (!action.Enabled) continue;
-          // A subgrid of an inactive record renders no create or associate action at all (live
-          // item-edit/inactive-record, parent-edit/inactive-record); search and download stay.
+          // A subgrid of an inactive record renders no create or associate action at all; search and
+          // download stay.
           if ((action.Type === ACTION.Insert || action.Type === ACTION.Associate) && this.parentInactive()) continue;
           if (action.Type === ACTION.Insert) actions.append(this.createActionElement(action));
           else if (action.Type === ACTION.Associate) {
@@ -570,7 +570,7 @@
             const group = document.createElement("div");
             group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"}`;
             if (this.bs5) group.setAttribute("style", "display: table; width: auto;");
-            // Bootstrap 5 grids render a button with a left margin (live DOM), Bootstrap 3 a link.
+            // Bootstrap 5 grids render a button with a left margin, Bootstrap 3 a link.
             const link = document.createElement(this.bs5 ? "button" : "a");
             if (this.bs5) link.type = "button";
             else link.href = "#";
@@ -595,8 +595,8 @@
     /**
      * The Bootstrap 5 record-count announcer after the toolbar: ...null for the entity_list template's grid
      * (it carries data-nl-search-filter), ...undefined for subgrids and the ASPX page's EntityListControl,
-     * ...<field> for lookups (live evidence). The page holds one announcer per id: a grid loading later
-     * (an associate dialog's grid) takes it over from the grid that had it (live DOM).
+     * ...<field> for lookups. The page holds one announcer per id: a grid loading later (an associate
+     * dialog's grid) takes it over from the grid that had it.
      */
     ensureAnnouncer() {
       if (this.child("[id^='SearchCountText']")) return;
@@ -632,7 +632,7 @@
         onClick(link, (event) => {
           event.preventDefault();
           if (!modal) return;
-          // Opening the create dialog leaves the bundle's loading notification after the link (live DOM).
+          // Opening the create dialog leaves the bundle's loading notification after the link.
           if (!link.parentElement.querySelector("#notificationDiv")) {
             const notification = document.createElement("div");
             for (const [name, value] of [["aria-relevant", "all"], ["aria-live", "assertive"], ["id", "notificationDiv"], ["class", "loading-text"]]) notification.setAttribute(name, value);
@@ -700,7 +700,7 @@
       table.setAttribute("aria-relevant", "additions");
       table.className = "table";
       for (const token of `${this.gridClass}${this.bs5 ? "" : " table-fluid"}${this.selectMode !== "None" ? " table-hover" : ""}`.split(/\s+/)) if (token) table.classList.add(token);
-      // Bootstrap 5 grids with pixel column widths fix the table to the view's total width (live DOM).
+      // Bootstrap 5 grids with pixel column widths fix the table to the view's total width.
       if (this.bs5 && this.widthStyle === "Pixels") {
         const total = layout.ColumnsTotalWidth ?? (layout.Columns ?? []).reduce((sum, column) => sum + (Number(column.Width) || 0), 0);
         table.setAttribute("style", `width:${total}px !important; max-width:${total}px !important;`);
@@ -736,7 +736,7 @@
             th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
           }
           const userSorted = this.state.sort != null;
-          // A column the view sorts names its own direction (live: a descending view column reads ". sort descending").
+          // A column the view sorts names its own direction (a descending view column reads ". sort descending").
           const hint = sorted ? (userSorted ? (ascending ? "Sort_Descending_Order" : "Sort_Ascending_Order") : ascending ? "Sort_Ascending_Order" : "Sort_Descending_Order") : "Sort_Descending_Order";
           th.innerHTML = `<a href="#" role="button" aria-label="${esc(plain(name))}" tabindex="0">${name}${sorted ? ` <span class="fa ${ascending ? "fa-arrow-up" : "fa-arrow-down"}" aria-hidden="true"></span>` : ""}<span class="${this.bs5 ? "visually-hidden" : "sr-only"} sort-hint">. ${esc(resource(hint, hint === "Sort_Descending_Order" ? "sort descending" : "sort ascending"))}</span></a>`;
           onClick(th.querySelector("a"), (event) => {
@@ -750,8 +750,8 @@
               this.load(1);
               return;
             }
-            // The Bootstrap 5 page grid re-marks its header in place (live DOM): the previous column
-            // loses its classes and arrow (its text keeps the trailing space), the clicked column gets
+            // The Bootstrap 5 page grid re-marks its header in place: the previous column loses its
+            // classes and arrow (its text keeps the trailing space), the clicked column gets
             // "sort-asc sort" and a bare arrow, the hints stay, and the header links keep style="".
             for (const other of row.querySelectorAll("th.sort")) {
               other.classList.remove("sort", "sort-asc", "sort-desc");
@@ -810,7 +810,7 @@
         pagingCookie: "",
         filter: this.state.filter ?? this.userFilter(),
         metaFilter: this.state.metaFilter,
-        // The entity_list template's grid posts its data-nl-search-filter; other grids post null (live requests).
+        // The entity_list template's grid posts its data-nl-search-filter; other grids post null.
         nlSearchFilter: this.element.getAttribute("data-nl-search-filter"),
         timezoneOffset: new Date().getTimezoneOffset(),
         customParameters: [],
@@ -840,7 +840,7 @@
           this.showMessage(null);
           if (!data || data.AccessDenied) {
             this.child(".view-access-denied").style.display = data?.AccessDenied ? "block" : "none";
-            // A denied grid announces no record count and hides its pager (live DOM).
+            // A denied grid announces no record count and hides its pager.
             if (data?.AccessDenied) {
               this.child("[id^='SearchCountText']")?.remove();
               const pager = this.child(".view-pagination");
@@ -1327,7 +1327,7 @@
     }
   }
 
-  // ---- lookup modal -------------------------------------------------------------
+  // ---- lookup modal
   const lookupButtons = new Set();
   function initLookup(container) {
     if (container.__ppLookup) return;
@@ -1391,7 +1391,7 @@
       if (event.target !== modal) return;
       grid.state.selected = null;
       restoreCurrentSelection = true;
-      // Opening any lookup dialog disables Select and Remove value in every lookup dialog of the page (live DOM).
+      // Opening any lookup dialog disables Select and Remove value in every lookup dialog of the page.
       for (const button of lookupButtons) button.disabled = true;
       trigger(gridElement, "refresh");
     });
@@ -1471,7 +1471,7 @@
     sync();
   }
 
-  // ---- associate dialog ---------------------------------------------------------
+  // ---- associate dialog
   function initAssociate(container) {
     if (container.__ppAssociate) return;
     container.__ppAssociate = true;
@@ -1500,7 +1500,7 @@
         }),
       );
     };
-    // OK stays disabled (disabled="disabled", live DOM) until a record is chosen.
+    // OK stays disabled (disabled="disabled") until a record is chosen.
     const ok = modal.querySelector(".modal-footer .btn-primary");
     const syncOk = () => {
       if (!ok) return;
@@ -1517,7 +1517,7 @@
       selected.replaceChildren();
       syncOk();
       modal.querySelector(".modal-body > .alert")?.remove();
-      // Once the dialog's grid has loaded, the subgrid it belongs to reloads too (live requests:
+      // Once the dialog's grid has loaded, the subgrid it belongs to reloads too (request order:
       // subgrid, associate grid, subgrid again).
       if (parent) {
         const reload = (loaded) => {
@@ -1558,7 +1558,7 @@
     });
   }
 
-  // ---- notes ----------------------------------------------------------------------
+  // ---- notes
   function initNotes(container) {
     if (container.__ppNotes) return;
     container.__ppNotes = true;
@@ -1581,7 +1581,7 @@
         if (node) node.style.display = name === selector ? "block" : "none";
       }
       if (bs5) {
-        // A shown list keeps an empty style attribute (live DOM: style="").
+        // A shown list keeps an empty style attribute (style="").
         if (list) list.style.display = selector ? "none" : "";
         const more = container.querySelector(".notes-loading-more");
         if (more) more.style.display = "none";
@@ -1594,7 +1594,7 @@
         .then((data) => {
           show(data.Records?.length ? null : ".notes-empty");
           // The Bootstrap 5 control hides its pager for a single page of notes; without notes the
-          // pager is left as rendered (live DOM: item-edit/populated vs item-edit/minimal).
+          // pager is left as rendered.
           const pager = bs5 && container.querySelector(".notes-pagination");
           if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = "none";
           const pattern = document.body?.getAttribute("data-datetimeformat");
@@ -1650,7 +1650,7 @@
           .then(() => {
             hideModal(modal);
             // The Bootstrap 5 add dialog is reset: an empty note and a fresh file input without
-            // the label and tab stop the dialog markup gave the first one (live DOM).
+            // the label and tab stop the dialog markup gave the first one.
             if (bs5 && modal.matches(".modal-addnote")) {
               const text = modal.querySelector('textarea[name="text"]');
               if (text) text.value = "";
@@ -1713,7 +1713,7 @@
     load(1);
   }
 
-  // ---- metadata filter apply (serialized-query) -----------------------------------
+  // ---- metadata filter apply (serialized-query)
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-serialized-query]");
     if (!button) return;
@@ -1725,7 +1725,7 @@
     for (const input of target.querySelectorAll("input, select")) {
       if (!input.name || input.disabled) continue;
       if ((input.type === "checkbox" || input.type === "radio") && !input.checked) continue;
-      // Every successful control posts, empty text boxes and selects included (live metaFilter "0=&1=1&8=").
+      // Every successful control posts, empty text boxes and selects included (metaFilter "0=&1=1&8=").
       parameters.append(input.name, input.value);
     }
     const serialized = parameters.toString();
@@ -1739,7 +1739,7 @@
     location.assign(url.href);
   });
 
-  // ---- modal form completion ------------------------------------------------------
+  // ---- modal form completion
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin || event.data !== "Success") return;
     for (const element of document.querySelectorAll(".entity-grid")) {
@@ -1753,9 +1753,9 @@
     }
   });
 
-  // ---- initialisation -------------------------------------------------------------------
+  // ---- initialisation
   function initialise(root = document) {
-    // Notes load before the grids (live: the notes POST precedes the subgrid POST).
+    // Notes load before the grids: the notes POST precedes the subgrid POST.
     for (const notes of root.querySelectorAll(".entity-notes")) initNotes(notes);
     for (const element of root.querySelectorAll(".entity-grid")) {
       if (element.__ppEntityGrid) continue;

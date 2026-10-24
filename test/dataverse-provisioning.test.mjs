@@ -218,7 +218,7 @@ test('API continuations cannot escape origin or path; connection output omits se
   const parsed=parseRegistrationOutput('Tenant ID Application ID Client Secret Expiration\n11111111-1111-4111-8111-111111111111 22222222-2222-4222-8222-222222222222 invented-secret 1/1/2030 12:00 PM');assert.equal(parsed.clientSecret,'invented-secret');
 });
 
-test('dataverse command is available through consumer CLI',()=>{
+test('dataverse help lists its register, plan and export commands',()=>{
   const result=spawnSync(process.execPath,[fileURLToPath(new URL('../bin/paqvilo.mjs',import.meta.url)),'dataverse','--help'],{encoding:'utf8',windowsHide:true});
   assert.equal(result.status,0);assert.match(result.stdout,/Register|register/);assert.match(result.stdout,/plan/);assert.match(result.stdout,/export/);
 });
@@ -226,7 +226,7 @@ test('dataverse command is available through consumer CLI',()=>{
 test('journal replacement survives a transient filesystem lock without repeating remote work',async()=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'invented-dataverse-journal-')),file=path.join(directory,'journal.json'),originalRename=fs.rename;let replacements=0;
   try{await privateJson(file,{step:1},true);fs.rename=async(...args)=>{replacements++;if(replacements===1){const error=new Error('invented transient lock');error.code='EPERM';throw error;}return originalRename(...args);};await privateJson(file,{step:2});assert.equal(replacements,2);assert.equal(JSON.parse(await fs.readFile(file,'utf8')).step,2);assert.deepEqual(await fs.readdir(directory),['journal.json']);await assert.rejects(privateJson(file,{step:3},true),e=>e.code==='EEXIST');}
-  finally{fs.rename=originalRename;assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('invented-dataverse-journal-'));await fs.rm(directory,{recursive:true,force:true});}
+  finally{fs.rename=originalRename;await fs.rm(directory,{recursive:true,force:true});}
 });
 
 test('credential import handles identity-bearing formats without treating secret ID as the value',()=>{

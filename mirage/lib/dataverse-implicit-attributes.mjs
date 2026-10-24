@@ -1,6 +1,5 @@
 // Platform metadata companions inferred from declared column kinds. These are metadata-only facts:
 // this helper does not introduce row values, persistence or permission bypasses.
-// File/image support columns: Microsoft Learn file-column-data and image-column-data.
 import { standardFields } from './dataverse-standard.mjs';
 
 const kind = field => String(field?.columnMetadata?.type ?? field?.dataverseType ?? '').toLowerCase();

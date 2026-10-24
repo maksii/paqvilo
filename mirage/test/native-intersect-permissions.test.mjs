@@ -19,7 +19,7 @@ async function fixture(t,{append=true,appendTo=true,manual=false,self=false,obse
  const sim=await createSimulator({sourceDir:portal,solutionRoots:[solution],solutionOrder:'explicit',watch:false,port:0,observed});ownedFixture(t).add(()=>sim.close());
  await sim.store.transact(()=>{sim.store.state.tables.widget=[{widgetid:G(2)},...(self?[{widgetid:G(3)}]:[])];sim.store.state.tables.label=[{labelid:G(3)}];sim.store.state.tables.contact=[{contactid:G(4),fullname:'Invented member',statecode:0}];if(manual==='untyped'){delete sim.store.state.mappings.widget.relationships.widget_labels.schemaName;delete sim.store.state.mappings.widget.relationships.widget_labels.type;}else if(manual)sim.store.state.mappings.widget_label.userConfigured=true;});
  const signed=sim.signIn(G(4),{roles:['Member']}),cookie=signed.cookieHeader,endpoint='/_api/widgets('+G(2)+')/widget_labels';
- const call=(route,{method='GET',body}={})=>fetch(sim.url+route,{method,headers:{cookie,__RequestVerificationToken:sim.state().csrf,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
+ const call=(route,{method='GET',body}={})=>fetch(sim.url+route,{method,headers:{cookie,__RequestVerificationToken:sim.csrf,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
  return {sim,identity:signed.identity,call,endpoint,post:()=>call(endpoint+'/$ref',{method:'POST',body:{'@odata.id':sim.url+'/_api/'+(self?'widgets':'labels')+'('+G(3)+')'}}),remove:()=>call(endpoint+'('+G(3)+')/$ref',{method:'DELETE'}),edge:()=>sim.store.state.tables.widget_label};
 }
 test('imported intersect associations use endpoint grants, idempotent native HTTP writes and exact readbacks',async t=>{

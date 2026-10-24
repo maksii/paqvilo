@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,10 +8,12 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { captureScenario, pageRunner } from '../baseline-capture.mjs';
 
 const origin = 'http://127.0.0.1:15153';
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 async function fixture(t) {
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
   const context = await browser.newContext();
+  t.after(() => context.close());
   await context.route(origin + '/**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Fixture</title><link rel="icon" href="data:,"><input id="visible"><input id="hidden" style="display:none"><input id="readonly" readonly>' }));
   return context.newPage();
 }

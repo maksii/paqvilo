@@ -29,12 +29,12 @@
 .crmEntityFormView .input-group .form-control{flex:1 1 auto;min-width:0;width:1%}
 .crmEntityFormView .input-group-btn,.crmEntityFormView .input-group-addon{flex:0 0 auto;display:flex;align-items:center}
 .crmEntityFormView .validation-summary{width:100%;box-sizing:border-box;padding:12px;margin:12px 0;border:1px solid #a94442;color:#a94442}
-/* Narrow forms (frames) stack the cells; the empty zero cell stays hidden (live quick view frame). */
+/* Narrow forms (frames) stack the cells; the empty zero cell stays hidden. */
 @media(max-width:767px){.crmEntityFormView fieldset{min-width:0}.crmEntityFormView table.section{display:block;table-layout:fixed}.crmEntityFormView table.section>tbody,.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
-/* The lookup dialog's error block stays hidden until the grid reports an error (live: not rendered visible). */
+/* The lookup dialog's error block stays hidden until the grid reports an error. */
 .modal-error.message{display:none}
 
-/* Map lists: the error box shows only when the map script reports an error (live). */
+/* Map lists: the error box shows only when the map script reports an error. */
 #entity-list-map-error{display:none}
 /* Structural preform affordances. These are replaced with captured preform CSS. */
 .crmEntityFormView .info.required label:after,.entity-form .table-info.required label:after{content:' *';color:#a4262c}

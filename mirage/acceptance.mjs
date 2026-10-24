@@ -314,6 +314,7 @@ export async function runAcceptance({
         await page.addInitScript(observeReadAborts);
       }
       const pending = new Map(),
+        noContentRequests = new WeakSet(),
         responseObservations = [];
       const requestRecords = new Map(), frameDocuments = new WeakMap(), navigationHolds = new Set(), navigationBudgets = new Map();
       let settlementDeadline = Infinity, actionDeadline = Infinity;
@@ -527,10 +528,8 @@ export async function runAcceptance({
         const response = observation.failedResponses.find(
           (item) => item.requestKey === requestKey,
         );
-        if (request.isNavigationRequest() && [204,205].includes(record?.status) && request.failure()?.errorText === 'net::ERR_ABORTED') {
-          (observation.noContentNavigations ??= []).push({method:request.method(),url:failureUrl(request.url()),status:record.status});
-          return;
-        }
+        // The response already recorded it; Chromium aborts the navigation that has no document to commit.
+        if (noContentRequests.has(request) && request.failure()?.errorText === 'net::ERR_ABORTED') return;
         observation.failedRequests.push({
           kind: "network",
           requestKey,
@@ -554,6 +553,12 @@ export async function runAcceptance({
       page.on("response", (response) => {
         const record = pending.get(response.request());
         if (record) record.status = response.status();
+        // A 204/205 navigation keeps the current document. Chromium ends it with requestfailed (ERR_ABORTED) or
+        // requestfinished depending on timing, so it is classified here, once, from its status.
+        if (response.request().isNavigationRequest() && [204, 205].includes(response.status())) {
+          noContentRequests.add(response.request());
+          (observation.noContentNavigations ??= []).push({ method: response.request().method(), url: failureUrl(response.url()), status: response.status() });
+        }
         if (response.status() >= 400) {
           const failure = {
             kind: "http",

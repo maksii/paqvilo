@@ -63,7 +63,7 @@ test('suspend and resume answer the steps mock map that replays journalled actio
   assert.deepEqual(answer.body, { id: 'i1', outcome: 'Approve' });
 });
 
-// RB1-03: secure outputs are redacted in state; the clear answer lives in this process only.
+// Secure outputs are redacted in state; the clear answer lives in this process only.
 test('a secure output is never written to state: a resume in the same process replays it, one after a restart is NotResumable', async t => {
   const { store, runs, scheduler } = await fixture(t);
   const run = await runs.start({ processId: FLOW });
@@ -181,7 +181,6 @@ test('prune drops finished approvals beyond keepRuns and keeps every pending one
   const result = await runs.prune();
   assert.equal(result.approvals, 250);
   const kept = Object.keys(approvals);
-  assert.equal(kept.filter(id => id.startsWith('appr-')).length, 50);
   assert.deepEqual(kept.filter(id => id.startsWith('appr-')).sort(), Array.from({ length: 50 }, (_, i) => `appr-${i + 250}`).sort(), 'the newest finished approvals stay');
   assert.deepEqual(kept.filter(id => id.startsWith('pending-')).sort(), ['pending-0', 'pending-1', 'pending-2']);
   assert.equal(notes.find(n => n.code === 'FLOW_RUN_JOURNAL_PRUNED').approvals, 250);

@@ -15,8 +15,7 @@ const list = (value) => (Array.isArray(value) ? value : value == null ? [] : [va
 const SERVICE_MARKERS = ["Access Denied", "Page Not Found"];
 
 /**
- * Read access to an exported page or web file for a persona
- * (docs/platform-internals-reference.md 2.1-2.3; Microsoft page-security docs):
+ * Read access to an exported page or web file for a persona:
  * - Service pages (Access Denied / Page Not Found site markers) are always readable.
  * - Content in a non-visible publishing state (or an unpublished website language)
  *   is readable only with Preview Unpublished Entities website access.
@@ -106,7 +105,6 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
   const anonymousRoles = new Set(
     roleRecords.filter((r) => flag(field(r, "anonymoususersrole", false))).map((r) => normalize(r.id)),
   );
-  // Service pages are always readable.
   const servicePageIds = new Set(
     (portal.siteMarkers ?? [])
       .filter((marker) => SERVICE_MARKERS.includes(marker.name))
@@ -151,7 +149,7 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
         ],
       };
   }
-  // Release/expiration dates still apply to web files (no longer to pages).
+  // Release/expiration dates apply to web files only.
   if (asset && !canPreview) {
     const release = Date.parse(field(asset.metadata, "releasedate") ?? ""),
       expiration = Date.parse(field(asset.metadata, "expirationdate") ?? "");

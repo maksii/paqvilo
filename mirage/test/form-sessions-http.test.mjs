@@ -6,7 +6,6 @@ import os from "node:os";
 import { createSimulator } from "../server.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 
-// Synthetic exports and local state only; no portal is contacted.
 const wizardSchema = {
   initialStepId: "create",
   steps: [
@@ -60,7 +59,7 @@ async function fixture(t, { formYaml = "", mode = "local", liveBridge, forms = {
   const submit = (kind, id, body, headers = {}) =>
     fetch(`${app.url}/__sim/forms/${kind}/${id}/submit`, {
       method: "POST",
-      headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf, ...headers },
+      headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf, ...headers },
       body: JSON.stringify(body),
     });
   return { app, submit };

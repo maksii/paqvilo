@@ -19,7 +19,7 @@ test('unknown pack keys are diagnostics, and errors in strict mode', () => {
   assert.deepEqual(validatePackExports(pack('fx-core', { generators: {}, parity: {}, dataset() {} })), []);
   assert.ok(CORE.includes('configurationPresets'));
   // validatePack keeps loading the pack and records the diagnostic for discoverPacks.
-  // validatePack returns a frozen snapshot of the pack with the same exports (R3-06).
+  // validatePack returns a frozen snapshot of the pack with the same exports.
   const validatedTypo = validatePack(typo);
   assert.ok(Object.isFrozen(validatedTypo));
   assert.deepEqual(Object.keys(validatedTypo), Object.keys(typo));
@@ -65,7 +65,7 @@ test('packProvides lists every export key per pack', () => {
 test('provider exports are pre-registered as pending until their module registers the real check', () => {
   for (const name of PRE_REGISTERED) assert.ok(PACK_EXPORTS[name], name);
   const pendingName = PRE_REGISTERED.find(name => PACK_EXPORTS[name].pending && name !== 'httpFixtures');
-  if (!pendingName) return;
+  assert.ok(pendingName, 'this process has not imported every provider module, so one export is still pending');
   assert.equal(PACK_EXPORTS[pendingName].collide, 'error');
   const loaded = pack('fx-a', { [pendingName]: { first: { run() {} } } });
   assert.deepEqual(validatePackExports(loaded).map(d => d.code), ['PACK_EXPORT_PENDING']);
@@ -91,7 +91,7 @@ test('discoverPacks surfaces export diagnostics of every loaded pack', async t =
   assert.deepEqual(packs.diagnostics.map(d => [d.code, d.pack, d.key]), [['PACK_EXPORT_UNKNOWN', 'fx-disk', 'pluginType']]);
 });
 
-test('R3-06: a getter export is refused at load, and a validated snapshot cannot diverge from what was checked', () => {
+test('a getter export is refused at load, and a validated snapshot cannot diverge from what was checked', () => {
   const getter = pack('fx-getter');
   Object.defineProperty(getter, 'customApis', { enumerable: true, get: () => ({ x_Echo: () => ({}) }) });
   assert.throws(() => validatePackExports(getter), { name: 'TypeError', message: /Data pack fx-getter: export customApis must be a plain data property/ });
@@ -116,7 +116,7 @@ test('R3-06: a getter export is refused at load, and a validated snapshot cannot
   assert.deepEqual(lazySnapshot.personas, []);
 });
 
-test('R3-14: flowIdentities keeps the earlier collector: any key, brace-stripped and lowercased, and a null export', () => {
+test('flowIdentities keeps the earlier collector: any key, brace-stripped and lowercased, and a null export', () => {
   const profile = { userId: STEP, evidence: 'Invented flow owner', grants: [{ entity: 'x_item', operations: ['read'] }] };
   const handlers = operationHandlers([pack('fx-flows', { flowIdentities: { 'Invented_Flow': profile, [`{${STEP.toUpperCase()}}`]: profile } }), pack('fx-none', { flowIdentities: null })]);
   assert.deepEqual([...handlers.flowIdentities.keys()], ['invented_flow', STEP]);

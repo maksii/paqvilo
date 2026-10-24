@@ -1,8 +1,8 @@
 /** A write failed after source-bound controls were validated. Transport and
  * malformed/forged control failures keep their original error response. */
 export function formWriteError(error, observed, kind = 'entityform') {
-  // Advanced forms have an existing LiquidServerControl inline save-error
-  // contract. Basic Form.aspx documents use the error MessagePanel postback.
+  // Advanced forms use the LiquidServerControl inline save-error contract.
+  // Basic Form.aspx documents use the error MessagePanel postback.
   if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true) return null;
   // A plugin's InvalidPluginExecutionException message (a handler's reject(message)) is shown as thrown.
   return { type: 'error', ...(observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {}), message: observed?.formSubmissionErrorMessage ??
@@ -15,8 +15,8 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ 
 
 /**
  * The basic form's error MessagePanel after a failed save. Bootstrap 5 sites render the
- * platform's close button and a danger paragraph with a warning icon (live basic-form
- * plugin-error captures); an observed `formSubmissionErrorMarkup` keeps its recorded shape.
+ * platform's close button and a danger paragraph with a warning icon; an observed
+ * `formSubmissionErrorMarkup` keeps its recorded shape.
  */
 export function formErrorPanel(outcome, { v5 = false, closeButton = '' } = {}) {
   const message = escapeHtml(outcome?.message);
@@ -27,9 +27,9 @@ export function formErrorPanel(outcome, { v5 = false, closeButton = '' } = {}) {
 }
 
 /**
- * Create-mode table-permission denial inside the form panel (live permission-denied
- * captures): the EntitySecurity/Record/CreateAccessDeniedMessage snippet, by default the
- * lock alert, in an editable-snippet wrapper, followed by an empty actions row.
+ * Create-mode table-permission denial inside the form panel: the
+ * EntitySecurity/Record/CreateAccessDeniedMessage snippet, by default the lock alert, in an
+ * editable-snippet wrapper, followed by an empty actions row.
  */
 export function createAccessDeniedForm({ ids, formName, defaultButton = 'InsertButton', snippet }) {
   const message = typeof snippet === 'string' ? snippet

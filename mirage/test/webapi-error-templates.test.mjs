@@ -13,15 +13,21 @@ const pack=()=>({id:'reader-format',name:'Reader format',description:'Invented r
 
 test('template keys omit user/property values and reject unknown descriptor branches',()=>{
  assert.equal(webApiReaderTemplateKey(descriptor),'{"kind":"primitive-format","expectedType":"Edm.Int32"}');
- for(const d of [{...descriptor,literal:'secret'}, {...descriptor,property:'title'},{kind:'constructor'},{kind:'primitive-format',expectedType:'Edm.Int64'},{kind:'root-node',actualNode:'Array',expectedNode:'StartObject'}])assert.throws(()=>webApiReaderTemplateKey(d));
+ for(const d of [{...descriptor,literal:'secret'}, {...descriptor,property:'title'},{kind:'constructor'}])assert.throws(()=>webApiReaderTemplateKey(d),/Finite reader template descriptor required/);
+ for(const d of [{kind:'primitive-format',expectedType:'Edm.Int64'},{kind:'root-node',actualNode:'Array',expectedNode:'StartObject'}])assert.throws(()=>webApiReaderTemplateKey(d),/Unsupported reader template type\/node/);
 });
 test('pack admission requires actual suffix hash, bounded CRLF and both evidence hashes',()=>{
  assert.equal(validatePack(pack()).id,'reader-format');
- for(const fault of ['suffix-hash','variation','source','line-endings','bounds','duplicates']){const c=capability(),t=c.templates[0];if(fault==='suffix-hash')t.suffixSha256='c'.repeat(64);if(fault==='variation')delete t.qualifiedVariationSha256;if(fault==='source')delete t.capturedSourceSha256;if(fault==='line-endings'){t.suffix=t.suffix.replaceAll('\r\n','\n');t.suffixSha256=sha(t.suffix);}if(fault==='bounds'){t.suffix+='x'.repeat(131072);t.suffixSha256=sha(t.suffix);}if(fault==='duplicates')c.templates.push(t);assert.throws(()=>validateWebApiErrorTemplates(c));}
+ const expected={'suffix-hash':/bounded exact CRLF suffix\/hash/,variation:/captured source, qualified variation and suffix SHA256/,source:/captured source, qualified variation and suffix SHA256/,'line-endings':/bounded exact CRLF suffix\/hash/,bounds:/bounded exact CRLF suffix\/hash/,duplicates:/Duplicate reader template descriptor/};
+ for(const fault of Object.keys(expected)){const c=capability(),t=c.templates[0];if(fault==='suffix-hash')t.suffixSha256='c'.repeat(64);if(fault==='variation')delete t.qualifiedVariationSha256;if(fault==='source')delete t.capturedSourceSha256;if(fault==='line-endings'){t.suffix=t.suffix.replaceAll('\r\n','\n');t.suffixSha256=sha(t.suffix);}if(fault==='bounds'){t.suffix+='x'.repeat(131072);t.suffixSha256=sha(t.suffix);}if(fault==='duplicates')c.templates.push(t);assert.throws(()=>validateWebApiErrorTemplates(c),expected[fault],fault);}
 });
 test('matching pack duplicate descriptors fail and getters are never evaluated',()=>{
  assert.throws(()=>collectWebApiErrorTemplates([pack(),{...pack(),id:'other'}]),/duplicate/);
- let called=false;const p=pack();Object.defineProperty(p,'webApiErrorTemplates',{get(){called=true;return capability();}});assert.throws(()=>validatePack(p));assert.throws(()=>collectWebApiErrorTemplates([p]));assert.equal(called,false);
+ let called=false;const p=pack();Object.defineProperty(p,'webApiErrorTemplates',{get(){called=true;return capability();}});assert.throws(()=>validatePack(p),/webApiErrorTemplates must be an explicit data property/);assert.throws(()=>collectWebApiErrorTemplates([p]),/webApiErrorTemplates must be an explicit data property/);assert.equal(called,false);
+});
+test('a refused template export names its pack once',()=>{
+ const p=pack();Object.defineProperty(p,'webApiErrorTemplates',{get:capability});
+ assert.throws(()=>validatePack(p),error=>error.message==='Data pack data pack: webApiErrorTemplates must be an explicit data property');
 });
 test('default, SDK errors, disabled innererror, unsupported descriptors and reader mode stay untouched',()=>{
  const templates=collectWebApiErrorTemplates([pack()]),error=attachODataReaderDetails(new DataError('Original',400,'InvalidValue'),odataConversionDetails('bad','Edm.Int32','quantity'));
@@ -54,7 +60,7 @@ async function fixture(t,{mode='response-template',match=true,inner=true,registe
  const file=path.join(source,'pack.mjs');await fs.writeFile(file,'export default {id:"reader-format",name:"Reader format",description:"Invented fixture",matches:()=>'+match+',presets:()=>({}),webApiErrorTemplates:'+JSON.stringify(capability())+'};');
  const app=await createSimulator({sourceDir:source,watch:false,dataPacks:register?[{id:'reader-format',module:file}]:[],observed:{webApiErrorDetails:'odata-wrapper',webApiErrorStacks:mode,evidence:'Invented loopback response capture and fresh variations'},initial:{mappings:{probe:{entitySet:'probes',idColumn:'probeid',schemaComplete:true,fields:{probeid:{dataverseType:'uniqueidentifier'},title:{dataverseType:'nvarchar'},quantity:{dataverseType:'int'}}}},tables:{probe:[{probeid:id,title:'Original',quantity:2}]},settings:{permissionMode:'permissive'}}});ownedFixture(t).add(()=>app.close());return app;
 }
-async function request(app,body,method='PATCH'){const r=await fetch(app.url+'/_api/probes'+(method==='POST'?'':'('+id+')'),{method,headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify(body)});return{status:r.status,headers:Object.fromEntries(r.headers),body:r.status===204?null:await r.json()};}
+async function request(app,body,method='PATCH'){const r=await fetch(app.url+'/_api/probes'+(method==='POST'?'':'('+id+')'),{method,headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify(body)});return{status:r.status,headers:Object.fromEntries(r.headers),body:r.status===204?null:await r.json()};}
 test('registered matching pack formats POST/PATCH failures while writes, status and headers retain their behavior',async t=>{
  const app=await fixture(t),before=JSON.stringify(app.store.snapshot().tables);
  for(const method of ['POST','PATCH']){const r=await request(app,{quantity:'invalid'},method);assert.equal(r.status,400);assert.equal(r.body.error.code,'9004010D');assert.equal(r.body.error.innererror.message.endsWith(suffix),true);assert.match(r.headers['content-type'],/^application\/json/);assert.equal(JSON.stringify(app.store.snapshot().tables),before);}

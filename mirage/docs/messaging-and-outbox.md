@@ -44,7 +44,7 @@ The connection string is read from its `env:NAME` variable when a connection ope
 
 `preflight()` opens a fresh connection (SASL included) and attaches a sender link to every entity that `providers.messaging.endpoints` maps to the provider, within 2 seconds. `provider:messaging/<id>` is `satisfied` when that succeeds and `missing` with the reason otherwise (variable not set, not loopback, unreachable, SASL refused, or the entity the emulator does not know).
 
-The descriptor lists these fidelity notes from Microsoft Learn:
+Emulator limits that affect local tests (the provider descriptor lists them too):
 
 - The emulator runs as Docker containers: the emulator and a SQL Server Linux container.
 - AMQP over TCP is the only transport. AMQP WebSockets and JMS are not supported.
@@ -151,11 +151,11 @@ Both hosts build these providers once (`organization-host.mjs`): the local bus w
 | 1, 3, 4, 7, 9 and others | skipped; an async job is Canceled (32) | the same |
 
 - **Target.** The bus entity comes from `providers.messaging.endpoints`. The key is the endpoint's `serviceendpointid` (any letter case) or its `name`. The value `<provider>/<entity>` picks the bus: `buses[provider]`, or the default bus when the provider matches the bus id (`local` by default).
-- **Properties.** Each message carries `{ organizationUri, callingUser, initiatingUser, entity, requestName }`. The names are unverified against the native listener's claim URIs.
+- **Properties.** Each message carries `{ organizationUri, callingUser, initiatingUser, entity, requestName }`. These names may differ from the native listener's property names.
 - **Synchronous steps.** On a bus in this process (the local bus) the message is sent with `nested: true`, so it is written inside the running transaction. If that transaction fails, the message is removed with it. On the Service Bus emulator bus the message is sent when the step runs and a rollback does not withdraw it (see [Service Bus emulator](#service-bus-emulator)). Before the send, the step checks what the bus would refuse: the entity name, plain-value properties and a `messageId` (the `OperationId`) of 1 to 128 characters. A message that fails these checks raises the error diagnostic `SERVICE_ENDPOINT_SEND_FAILED` and fails the operation with "Endpoint unavailable" (400, `0x80040265`), so the write rolls back instead of committing without the message.
 - **Asynchronous steps.** The message is sent after commit through the durable async job, which then ends Succeeded (30). Each committed event produces exactly one message, and a rolled-back write produces none. A send that fails the same checks fails the job with "Endpoint unavailable".
 - **Unmapped endpoints.** An endpoint with no mapping, or one that names an unknown provider, is never dropped silently. It raises the error diagnostic `SERVICE_ENDPOINT_UNMAPPED`, with the endpoint id and name and never its `authvalue`. A synchronous step then fails and rolls back the operation. An asynchronous step's System Job ends Failed (31) with a message that names the missing mapping.
-- **TriggerServiceEndpointCheck.** When a messaging provider is configured, it answers 204 for a mapped contract 2, 5 or 6 endpoint and sends nothing. An unmapped endpoint gets 400. Without a provider, the check accepts loopback contract 8 endpoints only. The 2/5/6 answer reuses the web hook's success shape, which is unverified.
+- **TriggerServiceEndpointCheck.** When a messaging provider is configured, it answers 204 for a mapped contract 2, 5 or 6 endpoint and sends nothing. An unmapped endpoint gets 400. Without a provider, the check accepts loopback contract 8 endpoints only. The 2/5/6 answer reuses the web hook's success shape.
 
 ### Email outbox
 

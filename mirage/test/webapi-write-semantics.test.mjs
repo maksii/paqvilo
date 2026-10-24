@@ -83,11 +83,13 @@ async function start(t, { state = fixture(), settings = SETTINGS } = {}) {
   await fs.writeFile(path.join(directory, "sitesetting.yml"), settingsYaml(settings));
   const app = await createSimulator({ sourceDir: directory, initial: state, watch: false });
   ownedFixture(t).add(() => app.close());
+  // app.state() clones the whole state, so read the token once.
+  const csrf = app.csrf;
   const json = async (route, { method = "GET", body, headers = {} } = {}) => {
     const response = await fetch(app.url + route, {
       method,
       headers: {
-        __RequestVerificationToken: app.state().csrf,
+        __RequestVerificationToken: csrf,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...headers,
       },
@@ -96,7 +98,7 @@ async function start(t, { state = fixture(), settings = SETTINGS } = {}) {
     const text = await response.text();
     return { status: response.status, headers: response.headers, body: text ? JSON.parse(text) : null };
   };
-  const rows = (table) => app.store.snapshot().tables[table] ?? [];
+  const rows = (table) => app.store.snapshot({ tables: [table] }).tables?.[table] ?? [];
   return { app, json, rows };
 }
 const enforced = (permissions) => {

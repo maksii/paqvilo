@@ -1,6 +1,6 @@
 # Mirage documentation
 
-Reference for source imports, simulated platform behavior and verification evidence.
+Reference for source imports, simulated platform behavior and verification evidence. Each guide describes what Mirage does today, how to configure it and where it stops.
 
 For setup, use [getting started](../../docs/getting-started.md). For daily work, read [browser integration](toolkit-integration.md), [local administration](sim-administration.md) and [data packs](data-packs.md).
 
@@ -10,10 +10,11 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | --- | --- |
 | Browser integration and lifecycle | [Toolkit integration](toolkit-integration.md) |
 | Source import, Solutions and bootstrap | [Bootstrap and sources](bootstrap-and-sources.md) |
-| Several portals and state isolation | [Multi-portal projects](multi-portal.md) |
+| Several portals and state isolation | [Several portals](toolkit-integration.md#several-portals) |
 | Local administration and sign-in | [Simulation administration](sim-administration.md) |
 | Infrastructure dashboard, provider, flow, capability and pack views, and the `/_sim/api/dashboard` feed | [Infrastructure feed](sim-administration.md#infrastructure-feed), [views](sim-administration.md#views-and-host-awareness) |
 | Solution-based model-driven apps and Mirage Site Manager | [Model-driven apps](model-driven-apps.md) |
+| Form scripts, ribbon commands, web resources and PCF in model-driven apps | [Client API](model-driven-client-api.md), [customizations](model-driven-customizations.md) |
 | Apps and APIs without a Power Pages export | [Standalone organization](standalone-organization.md) |
 | Canvas app inventory, the headless canvas runtime and the Power Fx engine | [Canvas apps](canvas-apps.md) |
 | Memory edits, direct pack DATA writes and schema changes | [Simulation levels](simulation-levels.md) |
@@ -36,10 +37,10 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Calculated, rollup and formula columns, business rules, currency, hierarchy, state transitions, cascades, virtual providers and business process flows: levels, diagnostics and pack overrides | [Dataverse contract modules](dataverse-contract-modules.md) |
 | Local message queues, dead-letter and the email/Teams outbox | [Messaging and outbox](messaging-and-outbox.md) |
 | Scripts, assets and platform adapters | [Platform resources](platform-resources.md) |
-| Reference comparison and its limits | [Parity evidence](parity-evidence.md), [runtime evidence](runtime-evidence.md) |
+| What local checks prove, and comparing with a live reference | [Runtime evidence](runtime-evidence.md), [parity evidence](parity-evidence.md) |
 | Native component baseline: inventories, reference and comparison | [Dataverse inventory](baseline/dataverse-inventory.md), [Power Pages inventory](baseline/power-pages-inventory.md), [coverage](baseline/coverage.md), [parity](baseline/parity.md), [reference](baseline/reference.md), [runbook](baseline/rerun.md) |
-| Configuration families, children and observations | [Configuration object parity](object-parity.md) |
-| Large datasets, journals and concurrent writers | [State storage](state-storage.md), [integrity](state-write-integrity.md) |
+| Redirects, page templates, web files and their `observed` response settings | [Configuration objects](object-parity.md) |
+| Large datasets, journals and concurrent writers | [State storage](state-storage.md), [integrity](state-write-integrity.md), [startup and responsiveness](runtime-performance.md) |
 | File bytes, storage routes and the provider contract suite | [Storage providers](storage-providers.md) |
 | SharePoint document integration and Graph contract fixtures | [SharePoint documents](sharepoint.md) |
 | Embedded runtimes and automated visitors | [Public API](../../docs/public-api.md) |

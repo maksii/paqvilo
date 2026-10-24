@@ -17,7 +17,7 @@
   const w = window;
   const jq = () => (typeof w.jQuery?.fn?.jquery === "string" ? w.jQuery : null);
 
-  // ---- WebUIValidation.js ------------------------------------------------------------
+  // ---- WebUIValidation.js
   w.Page_ValidationVer = "125";
   w.Page_IsValid = true;
   w.Page_BlockSubmit = false;
@@ -241,7 +241,7 @@
     return w.Page_ValidationActive ? w.ValidatorCommonOnSubmit() : true;
   };
 
-  // ---- crmentityformview.js helpers ----------------------------------------------------
+  // ---- crmentityformview.js helpers
   w.setIsDirty = function (id) {
     const control = document.getElementById(id);
     if (control && !control.classList.contains("dirty")) control.className = `${control.className} dirty`;
@@ -297,7 +297,7 @@
     if (control) control.value = control.value.toUpperCase();
   };
 
-  // ---- WebForms.js postback ----------------------------------------------------------------
+  // ---- WebForms.js postback
   w.WebForm_PostBackOptions = function (eventTarget, eventArgument, validation, validationGroup, actionUrl, trackFocus, clientSubmit) {
     this.eventTarget = eventTarget;
     this.eventArgument = eventArgument;
@@ -389,7 +389,7 @@
     true,
   );
 
-  // ---- local submission ------------------------------------------------------------------------
+  // ---- local submission
   const configOf = (form) => {
     if (form.__ppConfig) return form.__ppConfig;
     const node = form.querySelector('script[type="application/json"][data-paqvilo-mirage-form-config]');
@@ -598,7 +598,7 @@
     else label.textContent = message;
     panel.replaceChildren(label); panel.style.display = '';
   }
-  // The page's local verification token first: live makes no token request for a postback;
+  // The page's local verification token first: the platform makes no token request for a postback;
   // shell.getTokenDeferred (which may fetch /_layout/tokenhtml) is the fallback.
   function postbackToken() {
     return new Promise((resolve) => {
@@ -643,7 +643,7 @@
         if (submitter) { const control = document.createElement('input'); control.type = 'hidden'; control.name = submitter.name; control.value = submitter.value; outer.append(control); }
         hidden('__EVENTARGUMENT', eventArgument);
         // A page whose __VIEWSTATE carries the anti-forgery key (lib/native-postback.mjs
-        // nativeViewStateKey) posts its own fields only, as live postbacks do.
+        // nativeViewStateKey) posts its own fields only, as native postbacks do.
         if (!viewStateKey(outer)) hidden('__RequestVerificationToken', tokenValue);
         outer.method = 'POST';
         // A form with the attach-file control keeps its multipart encoding (the files post with the page).

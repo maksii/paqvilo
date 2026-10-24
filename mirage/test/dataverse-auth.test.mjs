@@ -4,7 +4,6 @@ import { test } from "node:test";
 import { certificateThumbprints, createAuthority, hashSecret, newClientSecret, verifySecret } from "../lib/dataverse-auth.mjs";
 import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 
-// Invented identifiers and a loopback origin only.
 const ORIGIN = "https://127.0.0.1:9443";
 const TENANT = "7e1a2b3c-4d5e-4f60-8a71-92b3c4d5e6f7";
 const APP_ID = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d";
@@ -21,6 +20,12 @@ const SCOPE = `${ORIGIN}/user_impersonation openid profile offline_access`;
 const TEST_PASSWORD = "invented-password-1";
 const T0 = Date.parse("2026-10-19T10:00:00Z");
 const SECRET = newClientSecret();
+// Generated once: RSA key generation dominates this file's run time, and every fixture registers its own copy.
+const rsa = () => generateKeyPairSync("rsa", { modulusLength: 2048 });
+const CLIENT_KEYS = rsa();
+const FEDERATED_KEYS = rsa();
+const STRANGER = rsa().privateKey;
+const SECRET_RECORD = hashSecret(SECRET);
 
 const TEST_USER = { systemuserid: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", azureactivedirectoryobjectid: USER_OID, fullname: "Test User", domainname: "test.user@example.test", firstname: "Test", lastname: "User", isdisabled: false };
 const APP_USER = { systemuserid: "3d4e5f6a-7b8c-4d9e-8f0a-2b3c4d5e6f7a", applicationid: APP_ID, azureactivedirectoryobjectid: APP_USER_OID, fullname: "Invented app user", domainname: `${APP_ID}@${TENANT}`, isdisabled: false };
@@ -41,7 +46,7 @@ function fixture() {
   const applications = [{
     appId: APP_ID,
     displayName: "Invented test app",
-    secrets: [{ id: "s1", ...hashSecret(SECRET), hint: SECRET.slice(-4), expiresOn: null }],
+    secrets: [{ id: "s1", ...SECRET_RECORD, hint: SECRET.slice(-4), expiresOn: null }],
     certificates: [],
     publicClient: false,
     redirectUris: [REDIRECT],
@@ -65,7 +70,7 @@ const b64 = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
 // No X.509 certificate exists in these fixtures, so the registered thumbprint is SHA-1 of the DER SPKI bytes,
 // uppercase hex, and the assertion header x5t is that same digest base64url-encoded.
 function registerCertificate(app) {
-  const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pair = CLIENT_KEYS;
   const der = pair.publicKey.export({ type: "spki", format: "der" });
   const thumbprint = createHash("sha1").update(der).digest("hex").toUpperCase();
   app.certificates = [{ thumbprint, publicKeyPem: pair.publicKey.export({ type: "spki", format: "pem" }) }];
@@ -88,7 +93,7 @@ function signedAssertion(privateKey, { alg = "RS256", header = {}, claims }) {
 
 // Registers a certificate record with only its public key: the authority derives both thumbprints from it.
 function registerKeyOnly(app) {
-  const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pair = CLIENT_KEYS;
   const der = pair.publicKey.export({ type: "spki", format: "der" });
   app.certificates = [{ publicKeyPem: pair.publicKey.export({ type: "spki", format: "pem" }) }];
   return { privateKey: pair.privateKey, x5tS256: createHash("sha256").update(der).digest("base64url"), der };
@@ -260,7 +265,7 @@ test("client_assertion with a registered certificate issues a token with appidac
 test("a client_assertion with a bad signature answers invalid_client with AADSTS700027", () => {
   const { auth, applications, state } = fixture();
   const { x5t } = registerCertificate(applications[0]);
-  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const stranger = STRANGER;
   const res = call(auth, { grant_type: "client_credentials", client_id: APP_ID, client_assertion_type: ASSERTION_TYPE, client_assertion: clientAssertion(stranger, x5t, state.now), scope: `${ORIGIN}/.default` });
   assert.equal(res.status, 400);
   assert.equal(res.body.error, "invalid_client");
@@ -327,7 +332,7 @@ test("a PS256 assertion whose x5t#S256 matches no certificate answers 700027, as
   const unmatched = call(auth, assertionForm(wrongThumbprint));
   assert.equal(unmatched.status, 400);
   assert.deepEqual(unmatched.body.error_codes, [700027]);
-  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const stranger = STRANGER;
   const registeredS256 = Buffer.from(certificateThumbprints(applications[0].certificates[0].publicKeyPem).thumbprint256, "hex").toString("base64url");
   const forged = signedAssertion(stranger, { alg: "PS256", header: { "x5t#S256": registeredS256 }, claims: { ...claims, jti: "ps-jti-3" } });
   const badSignature = call(auth, assertionForm(forged));
@@ -729,14 +734,14 @@ test("a refresh token from a delegated grant keeps the user across rotation", ()
   assert.notEqual(second.body.refresh_token, first.refresh_token);
 });
 
-// Federated credentials, managed identities and the /common ROPC refusal. Invented issuer and subject; loopback fixtures only.
+// Federated credentials, managed identities and the /common ROPC refusal.
 const EXT_ISSUER = "https://issuer.example.test";
 const EXT_SUBJECT = "invented-subject-1";
 const AZURE_AUDIENCE = "api://AzureADTokenExchange";
 
 function federatedFixture() {
   const state = { now: T0 };
-  const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pair = FEDERATED_KEYS;
   const jwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "ext-1", alg: "RS256", use: "sig" };
   const applications = [{
     appId: APP_ID,
@@ -783,7 +788,7 @@ test("a federated assertion must verify against the issuer's registered JWKS, RS
   const { auth, state, privateKey, federatedIssuers } = federatedFixture();
   const sec = Math.floor(state.now / 1000);
   const claims = { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec, exp: sec + 300 };
-  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const stranger = STRANGER;
   const forged = call(auth, federatedForm(signedAssertion(stranger, { header: { kid: "ext-1" }, claims: { ...claims, jti: "fed-jti-4" } })));
   assert.deepEqual([forged.status, forged.body.error_codes], [400, [700027]]);
   assert.match(forged.body.error_description, /signature is invalid/);
@@ -808,7 +813,7 @@ test("a federated token may outlive 10 minutes but a replayed jti is still refus
 test("a certificate-matched assertion is still verified as a certificate when federated credentials exist", () => {
   const { auth, state, applications } = federatedFixture();
   const { privateKey, x5t } = registerCertificate(applications[0]);
-  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const stranger = STRANGER;
   const sec = Math.floor(state.now / 1000);
   const claims = { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300, jti: "cert-fed-1" };
   const forged = call(auth, assertionForm(signedAssertion(stranger, { header: { x5t }, claims })));

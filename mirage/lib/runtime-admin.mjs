@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import { platformSettingEntries, validatePlatformOverrides } from './platform-settings.mjs';
 /** The Content-Security-Policy of the /_sim/ administration page on both hosts: same-origin only, no inline script or style. */
 export const ADMIN_CSP = "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
-// DOM-free mirage/lib modules the admin page imports; every other asset is a flat file of mirage/admin/ (D1).
+// DOM-free mirage/lib modules the admin page imports; every other asset is a flat file of mirage/admin/.
 export const SHARED_ADMIN_MODULES = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 /** Every /_sim/api prefix createRuntimeAdminRouter can answer; a router lists (router.routes) only those whose callbacks were
  * supplied, which is what a host reports in status `routes`. `/dataverse` includes the staff session route. */

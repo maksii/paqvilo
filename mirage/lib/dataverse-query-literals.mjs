@@ -22,8 +22,8 @@ function sameDecimal(left, right) {
 }
 
 export function dataverseNumberLiteralKind(raw) {
-  // Only the lexer's signed numeric tokens enter here. Oversized tokens keep
-  // the existing bounded unsupported diagnostic rather than guessing a type.
+  // Only the lexer's signed numeric tokens enter here. Oversized tokens get
+  // the bounded unsupported diagnostic rather than a guessed type.
   if (raw.length > 160) return undefined;
   const suffix = /[mMdDfFlL]$/.exec(raw)?.[0]?.toLowerCase();
   if (suffix)

@@ -11,7 +11,6 @@ const DOCUMENTATION_ASSETS = new Set([
 ]);
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
-const LENSE_ACTION_LICENSE = 'lense/LICENSE-levelup.txt';
 const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'catalogue.mjs', 'offline.mjs', 'control-descriptors.mjs', 'controls.mjs', 'controls.css', 'choice-control.mjs', 'date-control.mjs', 'date-control.css', 'duration-control.mjs', 'duration-control.css', 'lookup-control.mjs', 'lookup-dialog.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'providers.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
 // Reusable campaign sources only. Native recordings, configuration snapshots,
 // bridge credentials and local invocation manifests stay outside the package.
@@ -57,7 +56,7 @@ const COMPANY_QUALIFICATION_SOURCES = new Set([
   'plugins/currency-observer-plan.mjs', 'plugins/test/currency-observer-plan.test.mjs',
   'plugins/sdk-projection-probes.mjs', 'plugins/test/sdk-projection-probes.test.mjs',
   'plugins/SdkProjectionDriver.cs', 'plugins/SdkProbes/SdkProbes.csproj', 'plugins/SdkProbes/packages.lock.json',
-  'test/native-capture.test.mjs', 'test/qualification-domain.test.mjs', 'test/qualification-role-lattice.test.mjs',
+  'test/native-capture.test.mjs', 'test/qualification-domain.test.mjs', 'test/replay-role-combinations.test.mjs',
   'test/native-batch.test.mjs',
   'test/native-archive.test.mjs', 'test/native-paging.test.mjs', 'test/native-profile.test.mjs',
   'test/native-role-lease.test.mjs', 'test/permission-order.test.mjs',
@@ -82,7 +81,7 @@ export const REQUIRED_RELEASE_FILES = [
   'lense/model-driven-targets.mjs', 'lense/owned-page-binding.mjs',
   'lense/model-driven-inspection.mjs', 'lense/model-driven-inspector.mjs', 'lense/model-driven-inspector-ui.mjs',
   'lense/model-driven-actions.mjs', 'lense/model-driven-action-runner.mjs', 'lense/model-driven-actions-ui.mjs',
-  'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', LENSE_ACTION_LICENSE, 'docs/model-driven-actions.md',
+  'lense/model-driven-identity.mjs', 'lense/model-driven-commands.mjs', 'docs/model-driven-actions.md',
   ...MODEL_DRIVEN_FILES, 'mirage/docs/model-driven-apps.md',
   'lense/standalone-mirage.mjs', 'mirage/lib/standalone-runtime.mjs',
   'mirage/lib/dataverse-organization.mjs', 'mirage/lib/runtime-config.mjs',
@@ -114,6 +113,7 @@ export const REQUIRED_RELEASE_FILES = [
   'examples/company-operations/plugins/PipelineTests/Pipeline.cs', 'examples/company-operations/plugins/PipelineTests/Guards.cs',
   'package.json', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example',
   'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'lense/commands/demo.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
+  'licenses/bootstrap.txt', 'licenses/jquery.txt', 'licenses/sql4cds.txt', 'licenses/xrm-portals-community-edition.txt',
   'mirage/cli.mjs', 'mirage/server.mjs', 'mirage/lib/importer.mjs',
   'mirage/lib/project-config.mjs', 'mirage/admin/index.html',
   'lense/source-inspection.mjs', 'mirage/lib/code-components.mjs', 'mirage/lib/code-components-client.js',
@@ -124,10 +124,9 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/jqueryui-dialog-compat.js', 'mirage/lib/date-format-compat.js',
   'mirage/lib/footer-spacing-compat.js',
   'mirage/lib/bootstrap-fonts/glyphicons-halflings-regular.woff2',
-  'mirage/lib/bootstrap-fonts/LICENSE-bootstrap.txt',
   'mirage/admin/app.mjs', 'mirage/admin/style.css',
   'mirage/admin/persona-manager.mjs', 'mirage/admin/persona-picker.mjs', 'mirage/admin/persona-picker.css',
-  'mirage/admin/ui-kit.mjs', 'mirage/admin/ui-kit.css', 'mirage/admin/shell.css','mirage/admin/dashboard-view.mjs', 'mirage/admin/help-content.mjs',
+  'mirage/admin/ui-kit.mjs', 'mirage/admin/ui-kit.css', 'mirage/admin/shell.css','mirage/admin/help-content.mjs',
   'mirage/admin/view-common.mjs', 'mirage/admin/view-services.mjs', 'mirage/admin/view-flows.mjs', 'mirage/admin/view-capabilities.mjs', 'mirage/admin/view-packs.mjs',
   'mirage/admin/dashboard-map.mjs', 'mirage/admin/dashboard-icons.mjs', 'mirage/admin/dashboard.css',
   'mirage/lib/persona-catalog.mjs', 'mirage/lib/persona-search.mjs', 'mirage/lib/persona-picker-view.mjs',
@@ -161,11 +160,11 @@ export function validateReleaseFiles(files) {
   const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json', 'examples/project/gitattributes.template', 'examples/project/.gitattributes', 'examples/project/editor-workspace.mjs']);
   const demoPluginSources = /^examples\/project\/components\/DataversePlugins\/[A-Za-z0-9._-]+\.(?:cs|csproj|json|md|snk)$/;
   const demoPluginAssembly = /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
-  const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|lense\/setup\/[a-z0-9-]+\.(?:html|css)|docs\/[a-z0-9-]+\.md|docs\/baseline\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js)|baseline\/(?:[a-z0-9-]+\.(?:mjs|json)|dataverse\/[a-zA-Z0-9/_.-]+\.(?:json|xml)|data\/catalogue\.json|site\/[a-zA-Z0-9./_ ,-]+\.(?:yml|html|css|js|png)|solution\/[a-zA-Z0-9/_.{}, +()*-]+\.(?:xml|json|yaml|xaml|dll|snk|js|css|html|resx)))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/[a-z0-9-]+\.(?:html|mjs|css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md|docs\/baseline\/[a-z0-9-]+\.md|docs\/baseline\/catalog\/[a-z0-9-]+\.json))$/;
+  const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|licenses\/[a-z0-9-]+\.txt|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|lense\/setup\/[a-z0-9-]+\.(?:html|css)|docs\/[a-z0-9-]+\.md|docs\/baseline\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js)|baseline\/(?:[a-z0-9-]+\.(?:mjs|json)|dataverse\/[a-zA-Z0-9/_.-]+\.(?:json|xml)|data\/catalogue\.json|site\/[a-zA-Z0-9./_ ,-]+\.(?:yml|html|css|js|png)|solution\/[a-zA-Z0-9/_.{}, +()*-]+\.(?:xml|json|yaml|xaml|dll|snk|js|css|html|resx)))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/[a-z0-9-]+\.(?:html|mjs|css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md|docs\/baseline\/[a-z0-9-]+\.md|docs\/baseline\/catalog\/[a-z0-9-]+\.json))$/;
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !MODEL_DRIVEN_FILES.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && name !== LENSE_ACTION_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !MODEL_DRIVEN_FILES.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   // npm redacts GUIDs in JSON, so distinct archive entries can share a path here.
   return files.length;

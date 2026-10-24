@@ -49,7 +49,7 @@ async function fixture(t, create = false) {
   await sim.applyPreset('replacement');
   const controls = nativeFormControlIds('entityform', 'sample'), route = '/?id=' + ITEM;
   const post = () => fetch(sim.url + route, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams([
-    ['__EVENTTARGET', controls.buttons + (create ? 'InsertButton' : 'UpdateButton')], ['__EVENTARGUMENT', ''], ['__RequestVerificationToken', sim.state().csrf],
+    ['__EVENTTARGET', controls.buttons + (create ? 'InsertButton' : 'UpdateButton')], ['__EVENTARGUMENT', ''], ['__RequestVerificationToken', sim.csrf],
     [controls.names + 'exa_title', 'Saved sample'], [controls.names + 'exa_secret', 'mutate-me'], [controls.names + 'exa_price', '100'],
     [controls.names + 'transactioncurrencyid', CURRENCY], [controls.names + 'transactioncurrencyid_entityname', 'transactioncurrency'],
   ]) });

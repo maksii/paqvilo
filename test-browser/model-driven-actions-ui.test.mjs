@@ -1,5 +1,5 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -13,13 +13,17 @@ import { MODEL_DRIVEN_ACTIONS } from '../lense/model-driven-actions.mjs';
 
 async function capture(page, name) { if (process.env.PAQVILO_ACTIONS_SCREENSHOTS) { await fs.mkdir(process.env.PAQVILO_ACTIONS_SCREENSHOTS, { recursive:true }); await page.screenshot({ path:path.join(process.env.PAQVILO_ACTIONS_SCREENSHOTS, name + '.png') }); } }
 
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions()); });
+after(() => browser?.close());
+
 async function fixture(t) {
   const server = http.createServer((_request, response) => response.writeHead(200, { 'content-type':'text/html' }).end('<!doctype html><title>Invented native app</title>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch(browserLaunchOptions()); ownedFixture(t).add(async () => { await browser.close(); });
+  const context = await browser.newContext({ viewport:{ width:900, height:900 } }); ownedFixture(t).add(async () => { await context.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve => server.close(resolve)); });
-  const page = await browser.newPage({ viewport:{ width:900, height:900 } }), errors = []; page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message)); await page.goto(origin);
+  const page = await context.newPage(), errors = []; page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message)); await page.goto(origin);
   const data = { origin, token:'invented-token', revision:1, resourceCount:0, resources:[], diagnostics:[], problems:[], catalogue:{ forms:[], commands:[] }, context:{} };
   await installModelPanel(page, data); await page.evaluate(installModelDrivenCommands, data);
   const actions = [

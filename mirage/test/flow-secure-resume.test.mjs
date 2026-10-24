@@ -1,6 +1,6 @@
-// Task 45: secured outputs are sealed in the run journal (AES-256-GCM, key file under the state directory), so a run resumes
+// Secured outputs are sealed in the run journal (AES-256-GCM, key file under the state directory), so a run resumes
 // after a host restart over the same state directory; a Wait inside a loop suspends with its iteration's journal key and
-// resumes at that iteration. Invented pack connector, flow ids and secret values.
+// resumes at that iteration.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

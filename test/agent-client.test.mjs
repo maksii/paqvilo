@@ -42,14 +42,17 @@ test('agent never follows redirects carrying its bearer token', async (t) => {
 });
 
 test('session discovery probes identity, labels invalid files, and never prints tokens', async (t) => {
+  const authorizations = [];
   const fx = await fixture(t, (req, res) => {
-    assert.equal(req.headers.authorization, `Bearer ${'secret'.repeat(8)}`);
+    authorizations.push(req.headers.authorization);
     res.end(JSON.stringify({ schemaVersion: 1, id: 'fixture-session' }));
   });
   await fs.writeFile(path.join(fx.dir, 'agents', 'bad.json'), 'not json');
   const report = await listAgentSessions(fx.dir);
-  assert.equal(report.sessions[0].reachable, true);
+  assert.deepEqual(authorizations, [`Bearer ${'secret'.repeat(8)}`]);
+  assert.deepEqual(report.sessions.map(session => [session.id, session.reachable]), [['fixture-session', true]]);
   assert.equal(report.invalidFiles.length, 1);
+  assert.match(JSON.stringify(report.invalidFiles[0]), /bad\.json/);
   assert.ok(!JSON.stringify(report).includes(fx.discovery.token));
 });
 

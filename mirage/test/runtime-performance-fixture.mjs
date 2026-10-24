@@ -1,4 +1,4 @@
-// Invented local exports only. Shared by the bounded performance probe and tests.
+// Shared by the bounded performance probe and tests.
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';

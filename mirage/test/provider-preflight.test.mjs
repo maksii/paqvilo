@@ -1,6 +1,6 @@
-// Provider readiness (RA1-03, RA1-05): an instantiated storage provider or message bus is satisfied only when its optional
+// Provider readiness: an instantiated storage provider or message bus is satisfied only when its optional
 // preflight() answers { ready: true } within 2 s; without preflight() it is declared (placeholder), never satisfied, offline
-// and live. preflight({ packs }) reads module paths as createSimulator does. Invented packs and ids; loopback only.
+// and live. preflight({ packs }) reads module paths as createSimulator does.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -94,9 +94,9 @@ test('preflightProvider is bounded and the contract checks its shape', async t =
 test('the offline preflight accepts a local-disk root the running host accepts (one root rule)', async (t) => {
   const options = { ...await fixture(t, PACK('', '')), simulation: { level: 'simulation' }, providers: { storage: { local: { kind: 'local-disk', root: 'blobs' } } } };
   const offline = await preflight({ ...options, env: {} });
-  assert.ok(offline.requirements.length > 0);
+  assert.equal(row(offline, 'provider:storage/local').status, 'satisfied');
   await assert.rejects(() => preflight({ ...options, providers: { storage: { local: { kind: 'local-disk', root: '../outside' } } }, env: {} }), /must resolve under the state directory/);
   // An absolute root under the state directory, which the running host accepts, passes the offline preflight too.
   const absolute = path.join(options.projectRoot, '.paqvilo', 'mirage', 'blobs');
-  assert.ok((await preflight({ ...options, providers: { storage: { local: { kind: 'local-disk', root: absolute } } }, env: {} })).requirements.length > 0);
+  assert.equal(row(await preflight({ ...options, providers: { storage: { local: { kind: 'local-disk', root: absolute } } }, env: {} }), 'provider:storage/local').status, 'satisfied');
 });

@@ -103,16 +103,71 @@ jobs:
           npm audit signatures
           npm audit signatures --prefix mirage
 
+  # Unit and browser suites run as parallel jobs; the wall time is the slowest suite, not their sum.
   test:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Tests (Node ${{ matrix.node }}, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    name: Unit tests (Node ${{ matrix.node }}, ${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        node: [22, 24]
+        suite: [lense, mirage]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+            mirage/test-sdk/tds/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix mirage --ignore-scripts
+      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
+      - name: Disable Git auto-maintenance
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+      - name: Lense offline unit regressions
+        if: matrix.suite == 'lense'
+        run: npm test
+      - name: Demo and baseline fixture offline regressions
+        if: matrix.suite == 'lense'
+        run: npm run test:example
+      - name: Company Operations offline regressions
+        if: matrix.suite == 'lense'
+        run: npm run test:company
+      # The TDS end-to-end checks drive the endpoint with the real tedious client from the SDK gate's lockfile.
+      - name: Install the locked TDS client
+        if: matrix.suite == 'mirage'
+        run: npm ci --prefix mirage/test-sdk/tds --ignore-scripts
+      - name: Mirage offline unit regressions
+        if: matrix.suite == 'mirage'
+        run: npm --prefix mirage run test
+
+  browser:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
+    name: Browser tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,19 +190,18 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm ci --prefix mirage --ignore-scripts
-      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
       - name: Disable Git auto-maintenance
         run: |
           git config --global maintenance.auto false
           git config --global gc.auto 0
-      - name: Lense offline unit regressions
-        run: npm test
-      - name: Demo and baseline fixture offline regressions
-        run: npm run test:example
-      - name: Mirage offline unit regressions
-        run: npm --prefix mirage run test
-      - name: Company Operations offline regressions
-        run: npm run test:company
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Restore the Chromium download
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Lense loopback browser acceptance
@@ -182,10 +236,13 @@ jobs:
   windows:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Unit tests (Node 24, windows-latest)
+    name: Windows unit tests (Node 24, ${{ matrix.suite }})
     runs-on: windows-latest
-    # Full runtime, original CLR and SDK projection suites need runner headroom.
-    timeout-minutes: 45
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lense, mirage]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -207,42 +264,28 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm ci --prefix mirage --ignore-scripts
-      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
       - name: Disable Git auto-maintenance
         run: |
           git config --global maintenance.auto false
           git config --global gc.auto 0
       - name: Lense offline unit regressions
+        if: matrix.suite == 'lense'
         run: npm test
       - name: Demo and baseline fixture offline regressions
+        if: matrix.suite == 'lense'
         run: npm run test:example
-      - name: Install pinned Microsoft SDK reference for original CLR regressions
-        shell: pwsh
-        run: |
-          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'paqvilo-sdk-reference'
-          New-Item -ItemType Directory -Path $sdkDirectory | Out-Null
-          $sdkArchive = Join-Path $sdkDirectory 'sdk.zip'
-          Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg' -OutFile $sdkArchive
-          if ((Get-FileHash $sdkArchive -Algorithm SHA256).Hash -ne '59650574CDC89C1F506FABD7275FE6325A59A8BAE9FA9F92C5B5C2CBE31D5E1F') { throw 'Microsoft SDK archive digest mismatch' }
-          Expand-Archive -LiteralPath $sdkArchive -DestinationPath (Join-Path $sdkDirectory 'reference')
-          "PAQ_TEST_XRM_SDK=$(Join-Path $sdkDirectory 'reference/lib/net462/Microsoft.Xrm.Sdk.dll')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Execute original CLR plugin regressions (required SDK fixture)
-        shell: pwsh
-        run: |
-          if (-not (Test-Path -LiteralPath $env:PAQ_TEST_XRM_SDK)) { throw 'CLR SDK fixture was not installed' }
-          node --test mirage/test/plugin-clr.test.mjs mirage/test/plugin-context-values.test.mjs mirage/test/plugin-double-values.test.mjs mirage/test/plugin-lookup-values.test.mjs mirage/test/plugin-shared-variables.test.mjs mirage/test/plugin-response.test.mjs mirage/test/plugin-main-response.test.mjs mirage/test/plugin-http-error.test.mjs mirage/test/plugin-sdk-values.test.mjs mirage/test/plugin-query-paging.test.mjs mirage/test/plugin-admin-dependency.test.mjs mirage/test/plugin-admin-sdk-values.test.mjs mirage/test/plugin-read-mock-response.test.mjs mirage/test/plugin-sdk-execute.test.mjs mirage/test/plugin-association.test.mjs mirage/test/plugin-bulk.test.mjs mirage/test/exact-numeric.test.mjs
-      - name: Mirage offline unit regressions
-        run: npm --prefix mirage run test
-
       - name: Restore locked SDK projection driver fixture
+        if: matrix.suite == 'lense'
         shell: pwsh
         run: |
           dotnet restore examples/company-operations/plugins/SdkProbes/SdkProbes.csproj --locked-mode --disable-build-servers
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "PAQ_TEST_SDK_PROBES_RESTORED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Company Operations offline regressions
+        if: matrix.suite == 'lense'
         run: npm run test:company
       - name: Build and execute Company Operations plugin regressions
+        if: matrix.suite == 'lense'
         shell: pwsh
         run: |
           dotnet restore examples/company-operations/plugins/Tests/Tests.csproj --locked-mode
@@ -257,6 +300,26 @@ jobs:
             dotnet build "examples/company-operations/plugins/$project/$project.csproj" --no-restore -c Release
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      # The original CLR plug-in regressions in the Mirage suite run against this pinned SDK; without it they would skip.
+      - name: Install pinned Microsoft SDK reference for original CLR regressions
+        if: matrix.suite == 'mirage'
+        shell: pwsh
+        run: |
+          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'paqvilo-sdk-reference'
+          New-Item -ItemType Directory -Path $sdkDirectory | Out-Null
+          $sdkArchive = Join-Path $sdkDirectory 'sdk.zip'
+          Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg' -OutFile $sdkArchive
+          if ((Get-FileHash $sdkArchive -Algorithm SHA256).Hash -ne '59650574CDC89C1F506FABD7275FE6325A59A8BAE9FA9F92C5B5C2CBE31D5E1F') { throw 'Microsoft SDK archive digest mismatch' }
+          Expand-Archive -LiteralPath $sdkArchive -DestinationPath (Join-Path $sdkDirectory 'reference')
+          $sdk = Join-Path $sdkDirectory 'reference/lib/net462/Microsoft.Xrm.Sdk.dll'
+          if (-not (Test-Path -LiteralPath $sdk)) { throw 'CLR SDK fixture was not installed' }
+          "PAQ_TEST_XRM_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install the locked TDS client
+        if: matrix.suite == 'mirage'
+        run: npm ci --prefix mirage/test-sdk/tds --ignore-scripts
+      - name: Mirage offline unit regressions
+        if: matrix.suite == 'mirage'
+        run: npm --prefix mirage run test
 
   package:
     needs: changes
@@ -305,7 +368,7 @@ jobs:
   gate:
     name: ${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'PR description metadata' || 'CI gate' }}
     if: always()
-    needs: [changes, checks, test, windows, package]
+    needs: [changes, checks, test, browser, windows, package]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -317,8 +380,9 @@ jobs:
           PACKAGE: ${{ needs.changes.outputs.package }}
           CHECKS: ${{ needs.checks.result }}
           TESTS: ${{ needs.test.result }}
+          BROWSER: ${{ needs.browser.result }}
           WINDOWS: ${{ needs.windows.result }}
           SMOKE: ${{ needs.package.result }}
         run: |
           echo "Job results: $RESULTS"
-          node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.RUNTIME==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.WINDOWS,e.SMOKE].some(r=>!want(e.RUNTIME==='true',r)))process.exit(1)"
+          node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.RUNTIME==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS,e.SMOKE].some(r=>!want(e.RUNTIME==='true',r)))process.exit(1)"

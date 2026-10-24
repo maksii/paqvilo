@@ -216,7 +216,7 @@ test('packs view states that no pack is registered', async () => {
   assert.match(html, /No data preset is available\./);
 });
 
-test('view modules export the D3 contract', () => {
+test('view modules declare their id, label, icon, required route and hosts', () => {
   assert.deepEqual([services, flows, capabilities, packs].map(item => [item.id, item.label, item.icon, item.requires[0], item.hosts.join()]), [
     ['services', 'Providers & services', '⛁', '/__sim/api/dashboard', 'power-pages,standalone'],
     ['flows', 'Flows & jobs', '⟲', '/__sim/api/flow-runs', 'power-pages,standalone'],

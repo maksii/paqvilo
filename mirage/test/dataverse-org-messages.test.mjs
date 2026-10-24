@@ -1,5 +1,5 @@
 // Simulated Dataverse organization, environment variable, license and deployment messages: happy paths, the documented refusals,
-// a privilege denial on a write and one SOAP call through the generic OrganizationRequest. Invented schema and GUIDs only.
+// a privilege denial on a write and one SOAP call through the generic OrganizationRequest.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -83,7 +83,7 @@ test("RetrieveOrganizationInfo lists the solution rows of the organization", asy
   const res = await invoke(t.api, "RetrieveOrganizationInfo", { user: t.admin });
   assert.equal(res.status, 200);
   assert.match(res.body["@odata.context"], /RetrieveOrganizationInfoResponse$/);
-  assert.equal(res.body.organizationInfo.InstanceType, 13); // unverified: live capture
+  assert.equal(res.body.organizationInfo.InstanceType, 13); // not observed natively: a guess
   assert.deepEqual(res.body.organizationInfo.Solutions.map((s) => [s.SolutionUniqueName, s.VersionNumber]), [["contosoBase", "1.0.0.0"]]);
 });
 
@@ -169,14 +169,16 @@ test("RetrieveEnvironmentVariableSecretValue refuses an unknown name and answers
 test("NotifyEnvironmentVariableSecretChange needs both arguments and answers 204 with no state change", async () => {
   const t = await setup();
   await assert.rejects(action(t.api, "NotifyEnvironmentVariableSecretChange", { user: t.admin, body: { KeyVaultUrl: "/subscriptions/x" } }), refused);
+  const before = JSON.stringify(t.store.state);
   const res = await action(t.api, "NotifyEnvironmentVariableSecretChange", { user: t.admin, body: { KeyVaultUrl: "/subscriptions/x", SecretName: "db-password" } });
   assert.equal(res.status, 204);
+  assert.equal(JSON.stringify(t.store.state), before);
 });
 
 test("RetrieveDeploymentLicenseType and RetrieveLicenseInfo answer with the documented shape", async () => {
   const t = await setup();
   const type = await invoke(t.api, "RetrieveDeploymentLicenseType", { user: t.admin });
-  assert.equal(typeof type.body.licenseType, "string");
+  assert.equal(type.body.licenseType, "Trial");
   const info = await invoke(t.api, "RetrieveLicenseInfo", { user: t.admin, params: { AccessMode: 0 } });
   assert.equal(info.body.GrantedLicenseCount, 3, "the interactive users hold the granted licenses");
   assert.equal(info.body.AvailableCount, 0);
@@ -205,8 +207,8 @@ test("a generic OrganizationRequest dispatches IsDataEncryptionActive over SOAP"
   assert.match(res.body, /<b:key>IsActive<\/b:key><b:value i:type="c:boolean">true<\/b:value>/);
 });
 
-// G1 messages: settings, encryption key, sample data, SharePoint URLs, license access, social profile, walls, timeline, Fx and the
-// SetFeatureStatus internal message. Invented names and GUIDs only.
+// Settings, encryption key, sample data, SharePoint URLs, license access, social profile, walls, timeline, Fx and the
+// SetFeatureStatus internal message.
 const APP = "33333333-aaaa-4aaa-8aaa-000000000001";
 const SITE = "44444444-aaaa-4aaa-8aaa-000000000001";
 const LOCATION = "44444444-aaaa-4aaa-8aaa-000000000002";
@@ -216,7 +218,7 @@ const POST_LATER = "55555555-aaaa-4aaa-8aaa-000000000003";
 const POST_UNRELATED = "55555555-aaaa-4aaa-8aaa-000000000004";
 const SITE_URL = "https://contoso.example/sites/sample";
 
-// Seeds the invented application (new_sampleapp) that the setting calls name.
+// Seeds the application (new_sampleapp) that the setting calls name.
 const seedApp = (t) => t.store.transact(() => { t.store.state.tables.appmodule = [{ appmoduleid: APP, uniquename: "new_sampleapp", name: "Sample App" }]; });
 // Writes setting definitions as the host or a test does (solution parsing is not modelled).
 async function defineSettings(t, defs) {
@@ -300,7 +302,7 @@ test("InstallSampleData sets organization.sampledataimportid once and UninstallS
   const sampleImportId = () => t.store.state.tables.organization[0].sampledataimportid;
   await denied(action(t.api, "InstallSampleData", { user: t.basic }));
   assert.equal((await action(t.api, "InstallSampleData", { user: t.admin })).status, 204);
-  assert.ok(sampleImportId(), "the import id is set");
+  assert.match(sampleImportId(), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "the import id is set");
   await assert.rejects(action(t.api, "InstallSampleData", { user: t.admin }), refused);
   await denied(action(t.api, "UninstallSampleData", { user: t.basic }));
   assert.equal((await action(t.api, "UninstallSampleData", { user: t.admin })).status, 204);

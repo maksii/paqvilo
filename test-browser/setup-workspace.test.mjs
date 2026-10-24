@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -21,6 +21,11 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 const browserOptions = { headless: true, channel: channel === 'chromium' ? undefined : channel };
+let browser;
+before(async () => { browser = await chromium.launch(browserOptions); });
+after(() => browser?.close());
+// Call after temporary(t): the context closes with the test's other resources.
+async function newPage(t, options) { const context = await browser.newContext(options); t.resources.push(() => context.close()); return context.newPage(); }
 async function temporary(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
   t.resources = [];
@@ -57,8 +62,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   const sources = path.join(work, 'checkouts');
   await localGit(path.join(sources, 'classic'), path.join(root, 'examples/project/portal'));
   await localGit(path.join(sources, 'code'), path.join(root, 'test-browser/fixtures/code-site'));
-  const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+  const page = await newPage(t, { viewport: { width: 1440, height: 1050 } });
   await allSettings(page);
   const failures = []; page.on('pageerror', error => failures.push(error.message));
   const demoServer = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => demoServer.close());
@@ -157,8 +161,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
 
 test('missing and invalid setup documents recover through the browser without touching exports', { timeout: 60000 }, async t => {
   const directory = await temporary(t), server = await startSetupServer({ directory, processEnv: {} }); t.resources.push(() => server.close());
-  const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
-  const page = await browser.newPage(); await page.goto(server.url + '#advanced');
+  const page = await newPage(t); await page.goto(server.url + '#advanced');
   const create = page.locator('form[data-form=create]'); await create.waitFor();
   await create.locator('[name=id]').fill('sample'); await saveForm(page, create);
   const file = path.join(directory, 'paqvilo.config.yml');
@@ -179,13 +182,13 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   await fs.writeFile(configFile, YAML.stringify({ sourceRoot: checkout, defaultSite: 'portal', sites: { portal: { source: '.', environments: { dev: simulator.url }, markup: { enabled: false } } } }));
   const listener = net.createServer(); listener.listen(0, '127.0.0.1'); await once(listener, 'listening'); const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
   const child = spawn(process.execPath, [path.join(root, 'lense/cli.mjs'), 'dev', '--config', configFile, '--headless', '--browser', channel, '--debug-port', String(port)], { cwd: consumer, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '', browser, setupUrl;
+  let output = '', remote, setupUrl;
   child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
   const exited = once(child, 'exit');
   t.resources.push(async () => {
-    if (browser) { const cdp = await browser.newBrowserCDPSession().catch(() => null); await cdp?.send('Browser.close').catch(() => {}); await browser.close().catch(() => {}); }
+    if (remote) { const cdp = await remote.newBrowserCDPSession().catch(() => null); await cdp?.send('Browser.close').catch(() => {}); await remote.close().catch(() => {}); }
     if (child.exitCode === null) child.kill('SIGTERM'); await exited;
-    if (setupUrl) await assert.rejects(fetch(setupUrl), 'the owned setup server stops with dev');
+    if (setupUrl) await assert.rejects(fetch(setupUrl), /fetch failed/, 'the owned setup server stops with dev');
   });
   const deadline = Date.now() + 45000;
   while (!/Watching local sources/.test(output) && !/Watching sources/.test(output) && !/Browse pages and open tabs/.test(output) && Date.now() < deadline) {
@@ -193,8 +196,8 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   setupUrl = output.match(/setup\s+(http:\/\/127\.0\.0\.1:\d+\/_setup\/)/)?.[1]; assert.ok(setupUrl, output);
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-  const page = browser.contexts()[0].pages()[0]; await page.waitForURL(simulator.url + '/');
+  remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  const page = remote.contexts()[0].pages()[0]; await page.waitForURL(simulator.url + '/');
   await page.locator('#paqvilo-panel').waitFor({ state: 'attached' });
   await page.keyboard.press('Alt+Shift+P');
   const link = page.locator('#paqvilo-panel a[title="Project setup"]'); await link.waitFor();
@@ -213,8 +216,7 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
 test('setup shows real loading and save feedback, prevents duplicate writes and retains failed edits', { timeout: 60000 }, async t => {
   const work = await temporary(t), demo = path.join(work, 'feedback'); await prepareDemo(demo);
   const server = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => server.close());
-  const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  const page = await newPage(t, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
   await allSettings(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   let releaseRead; const reading = new Promise(resolve => { releaseRead = resolve; }); t.after(() => releaseRead());

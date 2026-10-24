@@ -105,10 +105,10 @@ test('outbox pack handlers observe committed captures only, after capture', asyn
   const providers = await composeProviders({ store: target, packs: [fxPack(calls)], config: { providers: { outbox: { kind: 'pack:fx-pack' } } } });
   await providers.outbox.capture({ channel: 'email', to: ['a@example.test'], subject: 'kept' });
   // A nested capture rolled back with its caller is never observed.
-  await target.transact(async () => {
+  await assert.rejects(target.transact(async () => {
     await providers.outbox.capture({ channel: 'email', to: ['a@example.test'], subject: 'rolled back' }, { nested: true });
     throw new Error('invented rollback');
-  }).catch(() => {});
+  }), /invented rollback/);
   await settleProviders(providers);
   assert.deepEqual(calls.filter(call => call.startsWith('observed:')), ['observed:kept']);
   assert.deepEqual(providers.outbox.list().map(entry => entry.subject), ['kept']);
@@ -204,4 +204,20 @@ test('an outbox pack kind without outboxHandlers fails composition', async () =>
   const target = await store();
   await assert.rejects(() => composeProviders({ store: target, packs: [], config: { providers: { outbox: { kind: 'pack:fx-missing' } } } }),
     { code: 'PROVIDER_NOT_REGISTERED' });
+});
+
+test('a resource a factory passes through own() and returns is closed once', async () => {
+  const calls = [];
+  const pack = { id: 'p', messageProviders: { bus: (input) => input.own({ send() {}, close: () => calls.push('close') }) } };
+  const providers = await composeProviders({ store: await store(), packs: [pack], config: { providers: { messaging: { b1: { kind: 'pack:p/bus' } } } } });
+  await closeProviders(providers);
+  assert.deepEqual(calls, ['close']);
+});
+
+test('composed providers are closed when the host context fails after composition', async () => {
+  const calls = [];
+  const pack = { id: 'p', messageProviders: { bus: () => ({ send() {}, close: () => calls.push('close') }) } };
+  await assert.rejects(composeOrganizationHost({ store: await store(), packs: [pack],
+    config: { providers: { messaging: { b1: { kind: 'pack:p/bus' } } } }, inventory: () => { throw new Error('inventory failed'); } }), /inventory failed/);
+  assert.deepEqual(calls, ['close']);
 });

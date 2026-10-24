@@ -1,7 +1,7 @@
-// One organization mutation pipeline: the same invented write through the Dataverse Web API, the SDK IOrganizationService
+// One organization mutation pipeline: the same write through the Dataverse Web API, the SDK IOrganizationService
 // (the service a CLR plug-in's SDK calls reach), the flow Dataverse connector, the portal /_api and the portal form writes
 // stores the same row, refuses a calculated-column value and a duplicate alternate key with the same error, and reads back
-// the same projection. Invented schema only.
+// the same projection.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -58,7 +58,7 @@ async function organization(t) {
     dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
   ownedFixture(t).add(() => sim.close());
   const registered = await fetch(sim.url + "/_sim/api/dataverse/applications", { method: "POST",
-    headers: { "content-type": "application/json", "x-sim-csrf": sim.state().csrf },
+    headers: { "content-type": "application/json", "x-sim-csrf": sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: "Invented client", roles: ["System Administrator"] }) });
   assert.equal(registered.status, 201, await registered.clone().text());
   const { secret } = await registered.json();
@@ -73,7 +73,7 @@ async function organization(t) {
   };
   const portal = async (method, suffix, body) => {
     const response = await fetch(sim.url + "/_api" + suffix, { method,
-      headers: { __RequestVerificationToken: sim.state().csrf, ...(body ? { "content-type": "application/json" } : {}) },
+      headers: { __RequestVerificationToken: sim.csrf, ...(body ? { "content-type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}) });
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };
@@ -238,7 +238,9 @@ test("associate and disassociate run the record hooks on the Web API, the SDK, t
   for (const [name, run] of Object.entries(surfaces)) {
     const ids = await pair(name);
     await run(ids);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The audit hook remainder runs after the write commits.
+    await sim.store.flushCommittedEvents();
+    await sim.store.queue;
     assert.equal(lineItem(ids.line), null, `${name} disassociated`);
     assert.deepEqual(actions(ids.item), [33, 34], `${name} ran the association record hooks`);
   }

@@ -1,4 +1,4 @@
-// Organization reads use the same inferred OData definitions as metadata. Invented schema and loopback only.
+// Organization reads use the same inferred OData definitions as metadata.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

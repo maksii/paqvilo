@@ -79,7 +79,8 @@ test('same-table parent singleton catalogue retains ancestors and never falsely 
   const result = permissionPathCatalogue({ permissions: [ancestor, child], identity: actor, table: 'asset', authoredXml });
   // Singleton root compilation must exclude the ancestor as an independent
   // leaf but include it while resolving the child's same-table parent path.
-  assert.equal(result.entries.filter(entry => entry.permissionId === 'child').length, 1);
+  assert.deepEqual(result.entries.map(entry => entry.permissionId), ['ancestor', 'child']);
+  assert.deepEqual(result.diagnostics, []);
 });
 
 test('current-source master probe has bounded independent requests and explicit representative versus exhaustive denominators', async () => {

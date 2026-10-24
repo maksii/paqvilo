@@ -1,5 +1,5 @@
-// Block-committed notes and attachments go through the record create pipeline (03-B2): attachment policy, mimetype,
-// ownership and synchronous plug-in steps apply exactly as on an ordinary create. Invented schema and GUIDs; loopback only.
+// Block-committed notes and attachments go through the record create pipeline: attachment policy, mimetype,
+// ownership and synchronous plug-in steps apply exactly as on an ordinary create.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { pluginCatalogue, pluginHandlers, pluginPhaseRequiresCheckpoint, pluginStepMatchesEntity, runPluginPhase } from "../lib/exported-plugins.mjs";

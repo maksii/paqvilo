@@ -1,6 +1,6 @@
-// Virtual table writes (Task 28): the provider is the main operation (Learn custom-ve-data-providers, stage 30), called after
+// Virtual table writes: the provider is the main operation (stage 30), called after
 // the store write passed every local check and inside its transaction. A locally refused write never reaches the provider;
-// a provider failure leaves the local row unchanged. Invented x_ schema and GUIDs only.
+// a provider failure leaves the local row unchanged.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION } from "../lib/dataverse-virtual-providers.mjs";

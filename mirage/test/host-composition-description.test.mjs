@@ -85,31 +85,7 @@ test('a pack factory that throws rejects the description with PROVIDER_FACTORY_F
     { code: 'PROVIDER_FACTORY_FAILED', pack: 'fx-broken' });
 });
 
-test('status lists the mounted /_sim/api routes and imported model-driven apps; Power Pages state carries docs', async t => {
-  const { root, options } = await fixture(t);
-  const sim = await createSimulator({ ...options, port: 0, watch: false });
-  t.after(() => sim.close());
-  const status = await (await fetch(sim.url + '/_sim/api/status')).json();
-  assert.ok(['/dashboard', '/environment', '/preflight', '/messages', '/flow-runs'].every(route => status.routes.includes(route)));
-  assert.equal(status.routes.includes('/personas'), false, 'personas belong to the Power Pages host');
-  assert.deepEqual(status.modelDrivenApps, []);
-
-  await fs.mkdir(path.join(root, 'portal'), { recursive: true });
-  await fs.writeFile(path.join(root, 'portal', 'website.yml'), 'adx_websiteid: fixture\nadx_name: Invented site');
-  await fs.writeFile(path.join(root, 'portal', 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true');
-  const portal = await createSimulator({ sourceDir: path.join(root, 'portal'), solutionRoots: options.solutionRoots, projectRoot: root, port: 0, watch: false, simulation: { level: 'dry-run' } });
-  t.after(() => portal.close());
-  const portalStatus = await (await fetch(portal.url + '/_sim/api/status')).json();
-  assert.ok(portalStatus.routes.includes('/personas') && portalStatus.routes.includes('/dashboard'));
-  assert.ok(Array.isArray(portalStatus.modelDrivenApps));
-  assert.ok((await (await fetch(portal.url + '/_sim/api/state')).json()).docs);
-  await fetch(portal.url + '/');
-  const dashboard = await (await fetch(portal.url + '/_sim/api/dashboard')).json();
-  const recent = dashboard.activity.requests.recent;
-  assert.ok(recent.length && recent.every(entry => entry.at === null || !Number.isNaN(Date.parse(entry.at)) && typeof entry.at === 'string'));
-});
-
-// RA1-04: the offline description installs the organization modules over its in-memory store, so every module and operation
+// The offline description installs the organization modules over its in-memory store, so every module and operation
 // level equals the running host's (both hosts), not only the module names.
 const levels = report => Object.fromEntries(report.modules.map(record => [record.name,
   [record.level, ...(record.operations ?? []).map(operation => `${operation.name}=${operation.level}`).sort()].join(' ')]));

@@ -9,7 +9,7 @@ import { builtInKey } from "./dataverse-elastic.mjs";
 const LCID = 1033;
 const FILE = new URL("./dataverse-standard-tables.json", import.meta.url);
 const SET_TYPE = { bit: "boolean", picklist: "picklist", state: "state", status: "status" };
-// Self-referencing relationships that Microsoft Learn documents as hierarchy-enabled by default (IsHierarchical).
+// Self-referencing relationships that are hierarchy-enabled by default (IsHierarchical).
 const HIERARCHICAL_STANDARD = new Set(["account_parent_account", "user_parent_user"]);
 
 let file = null;
@@ -211,7 +211,7 @@ function mappingOf(table) {
     userConfigured: true,
     dataverseOnly: true,
     standardTable: true,
-    tableType: table.tableType ?? "Standard", // Learn TableType; "Elastic" for backgroundoperation and appnotification
+    tableType: table.tableType ?? "Standard", // TableType; "Elastic" for backgroundoperation and appnotification
     ...(table.tableType === "Elastic" ? { alternateKeys: [builtInKey(table.primaryIdAttribute)] } : {}),
     fields: Object.fromEntries(Object.entries(table.attributes).map(([column, a]) => [column, { dataverseType: a.type }])),
     relationships: {},

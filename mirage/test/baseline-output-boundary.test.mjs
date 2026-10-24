@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination, validateCaptureLabel, validateScenarioId } from '../baseline-paths.mjs';
 import { captureMatrix } from '../baseline-suite.mjs';
@@ -66,9 +68,11 @@ test('a file ancestor and lexical escape are refused without creating children',
   assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'kept');
 }));
 
-for (const label of ['CONIN$', 'conout$.log', 'COM¹', 'com².log', 'COM³', 'LPT¹', 'lpt².txt', 'LPT³']) test('reject portable reserved Windows label ' + label, () => {
-  assert.throws(() => validateCaptureLabel(label));
-  assert.throws(() => validateScenarioId('valid/' + label));
+test('portable reserved Windows names are refused as labels and scenario segments', () => {
+  for (const label of ['CONIN$', 'conout$.log', 'COM¹', 'com².log', 'COM³', 'LPT¹', 'lpt².txt', 'LPT³']) {
+    assert.throws(() => validateCaptureLabel(label), /capture label must be one portable directory name/, label);
+    assert.throws(() => validateScenarioId('valid/' + label), /scenario id must contain safe nonempty relative directory segments/, label);
+  }
 });
 
 test('reserved-looking ordinary names remain valid', () => {
@@ -83,8 +87,7 @@ test('linked artifact refuses before persisting evidence through a directory ali
   assert.deepEqual(await fs.readdir(outside), []);
   assert.deepEqual(await fs.readdir(outDir), ['requests.json']);
 }));
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+
 test('CLI preflights linked selected output before runtime construction or evidence persistence', () => fixture(async ({ root, outside, base }) => {
   await linkDir(outside, path.join(root, 'invented'));
   const matrixFile = path.join(base, 'matrix.json');

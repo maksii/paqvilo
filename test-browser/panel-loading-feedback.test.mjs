@@ -1,6 +1,6 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Deliberately slow local tooling APIs; portal traffic and business writes are never used.
-import test from 'node:test';
+// Deliberately slow local tooling APIs.
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,23 +15,28 @@ import { SITE } from '../test/fixture.mjs';
 import { inspectionFixture } from '../test/source-inspection-fixture.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 
+let browser;
+before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true,args:['--disable-background-networking']}));});
+after(()=>browser?.close());
+
 test('X-ray immediately shows its scan, survives exit during loading, and exposes failure and retry', { timeout: 60_000 }, async t => {
-  const fx=inspectionFixture();let browser,panel,detach,releaseOpen,openCalls=0;
+  const fx=inspectionFixture();let context,panel,detach,releaseOpen,openCalls=0;
   const server=http.createServer((req,res)=>res.writeHead(200,{'content-type':'text/html'}).end('<!doctype html><title>Invented portal</title><style>body{font:15px Segoe UI;background:#f3f6fb;color:#20334c;margin:50px}main{padding:40px;background:white;border-radius:16px;max-width:800px}input{padding:12px;border:1px solid #ccd6e5}h1{font-size:38px}</style><main><h1>Project workspace</h1><p>Manage your next step.</p><form data-entityname="fx_widget" data-formid="widget-edit"><label for="fx_title">Title</label><input id="fx_title"></form></main>'));
   ownedFixture(t).add(async () => { releaseOpen?.(); });
   ownedFixture(t).add(async () => { await panel?.dispose(); });
   ownedFixture(t).add(async () => { await detach?.(); });
-  ownedFixture(t).add(async () => { await browser?.close(); });
+  ownedFixture(t).add(async () => { await context?.close(); });
   ownedFixture(t).add(async () => { server.closeAllConnections(); });
   ownedFixture(t).add(async () => { await new Promise(resolve=>server.close(resolve)); });
   ownedFixture(t).remove(async () => { fx.cleanup(); });
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
-  browser=await chromium.launch(browserLaunchOptions({headless:true,args:['--disable-background-networking']}));
-  const context=await browser.newContext({viewport:{width:1440,height:950},serviceWorkers:'block',reducedMotion:'no-preference'});context.setDefaultTimeout(10_000);
+  context=await browser.newContext({viewport:{width:1440,height:950},serviceWorkers:'block',reducedMotion:'no-preference'});context.setDefaultTimeout(10_000);
   const session=new OverlaySession({sourceDir:fx.portal,origin,site:structuredClone(SITE),sourceMaps:false,siteName:'Invented workspace',envName:'loopback',stateDir:fx.work,browser:{},mirageConfig:{project:fx.project}});
+  const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+  // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
   detach=await attachSession(context,session);panel=enablePanel(context,session,{open:async()=>{openCalls++;await new Promise(resolve=>{releaseOpen=resolve;});return null;}});
   await context.addInitScript(()=>{const schedule=window.setTimeout.bind(window);window.setTimeout=(fn,delay,...args)=>schedule(fn,window.__fastDeadline&&delay===120000?50:delay,...args);const original=window.fetch.bind(window);window.__inspectionMode='delay';window.__inspectionRequests=0;window.__catalogMode='failure';window.__catalogRequests=0;window.fetch=async(...args)=>{if(String(args[0]).includes('/__paqvilo/api/inspect')){window.__inspectionRequests++;const mode=window.__inspectionMode;if(mode==='delay')await new Promise(resolve=>{window.__releaseInspection=resolve;});if(mode==='failure')return new Response(JSON.stringify({ok:false,error:'Invented source unavailable'}),{status:200,headers:{'content-type':'application/json'}});}if(String(args[0]).includes('/__paqvilo/api/catalog')){window.__catalogRequests++;const mode=window.__catalogMode;if(mode==='failure')return new Response(JSON.stringify({ok:false,error:'Invented catalogue unavailable'}),{status:200,headers:{'content-type':'application/json'}});if(mode==='delay')await new Promise(resolve=>{window.__releaseCatalogue=resolve;});}return original(...args);};});
-  const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));await page.goto(origin);
+  await page.goto(origin);
   const scope=page.locator('#paqvilo-panel'),xray=page.locator('#paqvilo-xray');
   const evidence=async name=>{if(process.env.PAQVILO_EVIDENCE_DIR){fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.PAQVILO_EVIDENCE_DIR,name+'.png')});}};
   await scope.locator('.pill').click();await scope.getByRole('button',{name:'Toggle Lense X-ray'}).click();
@@ -67,8 +72,8 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
 });
 
 test('background X-ray refresh shows progress while retaining source details, and retires accepted progress', {timeout:30_000},async t=>{
-  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
-  const page=await browser.newPage();await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
+  const context=await browser.newContext();t.after(()=>context.close());
+  const page=await context.newPage();await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
   await page.evaluate(xrayUi,{origin:'null',token:'invented-progress'});
   await page.evaluate(()=>{
     window.fixtureReport={columns:[{name:'fx_title',entity:'fx_widget',type:'string',label:'Title'}],tables:[{logicalName:'fx_widget'}]};

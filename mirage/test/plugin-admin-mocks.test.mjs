@@ -21,7 +21,7 @@ async function fixture(t,{unsupported=false,enhanced=false}={}){
  if(enhanced)await fs.writeFile(path.join(first.portal,'website.yml'),'adx_websiteid: fixture\nadx_name: Widget plugin fixture\nadx_enhancedauthorization: 3');
  initial.tables.fx_widget=[{fx_widgetid:recordId,fx_title:'Stored original'}];
  const app=await createSimulator({sourceDir:first.portal,solutionRoots:[first.solution],initial,watch:false});t.after(()=>app.close());
- const admin=(number,body)=>fetch(app.url+'/__sim/api/operations/'+encodeURIComponent('plugin-step:'+pluginId(number)),{method:'PATCH',headers:{'content-type':'application/json','x-sim-csrf':app.state().csrf},body:JSON.stringify({mode:'mock',body})});
+ const admin=(number,body)=>fetch(app.url+'/__sim/api/operations/'+encodeURIComponent('plugin-step:'+pluginId(number)),{method:'PATCH',headers:{'content-type':'application/json','x-sim-csrf':app.csrf},body:JSON.stringify({mode:'mock',body})});
  return {app,admin};
 }
 
@@ -72,7 +72,7 @@ test('Explicit admin mock applies an eligible source-known patch without executi
  const catalogue=await (await fetch(app.url+'/__sim/api/operations')).json(),step=catalogue.items.find(item=>item.id===pluginId(25));
  assert.match(step.unsupported,/Impersonated/);
  assert.equal((await admin(25,{target:{fx_title:'Configured mock title'}})).status,200);
- const write=title=>fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({fx_title:title})});
+ const write=title=>fetch(app.url+'/_api/fx_widgets',{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify({fx_title:title})});
  assert.equal((await write('Submitted ordinary title')).status,204);
  assert.equal(app.store.snapshot().tables.fx_widget.at(-1).fx_title,'Configured mock title');
  assert.ok(app.state().diagnostics.some(item=>item.code==='PLUGIN_STEP_SIMULATED'&&item.stepId===pluginId(25)&&/original logic was not executed/.test(item.message)));

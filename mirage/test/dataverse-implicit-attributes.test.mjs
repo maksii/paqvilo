@@ -1,4 +1,4 @@
-// Metadata structural parity only: invented column names and local pinned standard target facts.
+// Metadata structural parity against locally pinned standard target facts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { implicitAttributes } from '../lib/dataverse-implicit-attributes.mjs';

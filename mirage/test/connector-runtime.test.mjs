@@ -98,8 +98,11 @@ test('pagination follows nextLink only when asked and stops at maxPages with a t
 test('http provider applies rewrites to loopback, refuses other hosts and refuses loopback redirects', async t => {
   const escaped = [];
   const other = await listen(t, (req, res) => { escaped.push(req.url); res.end('{}'); });
+  const hits = [];
   const local = await listen(t, (req, res) => {
+    hits.push(req.url);
     if (req.url.startsWith('/api/moved')) { res.writeHead(307, { location: other + '/stolen' }); return res.end(); }
+    if (req.url === '/api/local-moved') { res.writeHead(302, { location: '/api/echo' }); return res.end(); }
     let body = ''; req.on('data', c => { body += c; });
     req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ path: req.url, method: req.method, received: JSON.parse(body || 'null') })); });
   });
@@ -109,7 +112,9 @@ test('http provider applies rewrites to loopback, refuses other hosts and refuse
   assert.deepEqual(answer.body, { path: '/api/echo?q=1', method: 'POST', received: { x: 1 } });
   await rejectsWith(runtime.invoke({ connectorId: 'http', operationId: 'Http', parameters: { uri: 'https://elsewhere.example.test/api' } }), 'ProviderUnavailable', 503);
   await rejectsWith(runtime.invoke({ connectorId: 'http', operationId: 'Http', parameters: { uri: 'https://func.example.test/api/moved' } }), 'ProviderFailed', 502);
+  await rejectsWith(runtime.invoke({ connectorId: 'http', operationId: 'Http', parameters: { uri: 'https://func.example.test/api/local-moved' } }), 'ProviderFailed', 502);
   assert.deepEqual(escaped, []);
+  assert.deepEqual(hits, ['/api/echo?q=1', '/api/moved', '/api/local-moved'], 'neither redirect is followed');
 });
 
 test('fixture provider answers deterministically from pack httpFixtures without network', async () => {

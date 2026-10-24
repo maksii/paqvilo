@@ -154,14 +154,14 @@ test("observed static JSON is bound to the exact exported source SHA and capture
 });
 
 test("only bounded inert rich-text JSON is accepted; wrappers, credentials, HTML and unrelated objects fail before persistence", async () => {
-  for (const value of [
-    "<html>Sign in</html>",
-    'window.config={"defaultSupportedProps":{}}',
-    '{"records":[{"fullname":"business value"}]}',
-    '{"defaultSupportedProps":{"access_token":"private"}}',
-    '{"defaultSupportedProps":{"constructor":{}}}',
+  for (const [value, message] of [
+    ["<html>Sign in</html>", /JSON only, without script wrappers/],
+    ['window.config={"defaultSupportedProps":{}}', /JSON only, without script wrappers/],
+    ['{"records":[{"fullname":"business value"}]}', /not a supported static rich text configuration/],
+    ['{"defaultSupportedProps":{"access_token":"private"}}', /cannot contain credential fields/],
+    ['{"defaultSupportedProps":{"constructor":{}}}', /cannot contain credential fields/],
   ])
-    assert.throws(() => validateRichTextConfiguration(Buffer.from(value)));
+    assert.throws(() => validateRichTextConfiguration(Buffer.from(value)), message, value);
   assert.deepEqual(
     validateRichTextConfiguration(
       Buffer.from('{"defaultSupportedProps":{"height":195}}'),
@@ -265,7 +265,7 @@ test("HTTP mapped local configuration serves validated observation until source 
     method: "PATCH",
     headers: {
       "content-type": "application/json",
-      "x-sim-csrf": app.state().csrf,
+      "x-sim-csrf": app.csrf,
     },
     body: JSON.stringify({
       live: { origin: f.live.origin },

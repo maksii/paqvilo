@@ -170,7 +170,7 @@ export function resolvePortalIdentity(
   const roles = [...roleIds]
     .map((roleId) => model.roles.get(roleId)?.name)
     .filter(Boolean);
-  // Web roles of the persona's parent account are reported, not applied (  // lib/platform-changes.mjs accountWebRoleIds).
+  // Web roles of the persona's parent account are reported, not applied (platform-changes.mjs accountWebRoleIds).
   const accountRoles = accountId
     ? accountWebRoleIds(state, accountId).filter((roleId) => model.roles.has(roleId) && !roleIds.has(roleId))
     : [];
@@ -395,7 +395,7 @@ export function buildPermissionModel(
     diagnostics.push({ code, id: rule.id, entity: rule.entity, message });
   };
   // Child (parent-scope) grants inherit their parent's roles (Microsoft: "These roles are
-  // inherited from the parent table permission"; legacy runtime ignored child links).
+  // inherited from the parent table permission").
   // settings.childPermissionRoles = "intersect" keeps only roles also on the parent.
   const childRoleMode =
     state.settings?.childPermissionRoles === "intersect" ? "intersect" : "inherit";
@@ -506,7 +506,7 @@ export function buildPermissionModel(
       let parent =
         rule.scope === "parent" ? byId.get(id(rule.parentPermissionId)) : null;
       if (rule.scope === "parent") {
-        // This explicit, evidence-backed profile reproduces a recorded unsafe
+        // This opt-in observed profile reproduces an unsafe
         // native configuration. Only an exact inactive exported parent qualifies;
         // missing exports, unknown relationships and cycles remain closed.
         if (!parent && observed?.tablePermissionOrphans === "unrestricted") {

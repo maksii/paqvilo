@@ -16,7 +16,7 @@
   var iso = function (date) { return date.getUTCFullYear() + "-" + pad(date.getUTCMonth() + 1) + "-" + pad(date.getUTCDate()) + "T" + pad(date.getUTCHours()) + ":" + pad(date.getUTCMinutes()) + ":" + pad(date.getUTCSeconds()) + "Z"; };
   var DAY = 86400000;
   var VIEWS = ["year", "month", "week", "day"];
-  // The templates each view fetches after the event feed (platform calendar order, live requests).
+  // The templates each view fetches after the event feed, in platform calendar order.
   var VIEW_TEMPLATES = { year: ["year", "year-month", "events-list"], month: ["month", "month-day", "events-list"], week: ["week", "week-days"], day: ["day"] };
   var LOADING_IMAGE = "/Areas/EntityList/css/img/loading-bar.gif";
   var _ = { each: function (list, fn) { Array.prototype.forEach.call(list || [], fn); } };

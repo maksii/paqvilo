@@ -1,6 +1,6 @@
 // One capability registry per host (organization-host.mjs): status() / state() carry its legacy summary and its report,
 // GET /_sim/api/preflight and simulator.preflight() answer the live preflight, and strict acceptance refuses a required
-// capability below behaviour before any browser starts. Invented Solution and portal only.
+// capability below behaviour before any browser starts.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

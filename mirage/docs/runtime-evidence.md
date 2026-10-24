@@ -1,9 +1,14 @@
 # What runtime evidence proves
 
-Offline unit tests establish reusable semantics on invented input. Loopback browser tests establish that local adapters, forms, scripts and sessions work in the tested browser. Source inventories establish discoverable configuration and code coverage. Project acceptance tests establish a particular simulated business scenario. Recorded reference comparisons establish parity only for their observed cases and identities.
+Each kind of check proves something different. Report them separately, and never present one as another.
 
-The public distribution contains reusable implementations and synthetic regressions. These checks establish local behavior on their fixtures. Validate a particular portal with project-owned reference comparisons; this guide does not provide comparison evidence for your site.
+| Check | What it proves | What it does not prove |
+| --- | --- | --- |
+| Source inventory (`liquid-inventory`, `webapi-inventory`, `bootstrap-report`, `/_sim/` counts) | Which configuration and code the export contains and Mirage can read | That a page renders or behaves like the live portal |
+| Local render or browser run (`render-sweep`, `portal-matrix`, your browser tests) | That the local runtime renders and runs those pages for the tested persona, data and window size | That the hosted site does the same |
+| Project acceptance test | That one simulated business scenario works end to end locally | Behaviour for other personas, data or deployments |
+| Recorded reference comparison (`parity-suite`, `baseline-suite`) | Parity for the compared routes, identities and data only | Parity for anything not compared |
 
-Always report coverage and skipped/incomplete cases alongside passes. Capture runtime errors, failed requests, unmatched source patches and unsupported diagnostics. Keep source baseline, local scenario, permission mode and implementation fingerprint visible. Do not extrapolate a local result to every portal, persona or deployment.
+A sign-in page, an HTTP 200 or an inventory match is not a passing page. Always report coverage and skipped or incomplete cases alongside passes, and keep runtime errors, failed requests, unmatched source patches and unsupported diagnostics with the result. Record the source baseline, local scenario, permission mode and toolkit version so a result can be reproduced.
 
-Store business screenshots, logs, state and reference captures under the project's ignored `.paqvilo/`. Public CI may retain only synthetic evidence selected by `scripts/collect-evidence.mjs`; it must not upload full browser storage or agent discoveries.
+Store business screenshots, logs, state and reference captures under the project's ignored `.paqvilo/`. To compare with a live reference, see [reference parity evidence](parity-evidence.md).

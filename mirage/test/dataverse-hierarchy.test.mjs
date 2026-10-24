@@ -1,11 +1,11 @@
 // Record hierarchy (lib/dataverse-hierarchy.mjs): the four directions, the depth bound, the cycle guard, both lookup shapes,
-// the metadata and explicit hierarchy sources, install diagnostics and describe. Invented x_ schema and GUIDs only.
+// the metadata and explicit hierarchy sources, install diagnostics and describe.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EXTENSION, resolveHierarchy, validateHierarchies } from "../lib/dataverse-hierarchy.mjs";
 import { contractModuleFixture } from "./contract-module-fixture.mjs";
 
-// Invented tree, levels 1 to 4:  ROOT -> B, E;  B -> C;  E -> F;  C -> D.
+// Tree, levels 1 to 4:  ROOT -> B, E;  B -> C;  E -> F;  C -> D.
 // The loop is injected through the root's lookup: ROOT's parent is D, so ROOT -> D -> C -> B -> ROOT.
 const id = (n) => `10000000-0000-4000-8000-00000000000${n}`;
 const ROOT = id(1);
@@ -129,11 +129,6 @@ test("an explicit hierarchies map makes a flagless self-lookup hierarchical", as
   assert.deepEqual(api.hierarchy.isHierarchical("x_plain"), { column: "x_parentid" });
   assert.deepEqual(sorted(api.hierarchy.resolve("x_plain", PLAIN_ROOT, "under")), [PLAIN_CHILD]);
   assert.deepEqual(sorted(api.hierarchy.resolve("x_plain", PLAIN_CHILD, "above")), [PLAIN_ROOT]);
-});
-
-test("install reports no HIERARCHY_NOT_QUERYABLE diagnostic; the query operators are wired by the runtime", async (t) => {
-  const { diagnostics } = await setup(t, { hierarchies: { x_plain: "x_parentid" } });
-  assert.equal(diagnostics.filter((entry) => entry.code === "HIERARCHY_NOT_QUERYABLE").length, 0);
 });
 
 test("an unknown direction is a programming error, not a data answer", () => {

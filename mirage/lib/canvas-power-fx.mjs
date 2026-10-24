@@ -1,4 +1,4 @@
-// Power Fx evaluation seam. The default evaluator is Paqvilo's own interpreter (power-fx.mjs: the Learn Power Fx grammar,
+// Power Fx evaluation seam. The default evaluator is Paqvilo's own interpreter (power-fx.mjs: the documented Power Fx grammar,
 // typed values, error values and the function table of power-fx-functions.mjs), so formula columns, Dataverse Functions,
 // low-code plug-ins, api.fxEvaluator (the ExecuteFxExpression message in dataverse-org-messages.mjs) and canvas formulas
 // evaluate for real. A trusted pack's `powerFx` export ({ evaluate | evaluateSync, check? | checkSync? }) replaces it.

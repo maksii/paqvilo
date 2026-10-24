@@ -11,7 +11,7 @@ import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 
 const formId = '11111111-1111-4111-8111-111111111111';
-// Invented strict client API: like the loopback app's bounded Xrm, an unsupported member throws.
+// A strict client API: like the loopback app's bounded Xrm, an unsupported member throws.
 const strictXrm = `(() => {
   const strict = (value, name) => new Proxy(value, { get(target, key) {
     if (typeof key === 'symbol' || key === 'then') return Reflect.get(target, key);
@@ -89,7 +89,7 @@ test('a strict CSP and throwing client API keep Actions readable and runnable, X
   await tab.keyboard.press('Escape');
   const heading = await tab.getByRole('heading', { name: 'Invented record' }).boundingBox();
   await tab.mouse.click(heading.x + 5, heading.y + heading.height / 2);
-  // Before the fix an empty identifier matched every exported control without an id.
+  // An empty identifier must not match every exported control without an id.
   await xray.locator('.card').filter({ hasNotText: 'inv_item.inv_title' }).filter({ hasText: 'Invented main' }).waitFor();
   assert.equal(await xray.locator('.element-label').textContent(), 'h1');
   assert.deepEqual(problems, []);

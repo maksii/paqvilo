@@ -1,4 +1,4 @@
-// Loader failures reach the preflight graph (Task 6): a missing root, an unsupported file and a corrupt ZIP are blocking
+// Loader failures reach the preflight graph: a missing root, an unsupported file and a corrupt ZIP are blocking
 // solution-source rows, never an apparently valid empty inventory. Inventory notes stay out of the rows.
 import test from 'node:test';
 import assert from 'node:assert/strict';

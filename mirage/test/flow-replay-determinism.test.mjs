@@ -6,7 +6,7 @@ import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns } from '../lib/flow-runs.mjs';
 import { runTrackedFlow } from '../lib/flow-runtime.mjs';
 
-// Task 45: a resume replays the parameter values frozen at run start, and a replay that diverges from its journal fails
+// A resume replays the parameter values frozen at run start, and a replay that diverges from its journal fails
 // NotResumable (ReplayDiverged) before any provider is called.
 const FLOW = '77777777-7777-4777-8777-0000000000f1';
 const MODE = '77777777-7777-4777-8777-0000000000e1', KEY = '77777777-7777-4777-8777-0000000000e3';

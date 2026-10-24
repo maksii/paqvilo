@@ -1,7 +1,7 @@
 // Feature controls, the mobile-offline profile clone, cards, the NPS rating, and the Power BI, Finance and Operations, analytics
-// and ALM messages (brief G9d). Every operation is registered through registerAddon (dataverse-addon-common.mjs), so a trusted
-// pack's dataverseMessages handler replaces it. Invented data only; the parts not confirmed by a live capture are marked
-// unverified (LC2 feature controls, LC8 probes and defaults, LC9 the clone).
+// and ALM messages. Every operation is registered through registerAddon (dataverse-addon-common.mjs), so a trusted
+// pack's dataverseMessages handler replaces it. The feature-control shapes, probe answers, card defaults and the profile clone
+// are not confirmed natively.
 // ponytail: GetFeatureControlStringSettingsForNamespaceWithUserContext ignores its setting names and additional filters.
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
@@ -14,7 +14,7 @@ const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does
 const iso = (at) => new Date(at).toISOString();
 
 // Feature control setting: a featurecontrolsetting row's uniquename is the namespace, its content the JSON object { "<name>": value }.
-// Only active rows (statecode 0) count. unverified: LC2.
+// Only active rows (statecode 0) count.
 function settingsOf(store) {
   const settings = [];
   for (const row of store.state.tables.featurecontrolsetting ?? []) {
@@ -31,14 +31,14 @@ function settingsOf(store) {
   return settings;
 }
 
-// Type names are ours: the native mscrm.Type is an empty complex type. unverified.
+// Type names are ours: the native mscrm.Type is an empty complex type.
 function typeOf(value) {
   if (typeof value === "boolean") return "Boolean";
   if (typeof value === "number") return Number.isInteger(value) ? "Integer" : "Decimal";
   return "String";
 }
 
-// The CSDL declares Value as Edm.String (mscrm.Object is not expressible), so every value is sent as a string. unverified.
+// The CSDL declares Value as Edm.String (mscrm.Object is not expressible), so every value is sent as a string.
 const asSetting = (s) => ({ Type: typeOf(s.value), Value: String(s.value), Name: s.name, NamespaceValue: s.namespace });
 const asStringSetting = (s) => ({ TypeName: typeOf(s.value), Value: String(s.value), Name: s.name, NamespaceValue: s.namespace });
 
@@ -121,7 +121,7 @@ function operations(api) {
     },
     {
       name: "RetrieveFeatureControlSettings", kind: "action", binding: "unbound",
-      // unverified: the native filter on the name; here the name matches exactly, so the collection has one entry or none.
+      // The native name filter is not known; here the name matches exactly, so the collection has one entry or none.
       signature: { params: [["NamespaceValue", "Edm.String"], ["FeatureControlName", "Edm.String"]], response: [["FeatureControlSettingCollection", "Collection(mscrm.FeatureControlSettingData)"]] },
       handle: async (c) => {
         const { NamespaceValue, FeatureControlName } = argsOf(c);
@@ -160,7 +160,7 @@ function operations(api) {
       },
       handle: async (c) => ({ FeatureControlStringSettingCollection: namespaceOf(argsOf(c).NamespaceName).map(asStringSetting) }),
     },
-    // C: Learn "For internal use only." (microsoft.crm.sdk.messages.updatefeatureconfigrequest). Store-backed here.
+    // Documented "For internal use only."; store-backed here.
     {
       name: "UpdateFeatureConfig", kind: "action", binding: "unbound",
       signature: { params: [["FeatureType", "Edm.Int32"], ["ConfigData", "Edm.String"]] },
@@ -174,13 +174,13 @@ function operations(api) {
         return undefined;
       },
     },
-    // C: Learn "For internal use only." (microsoft.crm.sdk.messages.clonemobileofflineprofilerequest). Store-backed here. unverified: LC9.
+    // Documented "For internal use only."; store-backed here.
     {
       name: "CloneMobileOfflineProfile", kind: "action", binding: "entity", entity: "mobileofflineprofile",
       signature: { params: [], returns: "mscrm.mobileofflineprofile" },
       handle: async (c) => ({ ...(await cloneProfile(c.target.row)) }),
     },
-    // Cards. unverified: LC8 for the not-simulated cases.
+    // Cards.
     {
       name: "CardCreateClone", kind: "action", binding: "unbound",
       signature: { params: [["CardName", "Edm.String"], ["CardId", "Edm.String"]], response: [["CardIdClone", "Edm.String"]] },
@@ -202,7 +202,7 @@ function operations(api) {
       signature: { params: [["ImportCardTypeSchema", "Edm.String"]], response: [["GUID", "Edm.Guid"]] },
       fallback: featureNotEnabled,
     },
-    // NPS: no table holds the rating, so a valid score has no store effect. unverified: the 400 message and its code.
+    // NPS: no table holds the rating, so a valid score has no store effect. The 400 message and its code are guesses.
     {
       name: "CreateNPSUserRating", kind: "action", binding: "unbound",
       signature: { params: [["Score", "Edm.Int32"], ["Comment", "Edm.String"], ["AppModuleId", "Edm.String"], ["Browser", "Edm.String"], ["Device", "Edm.String"]] },
@@ -242,7 +242,7 @@ function operations(api) {
       },
       fallback: featureNotEnabled,
     },
-    // Deterministic probes. unverified: LC8.
+    // Deterministic probes (guessed values).
     {
       name: "RetrieveAnalyticsStoreDetails", kind: "function", binding: "unbound",
       csdl:

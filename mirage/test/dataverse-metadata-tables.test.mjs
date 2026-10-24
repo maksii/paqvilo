@@ -1,5 +1,5 @@
-// Metadata writes: table create/update/delete, columns, alternate keys, privileges and publish actions. Invented schema
-// and loopback origin only. The store is seeded with ensureSecurityModel, so principals, privileges and the seeded
+// Metadata writes: table create/update/delete, columns, alternate keys, privileges and publish actions.
+// The store is seeded with ensureSecurityModel, so principals, privileges and the seeded
 // security tables are the runtime shapes; handlers are called directly, not through the router.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -175,7 +175,7 @@ test("columns: each supported type lands in fields with the canonical choice sha
   const read = readService(store).attributes("new_bankaccount");
   assert.equal(read.find((a) => a.LogicalName === "new_balance")?.AttributeType, "Money");
   await assert.rejects(send(api, "POST", attributes, { body: column("Memo", "new_notes") }), { details: { innerCode: "0x80060304" } });
-  // A lookup is a relationship: the documented error points at RelationshipDefinitions. unverified message
+  // A lookup is a relationship: the documented error points at RelationshipDefinitions. The message text is a guess.
   await assert.rejects(send(api, "POST", attributes, { body: column("Lookup", "new_owner") }), { status: 400 });
   await assert.rejects(send(api, "POST", attributes, { body: column("String", "plain") }), { details: { innerCode: "0x80044366" } });
 });
@@ -271,13 +271,14 @@ test("alternate keys: allowed types, column, key and 900-byte limits; DELETE rem
   const result = await send(api, "POST", keys, { body: { SchemaName: "new_code_key", KeyAttributes: ["new_code"], DisplayName: label("Code") } });
   assert.equal(result.status, 204);
   assert.deepEqual(readService(store).keys("new_bankaccount").map((k) => [k.LogicalName, k.KeyAttributes]), [["new_code_key", ["new_code"]]]);
-  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_memo_key", KeyAttributes: ["new_memo"] } }));
-  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_wide_key", KeyAttributes: Array(17).fill("new_code") } }));
+  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_memo_key", KeyAttributes: ["new_memo"] } }), { status: 400, message: /new_memo cannot be used in an alternate key/ });
+  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_wide_key", KeyAttributes: Array(17).fill("new_code") } }), { status: 400, message: /1 to 16 columns/ });
   // Two 300-character text columns are 2 x 600 bytes, over the 900-byte limit; a single one is 600 bytes and fits.
-  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_big_key", KeyAttributes: ["new_long1", "new_long2"] } }), { status: 400 });
+  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_big_key", KeyAttributes: ["new_long1", "new_long2"] } }), { status: 400, message: /1200 bytes/ });
   assert.equal((await send(api, "POST", keys, { body: { SchemaName: "new_long_key", KeyAttributes: ["new_long1"] } })).status, 204);
   for (let i = 0; i < 8; i++) await send(api, "POST", keys, { body: { SchemaName: `new_k${i}_key`, KeyAttributes: ["new_code"] } });
-  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_eleventh_key", KeyAttributes: ["new_code"] } }));
+  assert.equal(readService(store).keys("new_bankaccount").length, 10);
+  await assert.rejects(send(api, "POST", keys, { body: { SchemaName: "new_eleventh_key", KeyAttributes: ["new_code"] } }), { status: 400, message: /at most 10 alternate keys/ });
 
   const keyId = readService(store).metadataId("key", "new_bankaccount", "new_code_key");
   assert.equal((await send(api, "DELETE", `${path}/Keys(${keyId})`)).status, 204);

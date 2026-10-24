@@ -1,7 +1,7 @@
 // A Dataverse service endpoint (contract 2 queue, 5 topic) mapped to a servicebus-emulator provider delivers through the core
-// AMQP bus (dataverse-webhooks.mjs serviceEndpointDelivery → bus.send) to the loopback fake broker. Invented x_widget table.
+// AMQP bus (dataverse-webhooks.mjs serviceEndpointDelivery → bus.send) to the loopback fake broker.
 // A synchronous step runs inside its operation on the asynchronous pipeline (data.mjs createRecordAsync): the send is awaited and
-// a failed send fails the operation (Learn: write-custom-azure-aware-plugin, Handle a failed Service Bus post).
+// a failed send fails the operation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -54,7 +54,7 @@ async function world(t, { contract = 2, entity = 'x-queue', mode = 1, second = n
   const job = () => store.tableRows('asyncoperation').find((row) => row.owningextensionid?.id === STEP);
   const token = (await (await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: APP, client_secret: 'invented-secret', scope: `${api.origin}/.default` }) })).json()).access_token;
-  // A Web API request as the invented application user.
+  // A Web API request as the application user.
   const request = async (method, path, body) => {
     const response = await fetch(`${api.origin}/api/data/v9.2${path}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await response.text();
@@ -132,6 +132,6 @@ test('an endpoint mapped to an entity the emulator does not know fails its Syste
   const { store, runner, job } = await world(t, { entity: 'x-missing' });
   await create(store);
   await runner.drain();
-  assert.notEqual(job().statuscode, 30);
+  assert.equal(job().statuscode, 31, "the System Job failed");
   assert.match(String(job().message ?? job().friendlymessage ?? ''), /x-missing/);
 });

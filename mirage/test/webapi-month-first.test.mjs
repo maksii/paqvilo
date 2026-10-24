@@ -29,6 +29,8 @@ for(const enabled of [false,true])test(`portal Web API conversion is evidenced a
   await fs.writeFile(join(root,'sitesetting.yml'),'- adx_name: Webapi/item/enabled\n  adx_value: true\n- adx_name: Webapi/item/fields\n  adx_value: date,instant,name\n');
   const app=await createSimulator({sourceDir:root,watch:false,observed:enabled?{webApiDateParsing:'month-first',evidence:'Synthetic opt-in boundary regression'}:{},initial:{settings:{permissionMode:'permissive'},mappings:{item:{entitySet:'items',idColumn:'itemid',fields:{date:{type:'datetime',behavior:'dateonly'},instant:{type:'datetime'},name:{type:'string'}}}},tables:{item:[]}}});ownedFixture(t).add(()=>app.close());
   const csrf=(await fetch(app.url+'/__sim/api/state?summary=1').then(r=>r.json())).csrf;
+  // Rejected writes target the item table; projecting it (with the row version) avoids cloning every system table per request.
+  const items=()=>({rows:app.store.snapshot({tables:['item']}).tables.item,rowVersion:app.store.state.rowVersion});
   const headers={'content-type':'application/json',__RequestVerificationToken:csrf};
   for(const [value,expected]of [['2/7/2025','2025-02-07T00:00:00Z'],['10/14/2026','2026-10-14T00:00:00Z'],['2025-02-07','2025-02-07T00:00:00Z']]){
     const response=await fetch(app.url+'/_api/items',{method:'POST',headers,body:JSON.stringify({instant:value,name:value})});
@@ -39,14 +41,14 @@ for(const enabled of [false,true])test(`portal Web API conversion is evidenced a
   const valid=await fetch(app.url+'/_api/items',{method:'POST',headers,body:JSON.stringify({date:'2024-02-29'})});assert.equal(valid.status,204);
   const id=valid.headers.get('entityid');
   for(const value of ['2/7/2025','2025-02-07T00:00:00Z','2025-02-29','0000-01-01',' 2025-02-07 ','2025-02-07Z',0,true,'']) {
-    const before=app.store.snapshot();
+    const before=items();
     for (const [method,url] of [['POST',app.url+'/_api/items'],['PATCH',app.url+`/_api/items(${id})`]]) {
       const response=await fetch(url,{method,headers,body:JSON.stringify({date:value})});assert.equal(response.status,400,`${method} ${value}`);
-      assert.deepEqual(app.store.snapshot(),before);
+      assert.deepEqual(items(),before);
     }
   }
   const unpadded=await fetch(app.url+`/_api/items(${id})`,{method:'PATCH',headers,body:JSON.stringify({date:'2025-2-7'})});assert.equal(unpadded.status,204);
   assert.equal((await fetch(app.url+`/_api/items(${id})`).then(r=>r.json())).date,'2025-02-07');
   const cleared=await fetch(app.url+`/_api/items(${id})`,{method:'PATCH',headers,body:JSON.stringify({date:null})});assert.equal(cleared.status,204);
-  const before=app.store.snapshot();const invalid=await fetch(app.url+'/_api/items',{method:'POST',headers,body:JSON.stringify({date:'14/10/2026'})});assert.equal(invalid.status,400);assert.deepEqual(app.store.snapshot(),before);
+  const before=items();const invalid=await fetch(app.url+'/_api/items',{method:'POST',headers,body:JSON.stringify({date:'14/10/2026'})});assert.equal(invalid.status,400);assert.deepEqual(items(),before);
 });

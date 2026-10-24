@@ -8,7 +8,7 @@ import * as quickUi from './quick.mjs';
 const $ = selector => document.querySelector(selector);
 const esc = kit.escapeHtml;
 let state, layer = 'shared', yamlLayer = null, dirty = false, pending = false, pendingFocus, firstRender = true;
-// Same-origin runtime facts (D19) and the live dashboard feed (D6, D21); both degrade to configuration-only views.
+// Same-origin runtime facts and the live dashboard feed; both degrade to configuration-only views.
 let runtimeInfo = {}, dashboard = null, dashboardError = '', previousActivity, nodeId = null;
 const activityHistory = []; // earlier live activity snapshots, oldest first (sparklines)
 const pagers = {}, uiOpen = new Map(), specs = new Map();
@@ -160,7 +160,7 @@ async function load() {
   finally { finish(); }
   pollDashboard();
 }
-// Runtime lists for datalists and pack badges (D19): only from the runtime serving this page; any failure leaves free text.
+// Runtime lists for datalists and pack badges: only from the runtime serving this page; any failure leaves free text.
 // ponytail: read once per status load (Refresh status rereads); poll them with the dashboard if presets or packs change while the page stays open.
 async function loadRuntimeInfo() {
   const base = liveBase();
@@ -169,7 +169,7 @@ async function loadRuntimeInfo() {
   const [status, packs] = await Promise.all([get(`${base}/status${liveQuery()}`), get(`${base}/packs${liveQuery()}`)]);
   runtimeInfo = { status, packs };
 }
-// The save notice follows the restart comparison: required, already matching, or unknown (RU3-14, RU3-02).
+// The save notice follows the restart comparison: required, already matching, or unknown.
 function savedNotice(runtime) {
   // A preview this page found running (started here or from a terminal) needs a restart to use the save.
   if (!runtime && quickSession()?.ready) return 'Saved. Restart the preview under Start & check to use it.';
@@ -209,7 +209,7 @@ const APP_HELP = 'Which of your model-driven apps opens first at /main.aspx. Lea
 function runtimeEditor(settings, site) {
   const runtime = settings.runtime ?? { kind: 'power-pages' }, simulation = settings.simulation, key = site ? slug(site.id) : 'project';
   const parts = quickUi.targetOf(state, site?.id)?.parts ?? {};
-  // Catalogue sites show effective values; keys that only defaults.mirage sets are named, so a site value is a deliberate override (RB-09).
+  // Catalogue sites show effective values; keys that only defaults.mirage sets are named, so a site value is a deliberate override.
   const inherited = name => (site?.inherited?.[name] ? `<p class="muted small">Inherited from defaults.mirage; saving a different value sets this target's own ${esc(name)}.</p>` : '');
   const apps = runtimeApps(), chosen = runtime.defaultApp ?? '';
   const appOptions = [['', 'The first app'], ...apps.map(([id, name]) => [id, name || id]), ...(chosen && !apps.some(([id]) => id === chosen) ? [[chosen, chosen]] : [])];
@@ -381,7 +381,7 @@ const railHtml = () => stagesNow().map((item, index) => {
   return `<a class="nav-item is-${esc(item.status)}${item.status === 'next' ? ' active" aria-current="step' : ''}" href="#${esc(sectionOf(item))}" title="${esc(`Stage ${index + 1}, ${item.title}: ${text}.${section ? ` Opens the ${section} section.` : ''}`)}"><span class="nav-icon rail-step" aria-hidden="true">${index + 1}</span><span class="rail-title">${esc(item.title)}</span>${status}</a>`;
 }).join('');
 
-// ---- Setting editor (D17, D18): every catalogue key without a dedicated form, saved to the layer its badge names.
+// ---- Setting editor: every catalogue key without a dedicated form, saved to the layer its badge names.
 // Every row carries the current authored value (the status exposes each document's keys, secrets as references only);
 // known is false only when that document could not be read, and such a row offers no blind replace or delete.
 function settingTargets(item) {
@@ -452,7 +452,7 @@ function settingEditor(sectionId) {
   }).join('');
 }
 
-// ---- System map (D21): planned from status.topology, live from /_sim/api/dashboard on the same origin.
+// ---- System map: planned from status.topology, live from /_sim/api/dashboard on the same origin.
 function plannedPayload() {
   const target = state.kind === 'project' ? null : state.sites.find(site => site.id === state.settings.defaultSite) ?? state.sites[0];
   const kind = state.kind === 'project' ? state.settings.runtime?.kind : target?.runtime?.kind;
@@ -758,7 +758,7 @@ function overviewBody(personal) {
     + `${sectionHelp('the project', 'Shows whether your settings file and folders are complete. It checks files on this computer only: start the preview to see your project run.', 'project')}${created ? layerControl(personal) : ''}</div>`;
   return head + (state.runtime ? runtimeBanner(state.runtime) : '') + (!created ? createFlow() : '')
     + (state.findings.some(item => expected.has(item.code)) ? '<p class="muted small">Items marked “next step” are expected after creating a project: they name the folders and addresses you still choose. They are not errors.</p>' : '')
-    // A linked-project finding opens its document in the YAML editor (RU3-15).
+    // A linked-project finding opens its document in the YAML editor.
     + (count ? `<ul class="detail-list findings">${state.findings.map(item => `<li class="row"><span>${item.site ? `<strong>${esc(item.site)}</strong> · ` : ''}${esc(item.message)} ${expected.has(item.code) ? kit.badge('next step', 'info') : kit.badge('needs attention', 'warn')}</span><a href="${esc(anchor(item.section))}"${item.layer && state.layers[item.layer] ? ` data-yaml-layer="${esc(item.layer)}"` : ''}>Review</a></li>`).join('')}</ul>` : '');
 }
 function runtimeBody() {
@@ -910,7 +910,7 @@ function render() {
   const admin = runtime?.product === 'Mirage' ? runtime.links?.administration ?? simUrl : null;
   navigation.hidden = !runtime;
   navigation.innerHTML = runtime ? `<div class="nav-label area-label">RUNNING PREVIEW</div>${portalUrl ? `<a class="nav-item" href="${esc(portalUrl)}">← Back to portal</a>` : ''}${admin ? `<a class="nav-item" href="${esc(admin)}">Administration</a>${runtime.kind !== 'dataverse-api' ? `<a class="nav-item" href="${esc(runtime.links?.modelDriven ?? '/main.aspx')}">Model-driven apps</a>` : ''}` : ''}` : '';
-  // Shell (D22): top bar actions, the AREAS switch and the sidebar status follow the running preview.
+  // Shell: top bar actions, the AREAS switch and the sidebar status follow the running preview.
   const openSimulator = $('#open-simulator'), openPortal = $('#open-portal'), area = $('#area-simulator');
   openSimulator.hidden = !admin; if (admin) openSimulator.href = admin;
   openPortal.hidden = !portalUrl; if (portalUrl) openPortal.href = portalUrl;
@@ -1099,7 +1099,7 @@ const SUBMIT = {
     const spec = specs.get(form.dataset.spec);
     if (!spec) throw new Error('Refresh status before saving this setting.');
     const { item, target } = spec, raw = String(data.get('value') ?? ''), text = raw.trim();
-    // Rows without a shown current value, or with references only, render no form; refuse a stale one too (RU3-05).
+    // Rows without a shown current value, or with references only, render no form; refuse a stale one too.
     if (!target.known || referencesOnly(item, target.value)) return notice(`Edit ${item.key} in the Settings file section; this page does not replace values it shows as references only.`, true);
     let edit;
     if (['list', 'object'].includes(item.kind)) {
@@ -1191,7 +1191,7 @@ const SUBMIT = {
     return save({ operations: edits });
   },
   settings({ data, value, edits, set }) {
-    // Only fields the user changed are written, so untouched keys keep their authored form (RU3-05).
+    // Only fields the user changed are written, so untouched keys keep their authored form.
     const settings = state.settings, browser = settings.browser ?? {}, flag = (name, path, previous) => { if (data.has(name) !== (previous === true)) set(path, data.has(name)); };
     update(edits, ['sourceRoot'], value('sourceRoot'), settings.sourceRoot);
     update(edits, ['defaultSite'], value('defaultSite') || undefined, settings.defaultSite || undefined);
@@ -1336,7 +1336,7 @@ function changedOnly(site, edits) {
     if (path.join('.') === 'scope') previous ??= 'all';
     if (path[0] === 'environments' && path[2] === 'caution') previous = Boolean(previous);
     if (path.join('.') === 'routes') previous ??= [];
-    // An absent solutionRoots and an empty list are the same; neither writes `solutionRoots: []` (RU3-16).
+    // An absent solutionRoots and an empty list are the same; neither writes `solutionRoots: []`.
     if (path.join('.') === 'mirage.solutionRoots') previous ??= [];
     if (edit.yaml !== undefined) return edit.yaml !== JSON.stringify(previous, null, 2);
     if (edit.op === 'delete') return previous !== undefined;

@@ -1,5 +1,5 @@
 // Record messages (Merge, InitializeFrom, CalculateRollupField, IsValidStateTransition,
-// FormatAddress) on an invented schema. Handlers are called directly through a fake registry.
+// FormatAddress). Handlers are called directly through a fake registry.
 // Fixtures use the stored shapes: lookups are { id, logical_name, name } objects and exported
 // column facts sit under columnMetadata.
 import test from "node:test";
@@ -379,12 +379,8 @@ test("IsValidStateTransition checks the status option's state, its TransitionDat
   assert.equal((await check(1, "Inactive")).body.IsValid, false);
 
   t.row("account", ACCOUNT_A, "accountid").statuscode = 3;
-  const parked = (status, state) => t.call("IsValidStateTransition", {
-    method: "GET",
-    params: { Entity: moniker("accounts", ACCOUNT_A), NewState: state, NewStatus: status },
-  });
-  assert.equal((await parked(1, "0")).body.IsValid, true, "TransitionData allows Active");
-  assert.equal((await parked(2, "1")).body.IsValid, false, "TransitionData does not allow Inactive");
+  assert.equal((await check(1, "0")).body.IsValid, true, "TransitionData allows Active");
+  assert.equal((await check(2, "1")).body.IsValid, false, "TransitionData does not allow Inactive");
 
   const unknown = await failure(check(9, "0"));
   assert.equal(unknown.status, 400);

@@ -17,7 +17,7 @@ const ACCOUNTS = ["a1000000-0000-4000-8000-000000000001", "a1000000-0000-4000-80
 test("native client runtime: WebForms validators, jQuery grid events, paging and the lookup modal", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "native-runtime-"));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  // Synthetic fixture: the portal's own jQuery is a source web file; nothing leaves loopback.
+  // The portal's own jQuery is a source web file.
   const jquery = await fs.readFile(path.join(path.dirname(require.resolve("jquery/package.json")), "dist", "jquery.min.js"));
   const files = {
     "website.yml": `adx_websiteid: ${SITE}\nadx_name: Runtime`,

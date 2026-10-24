@@ -1,4 +1,4 @@
-// Real DOM proof for offline YAML field overlays; all requests are fulfilled loopback fixtures.
+// Offline YAML field overlays in a real DOM.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -68,7 +68,7 @@ export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null
     try {
       // The callback URL of an HTTP Request trigger: its signature authorises the call (no CSRF token), its method and
       // schema are the trigger's (https://learn.microsoft.com/azure/connectors/connectors-native-reqres).
-      // unverified: the native status codes of a wrong method (405) and an invalid signature (401).
+      // The native status codes of a wrong method (405) and an invalid signature (401) are guesses.
       if (invokeRoute) {
         const runs = api?.flowRuns;
         if (!runs) throw failure(501, 'FlowRunsNotConfigured', 'This runtime has no flow run store.');
@@ -122,7 +122,7 @@ export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null
         send(res, 200, triggers.triggers());
         return true;
       }
-      // An HTTP Request trigger: the body is the trigger body; the flow's Response answers, else 202 (unverified: native 202 body).
+      // An HTTP Request trigger: the body is the trigger body; the flow's Response answers, else 202 (the native 202 body is a guess).
       if (triggersRoute && req.method === 'POST' && triggersRoute[1]) {
         const { result, runId } = await startRun(api, segment(triggersRoute[1]), await body(req), { kinds: ['http'], trigger: 'Http' });
         // Only content-type and x-* headers reach the simulator origin (never x-sim*, cookies, redirects or CSP).

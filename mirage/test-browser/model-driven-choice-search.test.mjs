@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
+
+const chrome = sharedBrowser();
+// Tests that only render controls or read records share one simulator; tests that write own theirs.
+const scope = fileScope();
+let sharedApp;
+const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 
 test('multiselect search preserves typed terms and keyboard selection cannot toggle hidden choices', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage();
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');
@@ -43,9 +47,8 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
 });
 
 test('choice lists stay inside the form viewport and keyboard navigation scrolls only their options', async t => {
-  const { origin } = await modelDrivenFixture(t);
-  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const { origin } = await readOnlyApp();
+  const page = await chrome.page(t, { viewport: { width: 1000, height: 700 } });
   await page.goto(origin + '/main.aspx');
   await page.evaluate(async () => {
     const { renderControl } = await import('/_apps/assets/controls.mjs');

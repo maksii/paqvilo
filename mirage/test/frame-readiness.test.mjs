@@ -34,9 +34,13 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
   // Local instrumentation is marked so the baseline compare skips it (no extra body child).
   assert.match(document, /<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready src="\/__sim\/frame-ready\/[^"]+"><script data-paqvilo-frame-ready>/);
   const response = await fetch(`http://127.0.0.1:${server.address().port}${route}`);
-  await response.arrayBuffer();
-  assert.equal(diagnostics[0].code, 'FRAME_READY_TIMEOUT');
-  assert.equal(diagnostics[0].path, '/synthetic');
+  assert.equal(response.headers.get('content-type'), 'image/gif');
+  assert.ok((await response.arrayBuffer()).byteLength > 0, 'the held image is released with its GIF body');
+  assert.deepEqual(diagnostics.map(({ code, path }) => ({ code, path })), [{ code: 'FRAME_READY_TIMEOUT', path: '/synthetic' }]);
+  // The expired entry is forgotten: a late request for it is answered at once and adds no diagnostic.
+  const late = await fetch(`http://127.0.0.1:${server.address().port}${route}`);
+  assert.equal(late.status, 204);
+  assert.equal(diagnostics.length, 1);
 });
 
 test('the marker image and script leave the document once the frame has loaded', () => {

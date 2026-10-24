@@ -1,9 +1,13 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+
+let browser;
+before(async () => { browser = await chromium.launch(browserLaunchOptions({ headless: true })); });
+after(() => browser?.close());
 
 test('step announcers and postback success messages preserve text without interpreting markup', async t => {
   const scripts = new Map(await Promise.all(['crmentityformview', 'webforms'].map(async name =>
@@ -15,9 +19,7 @@ test('step announcers and postback success messages preserve text without interp
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage(), errors = [];
+  const page = await browser.newPage(), errors = []; t.after(() => page.context().close());
   page.on('pageerror', error => errors.push(error.message));
   const hostile = 'Step <img src=x onerror="window.injected=true"> & details';
   await page.addInitScript(message => {
@@ -54,9 +56,7 @@ test('readonly links and grid frames reject executable URLs; the published sampl
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const page = await browser.newPage(), errors = [], external = [];
+  const page = await browser.newPage(), errors = [], external = []; t.after(() => page.context().close());
   page.on('pageerror', (error) => errors.push(error.message));
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.route('**/*', (route) => {

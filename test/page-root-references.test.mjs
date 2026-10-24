@@ -5,7 +5,7 @@ import {PortalModel} from '../lense/portal-model.mjs';
 import {createFixture,HOME_ID} from './fixture.mjs';
 const ROOT='11111111-1111-4111-8111-111111111111', LANG='22222222-2222-4222-8222-222222222222';
 for(const short of [false,true])for(const nested of [false,true]){
-  test(`explicit language-root identity establishes a displaced root (${short},${nested})`,async t=>{
+  test(`explicit language-root identity establishes a displaced root (${short?'short-key':'classic'} export, ${nested?'language subfolder':'shared folder'})`,async t=>{
     const fx=createFixture();t.after(()=>fx.cleanup());
     const k=n=>short?n:'adx_'+n,id=n=>short?'id':'adx_'+n+'id';
     if(short)fx.write('website.yml','id: site\nname: Site\n');

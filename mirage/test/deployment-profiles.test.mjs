@@ -3,27 +3,28 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { resolveDeploymentProfiles, profileSelection, loadDeploymentProfiles, deploymentProfilesSummary } from '../lib/deployment-profiles.mjs';
+import { resolveDeploymentProfiles, profileSelection, loadDeploymentProfiles, deploymentProfilesSummary, deploymentProfilesStatus } from '../lib/deployment-profiles.mjs';
 import { resolveProjectConfig, bootstrapProject } from '../lib/project-config.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { bootstrapReport } from '../bootstrap-report.mjs';
 import { profileFixture } from './fixtures/deployment-profiles.mjs';
-import { initProject, cliArgs } from '../../lense/commands/mirage.mjs';
+import { initProject, cliArgs, mirageReadiness } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 
 test('profile mappings validate defaults, required sections, IDs, paths and enabled flags', () => {
-  for (const config of [null, [], { unknown: true }, { default: 'absent' }, { required: ['unknown'] },
-    { enabled: { pages: 'true' } }, { profiles: { dev: { unknown: 'a.json' } } },
-    { profiles: { dev: { pages: '' } } }, { profiles: { dev: { pages: 'a.js' } } },
-    { profiles: JSON.parse('{"__proto__":{"pages":"a.json"}}') }]) assert.throws(() => resolveDeploymentProfiles(config));
+  for (const [config, message] of [[null, /must be an object containing only/], [[], /must be an object containing only/], [{ unknown: true }, /must be an object containing only/],
+    [{ default: 'absent' }, /default must name a configured profile/], [{ required: ['unknown'] }, /required must list distinct profile sections/],
+    [{ enabled: { pages: 'true' } }, /enabled values must be boolean/], [{ profiles: { dev: { unknown: 'a.json' } } }, /profiles\.dev must be an object containing only/],
+    [{ profiles: { dev: { pages: '' } } }, /requires a JSON or YAML file path/], [{ profiles: { dev: { pages: 'a.js' } } }, /requires a JSON or YAML file path/],
+    [{ profiles: JSON.parse('{"__proto__":{"pages":"a.json"}}') }, /profile IDs must be safe names/]]) assert.throws(() => resolveDeploymentProfiles(config), message);
   const config = resolveDeploymentProfiles({ default: 'dev', required: ['pages'], profiles: { dev: { pages: 'a.yml' } } });
   assert.throws(() => profileSelection(config, { profile: null }), /required/);
   assert.throws(() => profileSelection(config, { profile: 'missing' }), /configured/);
   assert.throws(() => profileSelection(config, { profile: 'dev', enabled: { pages: false } }), /required/);
   assert.throws(() => profileSelection(config, { profile: 'dev', enabled: { environmentVariables: true } }), /no.*mapping/);
   assert.throws(() => profileSelection(config, {}), /requires profile/);
-  assert.throws(() => profileSelection(config, { profile: 'dev', file: 'unregistered.json' }));
+  assert.throws(() => profileSelection(config, { profile: 'dev', file: 'unregistered.json' }), /pin must be an object containing only profile, enabled/);
   assert.equal(profileSelection(config).pinned, false);
 });
 
@@ -68,11 +69,11 @@ test('mirage init preserves profile paths and launches pass catalogue profile ov
 test('mapped files require correct PAC sections and reject duplicates, malformed connections and invalid Pages patches', async t => {
   const fixture = await profileFixture(t);
   const config = resolveDeploymentProfiles(fixture.deploymentProfiles, fixture.root);
-  for (const contents of [{}, { EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: {} }] },
-    { EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'a' }, { SchemaName: 'SAMPLE_URL', Value: 'b' }] },
-    { EnvironmentVariables: [], ConnectionReferences: [{ LogicalName: 'sample_Api', ConnectionId: null, ConnectorId: 'api' }] }]) {
+  for (const [contents, message] of [[{}, /requires a EnvironmentVariables array/], [{ EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: {} }] }, /requires scalar Value fields/],
+    [{ EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'a' }, { SchemaName: 'SAMPLE_URL', Value: 'b' }] }, /requires distinct valid schema\/logical names/],
+    [{ EnvironmentVariables: [], ConnectionReferences: [{ LogicalName: 'sample_Api', ConnectionId: null, ConnectorId: 'api' }] }, /requires valid ConnectionId fields/]]) {
     await fs.writeFile(config.profiles.dev.environmentVariables, JSON.stringify(contents));
-    await assert.rejects(loadDeploymentProfiles(config));
+    await assert.rejects(loadDeploymentProfiles(config), message);
   }
   await fs.writeFile(config.profiles.dev.pages, 'adx_contentsnippet: broken');
   await assert.rejects(loadDeploymentProfiles(config), /record patches/);
@@ -84,7 +85,7 @@ test('runtime pins profiles atomically, retains overrides and pins across restar
   let app = await createSimulator({ ...fixture, watch: false });
   fixture.onCleanup(() => app?.close());
   const call = async (route, body) => {
-    const response = await fetch(`${app.url}/__sim/api${route}`, body === undefined ? {} : { method: 'PUT', headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, body: JSON.stringify(body) });
+    const response = await fetch(`${app.url}/__sim/api${route}`, body === undefined ? {} : { method: 'PUT', headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   };
   const variable = () => app.state().data.environmentvariablevalue.find(row => row.schemaname === 'sample_Url')?.value;
@@ -170,7 +171,7 @@ test('no-profile pin restores source values, removes owned seeds only and preser
   const app = await createSimulator({ ...fixture, watch: false });
   fixture.onCleanup(() => app.close());
   const mutate = async (route, method, body) => fetch(app.url + '/__sim/api' + route, {
-    method, headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    method, headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   app.store.state.tables.connectionreference.push({ connectionreferenceid: 'unrelated', connectionreferencelogicalname: 'sample_Other', connectionid: 'local' });
   assert.equal((await mutate('/portal-snippets/Greeting', 'PATCH', { value: 'Manual snippet' })).status, 200);
@@ -219,4 +220,42 @@ test('shutdown drains an in-flight source reload before fixture removal and reje
   await fs.rm(fixture.root, { recursive: true, force: true, maxRetries: 5 });
   await new Promise(resolve => setTimeout(resolve, 400));
   await assert.rejects(fs.stat(fixture.root), { code: 'ENOENT' });
+});
+
+test('unused PAC connection references are reported without dropping connected entries',async t=>{
+  const fixture=await profileFixture(t),file=path.join(fixture.root,'mixed.json');
+  await fs.writeFile(file,JSON.stringify({ConnectionReferences:[{LogicalName:'unused',ConnectionId:'',ConnectorId:''},{LogicalName:'active',ConnectionId:'synthetic-connection',ConnectorId:'connector'}]}));
+  const config=resolveDeploymentProfiles({default:'dev',profiles:{dev:{connectionReferences:'mixed.json'}}},fixture.root);
+  const loaded=await loadDeploymentProfiles(config);
+  assert.equal(loaded.connectionReferences.length,1);assert.equal(loaded.connectionReferences[0].logicalName,'active');
+  assert.equal(loaded.diagnostics[0].code,'DEPLOYMENT_PROFILE_CONNECTION_UNSET');assert.equal(loaded.diagnostics[0].count,1);assert.deepEqual(loaded.diagnostics[0].logicalNames,['unused']);
+  assert.equal(loaded.diagnostics[0].message,'1 connection reference entry has no ConnectionId and was not seeded.');
+  await fs.writeFile(file,JSON.stringify({ConnectionReferences:[{LogicalName:'unused',ConnectionId:'',ConnectorId:''},{LogicalName:'second',ConnectionId:'',ConnectorId:''}]}));
+  assert.equal((await loadDeploymentProfiles(config)).diagnostics[0].message,'2 connection reference entries have no ConnectionId and were not seeded.');
+  await fs.writeFile(file,JSON.stringify({ConnectionReferences:[{LogicalName:'unused',ConnectionId:'',ConnectorId:''},{LogicalName:'active',ConnectionId:'synthetic-connection',ConnectorId:'connector'}]}));
+  const app=await createSimulator({...fixture,deploymentProfiles:config,watch:false});fixture.onCleanup(()=>app.close());
+  assert.equal(app.store.snapshot().tables.connectionreference.length,1);
+  assert.ok(app.state().diagnostics.some(d=>d.code==='DEPLOYMENT_PROFILE_CONNECTION_UNSET'));
+});
+
+test('source-relative profile paths follow the selected checkout and Solution files merge in order',async t=>{
+  const fixture=await profileFixture(t);
+  await fs.mkdir(path.join(fixture.sourceDir,'deployment-profiles'),{recursive:true});
+  await fs.writeFile(path.join(fixture.sourceDir,'deployment-profiles','local.json'),JSON.stringify({EnvironmentVariables:[{SchemaName:'sample_Url',Value:'local last'}],ConnectionReferences:[{LogicalName:'sample_Api',ConnectionId:'local-connection',ConnectorId:'connector'}]}));
+  const mirage={deploymentProfiles:{default:'dev',profiles:{dev:{environmentVariables:['profiles/dev-settings.json',{source:'deployment-profiles/local.json'}],connectionReferences:['profiles/dev-settings.json',{source:'deployment-profiles/local.json'}]}}}};
+  const config=resolveMirageConfig(mirage,{configDir:fixture.root,sourceRoot:path.dirname(fixture.sourceDir),sourceDir:fixture.sourceDir}).deploymentProfiles;
+  const loaded=await loadDeploymentProfiles(config);
+  assert.equal(loaded.environmentVariables.sample_Url,'local last');assert.equal(loaded.connectionReferences[0].connectionId,'local-connection');
+  const other=resolveMirageConfig(mirage,{configDir:fixture.root,sourceRoot:fixture.root,sourceDir:path.join(fixture.root,'other-checkout')});
+  assert.equal(other.deploymentProfiles.profiles.dev.environmentVariables[1],path.join(fixture.root,'other-checkout','deployment-profiles','local.json'));
+});
+
+test('profile parser failures report file, code and line without exposing source values, including doctor',async t=>{
+  const fixture=await profileFixture(t),file=path.join(fixture.root,'duplicate.yml');
+  await fs.writeFile(file,'adx_contentsnippet: []\nadx_contentsnippet: []\nsecret: do-not-echo-this\n');
+  const config=resolveDeploymentProfiles({default:'broken',profiles:{broken:{pages:'duplicate.yml'}}},fixture.root);
+  await assert.rejects(loadDeploymentProfiles(config),error=>error.details.file==='duplicate.yml'&&error.details.parserCode==='DUPLICATE_KEY'&&error.details.line===2&&!error.message.includes('do-not-echo-this'));
+  const status=await deploymentProfilesStatus(config);assert.equal(status.ready,false);assert.equal(status.profiles[0].files[0].exists,true);
+  const report=await mirageReadiness({configDir:fixture.root,stateDir:path.join(fixture.root,'.paqvilo'),siteName:'synthetic',sourceDir:fixture.sourceDir,mirageConfig:{solutionRoots:[],dataPacks:[],deploymentProfiles:config}}, {}, {checkPort:async()=>true});
+  assert.equal(report.deploymentProfiles.profiles[0].error.line,2);assert.ok(report.errors.some(message=>message.includes('duplicate.yml')));
 });

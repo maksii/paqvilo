@@ -1,6 +1,6 @@
 // The SDK IOrganizationService on the organization record pipeline: synchronous rule hooks run inline, an asynchronous
 // hook remainder finishes after the synchronous call and reports SDK_DEFERRED_EFFECT on failure, and without an
-// organization the service says it writes the store directly. Invented schema only.
+// organization the service says it writes the store directly.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -53,13 +53,14 @@ test("an SDK write runs synchronous rule hooks inline and reports a failed async
   assert.deepEqual(seen, ["create"], "the synchronous rule ran inside the call");
   assert.equal(row.statecode, 0, "state defaults");
   assert.equal(typeof row.versionnumber, "number", "row version");
-  assert.ok(row.createdby?.id, "audit columns: SYSTEM when the profile user is not an organization user");
+  const system = store.tableRows("systemuser").find((user) => user.fullname === "SYSTEM");
+  assert.equal(row.createdby?.id, system.systemuserid, "audit columns: SYSTEM when the profile user is not an organization user");
   assert.throws(() => sdk.create("x_item", { x_name: "refused" }), /Invented rule refused the row/);
   assert.equal(store.tableRows("x_item").filter((r) => r.x_name === "refused").length, 0, "a refusing rule rolls the call back");
   await finished;
   await new Promise((resolve) => setImmediate(resolve));
   const deferred = diagnostics.filter((note) => note.code === "SDK_DEFERRED_EFFECT");
-  assert.ok(deferred.length >= 1);
+  assert.equal(deferred.length, 1);
   assert.equal(deferred[0].entity, "x_item");
   assert.equal(deferred[0].operation, "create");
   assert.match(deferred[0].message, /invented asynchronous side effect failed/);

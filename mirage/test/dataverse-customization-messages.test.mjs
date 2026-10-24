@@ -1,5 +1,5 @@
 // Customization messages: ribbons, forms, unpublished reads and themes, through the registered operations and SOAP dispatch.
-// Invented contoso_widget table and GUIDs only; the systemform and theme mappings are the Dataverse standard names.
+// The systemform and theme mappings are the Dataverse standard names.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { inflateRawSync } from "node:zlib";
@@ -36,7 +36,7 @@ const SETTINGS = {
   ],
 };
 
-// Mappings and rows the operations read: an invented table, a form table and a theme table.
+// Mappings and rows the operations read: a custom table, a form table and a theme table.
 function fixtureState() {
   const state = emptyState();
   state.mappings.contoso_widget = {
@@ -160,8 +160,10 @@ test("RetrieveEntityRibbon refuses a filter outside the enum and an unknown tabl
 test("the ribbon update messages answer 204 with no effect", async () => {
   const t = await setup();
   const params = { ComponentId: THEME_OLD, ComponentType: 80, SolutionUniqueName: "Contoso" };
+  const before = structuredClone(t.store.state.tables);
   assert.equal((await t.call("UpdateRibbonClientMetadata", { kind: "action", params })).status, 204);
   assert.equal((await t.call("QueueUpdateRibbonClientMetadata", { kind: "action", params })).status, 204);
+  assert.deepEqual(t.store.state.tables, before);
 });
 
 test("RetrieveFilteredForms returns the forms of one table and form type", async () => {

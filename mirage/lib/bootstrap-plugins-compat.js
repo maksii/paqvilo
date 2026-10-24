@@ -120,7 +120,7 @@
       if (event(element, "show.bs.modal", { relatedTarget }).isDefaultPrevented() || state.shown) return;
       state.shown = true;
       const bs5 = element.hasAttribute("data-bs-backdrop") || element.hasAttribute("data-bs-toggle");
-      // Bootstrap 5 hides the page scrollbar and pads the body by its width (live: overflow: hidden; padding-right: 15px).
+      // Bootstrap 5 hides the page scrollbar and pads the body by its width (overflow: hidden; padding-right: 15px).
       const scrollbar = window.innerWidth - document.documentElement.clientWidth;
       if (bs5 && !document.body.classList.contains("modal-open")) {
         document.body.style.overflow = "hidden";
@@ -129,7 +129,7 @@
       document.body.classList.add("modal-open");
       if (state.options.backdrop) {
         state.backdrop = document.createElement("div");
-        // Bootstrap 5 backdrops carry "fade show" only (live parent-edit/associate-dialog).
+        // Bootstrap 5 backdrops carry "fade show" only.
         state.backdrop.className = bs5 ? "modal-backdrop fade show" : "modal-backdrop fade in show";
         document.body.append(state.backdrop);
       }

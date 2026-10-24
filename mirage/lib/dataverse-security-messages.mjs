@@ -1,10 +1,7 @@
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security messages: role privileges, team membership, privilege and share lookups, parent users, the
 // business unit hierarchy, access-team templates and the Microsoft Entra ID user lookups, through the registered operations.
-// Registered as extension operations (dataverse-operations.mjs). Invented schema and GUIDs only.
-// Contracts: Web API references for AddPrivilegesRole, RemovePrivilegeRole, ReplacePrivilegesRole, AddMembersTeam,
-// SetParentSystemUser, SetBusinessSystemUser, AddUserToRecordTeam, RemoveUserFromRecordTeam, RetrieveAadUserRoles,
-// RetrieveAadUserPrivileges and the RetrieveUserPrivilegeBy* functions; "About access teams and team templates".
+// Registered as extension operations (dataverse-operations.mjs).
 // The built-in RetrieveUserPrivileges and RetrievePrincipalAccess stay in dataverse-api.mjs and are not registered here.
 import { DataError } from "./data-error.mjs";
 import { objectTypeCode } from "./dataverse-metadata.mjs";
@@ -142,7 +139,7 @@ function assertTeamAcceptsMembers(store, target) {
   if (Number(row?.teamtype) >= 2) {
     throw invalid(`Team with Id = ${target.id} has type ${row.teamtype}. It's not allowed to add members to Microsoft Entra security group teams or office group teams.`, "0x80040208");
   }
-  // unverified: live capture (the wording of the default team refusal; the code 0x8004830B is from the error codes reference).
+  // The wording of the default team refusal is a guess; 0x8004830B is the documented code.
   if (row?.isdefault === true) throw invalid(`Team with Id = ${target.id} is the default team of its business unit; members cannot be added to or removed from it.`, "0x8004830B");
 }
 
@@ -393,7 +390,7 @@ function operations(api) {
         const memberId = c.target.id, member = systemuserOf(store, memberId);
         // The member needs Basic (User) Read on the record's table; the message is the one the platform returns.
         if (!(api.principals.privileges(member).get(privilegeName("Read", api.principals.privilegeNoun(mapping.logicalName))) > 0)) {
-          // unverified: live capture (the access-team privilege refusal; PrincipalPrivilegeDenied 0x80040231 is the likely code).
+          // The code is a guess: PrincipalPrivilegeDenied 0x80040231.
           throw invalid("You can't add the user to the access team because the user doesn't have sufficient privileges on the entity.", "0x80040231");
         }
         // The caller must hold every right the template grants, on this record.
@@ -519,7 +516,7 @@ function operations(api) {
     },
     {
       name: "SetParentSystemUser", kind: "action", binding: "entity", entity: "systemuser",
-      // unverified: KeepChildUsers true leaves the direct reports under the user; false moves them to the user's former parent.
+      // Assumed: KeepChildUsers true leaves the direct reports under the user; false moves them to the user's former parent.
       handle: async (c) => {
         need(c, "prvWriteUser", "systemuser");
         const userId = c.target.id, args = body(c);

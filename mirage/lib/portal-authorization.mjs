@@ -2,18 +2,13 @@
  * The Power Pages authorization bridge: one place every portal entry point reaches (data.mjs rules(), the row mask of
  * queryContext() and get(), the portal Web API column policy and write context, server logic's InvokeCustomApi principal).
  *
- * Learn, powerpagesite table reference: enhancedauthorization 0 Disabled, 1 Migration in progress, 2 Migration Failed,
- * 3 Enabled. Learn, security/unify-pages-security-with-dataverse:
- * - standard model (0): "Power Pages evaluates table and record permissions after data retrieval from Dataverse by using the
- *   Power Pages application user". The store evaluates table permissions and the Web API column permissions as before.
- * - enhanced model: "each contact is mapped to a corresponding system user in Dataverse. Multiple system user records can be
- *   created for a single contact if the same user has access to more than one site"; "Each web role is associated with a
- *   corresponding Dataverse security role"; "Permissions defined in web roles (such as table and column access) are reflected
- *   in these security roles"; "Dataverse operations execute on behalf of the site user by using impersonation rather than the
- *   application user"; "Column level permissions that you configure in the Power Pages for Web API are bypassed, and Dataverse
- *   column security profiles are used instead". Learn, security/column-security-profile: "Column security applies to all
- *   components and APIs used in Power Pages, including but not limited to Web API, forms, and list components" and
- *   "Anonymous users represents all users accessing the site without authentication".
+ * enhancedauthorization (powerpagesite table): 0 Disabled, 1 Migration in progress, 2 Migration Failed, 3 Enabled.
+ * - standard model (0): table and record permissions are evaluated after retrieval from Dataverse, as the Power Pages
+ *   application user. The store evaluates table permissions and the Web API column permissions.
+ * - enhanced model: each contact maps to a system user per site and each web role to a security role holding the web
+ *   role's permissions; Dataverse operations impersonate the site user, and Dataverse column security profiles replace the
+ *   Web API column permissions (https://learn.microsoft.com/power-pages/security/unify-pages-security-with-dataverse).
+ *   Column security applies to every Power Pages component and API, anonymous visitors included.
  *
  * Enhanced evaluation here: prepare() derives one security role per web role from the table permissions (privilege per
  * operation and table at the depth below) and one system user per contact and site (plus one anonymous user per site) holding
@@ -32,8 +27,8 @@ import { ENHANCED_AUTHORIZATION_STATES } from "./platform-changes.mjs";
 const key = (value) => String(value?.id ?? value ?? "").replace(/[{}]/g, "").toLowerCase();
 const field = (record, name) => record?.[`adx_${name}`] ?? record?.[`mspp_${name}`] ?? record?.[name];
 const RIGHT = { read: "Read", create: "Create", update: "Write", delete: "Delete", append: "Append", appendTo: "AppendTo" };
-// unverified: Learn documents that table permissions are "reflected" in the mapped security role, not the depth each scope
-// gets. Global -> Global (organization), Account -> Local (business unit), Contact and Self -> Basic (user), Parent -> the
+// The depth each scope gets is a guess (Learn says only that table permissions are "reflected" in the mapped security role):
+// Global -> Global (organization), Account -> Local (business unit), Contact and Self -> Basic (user), Parent -> the
 // depth of the permission it hangs from. The records a grant reaches stay those its scope selects in data.mjs allowed(): the
 // closest documented statement is that Dataverse "returns only the records the user is allowed to access".
 const SCOPE_DEPTH = { global: DEPTH.Global, account: DEPTH.Local, contact: DEPTH.Basic, self: DEPTH.Basic };
@@ -41,7 +36,7 @@ const COLUMN_PERMISSION_KINDS = new Set(["columnpermissionprofile", "columnpermi
 
 /**
  * The model a site record selects: { state, label, model: 'standard' | 'enhanced' }.
- * unverified: Learn lists the labels of states 1 (Migration in progress) and 2 (Migration Failed) without saying which model
+ * Learn lists the labels of states 1 (Migration in progress) and 2 (Migration Failed) without saying which model
  * serves the site meanwhile; every non-zero documented state runs the enhanced model here, as the ENHANCED_AUTHORIZATION finding
  * treats them. An undocumented value runs the standard model.
  */
@@ -65,7 +60,7 @@ export function createPortalAuthorization({ store, website, portal, principals, 
   const webRoles = () => portalWebRoles(portal());
   const securityRoleId = (webRoleId) => uuidV5(organizationId, `portal-web-role:${siteId()}:${key(webRoleId)}`);
   const contactOf = (identity) => key(identity?.contactId ?? identity?.id) || null;
-  // unverified: one site user per contact and site (Learn: "Multiple system user records can be created for a single contact")
+  // One site user per contact and site (Learn: "Multiple system user records can be created for a single contact")
   // and one per site for anonymous visitors (Learn column-security-profile: "Anonymous users represents all users accessing the
   // site without authentication"); the ids are local.
   const userIdOf = (identity) => uuidV5(organizationId, `portal-site-user:${siteId()}:${contactOf(identity) ?? "anonymous"}`);
@@ -168,7 +163,7 @@ export function createPortalAuthorization({ store, website, portal, principals, 
       else roles.push({ roleid: roleId, name: role.name, businessunitid: bu, organizationid: org, isinherited: 1 });
       const signature = signatureOf(role.grants), mark = markOf(marks[roleId]);
       if (mark?.derived === signature) continue;
-      // unverified: Learn says the permissions defined in web roles "are reflected in these security roles" and that these
+      // Learn says the permissions defined in web roles "are reflected in these security roles" and that these
       // constructs are mapped "so that access can be enforced directly at Dataverse"; how the platform treats a manual change
       // to a mapped role is not documented. The role is platform-managed here: a table-permission change rewrites it, and a
       // manual change the rewrite overwrites is reported once.
@@ -188,7 +183,7 @@ export function createPortalAuthorization({ store, website, portal, principals, 
     }
     const users = (tables.systemuser ??= []);
     const name = String(identity.fullname || identity.name || (contactOf(identity) ? contactOf(identity) : "Anonymous users"));
-    // unverified: Learn says these users "are managed internally, don't provide direct access to Dataverse"; systemmanagedusertype
+    // Learn says these users "are managed internally, don't provide direct access to Dataverse"; systemmanagedusertype
     // 1 (C2 User, systemuser table reference) and the non-interactive access mode are the closest documented values.
     const user = users.find((row) => key(row.systemuserid) === userId);
     if (user) user.fullname = name;
@@ -272,7 +267,7 @@ export function createPortalAuthorization({ store, website, portal, principals, 
      * fetchxml/entities and the portal Web API (Learn power-pages/security/column-security-profile: column security "applies to
      * all components and APIs used in Power Pages"). A portal read never sends UnMaskedData, and Learn
      * create-manage-masking-rules: "System and application users with Read and Read unmasked permissions get masked values by
-     * default", so masking rules always apply. unverified: a standard-model site's own masking on Liquid fetchxml (not captured). `fetch` ({ aliases, columns } of a FetchXML result) masks link-entity columns under their
+     * default", so masking rules always apply. A standard-model site's own masking on Liquid fetchxml is not known. `fetch` ({ aliases, columns } of a FetchXML result) masks link-entity columns under their
      * alias prefix and attribute aliases by key; related rows nested under a relationship name ($expand) are masked by their
      * own table.
      */
@@ -308,7 +303,7 @@ export function createPortalAuthorization({ store, website, portal, principals, 
      * The operand rule of a portal read, as the reader maskRow uses: a $filter, $orderby, $expand option, $apply step, FetchXML
      * condition, order, aggregate or distinct over a column that principal reads masked is refused with the Dataverse error
      * (dataverse-records.mjs secureInternal, 400 0x80041155 CannotFilterOnMaskedAttribute; Learn create-manage-masking-rules
-     * and web-service-error-codes). unverified: the portal-side status and body were not captured live.
+     * and web-service-error-codes). The portal-side status and body are a guess.
      */
     assertOperands(identity, logical, { portalRequest = false, fetchXml = null, params = null } = {}) {
       if (!(enhanced(identity) || portalRequest) || !fieldSecurity()?.maskedFor) return;

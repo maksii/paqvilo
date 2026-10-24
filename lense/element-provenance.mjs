@@ -70,7 +70,7 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
     for(let ancestor=node.parentNode;ancestor&&ancestors.length<6;ancestor=ancestor.parentNode){const classes=(ancestor.attrs?.find(attr=>attr.name==='class')?.value??'').replace(/\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g,'{dynamic}').split(/\s+/).filter(staticValue);if(classes.length)ancestors.push({tag:ancestor.tagName,classes});}
     const location={line:/\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,contexts,ancestors,tag:node.tagName,classes:staticClasses,attributes};
     const existing=selectors.get(selector);
-    if(existing){existing.occurrences++;existing.locations.push(location);existing.lines=existing.locations.map(item=>item.line).filter(Boolean);continue;}
+    if(existing){existing.occurrences++;existing.locations.push(location);if(location.line)existing.lines.push(location.line);continue;}
     selectors.set(selector,{
       selector,matchKind,domId:matchKind==='id'?id:undefined,tag:node.tagName,attributes:Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]])),classes:staticClasses,occurrences:1,locations:[location],lines:location.line?[location.line]:[],
       // Enhanced-model HTML is nested in XML/JSON; its line is not a file line.

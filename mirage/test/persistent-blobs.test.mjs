@@ -55,7 +55,7 @@ async function json(response, status) {
 
 async function client(sim, secret) {
   if (!secret) secret = (await json(await fetch(sim.url + (sim.adminUrl?.includes('__sim') ? '/__sim' : '/_sim') + '/api/dataverse/applications', { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf },
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId: CLIENT, displayName: 'Invented client', roles: ['System Administrator'] }) }), 201)).secret;
   const token = await json(await fetch(sim.dataverse.authority + '/oauth2/v2.0/token', { method: 'POST',
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT, client_secret: secret, scope: sim.dataverse.origin + '/.default' }) }), 200);
@@ -80,19 +80,34 @@ async function roundTrip(t, options, body = LARGE) {
 }
 
 const dataRow = async root => JSON.parse(await fs.readFile(path.join(root, 'data.json'), 'utf8')).notes[0];
-const diagnosticsOf = async sim => json(await fetch(sim.url + '/_sim/api/diagnostics', { headers: { 'x-sim-csrf': sim.state().csrf } }), 200);
+const diagnosticsOf = async sim => json(await fetch(sim.url + '/_sim/api/diagnostics', { headers: { 'x-sim-csrf': sim.csrf } }), 200);
 
-test('simulation and deep levels keep a large note body in <stateDir>/blobs across a restart', async t => {
-  for (const level of ['simulation', 'deep']) {
-    const { root, read, report } = await roundTrip(t, { level });
-    assert.equal(read.documentbody, LARGE, `${level}: the note body survives the restart`);
-    assert.ok((await fs.readdir(path.join(root, 'state', 'blobs'))).length, `${level}: bytes live in the state blob directory`);
-    // Above the inline limit the pack DATA row references the bytes by key; it never carries them.
-    const row = await dataRow(root);
-    assert.equal(row.documentbody, null);
-    assert.ok(row.__blobkey);
-    assert.ok(report.targets.some(target => target.kind === 'blobs' && target.file === path.join(root, 'state', 'blobs')), `${level}: the report lists the blob directory`);
-  }
+// Every non-dry-run level shares this path (persistentLevel below), so one level proves the blob store.
+test('a large note body lives in <stateDir>/blobs across a restart; a missing blob reads as a null body', async t => {
+  const { root, read, report, start, secret } = await roundTrip(t, { level: 'simulation' });
+  assert.equal(read.documentbody, LARGE);
+  assert.ok((await fs.readdir(path.join(root, 'state', 'blobs'))).length, 'bytes live in the state blob directory');
+  // Above the inline limit the pack DATA row references the bytes by key; it never carries them.
+  const row = await dataRow(root);
+  assert.equal(row.documentbody, null);
+  assert.equal(row.__blobkey, `annotations/${NOTE}/1`);
+  assert.ok(report.targets.some(target => target.kind === 'blobs' && target.file === path.join(root, 'state', 'blobs')), 'the report lists the blob directory');
+
+  // Missing blob: reported once at start, reads as null, $value answers 404 STORAGE_OBJECT_MISSING.
+  await fs.rm(path.join(root, 'state', 'blobs'), { recursive: true, force: true });
+  const sim = await start();
+  t.after(() => sim.close());
+  const { api } = await client(sim, secret);
+  const summary = JSON.stringify(await diagnosticsOf(sim));
+  assert.match(summary, /STORAGE_OBJECTS_MISSING/);
+  assert.ok(summary.includes(row.__blobkey), 'the summary names the first missing keys');
+  const list = await json(await api('GET', '/annotations?$select=subject,documentbody'), 200);
+  assert.deepEqual(list.value.map(({ subject, documentbody }) => ({ subject, documentbody })), [{ subject: 'Invented note', documentbody: null }]);
+  assert.equal((await json(await api('GET', `/annotations(${NOTE})?$select=documentbody`), 200)).documentbody, null);
+  const raw = await api('GET', `/annotations(${NOTE})/documentbody/$value`);
+  assert.equal(raw.status, 404);
+  assert.match(await raw.text(), /storage_object_missing/i); // the Web API envelope writes the code in lower case
+  assert.match(JSON.stringify(await diagnosticsOf(sim)), /STORAGE_OBJECT_MISSING".*annotation|annotation.*STORAGE_OBJECT_MISSING"/s);
 });
 
 test('a small note body stays inline in the pack DATA file, so the committed file reads without the blob directory', async t => {
@@ -108,33 +123,8 @@ test('a small note body stays inline in the pack DATA file, so the committed fil
   assert.equal((await json(await api('GET', `/annotations(${NOTE})?$select=documentbody`), 200)).documentbody, BODY);
 });
 
-test('a missing blob is reported once at start and reads as a null body; $value answers 404 STORAGE_OBJECT_MISSING', async t => {
-  const { root, start, secret } = await roundTrip(t, { level: 'simulation' });
-  const key = (await dataRow(root)).__blobkey;
-  await fs.rm(path.join(root, 'state', 'blobs'), { recursive: true, force: true });
-  const sim = await start();
-  t.after(() => sim.close());
-  const { api } = await client(sim, secret);
-  const started = await diagnosticsOf(sim);
-  const summary = JSON.stringify(started);
-  assert.match(summary, /STORAGE_OBJECTS_MISSING/);
-  assert.ok(summary.includes(key), 'the summary names the first missing keys');
-  const list = await json(await api('GET', '/annotations?$select=subject,documentbody'), 200);
-  assert.equal(list.value.length, 1);
-  assert.equal(list.value[0].subject, 'Invented note');
-  assert.equal(list.value[0].documentbody, null);
-  const single = await json(await api('GET', `/annotations(${NOTE})?$select=documentbody`), 200);
-  assert.equal(single.documentbody, null);
-  const raw = await api('GET', `/annotations(${NOTE})/documentbody/$value`);
-  assert.equal(raw.status, 404);
-  const rawText = await raw.text();
-  assert.match(rawText, /storage_object_missing/i); // the Web API envelope writes the code in lower case
-  assert.match(JSON.stringify(await diagnosticsOf(sim)), /STORAGE_OBJECT_MISSING".*annotation|annotation.*STORAGE_OBJECT_MISSING"/s);
-});
-
 test('a file column ($value) keeps its bytes across a restart at level simulation', async t => {
-  // The x_item mapping with a file column in `fields` (the shape dataverse-files reads); Solution file columns arrive as
-  // fieldMetadata, which dataverse-files does not read yet (reported to the lead).
+  // The x_item mapping with a file column in `fields`, the project mapping shape dataverse-files reads.
   const fields = { x_itemid: { dataverseType: 'primarykey' }, x_name: { dataverseType: 'nvarchar' }, x_doc: { dataverseType: 'file', MaxSizeInKB: 32768 } };
   const { start } = await fixture(t, { level: 'simulation', extra: { initial: { mappings: { x_item: { logicalName: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid', nameColumn: 'x_name', relationships: {}, fields } } } } });
   const ITEM = '77777777-7777-4777-8777-7777777777b2';
@@ -165,7 +155,7 @@ test('the Power Pages host at level simulation keeps a note body across a restar
 });
 
 test('dry-run keeps storage in memory and writes no blobs directory', async t => {
-  const { root, stateFile, start } = await fixture(t, { level: 'dry-run' });
+  const { stateFile, start } = await fixture(t, { level: 'dry-run' });
   const sim = await start();
   t.after(() => sim.close());
   const { api } = await client(sim);
@@ -174,7 +164,6 @@ test('dry-run keeps storage in memory and writes no blobs directory', async t =>
   await sim.close();
   await assert.rejects(fs.stat(path.join(path.dirname(stateFile), 'blobs')), { code: 'ENOENT' });
   assert.equal(stateDirectoryOf({ stateFile, simulation: { level: 'dry-run' } }), null);
-  assert.ok(await fs.stat(root));
 });
 
 test('persistentLevel: only dry-run is memory-only', () => {

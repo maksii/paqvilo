@@ -1,12 +1,13 @@
+// Solution component messages over the Web API: AddSolutionComponent, RemoveSolutionComponent and the dependency functions
+// (RetrieveDependentComponents, RetrieveRequiredComponents, RetrieveDependenciesForDelete, RetrieveDependenciesForUninstall,
+// RetrieveMissingDependencies). Registered by dataverse-solutions.mjs install.
 // Also here: patches (CloneAsPatch, CloneAsSolution), upgrades (StageSolution, StageAndUpgrade[Async], DeleteAndPromote[Async]),
 // UninstallSolutionAsync, async component adds, async export and DownloadSolutionExportData, RetrieveMissingComponents and the
 // preferred solution. Registered by lifecycleOperations; they take the archive reader, importer and exporter as tools.
 // Also here: the managed layers (RemoveActiveCustomization, RemoveActiveCustomizations, BulkRemoveActiveCustomizationsAsync) and
 // RetrieveMissingDependenciesWithMetadata, registered by layerOperations and installSolutionMessages.
-// Solution component messages over the Web API: AddSolutionComponent, RemoveSolutionComponent and the dependency functions
-// (RetrieveDependentComponents, RetrieveRequiredComponents, RetrieveDependenciesForDelete, RetrieveDependenciesForUninstall,
-// RetrieveMissingDependencies). Learn: addsolutioncomponent, removesolutioncomponent, retrievedependentcomponents, dependency
-// table (dependencytype 1 = Solution Internal). Registered by dataverse-solutions.mjs install.
+// The privileges these messages require, their refusal texts and codes, and the asyncoperation operationtype of their jobs are
+// guesses unless a comment says otherwise: the platform documents few of them.
 //
 // Dependencies are derived from the store, not stored: a column depends on its table, a lookup on its target table and a
 // picklist column on its global option set; a relationship depends on both tables and on its lookup column.
@@ -31,8 +32,8 @@ const lower = (value) => String(value ?? "").toLowerCase();
 const DEPENDENCY_TYPE_INTERNAL = 1; // dependency table: "Solution Internal"
 const DEP_NAMESPACE = "8a4e2d10-5c3b-4f7a-b9e1-0d6c2a7f4e95";
 const SOLUTION_TABLES = new Set(["solution", "publisher", "importjob", "solutioncomponent"]);
-const notFound = (message, code) => new DataError(message, 404, code); // unverified: message texts and codes (no Learn text)
-const invalid = (message) => new DataError(message, 400, "InvalidRequest"); // unverified
+const notFound = (message, code) => new DataError(message, 404, code);
+const invalid = (message) => new DataError(message, 400, "InvalidRequest");
 
 // Every component the store holds, with its key, componenttype code and object id (a metadata component's MetadataId in the
 // store's organization, componentObjectId).
@@ -87,7 +88,7 @@ export function dependenciesOf(state, components = componentsOf(state)) {
   return edges;
 }
 
-// A dependency row as the dependency table shows it (Learn: dependency columns).
+// A dependency row as the dependency table shows it.
 function dependencyRow(edge) {
   const { dependent, required } = edge;
   return {
@@ -107,18 +108,18 @@ const collection = (ctx, rows) => ({
 
 const componentOf = (components, id, type) => {
   const found = components.find((c) => c.id === lower(id) && c.type === Number(type));
-  if (!found) throw notFound(`The solution component ${id} of type ${type} does not exist.`, "NotFound"); // unverified
+  if (!found) throw notFound(`The solution component ${id} of type ${type} does not exist.`, "NotFound");
   return found;
 };
 const requireText = (value, name) => {
-  if (value === undefined || value === null || value === "") throw invalid(`${name} is required.`); // unverified
+  if (value === undefined || value === null || value === "") throw invalid(`${name} is required.`);
   return String(value);
 };
 // The component ids, types and names a solution contains, from its solutioncomponent rows.
 const membersOf = (store, solutionid) => store.state.tables.solutioncomponent?.filter((r) => lower(r.solutionid) === lower(solutionid)) ?? [];
 function solutionOrThrow(store, uniquename) {
   const row = solutionRowOf(store, uniquename);
-  if (!row) throw notFound(`Solution with UniqueName '${uniquename}' does not exist.`, "NotFound"); // unverified
+  if (!row) throw notFound(`Solution with UniqueName '${uniquename}' does not exist.`, "NotFound");
   return row;
 }
 // Components a solution holds, as component records.
@@ -142,22 +143,21 @@ function requiredClosure(edges, start) {
   return [...seen.values()];
 }
 
-// ---------------------------------------------------------------------------
-// Patches, upgrades, staging, async export and the preferred solution. Each handler names the Learn page it follows.
-// A patch is a solution row whose parentsolutionid is its parent's id and whose uniquename is the parent's (Learn: create
-// patches). A holding solution (the upgrade staged by StageAndUpgrade) is named <uniquename>_Upgrade (Learn: upgrade).
+// ---- Patches, upgrades, staging, async export and the preferred solution
+// A patch is a solution row whose parentsolutionid is its parent's id and whose uniquename is the parent's. A holding
+// solution (the upgrade staged by StageAndUpgrade) is named <uniquename>_Upgrade.
 // Membership is the solutioncomponent rows under each solution's own id, so a patch holds its own components.
 // The upgrade and uninstall paths remove the definitions a removed managed solution introduced (planRemoval, applyRemoval).
 
 export const HOLDING_SUFFIX = "_Upgrade";
-// asyncoperation.operationtype of the solution jobs (Learn: asyncoperation); ImportSolutionAsync (203) is in dataverse-solutions.mjs.
+// asyncoperation.operationtype of the solution jobs; ImportSolutionAsync (203) is in dataverse-solutions.mjs.
 export const OPERATION_TYPE = { export: 202, deleteAndPromote: 207, uninstall: 208, stageAndUpgrade: 211 };
 const VERSION_DEFAULT = "1.0.0.0";
 const tableOf = (store, name) => (store.state.tables[name] ??= []);
 const rowsOf = (store, name) => store.state.tables[name] ?? [];
 const stampOf = (api) => new Date(api.clock?.() ?? Date.now()).toISOString();
 const removeWhere = (list, predicate) => { for (let i = list.length - 1; i >= 0; i--) if (predicate(list[i])) list.splice(i, 1); };
-const requireVersion = (value) => { // unverified: VersionNumber validation message (Learn gives the rule, not the error)
+const requireVersion = (value) => {
   const text = requireText(value, "VersionNumber");
   if (!/^\d+(\.\d+){0,3}$/.test(text)) throw invalid(`VersionNumber ${text} is not a solution version.`);
   return text;
@@ -167,14 +167,14 @@ function versionParts(text) {
   while (parts.length < 4) parts.push(0);
   return parts.slice(0, 4);
 }
-// Learn: major.minor.build.revision, compared numerically part by part.
+// major.minor.build.revision, compared numerically part by part.
 function compareVersions(a, b) {
   const x = versionParts(a), y = versionParts(b);
   for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] - y[i];
   return 0;
 }
 
-// The base solution (not a patch) with a unique name. unverified: NotFound message and code, as the other lookups here.
+// The base solution (not a patch) with a unique name.
 function baseOrThrow(store, uniquename) {
   const row = rowsOf(store, "solution").find((s) => lower(s.uniquename) === lower(uniquename) && s.parentsolutionid == null);
   if (!row) throw notFound(`Solution with UniqueName '${uniquename}' does not exist.`, "NotFound");
@@ -210,26 +210,26 @@ export function addMemberRows(store, solutionid, components) {
 const componentById = (components, id, logicalName) => {
   const wanted = lower(id);
   const found = components.find((c) => lower(c.id) === wanted && (!logicalName || lower(c.logical) === lower(logicalName) || lower(c.name ?? "") === lower(logicalName)));
-  if (!found) throw notFound(`The solution component ${id} does not exist.`, "NotFound"); // unverified
+  if (!found) throw notFound(`The solution component ${id} does not exist.`, "NotFound");
   return found;
 };
 
-// The solution a component message writes to. SolutionId addresses a patch directly (unverified: native patch addressing is not
-// documented on the Learn pages read); otherwise SolutionUniqueName names the base solution.
+// The solution a component message writes to. SolutionId addresses a patch directly (assumed: native patch addressing is not
+// documented); otherwise SolutionUniqueName names the base solution.
 function targetOf(store, body) {
   if (body.SolutionId) {
     const row = rowsOf(store, "solution").find((s) => lower(s.solutionid) === lower(body.SolutionId));
-    if (!row) throw notFound(`Solution with Id ${body.SolutionId} does not exist.`, "NotFound"); // unverified
+    if (!row) throw notFound(`Solution with Id ${body.SolutionId} does not exist.`, "NotFound");
     return row;
   }
   return baseOrThrow(store, requireText(body.SolutionUniqueName, "SolutionUniqueName"));
 }
 
 // Preferred solution per user. usersettings has no preferred solution column in the standard tables, so the store keeps
-// state.dataverse.preferredSolutions[systemuserid] = solutionid. unverified: caller requirement when there is none.
+// state.dataverse.preferredSolutions[systemuserid] = solutionid.
 function callerKey(ctx) {
   const id = ctx.caller?.systemuserid;
-  if (!id) throw new DataError("A preferred solution needs an authenticated caller.", 403, "PrivilegeDenied"); // unverified
+  if (!id) throw new DataError("A preferred solution needs an authenticated caller.", 403, "PrivilegeDenied");
   return lower(id);
 }
 const solutionEntity = (row) => ({
@@ -237,8 +237,8 @@ const solutionEntity = (row) => ({
   version: row.version ?? null, ismanaged: row.ismanaged === true,
 });
 
-// Components a staged zip brings that the store lacks: a relationship whose table is in neither the store nor the zip (Learn:
-// MissingComponent). Only relationships are checked; lookup targets on columns are not read.
+// Components a staged zip brings that the store lacks: a relationship whose table is in neither the store nor the zip
+// (MissingComponent). Only relationships are checked; lookup targets on columns are not read.
 function missingOf(store, archive) {
   const known = (logical) => store.state.mappings?.[logical] !== undefined || archive.entities.some((e) => lower(e.logicalName) === lower(logical));
   const detail = (type, logical, schemaName, solution) => ({
@@ -272,7 +272,7 @@ function stagingResults(store, archive) {
       RequiredComponentSchemaName: m.RequiredComponent.SchemaName, RequiredComponentType: String(m.RequiredComponent.Type),
       RequiredSolutionName: null, MissingPackages: [],
     })),
-    // unverified: SolutionComponentDetails member values (the names and type names are the zip's own; Attributes left empty)
+    // SolutionComponentDetails member values are guesses (the names and type names are the zip's own; Attributes left empty)
     SolutionComponentsDetails: [
       ...archive.entities.map((e) => ({ ComponentName: e.logicalName, ComponentTypeName: "entity", Attributes: [] })),
       ...archive.relationships.map((r) => ({ ComponentName: r.schemaName, ComponentTypeName: "relationship", Attributes: [] })),
@@ -288,13 +288,13 @@ function stagingResults(store, archive) {
       SolutionUniqueName: archive.solution.uniqueName, SolutionVersion: archive.solution.version,
     },
     SolutionValidationResults: [],
-    StageSolutionStatus: 1, // unverified: Passed is returned whatever the missing dependencies (their status is not read on Learn)
+    StageSolutionStatus: 1, // Passed is returned whatever the missing dependencies (their native status is not known)
   };
 }
 
-/// Patch and holding promotion. promotable checks both solutions exist; promote removes the base solution and its patches with
+// Patch and holding promotion. promotable checks both solutions exist; promote removes the base solution and its patches with
 // their membership and the definitions they introduced (planRemoval, applyRemoval), then renames the holding solution to the
-// base's unique name (Learn: DeleteAndPromote replaces A with B).
+// base's unique name.
 function promotable(store, uniquename) {
   const base = baseOrThrow(store, uniquename);
   const holding = holdingOf(store, uniquename);
@@ -306,7 +306,7 @@ const heldBy = (store, solutionid) => new Set(membersOf(store, solutionid).map((
 // Metadata id of a table or column: the id the metadata reader gives it (dataverse-metadata.mjs metadataIdOf). Managed layers are keyed by it.
 export const metadataIdOf = managedLayerId;
 
-// The plan for removing a set of solutions (Learn: uninstall deletes a managed solution's components; DeleteAndPromote deletes the
+// The plan for removing a set of solutions (uninstall deletes a managed solution's components; DeleteAndPromote deletes the
 // base solution and its patches). A component is removed when a removed solution holds it, no solution outside the removed ones
 // and the Default solution holds it (keptIds counts as holding), and the removed solutions introduced it (componentOrigin). A
 // table's columns that no other solution holds go with it. A component another component depends on, and that stays, blocks the
@@ -353,8 +353,8 @@ function applyRemoval(api, plan) {
   for (const id of plan.removedIds) delete origin[id];
   popLayers(api, plan.removing, removed);
 }
-// Removes the removed solutions' layers from every managed stack (Learn solution-layers-alm: "If you uninstall a managed
-// solution, the managed solution below it takes effect"; removing-dependencies: only that layer is removed). A removed
+// Removes the removed solutions' layers from every managed stack (uninstalling a managed solution lets the
+// managed solution below it take effect; only that layer is removed). A removed
 // component's stack goes with it. When the top changed and no unmanaged customization sits on top, the new top definition is
 // restored into live metadata; an emptied stack leaves the remaining definition unmanaged. A Solution security role or field
 // security profile (SECURITY_LAYERS kinds) gets the grants of the layer below unless it was changed after its last import
@@ -404,19 +404,19 @@ function promote(api, uniquename) {
   return holding.solutionid;
 }
 
-// Uninstall (Learn: UninstallSolutionAsync). Only a managed solution is uninstalled; its base and patches leave with the
+// Uninstall (UninstallSolutionAsync). Only a managed solution is uninstalled; its base and patches leave with the
 // definitions they introduced (planRemoval). Plan first, so a blocked uninstall writes nothing.
 function planUninstall(store, uniquename) {
   const base = baseOrThrow(store, uniquename);
-  if (base.ismanaged !== true) throw invalid(`Solution ${uniquename} is not managed; only a managed solution is uninstalled.`); // unverified
+  if (base.ismanaged !== true) throw invalid(`Solution ${uniquename} is not managed; only a managed solution is uninstalled.`);
   return planRemoval(store, new Set([base, ...patchesOf(store, base.solutionid)].map((s) => lower(s.solutionid))));
 }
 
-// Staged upgrade (Learn: StageAndUpgrade): the zip imports as the holding solution, and the base solution stays until
+// Staged upgrade (StageAndUpgrade): the zip imports as the holding solution, and the base solution stays until
 // DeleteAndPromote applies the upgrade. The holding solution carries the zip's own version.
 export const holdingArchive = (archive) => ({ ...archive, solution: { ...archive.solution, uniqueName: archive.solution.uniqueName + HOLDING_SUFFIX } });
 // The checks a holding (staged upgrade) import must pass before it writes: the base solution exists, no upgrade is pending and the
-// zip is a higher version than the base (Learn: StageAndUpgrade, HoldingSolution). Errors are the Learn codes (unverified: status).
+// zip is a higher version than the base. Errors use the documented codes; their status is a guess.
 export function assertStageable(store, archive) {
   const name = archive.solution.uniqueName;
   const base = rowsOf(store, "solution").find((s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null);
@@ -434,21 +434,21 @@ function lifecycleOperations(api, tools) {
   const all = () => componentsOf(store.state);
   const ops = [];
 
-  // Patches (Learn: CloneAsPatch) and roll-up (Learn: CloneAsSolution).
+  // Patches (CloneAsPatch) and roll-up (CloneAsSolution).
   ops.push({
     name: "CloneAsPatch", kind: "action", binding: "unbound", signature: {"params":[["ParentSolutionUniqueName","Edm.String"],["DisplayName","Edm.String"],["VersionNumber","Edm.String"]],"response":[["SolutionId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified: privilege not read on Learn
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const body = ctx.body ?? {};
       const parent = baseOrThrow(store, requireText(body.ParentSolutionUniqueName, "ParentSolutionUniqueName"));
       const displayName = requireText(body.DisplayName, "DisplayName");
       const version = requireVersion(body.VersionNumber);
-      if (parent.ismanaged === true) throw invalid(`Solution ${parent.uniquename} is managed; a patch is created from an unmanaged solution.`); // unverified
+      if (parent.ismanaged === true) throw invalid(`Solution ${parent.uniquename} is managed; a patch is created from an unmanaged solution.`);
       const [major, minor] = versionParts(version), [parentMajor, parentMinor] = versionParts(parent.version);
-      if (major !== parentMajor || minor !== parentMinor) throw invalid(`The patch version ${version} must have the same major.minor number as ${parent.version}.`); // unverified
-      // A patch is higher than the parent and than every patch already made (Learn: subsequent patches are numerically higher).
+      if (major !== parentMajor || minor !== parentMinor) throw invalid(`The patch version ${version} must have the same major.minor number as ${parent.version}.`);
+      // A patch is higher than the parent and than every patch already made.
       const floor = patchesOf(store, parent.solutionid).reduce((max, p) => (compareVersions(p.version, max) > 0 ? p.version : max), parent.version);
-      if (compareVersions(version, floor) <= 0) throw invalid(`The patch version ${version} must be higher than ${floor}.`); // unverified
+      if (compareVersions(version, floor) <= 0) throw invalid(`The patch version ${version} must be higher than ${floor}.`);
       let id = null;
       await write(() => {
         const row = {
@@ -465,15 +465,15 @@ function lifecycleOperations(api, tools) {
   ops.push({
     name: "CloneAsSolution", kind: "action", binding: "unbound", signature: {"params":[["ParentSolutionUniqueName","Edm.String"],["DisplayName","Edm.String"],["VersionNumber","Edm.String"]],"response":[["SolutionId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const body = ctx.body ?? {};
       const parent = baseOrThrow(store, requireText(body.ParentSolutionUniqueName, "ParentSolutionUniqueName"));
       const displayName = requireText(body.DisplayName, "DisplayName");
       const version = requireVersion(body.VersionNumber);
-      if (parent.ismanaged === true) throw invalid(`Solution ${parent.uniquename} is managed; only an unmanaged solution is cloned.`); // unverified
+      if (parent.ismanaged === true) throw invalid(`Solution ${parent.uniquename} is managed; only an unmanaged solution is cloned.`);
       const [a, b] = versionParts(version), [c, d] = versionParts(parent.version);
-      if (!(a > c || (a === c && b > d))) throw invalid(`The solution version ${version} must have a higher major.minor number than ${parent.version}.`); // unverified
-      // The patches roll up into the base solution, which becomes the new version (Learn: "it becomes a new version").
+      if (!(a > c || (a === c && b > d))) throw invalid(`The solution version ${version} must have a higher major.minor number than ${parent.version}.`);
+      // The patches roll up into the base solution, which becomes the new version.
       await write(() => {
         const patchIds = new Set(patchesOf(store, parent.solutionid).map((p) => lower(p.solutionid)));
         const members = tableOf(store, "solutioncomponent");
@@ -497,11 +497,11 @@ function lifecycleOperations(api, tools) {
     },
   });
 
-  // Upgrade (Learn: StageAndUpgrade, StageAndUpgradeAsync, DeleteAndPromote, DeleteAndPromoteAsync).
+  // Upgrade (StageAndUpgrade, StageAndUpgradeAsync, DeleteAndPromote, DeleteAndPromoteAsync).
   ops.push({
     name: "StageAndUpgrade", kind: "action", binding: "unbound", signature: {"params":[["OverwriteUnmanagedCustomizations","Edm.Boolean"],["PublishWorkflows","Edm.Boolean"],["CustomizationFile","Edm.Binary"],["ImportJobId","Edm.Guid"]],"response":[["SolutionId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const body = ctx.body ?? {};
       const archive = tools.readArchive(body.CustomizationFile);
       assertStageable(store, archive);
@@ -513,7 +513,7 @@ function lifecycleOperations(api, tools) {
   ops.push({
     name: "StageAndUpgradeAsync", kind: "action", binding: "unbound", signature: {"params":[["OverwriteUnmanagedCustomizations","Edm.Boolean"],["PublishWorkflows","Edm.Boolean"],["CustomizationFile","Edm.Binary"],["ImportJobId","Edm.Guid"]],"response":[["ImportJobKey","Edm.String"],["AsyncOperationId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const body = ctx.body ?? {};
       const archive = tools.readArchive(body.CustomizationFile);
       assertStageable(store, archive);
@@ -527,8 +527,8 @@ function lifecycleOperations(api, tools) {
   ops.push({
     name: "DeleteAndPromote", kind: "action", binding: "unbound", signature: {"params":[["UniqueName","Edm.String"]],"response":[["SolutionId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified: DeleteAndPromote privilege not read on Learn
-      requireMetadataPrivilege(api, ctx, "prvDeleteSolution", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
+      requireMetadataPrivilege(api, ctx, "prvDeleteSolution", "solution");
       const name = requireText(ctx.body?.UniqueName, "UniqueName");
       promotable(store, name);
       let id = null;
@@ -539,8 +539,8 @@ function lifecycleOperations(api, tools) {
   ops.push({
     name: "DeleteAndPromoteAsync", kind: "action", binding: "unbound", signature: {"params":[["UniqueName","Edm.String"]],"response":[["AsyncOperationId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
-      requireMetadataPrivilege(api, ctx, "prvDeleteSolution", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
+      requireMetadataPrivilege(api, ctx, "prvDeleteSolution", "solution");
       const name = requireText(ctx.body?.UniqueName, "UniqueName");
       promotable(store, name);
       const asyncId = await api.systemJob({ name: `Delete and promote ${name}`, operationtype: OPERATION_TYPE.deleteAndPromote, callerId: ctx.caller.systemuserid }, async () => {
@@ -550,12 +550,12 @@ function lifecycleOperations(api, tools) {
     },
   });
 
-  // Uninstall (Learn: UninstallSolutionAsync). The supported job runs with operationtype 208.
+  // Uninstall (UninstallSolutionAsync). The supported job runs with operationtype 208.
   // The separate internal-only UninstallSolution declaration is registered at installation below.
   ops.push({
     name: "UninstallSolutionAsync", kind: "action", binding: "unbound", signature: {"params":[["SolutionUniqueName","Edm.String"]],"response":[["AsyncOperationId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvDeleteSolution", "solution"); // unverified: privilege name from the table privilege pattern
+      requireMetadataPrivilege(api, ctx, "prvDeleteSolution", "solution");
       const name = requireText(ctx.body?.SolutionUniqueName, "SolutionUniqueName");
       planUninstall(store, name);
       const asyncId = await api.systemJob({ name: `Uninstall ${name}`, operationtype: OPERATION_TYPE.uninstall, callerId: ctx.caller.systemuserid }, async () => {
@@ -565,11 +565,11 @@ function lifecycleOperations(api, tools) {
     },
   });
 
-  // Component membership, async (Learn: AddComponentToSolutionAsync, AddComponentsToSolutionAsync).
+  // Component membership, async (AddComponentToSolutionAsync, AddComponentsToSolutionAsync).
   ops.push({
     name: "AddComponentToSolutionAsync", kind: "action", binding: "unbound", signature: {"params":[["LogicalName","Edm.String"],["Id","Edm.Guid"],["SolutionUniqueName","Edm.String"],["AddRequiredComponents","Edm.Boolean"]],"response":[["AsyncOperationId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const body = ctx.body ?? {};
       const target = targetOf(store, body);
       assertUnpatched(store, target);
@@ -577,14 +577,14 @@ function lifecycleOperations(api, tools) {
       const chosen = body.AddRequiredComponents === true ? requiredClosure(edges(), [component]) : [component];
       const asyncId = await api.systemJob({ name: `Add component to ${target.uniquename}`, operationtype: null, callerId: ctx.caller.systemuserid }, async () => {
         await write(() => addMemberRows(store, target.solutionid, chosen));
-      }); // unverified: asyncoperation operationtype
+      });
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.AddComponentToSolutionAsyncResponse", { AsyncOperationId: asyncId });
     },
   });
   ops.push({
     name: "AddComponentsToSolutionAsync", kind: "action", binding: "unbound", signature: {"params":[["SolutionComponentParameters","mscrm.AddComponentToSolutionParametersCollection"],["SolutionUniqueName","Edm.String"],["ContinueOnError","Edm.Boolean"]],"response":[["AsyncOperationId","Edm.Guid"]]},
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const body = ctx.body ?? {};
       const target = targetOf(store, body);
       assertUnpatched(store, target);
@@ -595,19 +595,19 @@ function lifecycleOperations(api, tools) {
         try {
           component = componentById(components, requireText(item.Id, "Id"), item.LogicalName);
         } catch (error) {
-          if (body.ContinueOnError === true) continue; // Learn: ContinueOnError skips a component that fails
+          if (body.ContinueOnError === true) continue; // ContinueOnError skips a component that fails
           throw error;
         }
         picked.push(...(item.AddRequiredComponents === true ? requiredClosure(edges(), [component]) : [component]));
       }
       const asyncId = await api.systemJob({ name: `Add components to ${target.uniquename}`, operationtype: null, callerId: ctx.caller.systemuserid }, async () => {
         await write(() => addMemberRows(store, target.solutionid, picked));
-      }); // unverified: asyncoperation operationtype
+      });
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.AddComponentsToSolutionAsyncResponse", { AsyncOperationId: asyncId });
     },
   });
 
-  // Async export and download (Learn: ExportSolutionAsync, DownloadSolutionExportData). The finished zip is kept per export job.
+  // Async export and download (ExportSolutionAsync, DownloadSolutionExportData). The finished zip is kept per export job.
   ops.push({
     name: "ExportSolutionAsync", kind: "action", binding: "unbound", signature: {"params":[["SolutionName","Edm.String"],["Managed","Edm.Boolean"]],"response":[["AsyncOperationId","Edm.Guid"],["ExportJobId","Edm.Guid"]]},
     async handle(ctx) {
@@ -622,40 +622,40 @@ function lifecycleOperations(api, tools) {
         await write(() => {
           ((store.state.dataverse ??= {}).exportJobs ??= {})[lower(exportJobId)] = { solutionName: row.uniquename, managed, file: zip.toString("base64") };
         });
-      }); // unverified: asyncoperation operationtype
+      });
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.ExportSolutionAsyncResponse", { AsyncOperationId: asyncId, ExportJobId: exportJobId });
     },
   });
   ops.push({
     name: "DownloadSolutionExportData", kind: "action", binding: "unbound", signature: {"params":[["ExportJobId","Edm.Guid"]],"response":[["ExportSolutionFile","Edm.Binary"]]},
     handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvExportCustomization", "solution"); // unverified: privilege not read on Learn
+      requireMetadataPrivilege(api, ctx, "prvExportCustomization", "solution");
       const id = requireText(ctx.body?.ExportJobId, "ExportJobId");
       const job = store.state.dataverse?.exportJobs?.[lower(id)];
-      if (!job) throw notFound(`The solution export job ${id} does not exist or has not finished.`, "NotFound"); // unverified
+      if (!job) throw notFound(`The solution export job ${id} does not exist or has not finished.`, "NotFound");
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.DownloadSolutionExportDataResponse", { ExportSolutionFile: job.file });
     },
   });
 
-  // Staging (Learn: StageSolution). Reads the zip and reports; nothing is written to the store.
+  // Staging (StageSolution). Reads the zip and reports; nothing is written to the store.
   ops.push({
     name: "StageSolution", kind: "action", binding: "unbound", csdl: STAGE_SOLUTION_CSDL,
     handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified
+      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
       const archive = tools.readArchive(ctx.body?.CustomizationFile);
       const uploadId = ctx.body?.StageSolutionUploadId || randomUUID();
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.StageSolutionResponse", { StageSolutionResults: { ...stagingResults(store, archive), StageSolutionUploadId: uploadId } });
     },
   });
   ops.push({
-    name: "RetrieveMissingComponents", kind: "function", binding: "unbound", signature: {"params":[["CustomizationFile","Edm.Binary"]],"response":[["MissingComponents","Collection(mscrm.MissingComponent)"]]}, // unverified: parameter transport for a binary file on GET
+    name: "RetrieveMissingComponents", kind: "function", binding: "unbound", signature: {"params":[["CustomizationFile","Edm.Binary"]],"response":[["MissingComponents","Collection(mscrm.MissingComponent)"]]}, // how a binary file travels on a GET is a guess
     handle(ctx) {
       const archive = tools.readArchive(ctx.params?.CustomizationFile ?? ctx.body?.CustomizationFile);
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.RetrieveMissingComponentsResponse", { MissingComponents: missingOf(store, archive) });
     },
   });
 
-  // Preferred solution (Learn: GetPreferredSolution, SetPreferredSolution, PreferredSolutionUsedBy). Default: the Default solution.
+  // Preferred solution (GetPreferredSolution, SetPreferredSolution, PreferredSolutionUsedBy). Default: the Default solution.
   ops.push({
     name: "GetPreferredSolution", kind: "function", binding: "unbound", signature: {"returns":"mscrm.crmbaseentity"},
     handle(ctx) {
@@ -672,8 +672,8 @@ function lifecycleOperations(api, tools) {
       const key = callerKey(ctx);
       const id = requireText(ctx.body?.SolutionId, "SolutionId");
       const row = rowsOf(store, "solution").find((s) => lower(s.solutionid) === lower(id));
-      if (!row) throw notFound(`Solution with Id ${id} does not exist.`, "NotFound"); // unverified
-      if (row.ismanaged === true) throw invalid(`Solution ${row.uniquename} is managed; the preferred solution is unmanaged.`); // unverified (Learn: preferred solution page)
+      if (!row) throw notFound(`Solution with Id ${id} does not exist.`, "NotFound");
+      if (row.ismanaged === true) throw invalid(`Solution ${row.uniquename} is managed; the preferred solution is unmanaged.`);
       await write(() => { ((store.state.dataverse ??= {}).preferredSolutions ??= {})[key] = row.solutionid; });
       return undefined;
     },
@@ -685,7 +685,7 @@ function lifecycleOperations(api, tools) {
       const users = Object.entries(store.state.dataverse?.preferredSolutions ?? {}).filter(([, solution]) => lower(solution) === id).map(([user]) => user);
       const AssociatedUsers = users.map((user) => {
         const row = rowsOf(store, "systemuser").find((u) => lower(u.systemuserid) === user);
-        return { FirstName: row?.firstname ?? null, LastName: row?.lastname ?? null, SystemUserId: user }; // unverified: systemuser name columns
+        return { FirstName: row?.firstname ?? null, LastName: row?.lastname ?? null, SystemUserId: user }; // the systemuser name columns are a guess
       });
       return asyncResponse(ctx, "Microsoft.Dynamics.CRM.PreferredSolutionUsedByResponse", {
         NumberOfAssociatedUsers: users.length, PreferredSolutionDetails: { AssociatedUsers },
@@ -696,7 +696,7 @@ function lifecycleOperations(api, tools) {
 }
 
 // The complex and enum types the solution operations name in their responses and parameters, as the native CSDL declares them
-// (Learn: StageSolutionResults, MissingComponent, PreferredSolutionDetails, DependencyMetadataCollection, the bulk remove
+// (StageSolutionResults, MissingComponent, PreferredSolutionDetails, DependencyMetadataCollection, the bulk remove
 // parameters and AddComponentToSolutionParametersCollection). Declared once, by the StageSolution declaration below; the other
 // operations name them by type.
 const SOLUTION_TYPES_CSDL = `
@@ -727,7 +727,7 @@ const STAGE_SOLUTION_CSDL = `${SOLUTION_TYPES_CSDL}
 <ComplexType Name="StageSolutionResponse"><Property Name="StageSolutionResults" Type="mscrm.StageSolutionResults" /></ComplexType>
 <Action Name="StageSolution"><Parameter Name="CustomizationFile" Type="Edm.Binary" Nullable="false" /><Parameter Name="StageSolutionUploadId" Type="Edm.Guid" /><ReturnType Type="mscrm.StageSolutionResponse" Nullable="false" /></Action>`;
 
-// RetrieveMissingDependenciesWithMetadata (Learn: the DependencyMetadataInfo columns). The component type names are Learn's.
+// RetrieveMissingDependenciesWithMetadata: the DependencyMetadataInfo columns, with the documented component type names.
 const TYPE_NAME = { entity: "Entity", attribute: "Attribute", relationship: "Relationship", optionset: "OptionSet" };
 const entitySetOf = (store, logical) => store.state.mappings[logical]?.entitySet ?? null;
 // One DependencyMetadataInfo: the required and the dependent component, each with its base solution (componentOrigin), and the
@@ -757,16 +757,16 @@ function dependencyMetadataInfo(store, edge, baseOf) {
   };
 }
 
-// Managed layers (Learn: solution layers). A managed import pushes the managed definition of each table and column it brings
+// Managed layers. A managed import pushes the managed definition of each table and column it brings
 // onto the component's ordered stack (state.dataverse.managedLayers, keyed by metadata id; dataverse-solutions.mjs apply;
 // keys and relationships get an ownership-only stack). The unmanaged customization on top is active when the import kept an
 // existing definition, or when a metadata change came after the layer's last managed write. Removing the active customization
-// restores the top managed definition. Only a table or a column has a restorable layer (Learn: RemoveActiveCustomization).
+// restores the top managed definition. Only a table or a column has a restorable layer.
 const LAYER_KINDS = new Set(["entity", "attribute"]);
 function layerOf(api, kind, id) {
   const layer = api.store.state.dataverse?.managedLayers?.[lower(id)];
-  if (!LAYER_KINDS.has(kind)) throw new DataError(`RemoveActiveCustomizations is not supported for components of type ${kind}.`, 400, "InvalidRequest", { innerCode: "0x8004F059" }); // unverified: status
-  if (!layer || layer.kind !== kind || !layerStack(layer).length) throw new DataError(`RemoveActiveCustomization is not supported for solution layer {'${id}'} because it is not Active layer.`, 400, "InvalidRequest", { innerCode: "0x8004F076" }); // unverified: status
+  if (!LAYER_KINDS.has(kind)) throw new DataError(`RemoveActiveCustomizations is not supported for components of type ${kind}.`, 400, "InvalidRequest", { innerCode: "0x8004F059" }); // status is a guess
+  if (!layer || layer.kind !== kind || !layerStack(layer).length) throw new DataError(`RemoveActiveCustomization is not supported for solution layer {'${id}'} because it is not Active layer.`, 400, "InvalidRequest", { innerCode: "0x8004F076" }); // status is a guess
   return layer;
 }
 // Restores the top managed definition, through the overwrite path of the import: a column is replaced, a table is updated in
@@ -791,8 +791,8 @@ function removeActive(api, ctx, kind, id) {
   return true;
 }
 // The layers of one component, bottom first, as msdyn_componentlayer rows: one per managed solution, then the Active
-// (unmanaged) layer when a customization sits on top. unverified: Dataverse serves these through the msdyn_componentlayer
-// virtual table; the function name, the row columns kept here and msdyn_order numbering are this simulator's.
+// (unmanaged) layer when a customization sits on top. Dataverse serves these through the msdyn_componentlayer
+// virtual table; the function name, the row columns kept here and the msdyn_order numbering are this simulator's own.
 function componentLayers(api, kind, id) {
   const layer = api.store.state.dataverse?.managedLayers?.[lower(id)];
   if (!layer || (kind && layer.kind !== kind)) return [];
@@ -808,7 +808,7 @@ function componentLayers(api, kind, id) {
 function layerOperations(api) {
   const { store } = api;
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
-  const privilege = (ctx) => requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified: privilege not read on Learn
+  const privilege = (ctx) => requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
   return [
     {
       name: "RemoveActiveCustomization", kind: "action", binding: "unbound",
@@ -823,7 +823,7 @@ function layerOperations(api) {
       },
     },
     {
-      name: "RemoveActiveCustomizations", kind: "function", binding: "unbound", // unverified: Learn has no page; the native declaration is a function
+      name: "RemoveActiveCustomizations", kind: "function", binding: "unbound", // undocumented; the native declaration is a function
       signature: { params: [["SolutionComponentName", "Edm.String"], ["ComponentId", "Edm.Guid"]], response: [["Result", "Edm.Boolean"]] },
       async handle(ctx) {
         privilege(ctx);
@@ -854,12 +854,12 @@ function layerOperations(api) {
               }
             }
           });
-        }); // unverified: asyncoperation operationtype (Learn gives none)
+        });
         return asyncResponse(ctx, "Microsoft.Dynamics.CRM.BulkRemoveActiveCustomizationsAsyncResponse", { AsyncOperationId: asyncId });
       },
     },
     {
-      name: "RetrieveComponentLayers", kind: "function", binding: "unbound", // unverified: see componentLayers
+      name: "RetrieveComponentLayers", kind: "function", binding: "unbound", // simulator-only, see componentLayers
       signature: { params: [["ComponentId", "Edm.Guid"], ["SolutionComponentName", "Edm.String"]], response: [["Layers", "Collection(mscrm.crmbaseentity)"]] },
       async handle(ctx) {
         privilege(ctx);
@@ -882,16 +882,15 @@ export function installSolutionMessages(api, tools = {}) {
       name: "UpdateSolutionComponent", kind: "action", binding: "unbound",
       signature: { params: [["ComponentId", "Edm.Guid"], ["ComponentType", "Edm.Int32"], ["SolutionUniqueName", "Edm.String"], ["IncludedComponentSettingsValues", "Collection(Edm.String)"]] },
       async handle(ctx) {
-        // https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/updatesolutioncomponent
         // The setting values are opaque platform strings; persist them per membership, without inventing their interpretation.
         requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
         const input = ctx.body ?? {};
         const solution = solutionOrThrow(store, requireText(input.SolutionUniqueName, "SolutionUniqueName"));
-        if (solution.ismanaged === true) throw invalid("Only components of an unmanaged solution can be updated."); // unverified error
+        if (solution.ismanaged === true) throw invalid("Only components of an unmanaged solution can be updated.");
         assertUnpatched(store, solution);
         const component = componentOf(all(), requireText(input.ComponentId, "ComponentId"), requireText(input.ComponentType, "ComponentType"));
         const membership = membersOf(store, solution.solutionid).find((row) => lower(row.objectid) === lower(component.id) && Number(row.componenttype) === component.type);
-        if (!membership) throw notFound("The component does not belong to the specified solution.", "NotFound"); // unverified error
+        if (!membership) throw notFound("The component does not belong to the specified solution.", "NotFound");
         const settings = input.IncludedComponentSettingsValues;
         if (!Array.isArray(settings) || settings.some((value) => typeof value !== "string")) throw invalid("IncludedComponentSettingsValues must be a collection of strings.");
         await write(() => {
@@ -904,7 +903,7 @@ export function installSolutionMessages(api, tools = {}) {
     {
       name: "AddSolutionComponent", kind: "action", binding: "unbound", signature: {"params":[["ComponentId","Edm.Guid"],["ComponentType","Edm.Int32"],["SolutionUniqueName","Edm.String"],["AddRequiredComponents","Edm.Boolean"]],"response":[["id","Edm.Guid"]]},
       async handle(ctx) {
-        requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified: privilege not read on Learn
+        requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
         const body = ctx.body ?? {};
         const solution = requireText(body.SolutionUniqueName, "SolutionUniqueName");
         const components = all();
@@ -918,7 +917,7 @@ export function installSolutionMessages(api, tools = {}) {
           const row = solutionRowOf(store, solution);
           id = store.state.tables.solutioncomponent.find((r) => lower(r.solutionid) === lower(row.solutionid) && lower(r.objectid) === lower(component.id))?.solutioncomponentid ?? null;
           // Never a false success: a component that wrote no solutioncomponent row is refused and the write rolls back.
-          if (id == null) throw invalid(`The solution component ${component.id} of type ${component.type} cannot be added to a solution.`); // unverified: message text
+          if (id == null) throw invalid(`The solution component ${component.id} of type ${component.type} cannot be added to a solution.`);
         });
         return { status: 200, body: { "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.AddSolutionComponentResponse"), id } };
       },
@@ -926,7 +925,7 @@ export function installSolutionMessages(api, tools = {}) {
     {
       name: "RemoveSolutionComponent", kind: "action", binding: "unbound", signature: {"params":[["SolutionComponent","mscrm.solutioncomponent"],["ComponentType","Edm.Int32"],["SolutionUniqueName","Edm.String"]],"response":[["id","Edm.Guid"]]},
       async handle(ctx) {
-        requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution"); // unverified: privilege not read on Learn
+        requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
         const body = ctx.body ?? {};
         const solution = requireText(body.SolutionUniqueName, "SolutionUniqueName");
         const sc = body.SolutionComponent ?? {};
@@ -939,7 +938,7 @@ export function installSolutionMessages(api, tools = {}) {
           const rows = store.state.tables.solutioncomponent ?? [];
           const index = rows.findIndex((r) => lower(r.solutionid) === lower(row.solutionid)
             && r.componenttype === type && (lower(r.solutioncomponentid) === componentId || lower(r.objectid) === componentId || lower(r.objectid) === lower(objectId)));
-          if (index < 0) throw notFound(`The solution component does not exist in solution ${solution}.`, "NotFound"); // unverified
+          if (index < 0) throw notFound(`The solution component does not exist in solution ${solution}.`, "NotFound");
           rows.splice(index, 1);
         });
         return { status: 200, body: { "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.RemoveSolutionComponentResponse") } };
@@ -947,7 +946,7 @@ export function installSolutionMessages(api, tools = {}) {
     },
   ];
 
-  // Dependency functions (Learn: retrievedependentcomponents and siblings; each returns a collection of dependency rows).
+  // Dependency functions (RetrieveDependentComponents and siblings; each returns a collection of dependency rows).
   const functions = [
     {
       name: "RetrieveDependentComponents", kind: "function", binding: "unbound", signature: {"params":[["ObjectId","Edm.Guid"],["ComponentType","Edm.Int32"]],"returns":"Collection(mscrm.dependency)"},
@@ -957,21 +956,21 @@ export function installSolutionMessages(api, tools = {}) {
       },
     },
     {
-      name: "RetrieveRequiredComponents", kind: "function", binding: "unbound", signature: {"params":[["ObjectId","Edm.Guid"],["ComponentType","Edm.Int32"]],"returns":"Collection(mscrm.crmbaseentity)"}, // unverified: parameters as RetrieveDependentComponents
+      name: "RetrieveRequiredComponents", kind: "function", binding: "unbound", signature: {"params":[["ObjectId","Edm.Guid"],["ComponentType","Edm.Int32"]],"returns":"Collection(mscrm.crmbaseentity)"}, // parameters assumed to match RetrieveDependentComponents
       handle(ctx) {
         const component = componentOf(all(), requireText(ctx.params?.ObjectId, "ObjectId"), requireText(ctx.params?.ComponentType, "ComponentType"));
         return collection(ctx, edges().filter((e) => e.dependent.key === component.key));
       },
     },
     {
-      name: "RetrieveDependenciesForDelete", kind: "function", binding: "unbound", signature: {"params":[["ObjectId","Edm.Guid"],["ComponentType","Edm.Int32"]],"returns":"Collection(mscrm.dependency)"}, // unverified: Learn page not read; the components that depend on the component
+      name: "RetrieveDependenciesForDelete", kind: "function", binding: "unbound", signature: {"params":[["ObjectId","Edm.Guid"],["ComponentType","Edm.Int32"]],"returns":"Collection(mscrm.dependency)"}, // the components that depend on the component; contract assumed
       handle(ctx) {
         const component = componentOf(all(), requireText(ctx.params?.ObjectId, "ObjectId"), requireText(ctx.params?.ComponentType, "ComponentType"));
         return collection(ctx, edges().filter((e) => e.required.key === component.key));
       },
     },
     {
-      name: "RetrieveDependenciesForUninstall", kind: "function", binding: "unbound", signature: {"params":[["SolutionUniqueName","Edm.String"]],"returns":"Collection(mscrm.dependency)"}, // unverified: Learn page not read
+      name: "RetrieveDependenciesForUninstall", kind: "function", binding: "unbound", signature: {"params":[["SolutionUniqueName","Edm.String"]],"returns":"Collection(mscrm.dependency)"}, // contract assumed
       handle(ctx) {
         const solution = requireText(ctx.params?.SolutionUniqueName, "SolutionUniqueName");
         const components = all();
@@ -980,7 +979,7 @@ export function installSolutionMessages(api, tools = {}) {
       },
     },
     {
-      name: "RetrieveMissingDependencies", kind: "function", binding: "unbound", signature: {"params":[["SolutionUniqueName","Edm.String"]],"returns":"Collection(mscrm.crmbaseentity)"}, // unverified: Learn page not read
+      name: "RetrieveMissingDependencies", kind: "function", binding: "unbound", signature: {"params":[["SolutionUniqueName","Edm.String"]],"returns":"Collection(mscrm.crmbaseentity)"}, // contract assumed
       handle(ctx) {
         const solution = requireText(ctx.params?.SolutionUniqueName, "SolutionUniqueName");
         const components = all();
@@ -989,7 +988,7 @@ export function installSolutionMessages(api, tools = {}) {
       },
     },
     {
-      name: "RetrieveMissingDependenciesWithMetadata", kind: "function", binding: "unbound", // unverified: the Learn pages are 404; the contract is the native CSDL
+      name: "RetrieveMissingDependenciesWithMetadata", kind: "function", binding: "unbound", // undocumented; the contract is the native CSDL
       signature: { params: [["SolutionUniqueName", "Edm.String"], ["SkipManagedDependencies", "Edm.Boolean"]], response: [["DependencyMetadataCollection", "mscrm.DependencyMetadataCollection"]] },
       handle(ctx) {
         const solution = requireText(ctx.params?.SolutionUniqueName, "SolutionUniqueName");
@@ -1008,8 +1007,8 @@ export function installSolutionMessages(api, tools = {}) {
     },
   ];
   for (const op of [...operations, ...functions, ...lifecycleOperations(api, tools), ...layerOperations(api)]) api.registry.register(op);
-  // Learn marks the synchronous action "For internal use only". Keep its native signature visible with the shared
-  // internal-message fallback and explicit project override, rather than inventing public synchronous semantics.
+  // The synchronous action is internal-only. Its native signature stays visible through the shared internal-message
+  // fallback and an explicit project override; no public synchronous semantics are invented.
   // https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/uninstallsolution
   registerInternalMessage(api, {
     name: "UninstallSolution", kind: "action", binding: "unbound",

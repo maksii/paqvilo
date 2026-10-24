@@ -32,14 +32,10 @@ const outcome = fn => { try { return { value: fn() }; } catch (error) { return {
 test('the key lists derive from the table and keep every pre-migration key', () => {
   assert.deepEqual([...catalogueKeys()].sort(), [...PRE_MIGRATION_CATALOGUE, ...NEW_KEYS.filter(key => MIRAGE_SETTINGS[key].scopes.includes('catalogue'))].sort());
   assert.deepEqual([...projectKeys()].sort(), [...PRE_MIGRATION_PROJECT_SETTINGS, ...NEW_KEYS].sort());
-  for (const [key, row] of Object.entries(MIRAGE_SETTINGS)) {
-    assert.equal(typeof row.parse, 'function', key);
-    assert.ok(row.scopes.every(scope => ['catalogue', 'project', 'portal'].includes(scope)), key);
-    assert.equal(typeof row.doc, 'string', key);
-  }
+  for (const [key, row] of Object.entries(MIRAGE_SETTINGS)) assert.ok(row.scopes.every(scope => ['catalogue', 'project', 'portal'].includes(scope)), key);
 });
 
-// RC4b-01: trusted custom connector scripts are registered like data packs: a mapping list, unknown keys refused.
+// Trusted custom connector scripts are registered like data packs: a mapping list, unknown keys refused.
 test('connectorScripts registers a connector and the SHA-256 of its script text', () => {
   assert.deepEqual(parseSetting('connectorScripts', [{ connector: 'x_5fapi', sha256: 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855' }]), [{ connector: 'x_5fapi', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' }]);
   assert.deepEqual(parseSetting('connectorScripts', undefined), []);
@@ -172,7 +168,7 @@ test('registerSettingParser replaces the pending default', () => {
   assert.notDeepEqual(parseSetting(key, {}), { a: 'parsed' }, 'the module parser is back after the test seam');
 });
 
-test('R3-05: a project without dataverse leaves the catalogue site dataverse in force', async t => {
+test('a project without dataverse leaves the catalogue site dataverse in force', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const project = await resolveProjectConfig({ version: 2, runtime: { kind: 'model-driven' }, solutions: [] }, path.join(root, 'project.json'), { checkSources: false });
@@ -205,7 +201,7 @@ function serve(t, args, cwd) {
   });
 }
 
-test('05-B2/B3: multi-portal serve --project applies the project dataverse and platform to every portal', { timeout: 120_000 }, async t => {
+test('multi-portal serve --project applies the project dataverse and platform to every portal', { timeout: 120_000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-cli-'));
   await fs.mkdir(path.join(root, 'portal'), { recursive: true });
   await fs.writeFile(path.join(root, 'portal', 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n');

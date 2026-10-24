@@ -35,8 +35,8 @@ sources with that token. The first alert is enough to fail; pagination cannot hi
 additional findings. Inspect findings as well as job conclusions; a successful scan
 alone can report alerts.
 
-Report vulnerabilities through [private reporting](../SECURITY.md). Historical alert
-decisions live in the [CodeQL ledger](../.github/security/codeql-triage.json). New triage
+Report vulnerabilities through [private reporting](../SECURITY.md). Alert triage decisions
+are recorded in [`.github/security/codeql-triage.json`](../.github/security/codeql-triage.json). A triage entry
 must record the actual source-to-sink constraint, a focused regression where applicable,
 and validation on the affected revision. Do not dismiss an alert merely because code
 runs locally or appears in a test.

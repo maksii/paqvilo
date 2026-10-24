@@ -160,8 +160,8 @@ test('an advanced step requiring the captcha rejects the save postback with the 
   const error = await submitNativePostback(post(item, 'Changed'), [item], step({ adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true })).catch((e) => e);
   assert.deepEqual(nativePostbackResponse({ error, context: { kind: 'webform' }, values: { title: 'Changed' } }).state.validationErrors.map((e) => e.code), ['CaptchaInvalid']);
   // Signed in without that setting: the captcha is not asked and the step saves.
-  const { result } = await submitNativePostback(post(item, 'Changed'), [item], step({ adx_captcharequired: true }));
-  assert.notEqual(result, undefined);
+  await submitNativePostback(post(item, 'Changed'), [item], step({ adx_captcharequired: true }));
+  assert.equal((await options.store.get('sample', 'first-row', options.identity)).title, 'Changed');
 });
 
 test('a basic form showing the captcha rejects the save postback with the captcha message and writes nothing', async () => {
@@ -171,8 +171,8 @@ test('a basic form showing the captcha rejects the save postback with the captch
   assert.equal((await options.store.get('sample', 'first-row', options.identity)).title, 'First');
   // A signed-in visitor is asked only with "show captcha for authenticated users".
   options.portal.forms[0].metadata = { adx_captcharequired: true };
-  const { result } = await submitNativePostback(post(item, 'Changed'), [item], { ...options, identity: { contactId: 'c1', roles: ['Editor'] } });
-  assert.notEqual(result, undefined);
+  await submitNativePostback(post(item, 'Changed'), [item], { ...options, identity: { contactId: 'c1', roles: ['Editor'] } });
+  assert.equal((await options.store.get('sample', 'first-row', options.identity)).title, 'Changed');
 });
 
 test('a __VIEWSTATE carrying the anti-forgery key exposes it; other values carry none', () => {

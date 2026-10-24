@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,10 +8,14 @@ import {browserLaunchOptions} from '../lib/browser-launch.mjs';
 import {createSimulator} from '../server.mjs';
 import {initial,fixture} from '../test/fixtures/platform-experiments.mjs';
 
+let browser;
+before(async()=>{browser=await chromium.launch(browserLaunchOptions({headless:true}));});
+after(()=>browser?.close());
+
 test('developer configures platform rules and override presets through two dedicated pages', {timeout:45000},async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-experiment-ui-'));await fixture(root);let app,browser;
- t.after(async()=>{await browser?.close();await app?.close();await fs.rm(root,{recursive:true,force:true});});
- app=await createSimulator({sourceDir:root,stateFile:path.join(root,'state.json'),initial:initial(),watch:false});browser=await chromium.launch(browserLaunchOptions({headless:true}));const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-experiment-ui-'));await fixture(root);let app,context;
+ t.after(async()=>{await context?.close();await app?.close();await fs.rm(root,{recursive:true,force:true});});
+ app=await createSimulator({sourceDir:root,stateFile:path.join(root,'state.json'),initial:initial(),watch:false});context=await browser.newContext();const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(app.url+'/_sim/#platform');await page.getByRole('heading',{name:'Platform rules',exact:true}).waitFor();
  const budget=page.locator('tr').filter({has:page.getByRole('spinbutton',{name:'QueryLinkEntityLimit',exact:true})});
  await budget.getByRole('spinbutton').fill('30');await budget.getByRole('button',{name:'Save override'}).click();await budget.getByText('Instance override',{exact:false}).waitFor();
@@ -28,11 +32,11 @@ test('developer configures platform rules and override presets through two dedic
 });
 
 test('a shadowed saved configuration stays exportable and deletable without applying ambiguous overrides',{timeout:30000},async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-experiment-collision-ui-'));await fixture(root);let app,browser;
- t.after(async()=>{await browser?.close();await app?.close();await fs.rm(root,{recursive:true,force:true});});
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'mirage-experiment-collision-ui-'));await fixture(root);let app,context;
+ t.after(async()=>{await context?.close();await app?.close();await fs.rm(root,{recursive:true,force:true});});
  const state=initial();state.simulator.experimentPresets={feature:{id:'feature',name:'Saved feature',portalOverrides:{snippets:{Greeting:'Saved greeting'}}}};
  const pack={id:'user',name:'Synthetic',description:'Invented pack',matches:()=>true,presets:()=>({sample:{name:'Sample data',configurationPreset:'feature'}}),configurationPresets:[{id:'feature',name:'Pack feature',portalOverrides:{snippets:{Greeting:'Pack greeting'}}}]};
- app=await createSimulator({sourceDir:root,initial:state,packs:[pack],watch:false});browser=await chromium.launch(browserLaunchOptions({headless:true}));const page=await browser.newPage();
+ app=await createSimulator({sourceDir:root,initial:state,packs:[pack],watch:false});context=await browser.newContext();const page=await context.newPage();
  await page.goto(app.url+'/_sim/#access');await page.locator('#available-preset option[value="sample"]').waitFor({state:'attached'});assert.match(await page.locator('#available-preset option[value="sample"]').textContent(),/configuration: feature/);
  await page.goto(app.url+'/_sim/#overrides');await page.getByLabel('Configuration preset').selectOption({label:'Saved feature · saved collision (pack takes precedence)'});
  assert.equal(await page.getByRole('button',{name:'Apply preset',exact:true}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Delete saved preset'}).isEnabled(),true);

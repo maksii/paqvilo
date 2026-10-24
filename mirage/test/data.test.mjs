@@ -865,7 +865,7 @@ test("FetchXML inner and outer joins, alias filters, distinct, paging and aggreg
     '<fetch aggregate="true"><entity name="contact"><attribute name="parentcustomerid" alias="org" groupby="true"/><attribute name="age" alias="total" aggregate="sum"/></entity></fetch>',
     user,
   );
-  assert.equal(grouped.entities.length, 3);
+  assert.deepEqual(grouped.entities, [{ org: "a1", total: 36 }, { org: "a2", total: 85 }, { total: 41 }]);
 });
 
 test("FetchXML nested links and existential link types preserve multiplicity correctly", () => {
@@ -922,7 +922,7 @@ test("malformed and unsupported queries fail without arbitrary evaluation or ent
   assert.throws(() => store.query("contacts", { $top: "-1" }, user), DataError);
 });
 
-test("lookup bindings resolve explicit entity mappings and presets are persistent", async () => {
+test("lookup bindings resolve explicit entity mappings and presets switch the permission mode", async () => {
   const store = new DataStore({ state: state() });
   const created = await store.create(
     "contacts",
@@ -949,8 +949,10 @@ test("lookup bindings resolve explicit entity mappings and presets are persisten
   );
   await store.applyPreset("strict-permissions");
   assert.equal(store.snapshot().settings.permissionMode, "enforce");
+  assert.throws(() => store.query("audits"), (e) => e.code === "PermissionDenied");
   await store.applyPreset("open-sandbox");
-  assert.equal(store.query("audits").value.length, 0);
+  assert.equal(store.snapshot().settings.permissionMode, "permissive");
+  assert.deepEqual(store.query("audits").value, []);
 });
 
 test("native navigation bindings populate physical lookup columns, validate targets and clear with null", async () => {

@@ -37,7 +37,7 @@ test("imported Web API view columns combine with explicit fields without exposin
     simulator: { mode: "local", pageMode: "local", identityScope: "configured", identity: { id: "invented-persona", roles: [] }, endpoints: [], live: {} },
   } });
   ownedFixture(t).add(() => app.close());
-  const get = query => fetch(app.url + "/_api/viewwidgets?" + new URLSearchParams(query), { headers: { __RequestVerificationToken: app.state().csrf } });
+  const get = query => fetch(app.url + "/_api/viewwidgets?" + new URLSearchParams(query), { headers: { __RequestVerificationToken: app.csrf } });
   const allowed = await get({ $select: "title,tagline,_groupid_value" });
   assert.equal(allowed.status, 200, await allowed.clone().text());
   const result = (await allowed.json()).value;

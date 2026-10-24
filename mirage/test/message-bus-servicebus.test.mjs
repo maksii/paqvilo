@@ -152,15 +152,16 @@ test('preflight opens a connection and a link to each configured entity within t
   for (const result of [missing, unset, remote]) assert.doesNotMatch(JSON.stringify(result), new RegExp(KEY));
 });
 
-test('preflight against a silent port answers not ready within 2 seconds', async (t) => {
+test('preflight against a silent port answers not ready at its 1.8 s connect bound', async (t) => {
   const silent = net.createServer((socket) => socket.resume()); // accepts TCP and never answers the protocol header
   await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { silent.close(resolve); }));
   const bus = createServiceBusEmulatorBus({ settings: { connectionString: 'env:FX_SB', amqpPort: silent.address().port }, env: env() });
   const started = Date.now();
   const result = await bus.preflight();
-  assert.equal(result.ready, false);
-  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(result, { ready: false, reason: 'The Service Bus emulator did not answer within the 1800 ms bound.' });
+  // The bound is the connect abort; the slack only absorbs a loaded runner's timer lag.
+  assert.ok(Date.now() - started < 4000);
 });
 
 test('the client keeps an idle connection alive with empty frames inside the broker idle-time-out', async (t) => {

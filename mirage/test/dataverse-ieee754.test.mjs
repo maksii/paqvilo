@@ -127,16 +127,10 @@ test("Dataverse Decimal/Money request representations follow Content-Type indepe
       assert.equal(JSON.stringify(store.state.tables.sample), before);
     }
   for (const field of ["amount", "price"])
+    // Each spelling is covered by the reader's own table (dataverse-decimal-input.test.mjs); these prove the Web API uses it.
     for (const [value, expected] of [
-      [".5", 0.5],
-      ["1.", 1],
-      [" 1.25 ", 1.25],
-      ["+1.25", 1.25],
-      ["001.25", 1.25],
-      ["-1.25", -1.25],
       ["1,2,3.5", 123.5],
       ["1.25-", -1.25],
-      ["1.25+", 1.25],
     ])
       await t.test(
         field + " native lexical spelling " + JSON.stringify(value),
@@ -262,8 +256,9 @@ test("Dataverse Decimal/Money request representations follow Content-Type indepe
     [204, 400],
   );
   const mapping = store.state.mappings.sample;
-  assert.throws(() =>
-    store.coerceRecord(mapping, { amount: "1.25" }, { dataverseWebApi: true }),
+  assert.throws(
+    () => store.coerceRecord(mapping, { amount: "1.25" }, { dataverseWebApi: true }),
+    { status: 400, details: { innerCode: "0x80048d19" }, message: "Cannot convert the literal '1.25' to the expected type 'Edm.Decimal'." },
   );
   const internal = store.coerceRecord(
     mapping,

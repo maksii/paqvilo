@@ -53,13 +53,12 @@ The compare does not hide differences by default. Each normalisation below repla
 | `nonce` attributes ignored, `/__sim/` requests not recorded | Per-response values and the local runtime's own instrumentation. |
 | `{token}` placeholders, cookie names only, redacted query values | These are written at capture time on both sides, so secrets never reach the evidence. The same placeholder compares equal. |
 
-The token normalisations (the first five rows) are the D11 decision. Before it, the elements' presence was allowlisted. Normalising the token instead keeps the element visible to the compare.
+The token normalisations (the first five rows) replace only the token, not the element, so the element stays visible to the compare instead of needing an allowlist entry.
 
 ### Capture harness integrity
 
 - **Each live run carries its own nonce.** The bridge runner posts its evidence to the suite's loopback receiver together with the nonce of its run.
-  - A bridge call the client abandoned after a timeout keeps running in the bridge. Its late post is refused (409) and reported in the side's diagnostics, so it cannot fill the next scenario's wait.
-  - One such post once wrote a multistep step2-back capture into the resume folder.
+  - A bridge call the client abandoned after a timeout keeps running in the bridge. Its late post is refused (409) and reported in the side's diagnostics, so it cannot fill the next scenario's wait or land in another scenario's folder.
 - **writeCapture checks the scenario id.** It refuses a result whose scenario id differs from the folder's scenario.
 - **Harness-only steps** (`harness: true`) leave no evidence: they record no requests, console entries or URL.
 
@@ -110,7 +109,7 @@ The report's `evidenceChanges` section and `summary.md` list each change with it
 - **Rejected list.** A rejected proposal goes to `allowlist-proposals/rejected.json` with `rejectedBecause`. Rejection is the rule when the compare can normalise the difference safely, when the entry is broader than its evidence, or when the capture should not record the traffic at all.
 - **No hardcoding.** A value Mirage can derive from the export, the solution, the settings or the data is a Mirage fix, not an allowlist entry. A value Mirage cannot derive becomes an allowlist candidate. It is never hardcoded into Mirage.
 
-## Decisions that shape the comparison
+## Rules for the comparison
 
 - **Shared site settings stay as they are.** The fixture never changes the reference site's global settings, default roles or shared snippets. Their live values are recorded as observed values. Mirage derives them from the same export, like everything else it renders, so a settings difference is fixed in Mirage, never by changing the shared site.
 - **Platform runtime assets.** Live serves the platform's runtime scripts, `WebResource.axd` and the ResourceManager strings. These bodies are absent from the export. Mirage ships local equivalents by design and never copies live bodies. One reviewed entry per asset family explains the body deltas (`platform-runtime-script-bodies`, `resource-manager-body`). The requests themselves, their order and their presence are still compared.

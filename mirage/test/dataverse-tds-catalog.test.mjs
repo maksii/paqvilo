@@ -1,4 +1,4 @@
-// Dataverse TDS catalog: exposed columns per store table and Web API row projection. Invented schema only.
+// Dataverse TDS catalog: exposed columns per store table and Web API row projection.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -42,7 +42,8 @@ test("catalog exposes lookups, choices, money and datetime, and skips file, mult
   assert.equal(cols.owneridname.source.kind, "lookupName");
   assert.equal(cols.owneridtype.source.kind, "lookupType");
   assert.equal(cols.owninguser.sqlType, "uniqueidentifier");
-  assert.equal(cols.owninguserType, undefined, "non-polymorphic lookups have no type column");
+  assert.equal(cols.owningusername.source.kind, "lookupName");
+  assert.equal(cols.owningusertype, undefined, "non-polymorphic lookups have no type column");
 
   assert.equal(cols.statuscode.sqlType, "int");
   assert.equal(cols.statuscodename.source.kind, "choiceName");
@@ -78,7 +79,7 @@ test("projectRow maps formatted lookup, choice and money values to SQL column na
   assert.equal(row.statuscodename, "Active");
   assert.equal(row.price, "12.5000");
   assert.equal(row.owninguser, null);
-  assert.equal(row.owninguserid, undefined);
+  assert.equal(row.owningusername, null);
   // A plain column the formatted row omits falls back to the store row.
   assert.equal(projectRow(widget, { name: "Gear" }, {}).name, "Gear");
 });
@@ -94,5 +95,4 @@ test('catalog excludes private storage mappings that have no routable entity set
   data.state.mappings.x_empty = { logicalName: 'x_empty', entitySet: '', idColumn: 'x_emptyid', fields: {} };
   const catalog = buildCatalog({ store: data });
   assert.deepEqual([...catalog.tables.keys()], ['widget']);
-  assert.ok(data.state.mappings.x_private, 'private storage remains registered in the store');
 });

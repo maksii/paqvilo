@@ -269,7 +269,7 @@ export default async function verify(cfg, args) {
     check('nothing is overridden before any edit', hits.every((h) => !(h.sources ?? []).length));
     captureDiagnostics('baseline');
 
-    // ---- choose what to edit, from what this page really uses -------------------------------
+    // ---- choose what to edit, from what this page really uses
     const model = session.model;
     const used = [...requested].map((p) => model.findWebFile(p)).filter((w) => w?.file);
     const cssFile = used.find((w) => /\.css$/i.test(w.url) && !/\.min\.css$/i.test(w.url)) ?? used.find((w) => /\.css$/i.test(w.url));

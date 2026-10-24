@@ -1,20 +1,26 @@
 // mirage init/start/status/stop for every catalogue site (portals=all): one project and one
-// runtime per site. Loopback Mirages on synthetic exports only; no portal is contacted.
+// runtime per site.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createFixture } from './fixture.mjs';
 import { severalPortals } from '../lense/commands/mirage.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const ENHANCED = fs.realpathSync.native(fileURLToPath(new URL('../test-browser/fixtures/enhanced/', import.meta.url)));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
 function run(...args) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
   return spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 });
+}
+// Independent refusals run concurrently: each CLI process costs a quarter of a second to start.
+function runAsync(...args) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }));
+  });
 }
 const json = (result) => JSON.parse(result.stdout);
 
@@ -46,7 +52,7 @@ test('portals=all reaches every catalogue site for dev and start; init and stop 
   assert.equal(severalPortals(all, {}, 'status'), false);
 });
 
-test('mirage with portals=all writes one project per site, starts one runtime per site, labels them in status and stops them together', { timeout: 300_000 }, () => {
+test('mirage with portals=all writes one project per site, starts one runtime per site, labels them in status and stops them together', { timeout: 300_000 }, async () => {
   const classic = isolatedFixture();
   const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-portals-')));
   const config = path.join(work, 'paqvilo.config.yml');
@@ -65,15 +71,18 @@ test('mirage with portals=all writes one project per site, starts one runtime pe
     assert.equal(init.status, 0, init.stdout + init.stderr);
     assert.deepEqual(json(init).projects.map((item) => [item.site, item.file]), [['classic', project('classic')], ['enhanced', project('enhanced')]]);
     assert.ok(fs.existsSync(project('classic')) && fs.existsSync(project('enhanced')));
+    const [reinit, conflict, misplaced] = await Promise.all([
+      runAsync('mirage', 'init', '--config', config, '--site', 'classic', '--json'),
+      runAsync('mirage', 'start', '--config', config, '--portal', 'classic', '--json'),
+      runAsync('mirage', 'status', '--config', config, '--allow-live-writes', '--json'),
+    ]);
     // With --site, init stays with that site (and refuses to overwrite silently).
-    assert.match(json(run('mirage', 'init', '--config', config, '--site', 'classic', '--json')).error.message, /already exists/);
+    assert.match(json(reinit).error.message, /already exists/);
 
     // --port, --state, --preset and --solution-root apply to the selected site; options that name
     // one runtime of a project, or one source, do not fit several catalogue portals.
-    const conflict = run('mirage', 'start', '--config', config, '--portal', 'classic', '--json');
     assert.equal(conflict.status, 1);
     assert.match(json(conflict).error.message, /--portal applies to a single runtime\. \(--port, --state, --preset, --preset-mode, --solution-root apply to the selected site\.\)/);
-    const misplaced = run('mirage', 'status', '--config', config, '--allow-live-writes', '--json');
     assert.equal(misplaced.status, 1);
     assert.match(json(misplaced).error.message, /--allow-live-writes applies only to mirage dev and start/);
 
@@ -101,12 +110,14 @@ test('mirage with portals=all writes one project per site, starts one runtime pe
     catalogue.sites.classic.mirage.port = 18797;
     catalogue.sites.enhanced.mirage.port = 18797;
     fs.writeFileSync(clash, JSON.stringify(catalogue));
-    const refused = run('mirage', 'start', '--config', clash, '--json');
-    assert.equal(refused.status, 1);
-    assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
-    const alternateSpelling = run('mirage', 'start', '--config', clash, '--port', '018797', '--json');
-    assert.equal(alternateSpelling.status, 1);
-    assert.match(json(alternateSpelling).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
+    const refusals = await Promise.all([
+      runAsync('mirage', 'start', '--config', clash, '--json'),
+      runAsync('mirage', 'start', '--config', clash, '--port', '018797', '--json'),
+    ]);
+    for (const refused of refusals) {
+      assert.equal(refused.status, 1);
+      assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
+    }
   } finally {
     const stopped = run('mirage', 'stop', '--config', config, '--json');
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
@@ -187,7 +198,7 @@ test('doctor --all warns when catalogue sites share a Mirage port', () => {
   }
 });
 
-test('a project with several portals starts one runtime per portal on consecutive ports and stops them together', { timeout: 300_000 }, () => {
+test('a project with several portals starts one runtime per portal on consecutive ports and stops them together', { timeout: 300_000 }, async () => {
   const classic = isolatedFixture();
   const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-project-')));
   const config = path.join(work, 'paqvilo.config.yml');
@@ -202,13 +213,17 @@ test('a project with several portals starts one runtime per portal on consecutiv
   }, null, 2));
   let started = null;
   try {
-    assert.match(json(run('mirage', 'start', '--config', config, '--project', projectFile, '--state', path.join(work, 'one.json'), '--json')).error.message, /keeps a state file per portal/);
-    for (const port of ['', ' ', '-1', '0x1000', '1e3', '65536', '65535']) {
-      const invalid = run('mirage', 'start', '--config', config, '--project', projectFile, `--port=${port}`, '--json');
-      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
-      assert.match(json(invalid).error.message, /--port must be an integer|exceeds the available port range/);
-      assert.deepEqual(json(run('mirage', 'status', '--config', config, '--json')).sessions, [], 'invalid project range must not start any portal');
-    }
+    const ports = ['', ' ', '-1', '0x1000', '1e3', '65536', '65535'];
+    const [state, ...invalid] = await Promise.all([
+      runAsync('mirage', 'start', '--config', config, '--project', projectFile, '--state', path.join(work, 'one.json'), '--json'),
+      ...ports.map((port) => runAsync('mirage', 'start', '--config', config, '--project', projectFile, `--port=${port}`, '--json')),
+    ]);
+    assert.match(json(state).error.message, /keeps a state file per portal/);
+    ports.forEach((port, index) => {
+      assert.equal(invalid[index].status, 1, invalid[index].stdout + invalid[index].stderr);
+      assert.match(json(invalid[index]).error.message, port === '65535' ? /exceeds the available port range/ : /--port must be an integer/, `--port=${port}`);
+    });
+    assert.deepEqual(json(run('mirage', 'status', '--config', config, '--json')).sessions, [], 'invalid project range must not start any portal');
     started = run('mirage', 'start', '--config', config, '--project', projectFile, '--port', '0', '--startup-timeout', '120000', '--json');
     assert.equal(started.status, 0, started.stdout + started.stderr);
     const portals = json(started).portals;

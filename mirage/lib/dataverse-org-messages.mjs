@@ -1,14 +1,9 @@
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse organization, environment variable, license and deployment messages, through the registered operations.
 // Each answers from the store (organization row, solution, systemuser, workflow, environmentvariabledefinition and
-// environmentvariablevalue) or from a fixed stand-in where the simulator has no such fact: those are marked
-// `// unverified: live capture`. Invented schema and GUIDs only.
-// Contracts: Web API references for IsDataEncryptionActive, ResetUserFilters, RetrieveOrganizationInfo, RetrieveOrganizationResources,
-// RetrieveEnvironmentVariableValue, RetrieveEnvironmentVariables, UpsertEnvironmentVariable, RetrieveEnvironmentVariableSecretValue,
-// NotifyEnvironmentVariableSecretChange, RetrieveDeploymentLicenseType, RetrieveLicenseInfo and RetrieveUserLicenseInfo; and for the
-// settings, encryption key, sample data, SharePoint URL, license access, social profile, wall, timeline and Fx messages, the Learn
-// pages cited at each registration. SetFeatureStatus is an internal-only message (GC policy): registered with its native signature.
-// Not registered here: Validate (no documented contract; see the mirage docs for the list).
+// environmentvariablevalue) or from a fixed stand-in where the simulator has no such fact.
+// SetFeatureStatus is an internal-only message: registered with its native signature.
+// Not registered here: Validate (no documented contract).
 import { DataError } from "./data-error.mjs";
 import { standardTableDef } from "./dataverse-standard.mjs";
 import { ACCESS_MODE, isInteractiveUser, ownerColumns, privilegeDeniedError, privilegeName, uuidV5 } from "./dataverse-security.mjs";
@@ -20,11 +15,11 @@ const ENV_DEFINITION = "environmentvariabledefinition";
 const ENV_VALUE = "environmentvariablevalue";
 // Environment variable types (UpsertEnvironmentVariable Type): String, Integer, Boolean, JSON, Data Source, Secret.
 const ENV_TYPES = new Set([100000000, 100000001, 100000002, 100000003, 100000004, 100000005]);
-// The only secret store Learn documents for UpsertEnvironmentVariable: 0, KeyVault.
+// The only documented secret store for UpsertEnvironmentVariable: 0, KeyVault.
 const KEY_VAULT = 0;
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
-// unverified: live capture. The simulator has no instance type, license, sku or storage model; these are fixed stand-ins.
-const INSTANCE_TYPE_DEVELOPER = 13; // OrganizationType Developer (Learn enum value)
+// The simulator has no instance type, license, sku or storage model; these are fixed stand-ins.
+const INSTANCE_TYPE_DEVELOPER = 13; // OrganizationType Developer
 const DEPLOYMENT_LICENSE_TYPE = "Trial";
 const LIMITS = { MaxNumberOfActiveUsers: 1000, MaxNumberOfNonInteractiveUsers: 1000, MaxNumberOfCustomEntities: 1000, MaxNumberOfPublishedWorkflows: 1000, MaxStorage: 10240 };
 
@@ -36,7 +31,7 @@ const tableOf = (store, logical) => (store.state.tables[logical] ??= []);
 const body = (c) => (typeof c.body === "string" ? JSON.parse(c.body || "{}") : (c.body ?? {}));
 // Function parameters arrive as c.params and action parameters as the body; a SOAP call carries both.
 const argsOf = (c) => ({ ...body(c), ...(c.params ?? {}) });
-// unverified: live capture (the refusal wording; the 0x80040203 InvalidArgument code is the file's default for a rejected argument).
+// Refusal wording is a guess; 0x80040203 (InvalidArgument) is the default code for a rejected argument.
 const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode });
 const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, "NotFound", { id, innerCode: "0x80040217" });
 const requiredText = (value, name) => {
@@ -60,18 +55,18 @@ const TIME = (value) => new Date(value).getTime();
 const rowNamed = (store, logical, id) => tableOf(store, logical).find((r) => sameId(r[`${logical}id`], id)) ?? null;
 const fieldsOf = (values) => Object.fromEntries(Object.entries(values).filter(([field]) => !field.startsWith("@odata.")));
 
-// settingdefinition datatype and overridablelevel values. unverified: live capture.
+// settingdefinition datatype and overridablelevel values (assumed, not documented).
 const DATATYPE = { Number: 0, String: 1, Boolean: 2 };
 const LEVEL = { AppAndOrganization: 0, OrganizationOnly: 1, AppOnly: 2 };
 const SETTING_DETAIL = `<ComplexType Name="SettingDetail"><Property Name="Name" Type="Edm.String" Unicode="false" /><Property Name="Value" Type="Edm.String" Unicode="false" /><Property Name="DataType" Type="Edm.Int32" /></ComplexType>`;
-const settingNotFound = (name) => new DataError(`settingdefinition With Name = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" }); // unverified
-const appNotFound = (name) => new DataError(`appmodule With UniqueName = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" }); // unverified
+const settingNotFound = (name) => new DataError(`settingdefinition With Name = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
+const appNotFound = (name) => new DataError(`appmodule With UniqueName = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
 // ponytail: definitions come from the host or tests (dv(store).settingDefinitions). Reading them from a solution export needs
-// dataverse-settings.mjs and solution parsing, outside G1.
+// dataverse-settings.mjs and solution parsing.
 const definitionOf = (store, name) => dv(store).settingDefinitions?.[key(name)] ?? null;
 const appOf = (store, name) => tableOf(store, "appmodule").find((a) => sameId(a.uniquename, name)) ?? null;
 const settingValues = (store) => (dv(store).settingValues ??= { environment: {}, app: {} });
-const levelOf = (def) => def.overridablelevel ?? LEVEL.AppAndOrganization; // unverified: the default for a definition without a level
+const levelOf = (def) => def.overridablelevel ?? LEVEL.AppAndOrganization; // the default for a definition without a level is a guess
 
 // The value RetrieveSetting reports: a non-overridable setting has its default; otherwise the app value (AppAndOrganization,
 // AppOnly) then the environment value (AppAndOrganization, OrganizationOnly), else the default. appName is null without an app.
@@ -102,8 +97,8 @@ function settingTextOf(def, value) {
   return value;
 }
 
-// The encryption key: the stored one, else a deterministic stand-in (Learn says the system generates a random passphrase).
-// unverified: live capture. The key is never logged.
+// The encryption key: the stored one, else a deterministic stand-in (the platform generates a random passphrase).
+// The key is never logged.
 const encryptionKeyOf = (store) => dv(store).dataEncryptionKey ?? uuidV5(orgIdOf(store), "dataencryptionkey");
 
 // The record an entity-reference parameter names: an @odata.id string or object, or a typed object. Returns { logical, id }.
@@ -142,14 +137,14 @@ const currentValue = (store, definition) => {
 
 function organizationInfo(store) {
   return {
-    InstanceType: INSTANCE_TYPE_DEVELOPER, // unverified: live capture
-    SingletonScenarioName: null, // unverified: live capture
+    InstanceType: INSTANCE_TYPE_DEVELOPER,
+    SingletonScenarioName: null,
     Solutions: tableOf(store, "solution").map((s) => ({
       FriendlyName: s.friendlyname ?? null,
       Id: refId(s.solutionid) ?? null,
       PublisherId: refId(s.publisherid) ?? null,
-      PublisherIdName: null, // unverified: live capture (publisher names are not joined here)
-      PublisherUniqueName: null, // unverified: live capture
+      PublisherIdName: null, // publisher names are not joined here
+      PublisherUniqueName: null,
       SolutionUniqueName: s.uniquename ?? null,
       VersionNumber: s.version ?? null,
     })),
@@ -165,7 +160,7 @@ function organizationResources(store) {
     CurrentNumberOfCustomEntities: customEntities,
     CurrentNumberOfNonInteractiveUsers: users.filter((u) => u.accessmode === ACCESS_MODE.NonInteractive).length,
     CurrentNumberOfPublishedWorkflows: tableOf(store, "workflow").filter((w) => w.statecode === 1).length,
-    CurrentStorage: 0, // unverified: live capture (no blob storage is modelled)
+    CurrentStorage: 0, // no blob storage is modelled
     MaxNumberOfActiveUsers: LIMITS.MaxNumberOfActiveUsers,
     MaxNumberOfCustomEntities: LIMITS.MaxNumberOfCustomEntities,
     MaxNumberOfNonInteractiveUsers: LIMITS.MaxNumberOfNonInteractiveUsers,
@@ -225,7 +220,7 @@ function operations(api) {
     if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
   };
   const respond = (c, name, payload) => ({ status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...payload } });
-  // unverified: live capture (privilege name and text).
+  // The privilege check and its refusal text are guesses.
   const requireAdmin = (c) => {
     if (!api.principals.roles(c.user).some((r) => r.name === ADMIN)) throw new DataError("The caller is not a System Administrator.", 403, "PrivilegeDenied", { innerCode: "0x80040220" });
   };
@@ -252,10 +247,10 @@ function operations(api) {
     if (depth > 32) throw invalid("The SharePoint location hierarchy is too deep.");
     if (row.absoluteurl) return row.absoluteurl;
     const parent = parentOfSharePoint(row, logical);
-    if (!parent) return row.relativeurl ?? ""; // unverified: a root row with no absolute URL
+    if (!parent) return row.relativeurl ?? ""; // a root row with no absolute URL: assumed
     return `${absoluteOf(parent.row, parent.logical, depth + 1).replace(/\/+$/, "")}/${(row.relativeurl ?? "").replace(/^\/+/, "")}`;
   };
-  // The site collection: the topmost sharepointsite of the row, whose absolute URL is given only when isgridpresent is true (Learn: blank otherwise).
+  // The site collection: the topmost sharepointsite of the row, whose absolute URL is given only when isgridpresent is true (blank otherwise).
   const siteCollectionUrl = (row, logical) => {
     let current = { row, logical };
     let site = logical === "sharepointsite" ? current : null;
@@ -280,7 +275,7 @@ function operations(api) {
   });
 
   // The posts regarding the subjects, newest first (ascending with SortDirection true), paged, each with its newest comments.
-  // Type is accepted and ignored (Learn: reserved). unverified: live capture (LC-G1-6: comment shape and order, Keyword syntax).
+  // Type is reserved: accepted and ignored. The comment shape and order and the Keyword syntax are guesses.
   const wall = (c, subjects, createdBy) => {
     const args = argsOf(c);
     const page = integerOf(args.PageNumber, "PageNumber");
@@ -294,13 +289,13 @@ function operations(api) {
     const start = given(args.StartDate) ? TIME(args.StartDate) : null;
     const end = given(args.EndDate) ? TIME(args.EndDate) : null;
     const source = given(args.Source) ? integerOf(args.Source, "Source") : null;
-    const pattern = given(args.Keyword) ? new RegExp(String(args.Keyword).split(/[*%]/).map(escapeText).join(".*"), "i") : null; // unverified
+    const pattern = given(args.Keyword) ? new RegExp(String(args.Keyword).split(/[*%]/).map(escapeText).join(".*"), "i") : null;
     const ascending = args.SortDirection === true || args.SortDirection === "true";
     const candidates = tableOf(store, "post").filter((p) => {
       const regarding = refId(p.regardingobjectid);
       return (regarding != null && ids.has(key(regarding))) || [...ids].some((id) => key(p.text).includes(id)) || (createdBy != null && sameId(refId(p.createdby), createdBy));
     });
-    // Learn: the caller must read the records the posts regard. A post with no regarding record stays; an unreadable one is dropped.
+    // The caller must read the records the posts regard. A post with no regarding record stays; an unreadable one is dropped.
     const visible = candidates.filter((p) => {
       const regarding = refId(p.regardingobjectid);
       if (regarding == null) return true;
@@ -334,14 +329,14 @@ function operations(api) {
   return [
     {
       name: "IsDataEncryptionActive", kind: "function", binding: "unbound",
-      // All new and upgraded organizations use data encryption by default (Learn). The encryption key is not modelled (LC-G1-2).
+      // All new and upgraded organizations use data encryption by default. The encryption key is not modelled.
       handle: (c) => respond(c, "IsDataEncryptionActive", { IsActive: true }),
       csdl: csdlOf("function", "IsDataEncryptionActive", { response: [["IsActive", "Edm.Boolean"]] }),
     },
     {
       name: "ResetUserFilters", kind: "action", binding: "unbound",
       // The offline filters of the caller. The simulator keeps no offline filter state, so the reset has nothing to change
-      // (unverified: live capture of the QueryType values).
+      // (the accepted QueryType values are a guess).
       handle: (c) => {
         integerOf(argsOf(c).QueryType, "QueryType");
         return { status: 204 };
@@ -364,7 +359,7 @@ function operations(api) {
         const schemaName = requiredText(argsOf(c).DefinitionSchemaName, "DefinitionSchemaName");
         need(c, ENV_DEFINITION, "Read");
         const definition = definitionNamed(store, schemaName);
-        // unverified: live capture (the not-found wording and code for a schema name).
+        // The not-found wording and code for a schema name are guesses.
         if (!definition) throw new DataError(`${ENV_DEFINITION} With SchemaName = ${schemaName} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
         return respond(c, "RetrieveEnvironmentVariableValue", { Value: currentValue(store, definition) });
       },
@@ -372,7 +367,7 @@ function operations(api) {
     },
     {
       name: "RetrieveEnvironmentVariables", kind: "function", binding: "unbound",
-      // unverified: live capture (the row shape: the definition row, with its current value under `value`).
+      // The row shape is a guess: the definition row, with its current value under `value`.
       handle: (c) => {
         need(c, ENV_DEFINITION, "Read");
         const names = argsOf(c).SchemaNames;
@@ -435,7 +430,7 @@ function operations(api) {
     },
     {
       name: "RetrieveEnvironmentVariableSecretValue", kind: "action", binding: "unbound",
-      // Learn: callable from a Power Automate flow only. Key Vault is never called: the value row holds the Key Vault reference
+      // Natively callable from a Power Automate flow only. Key Vault is never called: the value row holds the Key Vault reference
       // and api.secrets (secret-resolver.mjs, from the project `secrets` config) resolves it for the caller. Without a
       // `secrets` config the secret is refused with the not-simulated code the other messages use.
       handle: async (c) => {
@@ -444,12 +439,11 @@ function operations(api) {
         const definition = definitionNamed(store, name);
         if (!definition) throw new DataError(`${ENV_DEFINITION} With SchemaName = ${name} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
         const secrets = api.secrets ?? null;
-        // unverified: live capture of the native refusal.
         if (!secrets) throw new DataError("Key Vault secret values are not simulated: no secrets configuration exists.", 501, "NotImplemented", { innerCode: "0x80040216" });
-        if (Number(definition.type) !== 100000005 || Number(definition.secretstore ?? KEY_VAULT) !== KEY_VAULT) throw invalid(`${name} is not a Key Vault Secret environment variable.`); // unverified: code and wording
+        if (Number(definition.type) !== 100000005 || Number(definition.secretstore ?? KEY_VAULT) !== KEY_VAULT) throw invalid(`${name} is not a Key Vault Secret environment variable.`); // code and wording are guesses
         const answer = await secrets.resolve(currentValue(store, definition), { principalId: (c.caller ?? c.user)?.systemuserid, purpose: "RetrieveEnvironmentVariableSecretValue" });
         if (answer.status === "resolved") return respond(c, "RetrieveEnvironmentVariableSecretValue", { EnvironmentVariableSecretValue: answer.value });
-        // unverified: live capture of the native status and code for each refusal (denied 403, missing/unbound 404, expired/disabled 400).
+        // The native status and code per refusal are guesses: denied 403, missing/unbound 404, expired/disabled 400.
         if (answer.status === "denied") throw new DataError(answer.reason, 403, "PrivilegeDenied", { innerCode: "0x80040220" });
         if (answer.status === "missing" || answer.status === "unbound") throw new DataError(answer.reason, 404, "NotFound", { innerCode: "0x80040217" });
         throw invalid(answer.reason);
@@ -458,8 +452,8 @@ function operations(api) {
     },
     {
       name: "NotifyEnvironmentVariableSecretChange", kind: "action", binding: "unbound",
-      // Learn: called from a flow on a Key Vault event. Nothing is cached here, so the notice only validates its arguments
-      // (unverified: live capture of the native reply).
+      // Called from a flow on a Key Vault event. Nothing is cached here, so the notice only validates its arguments; the
+      // native reply is a guess.
       handle: (c) => {
         const args = argsOf(c);
         requiredText(args.KeyVaultUrl, "KeyVaultUrl");
@@ -470,7 +464,7 @@ function operations(api) {
     },
     {
       name: "RetrieveDeploymentLicenseType", kind: "function", binding: "unbound",
-      // unverified: live capture (the simulator has no license model; this is a fixed stand-in string).
+      // The simulator has no license model; this is a fixed stand-in string.
       handle: (c) => respond(c, "RetrieveDeploymentLicenseType", { licenseType: DEPLOYMENT_LICENSE_TYPE }),
       csdl: csdlOf("function", "RetrieveDeploymentLicenseType", { response: [["licenseType", "Edm.String"]] }),
     },
@@ -480,7 +474,7 @@ function operations(api) {
       handle: (c) => {
         integerOf(argsOf(c).AccessMode, "AccessMode");
         return respond(c, "RetrieveLicenseInfo", {
-          AvailableCount: 0, // unverified: live capture (no license pool is modelled)
+          AvailableCount: 0, // no license pool is modelled
           GrantedLicenseCount: tableOf(store, "systemuser").filter(isInteractiveUser).length,
         });
       },
@@ -488,7 +482,7 @@ function operations(api) {
     },
     {
       name: "RetrieveUserLicenseInfo", kind: "function", binding: "entity", entity: "systemuser",
-      // unverified: live capture (the simulator has no service plan model, so the plans list is empty).
+      // The simulator has no service plan model, so the plans list is empty.
       handle: (c) => {
         const id = c.target?.id;
         if (!tableOf(store, "systemuser").some((u) => sameId(u.systemuserid, id))) throw notFound("systemuser", id);
@@ -498,7 +492,6 @@ function operations(api) {
     },
     {
       name: "RetrieveSetting", kind: "function", binding: "unbound",
-      // Learn: https://learn.microsoft.com/power-apps/maker/data-platform/create-edit-configure-settings. unverified: live capture (LC-G1-1).
       handle: (c) => {
         const args = argsOf(c);
         const name = requiredText(args.SettingName, "SettingName");
@@ -512,8 +505,8 @@ function operations(api) {
     },
     {
       name: "SaveSettingValue", kind: "action", binding: "unbound",
-      // Learn: https://learn.microsoft.com/power-apps/maker/data-platform/create-edit-configure-settings. The simulator allows the
-      // System Administrator and System Customizer roles (unverified). SolutionUniqueName is checked, and nothing else recorded (ponytail).
+      // Only the System Administrator role may save (a guess).
+      // ponytail: SolutionUniqueName is checked, and nothing else recorded.
       handle: async (c) => {
         requireAdmin(c);
         const args = argsOf(c);
@@ -522,13 +515,13 @@ function operations(api) {
         const def = definitionOf(store, name);
         if (!def) throw settingNotFound(name);
         if (given(args.SolutionUniqueName) && !tableOf(store, "solution").some((s) => sameId(s.uniquename, args.SolutionUniqueName))) {
-          throw new DataError(`solution With UniqueName = ${args.SolutionUniqueName} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" }); // unverified
+          throw new DataError(`solution With UniqueName = ${args.SolutionUniqueName} Does Not Exist`, 404, "NotFound", { innerCode: "0x80040217" });
         }
         const app = given(args.AppUniqueName) ? appOf(store, args.AppUniqueName) : null;
         if (given(args.AppUniqueName) && !app) throw appNotFound(args.AppUniqueName);
         const level = levelOf(def);
         const levelAllowed = app ? [LEVEL.AppAndOrganization, LEVEL.AppOnly].includes(level) : [LEVEL.AppAndOrganization, LEVEL.OrganizationOnly].includes(level);
-        if (def.isoverridable === false || !levelAllowed) throw invalid("The setting cannot be overridden at this level."); // unverified
+        if (def.isoverridable === false || !levelAllowed) throw invalid("The setting cannot be overridden at this level."); // wording is a guess
         const stored = settingTextOf(def, value);
         await write(() => {
           const values = settingValues(store);
@@ -541,7 +534,7 @@ function operations(api) {
     },
     {
       name: "RetrieveDataEncryptionKey", kind: "function", binding: "unbound",
-      // Learn: the encryption key of the organization. unverified: live capture (LC-G1-2, the Basic User refusal text).
+      // The encryption key of the organization. The Basic User refusal text is a guess.
       handle: (c) => {
         requireAdmin(c);
         return respond(c, "RetrieveDataEncryptionKey", { EncryptionKey: encryptionKeyOf(store) });
@@ -564,7 +557,7 @@ function operations(api) {
     },
     {
       name: "InstallSampleData", kind: "action", binding: "unbound",
-      // ponytail: no business rows are generated; the native sample row set is LC-G1-3. unverified: the refusal texts.
+      // ponytail: no business rows are generated; the native sample row set is not reproduced. The refusal texts are guesses.
       handle: async (c) => {
         requireAdmin(c);
         await write(() => {
@@ -595,7 +588,7 @@ function operations(api) {
     absoluteUrlOf("sharepointdocumentlocation", csdlOf("function", "RetrieveAbsoluteAndSiteCollectionUrl", { bound: "sharepointdocumentlocation", returns: "mscrm.RetrieveAbsoluteAndSiteCollectionUrlResponse" })),
     {
       name: "RetrieveUserApplicationLicenseAccess", kind: "function", binding: "entity", entity: "systemuser",
-      // unverified: live capture (LC-G1-4): the LicenseAccessInfo JSON is empty, since no license model is simulated.
+      // The LicenseAccessInfo JSON is empty, since no license model is simulated.
       handle: (c) => {
         const id = c.target?.id;
         if (!rowNamed(store, "systemuser", id)) throw notFound("systemuser", id);
@@ -609,7 +602,7 @@ function operations(api) {
     },
     {
       name: "GenerateSocialProfile", kind: "action", binding: "collection", entity: "socialprofile",
-      // Learn: the profile for a community. The match rule (uniqueprofileid, else profilename) is unverified (LC-G1-5).
+      // The profile for a community. The match rule (uniqueprofileid, else profilename) is a guess.
       handle: async (c) => {
         const e = argsOf(c).Entity;
         if (!e || typeof e !== "object" || Array.isArray(e)) throw invalid("Entity is required.");
@@ -636,7 +629,7 @@ function operations(api) {
     },
     {
       name: "RetrievePersonalWall", kind: "function", binding: "collection", entity: "post",
-      // Learn: the caller's own id, and the records the caller follows (postfollow rows the caller owns).
+      // The caller's own id, and the records the caller follows (postfollow rows the caller owns).
       handle: (c) => {
         const followed = tableOf(store, "postfollow").filter((f) => sameId(refId(f.ownerid), c.user.systemuserid)).map((f) => refId(f.regardingobjectid));
         return wall(c, [c.user.systemuserid, ...followed], null);
@@ -656,7 +649,7 @@ function operations(api) {
     },
     {
       name: "RetrieveTimelineWallRecords", kind: "function", binding: "collection", entity: "activitypointer",
-      // unverified: live capture (LC-G1-7): the string format. ponytail: RollupType 1 and 2 are accepted and read as 0.
+      // The string format is a guess. ponytail: RollupType 1 and 2 are accepted and read as 0.
       handle: async (c) => {
         const args = argsOf(c);
         const xml = requiredText(args.FetchXml, "FetchXml");
@@ -676,7 +669,7 @@ function operations(api) {
     {
       name: "ExecuteFxExpression", kind: "action", binding: "unbound",
       // api.fxEvaluator (a function) wins; else the host's Power Fx provider (canvas-power-fx.mjs, a pack `powerFx` adapter) through
-      // its synchronous path. Neither present answers 501. unverified: the response carries the value as Result.
+      // its synchronous path. Neither present answers 501. The response property name Result is a guess.
       handle: async (c) => {
         const args = argsOf(c);
         const expression = requiredText(args.expression, "expression");
@@ -694,7 +687,7 @@ function operations(api) {
 
 export function install(api) {
   for (const op of operations(api)) api.registry.register(op);
-  // C message, internal only (Learn: "For internal use only."): https://learn.microsoft.com/power-apps/developer/data-platform/webapi/reference/setfeaturestatus
+  // Internal-only message: https://learn.microsoft.com/power-apps/developer/data-platform/webapi/reference/setfeaturestatus
   registerInternalMessage(api, {
     name: "SetFeatureStatus", kind: "action", binding: "unbound",
     signature: { params: [["FeatureType", "Edm.Int32"], ["Status", "Edm.Boolean"], ["ConfigData", "Edm.String"], ["IsSolutionUninstall", "Edm.Boolean"]] },

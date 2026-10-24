@@ -7,9 +7,8 @@ import { createSimulator } from "../server.mjs";
 import { model, parentId } from "./fixtures/subgrid.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 
-// Synthetic subgrid export and local rows only. Downloads take page 1 of up to
-// Grid/Download/MaximumResults records (default 5000), whatever page and pageSize the
-// request carries (docs/platform-internals-reference.md, download routes).
+// Downloads take page 1 of up to Grid/Download/MaximumResults records (default 5000),
+// whatever page and pageSize the request carries.
 async function downloadFixture(t, { rows, maximumResults } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "grid-download-"));
   const { state, settings } = model();
@@ -45,7 +44,7 @@ async function downloadFixture(t, { rows, maximumResults } = {}) {
   const download = async (body) => {
     const response = await fetch(`${app.url}/_services/download-as-csv/site`, {
       method: "POST",
-      headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf, ...session },
+      headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf, ...session },
       body: JSON.stringify({ base64SecureConfiguration: layouts[0].Base64SecureConfiguration, columns: [{ LogicalName: "name", Name: "Child name", Type: 0 }], viewName: "Children", ...body }),
     });
     assert.equal(response.status, 200);

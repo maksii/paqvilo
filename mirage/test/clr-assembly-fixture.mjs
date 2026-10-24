@@ -1,6 +1,6 @@
 // Builds a minimal managed assembly image (DOS and PE headers, one .NET section pair, CLI header and the #~, #Strings, #GUID
 // and #Blob streams) for the reader and registration tests. It writes only the tables the reader reads (Module, TypeRef,
-// TypeDef, InterfaceImpl, NestedClass, Assembly) with 2-byte indexes, so the image is small and deterministic. Invented names.
+// TypeDef, InterfaceImpl, NestedClass, Assembly) with 2-byte indexes, so the image is small and deterministic.
 
 const BSJB = 0x424a5342;
 const TABLE = { Module: 0, TypeRef: 1, TypeDef: 2, InterfaceImpl: 9, NestedClass: 41, Assembly: 32 };

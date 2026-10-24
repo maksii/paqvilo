@@ -1,5 +1,5 @@
-// A loopback Dataverse API over an invented fx_widget table (file column fx_doc, full-size image fx_photo), with the storage
-// routing extension installed right after dataverse-files, with a local-disk storage router or without one. Invented schema only.
+// A loopback Dataverse API over an fx_widget table (file column fx_doc, full-size image fx_photo), with the storage
+// routing extension installed right after dataverse-files, with a local-disk storage router or without one.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

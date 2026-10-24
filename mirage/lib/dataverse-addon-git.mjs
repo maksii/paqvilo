@@ -1,4 +1,4 @@
-// Git source control messages (Learn: the Git integration API and the Web API ConnectToGit, DisconnectFromGit, CommitToGit,
+// Git source control messages (the Git integration API and the Web API ConnectToGit, DisconnectFromGit, CommitToGit,
 // RefreshChangesFromGit, PullChangesFromGit(Async), ExportSolutionFromGit(Async), PreValidateGitComponents and
 // ValidateSourceControlConnection). Unbound actions, registered through registerAddon (dataverse-addon-common.mjs).
 //
@@ -11,9 +11,9 @@
 // call time, so that module is not edited.
 //
 // Tables: sourcecontrolconfiguration (one row per repository), sourcecontrolbranchconfiguration (one row per connected
-// solution; name is the solution's unique name, unverified), sourcecontrolcomponent (pending Push, Pull and Conflict rows).
-// A component row carries its solution in solutionuniquename, a field that is not a Learn column.
-// Unverified: the messages and HTTP statuses that Learn does not give, the Type value of CommitToGit, the branch row's name,
+// solution; name is the solution's unique name, a guess), sourcecontrolcomponent (pending Push, Pull and Conflict rows).
+// A component row carries its solution in solutionuniquename, a field that is not a native column.
+// Guesses: the undocumented messages and HTTP statuses, the Type value of CommitToGit, the branch row's name,
 // the action and componenttype values of the pending rows (action 1 Push, 2 Pull, 3 Conflict; solution componenttype 7).
 // ponytail: the remote side compares whole solutions (one Solution row), not components.
 // ponytail: refresh treats every member as changed when the local export differs from the synced commit, not per modification time.
@@ -28,8 +28,8 @@ import { requireMetadataPrivilege } from "./dataverse-metadata-relationships.mjs
 
 const CONNECTED = 0, DISCONNECTED = 1;
 const ACTION = { Push: 1, Pull: 2, Conflict: 3 };
-const SOLUTION_TYPE = 7; // componenttype of a solution row (unverified)
-const SYNC = { Connected: 3, Committed: 4 }; // solution.sourcecontrolsyncstatus (unverified)
+const SOLUTION_TYPE = 7; // componenttype of a solution row (a guess)
+const SYNC = { Connected: 3, Committed: 4 }; // solution.sourcecontrolsyncstatus (a guess)
 const FORBIDDEN_BRANCH_TEXT = [" ", "~", "^", ":", "?", "*", "[", "\\", ".."];
 const PULL_PARAMETERS = [["SolutionUniqueName", "Edm.String"], ["AdditionalParameters", "mscrm.PullChangesFromGitParameters"]];
 
@@ -40,7 +40,7 @@ const tableOf = (api, table) => (api.store.state.tables[table] ??= []);
 const findRow = (api, table, key, id) => rowsOf(api, table).find((row) => row[key] === id);
 const write = (api, fn) => api.change(() => api.store.transact(fn, { isolated: true }));
 const gitError = (message, status, code, innerCode) => new DataError(message, status, code, { innerCode });
-const noResource = () => gitError("Git resource does not exist or do not have permissions for the operation attempted.", 400, "InvalidRequest", "0x80098001"); // unverified: status
+const noResource = () => gitError("Git resource does not exist or do not have permissions for the operation attempted.", 400, "InvalidRequest", "0x80098001"); // status is a guess
 const handlerOf = (api, name) => api.registry.find({ name, kind: "action", binding: "unbound" });
 
 // Remote paths. A repository segment must be one plain name (the values come from the request).
@@ -90,14 +90,14 @@ const zipsOf = (commit, name) => Object.entries(commit?.solutions ?? {}).find(([
 // The connected branch row of a solution, its configuration and its remote directory.
 function connectionOf(api, solutionName) {
   const branch = rowsOf(api, "sourcecontrolbranchconfiguration").find((b) => lower(b.name) === lower(solutionName) && b.statuscode === CONNECTED);
-  if (!branch) throw gitError(`The solution ${solutionName} is not connected to Git.`, 400, "InvalidRequest"); // unverified
+  if (!branch) throw gitError(`The solution ${solutionName} is not connected to Git.`, 400, "InvalidRequest"); // native message not known
   const config = findRow(api, "sourcecontrolconfiguration", "sourcecontrolconfigurationid", branch.sourcecontrolconfigurationid);
   return { branch, repo: remoteOf(api, config) };
 }
 
 function solutionOf(api, name) {
   const row = rowsOf(api, "solution").find((s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null);
-  if (!row) throw new DataError(`Solution with UniqueName '${name}' does not exist.`, 404, "NotFound"); // unverified
+  if (!row) throw new DataError(`Solution with UniqueName '${name}' does not exist.`, 404, "NotFound"); // native message not known
   return row;
 }
 
@@ -126,7 +126,7 @@ function pullOf(api, name) {
   const { branch, repo } = connectionOf(api, name);
   const { head, commit } = commitOf(repo, branch.branchname);
   const zips = zipsOf(commit, name);
-  if (!zips) throw new DataError(`The branch has no commit of solution ${name}.`, 404, "NotFound"); // unverified
+  if (!zips) throw new DataError(`The branch has no commit of solution ${name}.`, 404, "NotFound"); // native message not known
   return { branchId: branch.sourcecontrolbranchconfigurationid, head, zips };
 }
 
@@ -145,7 +145,7 @@ function exportFromGit(api, a) {
   const { branch, repo } = connectionOf(api, a.SolutionName);
   const { head, commit } = commitOf(repo, a.ReleaseBranch || branch.branchname);
   const zips = zipsOf(commit, a.SolutionName);
-  if (!zips) throw new DataError(`The branch has no commit of solution ${a.SolutionName}.`, 404, "NotFound"); // unverified
+  if (!zips) throw new DataError(`The branch has no commit of solution ${a.SolutionName}.`, 404, "NotFound"); // native message not known
   return { file: a.Managed ? zips.managed : zips.unmanaged, commitId: head };
 }
 
@@ -167,9 +167,9 @@ export function installGit(api) {
     handle: async (c) => {
       importPriv(c);
       const a = argsOf(c);
-      if (!a.GitFolder || !a.Branch) throw gitError("GitFolder and Branch are required.", 400, "InvalidRequest", "0x80040203"); // unverified message
+      if (!a.GitFolder || !a.Branch) throw gitError("GitFolder and Branch are required.", 400, "InvalidRequest", "0x80040203"); // native message not known
       const forbidden = FORBIDDEN_BRANCH_TEXT.find((text) => a.Branch.includes(text));
-      if (forbidden !== undefined) throw gitError(`Invalid git branch name. Branch name cannot contain ${forbidden}.`, 400, "InvalidRequest", "0x80098011"); // unverified
+      if (forbidden !== undefined) throw gitError(`Invalid git branch name. Branch name cannot contain ${forbidden}.`, 400, "InvalidRequest", "0x80098011"); // native message not known
       if (a.SolutionUniqueName) solutionOf(api, a.SolutionUniqueName);
       // A follow-up solution passes no repository and inherits the first connection's configuration.
       const configs = rowsOf(api, "sourcecontrolconfiguration");
@@ -206,7 +206,7 @@ export function installGit(api) {
       await write(api, () => {
         for (const b of tableOf(api, "sourcecontrolbranchconfiguration")) if (!name || lower(b.name) === lower(name)) b.statuscode = DISCONNECTED;
       });
-      return undefined; // 204, as the Learn sample (unverified: the response type in the CSDL)
+      return undefined; // 204, as the documented sample; the CSDL response type is a guess
     },
   });
 
@@ -220,7 +220,7 @@ export function installGit(api) {
       const { branch, repo } = connectionOf(api, a.SolutionUniqueName);
       const { head } = commitOf(repo, branch.branchname);
       if ((head ?? null) !== (branch.branchsyncedcommitid ?? null)) {
-        throw gitError("The branch has been updated by another user. Please sync the environment with Git and try again.", 400, "InvalidRequest", "0x80098010"); // unverified status
+        throw gitError("The branch has been updated by another user. Please sync the environment with Git and try again.", 400, "InvalidRequest", "0x80098010"); // status is a guess
       }
       const parent = head ? readCommit(repo, head) : null;
       const zips = exportZips(c, api, solution.uniquename);
@@ -236,7 +236,7 @@ export function installGit(api) {
         Object.assign(findRow(api, "solution", "solutionid", solution.solutionid), { sourcecontrolsyncstatus: SYNC.Committed });
         removeRows(api, "sourcecontrolcomponent", (r) => r.solutionuniquename === solution.uniquename && r.action === ACTION.Push);
       });
-      return { Type: 0, CommitId: id }; // unverified: Type
+      return { Type: 0, CommitId: id }; // Type is a guess
     },
   });
 
@@ -284,7 +284,7 @@ export function installGit(api) {
       const name = argsOf(c).SolutionUniqueName;
       const pull = pullOf(api, name);
       const asyncId = await api.systemJob({ name: `Pull ${name} from Git`, operationtype: null, callerId: c.caller.systemuserid }, () => applyPull(c, api, name, pull));
-      return { AsyncOperationId: asyncId }; // unverified: asyncoperation operationtype
+      return { AsyncOperationId: asyncId }; // the asyncoperation operationtype is a guess
     },
   });
 
@@ -322,7 +322,7 @@ export function installGit(api) {
     handle: (c) => {
       exportPriv(c);
       solutionOf(api, argsOf(c).SolutionUniqueName);
-      return { ValidationMessages: "[]" }; // unverified: no validation rules are simulated
+      return { ValidationMessages: "[]" }; // no validation rules are simulated
     },
   });
 

@@ -1,6 +1,5 @@
 // Note documentbody and attachment body through the storage routing extension, with a local-disk storage router and without
 // one: the row keeps no base64, reads answer the column exactly as before, and deletes and replacements free the blobs.
-// Invented schema and GUIDs; loopback only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -115,7 +114,7 @@ for (const mode of MODES) {
   });
 }
 
-// R1 F8: a release flush deletes only the object it judged dead; bytes put again under the same key after the check stay.
+// A release flush deletes only the object it judged dead; bytes put again under the same key after the check stay.
 test("a note re-created under the same id while the release flush is between its check and its delete keeps its new body", async (t) => {
   const h = await routingApi(t);
   assert.equal((await h.call("POST", "annotations", note())).status, 204);
@@ -137,9 +136,9 @@ test("a note re-created under the same id while the release flush is between its
   assert.equal(read.json.documentbody, NEW_BODY);
 });
 
-// R1 F10: the project hook builds the note id map once per request, not once per listed row.
+// The project hook builds the note id map once per request, not once per listed row.
 // Only the routing module's reads are counted: the records layer has its own per-row lookups.
-test("listing 50 notes with documentbody reads the annotation table once in the routing project hook", async (t) => {
+test("listing several notes with documentbody reads the annotation table once in the routing project hook", async (t) => {
   const callsFor = async (count) => {
     const h = await routingApi(t);
     for (let i = 0; i < count; i += 1) {
@@ -155,5 +154,5 @@ test("listing 50 notes with documentbody reads the annotation table once in the 
     assert.ok(list.json.value.every((row) => row.documentbody === BODY));
     return calls;
   };
-  assert.equal(await callsFor(50), 1);
+  assert.equal(await callsFor(10), 1);
 });

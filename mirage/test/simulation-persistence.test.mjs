@@ -239,11 +239,19 @@ test('failed persistence never retains elastic writes or independent plug-in wri
 
 test('pack DATA manifest rejects executable locations, path escapes, overlap and duplicate ownership', async t => {
   const base = { id: 'invented', name: 'Invented', description: 'Invented fixture', matches: () => true, presets: () => ({}) };
-  for (const file of ['pack.mjs', '../data.json', 'C:/data.json', '.paqvilo/state.json']) assert.throws(() => validatePack({ ...base, dataFiles: [{ file, tables: { item: { path: [], idColumn: 'itemid' } } }] }));
-  assert.throws(() => validatePack({ ...base, dataFiles: [{ file: 'data.json', tables: { item: { path: ['schema'], idColumn: 'itemid' } }, schemaPath: ['schema'] }] }));
-  assert.throws(() => simulationSettings({ level: 'unknown' }));
-  const { pack, stateFile } = await workspace(t, 'simulation');
-  await assert.rejects(createSimulationPersistence({ settings: { level: 'deep' }, packs: [pack, { ...pack }], stateFile }), /module directory|exactly one|more than one/);
+  for (const file of ['pack.mjs', '../data.json', 'C:/data.json', '.paqvilo/state.json'])
+    assert.throws(() => validatePack({ ...base, dataFiles: [{ file, tables: { item: { path: [], idColumn: 'itemid' } } }] }), /dataFiles\[0\]\.file must name an existing relative JSON data file inside the pack/, file);
+  assert.throws(() => validatePack({ ...base, dataFiles: [{ file: 'data.json', tables: { item: { path: ['schema'], idColumn: 'itemid' } }, schemaPath: ['schema'] }] }), /data and schema locations must not overlap/);
+  assert.throws(() => simulationSettings({ level: 'unknown' }), /level: dry-run, simulation, deep/);
+  const { pack, packModule, directory, stateFile } = await workspace(t, 'simulation');
+  const persistence = packs => createSimulationPersistence({ settings: { level: 'deep' }, packs, stateFile });
+  await assert.rejects(persistence([pack, { ...pack }]), /has no explicit module directory/);
+  await assert.rejects(persistence([pack, await loadPack(packModule)]), /Each pack data file must have exactly one descriptor/);
+  const other = path.join(directory, 'other');
+  await fs.mkdir(other);
+  await fs.writeFile(path.join(other, 'data.json'), JSON.stringify({ records: [] }));
+  await fs.writeFile(path.join(other, 'pack.mjs'), "export default {id:'invented-other',name:'Other',description:'Invented fixture',matches:()=>true,presets:()=>({}),dataFiles:[{file:'data.json',tables:{item:{path:['records'],idColumn:'itemid'}}}]};");
+  await assert.rejects(persistence([pack, await loadPack(path.join(other, 'pack.mjs'))]), /Table item has more than one pack data owner/);
 });
 
 test('a queued writer cannot borrow a paused source publication to bypass schema policy', async t => {

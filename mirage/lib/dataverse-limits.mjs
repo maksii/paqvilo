@@ -47,7 +47,7 @@ export function createServiceProtection({
     list.push(entry);
   };
 
-  // unverified: Retry-After is the seconds until the oldest counted entry leaves the window (rounded up).
+  // Retry-After is the seconds until the oldest counted entry leaves the window (rounded up); a guess at the native rule.
   const retryAfter = (oldestAt, now) => Math.max(1, Math.ceil(((oldestAt ?? now) + WINDOW_MS - now) / 1000));
 
   // Execution time: the retry is the expiry of the first entry whose removal, with every older one, brings the counted
@@ -76,7 +76,7 @@ export function createServiceProtection({
       const now = clock();
       const s = stateOf(userId);
       prune(s, now);
-      // unverified: rejected requests are not counted toward the request or execution windows.
+      // Rejected requests are not counted toward the request or execution windows (a guess).
       if (requestsPer300s != null && s.requests.length >= requestsPer300s) {
         return reject(
           `Number of requests exceeded the limit of ${requestsPer300s} over time window of 300 seconds.`,
@@ -86,7 +86,7 @@ export function createServiceProtection({
       }
       const executed = s.executed.reduce((sum, e) => sum + e.ms, 0);
       if (executionMsPer300s != null && executed >= executionMsPer300s) {
-        // unverified: whether execution time is counted at admission or completion; this counts at completion.
+        // Native may count execution time at admission or completion; this counts at completion.
         return reject(
           `Combined execution time of incoming requests exceeded limit of ${thousands(executionMsPer300s)}  milliseconds over time window of 300 seconds. Decrease number of concurrent requests or reduce the duration of requests and try again later.`,
           "0x80072321",
@@ -94,7 +94,7 @@ export function createServiceProtection({
         );
       }
       if (concurrentRequests != null && s.active >= concurrentRequests) {
-        // unverified: Retry-After for concurrency is not documented; 1 second is assumed.
+        // Retry-After for concurrency is not documented; 1 second is assumed.
         return reject(`Number of concurrent requests exceeded the limit of ${concurrentRequests}.`, "0x80072326", 1);
       }
 
@@ -125,8 +125,7 @@ export function createServiceProtection({
       }
       if (executionMsPer300s != null) {
         const used = s.executed.reduce((sum, e) => sum + e.ms, 0);
-        // unverified: the header unit is taken as seconds with two decimals (the value baseHeaders emits).
-        // observed: native authenticated responses (e.g. image.thumbnail) send the time remaining with a thousands separator (1,068.10).
+        // Seconds with two decimals and a thousands separator (1,068.10), as native authenticated responses send it.
         out["x-ms-ratelimit-time-remaining-xrm-requests"] = ((Math.max(0, executionMsPer300s - used) / 1000).toFixed(2)).replace(/^\d+/, thousands);
       }
       return out;

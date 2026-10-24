@@ -25,7 +25,7 @@ const connector = {
   DeleteRecord: (entitySet, id) => connectorCall('delete', entitySet, id),
   InvokeCustomApi: (httpMethod, url, payload = null) => rpc('customApi', { method: String(httpMethod ?? ''), url: String(url ?? ''), payload: text(payload) }),
 };
-// Learn (server objects): HttpClient methods and CloudFlow.TriggerAsync are asynchronous and answer the response envelope.
+// HttpClient methods and CloudFlow.TriggerAsync are asynchronous and answer the response envelope.
 const http = method => (url, ...rest) => {
   const [body, headers, contentType] = ['GET', 'DELETE'].includes(method) ? [null, rest[0], null] : rest;
   return Promise.resolve().then(() => rpc('http', { method, url: String(url ?? ''), body: text(body), headers: headers ?? {}, contentType: contentType ?? null }));

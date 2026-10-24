@@ -1,6 +1,6 @@
 // Solution export and import over the Dataverse Web API: ExportSolution (synchronous), ImportSolution and ImportSolutionAsync.
-// Documented on Learn: web-api reference exportsolution, importsolution, importsolutionasync; ImportJob table (importjob);
-// Miscellaneous privileges (prvExportCustomization, prvImportCustomization, held by System Administrator and System Customizer).
+// They need the miscellaneous privileges prvExportCustomization and prvImportCustomization (held by System Administrator and
+// System Customizer).
 //
 // Export builds a Solution zip (solution.xml, customizations.xml, [Content_Types].xml) from the components a solution holds:
 // state.dataverse.solutionComponents, filled by metadata writes that name the solution in MSCRM.SolutionUniqueName
@@ -16,7 +16,7 @@
 // flags (ignored), workflow activation (PublishWorkflows is accepted and ignored), and the ImportJobKey lookup beyond the
 // importjob id. App/form/view/workflow definitions and opaque asset bytes
 // persist in bounded, per-solution transport layers; metadata rows share the record store and export retains current edits.
-// Error messages and statuses not confirmed on Learn are unverified.
+// Error messages and statuses the platform does not document are guesses.
 import { randomUUID } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
@@ -37,16 +37,16 @@ import {
 } from "./dataverse-metadata-relationships.mjs";
 
 const DEFAULT_LCID = 1033;
-// asyncoperation.operationtype of an ImportSolutionAsync job: 203 "Import Solution Async Operation" (Learn: asyncoperation).
+// asyncoperation.operationtype of an ImportSolutionAsync job: 203 "Import Solution Async Operation".
 export const IMPORT_SOLUTION_TYPE = 203;
 const lower = (value) => String(value ?? "").toLowerCase();
 const sameGuid = (a, b) => lower(idOf(a)) === lower(idOf(b));
 const idOf = (value) => (value && typeof value === "object" ? value.id : value);
-const invalid = (message) => new DataError(message, 400, "InvalidRequest"); // unverified: InvalidRequest code
+const invalid = (message) => new DataError(message, 400, "InvalidRequest");
 const stamp = (api) => new Date(api.clock?.() ?? Date.now()).toISOString();
 const rowsOf = (store, table) => store.state.tables?.[table] ?? [];
 
-// Seeded Dataverse-only tables: solution, publisher and importjob (Learn: ImportJob table columns). The writable columns named
+// Seeded Dataverse-only tables: solution, publisher and importjob. The writable columns named
 // here are the ones the simulator reads and writes; the rest of the documented columns are not modelled.
 const UUID = { dataverseType: "uniqueidentifier" }, TEXT = { dataverseType: "nvarchar" }, INT = { dataverseType: "int" };
 const DT = { dataverseType: "datetime" }, BIT = { dataverseType: "bit" }, LOOKUP = { dataverseType: "lookup" };
@@ -59,7 +59,7 @@ const SEEDS = {
     set: "publishers", id: "publisherid", name: "friendlyname",
     fields: { publisherid: UUID, uniquename: TEXT, friendlyname: TEXT, customizationprefix: TEXT, customizationoptionvalueprefix: INT, description: TEXT, emailaddress: TEXT, supportingwebsiteurl: TEXT },
   },
-  // One row per solution and component (Learn: solutioncomponent). Written by addSolutionComponentRows (metadata writes and imports).
+  // One row per solution and component. Written by addSolutionComponentRows (metadata writes and imports).
   solutioncomponent: {
     set: "solutioncomponents", id: "solutioncomponentid", name: "solutioncomponentid",
     fields: {
@@ -87,8 +87,8 @@ function seedMappings(store) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Zip (stored or deflated entries, no ZIP64). The reader is solution-schema.mjs readSolutionZip.
+// ---- Zip
+// Stored or deflated entries, no ZIP64. The reader is solution-schema.mjs readSolutionZip.
 
 const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -127,8 +127,8 @@ export function zipOf(files) {
   return Buffer.concat([...parts, directory, end]);
 }
 
-// ---------------------------------------------------------------------------
-// XML writing. The shapes are the ones solution-schema.mjs parseSchemaDocument reads back.
+// ---- XML writing
+// The shapes are the ones solution-schema.mjs parseSchemaDocument reads back.
 
 const esc = (value) => String(value ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 const el = (name, text) => (text === undefined || text === null || text === "" ? "" : `<${name}>${esc(text)}</${name}>`);
@@ -373,8 +373,8 @@ function buildSolutionArchive(state, row, { managed = false } = {}) {
   ]);
 }
 
-// ---------------------------------------------------------------------------
-// Import: read the archive with the Solution reader, then create the components through the metadata create functions.
+// ---- Import
+// Read the archive with the Solution reader, then create the components through the metadata create functions.
 
 const NS_NAME = (labels, fallback) => (labels && Object.keys(labels).length ? labels : { [DEFAULT_LCID]: fallback });
 const blockOf = (labels) => ({ LocalizedLabels: Object.entries(labels ?? {}).map(([code, Label]) => ({ Label, LanguageCode: Number(code) })) });
@@ -387,7 +387,7 @@ function readArchive(base64) {
     assetEntries = readSolutionAssetEntries(bytes);
     docs = readSolutionZip(bytes);
   } catch (error) {
-    throw new DataError("The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.", 400, "0x80048060"); // Learn: ImportCustomizationsBadZipFileError
+    throw new DataError("The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.", 400, "0x80048060"); // ImportCustomizationsBadZipFileError
   }
   const archive = { manifest: null, entities: [], relationships: [], optionSets: [], assetEntries, payloadComponents: [], inventory: [] };
   for (const entry of assetEntries) {
@@ -404,7 +404,7 @@ function readArchive(base64) {
     archive.optionSets.push(...(facts.optionSets ?? []));
     archive.inventory.push(...(facts.inventory ?? []).filter((record) => record.component === "role" || record.component === "fieldsecurityprofile"));
   }
-  if (!archive.manifest?.solution.uniqueName) throw invalid("The solution file has no solution.xml with a UniqueName."); // unverified
+  if (!archive.manifest?.solution.uniqueName) throw invalid("The solution file has no solution.xml with a UniqueName.");
   const root = parseSolutionXml(archive.manifest.xml, { recover: true });
   const manifest = child(root, "SolutionManifest") ?? root;
   const publisher = child(manifest, "Publisher");
@@ -460,7 +460,7 @@ function attributeBody(a, primary) {
 
 function entityBody(entity, attributes) {
   const primaryFact = entity.attributes.find((a) => a.name === entity.primaryNameAttribute) ?? entity.attributes.find((a) => a.isPrimaryName);
-  if (!primaryFact || primaryFact.type !== "nvarchar") throw invalid(`The table ${entity.logicalName} has no text primary name column.`); // unverified
+  if (!primaryFact || primaryFact.type !== "nvarchar") throw invalid(`The table ${entity.logicalName} has no text primary name column.`);
   const primary = attributeBody(primaryFact, true);
   const others = attributes.filter((a) => a.name !== primaryFact.name).map((a) => attributeBody(a, false));
   return {
@@ -533,7 +533,7 @@ const entityLayerBody = (entity) => ({
 // Applies the archive's components in the store (inside the caller's transaction) and returns its members: { kind, logical, name,
 // created }. created is true when the import introduced the component (componentOrigin records it). A managed archive also pushes
 // its layer onto each component's managed stack (state.dataverse.managedLayers, dataverse-metadata-relationships.mjs): tables and
-// columns with their definition, keys and relationships for ownership. Learn solution-layers-alm and update-solutions: the
+// columns with their definition, keys and relationships for ownership. The
 // incoming definition becomes active when this solution's layer is the top managed layer and no unmanaged customization sits on
 // top; OverwriteUnmanagedCustomizations governs only that unmanaged customization (replaced with it, kept on top without it).
 function apply(api, archive, { overwrite, origin, version, caller }, log) {
@@ -779,14 +779,13 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
     await api.store.flushCommittedEvents?.();
     api.changes?.rewind(revision);
     await api.change(() => api.store.transact(() => writeJob(api, { jobId, archive, log: [], error: error.message, progress: 0 })));
-    throw error instanceof DataError ? error : invalid(`The solution import failed: ${error.message}`); // unverified: message text
+    throw error instanceof DataError ? error : invalid(`The solution import failed: ${error.message}`);
   }
-  // The imported keys start Pending; each gets its index job once the import has committed (Learn define-alternate-keys-entity).
+  // The imported keys start Pending; each gets its index job once the import has committed.
   for (const member of created) await activateKey(api, member.logical, lower(member.name), caller?.systemuserid ?? null);
 }
 
-// ---------------------------------------------------------------------------
-// The module
+// ---- The module
 
 // Resolves with the asyncoperation row once it is Completed (statecode 3), for tests and tools that wait on an ImportSolutionAsync run.
 export async function solutionImportJob(api, asyncId, { timeoutMs = 10000 } = {}) {
@@ -822,9 +821,9 @@ export function install(api) {
     handle(ctx) {
       requireMetadataPrivilege(api, ctx, "prvExportCustomization", "solution");
       const name = String(ctx.body?.SolutionName ?? "").trim();
-      if (!name) throw invalid("SolutionName is required."); // unverified
+      if (!name) throw invalid("SolutionName is required.");
       const row = rowsOf(store, "solution").find((s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null);
-      // Learn: a missing solution fails the export with 0x80048037 (the message is Learn's; the 404 status is unverified).
+      // A missing solution fails the export with the documented 0x80048037 and message; the 404 status is a guess.
       if (!row) throw new DataError("An error occurred while exporting a solution. The solution does not exist in this system.", 404, "NotFound", { innerCode: "0x80048037" });
       assertUnpatched(store, row);
       const zip = buildSolutionArchive(store.state, row, { managed: ctx.body?.Managed === true });
@@ -846,7 +845,7 @@ export function install(api) {
       const target = stagedArchive(api, archive, body);
       const jobId = typeof body.ImportJobId === "string" && body.ImportJobId ? body.ImportJobId : randomUUID();
       await importArchive(api, target, { overwrite: body.OverwriteUnmanagedCustomizations === true, jobId, origin: ctx.origin, version: ctx.version, caller: ctx.caller });
-      return undefined; // 204 No Content (Learn: the ImportSolution sample)
+      return undefined; // 204 No Content
     },
   };
   const asyncOperation = {
@@ -880,18 +879,18 @@ export function install(api) {
       };
     },
   };
-  // RetrieveFormattedImportJobResults (Learn: the results are returned in Microsoft Excel format; the import log Mirage writes is
-  // the data, unverified). The importjob row is written by the import, so an unknown id is the one error here.
+  // RetrieveFormattedImportJobResults: natively the results are in Microsoft Excel format; here the import log Mirage writes
+  // is the data. The importjob row is written by the import, so an unknown id is the one error here.
   const formattedResults = {
     name: "RetrieveFormattedImportJobResults",
     kind: "function",
     binding: "unbound",
     signature: { params: [["ImportJobId", "Edm.Guid"]], response: [["FormattedResults", "Edm.String"]] },
     handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvReadImportJob", "importjob"); // unverified: privilege name from the table privilege pattern
+      requireMetadataPrivilege(api, ctx, "prvReadImportJob", "importjob"); // privilege name assumed from the table privilege pattern
       const id = String(ctx.params?.ImportJobId ?? "");
       const row = rowsOf(store, "importjob").find((r) => sameGuid(r.importjobid, id));
-      if (!row) throw new DataError(`importjob With Id = ${id} Does Not Exist`, 404, "0x80040217"); // unverified: Dataverse message text
+      if (!row) throw new DataError(`importjob With Id = ${id} Does Not Exist`, 404, "0x80040217");
       return {
         status: 200,
         body: { "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.RetrieveFormattedImportJobResultsResponse"), FormattedResults: row.data ?? "" },
@@ -899,7 +898,7 @@ export function install(api) {
     },
   };
   for (const op of [exportOperation, importOperation, asyncOperation, formattedResults]) api.registry.register(op);
-  // ImportSolutions is internal to the platform (Learn: "For internal use only."), so it answers the not-simulated default.
+  // ImportSolutions is internal to the platform, so it answers the not-simulated default.
   // https://learn.microsoft.com/dotnet/api/microsoft.crm.sdk.messages.importsolutionsrequest
   registerInternalMessage(api, {
     name: "ImportSolutions",

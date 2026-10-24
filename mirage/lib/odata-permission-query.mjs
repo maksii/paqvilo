@@ -232,8 +232,8 @@ export function compileODataPermissionQuery(authoredXml, {
     const field = grant.field ?? primary(grant.entity);
     const terminals = [...(anyallalias?[condition(primary(grant.entity), 'not-null')]:[]), condition(field, 'eq', braced(value))];
     terminalConditions.push(...terminals.map(terminal => ({ ...terminal.attrs })));
-    // Only Contact scoped terminals inside N:N paths have independent native
-    // conversion evidence so far. Other classic scopes need calibration.
+    // Only Contact-scoped terminals inside N:N paths have a confirmed native conversion;
+    // other classic scopes are reported as unqualified.
     if (grant.scope !== 'contact') diagnostics.push({ code: 'ODATA_TERMINAL_CONTRACT_UNQUALIFIED', permissionId: grant.id });
     const expression = filter(terminals, anyallalias ? { anyallalias } : {});
     if (anyallalias) aliasFilters.add(expression);

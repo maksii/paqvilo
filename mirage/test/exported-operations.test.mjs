@@ -161,7 +161,7 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
   const calls=[],liveBridge={origin:'https://invalid.example',configure(){},status:()=>({connected:true}),async close(){},async request(url){calls.push(url);throw new Error('No live request expected');}};
   const app=await createSimulator({sourceDir:dir,port:0,watch:false,dataPacks:[{module:path.join(dir,'pack.mjs')}],liveBridge,initial:{version:1,tables:{},mappings:{},permissions:[],settings:{permissionMode:'enforce'},plugins:[],simulator:{mode:'local',pageMode:'local',endpoints:[],identityScope:'configured',identity:{id:'person',roles:['Runner'],roleSource:'override'}}}});
   t.after(()=>app.close());
-  const token=app.state().csrf;
+  const token=app.csrf;
   const post=(route,headers={})=>fetch(app.url+route,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({value:7})});
   const logic='/_api/serverlogics/sample',cloud='/_api/cloudflow/v1.0/trigger/'+flow;
   assert.equal((await post(logic)).status,403);assert.equal((await post(cloud)).status,403);
@@ -186,7 +186,7 @@ test('Imported flow HTTP failure retains completed connector commits and Respons
  const workflow={properties:{definition:{triggers:{request:{type:'Request',kind:'powerpages'}},actions:{created:{type:'OpenApiConnection',inputs:{host:{apiId:'/apis/shared_commondataserviceforapps',operationId:'CreateRecord'},parameters:{entityName:'widgets','item/title':'Committed before later failure'}}},reply:{type:'If',runAfter:{created:['Succeeded']},expression:"@triggerBody()['ok']",actions:{success:{type:'Response',inputs:{headers:{'x-invented-flow':'preserved'},body:"@body('created')"}}},else:{actions:{failure:{type:'Terminate',inputs:{runStatus:'Failed',runError:{message:'Later action failed'}}}}}}}}}};
  await fs.writeFile(path.join(dir,'Workflows/flow.json'),JSON.stringify(workflow));await fs.writeFile(path.join(dir,'Workflows/flow.json.data.xml'),`<Workflow WorkflowId="${flow}" Name="Invented flow"/>`);
  const app=await createSimulator({sourceDir:dir,solutionRoots:[dir],stateFile,port:0,watch:false,dataPacks:[{module:path.join(dir,'pack.mjs')}],initial:{version:1,tables:{widget:[]},mappings:{widget:{entitySet:'widgets',idColumn:'widgetid'}},permissions:[],plugins:[],settings:{permissionMode:'enforce'},simulator:{mode:'local',pageMode:'local',identityScope:'configured',identity:{id:'caller',roles:['Runner'],roleSource:'override'}}}});t.after(()=>app.close());
- const send=ok=>fetch(app.url+'/_api/cloudflow/v1.0/trigger/'+flow,{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({ok})});
+ const send=ok=>fetch(app.url+'/_api/cloudflow/v1.0/trigger/'+flow,{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.csrf},body:JSON.stringify({ok})});
  const rejected=await send(false);assert.equal(rejected.status,400);assert.equal(app.state().data.widget.length,1);assert.equal(JSON.parse(await fs.readFile(stateFile,'utf8')).tables.widget.length,1);
  const accepted=await send(true);assert.equal(accepted.status,200);assert.equal(accepted.headers.get('x-invented-flow'),'preserved');assert.equal(app.state().data.widget.length,2);
 });

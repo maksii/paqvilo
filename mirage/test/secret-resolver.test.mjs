@@ -1,5 +1,5 @@
 // Secret resolver: Key Vault reference forms, every status, the fail-closed allow list, versions, expiry with a fixed
-// clock, and that values never reach describe(), diagnostics or JSON. Invented vaults, principals and values only.
+// clock, and that values never reach describe(), diagnostics or JSON.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSecretResolver, parseSecretReference, secretSettings, effectiveEnvironmentVariables, environmentVariablePayload, bindSiteSettings } from '../lib/secret-resolver.mjs';

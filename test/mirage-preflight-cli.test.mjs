@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const cli = fileURLToPath(new URL('../mirage/cli.mjs', import.meta.url));
@@ -42,12 +42,24 @@ async function fixture(t) {
 
 const env = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')));
 // Every run uses an empty state directory and the fixture root as cwd, so a write outside it cannot reach the checkout.
-const runIn = ({ root, stateDir }, command, ...args) =>
-  spawnSync(process.execPath, [cli, command, ...args, '--state-dir', stateDir], { cwd: root, encoding: 'utf8', windowsHide: true, env: env(), timeout: 60000 });
+// Runs are independent and start concurrently; each resolves with its exit status and output.
+const runIn = ({ root, stateDir }, command, ...args) => new Promise((resolve) => {
+  execFile(process.execPath, [cli, command, ...args, '--state-dir', stateDir], { cwd: root, encoding: 'utf8', windowsHide: true, env: env(), timeout: 60000 },
+    (error, stdout, stderr) => resolve({ status: error ? error.code : 0, signal: error?.signal ?? null, killed: error?.killed ?? false, stdout, stderr }));
+});
 
 test('mirage preflight reports a placeholder flow and blocks on it only with --strict or a scenario', async t => {
   const { root, portal, solution, stateDir, run } = await fixture(t);
-  const plain = run('--source', portal, '--solution-root', solution, '--json');
+  const flowScenario = path.join(root, 'flow-scenario.json'), pageScenario = path.join(root, 'page-scenario.json');
+  await fs.writeFile(flowScenario, JSON.stringify({ id: 'invented-flow', requires: ['cloud-flow:*'] }));
+  await fs.writeFile(pageScenario, JSON.stringify({ id: 'invented-page', requires: ['webpage:home'] }));
+  const [plain, strict, scoped, page, human] = await Promise.all([
+    run('--source', portal, '--solution-root', solution, '--json'),
+    run('--source', portal, '--solution-root', solution, '--strict', '--json'),
+    run('--source', portal, '--solution-root', solution, '--scenario', flowScenario, '--json'),
+    run('--source', portal, '--solution-root', solution, '--scenario', pageScenario, '--json'),
+    run('--source', portal, '--solution-root', solution, '--strict'),
+  ]);
   assert.equal(plain.status, 0, plain.stdout + plain.stderr);
   const report = JSON.parse(plain.stdout);
   assert.equal(report.schemaVersion, 1);
@@ -61,28 +73,21 @@ test('mirage preflight reports a placeholder flow and blocks on it only with --s
   assert.equal(flow.blocking, false);
   assert.equal(report.summary.blocking, 0);
 
-  const strict = run('--source', portal, '--solution-root', solution, '--strict', '--json');
   assert.equal(strict.status, 1, strict.stderr);
   assert.equal(JSON.parse(strict.stdout).requirements.find(row => row.id === `cloud-flow:${FLOW}`).blocking, true);
 
-  const scenario = path.join(root, 'scenario.json');
-  await fs.writeFile(scenario, JSON.stringify({ id: 'invented-flow', requires: ['cloud-flow:*'] }));
-  const scoped = run('--source', portal, '--solution-root', solution, '--scenario', scenario, '--json');
   assert.equal(scoped.status, 1, scoped.stderr);
   assert.equal(JSON.parse(scoped.stdout).scope.scenario.id, 'invented-flow');
   // A scenario that needs only the home page does not block on the unused placeholder flow.
-  await fs.writeFile(scenario, JSON.stringify({ id: 'invented-page', requires: ['webpage:home'] }));
-  const page = run('--source', portal, '--solution-root', solution, '--scenario', scenario, '--json');
   assert.equal(page.status, 0, page.stderr);
   const rows = JSON.parse(page.stdout).requirements;
   assert.equal(rows.find(row => row.id === 'webpage:home').status, 'satisfied');
   assert.equal(rows.find(row => row.id === `cloud-flow:${FLOW}`).inScope, false);
 
-  const human = run('--source', portal, '--solution-root', solution, '--strict');
   assert.equal(human.status, 1);
   assert.match(human.stdout, /BLOCKING placeholder cloud-flow:/);
   // Preflight opens no listener (every run above exited on its own) and writes no state or cache file.
-  assert.ok(![plain, strict, scoped, page, human].some(result => result.signal || result.error), 'each run exited by itself');
+  assert.ok(![plain, strict, scoped, page, human].some(result => result.signal || result.killed), 'each run exited by itself');
   assert.doesNotMatch(plain.stdout, /"(url|port|origin)":\s*"?http/);
   assert.deepEqual(await fs.readdir(stateDir), []);
 });
@@ -91,11 +96,15 @@ test('mirage preflight exits 2 on an invocation error', async t => {
   const { root, solution, stateDir, run } = await fixture(t);
   const scenario = path.join(root, 'broken.json');
   await fs.writeFile(scenario, JSON.stringify({ requires: 'cloud-flow:*' }));
-  const result = run('--runtime', 'dataverse-api', '--solution-root', solution, '--scenario', scenario, '--json');
+  const [result, sourceForApi, serve] = await Promise.all([
+    run('--runtime', 'dataverse-api', '--solution-root', solution, '--scenario', scenario, '--json'),
+    run('--runtime', 'dataverse-api', '--source', solution),
+    runIn({ root, stateDir }, 'serve', '--source', 'preflight', '--invented-flag'),
+  ]);
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(result.stderr, /scenario\.id/);
-  assert.equal(run('--runtime', 'dataverse-api', '--source', solution).status, 2);
-  // R3-16: only the preflight command answers 2; the word as another command's option value does not.
-  assert.equal(runIn({ root, stateDir }, 'serve', '--source', 'preflight', '--invented-flag').status, 1);
+  assert.equal(sourceForApi.status, 2, sourceForApi.stdout + sourceForApi.stderr);
+  // Only the preflight command answers 2; the word as another command's option value does not.
+  assert.equal(serve.status, 1, serve.stdout + serve.stderr);
   assert.deepEqual(await fs.readdir(stateDir), []);
 });

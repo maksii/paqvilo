@@ -8,9 +8,8 @@ import { createHash } from "node:crypto";
  * supplies the real platform bundle paths, which the asset cache then serves.
  *
  * The manifest defines local shell contracts for platform globals, chrome, forms
- * and bundles. Synthetic regressions cover their composition and ordering.
- * Captured shell profiles can override deployment-specific bundle paths.
- * - Legacy ADX sources (MIT): LiquidServerControl.ServerForm (liquid_form wrapper and
+ * and bundles. Captured shell profiles can override deployment-specific bundle paths.
+ * Modelled on the legacy ADX sources (MIT): LiquidServerControl.ServerForm (liquid_form wrapper and
  *   jquery.blockUI ScriptReference), EntityForm/WebForm (webform.js, radcaptcha.js) and
  *   CellTemplate/EnhancedTextBox (crmentityformview.js).
  */
@@ -95,15 +94,15 @@ const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
 // A calendar list (lib/list-views.mjs renderCalendarList): a server control that runs inside the
 // WebForms form, without form controls or event validation.
 // A map list without map credentials (lib/platform.mjs renderListGrid) is the same kind of server
-// list control: an empty EntityListControl inside the WebForms form (live map list captures).
+// list control: an empty EntityListControl inside the WebForms form.
 const CALENDAR_LIST_MARKER = /<div class="entitylist" data-calendar-url="|<!--pp-server-list-->/;
 const VALIDATOR_MARKER = /Page_Validators = \(window\.Page_Validators \|\| \[\]\)\.concat\(\[document\.getElementById\(/;
 // The response markup of a date control is the bound box (data-ui="datetimepicker"); the picker group is built in the browser.
 // A form denied by table permissions renders no controls but keeps its date script when its
-// layout has date columns (lib/platform.mjs leaves the comment; live permission captures).
+// layout has date columns (lib/platform.mjs leaves the comment).
 const DATE_CONTROL_MARKER = /\bdata-ui="datetimepicker"|<!--pp-date-controls-->/;
 // A permission-denied form control (lib/platform.mjs): no validators or postback controls, so
-// ASP.NET registers neither WebUIValidation.js nor event validation (live permission captures).
+// ASP.NET registers neither WebUIValidation.js nor event validation.
 const DENIED_FORM_MARKER = /<!--pp-native-form-denied-->/;
 // The attach-file control posts its files with the page, so its form is multipart.
 const ATTACH_FILE_MARKER = /\bid="AttachFile"/;
@@ -132,9 +131,9 @@ const opaque = (...parts) => createHash("sha256").update(parts.join("\u0000")).d
 const hidden = (name, value) => `<input type="hidden" name="${name}" id="${name}" value="${escapeAttribute(value)}" />`;
 
 /**
- * The WebForms script resources of form pages at their native paths: WebResource.axd and
- * three ScriptResource.axd resources (WebForms.js,
- * WebUIValidation.js, MicrosoftAjax.js and MicrosoftAjaxWebForms.js). The `d` value names the
+ * The WebForms script resources of form pages at their native paths: WebResource.axd (WebForms.js)
+ * and three ScriptResource.axd resources (WebUIValidation.js, MicrosoftAjax.js and
+ * MicrosoftAjaxWebForms.js). The `d` value names the
  * local equivalent that lib/native-services.mjs serves:
  * - webforms-compat.js implements the postback, WebForm_* and validation surface;
  * - MicrosoftAjax contributes Date.prototype.format (the format part of date-format-compat.js);
@@ -146,7 +145,7 @@ export const LOCAL_ASPNET_SCRIPTS = Object.freeze(
     { id: "paqvilo-webuivalidation", path: "/ScriptResource.axd?d=paqvilo-webuivalidation&t=0", local: ["provided:webforms-compat.js"] },
     { id: "paqvilo-microsoftajax", path: "/ScriptResource.axd?d=paqvilo-microsoftajax&t=0", local: ["date-format-compat.js#format"] },
     { id: "paqvilo-microsoftajaxwebforms", path: "/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0", local: [], reason: "The ASP.NET AJAX page request manager (Sys.WebForms) is not simulated; local postbacks reload the page." },
-    // Registered by a form that shows a captcha (CAPTCHA_MARKER), after the form scripts (live).
+    // Registered by a form that shows a captcha (CAPTCHA_MARKER), after the form scripts.
     { id: "paqvilo-telerik-support", path: "/ScriptResource.axd?d=paqvilo-telerik-support&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik client feature detection the RadCaptcha control registers is not simulated; the captcha hooks are radcaptcha-compat.js." },
     { id: "paqvilo-radcaptcha", path: "/ScriptResource.axd?d=paqvilo-radcaptcha&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik RadCaptcha client control: radcaptcha-compat.js stands in for it (audio player, load event, partial refresh postback)." },
   ].map((entry) => Object.freeze({ ...entry, kind: "script" })),
@@ -170,7 +169,7 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
   // data-pp-viewstate on its wrapper; the page's __VIEWSTATE carries it, as ASP.NET would.
   // A failed native form control aborts the server form's content (lib/platform.mjs
   // RENDER_ABORT_MARKER): only the closing tags directly after the control survive, written after
-  // the form's closing fields (live truncated pages), then the form ends; the layout outside the
+  // the form's closing fields, then the form ends; the layout outside the
   // form (the footer) is unaffected.
   const aborted = String(content ?? "").indexOf(RENDER_ABORT_MARKER);
   let trailing = "";
@@ -185,10 +184,10 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
   const denied = DENIED_FORM_MARKER.test(String(content ?? ""));
   if (denied) eventValidation = false;
   // ASP.NET writes __EVENTVALIDATION only for registered input controls: a form control that
-  // renders only a message (an insert form the visitor may not use) has none (live).
+  // renders only a message (an insert form the visitor may not use) has none.
   if (!/<(?:select|textarea)\b|<input\b(?![^>]*\btype="hidden")/i.test(String(content ?? ""))) eventValidation = false;
   // WebUIValidation.js is registered by validators and form controls only: server forms holding a
-  // list control or no control at all load three AXD scripts (live calendar, map, rewrite pages).
+  // list control or no control at all load three AXD scripts.
   const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.filter((entry) => !entry.captcha && ((!denied && (validators || formControls)) || entry.id !== "paqvilo-webuivalidation")).map((entry) => script(entry.path)).join("\n");
   const captchaScripts = formControls && CAPTCHA_MARKER.test(String(content ?? "")) ? LOCAL_ASPNET_SCRIPTS.filter((entry) => entry.captcha).map((entry) => script(entry.path)).join("\n") + "\n" : "";
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
@@ -222,7 +221,7 @@ export function nativePageRegions({ content = "", action = "/", bodyScripts = []
   // Liquid pages get the server form only for their form controls and calendar lists; legacy
   // ASPX page templates (rewrite URLs) always run inside the WebForms master's content_form.
   const calendar = kind === "calendar-list";
-  // A legacy ASPX page template's content_form (serverFormId) writes no __EVENTVALIDATION (live rewrite and bound pages).
+  // A legacy ASPX page template's content_form (serverFormId) writes no __EVENTVALIDATION.
   const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component" || calendar;
   return {
     kind,
@@ -276,7 +275,7 @@ export function rewritePageLayout(page, pageTemplate) {
   } else if (layout === "fullpage") {
     // FullPage.aspx: div#mainContent holds the page copy (one editable element with the
     // page-copy class) and the three entity control holders, empty when the page binds none;
-    // the page metadata and child links follow it (live bound and rewrite pages).
+    // the page metadata and child links follow it.
     const holders =
       DEFAULT_VALIDATION_HOOKS +
       (advancedForm ? `{% webform id: '${advancedForm}', pp_page_control: true %}` : '<div id="WebFormControl"></div>') +
@@ -290,7 +289,6 @@ export function rewritePageLayout(page, pageTemplate) {
   return { source: `${heading}<div class="container">${main}</div>`, serverFormId: "content_form" };
 }
 
-// ---------------------------------------------------------------------------
 // Platform bundle ordering used by the local shell, including modal form documents.
 // The ResourceManager script and bundles retain their native URL structure.
 // Sites whose Site/BootstrapV5Enabled setting is true load the BootstrapV5 builds of

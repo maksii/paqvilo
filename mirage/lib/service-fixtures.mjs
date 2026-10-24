@@ -9,13 +9,13 @@
 //   3. else the fallback (level 'disabled', source 'core'). The default fallback answers
 //      { error: { code: 'ServiceDisabled', service, operation } } and reports SERVICE_FIXTURE_DISABLED once per service
 //      and operation. An operation that was never registered resolves to the default fallback as well.
-// Out of scope by decision (ARCH-DECISIONS section 1): Power BI / Fabric rendering, AI Builder model inference and Copilot
+// Out of scope: Power BI / Fabric rendering, AI Builder model inference and Copilot
 // orchestration. This module never renders, infers or orchestrates; it answers with a pack fixture or the disabled error.
 // The built-in catalogue is powerBi.embed, aiBuilder.predict and copilot.ask, each with the default fallback only.
 // dynamics.* is not pre-registered: packs add its operations.
 //
 // Host seams: platform.mjs powerBiMarkup calls resolve('powerBi', 'embed')
-// and uses { html } from a fixture before the placeholder; server.mjs runtimeState capabilities (about :1379) adds
+// and uses { html } from a fixture before the placeholder; server.mjs runtimeState capabilities adds
 // services: describe().
 // ponytail: a fixture runs in-process with no timeout; packs are trusted code, as dataverseMessages handlers are.
 // ponytail: each registry dedupes its own diagnostics; a process with several registries reports once per registry.
@@ -114,7 +114,7 @@ export function createServiceFixtureRegistry({ packs = [], diagnostic } = {}) {
       });
   }
 
-  // One capability record per service (ARCH-DECISIONS section 2 item 4).
+  // One capability record per service.
   function describe() {
     const services = new Map();
     for (const entry of list()) {

@@ -3,21 +3,18 @@
 // queued writes through the organization's Web API (the records pipeline, as the staff user) and downloads again.
 // Only the device is simulated: the offline copy is a server-side store per staff session and app.
 //
-// Learn sources:
-// - Profile items: power-apps/developer/data-platform/reference/entities/mobileofflineprofileitem (RecordDistributionCriteria
-//   0 Download related data only, 1 All records, 2 Other data filter, 3 Custom data filter; RecordsOwnedByMe/MyTeam/
-//   MyBusinessUnit; ProfileItemEntityFilter; SyncIntervalInMinutes 5..1440) and mobileofflineprofileitemassociation
-//   (SelectedRelationShipsSchema).
-// - Filters: power-apps/mobile/setup-mobile-offline ("Related rows only: be sure that the related table has been added to the
-//   offline profile"; "Relationships ... ensures that related rows following that relationship are downloaded"; up to 15
-//   related tables) and mobile-offline-guidelines (a custom filter on a related-rows table is treated as an OR).
-// - Client API: clientapi/reference/xrm-webapi/offline (the methods work only for tables in the user's offline profile;
-//   only basic validation offline: lower-case existing columns, data types, no duplicate GUID, the record exists) and
-//   xrm-webapi (in offline mode the source of Xrm.WebApi is the offline data store).
-// - Conflicts: power-apps/mobile/resolve-sync-conflicts and dynamics365/field-service/mobile/offline-data-sync: with conflict
-//   detection off (organization.isconflictdetectionenabledformobileclient, default False) the offline change wins; with it on
-//   the server change wins and the user sees a sync conflict error; plug-in or validation failures revert the change locally
-//   and are reported as sync errors.
+// Platform rules reproduced:
+// - Profile items: RecordDistributionCriteria 0 Download related data only, 1 All records, 2 Other data filter, 3 Custom
+//   data filter; RecordsOwnedByMe/MyTeam/MyBusinessUnit; ProfileItemEntityFilter; SyncIntervalInMinutes 5..1440; item
+//   associations name their SelectedRelationShipsSchema.
+// - Filters: a related-rows-only table must itself be in the profile; a selected relationship downloads the related rows
+//   following it (up to 15 related tables); a custom filter on a related-rows table is treated as an OR.
+// - Client API: Xrm.WebApi.offline works only for tables in the user's offline profile, with basic validation only
+//   (lower-case existing columns, data types, no duplicate GUID, the record exists); in offline mode Xrm.WebApi reads the
+//   offline data store.
+// - Conflicts: with conflict detection off (organization.isconflictdetectionenabledformobileclient, default False) the
+//   offline change wins; with it on the server change wins and the user sees a sync conflict error; plug-in or validation
+//   failures revert the change locally and are reported as sync errors.
 import { randomUUID } from 'node:crypto';
 import { DataStore } from '../data.mjs';
 import { parseSolutionXml, serializeXml } from '../solution-xml.mjs';
@@ -33,7 +30,7 @@ const bare = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
 const now = () => new Date().toISOString();
 
 // A custom filter is the FetchXML `<filter>`/`<link-entity>` content of the item's table, from a `<fetch>` document or a bare
-// `<filter>` (unverified: the exported ProfileItemEntityFilter text format; both shapes are accepted): { text, nodes }.
+// `<filter>` (the exported ProfileItemEntityFilter text format is a guess; both shapes are accepted): { text, nodes }.
 function customFilter(text, entity) {
   let root;
   try { root = parseSolutionXml(String(text)); } catch { return null; }
@@ -46,8 +43,8 @@ function customFilter(text, entity) {
 // Why the download query cannot run a custom filter, or null: every condition operator must be one the organization's
 // FetchXML runs for the staff user (dataverse-conditions.mjs), and every link-entity must join a table of the profile. A
 // record hierarchy operator (under, above...) runs on a table whose metadata has a hierarchical self-referencing one-to-many
-// relationship (hierarchical(table): IsHierarchical; Learn query-hierarchical-data); on any other table the organization's
-// FetchXML refuses it, so it is a gap there only.
+// relationship (hierarchical(table): IsHierarchical); on any other table the organization's FetchXML refuses it, so it is
+// a gap there only.
 function filterGap(nodes, entity, profileTables, hierarchical = () => false) {
   // [node, the table its conditions apply to]: the link-entity's own table, or the aliased table a condition names (entityname).
   const aliases = new Map();
@@ -68,7 +65,7 @@ function filterGap(nodes, entity, profileTables, hierarchical = () => false) {
 }
 
 /** The FetchXML filter one profile item downloads by (`filter`: '' for all rows, null for related rows only), or the
- * `reason` it cannot be evaluated. A custom filter on a related-rows item is an OR (Learn mobile-offline-guidelines).
+ * `reason` it cannot be evaluated. A custom filter on a related-rows item is an OR.
  * `profileTables` (the profile's table names) lets the check refuse a link-entity to a table outside the profile;
  * `hierarchical(table)` answers whether a table has a hierarchical relationship (filterGap). */
 export function profileItemFilter(item = {}, { profileTables = null, hierarchical } = {}) {
@@ -229,8 +226,8 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
       rows.set(item.entity, rows.get(item.entity) ?? new Map());
       const { filter, reason } = profileItemFilter(item, { profileTables: inProfile, hierarchical });
       if (reason || filter === null) continue;
-      // A table whose download fails is not in the copy (Learn xrm-webapi/offline: only tables of the profile the device
-      // holds work offline); the gap says why.
+      // A table whose download fails is not in the copy (only tables of the profile the device holds work offline); the gap
+      // says why.
       try { take(item.entity, await query(session, item.entity, filter)); } catch (error) { rows.delete(item.entity); gap(item.entity, error.message); }
     }
     // Related rows follow each selected relationship until no table grows (a related-rows table inherits its parent's rows).
@@ -272,7 +269,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
       tables: items.filter(item => rows.has(item.entity)).map(item => ({ entity: item.entity, rows: rows.get(item.entity).size, syncIntervalMinutes: item.syncIntervalMinutes ?? null })) });
   }
 
-  // Learn resolve-sync-conflicts: conflict detection is the organization setting, False when unset.
+  // Conflict detection is the organization setting, False when unset.
   async function conflictDetection(session) {
     const response = await call(session, 'GET', `${API}/organizations?$select=isconflictdetectionenabledformobileclient`);
     return response.status < 400 && response.body?.value?.[0]?.isconflictdetectionenabledformobileclient === true;
@@ -309,7 +306,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
         else {
         settle(session, entry.entity, entry.id, 'errors', { entity: entry.entity, id: entry.id, operation: entry.operation, status: error.status ?? null, code: error.code ?? 'OfflineSyncFailed',
           message: String(error.message ?? error), queued: true, at: now() });
-        throw Object.assign(fail(`Synchronization stopped at the queued ${entry.operation} of ${entry.entity} ${entry.id}: ${error.message ?? error}`, 502, 'OfflineSyncFailed'), { recorded: true }); // unverified: native code
+        throw Object.assign(fail(`Synchronization stopped at the queued ${entry.operation} of ${entry.entity} ${entry.id}: ${error.message ?? error}`, 502, 'OfflineSyncFailed'), { recorded: true }); // native code unknown
         }
       }
       session.queue.shift();
@@ -324,8 +321,8 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
   }
 
   const available = (session, entity) => {
-    if (session.mode !== 'offline') throw fail('Xrm.WebApi.offline works only while the app is offline.', 409, 'OfflineModeRequired'); // unverified: the native message and code online
-    if (!session.db?.state.mappings[entity]) throw fail(`${entity} is not available offline in this user's mobile offline profile.`, 400, 'OfflineTableUnavailable'); // unverified: native code
+    if (session.mode !== 'offline') throw fail('Xrm.WebApi.offline works only while the app is offline.', 409, 'OfflineModeRequired'); // native message and code unknown
+    if (!session.db?.state.mappings[entity]) throw fail(`${entity} is not available offline in this user's mobile offline profile.`, 400, 'OfflineTableUnavailable'); // native code unknown
     return session.catalogueTables[entity];
   };
   // A write the downloaded privileges refuse fails when it is queued, with the online privilege error (status, code, message).
@@ -340,7 +337,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     return result;
   };
   const exists = (session, entity, id) => session.db.get(entity, id, ADMIN);
-  // Learn xrm-webapi/offline: basic validation only (lower-case existing columns, lookup bindings, types through the store).
+  // Basic validation only, as natively offline (lower-case existing columns, lookup bindings, types through the store).
   function localValues(session, table, data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw fail('Provide a record values object.', 400, 'OfflineValidationFailed');
     const values = {};
@@ -364,16 +361,16 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     async retrieve(session, { entity, id, options = '' }) {
       const table = available(session, entity), query = params(options, ['$select', '$expand']);
       const row = session.db.queryCore(entity, { ...query, $filter: `${table.idColumn} eq ${bare(id)}` }, ADMIN).value?.[0];
-      if (!row) throw fail(`${entity} with id ${bare(id)} does not exist in the offline data store.`, 404, 'OfflineRecordNotFound'); // unverified: native code
+      if (!row) throw fail(`${entity} with id ${bare(id)} does not exist in the offline data store.`, 404, 'OfflineRecordNotFound'); // native code unknown
       return row;
     },
     async retrieveMultiple(session, { entity, options = '' }) {
       available(session, entity);
       const query = params(options, ['$select', '$filter', '$top', '$orderby', '$expand', 'fetchXml']);
       if (query.fetchXml && !new RegExp(`<entity\\s+name=["']${entity}["']`).test(query.fetchXml)) throw fail('The FetchXML query must target this table.', 400, 'OfflineQueryInvalid');
-      // Learn retrieveMultipleRecords: grouping and aggregation are not supported in mobile offline.
+      // Grouping and aggregation are not supported in mobile offline.
       if (/aggregate\s*=\s*["']true/i.test(query.fetchXml ?? '')) throw fail('Grouping and aggregation are not supported offline.', 400, 'OfflineQueryInvalid');
-      // ponytail: the whole result in one page; maxPageSize paging with nextLink is the upgrade path (deprecated offline per Learn).
+      // ponytail: the whole result in one page; maxPageSize paging with nextLink is the upgrade path (deprecated offline).
       return { entities: session.db.queryCore(entity, query, ADMIN).value ?? [] };
     },
     async create(session, { entity, data }) {
@@ -415,7 +412,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
       queue: session.queue.map(({ operation, entity, id, body, at }) => ({ operation, entity, id, columns: Object.keys(body ?? {}), at })),
       conflicts: session.conflicts, errors: session.errors };
   };
-  // Going online uploads the queue and downloads again (Learn: the device syncs when connected); going offline downloads
+  // Going online uploads the queue and downloads again (the device syncs when connected); going offline downloads
   // first when nothing is queued, so the copy is current when the connection drops.
   // A failure is recorded (on its queue entry, else as a sync error without an entry) and rethrown with recorded: true; a
   // successful sync clears the sync errors that named no entry.
@@ -482,7 +479,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
           return { id: saved.id, ...read(entity, saved.id) };
         }),
         // Offline rights: the copy holds only rows the user could read, and writes follow the privileges downloaded with it;
-        // business validation runs on upload (Learn).
+        // business validation runs on upload.
         capabilities: (entity, _actor, { fields = {} } = {}) => {
           const ok = Boolean(session.db?.state.mappings[entity]), may = operation => ok && !session.rights?.[entity]?.[operation];
           return { read: ok, create: may('create'), update: may('update'), delete: may('delete'), ...(ok ? {} : { reason: `${entity} is not available offline in this user's mobile offline profile.` }),
@@ -508,7 +505,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     async sync(principal, appId, host) {
       const session = await sessionFor(principal, appId, host);
       return serial(session, async () => {
-        if (session.mode === 'offline') throw fail('The app is offline; go online to synchronize.', 409, 'OfflineSyncUnavailable'); // unverified: native message
+        if (session.mode === 'offline') throw fail('The app is offline; go online to synchronize.', 409, 'OfflineSyncUnavailable'); // native message unknown
         try { await sync(session); } catch (error) { if (!error.recorded) throw error; }
         return status(session);
       });

@@ -181,7 +181,7 @@ test("page scope 1 protects direct assets and scope 2 excludes only direct child
     ).allowed,
     true,
   );
-  // Web files use only their direct parent's rules (legacy algorithm; G-D8 default):
+  // Web files use only their direct parent's rules (the legacy algorithm, the default):
   // the home restriction is reported but does not protect a file under /child/.
   const nested = pageAccess(
     p,

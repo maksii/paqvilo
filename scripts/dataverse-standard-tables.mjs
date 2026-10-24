@@ -34,13 +34,12 @@ export const TABLES = [
   'pluginassembly', 'plugintype', 'sdkmessage', 'sdkmessagefilter', 'sdkmessageprocessingstep',
   'sdkmessageprocessingstepimage', 'sdkmessageprocessingstepsecureconfig', 'serviceendpoint', 'pluginpackage',
   'plugintracelog', 'workflow', 'workflowlog', 'processsession', 'appnotification',
-  // tables the Web API gap brief names as absent (present in the native base environment)
+  // further platform tables of the native base environment
   'calendar', 'calendarrule', 'appmodule', 'appmodulecomponent', 'import', 'importfile', 'importmap', 'importlog',
   'recyclebinconfig', 'retentionconfig', 'mailboxtrackingfolder', 'kbarticle', 'timezonedefinition', 'timezonerule',
   'timezonelocalizedname', 'report', 'savedqueryvisualization', 'dependency', 'solutioncomponent',
   'activitymimeattachment', 'systemform', 'theme', 'fxexpression', 'maskingrule', 'attributemaskingrule',
   'deleteditemreference', 'connectioninstance', 'recurrencerule',
-  // skip sweep 2026-10-20 (tables the A briefs need)
   'postcomment', 'postfollow', 'postregarding',
   'mobileofflineprofile', 'mobileofflineprofileitem', 'mobileofflineprofileitemassociation', 'mobileofflineprofileitemfilter',
   'delegatedauthorization', 'privilegecheckerrun', 'privilegecheckerlog',

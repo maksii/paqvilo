@@ -92,12 +92,12 @@ function parseViewDocument(xml, entity, file, lcid) {
       fetchXml: fetch
         ? serialize(fetch)
         : decodeXml(child(view, "fetchxml")?.text.trim() ?? ""),
-      // Layout cells marked ishidden="1" are not grid columns (live Contacts Lookup View hides fax, address1_name, address1_fax).
+      // Layout cells marked ishidden="1" are not grid columns (e.g. the Contacts Lookup View hides fax, address1_name, address1_fax).
       fields: descendants(layout, "cell").filter((c) => c.attrs.ishidden !== "1").map((c) => ({
         name: c.attrs.name,
         width: Number(c.attrs.width) || undefined,
         // A cell without a width is a zero-width column; disableSorting="1" disables its sort
-        // (live Contact form ActionCards grid: widths 0, Card Type unsortable).
+        // (e.g. the Contact form ActionCards grid).
         ...(c.attrs.width == null ? { widthless: true } : {}),
         ...(c.attrs.disableSorting === "1" ? { sortDisabled: true } : {}),
       })),
@@ -372,7 +372,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   );
   const selectedTab = norm(field(definition.metadata, "tabname"));
   const tabs = descendants(tree, "tab");
-  // Legacy tab selection (platform-internals-reference.md 6.1.3): no tab name renders
+  // Legacy tab selection: no tab name renders
   // every visible tab; otherwise the first tab whose name matches, else the first whose
   // label matches, else the first visible tab.
   const visibleTabs = tabs.filter((t) => t.attrs.visible === undefined || t.attrs.visible === "true");
@@ -435,7 +435,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               continue;
             }
             // A control naming a target table and a view is a dataset subgrid even without the subgrid
-            // class or flag (the platform Contact form's ActionCards control, live: a subgrid cell).
+            // class or flag (the platform Contact form's ActionCards control).
             const datasetControl = Boolean(text(parameters, "TargetEntityType") && text(parameters, "ViewId"));
             if (control?.attrs.indicationOfSubgrid === "true" || norm(control?.attrs.classid) === SUBGRID_CLASS || datasetControl) {
               const entity = norm(text(parameters, "TargetEntityType"));
@@ -458,7 +458,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 })),
                 fetchXml: view?.fetchXml,
                 label: label(child(cell, "labels"), lcid),
-                // A hidden label leaves the subgrid heading empty (live Contact form ActionCards).
+                // A hidden label leaves the subgrid heading empty.
                 ...(cell.attrs.showlabel === "false" ? { showLabel: false } : {}),
                 colspan: Number(cell.attrs.colspan) || 1,
                 rowspan: Number(cell.attrs.rowspan) || 1,
@@ -648,7 +648,7 @@ export function applySolutionMetadata(portal, metadata) {
       message: 'Matching exported forms have a declared non-Main type; no portal form layout is selected.',
     });
     if (!choices.length) return null;
-    // Legacy form selection (platform-internals-reference.md 6.1.3): the first systemform
+    // Legacy form selection: the first systemform
     // with the name. Dataverse retrieval order is not observable locally; layer and file
     // order stand in for it and the other candidates are reported.
     if (choices.length > 1)

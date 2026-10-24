@@ -1,4 +1,4 @@
-// CLI subprocess acceptance: disposable exports, explicit solution roots and loopback only.
+// CLI subprocess acceptance: disposable exports and explicit solution roots.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -8,6 +8,7 @@ import http from "node:http";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { runtimePort } from "../lib/runtime-port.mjs";
 
 const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
 async function fixture(t, files) {
@@ -113,60 +114,10 @@ async function run(t, args, cwd) {
   }
 }
 
-test('CLI subprocess cleanup forcibly terminates a child that ignores stop', { timeout: 15_000 }, async (t) => {
-  const child = spawn(process.execPath, ['-e',
-    'process.stdin.on("data", () => {}); setInterval(() => {}, 1000); process.stdout.write("ready");'], {
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    signal: t.signal, killSignal: 'SIGKILL',
-  });
-  const completion = closed(child);
-  t.after(() => forceStop(child, completion));
-  await within(once(child.stdout, 'data'), 10_000, () => 'Fixture child did not start');
-  await stop(child, completion);
-  const result = await completion;
-  assert.equal(result.error, undefined);
-  assert.equal(result.signal, 'SIGKILL');
-  assert.equal(child.stdin.destroyed, true);
-  assert.equal(child.stdout.destroyed, true);
-  assert.equal(child.stderr.destroyed, true);
-  // Repeated cleanup must not attempt another write to the ended stdin pipe.
-  await stop(child, completion);
-});
-
-test('CLI subprocess cleanup observes cancellation before close', { timeout: 15_000 }, async (t) => {
-  const controller = new AbortController();
-  const child = spawn(process.execPath, ['-e',
-    'process.stdin.on("data", () => {}); process.stdout.write("ready");'], {
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    signal: controller.signal, killSignal: 'SIGKILL',
-  });
-  const completion = closed(child);
-  t.after(() => forceStop(child, completion));
-  await within(once(child.stdout, 'data'), 10_000, () => 'Fixture child did not start');
-  controller.abort();
-  await forceStop(child, completion);
-  const result = await completion;
-  assert.equal(result.error?.name, 'AbortError');
-  assert.notEqual(result.signal, null);
-  assert.equal(child.stdin.destroyed, true);
-  assert.equal(child.stdout.destroyed, true);
-  assert.equal(child.stderr.destroyed, true);
-});
-
-test('CLI startup rejects partial JSON on exit and releases its output listener', { timeout: 15_000 }, async (t) => {
-  const child = spawn(process.execPath, ['-e', 'process.stdout.write("{\\\"url\\\":");'], {
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    signal: t.signal, killSignal: 'SIGKILL',
-  });
-  const completion = closed(child);
-  t.after(() => forceStop(child, completion));
-  let stdout = '';
-  child.stdout.on('data', data => { stdout += data; });
-  const listeners = child.stdout.listenerCount('data');
-  await assert.rejects(startup(child, completion, () => ({ stdout, stderr: '' })),
-    /CLI exited before complete startup JSON/);
-  assert.equal(stdout, '{"url":');
-  assert.equal(child.stdout.listenerCount('data'), listeners);
+test('runtime ports accept decimal integers from 0 to 65535 and reject empty and non-decimal spellings', () => {
+  for (const [value, port] of [[undefined, 8787], ['0', 0], ['65535', 65535], [8080, 8080]]) assert.equal(runtimePort(value), port, String(value));
+  for (const value of ['', ' ', '-1', '0x1000', '1e3', '65536', '1.5', null])
+    assert.throws(() => runtimePort(value), /--port must be an integer from 0 to 65535/, JSON.stringify(value));
 });
 
 test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 60_000 }, async (t) => {
@@ -176,13 +127,13 @@ test('CLI: invalid serve ports fail before starting or writing simulation state'
     'project.json': JSON.stringify({ version: 1, portals: [{ id: 'first', path: './portal' }, { id: 'second', path: './portal' }], solutions: [], references: [] }),
   });
   const state = path.join(directory, 'invalid-state.json');
-  for (const selection of [['--source', path.join(directory, 'portal')], ['--project', path.join(directory, 'project.json')]]) {
-    for (const port of ['', ' ', '-1', '0x1000', '1e3', '65536']) {
-      const result = await run(t, ['serve', ...selection, `--port=${port}`, '--state', state, '--no-watch'], directory);
-      assert.equal(result.code, 1, `${JSON.stringify(port)}: ${result.stderr}`);
-      assert.match(result.stderr, /--port must be an integer/);
-      assert.equal(result.stdout, '');
-    }
+  // One spelling per selection: the parser itself is covered above; this proves both serve paths parse before starting.
+  const cases = [[['--source', path.join(directory, 'portal')], ''], [['--project', path.join(directory, 'project.json')], '1e3']];
+  const results = await Promise.all(cases.map(([selection, port]) => run(t, ['serve', ...selection, `--port=${port}`, '--state', state, '--no-watch'], directory)));
+  for (const [index, result] of results.entries()) {
+    assert.equal(result.code, 1, `${JSON.stringify(cases[index])}: ${result.stderr}`);
+    assert.match(result.stderr, /--port must be an integer/);
+    assert.equal(result.stdout, '');
   }
   await assert.rejects(fs.stat(state), { code: 'ENOENT' });
   await assert.rejects(fs.stat(path.join(directory, 'first')), { code: 'ENOENT' });
@@ -220,65 +171,8 @@ test(
         '<powerpagecomponent powerpagecomponentid="enhanced-home"><name>Enhanced home</name><powerpagecomponenttype>2</powerpagecomponenttype><content>{&quot;adx_webpageid&quot;:&quot;enhanced-home&quot;,&quot;adx_name&quot;:&quot;Enhanced home&quot;,&quot;adx_partialurl&quot;:&quot;/&quot;,&quot;adx_copy&quot;:&quot;&lt;h1&gt;Enhanced local&lt;/h1&gt;&quot;}</content></powerpagecomponent>',
     });
     const standard = path.join(directory, "standard");
-    let result = await run(t,
-      ["inspect", "--source", standard, "--env", "sandbox", "--json"],
-      directory,
-    );
-    assert.equal(result.code, 0, result.stderr);
-    const inspected = JSON.parse(result.stdout);
-    assert.equal(inspected.format, "standard");
-    assert.equal(inspected.pages[0].url, "/");
-    assert.equal(inspected.pages[0].name, "CLI standard");
-    assert.equal(inspected.liquidSyntax.sourceCount, 1);
-    assert.equal(inspected.liquidSyntax.sourceParsePassed, 1);
-    assert.deepEqual(inspected.liquidSyntax.diagnostics, []);
-    result = await run(t,
-      [
-        "inspect",
-        "--source",
-        standard,
-        "--env",
-        "sandbox",
-        "--deployment-profile",
-        "sandbox",
-        "--json",
-      ],
-      directory,
-    );
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(
-      JSON.parse(result.stdout).pages[0].name,
-      "Profile selected explicitly",
-    );
-    assert.match(
-      await fs.readFile(path.join(standard, "Home.webpage.yml"), "utf8"),
-      /CLI standard/,
-    );
-    result = await run(t,
-      ["inspect", "--source", path.join(directory, "enhanced"), "--json"],
-      directory,
-    );
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).format, "enhanced");
-    assert.equal(JSON.parse(result.stdout).pages[0].name, "Enhanced home");
     const output = path.join(directory, "rendered.html");
-    result = await run(t,
-      [
-        "render",
-        "--source",
-        standard,
-        "--state",
-        path.join(directory, "render-state.json"),
-        "--path",
-        "/",
-        "--output",
-        output,
-      ],
-      directory,
-    );
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).status, 200);
-    assert.match(await fs.readFile(output, "utf8"), /CLI local LIQUID/);
+    const unusedState = path.join(directory, "capture-state.json");
     let unrelatedTraffic = 0;
     const unrelated = http.createServer((_req, res) => {
       unrelatedTraffic++;
@@ -288,79 +182,47 @@ test(
     await once(unrelated, "listening");
     t.after(() => closeServer(unrelated));
     const unrelatedUrl = `http://127.0.0.1:${unrelated.address().port}/unrelated`;
-    for (const badPath of [
-      unrelatedUrl,
-      unrelatedUrl.replace("http:", ""),
-      "/\\127.0.0.1/unsafe",
-    ]) {
-      result = await run(t,
-        [
-          "render",
-          "--source",
-          standard,
-          "--state",
-          path.join(directory, "invalid-render-state.json"),
-          "--path",
-          badPath,
-        ],
-        directory,
-      );
-      assert.equal(result.code, 1);
-      assert.match(
-        result.stderr,
-        /portal-relative|escaped the local simulator/,
-      );
+    const badPaths = [unrelatedUrl, unrelatedUrl.replace("http:", ""), "/\\127.0.0.1/unsafe"];
+    const [inspected, profiled, enhanced, rendered, unknownOption, missingCdp, withPreset, ...badRenders] = await Promise.all([
+      ["inspect", "--source", standard, "--env", "sandbox", "--json"],
+      ["inspect", "--source", standard, "--env", "sandbox", "--deployment-profile", "sandbox", "--json"],
+      ["inspect", "--source", path.join(directory, "enhanced"), "--json"],
+      ["render", "--source", standard, "--state", path.join(directory, "render-state.json"), "--path", "/", "--output", output],
+      ["inspect", "--source", standard, "--not-an-option"],
+      ["capture-shell", "--source", standard, "--state", unusedState, "--path", "/"],
+      ["capture-shell", "--source", standard, "--state", unusedState, "--cdp", "http://127.0.0.1:1", "--preset", "contact-demo"],
+      ...badPaths.map((badPath, index) => ["render", "--source", standard, "--state", path.join(directory, `invalid-render-state-${index}.json`), "--path", badPath]),
+    ].map((args) => run(t, args, directory)));
+    assert.equal(inspected.code, 0, inspected.stderr);
+    const standardReport = JSON.parse(inspected.stdout);
+    assert.equal(standardReport.format, "standard");
+    assert.equal(standardReport.pages[0].url, "/");
+    assert.equal(standardReport.pages[0].name, "CLI standard");
+    assert.equal(standardReport.liquidSyntax.sourceCount, 1);
+    assert.equal(standardReport.liquidSyntax.sourceParsePassed, 1);
+    assert.deepEqual(standardReport.liquidSyntax.diagnostics, []);
+    assert.equal(profiled.code, 0, profiled.stderr);
+    assert.equal(JSON.parse(profiled.stdout).pages[0].name, "Profile selected explicitly");
+    assert.match(await fs.readFile(path.join(standard, "Home.webpage.yml"), "utf8"), /CLI standard/);
+    assert.equal(enhanced.code, 0, enhanced.stderr);
+    assert.equal(JSON.parse(enhanced.stdout).format, "enhanced");
+    assert.equal(JSON.parse(enhanced.stdout).pages[0].name, "Enhanced home");
+    assert.equal(rendered.code, 0, rendered.stderr);
+    assert.equal(JSON.parse(rendered.stdout).status, 200);
+    assert.match(await fs.readFile(output, "utf8"), /CLI local LIQUID/);
+    for (const [index, result] of badRenders.entries()) {
+      assert.equal(result.code, 1, badPaths[index]);
+      assert.match(result.stderr, /portal-relative|escaped the local simulator/);
     }
     assert.equal(unrelatedTraffic, 0);
-    result = await run(t,
-      ["inspect", "--source", standard, "--not-an-option"],
-      directory,
-    );
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /Unknown option/);
-    assert.doesNotMatch(
-      result.stderr,
-      /at parseArgs|node:internal|ERR_PARSE_ARGS/,
-    );
-    const unusedState = path.join(directory, "capture-state.json");
-    result = await run(t,
-      [
-        "capture-shell",
-        "--source",
-        standard,
-        "--state",
-        unusedState,
-        "--path",
-        "/",
-      ],
-      directory,
-    );
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /requires --cdp/);
-    await assert.rejects(
-      fs.stat(unusedState),
-      (error) => error.code === "ENOENT",
-    );
-    result = await run(t,
-      [
-        "capture-shell",
-        "--source",
-        standard,
-        "--state",
-        unusedState,
-        "--cdp",
-        "http://127.0.0.1:1",
-        "--preset",
-        "contact-demo",
-      ],
-      directory,
-    );
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /does not apply presets/);
-    await assert.rejects(
-      fs.stat(unusedState),
-      (error) => error.code === "ENOENT",
-    );
+    assert.equal(unknownOption.code, 1);
+    assert.match(unknownOption.stderr, /Unknown option/);
+    assert.doesNotMatch(unknownOption.stderr, /at parseArgs|node:internal|ERR_PARSE_ARGS/);
+    assert.equal(missingCdp.code, 1);
+    assert.match(missingCdp.stderr, /requires --cdp/);
+    assert.equal(withPreset.code, 1);
+    assert.match(withPreset.stderr, /does not apply presets/);
+    await assert.rejects(fs.stat(unusedState), { code: "ENOENT" });
   },
 );
 

@@ -1,13 +1,11 @@
 // Formula columns (Power Fx) in the Dataverse API: computed on read by a Power Fx evaluator, refused on write.
 //
-// A column is a formula column when its metadata says SourceType 3. Microsoft Learn (AttributeMetadata.SourceType, and
-// "Specialized columns using code") lists 0 simple, 1 calculated, 2 rollup, 3 formula, 4 prompt. Formula columns are
-// read-only and are computed as the system user, not as the caller. A formula over a secured column therefore shows its
-// result to callers who cannot read that column, as natively: Learn (column-level security, "Which columns can be secured":
-// formula columns can't be secured; "Best practices": a calculated column that includes a secured column may display its
-// data to users without permission). FORMULA_COLUMN_OVER_SECURED_COLUMN (warning) names each such formula column and its
-// secured inputs when the extension installs or reseeds; a $filter on the column reads the computed value, as natively. Every read takes the column's value from the store's
-// computed-column seam (store.setComputedColumns), so $filter, $orderby, $apply and FetchXML see it too:
+// A column is a formula column when its metadata says SourceType 3 (0 simple, 1 calculated, 2 rollup, 3 formula,
+// 4 prompt). Formula columns are read-only and are computed as the system user, not as the caller. A formula over a secured
+// column therefore shows its result to callers who cannot read that column, as natively (formula columns cannot be
+// secured themselves). FORMULA_COLUMN_OVER_SECURED_COLUMN (warning) names each such formula column and its secured inputs
+// when the extension installs or reseeds. Every read takes the column's value from the store's computed-column seam
+// (store.setComputedColumns), so $filter, $orderby, $apply and FetchXML see it too:
 //   1. a trusted pack's formulaColumns['<table>.<column>'](row, ctx) wins (synchronous, like calculatedColumns);
 //   2. else the evaluator (install option, else the host's api.providers.powerFx: the core Power Fx engine of power-fx.mjs or
 //      a pack powerFx adapter) answers through its evaluateSync(formula, ctx) and returns { value }; ctx.principal is null:
@@ -20,8 +18,6 @@
 // so the column reads null with the diagnostic; the explicitly disabled engine answers 501 and reads null the same way.
 // solution-schema resolves a referenced FormulaDefinitions YAML column mapping to its expression;
 // metadata containing an inline FormulaDefinition supplies the expression directly.
-// unverified: the native refusal of a value for a formula column (read-only). The invalid-property shape (0x80048d19) used by
-// calculated columns is reused.
 // ponytail: a formula is evaluated once per row per query (the read copy keeps it) with no cross-query cache. Upgrade path:
 // a per-row cache keyed by the row's values when formula-heavy tables get slow.
 import { DataError } from "./data-error.mjs";
@@ -80,7 +76,7 @@ function allFormulaColumns(api) {
   return Object.keys(api.store.state.mappings ?? {}).flatMap((table) => Object.keys(formulaColumnsOf(api, table)).map((column) => [table, column]));
 }
 
-// unverified: the native refusal of a value for a formula column (read-only). Same shape as calculated columns.
+// Native error for writing a formula column not known; the calculated-column invalid-property shape (0x80048d19) is a guess.
 const writeRefused = (mapping, column) => new DataError(
   `The attribute '${column}' of entity '${mapping.logicalName}' is a formula field and cannot be set.`,
   400,
@@ -97,8 +93,8 @@ function unevaluated(state, table, column, reason) {
 }
 
 // The implicit ThisRecord of a formula: the row typed by its column metadata (power-fx-dataverse.mjs), each other formula
-// column of the table computed when the formula reads it, the column itself blank (Learn: a formula column can't
-// reference itself).
+// column of the table computed when the formula reads it, the column itself blank (a formula column cannot reference
+// itself).
 function scopeOf(state, host, mapping, row, column) {
   const record = host.record(mapping.logicalName, row);
   const formulas = formulaColumnsOf(state.api, mapping.logicalName);
@@ -112,7 +108,7 @@ function scopeOf(state, host, mapping, row, column) {
   return record;
 }
 
-// Learn ("Work with formula columns"): a decimal formula column keeps its precision (0 to 10 places, default 2).
+// A decimal formula column keeps its precision (0 to 10 places, default 2).
 // The rounding is exact (exact-numeric.mjs roundNumeric, half away from zero), so a 28-digit decimal keeps its digits.
 function columnValue(state, mapping, column, value) {
   if (typeof value !== "number" && !isExactNumeric(value)) return value ?? null;
@@ -126,10 +122,10 @@ function evaluateFormula(state, c, mapping, row, column, formula) {
   const table = mapping.logicalName;
   const engine = state.evaluator;
   if (typeof engine.evaluateSync !== "function") return unevaluated(state, table, column, "The Power Fx evaluator has no evaluateSync, and a formula column is read synchronously.");
-  // unverified: the expression is the stored FormulaDefinition text; a leading "=" (the YAML formula form) is dropped.
+  // Assumption: the expression is the stored FormulaDefinition text; a leading "=" (the YAML formula form) is dropped.
   const expression = String(formula ?? "").trim().replace(/^=/, "");
   if (!expression) return unevaluated(state, table, column, "The column has no formula text.");
-  // Learn ("Work with formula columns"): the depth of formula columns referring to formula columns is at most 10.
+  // Formula columns may chain through other formula columns at most 10 deep.
   if (state.depth >= 10) return unevaluated(state, table, column, "The column is computed through more than 10 chained formula columns.");
   state.depth++;
   try {
@@ -138,7 +134,7 @@ function evaluateFormula(state, c, mapping, row, column, formula) {
     const result = engine.evaluateSync(expression, {
       symbols: { table, columns: Object.keys(mapping.fields ?? {}) },
       values: structuredClone(row),
-      principal: null, // computed as the system user (header), not as the caller
+      principal: null, // computed as the system user, not as the caller
       host: { ...host, scope: scopeOf(state, host, mapping, row, column) },
     });
     if (isThenable(result)) {
@@ -148,7 +144,7 @@ function evaluateFormula(state, c, mapping, row, column, formula) {
     if (result === null || typeof result !== "object" || !Object.hasOwn(result, "value")) return unevaluated(state, table, column, "The Power Fx evaluator did not return { value }.");
     return columnValue(state, mapping, column, result.value);
   } catch (error) {
-    // A Power Fx error value (Learn ErrorKind) reads blank with its own diagnostic; any other failure is not evaluated.
+    // A Power Fx error value (ErrorKind) reads blank with its own diagnostic; any other failure is not evaluated.
     if (error.code === "PowerFxError") {
       report(state, { code: "FORMULA_ERROR", table, column, kind: error.details?.kind ?? null, message: `The formula answered an error (${error.details?.kind ?? "Unknown"}): ${error.message} The column reads as null.` });
       return null;
@@ -202,7 +198,6 @@ function install(api, options = {}) {
   });
 }
 
-// Reseed: the once-per-column diagnostics start again (the metadata may have changed).
 // The secured columns a formula reads: bare or ThisRecord columns of its table and columns reached through one lookup.
 function securedInputs(api, table, formula) {
   let ast;
@@ -232,6 +227,7 @@ function reportSecuredInputs(api, state) {
   }
 }
 
+// Reseed: the once-per-column diagnostics start again (the metadata may have changed).
 function reset(api) {
   const state = stateOf(api);
   state.reporter.clear();

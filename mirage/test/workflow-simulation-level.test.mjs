@@ -1,5 +1,5 @@
 // A classic background workflow at simulation level: its run history (workflowlog, as asyncoperation) is runtime-owned, so a
-// project DATA file that owns only the business table does not fail the run with SimulationDataTargetRequired. Invented ids only.
+// project DATA file that owns only the business table does not fail the run with SimulationDataTargetRequired.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

@@ -1,13 +1,18 @@
 Paqvilo
-Original Paqvilo code: GNU Affero General Public License v3.0 only (see LICENSE).
+Licensed under the GNU Affero General Public License v3.0 only (see LICENSE).
 
-Third-party code and assets retain their upstream licenses:
-- Bootstrap glyphicons fonts under mirage/lib/bootstrap-fonts/: MIT; see LICENSE-bootstrap.txt.
-- mirage/lib/dataverse-standard-tables.json: facts from the Microsoft Learn Dataverse table/entity reference (MicrosoftDocs/powerapps-docs @ c3a8c43b), CC BY 4.0; descriptions omitted.
-- mirage/lib/platform-time-zones.mjs (TIME_ZONE_IDS): time zone codes, names and Windows/IANA ids joined from Microsoft Learn pages (Azure SQL Managed Instance time zones; SQL Server on Linux time zone mapping), CC BY 4.0.
-- mirage/lib/dataverse-operation-contracts.mjs: structural Microsoft Dataverse platform API schema facts (operation signatures, EDM type members and enum values), cross-checked with the Microsoft Learn Web API reference; descriptions and organization data omitted. Microsoft Learn reference material is CC BY 4.0.
-- npm dependencies: see each installed package's license and notices.
-- Model-driven Lense action vocabulary reviewed from Level Up for Dynamics 365 / Power Apps (MIT, Copyright 2016 Natraj Yegnaraman); rewritten execution/UI contract; see lense/LICENSE-levelup.txt.
-- Test fixtures with upstream-derived assets: preserve the notices beside each fixture.
+Third-party material keeps its own license. License texts are in licenses/.
 
-Paqvilo is independent of Microsoft. Power Pages and Dataverse are Microsoft products.
+- Bootstrap 3 Glyphicons Halflings fonts, mirage/lib/bootstrap-fonts/: MIT, licenses/bootstrap.txt
+- xRM Portals Community Edition (Adxstudio) Liquid templates and resource strings,
+  mirage/lib/liquid-builtins.mjs and mirage/lib/liquid-resx.mjs: MIT, licenses/xrm-portals-community-edition.txt
+  https://github.com/amervitz/xRM-Portals-Community-Edition
+- SQL 4 CDS fiscal period arithmetic, ported in mirage/lib/fiscal-calendar.mjs: MIT, licenses/sql4cds.txt
+  https://github.com/MarkMpn/Sql4Cds
+- Example project copies of Bootstrap CSS and jQuery, examples/project/: MIT, licenses/bootstrap.txt and licenses/jquery.txt
+- Test fixture from the GCWeb Power Pages template, mirage/test/fixtures/wet-boew-bilingual/: MIT,
+  licenses/wet-boew-power-pages-template.txt
+  https://github.com/alfredofosu/wet-boew-power-pages-template
+- npm dependencies are installed separately and keep their own licenses.
+
+Paqvilo is independent of Microsoft. Power Pages, Power Apps and Dataverse are Microsoft products.

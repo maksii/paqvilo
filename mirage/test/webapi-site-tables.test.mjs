@@ -105,7 +105,7 @@ test("site components are read-only locally", async (t) => {
   });
   const response = await fetch(`${app.url}/_api/powerpagecomponents(${PUBLISHER})`, {
     method: "PATCH",
-    headers: { "content-type": "application/json", __RequestVerificationToken: app.state().csrf },
+    headers: { "content-type": "application/json", __RequestVerificationToken: app.csrf },
     body: JSON.stringify({ name: "Renamed" }),
   });
   assert.equal(response.status, 501);

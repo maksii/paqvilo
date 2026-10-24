@@ -59,9 +59,9 @@ export function parsePluginDocument(xml) {
     const primary=canonical(value(step,'PrimaryEntity')||value(step,'PrimaryEntityName')||value(step,'PrimaryEntityTypeCode')||value(step,'PrimaryObjectTypeCode')||value(filter,'PrimaryObjectTypeCode'));
     const messageFilterId=lookupId(step,'SdkMessageFilterId')||null;
     const unfiltered=(primary==='none'||Boolean(filter&&!messageFilterId&&!(filter.text??'').trim()&&!filter.children?.length))&&!messageFilterId;
-    // EventHandler is polymorphic (Learn, sdkmessageprocessingstep.eventhandler: Targets plugintype, serviceendpoint). A service
+    // EventHandler is polymorphic (sdkmessageprocessingstep.eventhandler targets plugintype or serviceendpoint). A service
     // endpoint handler is named by ServiceEndpointId or by EventHandlerTypeCode 4618 (serviceendpoint); an EventHandler with no
-    // plug-in type facts is resolved by importSolutionPlugins. unverified: the exported element names of a service endpoint step.
+    // plug-in type facts is resolved by importSolutionPlugins. The exported element names of a service endpoint step are a guess.
     const handlerType = String(value(step, 'EventHandlerTypeCode') ?? '').trim().toLowerCase();
     const handlerId = lookupId(step, 'EventHandler') || null;
     const serviceEndpointId = lookupId(step, 'ServiceEndpointId') || (['4618', 'serviceendpoint'].includes(handlerType) ? handlerId : null) || null;
@@ -83,9 +83,8 @@ export function parsePluginDocument(xml) {
 
 /**
  * Well-known SDK message ids: the platform ships the sdkmessage rows, so these ids are the same
- * in every Dataverse organisation (confirmed by the baseline read-back of PAC-exported steps,
- * examples/project/baseline/plugins-readback.json). A project's observed.sdkMessages adds or
- * overrides entries for messages not listed here.
+ * in every Dataverse organisation. A project's observed.sdkMessages adds or overrides entries for
+ * messages not listed here.
  */
 export const SDK_MESSAGES = Object.freeze({
   '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8': 'Create',
@@ -185,21 +184,20 @@ export function pluginUnsupported(step,{images=false,impersonation=false}={}) {
   if(images&&(step.images??[]).some(image=>![0,1,2].includes(image.type)||!image.alias&&!image.name))return 'Registered image type or alias is unresolved.';
   if(images&&new Set((step.images??[]).map(image=>image.alias||image.name)).size!==(step.images??[]).length)return 'Registered image aliases must be unique.';
   if (step.eventHandlerId && !step.serviceEndpointId && !step.assemblyId) return "The step's EventHandler names neither a plug-in type nor a service endpoint of the organization (handler unresolved).";
-  // A web hook step (serviceEndpointId, P6) has no plug-in type.
+  // A web hook step (serviceEndpointId) has no plug-in type.
   if (!step.serviceEndpointId && (!step.typeName || !step.assemblyId)) return 'The exported plugin type or assembly dependency is unresolved.';
   return null;
 }
 
-/** Trusted project packs map exact exported step IDs to synchronous functions. */
 export function pluginStepMatchesEntity(step,entity){return step.entity===entity||step.unfiltered===true&&step.entity==null&&step.messageFilterId==null&&String(step.message).toLowerCase()==='retrievemultiple'&&(step.contract?.mode??step.mode)===0;}
-// P4: one handler per plug-in type name (pluginTypes) serves every step of that type, including steps the Dataverse API
+// One handler per plug-in type name (pluginTypes) serves every step of that type, including steps the Dataverse API
 // registered; pluginSteps handlers are keyed by canonical step id. Validation and the collision message are pack-exports.mjs'.
 export function pluginHandlers(packs = []) {
   const entries = [...collectPackExport(packs, 'pluginTypes'), ...collectPackExport(packs, 'pluginSteps')];
   return new Map(entries.map(([key, { value }]) => [key, value]));
 }
 
-// Step id first, then the plug-in type name (P4). Step ids are GUIDs and type names cannot contain a hyphen, so the keys never collide.
+// Step id first, then the plug-in type name. Step ids are GUIDs and type names cannot contain a hyphen, so the keys never collide.
 const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step.typeName);
 // Nesting of synchronous JavaScript handlers (step id and plug-in type): a write a handler makes runs its own steps one level
 // deeper (Depth). The counter is the one CLR steps use (plugin-clr.mjs pluginExecutionDepth), so a JS/CLR chain shares one
@@ -207,7 +205,7 @@ const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step
 const HANDLER_DEPTH_LIMIT = 8;
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
 const pluginFault = (cause, item) => pluginFailure({ message: cause?.message ?? String(cause), errorCode: cause?.errorCode, pluginFault: 'InvalidPluginExecutionException' }, { name: item.name, id: item.id, type: item.typeName, traces: [] }, 0);
-// The IPluginExecutionContext-like context a plug-in type handler receives (P4): registered images keyed by alias, and the
+// The IPluginExecutionContext-like context a plug-in type handler receives: registered images keyed by alias, and the
 // caller or the impersonated user as UserId. Values are copies; the handler cannot change the write through it.
 function typedContext({ item, store, entity, operation, stage, target, targets, record, previous, identity, depth, trace, changedAttributes=[] }) {
   const idColumn = store?.resolveMapping(entity)?.idColumn;
@@ -224,7 +222,7 @@ function typedContext({ item, store, entity, operation, stage, target, targets, 
   };
 }
 
-// plugintracelog (Learn): organization.plugintracelogsetting 1 keeps the rows of failed executions, 2 keeps every execution, 0 keeps none.
+// plugintracelog: organization.plugintracelogsetting 1 keeps the rows of failed executions, 2 keeps every execution, 0 keeps none.
 // The row is written in the phase's own transaction, so a rolled-back write takes its trace with it.
 // ponytail: native keeps the trace of a rolled-back execution; this simulator does not.
 function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error }) {
@@ -269,8 +267,8 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
   if(initialFrame)executionFrames.set(record,structuredClone(initialFrame));
   const read=['retrieve','retrievemultiple'].includes(operation),multiple=operation==='retrievemultiple',bulk=['createmultiple','updatemultiple'].includes(operation),association=['associate','disassociate'].includes(operation);
   const matched = matchingPluginSteps(items, { entity, operation, stage, changedAttributes, asyncExecution }).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
-  // Mock/handler read outputs also belong to the SDK response frame. Keep ordinary
-  // reads without an executing observer on their existing projection path.
+  // Mock/handler read outputs also belong to the SDK response frame. Ordinary reads
+  // without an executing observer keep the plain projection path.
   if(stage===40&&read&&!asyncExecution&&!executionFrames.has(record)&&matched.some(item=>['clr','handler','mock'].includes(item.mode)&&(!item.unsupported||item.mode==='mock')))executionFrames.set(record,{});
   if(stage===40&&store&&!asyncExecution&&executionFrames.has(record)){
     const frame=executionFrames.get(record),primary=store.resolveMapping(entity).idColumn;
@@ -287,7 +285,7 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),webhooks=nu
     if(item.mode==='disabled'){note('PLUGIN_STEP_DISABLED','This step is explicitly disabled in local simulator configuration.');continue;}
     if(item.mode==='mock'){if((item.configuration?.status??200)>=400||item.configuration?.body?.error){const message=item.configuration?.body?.error?.message||'Explicit plugin mock rejected.';note('PLUGIN_STEP_REJECTED',message);throw error(message,'PluginValidation');}if(item.unsupported)note('PLUGIN_STEP_SIMULATED','Explicit mock chosen for an unsupported source execution contract; original logic was not executed.');}
     if (item.unsupported&&item.mode!=='mock') { note('PLUGIN_STEP_UNSUPPORTED', item.unsupported); if(['clr','handler'].includes(item.mode))throw error(item.unsupported,'LocalPluginUnsupported',501);continue; }
-    // P6: a synchronous web hook posts its context and fails the operation (rolled back) unless the endpoint answers 2xx.
+    // A synchronous web hook posts its context and fails the operation (rolled back) unless the endpoint answers 2xx.
     // Asynchronous web hooks are delivered by plugin-async.mjs after commit.
     if (item.mode === 'webhook') {
       if (!webhooks) throw error('No webhook delivery adapter is configured.', 'LocalPluginUnsupported', 501);

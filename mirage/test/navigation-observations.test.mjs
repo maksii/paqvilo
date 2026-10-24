@@ -1,15 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyNavigationObservations } from "../lib/navigation-observations.mjs";
-import { simulatorBackgroundRequest } from '../lib/simulator-background-requests.mjs';
 
-test('frame lifecycle requests are recognized only on loopback with a valid nonce',()=>{
+// Which URLs are frame lifecycle requests: navigation-cancellations.test.mjs.
+test('an aborted loopback frame lifecycle request is not an unexpected failure',()=>{
   const origin='http://127.0.0.1:8787',route='/__sim/frame-ready/11111111-1111-4111-8111-111111111111';
-  assert.equal(simulatorBackgroundRequest(origin+route+'?reason=dom-ready',origin),true);
-  assert.equal(simulatorBackgroundRequest('https://foreign.invalid'+route,origin),false);
-  assert.equal(simulatorBackgroundRequest('/__sim/frame-ready/not-a-nonce',origin),false);
   const report={origin,failedRequests:[{url:origin+route,method:'POST',error:'net::ERR_ABORTED'}],failedResponses:[],consoleErrors:[],calls:[]};
   assert.deepEqual(classifyNavigationObservations(report).unexpectedFailedRequests,[]);
+  report.failedRequests[0].url=origin+'/__sim/frame-ready/not-a-nonce';
+  assert.equal(classifyNavigationObservations(report).unexpectedFailedRequests.length,1);
 });
 const url =
   "http://127.0.0.1:8787/fetchchangerequestactivities?id=change&type=getProducts";

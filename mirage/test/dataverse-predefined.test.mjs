@@ -1,4 +1,4 @@
-// Predefined queries (savedQuery / userQuery) answered as FetchXML by the query hook. Invented schema and GUIDs only.
+// Predefined queries (savedQuery / userQuery) answered as FetchXML by the query hook.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
@@ -254,7 +254,7 @@ test("reset(api) re-seeds the saved and user query mappings and tables after a w
   assert.deepEqual(store.state.tables.userquery, []);
 });
 
-// RetrieveExchangeRate and SendAppNotification, registered by install and called through the registry. Invented GUIDs only.
+// RetrieveExchangeRate and SendAppNotification, registered by install and called through the registry.
 const CURRENCY = "55555555-0000-4000-8000-000000000001";
 async function messageSetup() {
   const state = emptyState();

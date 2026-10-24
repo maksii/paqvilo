@@ -1,5 +1,5 @@
 // HTTP-level checks for the router core: service protection, identity and impersonation, the request body, changesets
-// (runAtomic) and federated issuers from settings. Invented schema and loopback fixtures only.
+// (runAtomic) and federated issuers from settings.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
@@ -300,9 +300,12 @@ describe("managed identity hook", () => {
     assert.deepEqual(await routed.json(), { echo: "collection" });
   });
 
-  it("startDataverseApi returns the authority's managed identity token issuer", async () => {
+  it("startDataverseApi returns the authority's managed identity token issuer, whose tokens the router accepts", async () => {
     const s = await start();
-    assert.equal(typeof s.router.issueManagedIdentityToken, "function");
+    const issued = s.router.issueManagedIdentityToken({ origin: s.origin, clientId: APP_ID, resource: s.origin });
+    const response = await fetch(`${s.origin}${API}WhoAmI`, { headers: { authorization: `Bearer ${issued.access_token}` }, signal: AbortSignal.timeout(10_000) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).UserId, s.appUserId);
   });
 });
 

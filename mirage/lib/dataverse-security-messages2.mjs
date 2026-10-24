@@ -2,9 +2,7 @@ import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security messages, second set: owner reassignment, owner-to-access team conversion, team business units
 // and group sync, shared links, Entra object id privilege reads, the user hierarchy, team-derived privileges, masked columns,
 // the delegation, privilege checker, consent and inherited-access messages, and the internal-only channel and sync messages.
-// Registered from dataverse-extensions.mjs. Invented schema and GUIDs only. The response shapes come from the Learn complex-type
-// pages (GenerateSharedLinkResponse, RetrieveMaskedAttributesForEntityResponse, RetrieveUsersPrivilegesThroughTeamsResponse,
-// ResetInheritedAccessResponse, GetConsentLinkResponse). Lines marked "unverified" are behaviour not confirmed against a live capture.
+// Registered from dataverse-extensions.mjs. The response shapes follow the documented complex types.
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { registerInternalMessage } from "./dataverse-addon-common.mjs";
@@ -66,7 +64,7 @@ function reassignRows(api, c, from, to, objectType) {
   if (to.logical_name === "team") assertTeamCanOwn(store, to.id);
   const tables = Object.entries(store.state.mappings).filter(([logical, mapping]) => ownershipOf(logical, null, mapping) === "user"
     && (objectType === null || objectTypeCode(logical) === objectType));
-  // unverified: the refusal for an object type that is not a user-owned table.
+  // The refusal for an object type that is not a user-owned table is a guess.
   if (objectType !== null && tables.length === 0) throw invalid(`The object type code ${objectType} is not a user-owned table.`);
   for (const [logical, mapping] of tables) {
     for (const row of tableOf(store, logical)) {
@@ -125,7 +123,7 @@ export function install(api) {
     return respond(c, name, { RolePrivileges: entriesOf(store, roleIdsOfUser(store, user.systemuserid)).filter(keep) });
   };
   const orgId = () => organizationRecord(store)?.organizationid ?? null;
-  // The System Administrator role check of dataverse-fls.mjs. unverified: the privilege name in the refusal.
+  // The System Administrator role check of dataverse-fls.mjs; the privilege name in the refusal is a guess.
   const needSystemAdministrator = (c) => {
     if (!api.principals.roles(c.user).some((r) => r.name === ADMIN_ROLE)) throw privilegeDeniedError(c.user, "prvSystemAdministrator", "organization");
   };
@@ -148,7 +146,7 @@ export function install(api) {
     }
   };
   // The delegation team of an authorization, created with it when missing. Synchronous: call it inside write.
-  // unverified: teamtype 1. ponytail: the team gets no members and no roles.
+  // teamtype 1 is a guess. ponytail: the team gets no members and no roles.
   const delegationTeamOf = (c, daId) => {
     const teams = tableOf(store, "team");
     const found = teams.find((t) => sameId(refId(t.delegatedauthorizationid), daId));
@@ -170,7 +168,7 @@ export function install(api) {
     return tableOf(store, "connectioninstance").find((r) => sameId(r.connectioninstanceid, id));
   };
   // RetrievePrincipalAccessInfo, bound to systemuser and to team: the rights the principal holds on one row.
-  // unverified: the AccessInfo format; the rights string is wrapped as JSON.
+  // The AccessInfo format is a guess: the rights string wrapped as JSON.
   const principalAccessInfo = (entity) => ({
     name: "RetrievePrincipalAccessInfo", kind: "function", binding: "entity", entity,
     handle: async (c) => {
@@ -194,7 +192,7 @@ export function install(api) {
       handle: async (c) => {
         need(c, "prvWriteTeam", "team");
         const teamId = c.target.id, team = teamOf(store, teamId);
-        // unverified: both refusals; the live wording and code are not captured.
+        // Both refusals' wording and code are guesses.
         if (Number(team.teamtype ?? 0) !== OWNER_TEAM) throw invalid(`Team with Id = ${teamId} is not an owner team.`);
         if (ownsRows(store, teamId)) throw invalid(`Team with Id = ${teamId} owns records and cannot be converted to an access team.`);
         await write(() => { teamOf(store, teamId).teamtype = ACCESS_TEAM; });
@@ -230,10 +228,10 @@ export function install(api) {
       name: "ResetInheritedAccess", kind: "function", binding: "unbound",
       handle: async (c) => {
         const fetchXml = String(c.params?.FetchXml ?? "");
-        // unverified: the refusal for a query on another table.
+        // The refusal for a query on another table is a guess.
         if (!/<entity\s+name=['"]principalobjectaccess['"]/i.test(fetchXml)) throw invalid("The FetchXml query must select principalobjectaccess.");
         // ponytail: every share row is reset and the FetchXml filter is not applied. Mirage never writes inherited rights (grantAccess
-        // stores 0), so the reset changes nothing observable. unverified: the sentence and the privilege gate.
+        // stores 0), so the reset changes nothing observable. The refusal sentence and the privilege gate are guesses.
         await write(() => { for (const share of tableOf(store, "principalobjectaccess")) share.inheritedaccessrightsmask = 0; });
         return respond(c, "ResetInheritedAccess", {
           ResetInheritedAccessResponse: "The job to reset inherited access was created successfully. ExecutionMode: Synchronous.",
@@ -251,7 +249,7 @@ export function install(api) {
           const teams = tableOf(store, "team");
           if (!teams.some((t) => sameId(t.teamid, token))) teams.push(linkRow(store, { token, logical: mapping.logicalName, id, mask, row }));
         });
-        // unverified: the link's URL shape. The loopback form carries the record and the token.
+        // The link's URL shape is a guess; the loopback form carries the record and the token.
         const url = `${c.origin}/main.aspx?etn=${mapping.logicalName}&id=${id}&sharedlink=${token}`;
         return respond(c, "GenerateSharedLink", { Response: url });
       },
@@ -263,7 +261,7 @@ export function install(api) {
         let token = null;
         try { token = new URL(String(body(c).RecordUrlWithSharedLink ?? "")).searchParams.get("sharedlink"); } catch { token = null; }
         const link = token ? tableOf(store, "team").find((t) => sameId(t.teamid, token) && isLink(t)) : null;
-        // unverified: the refusal for a URL without a live shared link.
+        // The refusal for a URL without a live shared link is a guess.
         if (!link) throw invalid("The URL does not carry a shared link.");
         const logical = link.regardingobjecttypecode, id = refId(link.regardingobjectid);
         const row = store.get(logical, id, c.identity);
@@ -409,7 +407,7 @@ export function install(api) {
       handle: async (c) => {
         need(c, "prvWriteTeam", "team");
         const teamId = c.target.id, team = teamOf(store, teamId);
-        // unverified: the refusal for a team that is not an Entra group team.
+        // The refusal for a team that is not an Entra group team is a guess.
         if (Number(team.teamtype ?? 0) < 2 || !team.azureactivedirectoryobjectid) throw invalid(`Team with Id = ${teamId} is not a Microsoft Entra group team.`);
         const group = key(team.azureactivedirectoryobjectid);
         await write(() => {
@@ -436,9 +434,9 @@ export function install(api) {
         needSystemAdministrator(c);
         const schema = String(body(c).RelationshipSchema ?? "").trim();
         if (!schema) throw invalid("RelationshipSchema is required.");
-        // unverified: the refusal for a relationship that does not exist.
+        // The refusal for a relationship that does not exist is a guess.
         if (!relationshipTableOf(schema)) throw invalid(`The relationship ${schema} does not exist.`);
-        // unverified: the operation type. The job clears the inherited rights of the share rows on the referencing table's records.
+        // The operation type is not known (null). The job clears the inherited rights of the share rows on the referencing table's records.
         // ponytail: one level only; the cascade through related tables is not walked.
         await api.systemJob({ name: "RevokeInheritedAccess", operationtype: null, callerId: (c.caller ?? c.user).systemuserid }, async () => {
           const referencing = relationshipTableOf(schema), idColumn = store.resolveMapping(referencing).idColumn;
@@ -461,7 +459,7 @@ export function install(api) {
         const daId = targetRef(api, args.delegatedauthorization).id;
         if (!tableOf(store, "delegatedauthorization").some((d) => sameId(d.delegatedauthorizationid, daId))) throw notFound("delegatedauthorization", daId);
         const { mapping, id } = sharedTarget(c, args.target, "share");
-        // unverified: the owner-access mask and the Share privilege gate. Without owneraccess the team gets Read only.
+        // The owner-access mask and the Share privilege gate are guesses. Without owneraccess the team gets Read only.
         const mask = args.owneraccess === true ? OWNER_RIGHTS : ACCESS_RIGHTS.Read;
         await write(() => {
           const team = delegationTeamOf(c, daId);
@@ -494,9 +492,9 @@ export function install(api) {
       name: "RetrieveAppsWithDelegatedAccessPermissions", kind: "action", binding: "unbound",
       handle: async (c) => {
         const cloud = body(c).cloud;
-        // unverified: the refusal for a cloud that is not an integer.
+        // The refusal for a cloud that is not an integer is a guess.
         if (cloud === undefined || !Number.isInteger(Number(cloud))) throw invalid("cloud must be an integer.");
-        // ponytail: no app registry is modelled, so no app holds delegated permissions. LC-2 for the native items.
+        // ponytail: no app registry is modelled, so no app holds delegated permissions.
         return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, "Collection(Microsoft.Dynamics.CRM.crmbaseentity)"), value: [] } };
       },
       csdl: csdlOf("action", "RetrieveAppsWithDelegatedAccessPermissions", { params: [["cloud", "Edm.Int32"]], returns: "Collection(mscrm.crmbaseentity)" }),
@@ -506,7 +504,7 @@ export function install(api) {
       handle: async (c) => {
         need(c, "prvCreateRole", "role");
         const args = body(c), runId = c.target.id;
-        // unverified: the refusal for a PrivilegeCheckerRunId that is not the bound run, and for a missing RoleName.
+        // The refusals for a PrivilegeCheckerRunId that is not the bound run, and for a missing RoleName, are guesses.
         if (!sameId(args.PrivilegeCheckerRunId, runId)) throw invalid("PrivilegeCheckerRunId must be the bound privilegecheckerrun.");
         if (!args.RoleName) throw invalid("RoleName is required.");
         // Privilege checks (checktype 1) of the run, one mask per privilege; the highest depth wins for a repeated privilege.
@@ -541,7 +539,7 @@ export function install(api) {
       handle: async (c) => {
         const redirectUrl = String(body(c).redirectUrl ?? "");
         connectionOf(c);
-        // unverified: the link shape and the property values. No request leaves the simulator; the link names this loopback origin.
+        // The link shape and the property values are guesses. No request leaves the simulator; the link names this loopback origin.
         return respond(c, "GetConsentLink", {
           tenantId: api.settings?.tenantId ?? null, redirectUrl, parameterConsentLinks: "[]", principalType: "User", principalId: c.user.systemuserid,
           consentLink: `${c.origin}/consent/${c.target.id}?redirect_uri=${encodeURIComponent(redirectUrl)}`, firstPartyLoginUri: null, customParameters: null,
@@ -555,7 +553,7 @@ export function install(api) {
         connectionOf(c);
         const code = body(c).code;
         if (!code) throw invalid("code is required.");
-        // unverified: the status value. The code itself is never stored.
+        // The status value is a guess. The code itself is never stored.
         await write(() => {
           tableOf(store, "connectioninstance").find((r) => sameId(r.connectioninstanceid, c.target.id)).connectionstatus = JSON.stringify([{ status: "Connected" }]);
         });
@@ -566,8 +564,8 @@ export function install(api) {
   ];
   for (const op of operations) api.registry.register(op);
 
-  // Internal-only messages (GC policy, dataverse-addon-common.mjs): each keeps its native signature and answers 501 unless a pack
-  // handles it. Each names the Learn page that says "For internal use only."
+  // Internal-only messages (dataverse-addon-common.mjs): each keeps its native signature and answers 501 unless a pack
+  // handles it.
   // https://learn.microsoft.com/dotnet/api/microsoft.crm.sdk.messages.addchannelaccessprofileprivilegesrequest
   registerInternalMessage(api, {
     name: "AddChannelAccessProfilePrivileges", kind: "action", binding: "unbound",

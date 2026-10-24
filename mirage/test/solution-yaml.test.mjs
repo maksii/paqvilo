@@ -1,5 +1,5 @@
-// Canonical Dataverse Git YAML (Learn, power-platform/alm/solution-source-control-yaml-format) through the one YAML adapter
-// (solution-yaml.mjs) into the schema, metadata and source graph. Invented fixture: mirage/test/fixtures/yaml-solution.
+// Canonical Dataverse Git YAML through the one YAML adapter (solution-yaml.mjs) into the schema, metadata and source graph.
+// Fixture: mirage/test/fixtures/yaml-solution.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

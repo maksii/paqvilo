@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { chromium } from "playwright-core";
-import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 import { signInContext } from "../testing/session.mjs";
 import { ownedFixture } from "../testing/owned-fixture.mjs";
+import { sharedBrowser } from "./shared-browser.mjs";
+
+const chrome = sharedBrowser();
 
 // These are invented local records. Acceptance of an input by this fixture does
 // not establish that the hosted portal's request-validation policy accepts it.
@@ -66,9 +67,8 @@ async function fixture(t, extraFields = [], contextOptions = {}) {
   };
   const app = await createSimulator({ sourceDir: root, initial, watch: false });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const context = await browser.newContext(contextOptions);
+  const context = await chrome.browser.newContext(contextOptions);
+  ownedFixture(t).add(() => context.close());
   await signInContext(context, app, 'fixture-editor', { roles: ['Editor'] });
   const page = await context.newPage();
   const errors = [], external = [], writes = [];

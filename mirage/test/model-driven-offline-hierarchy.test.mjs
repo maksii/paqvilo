@@ -1,6 +1,6 @@
-// RC4a-03: a mobile offline profile filter with a record hierarchy operator (under, above...) is a gap only on a table whose
-// metadata has no hierarchical relationship (Learn query-hierarchical-data: IsHierarchical on a self-referencing 1:N). The
-// download reads EntityDefinitions(...)/OneToManyRelationships from the organization. Invented x_ tables and GUIDs.
+// A mobile offline profile filter with a record hierarchy operator (under, above...) is a gap only on a table whose
+// metadata has no hierarchical relationship (IsHierarchical on a self-referencing 1:N). The
+// download reads EntityDefinitions(...)/OneToManyRelationships from the organization.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

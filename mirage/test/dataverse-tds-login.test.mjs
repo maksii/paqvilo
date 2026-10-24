@@ -145,10 +145,12 @@ for (const c of decodeCases) {
 const rejectCases = [
   {
     name: "shorter than the fixed header",
+    message: /shorter than its fixed header/,
     buffer: () => Buffer.alloc(10),
   },
   {
     name: "length field disagrees with the buffer",
+    message: /length field does not match/,
     buffer: () => {
       const b = encodeLogin7({ userName: "sa" });
       b.writeUInt32LE(b.length + 4, 0);
@@ -157,6 +159,7 @@ const rejectCases = [
   },
   {
     name: "variable-data offset points past the end",
+    message: /outside its buffer/,
     buffer: () => {
       const b = encodeLogin7({ userName: "sa" });
       b.writeUInt16LE(0xfff0, 40);
@@ -165,6 +168,7 @@ const rejectCases = [
   },
   {
     name: "feature block runs past the end (no 0xFF terminator)",
+    message: /outside its buffer/,
     buffer: () => {
       const b = Buffer.from(encodeLogin7({ features: [fedSecurityToken("t")] }).subarray(0, -1));
       b.writeUInt32LE(b.length, 0);
@@ -175,7 +179,7 @@ const rejectCases = [
 
 for (const c of rejectCases) {
   test(`decodeLogin7 rejects: ${c.name}`, () => {
-    assert.throws(() => decodeLogin7(c.buffer()), RangeError);
+    assert.throws(() => decodeLogin7(c.buffer()), { name: "RangeError", message: c.message });
   });
 }
 
@@ -191,7 +195,7 @@ test("loginAck: LOGINACK 0xAD with big-endian TDS version and progName 'mirage' 
 });
 
 test("loginAck rejects a malformed version", () => {
-  assert.throws(() => loginAck({ version: "12.0" }), RangeError);
+  assert.throws(() => loginAck({ version: "12.0" }), { name: "RangeError", message: /not major\.minor\.build/ });
 });
 
 const tokenCases = [
@@ -257,7 +261,6 @@ for (const c of infoDefaults) {
 
 const fedAuthInfoCases = [
   { name: "Azure AD STS URL and SPN", stsUrl: "https://login.example.test/tenant", spn: "https://org.example.test/" },
-  { name: "loopback fixture URLs", stsUrl: "https://127.0.0.1/00000000-0000-0000-0000-0000000000aa", spn: "https://127.0.0.1/" },
 ];
 
 for (const c of fedAuthInfoCases) {

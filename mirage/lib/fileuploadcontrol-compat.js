@@ -2,7 +2,7 @@
  * Local equivalent of the platform's /xrm-adx/js/fileuploadcontrol.js (the attach-file control
  * of basic and multistep forms): the Upload button opens the file chooser and the chosen files
  * are listed in the control's file-info area. Each chosen file goes through the platform's file
- * API at once (live basic and multistep attach captures): POST /_api/file/InitializeFileUpload/note
+ * API at once: POST /_api/file/InitializeFileUpload/note
  * (the token, the file's name, size and type, the control's instance id as form session) answers an
  * annotation id and a continuation token, then PUT /_api/file/UploadFileBlock/note sends the
  * bytes. The postback carries the ids in AttachFile_HiddenField_AnnotationIds (a JSON array) and
@@ -91,7 +91,7 @@
       info.append(item);
     }
     // The required validator reads the annotation ids the uploads return; the file input is
-    // emptied so the postback carries the ids only (live).
+    // emptied so the postback carries the ids only.
     const ids = byId("AttachFile_HiddenField_AnnotationIds");
     const files = [...(input.files ?? [])].filter((file) => chosen.includes(file));
     pending += 1;

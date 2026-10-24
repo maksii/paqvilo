@@ -1,8 +1,6 @@
-// Liquid resource strings (resx) per culture for the keys the mirage defines in lib/liquid.mjs
-// (RESX), from the MIT-licensed Adxstudio resource files
-// (Adxstudio.Xrm.Resources/ResourceFiles/strings.<culture>.resx). Generated; English values live in
-// lib/liquid.mjs, where values observed on the live portal win over the resource file.
-// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+// Liquid resource strings per culture for the keys lib/liquid.mjs defines (English lives there).
+// From xRM Portals Community Edition (Adxstudio.Xrm.Resources/ResourceFiles/strings.<culture>.resx),
+// MIT License, Copyright (c) 2017 Microsoft and contributors; see licenses/xrm-portals-community-edition.txt.
 export const RESX_CULTURES = Object.freeze({
   "bg-BG": Object.freeze({
     Sign_In: "Влизане",
