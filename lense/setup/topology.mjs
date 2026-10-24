@@ -51,7 +51,6 @@ export function plannedTopology(snapshot = {}) {
   };
   const edge = (from, to, kind, label) => { if (!edges.some(item => item.from === from && item.to === to)) edges.push({ from, to, kind, label }); };
   const list = targets(snapshot);
-  const sites = kind => list.filter(item => item.kind === kind).map(item => item.id);
   const portals = list.filter(item => item.kind === 'power-pages' && item.portals);
   const modelDriven = list.filter(item => item.kind === 'model-driven' || (item.kind === 'power-pages' && item.solutions));
   const dataverseOn = item => item.mirage.dataverse?.enabled === true || (item.mirage.dataverse?.enabled === undefined && item.kind === 'dataverse-api');

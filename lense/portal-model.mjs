@@ -321,7 +321,7 @@ export function yamlKeyStyle(dir) {
     const sample = [];
     const visit = (folder, depth) => {
       if (sample.length >= 5 || depth > 3) return;
-      let entries = [];
+      let entries;
       try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         if (sample.length >= 5) return;
@@ -375,7 +375,7 @@ export function sourceText(src, raw) {
     }
   }
   if (text == null) return null;
-  text = text.replace(/^﻿/, '');
+  text = text.replace(/^\uFEFF/, '');
   if (src.componentId != null && componentIdentity(text) !== String(src.componentId).toLowerCase()) return null;
   return src.parsedYaml && src.fieldPath ? yamlField(src)(text) : src.extract ? src.extract(text) : text;
 }
@@ -387,7 +387,7 @@ export function createSourceReader(model) {
     const yamlFieldSource=source.fieldPath&&/\.ya?ml$/i.test(source.file);
     if (!files.has(source.file)) {
       const root = source.sourceDir ?? model?.sourceDir;
-      let entry = { raw: null, yaml: null };
+      const entry = { raw: null, yaml: null };
       try {
         const stat = root ? sourceFileStat(root, source.file) : fs.statSync(source.file);
         if (!stat?.isFile()) throw new Error('Source is missing or outside the extract');

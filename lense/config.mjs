@@ -118,6 +118,7 @@ function readYamlFile(file) {
   try {
     return YAML.parse(fs.readFileSync(file, 'utf8')) ?? {};
   } catch (err) {
+    // eslint-disable-next-line preserve-caught-error -- YAML errors can contain private values; expose only the bounded first line.
     throw new Error(`${path.basename(file)} is not valid YAML: ${err.message.split('\n')[0]}`);
   }
 }
@@ -185,6 +186,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
   const root = catalogueRoot(base, local ?? {}, settings.values);
 
   const sourceRootSetting = opts.repo ?? settings.values.PAQVILO_REPO ?? root.sourceRoot ?? '.';
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof sourceRootSetting !== 'string' || !sourceRootSetting.trim() || /[\x00-\x1f\x7f]/.test(sourceRootSetting)) throw new Error('Portal repository root must be a non-empty path without control characters');
   const sourceRoot = path.resolve(opts.repo !== undefined ? process.cwd() : configDir, sourceRootSetting);
 
@@ -329,6 +331,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
     markup: { ...site.markup, baseline: opts.baseline ?? s.PAQVILO_BASELINE ?? env.baseline ?? site.markup.baseline },
   };
   startPath(resolvedSite.startPath);
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof resolvedSite.markup.baseline !== 'string' || !resolvedSite.markup.baseline.trim() || /[\x00-\x1f]/.test(resolvedSite.markup.baseline)) throw new Error('baseline must be a non-empty git ref');
 
   const browser = browserSettings({ browser: root.browser, options: opts, settings: s, configDir });

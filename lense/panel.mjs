@@ -85,7 +85,7 @@ function webFileGroup(url) {
   return 'other';
 }
 
-const toLines = (text) => text.replace(/^﻿/, '').replace(/\r\n?/g, '\n').split('\n');
+const toLines = (text) => text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
 const sameOrigin = (address, origin) => {
   try { return new URL(address).origin === origin; } catch { return false; }
 };
@@ -430,10 +430,6 @@ export function enablePanel(context, session, opts = {}) {
   let inspectionSequence = 0;
   const runtimeJobs = new WeakMap();
   const inspectionProgress = new WeakMap();
-  const inside = (root, file) => {
-    const delta = path.relative(root, file);
-    return Boolean(delta) && delta !== '..' && !delta.startsWith(`..${path.sep}`) && !path.isAbsolute(delta);
-  };
   // The Mirage reports native real paths. Short (8.3) names, junctions and case differences in
   // the configured roots must not decide whether a reported file belongs to them.
   const realNative = (value) => {
@@ -672,7 +668,7 @@ export function enablePanel(context, session, opts = {}) {
         failOnStatusCode: false,
         timeout: 120_000,
       });
-      let result = null;
+      let result;
       try { result = await response.json(); } catch { result = null; }
       if (response.ok()) return { ok: true, result };
       const message = result?.error?.message ?? result?.error ?? `Mirage answered HTTP ${response.status()}`;
@@ -1028,8 +1024,8 @@ export function enablePanel(context, session, opts = {}) {
     const src = indexSources().inlineByRel.get(rel);
     const local = src ? sourceText(src) : readLocalFileSync(file, { maxBytes: MAX_DIFF_BYTES, encoding: 'utf8' });
     if (local == null) return { ok: false, error: 'the local file cannot be read' };
-    let before = null;
-    let against = null;
+    let before;
+    let against;
     if (!src && url) {
       let address;
       try { address = new URL(portalResourceUrl(cfg.origin, url)); } catch { /* invalid URL */ }

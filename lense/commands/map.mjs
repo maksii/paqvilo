@@ -52,7 +52,7 @@ export function buildMapping(session) {
   };
 }
 
-const markdownText = (value) => String(value ?? '').replace(/[&<>|`\\\[\]*_]/g, (c) => `&#${c.charCodeAt(0)};`).replace(/\r\n?|\n/g, '<br>');
+const markdownText = (value) => String(value ?? '').replace(/[&<>|`\\[\]*_]/g, (c) => `&#${c.charCodeAt(0)};`).replace(/\r\n?|\n/g, '<br>');
 
 export function toMarkdown(m) {
   const lines = [

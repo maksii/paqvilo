@@ -26,7 +26,7 @@ async function template(name, values = {}) {
   });
 }
 
-export function projectScripts({ sites, browser, packs, vscode }) {
+export function projectScripts({ sites, packs, vscode }) {
   const config = '--config ./paqvilo.config.yml';
   const lense = command => `paqvilo lense ${command} ${config}`;
   const mirage = command => `paqvilo mirage ${command} ${config}`;
@@ -68,11 +68,13 @@ export async function prepareProject(directory, options = {}) {
   const browser = options.browser ?? 'msedge';
   if (!['msedge', 'chrome', 'chromium'].includes(browser)) throw new Error('--browser must be msedge, chrome or chromium');
   const sourceRoot = options.sourceRoot ?? './sources';
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof sourceRoot !== 'string' || !sourceRoot.trim() || /[\x00-\x1f\x7f]/.test(sourceRoot)) throw new Error('--source-root must be a non-empty path without control characters');
   const metadata = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const { version } = metadata;
   const docs = metadata.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') + '/blob/main/';
   const toolkit = options.toolkit ?? `^${version}`;
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (!toolkit.trim() || /[\x00-\x1f\x7f]/.test(toolkit)) throw new Error('--toolkit must be a non-empty dependency specification');
   const packs = packIds.map(id => ({ id, directory: packIds.length === 1 ? 'pack' : `packs/${id}` }));
   const vscode = !options.noVscode;
@@ -93,7 +95,7 @@ export async function prepareProject(directory, options = {}) {
     'package.json': json({ name, private: true, type: 'module', engines: { node: metadata.engines.node }, scripts, devDependencies: { paqvilo: toolkit }, paqvilo: { scaffold: 1, vscode } }),
     'paqvilo.config.yml': String(doc),
     '.gitignore': await template('gitignore.template'), '.gitattributes': await template('gitattributes.template'),
-    '.editorconfig': await template('editorconfig.template'), '.node-version': metadata.engines.node.match(/\d+/)[0] + '\n',
+    '.editorconfig': await template('editorconfig.template'), '.node-version': metadata.engines.node.match(/\d+\.\d+\.\d+/)[0] + '\n',
     'README.md': await template('README.md', { name, docs, version, node: metadata.engines.node.match(/\d+/)[0], editorStep: vscode ? 'Run `npm run editor:refresh` after configuration changes; inspect any script proposals and edited-file alternatives.' : 'Editor generation is disabled; use `paqvilo init --refresh-editor --workspace-only` if you want an ignored workspace file.' }), 'AGENTS.md': await template('AGENTS.md', { name, docs }),
     'tools/bootstrap.mjs': await template('bootstrap.mjs.template'),
     'docs/configuration.md': await template('configuration.md', { docs }),

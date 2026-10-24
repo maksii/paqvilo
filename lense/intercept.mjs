@@ -248,8 +248,8 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       // text inspection and an unchanged fulfill instead of fetching/copying the body twice.
       let bytes;
       let text;
-      const readBody = () => bytes ??= Promise.resolve().then(() => response.body());
-      const readText = () => text ??= readBody().then((body) => body.toString('utf8'));
+      const readBody = () => (bytes ??= Promise.resolve().then(() => response.body()));
+      const readText = () => (text ??= readBody().then((body) => body.toString('utf8')));
       return new Proxy(response, {
         get(target, property) {
           if (property === 'body') return readBody;

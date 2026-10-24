@@ -36,7 +36,7 @@ const WEAK_ANCHOR_LENGTH = 12;
 
 function readText(file) {
   try {
-    return fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+    return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   } catch {
     return null;
   }
@@ -625,7 +625,7 @@ export class HtmlRewriter {
           const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
           const after = await fs.promises.stat(file);
           if (!sameStamp(before, after) || await fs.promises.realpath(file) !== real) throw new Error('source changed during startup');
-          raw.set(key, text.replace(/^﻿/, ''));
+          raw.set(key, text.replace(/^\uFEFF/, ''));
           valid.set(key, true);
           stamps.set(key, { file, real, info: after });
         } catch {

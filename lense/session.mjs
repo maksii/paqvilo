@@ -335,7 +335,7 @@ export class OverlaySession extends EventEmitter {
       }
       const isDocument = type === 'document' && (method === 'GET' || (method === 'POST' && /^application\/x-www-form-urlencoded/i.test(request.headers()['content-type'] ?? '')));
       if (isDocument) {
-        let navigation = false;
+        let navigation;
         try { navigation = request.isNavigationRequest() && request.frame().parentFrame() === null; }
         catch { navigation = true; }
         if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation: true });
@@ -436,7 +436,7 @@ export class OverlaySession extends EventEmitter {
     // yet, so snippet-only changes must still get a chance to patch returned HTML.
     const isDataRequest = (type === 'xhr' || type === 'fetch') && method === 'GET' && this.rewriter.patches.length > 0;
     if (isDocument || isDataRequest) {
-      let navigation = false;
+      let navigation;
       try {
         navigation = isDocument && request.isNavigationRequest() && request.frame().parentFrame() === null;
       } catch {

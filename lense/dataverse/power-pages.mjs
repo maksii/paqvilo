@@ -28,8 +28,8 @@ async function command(name,args,options){
  return typeof result.stdout==='string'?result.stdout:String(result.stdout??'');
 }
 function jsonResponse(output){
- try{return JSON.parse(output.trim());}catch{}
- const lines=output.split(/\r?\n/);for(let index=0;index<lines.length;index++)if(/^[\[{]/.test(lines[index].trim()))try{return JSON.parse(lines.slice(index).join('\n'));}catch{}
+ try{return JSON.parse(output.trim());}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
+ const lines=output.split(/\r?\n/);for(let index=0;index<lines.length;index++)if(/^[[{]/.test(lines[index].trim()))try{return JSON.parse(lines.slice(index).join('\n'));}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
  throw new Error('PAC Power Pages management returned no JSON record; command output withheld.');
 }
 function siteRecord(row){

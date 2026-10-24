@@ -389,6 +389,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
       if (!['commit', 'domcontentloaded', 'load'].includes(waitUntil)) throw fault(400, 'invalid_argument', 'waitUntil must be commit, domcontentloaded or load');
       let target;
       if (action === 'navigate') {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
         if (typeof body.url !== 'string' || body.url.length > 4096 || /[\\\x00-\x20]/.test(body.url)) throw fault(400, 'invalid_argument', 'url must be a portal URL or path without whitespace/backslashes');
         try { target = new URL(body.url, cfg.origin); } catch { throw fault(400, 'invalid_argument', 'Invalid navigation URL'); }
         if (target.origin !== cfg.origin || target.username || target.password) throw fault(403, 'foreign_origin', 'Navigation must start on the configured portal origin');
@@ -399,9 +400,10 @@ export async function startAgentServer({ session, context, panel, attached = fal
       const destination = action === 'navigate' ? target.href : refreshUrl(page.url());
       let navigated;
       try { navigated = await withPage(page, timeout + 50, () => page.goto(destination, { waitUntil, timeout })); }
-      catch(cause){if(cause.name==='TimeoutError'||cause.code==='action_timeout'){try{const cdp=await context.newCDPSession(page);try{await cdp.send('Page.stopLoading');}finally{await cdp.detach();}}catch{}throw fault(504,'action_timeout','The browser navigation timed out');}throw cause;}
+      catch(cause){if(cause.name==='TimeoutError'||cause.code==='action_timeout'){try{const cdp=await context.newCDPSession(page);try{await cdp.send('Page.stopLoading');}finally{await cdp.detach();}}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }throw fault(504,'action_timeout','The browser navigation timed out');}throw cause;}
       json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, status: navigated?.status?.() ?? null });
     } catch (error) {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
       const message = redactText(error.message).replace(/\x1b\[[0-9;]*m/g,'').split(/\r?\n/)[0].replace(/[\x00-\x1f\x7f]/g,' ').slice(0,1000);
       const status = error.status ?? (error.name === 'TimeoutError' ? 504 : /(?:not a valid selector|querySelectorAll.*not valid)/i.test(error.message) ? 400 : 500);
       if (status >= 500) push({ type: 'action-error', code: error.code ?? 'action_failed', text: message });
@@ -411,7 +413,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
   });
   server.requestTimeout = 10_000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxRequestsPerSocket = 100; server.maxConnections = 32;
   server.on('connection', (socket) => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
-  const close = () => closing ??= (async () => {
+  const close = () => (closing ??= (async () => {
     stopped = true;
     for (const remove of removers) remove();
     pages.clear(); events.length = 0; eventBytes = 0;
@@ -421,7 +423,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
       server.closeIdleConnections();
     });
     fs.rmSync(discoveryFile, { force: true });
-  })();
+  })());
   try {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     discovery = { schemaVersion: 1, id, pid: process.pid, startedAt, site: cfg.siteName, environment: cfg.envName, portalOrigin: cfg.origin, sourceDir: cfg.sourceDir, endpoint: `http://127.0.0.1:${server.address().port}`, token, capabilities: { events: true, state: true, dom: true, screenshot: true, viewport: true, navigate: true, reload: true, stop: true, evaluate: false, formActions: false } };

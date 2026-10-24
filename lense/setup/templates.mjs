@@ -7,6 +7,7 @@ const DEFAULTS = { id: 'invented-portal', root: '' };
 function values(input = {}) {
   const id = input.id ?? DEFAULTS.id, root = input.root ?? DEFAULTS.root;
   if (typeof id !== 'string' || !ID.test(id)) throw Object.assign(new Error('Target name must be 1-63 letters, numbers or hyphens.'), { status: 400 });
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof root !== 'string' || root.length > 1024 || /[\x00-\x1f\x7f]/.test(root)) throw Object.assign(new Error('Source folder must be a path without control characters.'), { status: 400 });
   return { id, root: root.trim() };
 }

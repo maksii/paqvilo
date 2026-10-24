@@ -65,6 +65,7 @@ export function validateModelDrivenAction(id, params = {}) {
       if (typeof value !== 'boolean') throw new Error('Action switches must be Boolean values.');
       result[input.name] = value;
     } else if (input.type === 'text') {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
       if (typeof value !== 'string' || value.length > (input.maxLength ?? 200) || /[\x00-\x1f\x7f]/.test(value)) throw new Error('Enter a bounded text value without control characters.');
       result[input.name] = value;
     }

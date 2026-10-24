@@ -190,7 +190,7 @@ async function withOwnershipLock(paths, action, { signal } = {}) {
       try {
         if (Date.now() - (await fs.stat(lock)).mtimeMs > OWNERSHIP_LOCK_STALE) await fs.rm(lock, { force: true });
       } catch { /* released meanwhile */ }
-      if (Date.now() > deadline) throw new Error(`The Mirage ownership records stayed locked: ${lock}`);
+      if (Date.now() > deadline) throw new Error(`The Mirage ownership records stayed locked: ${lock}`, { cause: error });
       await delay(20 + Math.floor(Math.random() * 40), undefined, { signal });
     }
   }
@@ -225,7 +225,7 @@ export async function updateOwnedSessions(paths, change, { signal } = {}) {
 // ---- discovery records
 async function discoveryRecords(paths, { signal } = {}) {
   signal?.throwIfAborted();
-  let names = [];
+  let names;
   try { names = await fs.readdir(paths.discoveryRoot); } catch { signal?.throwIfAborted(); return []; }
   signal?.throwIfAborted();
   const records = [];
@@ -673,7 +673,7 @@ async function startRuntime(cfg, args, paths, startup) {
     const setupRuntime = JSON.stringify({ command: startup.command, ...(cfg.configFile ? { site: cfg.catalogueSite ?? cfg.siteName } : {}) });
     child = spawn(process.execPath, [cli, ...values], { cwd: cfg.configDir ?? process.cwd(), detached: true, stdio: ['ignore', logHandle.fd, logHandle.fd], windowsHide: true, env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime } });
     startup.child(child);
-  } catch (error) { await logHandle.close(); throw new Error(`Could not start Mirage: ${error.message}. Startup log: ${log}`); }
+  } catch (error) { await logHandle.close(); throw new Error(`Could not start Mirage: ${error.message}. Startup log: ${log}`, { cause: error }); }
   await logHandle.close();
   child.unref();
   const discovery = path.join(paths.discoveryRoot, `session-${child.pid}.json`);
@@ -862,16 +862,17 @@ export async function initProject(cfg, args = {}) {
   let loaded;
   try { loaded = await loadProject(file); }
   catch (error) {
+    let loadFailure = error;
     // A newer loader names the version it requires; the fields written here are shared by all versions.
     const required = /version/i.test(error.message) ? Math.max(...(error.message.match(/\d+/g) ?? []).map(Number)) : NaN;
     if (Number.isInteger(required) && required > document.version) {
       document.version = required;
       await write();
-      try { loaded = await loadProject(file); } catch (retry) { error = retry; }
+      try { loaded = await loadProject(file); } catch (retry) { loadFailure = retry; }
     }
     if (!loaded) {
       await fs.rm(file, { force: true });
-      throw new Error(`The generated project file did not load and was removed: ${error.message}`);
+      throw new Error(`The generated project file did not load and was removed: ${loadFailure.message}`, { cause: error });
     }
   }
   const packs = await matchingPacks(cfg, configured.dataPacks ?? []);

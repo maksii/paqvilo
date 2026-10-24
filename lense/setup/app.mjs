@@ -78,7 +78,6 @@ const LEVEL_HELP = 'What happens to records you add or change in the preview. Ke
 // What a target runs, in words: "Power Pages website, Model-driven apps".
 const partsName = siteId => { const parts = quickUi.targetOf(state, siteId)?.parts ?? {}; return Object.entries(quickUi.PARTS).filter(([key]) => parts[key]).map(([, item]) => item.title).join(', ') || 'Nothing chosen'; };
 const optionText = (name, value) => (name === 'runtime-kind' ? runtimeName(value) : name === 'simulation-level' ? SIMULATION_LEVELS[value] ?? value : value);
-const select = (label, name, values, chosen) => choice(label, name, values.map(value => [value, optionText(name, value)]), chosen);
 const source = site => `<div class="notice"><strong>${site.sourceStatus.format ? `Website export found (${esc(site.sourceStatus.layout?.dialect ?? site.sourceStatus.format)} format)` : site.sourceStatus.exists ? 'This folder holds no website export' : 'Website export folder not found'}</strong><p class="code-text source-path">${esc(site.sourceStatus.path || 'No source selected')}</p><span class="ui-badge ui-tone-neutral">${site.sourceStatus.git ? `Git branch ${esc(site.sourceStatus.git.branch)}, commit ${esc(site.sourceStatus.git.commit)}${site.sourceStatus.git.changed ? ' · uncommitted changes in this folder' : ''}` : ''}${site.sourceStatus.gitState === 'timeout' ? ' · Git status unavailable (timeout)' : site.sourceStatus.gitState === 'unavailable' ? ' · Git status unavailable' : !site.sourceStatus.git ? 'No committed Git checkout' : ''}</span></div>`;
 function notice(message, error = false) {
   const node = $('#notice'); node.hidden = false; node.className = `activity-feedback ${error ? 'error' : 'done'}`;
@@ -144,7 +143,7 @@ async function request(url, options = {}) {
   } catch (error) {
     if (deadline.signal.aborted) throw new Error(options.method && options.method !== 'GET'
       ? 'The configuration request timed out. Its result may be unknown; refresh and check the configuration before retrying.'
-      : 'Loading configuration timed out. Try Refresh to reconnect.');
+      : 'Loading configuration timed out. Try Refresh to reconnect.', { cause: error });
     throw error;
   } finally { clearTimeout(timer); }
 }

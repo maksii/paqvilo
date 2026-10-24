@@ -133,6 +133,7 @@ function scanScriptSourceHints(body,source,limit){
       if(previous==='.'&&['getElementById','querySelector','querySelectorAll'].includes(name)||previous!=='.'&&['$','jQuery'].includes(name)){
         let at=trivia(index);if(body[at]==='('){at=trivia(at+1);const string=quotedString(body,at);if(string){const end=trivia(string.end);if(body[end]===')'){
           const value=string.value;
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
           const selector=name==='getElementById'?(!/[\s?=&/{}%\x00-\x1f\x7f]/.test(value)&&value.length<=160&&value?cssId(value):null):safeScriptSelector(value);
           if(selector&&!seen.has(selector)){seen.add(selector);rows.push({...source,selector,line:/\.[cm]?js$/i.test(source.sourceFile??'')?body.slice(0,start).split('\n').length:undefined,evidence:'script-selector',certainty:'candidate'});}
           index=end+1;previous=')';continue;
@@ -199,6 +200,7 @@ function quotedString(text,start){
 }
 
 function safeScriptSelector(value){
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if(!value||value.length>160||/[\x00-\x1f\x7f{}%]/.test(value))return null;
   // Only declared schema/component identifiers may appear as attribute values. Arbitrary
   // DOM values, hrefs and nested functional selectors must never become saved evidence.

@@ -115,7 +115,7 @@ function assetPaths(text, basePath) {
       if (!match[1] || match[1].includes('{{') || match[1].startsWith('#')) continue;
       const url = new URL(match[1], new URL(basePath, 'http://inspect.invalid'));
       if (url.origin === 'http://inspect.invalid') values.push(decodeURIComponent(url.pathname));
-    } catch {}
+    } catch { /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
   }
   return values;
 }
@@ -160,8 +160,8 @@ export function inspectRenderedPage() {
   const controlSelector='input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],[id^=EntityList],.entity-grid[data-selected-view],iframe';
   const addControl=node=>{
     let layout = {};
-    try { layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); } catch {}
-    let frameForm='';if(node.localName==='iframe')try{const url=new URL(node.getAttribute('src'),node.ownerDocument.baseURI);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{}
+    try { layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); } catch { /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
+    let frameForm='';if(node.localName==='iframe')try{const url=new URL(node.getAttribute('src'),node.ownerDocument.baseURI);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
     return {
     tag: node.tagName.toLowerCase(), id: node.id.slice(0, 160), name: (node.getAttribute('name') ?? '').slice(0, 160), type: (node.getAttribute('type') ?? '').slice(0, 40),
     entity: String(node.getAttribute('data-entityname') ?? node.getAttribute('data-entity') ?? layout.EntityName ?? '').slice(0, 160),
@@ -182,11 +182,11 @@ export function inspectRenderedPage() {
   while(pending.length&&scanned<8000){
     const node=pending.pop();if(!own(node))continue;scanned++;
     if(node.matches(shapeSelector)){if(elements.length<2000)elements.push(node);else shapeOverflow=true;}
-    if(node.matches('script[src],link[href],img[src]')&&assets.length<300){const raw=node.getAttribute('src')??node.getAttribute('href');try{const url=new URL(raw,node.ownerDocument.baseURI);if(url.origin===location.origin)assets.push({kind:node.localName,path:url.pathname});}catch{}}
+    if(node.matches('script[src],link[href],img[src]')&&assets.length<300){const raw=node.getAttribute('src')??node.getAttribute('href');try{const url=new URL(raw,node.ownerDocument.baseURI);if(url.origin===location.origin)assets.push({kind:node.localName,path:url.pathname});}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }}
     if(node.matches(controlSelector)){controlsSeen++;if(controls.length<300){const control=addControl(node);
-      if(!control.formId)try{const url=new URL(node.ownerDocument.URL);if(url.origin===location.origin)control.formId=(url.searchParams.get('entityformid')??'').slice(0,160);}catch{}
+      if(!control.formId)try{const url=new URL(node.ownerDocument.URL);if(url.origin===location.origin)control.formId=(url.searchParams.get('entityformid')??'').slice(0,160);}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
       controls.push(control);}}
-    if(node.localName==='iframe')try{const inner=node.contentDocument;if(inner?.documentElement)pending.push(inner.documentElement);}catch{}
+    if(node.localName==='iframe')try{const inner=node.contentDocument;if(inner?.documentElement)pending.push(inner.documentElement);}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
     for(const children of [node.shadowRoot?.children??[],node.children]){
       const count=Math.min(children.length,8000-scanned-pending.length);
       if(count<children.length)traversalTruncated=true;
@@ -194,10 +194,12 @@ export function inspectRenderedPage() {
     }
   }
   const shapeTruncated=shapeOverflow||traversalTruncated||pending.length>0;
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   const ids=elements.filter(node=>node.hasAttribute('id')).map(node=>node.id).filter(id=>id.length<=160&&!/[\s?=&/{}%\x00-\x1f\x7f]/.test(id));
   const tokens=new Set();let tokenTruncated=false;
   const addToken=token=>{if(tokens.size>=8000&&!tokens.has(token)){tokenTruncated=true;return false;}tokens.add(token);return true;};
   const idSet=new Set(ids);
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   const staticValue=value=>value&&value.length<=160&&!/[{}%\x00-\x1f\x7f]/.test(value);
   shapeLoop:for(const node of elements.slice(0,2000)){
     if(idSet.has(node.id)&&!addToken('id:'+node.id))break;
@@ -428,7 +430,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   if(report.page&&page){report.page.entityFormId=page.formId??portalField(page.metadata??{},'entityform')??null;report.page.listId=page.listId??portalField(page.metadata??{},'entitylist')??null;}
   report.pageSources = [];
   for (const source of pageSources(portal, page)) {
-    try { if ((await fs.stat(source.sourceFile)).isFile()) report.pageSources.push(source); } catch {}
+    try { if ((await fs.stat(source.sourceFile)).isFile()) report.pageSources.push(source); } catch { /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
   }
   if (page?.metadata?._file) {
     const root = portal.records.find((record) => record.kind === 'webpage' && norm(record.id) === norm(page.id));
@@ -517,7 +519,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
           sourceBodies.push(text);
           for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
         }
-      } catch {}
+      } catch { /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
     }
   }
   const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
@@ -612,7 +614,7 @@ export function createSourceInspector(cfg) {
       return structuredClone(result);
     }catch(error){if(generation===reports&&reports.get(key)===entry)reports.delete(key);throw error;}
   };
-  const load = () => loading ??= (async () => {
+  const load = () => (loading ??= (async () => {
     const sources = await inspectionSources(cfg);
     counters.reloads++;
     const variants = new Map();
@@ -645,7 +647,7 @@ export function createSourceInspector(cfg) {
       return { ...(language ? await variant(language) : initial), language, route: language ? pathname.slice(prefix.length + 1) || '/' : pathname, requestPath: pathname };
     };
     return { sources, select, signature };
-  })().catch((error) => { loading = null; throw error; });
+  })().catch((error) => { loading = null; throw error; }));
   return {
     invalidate() {
       const previous=loading;

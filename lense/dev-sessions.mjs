@@ -43,7 +43,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
     failure = combine([...(failure ? [failure] : []), cause], 'Development session failed during cleanup.');
   };
 
-  const dispose = (record) => record.closing ??= (async () => {
+  const dispose = (record) => (record.closing ??= (async () => {
     const failures = [];
     const attempt = async operation => {
       try { await operation(); } catch (cause) { failures.push(cause); retainCleanupFailure(cause); }
@@ -60,7 +60,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
     if (active.get(record.session.cfg.origin) === record) active.delete(record.session.cfg.origin);
     records.delete(record);
     if (failures.length) throw combine(failures, 'Development target cleanup failed.');
-  })();
+  })());
 
   const ensure = (origin) => {
     if (closed) return Promise.reject(new Error('Development browser is stopping'));
@@ -122,7 +122,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
     return pending.get(origin);
   };
 
-  const close = () => closing ??= (async () => {
+  const close = () => (closing ??= (async () => {
     closed = true;
     try { stopDialogs(); } catch (cause) { retainCleanupFailure(cause); }
     // Release paused requests first. Initializers finish before disposing any resources they own.
@@ -133,7 +133,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
     pending.clear();
     failedAt.clear();
     if (cleanupFailures.length) throw combine(cleanupFailures, 'Development browser cleanup failed.');
-  })();
+  })());
 
   try {
     detach = await interceptOrigins(context, [...configs.keys()], async (route) => {

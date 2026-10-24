@@ -2,6 +2,7 @@ import path from 'node:path';
 import { modelDrivenOrigin, readModelDrivenResourceMap, createModelDrivenOverlay, modelDrivenResourcePath } from './model-driven.mjs';
 
 function localPath(value, origin) {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\x00-\x20]/.test(value) || new URL(value, origin).origin !== origin) throw new Error('A model-driven start path must stay on its declared origin.');
   return value;
 }

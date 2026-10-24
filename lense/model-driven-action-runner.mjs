@@ -152,6 +152,7 @@ export async function runModelDrivenAction({ origin, token, action, params = {},
   try {
     let outcome;
     if (action === 'identity:users') {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
       const query = params.query ?? ''; if (typeof query !== 'string' || query.length > 100 || /[\x00-\x1f\x7f]/.test(query)) fail('Enter a user search of at most 100 characters.', 'error');
       const filter = 'isdisabled eq false and applicationid eq null' + (query.trim() ? ` and (contains(fullname,'${query.trim().replaceAll("'", "''")}') or contains(domainname,'${query.trim().replaceAll("'", "''")}'))` : '');
       const users = await get(`systemusers?$select=systemuserid,fullname,domainname,azureactivedirectoryobjectid&$filter=${encodeURIComponent(filter)}&$orderby=fullname&$top=100`);

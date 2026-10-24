@@ -32,7 +32,7 @@ const SITE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
  */
 function runningRuntime(options, env = process.env) {
   if (!options.runtime) return null;
-  let launched = {};
+  let launched;
   try { launched = JSON.parse(env.MIRAGE_SETUP_RUNTIME ?? '{}') ?? {}; } catch { launched = {}; }
   const site = [options.runtime.site, options.site, launched.site].find(value => typeof value === 'string' && SITE.test(value));
   const command = [options.runtime.command, options.command, launched.command].find(value => COMMANDS.has(value));
@@ -88,7 +88,8 @@ function requestOrigin(req) {
 async function body(req) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) throw setupError('Send application/json.', 415);
   if (Number(req.headers['content-length']) > 512 * 1024) throw setupError('Setup request exceeds 512 KiB.', 413);
-  let size = 0, chunks = [];
+  let size = 0;
+  const chunks = [];
   for await (const chunk of req) { size += chunk.length; if (size > 512 * 1024) throw setupError('Setup request exceeds 512 KiB.', 413); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw setupError('Invalid JSON request.'); }
 }

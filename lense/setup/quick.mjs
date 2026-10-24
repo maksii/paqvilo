@@ -251,7 +251,7 @@ export function checkStep({ state, esc, session, dashboard, productName, mapHtml
     const [text, step] = PLAIN[item.code] ?? [item.message, null];
     return `<li><span>${esc(text)}</span>${step ? `<button type="button" class="button quiet small" data-quick-edit="${step}">Fix</button>` : `<a href="${esc(item.section ?? '#overview')}" data-quick-all>Fix in All settings</a>`}</li>`;
   });
-  let health = '';
+  let health;
   if (session?.ready && dashboard?.nodes) {
     const nodes = dashboard.nodes, by = status => nodes.filter(node => node.status === status);
     const bad = [...by('missing'), ...by('error')], ready = nodes.filter(node => ['ready', 'listening'].includes(node.status)).length, stand = by('placeholder').length;

@@ -15,8 +15,10 @@ export function modelDrivenOrigin(value) {
 }
 
 export const modelDrivenResourcePath = value => {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\?#\x00-\x1f]/.test(value)) throw new Error('Resource mappings require an origin-relative pathname without query, fragment or backslash.');
   let decoded; try { decoded = decodeURIComponent(value); } catch { throw new Error('Resource mapping contains invalid URL encoding.'); }
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (/[\\\x00-\x1f]/.test(decoded) || decoded.split('/').some(segment => ['.', '..'].includes(segment))) throw new Error('Invalid resource mapping pathname.');
   if (/^\/(?:api|oauth[^/]*|auth|signin|sign-in|login|connect|_sim|_setup)(?:\/|$)/i.test(decoded) || /^\/(?:main\.aspx|_apps\/api)(?:\/|$)/i.test(decoded)) throw new Error('Model-driven resource mappings cannot target an API, authentication, application shell or administration route.');
   return decoded.replace(/^\/webresources\//i, '/WebResources/');

@@ -27,7 +27,8 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
   const { context, close, attached } = await open({ ...cfg, origin: session.url }, { debugPort: cfg.browser.debugPort });
-  let stop, page, failure;
+  let stop, page;
+  const errors = [];
   const stopped = new Promise(resolve => { stop = resolve; });
   const browser = context.browser();
   context.once('close', stop); browser?.once('disconnected', stop);
@@ -42,18 +43,14 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
     console.log(`Opening ${session.url}${destination}. Close the dedicated browser or press Ctrl+C to stop.`);
     await waitForStartupPage(page, session.url + destination, { progress, stopped, modelDriven: cfg.runtime.kind === 'model-driven' });
     await stopped;
-  } catch (error) {
-    failure = error;
-    throw error;
   } finally {
     progress.close();
     process.off('SIGINT', stop); process.off('SIGTERM', stop); context.off('close', stop); browser?.off('disconnected', stop);
     page?.off('close', stop);
-    const errors = [];
     for (const cleanup of [() => attached && page && !page.isClosed() ? page.close() : undefined, close]) {
       try { await cleanup(); } catch (error) { errors.push(error); }
     }
-    if (!failure && errors.length) throw new AggregateError(errors, 'Standalone browser cleanup failed.');
   }
+  if (errors.length) throw new AggregateError(errors, 'Standalone browser cleanup failed.');
   return 0;
 }

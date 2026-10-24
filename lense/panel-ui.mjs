@@ -937,7 +937,7 @@ export function panelUi(data) {
         picker.outerHTML=personaPickerHtml();
         delete S.html.body;
         const replacement=identity?[...el.panel.querySelectorAll('.pp-persona-picker button,.pp-persona-picker input,.pp-persona-picker select')].find(node=>node.tagName===identity.tag&&Object.entries(identity.data).every(([key,value])=>node.dataset[key]===value)):null;
-        if(identity)(replacement??el.tabs.querySelector('[aria-selected=true]'))?.focus({preventScroll:true});if(search&&selection)try{replacement?.setSelectionRange(...selection);}catch{}
+        if(identity)(replacement??el.tabs.querySelector('[aria-selected=true]'))?.focus({preventScroll:true});if(search&&selection)try{replacement?.setSelectionRange(...selection);}catch{ /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
       }
       const query=S.personaFilters??{},count=['roles','tags','groups','subgroups','accounts'].reduce((total,key)=>total+(query[key]?.length??0),0)+(query.rolesOnly?1:0),summary=el.panel.querySelector('.pp-persona-filter-disclosure>summary');
       if(summary)summary.textContent='Filters'+(count?` · ${count} active`:'');
@@ -953,7 +953,6 @@ export function panelUi(data) {
       let out = '';
       if (S.confirm) out += `<div class="banner"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
       const option = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
-      const personaLabel = (item) => `${item.name ?? item.contactId}${item.roles?.length ? ` — ${item.roles.join(', ')}` : ''}${item.active === false ? ' (inactive)' : ''}`;
       const session = t.session?.supported ? t.session : null;
       if (session) {
         // This browser's own sign-in session (a cookie): not the Mirage default persona.
@@ -1683,9 +1682,11 @@ export function panelUi(data) {
         if (MIRAGE_TABS.includes(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
         S.targets = (Array.isArray(d.targets) ? d.targets : []).flatMap((target) => {
           try {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
             if (!target || typeof target.origin !== 'string' || /[\\\x00-\x20]/.test(target.origin)) return [];
             const origin = new URL(target.origin);
             const startPath = target.startPath ?? '/';
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
             if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || typeof startPath !== 'string' || !startPath.startsWith('/') || /[\\\x00-\x20]/.test(startPath)) return [];
             const url = new URL(startPath, origin);
             if (url.origin !== origin.origin || url.username || url.password) return [];

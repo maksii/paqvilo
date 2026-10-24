@@ -16,6 +16,7 @@ function keys(value, allowed, name) {
 }
 
 function string(value, name) {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof value !== 'string' || !value.trim() || /[\x00-\x1f\x7f]/.test(value)) throw new Error(`${name} must be a non-empty string without control characters`);
 }
 

@@ -23,9 +23,9 @@ export function modelDrivenReloadQueue(task) {
     request() {
       if (stopped) return Promise.resolve();
       requested = true;
-      return pending ??= Promise.resolve().then(async () => {
+      return (pending ??= Promise.resolve().then(async () => {
         do { requested = false; await task(); } while (requested && !stopped);
-      }).finally(() => { pending = null; });
+      }).finally(() => { pending = null; }));
     },
     async close() { stopped = true; requested = false; await pending; },
   };
@@ -177,6 +177,7 @@ async function runModelDriven(args, action, progress) {
     console.log('Close the dedicated browser or press Ctrl+C to stop. Resource queries and credentials are omitted from the report.');
     let loaded;
     try { loaded = await waitForStartupPage(page, url.href, { progress, stopped }); }
+    // eslint-disable-next-line preserve-caught-error -- Raw browser errors can contain credential/query values; retain only the redacted message.
     catch (error) { throw new Error(`Could not open the model-driven app: ${cleanError(error)}`); }
     if (loaded) console.log('Model-driven overlay installed; document and initial resources loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.');
     await stopped;
@@ -200,7 +201,9 @@ async function runModelDriven(args, action, progress) {
     console.log(`Model-driven overlay stopped${cleanupFailures.length ? ' with cleanup failures' : ''}: ${report.applied} local resource applications; ${report.currentRevisionApplied} on the current revision; ${report.resources.filter(resource => resource.currentRevisionApplied === 0).length} current resources not observed.`);
     if (cleanupFailures.length) {
       const causes = [...new Set([...(primaryFailure ? [primaryFailure] : []), ...cleanupFailures])];
+      // eslint-disable-next-line no-unsafe-finally -- Cleanup failures explicitly retain the primary failure in causes.
       if (causes.length === 1) throw causes[0];
+      // eslint-disable-next-line no-unsafe-finally -- Aggregate both primary and cleanup failures instead of replacing the primary silently.
       throw new AggregateError(causes, primaryFailure ? `${cleanError(primaryFailure)} (cleanup also failed).` : 'Model-driven cleanup failed.');
     }
   }

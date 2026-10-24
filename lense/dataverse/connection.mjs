@@ -103,7 +103,7 @@ export async function registerApplication({ connectionFile, environment, applica
   const result = await runProcess(pacExecutable(), ['admin', 'create-service-principal', '--environment', environmentUrl, '--name', applicationName, '--role', role]);
   // Save encrypted recovery evidence before parsing or reporting anything.
   const reportedError=/^\s*Error:/im.test(result.stdout+'\n'+result.stderr);
-  const partialApplicationId=result.stdout.match(new RegExp(`Application\\s+['\"]?(${GUID})`, 'i'))?.[1];
+  const partialApplicationId=result.stdout.match(new RegExp(`Application\\s+['"]?(${GUID})`, 'i'))?.[1];
   await privateJson(pending, { schemaVersion: 1, ...active, applicationName, role, partialApplicationId, state: result.code === 0 && !result.timedOut && !reportedError ? 'Returned' : 'FailedOrUnknown', code: result.code, timedOut: result.timedOut, protectedOutput: await protectSecret(JSON.stringify({ stdout: result.stdout, stderr: result.stderr })) });
   if (result.code !== 0 || result.timedOut || reportedError) throw new Error('PAC registration failed or its commit is partial/unknown. Encrypted recovery details saved; do not blindly register another app.');
   let credentials;
@@ -140,7 +140,7 @@ export async function connectExistingApplication({ registrationFile, secretFile,
 export function parseCredentialFile(input) {
   const text=input.replace(/^\uFEFF/,'').trim();
   let fields;
-  try { const parsed=JSON.parse(text);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)) fields=parsed; } catch {}
+  try { const parsed=JSON.parse(text);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)) fields=parsed; } catch { /* Optional inspection or cleanup failure must not interrupt the owning operation. */ }
   const normalize=key=>key.toLowerCase().replace(/[ _-]/g,'');
   if(!fields) {
     const lines=text.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
@@ -168,7 +168,7 @@ export async function loadConnection(file, { allowLoopback = false } = {}) {
 // Production authority unless a loopback test authority is explicitly allowed.
 function authorityEndpoint(connection, allowLoopback) {
   if (!allowLoopback || connection.authorityHost == null) return new URL('https://login.microsoftonline.com/');
-  let authority = null;
+  let authority;
   try { authority = new URL(connection.authorityHost); } catch { authority = null; }
   if (!authority || !isLoopbackOrigin(authority) || authority.username || authority.password || authority.search || authority.hash || !['', '/'].includes(authority.pathname)) throw new Error('authorityHost must be a loopback origin');
   return new URL(`${authority.origin}/`);

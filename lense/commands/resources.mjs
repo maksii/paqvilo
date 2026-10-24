@@ -23,6 +23,7 @@ export function resourceFilters(args = {}) {
 
   const kinds = args.kind === undefined ? [] : [args.kind].flat();
   for (const kind of kinds) if (!RESOURCE_KINDS.includes(kind)) throw invalidArgument(`Unknown resource kind "${kind}". Supported: ${RESOURCE_KINDS.join(', ')}`);
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (args.page !== undefined && (typeof args.page !== 'string' || !args.page.startsWith('/') || args.page.startsWith('//') || /[\\?#\x00-\x1f]/.test(args.page))) throw invalidArgument('--page must be a same-origin URL path without a query or fragment');
   return { page: args.page === undefined ? null : pageKey(args.page), kinds: [...new Set(kinds)].sort(compare), search: args.search?.trim() ?? '', changed: Boolean(args.changed), offset: integer(args.offset, 0, '--offset'), limit };
 }

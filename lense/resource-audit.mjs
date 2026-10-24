@@ -147,7 +147,7 @@ export function auditResources(model, site) {
       let nestedCount = 0;
       // Localized metadata is a serialized JSON array. Inventory its literal strings
       // independently; the container's LCIDs and server settings still need deployment.
-      if (/^\s*[\[{]/.test(value)) {
+      if (/^\s*[[{]/.test(value)) {
         try {
           const nested = JSON.parse(value);
           if (nested && typeof nested === 'object') {

@@ -42,7 +42,7 @@ export async function openBrowser(cfg, overrides = {}) {
   const args = initializePlacement ? ['--window-size=1280,900'] : [];
   if (profile.kind === 'external') args.push(`--profile-directory=${profile.profileDirectory}`);
   // only the dev loop opens the port; it is bound to this machine
-  let debugPort = overrides.debugPort ?? null;
+  const debugPort = overrides.debugPort ?? null;
   // Never attach VS Code to another account's browser because the requested port was occupied.
   if (debugPort && !(await debuggerPortAvailable(debugPort))) throw new Error(`Debugger port ${debugPort} is already in use. Choose another --debug-port (0 disables debugging), or attach to the intended browser with --cdp-url.`);
   if (debugPort) args.push(`--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1');
@@ -65,10 +65,10 @@ export async function openBrowser(cfg, overrides = {}) {
   } catch (err) {
     const first = err.message.split('\n')[0];
     if (/already (?:in use|running)|ProcessSingleton|SingletonLock|Target page, context or browser has been closed/i.test(err.message)) {
-      throw new Error(`the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`);
+      throw new Error(`the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`, { cause: err });
     }
     if (/is not found at|distribution .* is not found|executable doesn't exist/i.test(err.message)) {
-      throw new Error(`browser "${b.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`);
+      throw new Error(`browser "${b.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`, { cause: err });
     }
     throw err;
   }
@@ -173,6 +173,7 @@ async function debuggerListening(port, targetId, attempts = 10) {
  * when it closes. Put them where the user expects them: the Downloads folder, under their own name.
  */
 export function safeDownloadName(suggested) {
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   const name = path.win32.basename(path.posix.basename(suggested)).replace(/[<>:"|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'download';
   return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? `_${name}` : name;
 }
@@ -262,11 +263,11 @@ export async function keepSessionCookies(context, file, { origins = [] } = {}) {
     clearInterval(timer);
   });
   let stopping;
-  return () => stopping ??= (async () => {
+  return () => (stopping ??= (async () => {
     clearInterval(timer);
     await saving;
     await save();
-  })();
+  })());
 }
 
 /** Routes the portal origin of `context` through the overlay session. */

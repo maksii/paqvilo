@@ -46,7 +46,7 @@ export function redactSettings(mirage) {
 const redactDefaults = defaults => (plain(defaults) ? { ...defaults, ...(plain(defaults.mirage) ? { mirage: redactSettings(defaults.mirage) } : {}) } : defaults);
 
 /** The section of /_setup/ that fixes a finding. */
-function sectionOf(finding, kind) {
+function sectionOf(finding) {
   // A missing file is created in the project status strip; linked-project documents and the catalogue's mirage.project are
   // edited in the Settings file.
   if (finding.code === 'missing-config') return '#overview';

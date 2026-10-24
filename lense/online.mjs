@@ -8,10 +8,12 @@ const MAX_COMPARISON_BYTES = 32 * 1024 * 1024;
 export function portalResourceUrl(origin, urlPath) {
   const base = new URL(origin);
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) throw new Error('Expected an HTTP(S) portal origin');
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof urlPath !== 'string' || !urlPath.startsWith('/') || urlPath.startsWith('//') || /[\\\x00-\x1f]/.test(urlPath)) throw new Error('Expected a same-origin resource path');
   const encoded = urlPath.split('/').map((segment) => {
     let decoded = segment;
     try { decoded = decodeURIComponent(segment); } catch { /* literal percent */ }
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
     if (decoded === '.' || decoded === '..' || /[\\\x00-\x1f]/.test(decoded)) throw new Error('Invalid resource path segment');
     return encodeURIComponent(decoded);
   }).join('/');

@@ -166,7 +166,7 @@ export function inspectProjectAdoption(directory, { config = 'paqvilo.config.yml
     if (!rule.startsWith('!')) return false;
     const exception = rule.slice(1).replace(/^\//, '');
     if (exception === '.env.example') return false;
-    return /(?:^|\/)(?:\.paqvilo|node_modules|\.env[^/]*|paqvilo\.config\.local\.yml)(?:\/|$)/i.test(exception) || /[*?\[]/.test(exception);
+    return /(?:^|\/)(?:\.paqvilo|node_modules|\.env[^/]*|paqvilo\.config\.local\.yml)(?:\/|$)/i.test(exception) || /[*?[]/.test(exception);
   });
   if (privateException) add('PRIVATE_IGNORE_REVIEW', '.gitignore', 'Review private-path or wildcard ignore exceptions; representative probes cannot establish that every private evidence or environment file remains excluded.');
   for (const rule of ['.paqvilo/', 'node_modules/', 'paqvilo.config.local.yml']) if (!rules.has(rule))

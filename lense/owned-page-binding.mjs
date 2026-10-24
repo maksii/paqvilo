@@ -289,6 +289,7 @@ export async function createOwnedPageBindings(
       throw new AggregateError(
         [error, cleanup],
         "Owned page binding initialization and cleanup failed.",
+        // eslint-disable-next-line preserve-caught-error -- Both caught errors are preserved in errors; the cause remains the initiating failure.
         { cause: error },
       );
     }
