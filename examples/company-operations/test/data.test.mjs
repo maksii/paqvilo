@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { readManifest, readCatalogue } from 'paqvilo/dataverse';
 const schema = await readManifest(new URL('../dataverse/manifest.json', import.meta.url)),
   data = await readCatalogue(new URL('../data/catalogue.json', import.meta.url));
@@ -210,4 +215,27 @@ test('five complete deep paths, all paired read IDs, explicit collision expectat
   assert.equal(rows('pqvd_pluginevent').length, 0);
   assert.equal(rows('pqvd_testresult').length, 0);
   assert.ok(rows('pqvd_testrun').every((r) => r.fields.pqvd_runstate === option('pqvd_runstate', 'Incomplete')));
+});
+
+test('regenerated invented fixtures retain their committed deterministic record identities', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-public-fixture-ids-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const output = path.join(directory, 'catalogue.json');
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('../prepare-data.mjs', import.meta.url)), '--out', output],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 30_000,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const generated = JSON.parse(await fs.readFile(output, 'utf8'));
+  const identities = (catalogue) => catalogue.records.map(({ key, id }) => [key, id]);
+  assert.deepEqual(identities(generated), identities(data));
+  assert.equal(
+    generated.records.find((record) => record.key === 'currency-USD').id,
+    '4423dab3-61bc-56f6-ba62-5c6135165abd',
+  );
 });

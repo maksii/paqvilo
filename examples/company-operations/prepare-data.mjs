@@ -16,6 +16,8 @@ const clock = '2026-10-12T09:00:00Z',
   queries = [],
   personas = [],
   scenarios = [];
+// Preserve the public, committed fixture identities. SHA-1 here maps invented catalogue keys
+// to deterministic UUID-shaped IDs; it provides no authentication, secrecy or integrity proof.
 const id = (key) => {
   const b = createHash('sha1')
     .update('paqvilo-company-operations-fixtures-v1:' + key)
